@@ -11,6 +11,7 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
+    floor_to_time_step,
     resample_to_time_step,
     resolved_aggregation_methods,
     validate_time_step_cadence,
@@ -449,6 +450,209 @@ def raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
+# Plan 261 T1: the control run is `member_id in {None, 0}` — deterministic
+# sources (snow) carry None, an ensemble's control carries 0. Mirrors
+# `_pivot_nwp_records`'s SINGLE branch so the filled past leg and the future
+# leg select the same series.
+_CONTROL_MEMBER_IDS: frozenset[int | None] = frozenset({None, 0})
+
+
+def _freshest_control_points(
+    records: list[WeatherForecastRecord],
+) -> dict[tuple[str, UtcDatetime], float]:
+    """One value per ``(parameter, valid_time)``, from the cycle issued LAST
+    among those covering it (Plan 261 D3).
+
+    The freshest covering cycle is typically one issued on the day in question
+    (lead ~= 0), which is the closest thing to an observation the store holds.
+    """
+    freshest: dict[tuple[str, UtcDatetime], tuple[UtcDatetime, float]] = {}
+    for r in records:
+        # The store-side `member_ids` filter is a COST measure (a ~21x read).
+        # Selecting the control run is CORRECTNESS, so it is enforced here too
+        # rather than trusted to the caller's query.
+        if r.member_id not in _CONTROL_MEMBER_IDS:
+            continue
+        key = (r.parameter, ensure_utc(r.valid_time))
+        incumbent = freshest.get(key)
+        if incumbent is None or ensure_utc(r.cycle_time) > incumbent[0]:
+            freshest[key] = (ensure_utc(r.cycle_time), r.value)
+    return {key: value for key, (_cycle, value) in freshest.items()}
+
+
+def _native_steps_per_bucket(
+    valid_times: set[UtcDatetime], time_step: timedelta
+) -> int | None:
+    """How many raw NWP steps make ONE complete ``time_step`` bucket, inferred
+    from the delivered cadence. ``None`` when it cannot be determined, which
+    the caller must treat as "do not fill" rather than "fill anyway"."""
+    ordered = sorted(valid_times)
+    if len(ordered) < 2:
+        return None
+    native = min(
+        (b - a for a, b in zip(ordered, ordered[1:], strict=False)),
+        default=None,
+    )
+    if native is None or native.total_seconds() <= 0:
+        return None
+    bucket_s = time_step.total_seconds()
+    native_s = native.total_seconds()
+    if bucket_s % native_s != 0:
+        return None
+    return int(bucket_s // native_s)
+
+
+def fill_past_forcing_tail(
+    past_dynamic: pl.DataFrame,
+    *,
+    station_id: StationId,
+    nwp_source: str,
+    weather_forecast_store: WeatherForecastStore,
+    parameters: list[str],
+    window_end: UtcDatetime,
+    time_step: timedelta,
+    aggregation_methods: dict[str, AggregationMethod],
+) -> pl.DataFrame:
+    """Extend each past-forcing series to the end of the aligned lookback
+    window using stored NWP forecasts (Plan 261 T1).
+
+    Operational assemblers only. Nothing is persisted; the rows exist inside
+    this frame and nowhere else, which is what keeps forecast values out of
+    training and hindcast BY CONSTRUCTION (D2) rather than by a guard.
+
+    Three rules carry the correctness, all of them from review round 2:
+
+    * **Resample each source separately.** The reanalysis frame is already at
+      ``time_step``; NWP rows are native-cadence. Concatenating them and
+      resampling once would sum a daily precipitation total together with 24
+      hourly increments in the same bucket.
+    * **Stop at ``window_end``, never at the issue time.** ``window_end`` is
+      ``aligned_lookback_bounds``' exclusive end, which deliberately omits the
+      in-progress bucket; filling past it appends a partial bucket that the
+      resample then presents as a whole one, and leaves this frame one row
+      longer than ``past_targets``.
+    * **Reanalysis precedence, TAIL only.** A bucket the reanalysis already
+      holds is never overwritten, and only buckets strictly after a series'
+      own last measured bucket are filled. Interior holes are deliberately
+      left alone (owner decision, 2026-09-09).
+
+    A bucket is filled only when its full complement of native steps is
+    present: a partly covered bucket would resample to a silently low
+    precipitation total with no null, which neither ``max_nan`` nor the
+    past-forcing gap flag would catch.
+    """
+    if past_dynamic.is_empty() or not parameters:
+        return past_dynamic
+
+    present = [p for p in parameters if p in past_dynamic.columns]
+    if not present:
+        return past_dynamic
+
+    # Per-series anchor: the last bucket this parameter actually measured.
+    # Per-series, not per-frame, because the products publish independently.
+    last_measured: dict[str, UtcDatetime] = {}
+    for param in present:
+        stamps = (
+            past_dynamic.filter(pl.col(param).is_not_null())
+            .get_column("timestamp")
+            .to_list()
+        )
+        if stamps:
+            last_measured[param] = ensure_utc(max(stamps))
+    if not last_measured:
+        return past_dynamic
+
+    fetch_start = ensure_utc(min(last_measured.values()) + time_step)
+    if fetch_start >= window_end:
+        return past_dynamic
+
+    records = weather_forecast_store.fetch_lookback(
+        station_id=station_id,
+        nwp_source=nwp_source,
+        start=fetch_start,
+        end=window_end,
+        parameters=list(last_measured),
+        member_ids=_CONTROL_MEMBER_IDS,
+    )
+    if not records:
+        log.info(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="no_forecast_records",
+            start=str(fetch_start),
+            end=str(window_end),
+        )
+        return past_dynamic
+
+    points = _freshest_control_points(records)
+    steps_per_bucket = _native_steps_per_bucket(
+        {valid_time for _param, valid_time in points}, time_step
+    )
+    if steps_per_bucket is None:
+        log.warning(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="indeterminate_native_cadence",
+        )
+        return past_dynamic
+
+    wide_rows: dict[UtcDatetime, dict[str, object]] = {}
+    for (param, valid_time), value in points.items():
+        wide_rows.setdefault(valid_time, {"timestamp": valid_time})[param] = value
+    fill_frame = resample_to_time_step(
+        pl.DataFrame(list(wide_rows.values())),
+        time_step,
+        aggregation_methods=aggregation_methods,
+    )
+
+    # A bucket counts as complete only with its full complement of native
+    # steps, counted per parameter on the RAW points (the resample itself
+    # aggregates whatever it is given without judging coverage).
+    covered: dict[tuple[str, UtcDatetime], int] = defaultdict(int)
+    for param, valid_time in points:
+        bucket = floor_to_time_step(valid_time, time_step)
+        covered[(param, bucket)] += 1
+
+    merged: dict[UtcDatetime, dict[str, object]] = {
+        ensure_utc(row["timestamp"]): dict(row)
+        for row in past_dynamic.iter_rows(named=True)
+    }
+    filled: list[str] = []
+    for row in fill_frame.iter_rows(named=True):
+        bucket = ensure_utc(row["timestamp"])
+        for param in last_measured:
+            value = row.get(param)
+            if value is None or bucket <= last_measured[param]:
+                continue
+            if covered[(param, bucket)] != steps_per_bucket:
+                continue
+            # No precedence check is needed: `last_measured[param]` is this
+            # series' last NON-NULL bucket, so every bucket past it is null or
+            # absent. The tail-only rule above is the single guard.
+            merged.setdefault(bucket, {"timestamp": bucket})[param] = value
+            filled.append(f"{param}@{bucket}")
+
+    if not filled:
+        return past_dynamic
+
+    log.info(
+        "operational_inputs.past_forcing_tail_filled",
+        station_id=str(station_id),
+        nwp_source=nwp_source,
+        filled=sorted(filled),
+    )
+    columns = list(past_dynamic.columns)
+    return pl.DataFrame(
+        [
+            {column: row.get(column) for column in columns}
+            for _ts, row in sorted(merged.items())
+        ],
+        schema=past_dynamic.schema,
+    ).sort("timestamp")
+
+
 def _merge_declared_aggregations(
     requirements: list[ModelDataRequirements],
 ) -> frozenset[tuple[str, AggregationMethod]]:
@@ -707,6 +911,20 @@ def assemble_station_operational_inputs(
             past_dynamic = resample_to_time_step(
                 past_dynamic,
                 time_step,
+                aggregation_methods=resolved_aggregation_methods(reqs),
+            )
+            # Plan 261 T1: MeteoSwiss publishes ~2.4 days behind, so the
+            # measured leg always stops short of the window. Extend it from
+            # stored forecasts (freshest covering cycle, control member) —
+            # in memory, never persisted.
+            past_dynamic = fill_past_forcing_tail(
+                past_dynamic,
+                station_id=station_id,
+                nwp_source=nwp_source,
+                weather_forecast_store=weather_forecast_store,
+                parameters=past_dynamic_features,
+                window_end=past_targets_end,
+                time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
             )
     else:

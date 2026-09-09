@@ -27,6 +27,7 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.operational_inputs import (
     build_future_dynamic_frame,
+    fill_past_forcing_tail,
     observations_to_wide_dataframe,
     raw_forcing_to_dataframe,
 )
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
         BasinStore,
         ObservationStore,
         StationStore,
+        WeatherForecastStore,
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forcing_track import (
@@ -166,6 +168,11 @@ def assemble_assignment_inputs(
     station_store: StationStore,
     basin_store: BasinStore,
     forcing_source: WeatherReanalysisSource,
+    # Plan 261 T1: this assembler delivers `past_dynamic` on its own route, so
+    # the tail fill needs its own store handle and NWP source here — the
+    # station assembler already carried both, this one carried neither.
+    weather_forecast_store: WeatherForecastStore,
+    nwp_source: str,
     clock: Callable[[], UtcDatetime],
     static_naming_models: list[object] | None = None,
     expected_member_ids: frozenset[int] | None = None,
@@ -372,6 +379,18 @@ def assemble_assignment_inputs(
             past_dynamic = resample_to_time_step(
                 past_dynamic,
                 time_step,
+                aggregation_methods=resolved_aggregation_methods(reqs),
+            )
+            # Plan 261 T1: extend the measured leg to the end of the aligned
+            # window from stored forecasts. In memory only.
+            past_dynamic = fill_past_forcing_tail(
+                past_dynamic,
+                station_id=station_id,
+                nwp_source=nwp_source,
+                weather_forecast_store=weather_forecast_store,
+                parameters=past_dynamic_features,
+                window_end=past_targets_end,
+                time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
             )
     else:

@@ -45,6 +45,7 @@ from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
+_NWP_SOURCE_261 = "icon_ch2_eps"
 _STEP = timedelta(hours=24)
 _STATION_ID = StationId(uuid4())
 _MODEL_HIGH = ModelId("model-high-priority")
@@ -183,6 +184,7 @@ def test_assembly_and_runner_share_exactly_one_warm_up_load() -> None:
         FakeBasinStore,
         FakeObservationStore,
         FakeStationStore,
+        FakeWeatherForecastStore,
     )
 
     artifact_store = _SpyModelArtifactStore()
@@ -208,6 +210,8 @@ def test_assembly_and_runner_share_exactly_one_warm_up_load() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
     assert isinstance(ready, ReadyContext)
@@ -263,6 +267,7 @@ def test_production_assembly_per_track_route_survives_to_predict() -> None:
         FakeBasinStore,
         FakeObservationStore,
         FakeStationStore,
+        FakeWeatherForecastStore,
     )
 
     artifact_store = FakeModelArtifactStore()
@@ -285,6 +290,8 @@ def test_production_assembly_per_track_route_survives_to_predict() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=FakeBasinStore(),  # type: ignore[arg-type]
         forcing_source=FakeWeatherReanalysisSource(),  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
     assert isinstance(ready, ReadyContext)

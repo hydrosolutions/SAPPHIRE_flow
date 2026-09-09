@@ -48,11 +48,13 @@ from tests.fakes.fake_stores import (
     FakeBasinStore,
     FakeObservationStore,
     FakeStationStore,
+    FakeWeatherForecastStore,
 )
 
 _STATION = StationId(uuid4())
 _MODEL = ModelId("track_assembly_test_model")
 _STEP = timedelta(hours=24)
+_NWP_SOURCE_261 = "icon_ch2_eps"
 _ISSUE = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
 _NOW = ensure_utc(datetime(2026, 1, 10, 1, tzinfo=UTC))
 
@@ -159,6 +161,8 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -222,6 +226,8 @@ def test_per_feature_horizon_caps_each_column_independently() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -296,6 +302,8 @@ def test_expected_member_ids_thread_onto_contract_for_ensemble_only() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
         expected_member_ids=frozenset({0, 1}),
     )
@@ -341,6 +349,8 @@ def test_nwp_age_hours_from_this_assignments_own_resolved_cycle() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -367,6 +377,8 @@ def test_no_forcing_required_assignment_gets_null_provenance_and_no_contract() -
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -413,6 +425,8 @@ def test_unavailable_track_outcome_short_circuits_without_assembling() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -472,6 +486,8 @@ def test_isolated_missing_daily_bucket_yields_incomplete_at_cycle_not_raise() ->
             station_store=station_store,  # type: ignore[arg-type]
             basin_store=basin_store,  # type: ignore[arg-type]
             forcing_source=reanalysis,  # type: ignore[arg-type]
+            weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+            nwp_source=_NWP_SOURCE_261,
             clock=_clock,  # type: ignore[arg-type]
         )
 
@@ -538,6 +554,8 @@ def test_partial_trailing_day_excluded_at_a_non_midnight_cycle() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=lambda: issue_time,  # type: ignore[arg-type]
     )
 
@@ -613,6 +631,8 @@ def test_freshness_reflects_the_partial_bucket_not_the_aligned_window() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=lambda: issue_time,  # type: ignore[arg-type]
     )
 
@@ -679,6 +699,8 @@ def test_past_dynamic_is_resampled_to_the_declared_step_on_the_per_track_path() 
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 

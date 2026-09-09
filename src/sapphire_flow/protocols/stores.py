@@ -302,7 +302,23 @@ class WeatherForecastStore(Protocol):
         nwp_source: str,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters: list[str] | None = None,
+        member_ids: frozenset[int | None] | None = None,
     ) -> list[WeatherForecastRecord]:
+        """Records by ``valid_time`` across EVERY retained cycle (contrast
+        ``fetch_weather_forecasts``, which is scoped to one ``cycle_time``).
+
+        Plan 261 T1: ``parameters`` and ``member_ids`` are filters, not
+        conveniences. The operational past-forcing fill reads this per station
+        per cycle, and the unfiltered read is ~21x larger — measured 47,964 rows
+        against 2,284 for one station over a ~2.4-day span, i.e. 7.1M rows
+        against 338k across 148 stations. ``None`` means no filter on that
+        column; ``member_ids`` is a SET because the control run is
+        ``member_id in {None, 0}`` (deterministic sources carry ``None``, an
+        ensemble's control carries ``0``), so a bare ``int | None`` could not
+        express it without conflating "no filter" with "the deterministic
+        series".
+        """
         raise NotImplementedError
 
     def fetch_received_cycles(

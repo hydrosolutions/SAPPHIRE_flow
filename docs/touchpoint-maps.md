@@ -244,8 +244,14 @@ gates.
 - data requirements must match what input assembly actually provides
 - output shape and station / issue-time identity remain stable
 - assignment priority and fallback semantics remain explicit
-- **no imputation** — missing operational-input values are gated (`max_nan`), never
-  imputed / interpolated / filled
+- **no imputation** — missing operational-input VALUES are gated (`max_nan`), never
+  imputed / interpolated / filled. **Plan 261 narrows this, it does not retire it:** the
+  operational past-forcing leg is EXTENDED at its tail with real stored NWP values
+  (`fill_past_forcing_tail`, operational assemblers only, in memory, nothing persisted,
+  interior holes untouched). Nothing is derived, interpolated or invented — a filled
+  bucket is a forecast that was actually issued — and `max_nan` still gates values
+  exactly as before. Training and hindcast are unchanged and cannot reach the fill
+  (`tests/unit/services/test_forecast_fill_does_not_reach_history.py`)
 - `resample_to_time_step` is shared across **operational, training, AND
   hindcast** `past_targets` assembly (Plan 228 P1 — hindcast used to build
   `past_targets` from raw, unresampled rows; fixed) — a change there hits all
@@ -269,7 +275,9 @@ gates.
 - forecast-cycle test covering assignment → input assembly → model execution
 - regression test for `ModelFailure` behavior when expected data is missing
 - regression test that missing operational data is *gated, not filled* (assert
-  `max_nan`, not imputation)
+  `max_nan`, not imputation) — scoped to VALUES; the Plan 261 tail extension is the
+  one sanctioned exception, and its own guards live in
+  `tests/unit/services/test_past_forcing_tail_fill.py`
 - `assess_input_quality` coverage (`test_input_quality.py`) when changing staleness /
   degraded-input thresholds or `OperationalInputMetadata` fields
 - log/observability assertion if changing operational warnings

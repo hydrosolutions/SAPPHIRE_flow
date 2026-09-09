@@ -2694,6 +2694,13 @@ class WeatherForecastStore(Protocol):
         nwp_source: str,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters: list[str] | None = None,  # None = all parameters
+        # Plan 261: a SET, because the control run is `member_id in {None, 0}`
+        # — deterministic sources carry None, an ensemble's control carries 0.
+        # None = all members. Filtering here is a cost measure: the
+        # operational past-forcing fill reads this per station per cycle, and
+        # the unfiltered read is ~21x larger (measured 47,964 rows vs 2,284).
+        member_ids: frozenset[int | None] | None = None,
     ) -> list[WeatherForecastRecord]: ...
     def fetch_received_cycles(
         self,
@@ -4270,7 +4277,7 @@ All fake stores use `dict[ID, Entity]` or `list[Entity]` as backing storage. The
 - `FakeObservationStore` — keyed on `(station_id, parameter, timestamp)`. Raises on duplicate natural keys.
 - `FakeForecastStore` — keyed on `ForecastId`. Tracks status transitions; raises `ConflictError` on version mismatch (same as production).
 - `FakeAlertStore` — keyed on `AlertId`. Enforces partial unique index (one active alert per station/alert_level/source) in memory.
-- `FakeWeatherForecastStore` — backed by `list[WeatherForecastRecord]`. Implements `fetch_lookback` with simple range scan.
+- `FakeWeatherForecastStore` — backed by `list[WeatherForecastRecord]`. Implements `fetch_lookback` with simple range scan, honouring the `parameters` / `member_ids` filters.
 - `FakeSkillStore` — backed by `list[SkillScore]`. Supports `computation_version` queries.
 - `FakeParameterStore` — backed by `dict[str, ParameterDefinition]`. Seeded from canonical parameter list.
 
