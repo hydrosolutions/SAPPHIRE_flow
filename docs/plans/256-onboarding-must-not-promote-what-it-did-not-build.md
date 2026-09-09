@@ -3,9 +3,9 @@ status: DRAFT
 created: 2026-09-08
 plan: 256
 title: Onboarding must not promote what it did not build — hold excluded stations at promotion, and audit the status transitions onboarding writes
-scope: Stop onboarding PROMOTING a station whose operational forcing it withheld, and make the status transitions ONBOARDING WRITES attributable. Narrowed on owner decision 2026-09-08 — this plan does NOT demote stations already operational, because every non-operational status stops observation ingest and BAFU history cannot be back-fetched. Explicitly NOT a demotion of Branson or any live station, NOT the QC remediation (Plan 258), NOT geometry repair, NOT model-onboarding promotion, NOT an audit boundary that captures direct SQL writes (see the limit stated below).
+scope: Stop onboarding PROMOTING a station whose operational forcing it withheld, and make the status transitions ONBOARDING WRITES attributable. Narrowed on owner decision 2026-09-08 — this plan does NOT demote stations already operational, because every non-operational status stops observation ingest and BAFU history cannot be back-fetched. Explicitly NOT a demotion of Branson or any live station, NOT the QC remediation (Plan 260), NOT geometry repair, NOT model-onboarding promotion, NOT an audit boundary that captures direct SQL writes (see the limit stated below).
 depends_on: [255]
-blocks: [258]
+blocks: [260]
 source: 2026-09-08 — a read-only diagnosis of the mac-mini staging host. Five stations carry `operational` although the promotion gate could not have passed them; one station was excluded from operational forcing by an invalid polygon and promoted anyway. Revised twice after independent Codex passes (4 blockers, then 6 further blockers including that the first revision still promised a demotion it could not deliver).
 ---
 
@@ -105,7 +105,7 @@ before the promotion write at `:1207`. Four have no artifact of any model, ever.
 **Root cause, and it is not this plan's to fix.** QC never processed those five stations' pre-2026
 observations, and the partition is exact: of 148 stations, the 143 whose pre-2026 rows were
 QC-processed all have baselines; the 5 whose rows were not have none. 2041, 2116 and 2615 still hold
-14 610 / 14 610 / 9 497 rows in `raw`; 2392 and 2623 have no pre-2026 history at all. **Plan 258**
+14 610 / 14 610 / 9 497 rows in `raw`; 2392 and 2623 have no pre-2026 history at all. **Plan 260**
 owns the remediation, blocked on T3 below.
 
 ## Tasks
@@ -220,7 +220,7 @@ be determined from surviving evidence.
 
 Separating investigation from remediation is deliberate: an earlier draft folded them into one task
 scoped as "whatever the cause analysis indicates", which is neither bounded nor reviewable before a
-live write. **Plan 258** owns the remediation and is blocked on this.
+live write. **Plan 260** owns the remediation and is blocked on this.
 
 **In.** A finding appended to this plan.
 **Out.** No write of any kind. No status change. No QC re-run.

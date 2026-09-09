@@ -205,8 +205,8 @@ exit criteria — Plan 212 owns that deeper screening.
   observation record permanently; owner chose to leave it operational, so this plan
   prevents the NEXT wrong promotion rather than repairing the existing one. And the
   audit cannot capture the direct SQL write that caused the staging incident — that
-  would need a database trigger, deliberately not attempted. Depends on 255; blocks 258.
-- **258** — Recover the three stations whose history QC never processed — `BLOCKED`
+  would need a database trigger, deliberately not attempted. Depends on 255; blocks 260.
+- **260** — Recover the three stations whose history QC never processed — `BLOCKED`
   on 256 T3 — 2041, 2116 and 2615 hold 14 610 / 14 610 / 9 497 pre-2026 rows still in
   `raw`; the fleet partition is exact (all 143 QC'd stations have baselines, none of
   the 5 un-QC'd do). Deliberately carries no tasks until the cause of the QC skip is

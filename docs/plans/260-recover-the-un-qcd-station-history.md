@@ -1,7 +1,7 @@
 ---
 status: BLOCKED
 created: 2026-09-08
-plan: 258
+plan: 260
 title: Recover the three staging stations whose history QC never processed
 scope: Run QC over the untouched `raw` pre-2026 observations of 2041, 2116 and 2615 so the baselines, flow regime and climatology floor that follow can exist, making three nominally-operational stations genuinely operational. Explicitly NOT a change to the QC rules, NOT a re-QC of rows already carrying a non-`raw` status, NOT any change to the other 145 stations, NOT a status change for any station.
 depends_on: [256]
@@ -9,7 +9,7 @@ blocks: []
 source: 2026-09-08 — split out of Plan 256 after an independent Codex review found the remediation task unimplementable while its cause was unknown, and that a READY plan may not defer its own inputs (`docs/workflow.md:129`).
 ---
 
-# Plan 258 — recover the three stations whose history QC never processed
+# Plan 260 — recover the three stations whose history QC never processed
 
 ## Status
 
