@@ -6,6 +6,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import polars as pl
 from structlog.testing import capture_logs
 
 from sapphire_flow.services.track_assembly import (
@@ -713,3 +714,100 @@ def test_past_dynamic_is_resampled_to_the_declared_step_on_the_per_track_path() 
         f"per-track past_dynamic arrived at {gaps}, not the declared {_STEP}"
     )
     assert len(stamps) == requirements.lookback_steps
+
+
+def test_past_forcing_tail_is_filled_on_the_per_track_path() -> None:
+    """Plan 261 T1, independent review 2026-09-09 (major): the fill's unit
+    tests call the helper directly, so removing the call from THIS assembler
+    left them green. Mirrors
+    `test_operational_inputs.py::TestPastForcingTailReachesTheWindowThroughTheAssembler`.
+
+    A daily model, hourly reanalysis stopping one whole day short of the
+    aligned window, and a complete 24-hour control-member forecast covering
+    that missing day.
+    """
+    from sapphire_flow.types.station import StationWeatherSource
+
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    station_store.store_weather_source(
+        StationWeatherSource(
+            station_id=_STATION,
+            nwp_source="era5_land",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+    )
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset(),
+        past_dynamic_features=frozenset({"precipitation"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),  # DAILY
+        lookback_steps=2,
+        forecast_horizon_steps=1,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    window_end = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+    last_measured_day = ensure_utc(window_end - timedelta(days=2))
+    # Hourly reanalysis covering only the FIRST of the two lookback days.
+    reanalysis.set_records(
+        [
+            make_raw_historical_forcing(
+                station_id=_STATION,
+                parameter="precipitation",
+                valid_time=ensure_utc(last_measured_day + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(24)
+        ]
+    )
+    forecast_store = FakeWeatherForecastStore()
+    forecast_store.store_weather_forecasts(
+        [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=ensure_utc(window_end - timedelta(days=1)),
+                valid_time=ensure_utc(window_end - timedelta(days=1, hours=-hour)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=2.0,
+                created_at=window_end,
+            )
+            for hour in range(24)
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=window_end,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=forecast_store,  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
+        clock=lambda: window_end,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    past_dynamic = result.inputs.data.past_dynamic
+    timestamps = [ensure_utc(t) for t in past_dynamic.get_column("timestamp").to_list()]
+    # Both lookback days present: the measured one and the forecast-filled one.
+    assert timestamps == [
+        last_measured_day,
+        ensure_utc(window_end - timedelta(days=1)),
+    ]
+    filled_value = past_dynamic.filter(
+        pl.col("timestamp") == ensure_utc(window_end - timedelta(days=1))
+    ).get_column("precipitation")[0]
+    assert filled_value == 48.0  # 24 h x 2.0, SUM

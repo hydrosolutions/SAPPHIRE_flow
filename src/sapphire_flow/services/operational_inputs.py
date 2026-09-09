@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -32,7 +33,6 @@ from sapphire_flow.types.model import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import (
@@ -456,6 +456,23 @@ def raw_forcing_to_dataframe(
 # leg select the same series.
 _CONTROL_MEMBER_IDS: frozenset[int | None] = frozenset({None, 0})
 
+# Plan 261 D5: the fill covers these parameters and no others. Not a
+# convenience — `member_id=None` means "deterministic", which is BOTH an
+# ensemble-free control run AND how recap Gateway stores Nepal's snow
+# (`adapters/recap_gateway.py:1574`). Without this restriction a model
+# declaring past snow would receive forecast-filled snow on the Nepal
+# operational path, which this plan explicitly defers.
+_FILLABLE_PARAMETERS: frozenset[str] = frozenset({"precipitation", "temperature"})
+
+# The native cadence of the stored NWP the fill reads. DECLARED, never inferred
+# from the rows being validated: inferring it from delivered timestamps is
+# circular — an hourly bucket holding only 0,2,...,22 infers a 2-hourly source,
+# "completes" at 12 steps, and yields a precipitation total that is silently
+# half of the truth (independent review, 2026-09-09). Measured hourly for
+# ICON-CH2-EPS (121 steps over 5 days). A source delivering anything else is
+# NOT filled and says so in the log — failing closed, never low.
+_NWP_NATIVE_STEP = timedelta(hours=1)
+
 
 def _freshest_control_points(
     records: list[WeatherForecastRecord],
@@ -480,26 +497,24 @@ def _freshest_control_points(
     return {key: value for key, (_cycle, value) in freshest.items()}
 
 
-def _native_steps_per_bucket(
-    valid_times: set[UtcDatetime], time_step: timedelta
-) -> int | None:
-    """How many raw NWP steps make ONE complete ``time_step`` bucket, inferred
-    from the delivered cadence. ``None`` when it cannot be determined, which
-    the caller must treat as "do not fill" rather than "fill anyway"."""
-    ordered = sorted(valid_times)
-    if len(ordered) < 2:
-        return None
-    native = min(
-        (b - a for a, b in zip(ordered, ordered[1:], strict=False)),
-        default=None,
-    )
-    if native is None or native.total_seconds() <= 0:
-        return None
+def _complete_bucket_grid(
+    bucket: UtcDatetime, time_step: timedelta
+) -> frozenset[UtcDatetime] | None:
+    """Every native timestamp a COMPLETE ``bucket`` must contain.
+
+    Compared as a SET, not a count: a count is satisfied by any twelve rows,
+    including twelve two-hourly ones standing in for twenty-four hourly ones.
+    ``None`` when ``time_step`` is not a whole number of native steps, which the
+    caller must treat as "do not fill".
+    """
     bucket_s = time_step.total_seconds()
-    native_s = native.total_seconds()
-    if bucket_s % native_s != 0:
+    native_s = _NWP_NATIVE_STEP.total_seconds()
+    if native_s <= 0 or bucket_s % native_s != 0:
         return None
-    return int(bucket_s // native_s)
+    return frozenset(
+        ensure_utc(bucket + i * _NWP_NATIVE_STEP)
+        for i in range(int(bucket_s // native_s))
+    )
 
 
 def fill_past_forcing_tail(
@@ -544,7 +559,11 @@ def fill_past_forcing_tail(
     if past_dynamic.is_empty() or not parameters:
         return past_dynamic
 
-    present = [p for p in parameters if p in past_dynamic.columns]
+    # D5: restrict to the parameters this plan fills BEFORE anchoring, so an
+    # out-of-scope series neither pulls the read window back nor gets filled.
+    present = [
+        p for p in parameters if p in past_dynamic.columns and p in _FILLABLE_PARAMETERS
+    ]
     if not present:
         return past_dynamic
 
@@ -586,17 +605,6 @@ def fill_past_forcing_tail(
         return past_dynamic
 
     points = _freshest_control_points(records)
-    steps_per_bucket = _native_steps_per_bucket(
-        {valid_time for _param, valid_time in points}, time_step
-    )
-    if steps_per_bucket is None:
-        log.warning(
-            "operational_inputs.past_forcing_tail_unfilled",
-            station_id=str(station_id),
-            nwp_source=nwp_source,
-            reason="indeterminate_native_cadence",
-        )
-        return past_dynamic
 
     wide_rows: dict[UtcDatetime, dict[str, object]] = {}
     for (param, valid_time), value in points.items():
@@ -607,13 +615,15 @@ def fill_past_forcing_tail(
         aggregation_methods=aggregation_methods,
     )
 
-    # A bucket counts as complete only with its full complement of native
-    # steps, counted per parameter on the RAW points (the resample itself
-    # aggregates whatever it is given without judging coverage).
-    covered: dict[tuple[str, UtcDatetime], int] = defaultdict(int)
+    # A bucket is complete only when it holds EVERY native timestamp the grid
+    # requires, per parameter, on the RAW points — the resample aggregates
+    # whatever it is handed without judging coverage. Compared as a set, not a
+    # count: twelve two-hourly rows satisfy a count of twelve while carrying
+    # half the precipitation.
+    covered: dict[tuple[str, UtcDatetime], set[UtcDatetime]] = defaultdict(set)
     for param, valid_time in points:
         bucket = floor_to_time_step(valid_time, time_step)
-        covered[(param, bucket)] += 1
+        covered[(param, bucket)].add(valid_time)
 
     merged: dict[UtcDatetime, dict[str, object]] = {
         ensure_utc(row["timestamp"]): dict(row)
@@ -626,7 +636,8 @@ def fill_past_forcing_tail(
             value = row.get(param)
             if value is None or bucket <= last_measured[param]:
                 continue
-            if covered[(param, bucket)] != steps_per_bucket:
+            grid = _complete_bucket_grid(bucket, time_step)
+            if grid is None or covered[(param, bucket)] != grid:
                 continue
             # No precedence check is needed: `last_measured[param]` is this
             # series' last NON-NULL bucket, so every bucket past it is null or

@@ -406,6 +406,89 @@ class TestFillPastForcingTail:
         row = filled.filter(pl.col("timestamp") == _ts(2026, 9, 8))
         assert row.get_column("precipitation").to_list() == [48.0]
 
+    def test_an_evenly_sparse_bucket_is_not_filled(self) -> None:
+        """Independent review 2026-09-09 (major). Inferring the native cadence
+        from the rows being validated is circular: a bucket holding only the
+        even hours is "evenly spaced 2-hourly", completes at 12 steps, and
+        yields half the real precipitation with no null anywhere. The grid is
+        DECLARED, so this bucket is short and stays unfilled.
+        """
+        frame = _reanalysis_frame(7)
+        records = _hourly_forecast(
+            day=8,
+            parameter="precipitation",
+            cycle_day=8,
+            value_per_hour=1.0,
+            hours=range(0, 24, 2),
+        )
+
+        filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
+
+        assert filled.equals(frame)
+
+    def test_a_parameter_outside_the_fillable_set_is_never_filled(self) -> None:
+        """D5 scope. `member_id=None` means "deterministic", which is both an
+        ensemble-free control run AND how Nepal's snow is stored — so without
+        an explicit parameter scope a past-snow model would silently receive
+        forecast-filled snow on a path this plan defers entirely.
+        """
+        frame = pl.DataFrame(
+            [
+                {"timestamp": _ts(2026, 9, day), "snow_depth": float(day)}
+                for day in range(1, 8)
+            ]
+        )
+        records = [
+            WeatherForecastRecord(
+                id=UUID(int=900000 + hour),
+                station_id=_STATION,
+                nwp_source=_NWP,
+                cycle_time=_ts(2026, 9, 8),
+                valid_time=_ts(2026, 9, 8, hour),
+                parameter="snow_depth",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=None,  # deterministic, exactly like recap snow
+                value=5.0,
+                created_at=_ts(2026, 9, 8),
+            )
+            for hour in range(24)
+        ]
+
+        filled = _fill(
+            frame, records, window_end=_ts(2026, 9, 9), parameters=["snow_depth"]
+        )
+
+        assert filled.equals(frame)
+
+    def test_a_full_count_of_off_grid_timestamps_is_not_filled(self) -> None:
+        """Why the coverage check compares SETS rather than counts: 24 readings
+        stamped at :30 past each hour are a full count on a grid they never
+        touch. A count-compare accepts them; the bucket they aggregate into is
+        offset from the one being filled.
+        """
+        frame = _reanalysis_frame(7)
+        records = [
+            WeatherForecastRecord(
+                id=UUID(int=800000 + hour),
+                station_id=_STATION,
+                nwp_source=_NWP,
+                cycle_time=_ts(2026, 9, 8),
+                valid_time=ensure_utc(_ts(2026, 9, 8, hour) + timedelta(minutes=30)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=1.0,
+                created_at=_ts(2026, 9, 8),
+            )
+            for hour in range(24)
+        ]
+
+        filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
+
+        assert filled.equals(frame)
+
     def test_no_forecasts_leaves_the_frame_unchanged(self) -> None:
         frame = _reanalysis_frame(7)
 
