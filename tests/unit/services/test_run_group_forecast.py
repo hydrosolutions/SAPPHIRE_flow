@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import polars as pl
 import pytest
+import structlog
 from polars.testing import assert_frame_equal
 from sqlalchemy.exc import DisconnectionError
 
@@ -15,6 +16,7 @@ from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services import run_group_forecast as service
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.operational_inputs import OperationalInputMetadata
+from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -69,10 +71,25 @@ def _time_frame(data: dict[str, list[object]]) -> pl.DataFrame:
     )
 
 
+def _complete_past_dynamic() -> pl.DataFrame:
+    """Every bucket `FakeGroupForecastModel` declares, for both series — the
+    contrast case that keeps the forcing-gap diagnosis honest."""
+    buckets = list(expected_past_buckets(_ISSUE, _STEP, 720))
+    return _time_frame(
+        {
+            "timestamp": buckets,
+            "precipitation": [1.0] * len(buckets),
+            "temperature": [5.0] * len(buckets),
+        }
+    )
+
+
 def _make_station_inputs(
     station_id: StationId,
     base_value: float,
     static: pl.DataFrame | None = None,
+    *,
+    complete_past_dynamic: bool = False,
 ) -> StationModelInputs:
     return StationModelInputs(
         station_id=station_id,
@@ -83,11 +100,15 @@ def _make_station_inputs(
                     "discharge": [base_value, base_value + 1.0],
                 }
             ),
-            past_dynamic=_time_frame(
-                {
-                    "timestamp": [_ISSUE - _STEP, _ISSUE],
-                    "precipitation": [base_value + 2.0, base_value + 3.0],
-                }
+            past_dynamic=(
+                _complete_past_dynamic()
+                if complete_past_dynamic
+                else _time_frame(
+                    {
+                        "timestamp": [_ISSUE - _STEP, _ISSUE],
+                        "precipitation": [base_value + 2.0, base_value + 3.0],
+                    }
+                )
             ),
             future_dynamic=_time_frame(
                 {
@@ -229,9 +250,13 @@ def _make_ensemble(
     )
 
 
-def _make_group_inputs(group: StationGroup) -> GroupModelInputs:
+def _make_group_inputs(
+    group: StationGroup, *, complete_past_dynamic: bool = False
+) -> GroupModelInputs:
     station_inputs = [
-        _make_station_inputs(sid, float(index + 1))
+        _make_station_inputs(
+            sid, float(index + 1), complete_past_dynamic=complete_past_dynamic
+        )
         for index, sid in enumerate(sorted(group.station_ids, key=str))
     ]
     return GroupModelInputs(
@@ -927,15 +952,57 @@ def test_run_group_forecast_model_output_error_returns_empty() -> None:
     artifact_store = FakeModelArtifactStore()
     _seed_group_artifact(artifact_store, group)
 
-    results = _call_run_group_forecast(
-        group=group,
-        group_inputs=group_inputs,
-        metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
-        model=_BatchGroupModel(exc=ModelOutputError("bad output")),
-        artifact_store=artifact_store,
-    )
+    with structlog.testing.capture_logs() as captured:
+        results = _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+            model=_BatchGroupModel(exc=ModelOutputError("bad output")),
+            artifact_store=artifact_store,
+        )
 
     assert results == {}
+    # Cross-check review 2026-09-09: this asserted only `results == {}`, so both
+    # group `forcing_gaps` calls could be deleted and it stayed green. A failing
+    # batch must still record WHY the forcing was short — the whole point of the
+    # blocker fix. `_make_group_inputs` supplies no past forcing, so every
+    # declared series is a total gap.
+    failures = [
+        event
+        for event in captured
+        if event.get("event") == "run_group_forecast.predict_batch_failed"
+    ]
+    assert failures, "no predict_batch_failed event was logged"
+    gaps = failures[0].get("forcing_gaps")
+    assert gaps, f"the failure carried no forcing diagnosis: {failures[0]}"
+    assert str(sid) in gaps
+
+
+def test_run_group_forecast_intact_forcing_adds_no_gap_noise() -> None:
+    """The contrast case: without it, always emitting gap text would pass the
+    test above and tell an operator nothing."""
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    group_inputs = _make_group_inputs(group, complete_past_dynamic=True)
+    artifact_store = FakeModelArtifactStore()
+    _seed_group_artifact(artifact_store, group)
+
+    with structlog.testing.capture_logs() as captured:
+        _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+            model=_BatchGroupModel(exc=ModelOutputError("bad output")),
+            artifact_store=artifact_store,
+        )
+
+    failures = [
+        event
+        for event in captured
+        if event.get("event") == "run_group_forecast.predict_batch_failed"
+    ]
+    assert failures
+    assert failures[0].get("forcing_gaps") == {}
 
 
 def test_run_group_forecast_connection_fatal_propagates_store_error() -> None:

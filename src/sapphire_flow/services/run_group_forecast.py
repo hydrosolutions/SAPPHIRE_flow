@@ -8,7 +8,10 @@ import structlog
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
-from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.input_quality import (
+    assess_input_quality,
+    past_forcing_flags,
+)
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
@@ -22,6 +25,7 @@ from sapphire_flow.services.run_station_forecast import (
     StationForecastResult,
     worst_qc_status,
 )
+from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import ArtifactScope, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import ForecastId
@@ -33,7 +37,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
     from uuid import UUID
 
-    from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.config.deployment import DeploymentConfig, InputQualityConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import GroupForecastModel
     from sapphire_flow.protocols.stores import (
@@ -57,7 +61,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
-    from sapphire_flow.types.model import StationModelInputs
+    from sapphire_flow.types.model import ModelDataRequirements, StationModelInputs
     from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
 log = structlog.get_logger(__name__)
@@ -258,6 +262,7 @@ def _build_station_result(
     artifact_id: ArtifactId,
     group_inputs: GroupModelInputs,
     input_metadata: OperationalInputMetadata,
+    data_requirements: ModelDataRequirements,
     ensembles: dict[str, ForecastEnsemble],
     new_state: bytes | None,
     qc_checker: ForecastOutputQualityChecker,
@@ -317,6 +322,23 @@ def _build_station_result(
         warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
     )
 
+    # Plan 239 T1b: past-forcing gaps become an input-quality flag, never a
+    # refusal (owner decision 2026-09-08). This function is already invoked
+    # PER STATION, so the flags describe THIS station only — a gap at one
+    # station of a group must never label its siblings.
+    forcing_flags = past_forcing_flags(
+        past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+        features=data_requirements.past_dynamic_features,
+        anchor=group_inputs.issue_time,
+        time_step=group_inputs.time_step,
+        lookback_steps=data_requirements.lookback_steps,
+        recent_steps=iq_config.forcing_recent_steps,
+        declared_lookbacks=dict(data_requirements.declared_lookbacks),
+    )
+    if forcing_flags:
+        input_quality_flags = (*input_quality_flags, *forcing_flags)
+        input_quality = aggregate_input_quality(list(input_quality_flags))
+
     forecasts: list[OperationalForecast] = []
     now = clock()
     for param, ensemble in ensembles.items():
@@ -355,6 +377,40 @@ def _build_station_result(
         new_state=new_state,
         ensembles=dict(ensembles),
     )
+
+
+def _group_forcing_gap_details(
+    *,
+    group_inputs: GroupModelInputs,
+    data_requirements: ModelDataRequirements,
+    iq_config: InputQualityConfig,
+) -> dict[str, list[str]]:
+    """Per-station past-forcing gaps, for a batch that already failed.
+
+    Plan 239 T1b review (blocker, 2026-09-09): `predict_batch` failing returns
+    ``{}`` for the WHOLE group, so no per-station result is ever built and the
+    forcing flags computed in that builder never exist. The gap analysis is
+    what explains a short-window refusal, so it is recomputed here — only on
+    the failure path, so the happy path pays nothing.
+
+    Stations with no gaps are omitted; an empty dict means forcing was intact
+    and the batch failed for some other reason.
+    """
+    details: dict[str, list[str]] = {}
+    declared = dict(data_requirements.declared_lookbacks)
+    for station_id in group_inputs.station_ids:
+        flags = past_forcing_flags(
+            past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+            features=data_requirements.past_dynamic_features,
+            anchor=group_inputs.issue_time,
+            time_step=group_inputs.time_step,
+            lookback_steps=data_requirements.lookback_steps,
+            recent_steps=iq_config.forcing_recent_steps,
+            declared_lookbacks=declared,
+        )
+        if flags:
+            details[str(station_id)] = [flag.detail for flag in flags]
+    return details
 
 
 def run_group_forecast(
@@ -454,6 +510,11 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             error=str(exc),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
         return {}
     except StoreError:
@@ -470,6 +531,11 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             error=str(exc),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
         return {}
 
@@ -479,15 +545,35 @@ def run_group_forecast(
             "run_group_forecast.batch_empty",
             group_id=str(group.id),
             model_id=str(assignment.model_id),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
 
     missing_station_ids = sorted(expected_station_ids - set(batch_result), key=str)
     if missing_station_ids:
+        # Cross-check review 2026-09-09: a batch can come back PARTIAL rather
+        # than failing — the FI adapter skips a station whose variables all
+        # report FAILURE and returns its successful siblings. That station gets
+        # no per-station result, so the forcing flags built in the result
+        # builder never exist for it. Diagnose exactly the ones that vanished.
+        gaps = _group_forcing_gap_details(
+            group_inputs=group_inputs,
+            data_requirements=model.data_requirements,
+            iq_config=config.input_quality,
+        )
         log.warning(
             "run_group_forecast.batch_missing_station_outputs",
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             station_ids=[str(station_id) for station_id in missing_station_ids],
+            forcing_gaps={
+                str(sid): gaps[str(sid)]
+                for sid in missing_station_ids
+                if str(sid) in gaps
+            },
         )
 
     results: dict[StationId, StationForecastResult] = {}
@@ -507,6 +593,7 @@ def run_group_forecast(
             artifact_id=artifact_id,
             group_inputs=group_inputs,
             input_metadata=input_metadata,
+            data_requirements=model.data_requirements,
             ensembles=ensembles,
             new_state=new_state,
             qc_checker=qc_checker,

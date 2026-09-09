@@ -20,12 +20,15 @@ from sapphire_flow.services.run_station_forecast import (
     run_all_station_forecasts,
     run_station_forecast,
 )
+from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ArtifactScope,
     EnsembleMode,
+    InputQualityCategory,
+    InputQualityLevel,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
@@ -2443,3 +2446,234 @@ class TestContextInputsIsTheSingleInputAuthority:
         values = result.forecasts[0].ensemble.values["value"].to_list()
         assert values
         assert all(v == 77.0 for v in values)
+
+
+class TestForcingGapReachesTheForecast:
+    """Plan 239 T1b: a past-forcing gap must appear ON THE FORECAST as an
+    input-quality flag — and must never stop the forecast being produced.
+
+    Unit-testing `assess_past_forcing_gaps` proves the RULE; this proves the
+    WIRING, which is the half that silently does nothing if the call site is
+    wrong. `FakeStationForecastModel` declares past precipitation/temperature
+    with a 720-step lookback, so an empty `past_dynamic` is a total gap.
+    """
+
+    def _forecast_with(self, past_dynamic: pl.DataFrame):
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        inputs = _make_inputs()
+        inputs = StationModelInputs(
+            station_id=inputs.station_id,
+            data=StationInputData(
+                past_targets=inputs.data.past_targets,
+                past_dynamic=past_dynamic,
+                future_dynamic=inputs.data.future_dynamic,
+                static=None,
+            ),
+            issue_time=inputs.issue_time,
+            forecast_horizon_steps=inputs.forecast_horizon_steps,
+            time_step=inputs.time_step,
+        )
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=inputs,
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+            models={_MODEL_ID_A: FakeStationForecastModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),  # type: ignore[arg-type]
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+        assert _MODEL_ID_A in result.results, result.failed_models
+        return result.results[_MODEL_ID_A].forecasts[0]
+
+    def test_a_total_gap_marks_the_forecast_degraded_but_still_produces_it(
+        self,
+    ) -> None:
+        empty = pl.DataFrame({"timestamp": []}).with_columns(
+            pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+        )
+        forecast = self._forecast_with(empty)
+
+        # Produced — the whole point of the owner's redesign.
+        assert forecast is not None
+        flags = [
+            f
+            for f in forecast.input_quality_flags
+            if f.category is InputQualityCategory.FORCING
+        ]
+        assert flags, "no FORCING flag reached the forecast — the wiring is dead"
+        assert all(f.level is InputQualityLevel.DEGRADED for f in flags)
+        # Independent review 2026-09-09 (minor): asserting only the individual
+        # flag levels left the AGGREGATE untested — deleting the
+        # `aggregate_input_quality` recomputation left `input_quality == FULL`
+        # and this test still passed. The aggregate is what the API serves.
+        assert forecast.input_quality is InputQualityLevel.DEGRADED
+        # One flag per declared series, named so an operator can act on it.
+        # Same review: comparing only the SET of names present also passed for
+        # one combined flag, or for duplicates. Cross-check review 2026-09-09:
+        # counting total flags and FLATTENED substrings still permitted one
+        # combined precipitation+temperature flag plus one unnamed flag. Assert
+        # that each flag names EXACTLY ONE series, and that the two differ.
+        named = [
+            [s for s in ("precipitation", "temperature") if s in flag.detail]
+            for flag in flags
+        ]
+        assert all(len(names) == 1 for names in named), [f.detail for f in flags]
+        assert sorted(names[0] for names in named) == ["precipitation", "temperature"]
+
+    def test_a_refusing_model_still_reports_why_the_forcing_was_short(
+        self,
+    ) -> None:
+        """Independent review 2026-09-09 (BLOCKER): the forcing analysis used to
+        be computed only AFTER a successful `predict`, so a model that refuses
+        its own short window produced no forecast AND no forcing diagnosis —
+        the one explanation this plan exists to surface was dropped exactly
+        when it mattered. On staging that path fired 136 times in 30 hours.
+
+        This does NOT assert a forecast is produced: a model whose contract
+        rejects an incomplete window still fails, and filling that window is
+        Plan 261's job. It asserts the REASON survives the failure.
+        """
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        base = _make_inputs()
+        empty = pl.DataFrame({"timestamp": []}).with_columns(
+            pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+        )
+        inputs = StationModelInputs(
+            station_id=base.station_id,
+            data=StationInputData(
+                past_targets=base.data.past_targets,
+                past_dynamic=empty,
+                future_dynamic=base.data.future_dynamic,
+                static=None,
+            ),
+            issue_time=base.issue_time,
+            forecast_horizon_steps=base.forecast_horizon_steps,
+            time_step=base.time_step,
+        )
+
+        class _RefusingModel(FakeStationForecastModel):  # type: ignore[misc,valid-type]
+            def predict(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+                raise ModelOutputError(
+                    "ForecastInterface model failure: INPUT_DATA: "
+                    "insufficient precipitation history: got 0, need 720"
+                )
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=inputs,
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+            models={_MODEL_ID_A: _RefusingModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),  # type: ignore[arg-type]
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        assert _MODEL_ID_A not in result.results
+        failure = result.failed_models[_MODEL_ID_A]
+        assert failure.cause is rsf_module.AssignmentFailureCause.PREDICT_FAILED
+        # The model's own message survives...
+        assert "insufficient precipitation history" in failure.detail
+        # ...AND the gap analysis that explains it, naming both series.
+        assert "past-forcing gaps" in failure.detail
+        assert "precipitation" in failure.detail
+        assert "temperature" in failure.detail
+
+    def test_an_intact_frame_adds_no_gap_noise_to_an_unrelated_failure(
+        self,
+    ) -> None:
+        """The contrast case: without this, always appending the gap text would
+        pass the test above and tell an operator nothing."""
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        base = _make_inputs()
+        buckets = expected_past_buckets(_NOW, _STEP, 720)
+        complete = pl.DataFrame(
+            {
+                "timestamp": buckets,
+                "precipitation": [1.0] * len(buckets),
+                "temperature": [5.0] * len(buckets),
+            }
+        ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
+        inputs = StationModelInputs(
+            station_id=base.station_id,
+            data=StationInputData(
+                past_targets=base.data.past_targets,
+                past_dynamic=complete,
+                future_dynamic=base.data.future_dynamic,
+                static=None,
+            ),
+            issue_time=base.issue_time,
+            forecast_horizon_steps=base.forecast_horizon_steps,
+            time_step=base.time_step,
+        )
+
+        class _UnrelatedFailureModel(FakeStationForecastModel):  # type: ignore[misc,valid-type]
+            def predict(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+                raise ModelOutputError("artifact is corrupt")
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=inputs,
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+            models={_MODEL_ID_A: _UnrelatedFailureModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),  # type: ignore[arg-type]
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+        failure = result.failed_models[_MODEL_ID_A]
+        assert "artifact is corrupt" in failure.detail
+        assert "past-forcing gaps" not in failure.detail
+
+    def test_complete_forcing_produces_no_forcing_flag(self) -> None:
+        # The other direction: without this, "always flag" would pass the test
+        # above and be useless.
+        # Built FROM the expected set rather than guessed: an earlier version
+        # generated 799 hourly rows against a step that is not hourly, so only
+        # the 33 landing on a bucket boundary counted and the frame was 687
+        # short while looking full.
+        buckets = expected_past_buckets(_NOW, _STEP, 720)
+        complete = pl.DataFrame(
+            {
+                "timestamp": buckets,
+                "precipitation": [1.0] * len(buckets),
+                "temperature": [5.0] * len(buckets),
+            }
+        ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
+        forecast = self._forecast_with(complete)
+        assert not [
+            f
+            for f in forecast.input_quality_flags
+            if f.category is InputQualityCategory.FORCING
+        ]

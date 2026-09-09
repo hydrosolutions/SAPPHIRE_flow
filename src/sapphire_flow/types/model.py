@@ -289,6 +289,16 @@ class ModelDataRequirements:
     # `services/training_data.py::resolved_aggregation_methods`). A `tuple`-
     # of-pairs `frozenset`, not a `dict`, to keep this dataclass hashable.
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()
+    # Plan 239 T1b review (major): `lookback_steps` above is the MAXIMUM across
+    # every declared past variable, because input assembly fetches one frame
+    # wide enough for all of them. Judging gap severity on that maximum is
+    # wrong — a model declaring precipitation=45 and temperature=14 would have
+    # a 30-day-old temperature hole, a bucket it never reads, reported as a
+    # gap. This keeps each variable's OWN declared lookback so quality
+    # assessment can judge each series on its own window. Same tuple-of-pairs
+    # shape as `declared_aggregations`, for the same hashability reason. Empty
+    # means nothing was declared and callers fall back to `lookback_steps`.
+    declared_lookbacks: frozenset[tuple[str, int]] = frozenset()
     # Plan 241 T2: the model's OWN horizon declaration (FI >= 0.1.20
     # `FutureKnownVariable.horizon_semantics` / `min_future_steps`), captured by
     # the FI adapter so `services/horizon_semantics.py` can honour it. Without
@@ -318,6 +328,23 @@ class ModelDataRequirements:
                 "declared_aggregations must not declare conflicting methods "
                 f"for the same parameter: {sorted(names)}"
             )
+        lookback_names = [name for name, _ in self.declared_lookbacks]
+        if len(lookback_names) != len(set(lookback_names)):
+            raise ValueError(
+                "declared_lookbacks must not declare conflicting lookbacks "
+                f"for the same parameter: {sorted(lookback_names)}"
+            )
+        for name, declared in self.declared_lookbacks:
+            if declared < 1:
+                raise ValueError(
+                    f"declared lookback for {name!r} must be ≥ 1, got {declared}"
+                )
+            if declared > self.lookback_steps:
+                raise ValueError(
+                    f"declared lookback for {name!r} is {declared}, which exceeds "
+                    f"lookback_steps {self.lookback_steps} — the assembled frame "
+                    "would be too narrow to judge it"
+                )
         # Plan 241 T4 (independent review, minor): an incoherent horizon
         # declaration must be unrepresentable rather than silently resolved.
         # `resolve_required_steps` accepts any non-boolean int as a floor, so a

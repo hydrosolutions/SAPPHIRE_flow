@@ -655,11 +655,27 @@ class ForecastInterfaceAdapter:
         # model needs those past target steps, delivered from past_targets.
         past_dynamic_features: set[str] = set()
         lookback_steps = 1
+        # Plan 239 T1b review (major): keep each forcing variable's OWN declared
+        # lookback alongside the collapsed maximum. Only forcing features are
+        # recorded — a target's past history travels the target channel and is
+        # not what `past_forcing_flags` judges.
+        #
+        # Per name this is a MAX across branches, NOT a conflict check. Unlike a
+        # declared aggregation or unit — where two different values for one name
+        # are a genuine model-configuration fault — the same variable legitimately
+        # carries different lookbacks in different (product, time_step) branches,
+        # and an early revision that raised on that broke 14 adapter tests. Max is
+        # also exactly how `lookback_steps` above is derived, so the per-series
+        # window can never exceed the frame actually assembled.
+        declared_lookback: dict[str, int] = {}
         for name, variable in past_variables:
             lookback_steps = max(lookback_steps, variable.lookback)
             if name in req.targets:
                 continue
             past_dynamic_features.add(name)
+            declared_lookback[name] = max(
+                declared_lookback.get(name, 0), variable.lookback
+            )
 
         # Plan 228 review fixer round (blocker): a model's DECLARED
         # per-variable aggregation (`PastKnownVariable.aggregation` /
@@ -762,6 +778,7 @@ class ForecastInterfaceAdapter:
                 EnsembleMode.ENSEMBLE if any_ensemble_future else EnsembleMode.SINGLE
             ),
             declared_aggregations=frozenset(declared_aggregation.items()),
+            declared_lookbacks=frozenset(declared_lookback.items()),
             declared_horizon_semantics=declared_horizon_semantics,
             declared_min_future_steps=declared_min_future_steps,
         )

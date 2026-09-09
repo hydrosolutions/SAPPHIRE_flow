@@ -16,6 +16,16 @@
           "category": "warm_up",
           "level": "degraded",
           "detail": "Cold start (no warm-up snapshot available)"
+        },
+        {
+          "category": "forcing",
+          "level": "degraded",
+          "detail": "'precipitation' missing 2 of the 2 most recent steps: 2026-04-01 04:00:00+00:00, 2026-04-01 05:00:00+00:00 (20 of 20 missing overall)"
+        },
+        {
+          "category": "forcing",
+          "level": "degraded",
+          "detail": "'temperature' missing 2 of the 2 most recent steps: 2026-04-01 04:00:00+00:00, 2026-04-01 05:00:00+00:00 (20 of 20 missing overall)"
         }
       ],
       "qc_status": "qc_passed",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random  # noqa: TC003
-from collections.abc import Callable  # noqa: TC003
+from collections.abc import Callable, Sequence  # noqa: TC003
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, cast
@@ -17,7 +17,10 @@ from sapphire_flow.services.ensemble_fanout import (
     reject_stateful_ensemble_states,
 )
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
-from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.input_quality import (
+    assess_input_quality,
+    past_forcing_flags,
+)
 from sapphire_flow.services.nwp_coverage import assess_future_coverage, member_indices
 from sapphire_flow.services.operational_inputs import (
     ModelRunContext,
@@ -34,6 +37,7 @@ from sapphire_flow.services.track_assembly import (
     ReadyContext,
     UnavailableTrackContext,
 )
+from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
 from sapphire_flow.types.forcing_track import FeatureName  # noqa: TC001
 from sapphire_flow.types.forecast import OperationalForecast
@@ -142,6 +146,23 @@ def worst_qc_status(flags: list[QcFlag]) -> QcStatus:
         QcStatus.MISSING: 0,
     }
     return max(flags, key=lambda f: priority.get(f.status, 0)).status
+
+
+def _predict_failure_detail(
+    exc: Exception, forcing_flags: Sequence[InputQualityFlag]
+) -> str:
+    """Carry any past-forcing diagnosis into a PREDICT_FAILED detail.
+
+    Plan 239 T1b review (blocker, 2026-09-09): a model that refuses its own
+    short forcing window fails here, and the operator saw only the model's
+    message. The gap analysis that explains WHY is already computed by then, so
+    it travels with the failure instead of being discarded.
+    """
+    base = f"predict failed: {exc}"
+    if not forcing_flags:
+        return base
+    gaps = "; ".join(flag.detail for flag in forcing_flags)
+    return f"{base} | past-forcing gaps: {gaps}"
 
 
 def _assert_consistent_member_set(
@@ -414,6 +435,43 @@ def _run_single_model(
                 detail=f"unsupported stateful ensemble: {exc}",
             )
 
+    # Plan 239 T1b: gaps in the model's PAST forcing history become an input-
+    # quality flag — never a refusal (owner decision 2026-09-08). WHERE the gap
+    # sits decides severity: old gaps are PARTIAL, a gap inside the most recent
+    # `forcing_recent_steps` is DEGRADED, because the model leans on recent
+    # conditions.
+    #
+    # Computed BEFORE `predict` (independent review, 2026-09-09 — blocker).
+    # It was computed after, on the success path only, so a model that refuses
+    # its own short window (`nwp_regression` returns `ModelFailure`, which the
+    # FI adapter re-raises) produced no forecast AND no forcing flag: the one
+    # diagnosis this plan exists to surface was dropped exactly when it
+    # mattered. It depends only on `context.inputs`, so nothing forces it to
+    # wait for a prediction.
+    #
+    # ⚠️ This records the diagnosis on the failure path; it does NOT make a
+    # refusing model produce a forecast. A model whose own contract rejects an
+    # incomplete window still fails, and filling that window is Plan 261's job.
+    #
+    # The model's OWN declaration on BOTH routes: `ForcingContract` replaces
+    # `data_requirements` for FUTURE forcing only (`track_assembly.py:96-99`
+    # carries `future_dynamic_features` and no past equivalent). An earlier
+    # version read `forcing_contract.past_dynamic_features`, which does not
+    # exist — an existing per-track test caught it as an UNEXPECTED_EXCEPTION
+    # that failed the whole assignment.
+    forcing_flags = past_forcing_flags(
+        past_dynamic=context.inputs.data.past_dynamic,
+        features=model.data_requirements.past_dynamic_features,
+        anchor=context.inputs.issue_time,
+        time_step=context.inputs.time_step,
+        lookback_steps=model.data_requirements.lookback_steps,
+        # `config.input_quality` directly: this runs BEFORE the `iq_config`
+        # binding further down, which sits with the observation/NWP/warm-up
+        # assessment on the post-predict path.
+        recent_steps=config.input_quality.forcing_recent_steps,
+        declared_lookbacks=dict(model.data_requirements.declared_lookbacks),
+    )
+
     ensemble_member_states: list[bytes | None] | None = None
     try:
         artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
@@ -452,10 +510,11 @@ def _run_single_model(
             station_id=str(station_id),
             model_id=str(assignment.model_id),
             error=str(exc),
+            forcing_gaps=[flag.detail for flag in forcing_flags],
         )
         return AssignmentFailure(
             cause=AssignmentFailureCause.PREDICT_FAILED,
-            detail=f"predict failed: {exc}",
+            detail=_predict_failure_detail(exc, forcing_flags),
         )
 
     # Combining N per-member warm-up states into one aggregate is ill-defined.
@@ -528,6 +587,11 @@ def _run_single_model(
         warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
         warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
     )
+
+    # Plan 239 T1b — the forcing flags were computed before `predict` (see the
+    # note there); fold them in alongside the observation/NWP/warm-up flags.
+    input_quality_flags = (*input_quality_flags, *forcing_flags)
+    input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
     now = clock()

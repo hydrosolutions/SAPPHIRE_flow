@@ -225,11 +225,18 @@ def missing_buckets(
     it differently: past uses `expected_past_buckets`, future
     `expected_future_buckets`, and TRAINING has no issue time at all — it joins
     forcing onto whatever target timestamps exist, so it passes those directly.
+
+    A frame with no `timestamp` column shows nothing present, so everything
+    expected is missing. It must NOT raise: cross-check review 2026-09-09
+    found this indexing `df["timestamp"]` unguarded whenever `column` existed,
+    so a malformed frame raised `ColumnNotFoundError` from inside a caller's
+    exception handler and replaced the real failure with this one. A gap
+    detector that throws is worse than one that over-reports.
     """
     if not expected:
         return []
     present: set[UtcDatetime] = set()
-    if column in df.columns:
+    if column in df.columns and "timestamp" in df.columns:
         present = {ensure_utc(cast("datetime", ts)) for ts in df["timestamp"].to_list()}
     return [slot for slot in expected if slot not in present]
 

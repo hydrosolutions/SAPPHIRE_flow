@@ -208,6 +208,22 @@ def test_projects_multi_product_multi_variable_input_requirement() -> None:
     assert req.future_dynamic_features == frozenset({"precip_forecast", "wind"})
     assert req.lookback_steps == 10
     assert req.forecast_horizon_steps == 8
+    # Cross-check review 2026-09-09: `lookback_steps` alone left the per-series
+    # projection untested — deleting it entirely stayed green, because the only
+    # per-series test injected `declared_lookbacks` directly rather than going
+    # through the adapter. Each variable's OWN declared lookback must survive,
+    # distinct from the collapsed maximum.
+    assert dict(req.declared_lookbacks) == {
+        "precip": 5,
+        "temp": 6,
+        "snow_depth": 2,
+        "soil_moisture": 10,
+    }
+    # `precip` is declared in two branches (3 and 5); the projection keeps the
+    # MAX, and never raises on the difference.
+    assert dict(req.declared_lookbacks)["precip"] == 5
+    # No declared window may exceed the frame the assembler actually fetches.
+    assert all(v <= req.lookback_steps for v in dict(req.declared_lookbacks).values())
     # Plan 156: supported_time_steps is the FUTURE-FORCED branch(es) only —
     # never the past-only 24h branch — so no downstream `next(iter(...))`
     # site can arbitrarily land on a resolution the model cannot forecast at.
