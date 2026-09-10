@@ -6,7 +6,7 @@ plan: 263
 reviews:
   - "codex 2026-09-10 — NOT READY, 5 blockers; all verified, folded"
   - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
-open_decisions: [D6, D7, D10, D11, D12, D13]
+open_decisions: [D14]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
 related: [035]
@@ -19,15 +19,16 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 
 **DRAFT — NOT READY.** Both mandated independent passes have now run and are folded
 (Codex 2026-09-10; Claude 2026-09-10). Every finding was verified against the cited source
-before folding. **Six owner decisions are open** (D6, D7, D10, D11, D12, D13), three of
-them opened *by* the reviews.
+before folding. **Thirteen of fourteen decisions are closed**; only D14 (QC
+threshold calibration) is open, and it was opened by closing D12. Tasks T1–T4 are unblocked
+and buildable; T7 waits on D14.
 
 The two passes between them found eleven blockers, and the pattern is worth stating because
 it should shape how this plan is finished: **the author's measurements of the delivered data
 held up; the author's claims about this repository did not.** Nothing in the file analysis
 was overturned. What was wrong was a verification command naming a test tier that cannot
 exercise the defect, a migration that breaks a pinned Alembic head, an onboarding task that
-cannot satisfy a NOT NULL tenant, an import that never states the QC status of 96,521 rows,
+cannot satisfy a NOT NULL tenant, an import that never states the QC status of 99,246 rows,
 and an acceptance criterion whose number depends on the very decision the task is blocked on.
 
 Corrections to the author's own earlier reasoning, recorded so they are not re-derived:
@@ -40,6 +41,15 @@ Corrections to the author's own earlier reasoning, recorded so they are not re-d
    caller. The conclusion survives, on two stronger legs; see D7.
 3. **This Status section claimed all nine decisions were closed** while two sections below
    it reopened one and opened another. Fixed here.
+4. **The delivery's headline count was wrong in every earlier revision.** It said 96,521
+   daily values; the true figure is **99,246**, and the in-range result is 94,616 of the
+   94,617 values that have a curve. The author found this while measuring for D12; neither
+   review could have caught it, since the files are unverifiable from the repository. It is
+   the exact failure the second review named — *flag anywhere the design would fail badly if
+   one of those numbers were wrong* — and the fold that answered it did its job: T4's
+   acceptance criterion had already been rewritten as a delta against T5's re-measure rather
+   than a literal, so the wrong number would have surfaced at implementation instead of being
+   ratified. Read every count here as the author's claim until T5 reproduces it.
 
 An independent pass also confirmed by reading source that the three code mismatches this
 plan is built on are accurate, that the data-handling constraint is not violated anywhere in
@@ -53,7 +63,7 @@ change to Plan 139's scope, no contact with Plans 261/262.
 
 | File(s) | Content |
 |---|---|
-| `DFL_{447,450,604.5,647,670,684}.txt` | Daily **discharge** in m³/s, 96,521 values total |
+| `DFL_{447,450,604.5,647,670,684}.txt` | Daily **discharge** in m³/s, 99,246 values total |
 | `RT_{same six}.txt` | **112 rating tables**, stage→Q at 0.1 m steps, each with a validity window |
 | `Updated_Published_Station_List_2023.pdf` | DHM's published station list — **a 3-page scan, no text layer** |
 | `koshi basin.jpg`, `NARAYANI BASIN.jpg` | Basin overview maps |
@@ -114,7 +124,7 @@ Consequences, binding on every task below:
 The briefing's hypothesis was that the gap is parsing and station identity, not the
 curve model. **That is two-thirds right, and the remaining third is the load-bearing part.**
 
-- **Parsing is genuinely easy.** Both formats are rigidly regular. Across 96,521 data
+- **Parsing is genuinely easy.** Both formats are rigidly regular. Across 99,246 data
   lines and 112 rating tables there are **zero** unparsable lines, zero duplicate dates,
   zero non-numeric values, zero stray lines inside a rating block. Every rating table is
   strictly increasing in both stage and discharge — which clears the two rules most likely
@@ -218,13 +228,13 @@ source until DHM produces new tables.
 Internal consistency, measured by inverting each daily discharge back through whichever
 curve was valid that day:
 
-- **96,520 of 96,521 values fall inside the tabulated Q range** of their valid curve. The
+- **94,616 of the 94,617 values that have a curve fall inside its tabulated Q range** of their valid curve. The
   daily series is *consistent with* having been produced from these exact tables — which is
   weaker than saying it was; see § What is not established.
 - **One value at station 670 falls outside** its valid curve's range. One exception in
-  96,521 is not noise to round away: it is either a curve/date mismatch or a value DHM
+  94,617 is not noise to round away: it is either a curve/date mismatch or a value DHM
   produced by some other route, and the import needs a stated policy for it (D10).
-- **4,629 values (4.8%) have no curve at all**: station 604.5's record starts 1975-05-23
+- **4,629 values (4.7%) have no curve at all**: station 604.5's record starts 1975-05-23
   but its first curve starts 1983-07-16 (2,976 values), and station 670's record starts
   1964-03-10 against a first curve from 1968-10-06 (1,653 values). Their provenance
   cannot be reconstructed from this delivery.
@@ -319,10 +329,28 @@ spot-check before they become station rows.
 See § Data handling — the publication constraint is the load-bearing half of this answer
 and binds every task.
 
-**D6 — What a daily value means. CLOSED as far as it can be: it is a Nepali day.**
-The exact day boundary is with DHM, unanswered. See Trap 1. T4 stays blocked.
+**D6 — What a daily value means. CLOSED by a stated working assumption.**
+It is a Nepali day (owner). The owner has asked several counterparts for DHM's exact day
+definition, expects no rapid answer, and has decided not to wait: **assume a Nepali day runs
+00:00–23:59 Asia/Kathmandu, and re-import if we learn otherwise.**
 
-**D7 — Source label for the discharge. REOPENED; owner to re-decide.**
+That is a sound call, and it is not free — it makes **re-importability a design requirement**,
+not a nicety:
+
+- The assumption is recorded once, in one named constant, so a later correction is a
+  one-line change rather than an archaeology exercise.
+- T4's import must be **idempotent and re-runnable**: re-running it after a boundary change
+  must converge on the corrected series, not append a second one. Note this interacts with
+  D7 — `source` is part of the observations natural key, so a re-import under the same
+  label upserts in place, which is what we want.
+- The same boundary governs curve validity in T3 (curves are stored as instants), so both
+  imports move together. They must use the *same* constant, or `fetch_curve_at` picks the
+  wrong curve at the seam.
+
+**T3 and T4 are unblocked by this.** Trap 1 stands as the record of *why* the assumption is
+an assumption; nothing here designs a grid or phase answer for the halted track.
+
+**D7 — Source label for the discharge. CLOSED: record the link, claim nothing more.**
 The owner closed this on the author's recommendation — bind each value to the curve in force
 that day — but that rested on a claim the author had measured as only *consistent with* the
 data, not confirmed (§ What is not established).
@@ -356,8 +384,10 @@ which the author had missed:
 
 The middle option is representable — the domain type allows it (`types/observation.py:39`)
 and the composite FK is skipped only when the curve id is NULL, so a populated one is still
-integrity-checked. **Recommendation: the middle option.** It records everything we actually
-know, including the curve link, and claims nothing we do not.
+integrity-checked. **CLOSED on the middle option** (owner, 2026-09-10): `MANUAL_IMPORT`
+throughout, with `rating_curve_id` populated as pure provenance wherever a curve covers the
+day and NULL for the 4,629 days where none does. It records everything we know — including
+the curve link — and claims nothing we do not.
 
 **D8 — What to ask DHM. CLOSED, and the answer reshapes the finding.**
 **There are no current rating tables** — not withheld, not in this delivery by oversight;
@@ -375,47 +405,85 @@ weighed and is **not** this plan's to settle. Note the unresolved publication qu
 restriction should be settled before the pilot is placed. Note also D12: with these rows
 imported as `RAW`, a pilot cannot read them until a QC pass is decided and run.
 
-**D10 — the one out-of-range value at station 670. OPEN.**
-One value in 96,521 falls outside its contemporaneous curve's range. Note the second
+**D10 — the one out-of-range value at station 670. CLOSED: import as delivered.**
+One value in 99,246 falls outside its contemporaneous curve's range. Note the second
 review's catch: "import it and flag it" is not free — a QC flag requires a rule id, a rule
 version, and a status that is neither raw nor missing (`types/domain.py:88-101`), so
-flagging one row invents a QC rule identity and leaves exactly one QC'd row among 96,520
+flagging one row invents a QC rule identity and leaves exactly one QC'd row among 94,616
 that are not. That is a policy act, and it cannot sit under T4's "no QC policy change".
-Options: import unflagged and record the exception in the T5 re-measure only; import with a
-purpose-made QC rule identity; or quarantine. **Recommendation: import unflagged, and let
-T5's re-measure be the standing record of it** — it keeps the delivered data intact without
-inventing a QC rule for a single row.
+**CLOSED: import it as delivered** (owner, 2026-09-10), with T5's re-measure as the standing
+record that it exists. No bespoke QC rule is invented for one row. Note this is now partly
+overtaken by D12: our own QC runs over the whole series anyway, so if the value is genuinely
+anomalous the range rule will say so on its own terms — which is a better outcome than a
+hand-made flag, because it is the same judgement applied to all 99,246 values.
 
-**D11 — what "side dataset" actually means. NEW, open; blocks T2b.**
+**D11 — what "side dataset" means. CLOSED: a new tenant in the existing database.**
 D5 said "side dataset first" and the author never defined it. The second review found the
 phrase appears nowhere in the repository outside this plan, and that the gap is not
 cosmetic: `stations.tenant_id` is NOT NULL with no server default (`db/metadata.py:292-297`)
 and `services/tenant_boundary.py:12` hard-errors on an unknown tenant code, so T2b cannot
-insert a station without an answer. Options: a separate database; a new tenant in the
-existing database; the existing tenant with these six left at `onboarding` status.
-**Recommendation: a new tenant.** It gives real isolation for restricted data without
-standing up separate infrastructure, and it matches how the schema already partitions.
+insert a station without an answer. **CLOSED: a new tenant in the existing database** (owner, 2026-09-10) — real isolation for
+restricted data without standing up separate infrastructure, matching how the schema already
+partitions. T2b provisions it; the six stations stay at `onboarding` status regardless.
 
-**D12 — what QC status the 96,521 imported rows carry. NEW, open; blocks T4.**
-Never stated, and load-bearing: `store_observations` writes the status verbatim
-(`store/observation_store.py:44-48`), the hot read index is partial on `qc_passed`
-(`db/metadata.py:565-570`), and component derivation only consumes passed/suspect
-(`services/component_derivation.py:35-38`). So `RAW` means a pilot trained on this data sees
-nothing, while anything else asserts a QC run that did not happen — which is precisely the
-failure already on record elsewhere in this project, where stations were labelled
-operational without their history ever being QC'd. **Recommendation: `RAW`, and treat
-"make this data visible to a model" as its own later decision with its own QC pass.** Do not
-buy pilot convenience with a false quality claim.
+**D12 — what QC status the imported rows carry. CLOSED, and the answer is better than the
+recommendation it replaced: run our own daily QC over the series.**
 
-**D13 — interpolation method. NEW, open; blocks T3's acceptance criterion.**
+The author recommended importing everything as `RAW` — unchecked — to avoid asserting a
+quality review that never happened. The owner supplied the missing context and a better
+answer: **DHM states this is quality-checked regime data**, and we should nonetheless **pass
+it through our own daily QC** rather than inherit their claim or fake one of our own. The
+status each row carries is then whatever our QC decides, which is the only status that is
+true by construction.
+
+**The machinery already exists and already covers this cadence.** `Stage1QualityChecker`
+(`services/qc.py:225`) selects rules by inferred time step, and the default rule set already
+carries a full daily (86,400 s) discharge tier: range, rate-of-change, frozen-sensor, spike
+and gross-outlier (`config/qc_rules.py:80-114`). Nothing new has to be built to run QC on a
+daily series.
+
+**But the thresholds are Swiss, and applying them unchanged would be worse than not running
+QC at all.** Measured against the delivered data:
+
+| Daily rule | Swiss threshold | Would flag |
+|---|---|---|
+| range check | max 5,000 m³/s | 1,126 values (1.1%) |
+| rate of change | max 500 m³/s/day | 2,638 values (2.7%) |
+| frozen sensor | 5 equal days | ~536 values (0.5%) |
+
+The range-check number is the dangerous one: **1,125 of those 1,126 are at station 450**,
+a 31,650 km² basin whose genuine monsoon peaks exceed the Swiss ceiling by nearly threefold.
+Running the Swiss rule would mark the single most important part of the record — the floods —
+as out of range. That is not QC; it is a calibration error wearing QC's clothes, and it would
+be recorded as a quality judgement on data DHM has already checked. **D14 covers the
+calibration.**
+
+**Sequencing consequence:** QC is a distinct step after import, not a property of it. T4
+imports at `RAW` — honestly unchecked, because at that instant it is — and **T7** runs the
+QC pass that assigns the real status. A pilot reads the data only after T7.
+
+**D13 — interpolation method. CLOSED: linear.**
 T3 requires all 112 curves to pass the converter "with the interpolation actually selected",
 and the method was never selected. Measured for this decision: **no tabulated discharge in
 any of the 7,869 points is zero or negative**, so log-linear is representable and the data
-does not force the choice. **Recommendation: linear** — it matches the column default
+does not force the choice. **CLOSED: linear** (owner, 2026-09-10) — it matches the column default
 (`db/metadata.py:601-606`), and the author's inversion of the daily series through these
 tables under linear interpolation put all but one value in range, which is weak but
 directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
 blocking on.
+
+**D14 — how the DHM daily QC thresholds are calibrated. NEW, open; blocks T7.**
+Opened by D12's answer. Swiss thresholds cannot be reused (see the table above), so a DHM
+daily rule set is needed. The trap to avoid is **circularity**: deriving a threshold from the
+same record it will then judge guarantees the record passes and makes the QC decorative.
+Options: per-station overrides via the existing `StationQcOverride` seam, with limits set
+from an independent basis (basin area, DHM's own published rating-table maxima, regional
+flood estimates); or a single DHM rule set with limits generous enough to catch only physical
+impossibility. **Recommendation: per-station range limits derived from each station's rating
+table ceiling** — the tables are an *independent* artefact from the daily series, they encode
+DHM's own view of the plausible stage-discharge envelope, and every station has one. Keep
+rate-of-change and frozen-sensor conservative to start, and treat the first QC run's flag
+rate as information about the thresholds, not only about the data.
 
 ## Tasks
 
@@ -468,9 +536,8 @@ ingest and forecasting for a station and is not this plan's to trigger.
 **Verification**: after running it against the D11 target, six rows exist with the expected
 codes, `network = dhm`, `station_status = onboarding`, and the tenant D11 names; re-running
 it is idempotent (no duplicate rows).
-**Pre-change**: N/A — new path. **Depends on T2a. BLOCKED on D11** — `stations.tenant_id`
-is NOT NULL with no server default and the tenant resolver hard-errors on an unknown code,
-so "which dataset" must be answered before a single row can be inserted.
+**Pre-change**: N/A — new path. **Depends on T2a. Unblocked** — D11 selects a new tenant in
+the existing database; T2b provisions it and inserts against it.
 
 ### T3 — Rating curve import
 
@@ -503,27 +570,34 @@ only the database reader would split unit from integration behaviour);
 **Pre-change**: a RED test proving `fetch_curve_at` raises `MultipleResultsFound` on two
 simultaneously-valid curves, from a synthetic two-curve fixture — the actual defect and its
 actual cause, not a signature error.
-**BLOCKED on D6 and D13.** Curve validity is stored as instants, so converting DHM's
-inclusive end dates needs the Nepali-day boundary DHM has not given us; and the acceptance
-criterion above is undefined until the interpolation method is chosen. Everything else —
-the migration, the version scheme, the provenance column, both reader fixes — can be built
-and tested against synthetic fixtures first; only the import of the real dates waits.
+**Unblocked.** D13 selects linear interpolation; D6 supplies the working day boundary
+(00:00–23:59 Asia/Kathmandu). Both are read from **one shared constant** with T4 — the two
+imports must not drift, or `fetch_curve_at` selects the wrong curve at a seam. An inclusive
+DHM end date becomes `valid_to` = 00:00 Asia/Kathmandu on the following day, expressed in
+UTC; assert that explicitly on the three known overlap days.
 
 ### T4 — Daily discharge import
 
-**Outcome**: 96,521 observations, no row for any missing day, no `MISSING`-status rows, each
-row labelled per D7 and carrying the QC status D12 selects.
+**Outcome**: 99,246 observations, no row for any missing day, no `MISSING`-status rows, each
+labelled `MANUAL_IMPORT` with the covering curve recorded as provenance (D7) and imported at
+`RAW` — genuinely unchecked at that instant. T7 assigns the real quality status.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (observation branch);
 `src/sapphire_flow/store/observation_store.py` (read-only — no change expected).
-**Out**: no QC rule authored, no skill or training wiring.
+**Out**: no QC rule authored and no QC run — that is T7. No skill or training wiring.
 **Verification**: per-station stored row count equals **T5's re-measured count for that
 station** — expressed as a delta against T5, not as a literal, because which curve is in
 force on a day depends on the D6 boundary and an absolute number would silently ratify
 whatever the implementer produced; no row exists on any gap day T5 reports; the count of
-values outside their curve's range equals T5's count (currently 1, handled per D10); every
-row carries the D12 status and the D7 label.
+values outside their curve's range equals T5's count (currently 1, imported as delivered per
+D10); every row is `MANUAL_IMPORT` at `RAW`, carrying a curve id wherever T5 says a curve
+covers the day and NULL on the 4,629 days it says none does; and **a second run of the import
+changes no row count and no row value**.
 **Pre-change**: N/A — new import path.
-**BLOCKED on D6, D7 and D12.** Do not start by picking a day boundary.
+**Unblocked**, on D6's working assumption. **Re-importability is a requirement, not a
+nicety** (D6): re-running after a boundary correction must converge on the corrected series,
+not append a second one. Because D7 fixes one `source` value for the whole import and
+`source` is part of the natural key, a re-import upserts in place — prove that with the
+re-run assertion above, do not assume it.
 
 ### T5 — Delivery re-measure
 
@@ -558,19 +632,47 @@ write-path map still states that `RatingCurveStore` has **no `Pg*` implementatio
 a file placed at a delivered-data path is refused by the new hook.
 **Pre-change**: a RED check — the hook rejects a test path before the doc edits land.
 
+### T7 — DHM daily QC ruleset, and the QC pass
+
+**Outcome**: a DHM daily rule set exists, and every imported observation carries a quality
+status our own QC assigned. Added on the owner's instruction (D12): DHM calls this
+quality-checked regime data, and we check it ourselves rather than inherit or fake that claim.
+**In**: `src/sapphire_flow/config/qc_rules.py` (a DHM daily rule set — **not** an edit to the
+Swiss defaults) and/or per-station `StationQcOverride` rows; the QC pass entry point in
+`src/sapphire_flow/cli/import_dhm_delivery.py`.
+**Out**: no new QC *rule kind* — the five daily discharge rules already exist
+(`config/qc_rules.py:80-114`) and this task calibrates them, it does not write new ones. No
+change to the Swiss rule set or to any operational QC path.
+**Verification**:
+- `uv run pytest tests/unit/config/test_dhm_qc_rules.py` — the DHM rule set resolves for
+  `discharge` at an 86,400 s step, and the Swiss set is byte-identical to before.
+- A calibration assertion that is **not circular**: station 450's range ceiling must exceed
+  its rating table's highest tabulated discharge, and the tables are an independent artefact
+  from the daily series (D14).
+- After the pass, no observation is left at `RAW`, and the per-rule flag counts are reported
+  against T5's totals so the flag *rate* is visible — a rule flagging a large fraction is a
+  threshold finding, not a data finding, and must be read that way before anything is
+  concluded about DHM's data quality.
+**Pre-change**: a RED test proving the **Swiss** daily range rule flags station 450's genuine
+monsoon peaks — the measured 1,125 values above 5,000 m³/s — so the calibration exists to fix
+a demonstrated fault rather than a suspected one.
+**Depends on T4. BLOCKED on D14.**
+
 ```json
 {
   "phases": [
     { "id": "phase-1", "tasks": ["T1", "T2a"], "parallel": true },
     { "id": "phase-2", "tasks": ["T2b", "T5", "T6"], "depends_on": ["phase-1"], "parallel": true },
     { "id": "phase-3", "tasks": ["T3"], "depends_on": ["phase-2"] },
-    { "id": "phase-4", "tasks": ["T4"], "depends_on": ["phase-3"] }
+    { "id": "phase-4", "tasks": ["T4"], "depends_on": ["phase-3"] },
+    { "id": "phase-5", "tasks": ["T7"], "depends_on": ["phase-4"] }
   ]
 }
 ```
 
 T1 and T2a are genuinely independent. T5 needs only the parser; T2b needs only the metadata
-artifact and D11; T6 needs neither. T3 and T4 remain blocked on open decisions.
+artifact; T6 needs neither. Only T7 is still gated on an open decision (D14) — everything
+through T4 can now be built.
 
 ## Explicitly out of scope
 
@@ -583,3 +685,5 @@ artifact and D11; T6 needs neither. T3 and T4 remain blocked on open decisions.
   where it lives — alongside the Swiss study or as a separate deployment — is undecided and
   is not settled here.
 - Publishing these measurements in any form (§ Data handling).
+- Any change to the Swiss QC rule set or to an operational QC path. T7 adds a DHM daily rule
+  set beside the existing one; it does not edit it.
