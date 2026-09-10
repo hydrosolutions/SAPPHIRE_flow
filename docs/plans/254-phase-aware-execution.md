@@ -239,14 +239,17 @@ does not, nothing does. The contract:
 | A **configurable limit** bounds how far a chosen edge may sit from nominal; beyond it the bucket is **REFUSED**, not built | 252 OD-14 |
 | **Ties** (two readings equidistant from a boundary) resolve deterministically — take the EARLIER, and lock it by test | this task |
 | **How far the chosen edge actually sat** is recorded on the value | 252 OD-14 |
-| **Off-grid pairing**: same step, different phase, source not sub-dividable ⇒ pair each value with the target bucket it MOST OVERLAPS, unchanged, recording displacement and overlap fraction | 252 **OD-16** |
-| ⛔ Off-grid pairing is **REFUSED for accumulations** and permitted only for interval statistics and instantaneous values | 252 OD-16 |
-| ⛔ A phase mismatch that is NOT declared as paired still **REFUSES** | 252 OD-16 |
+| ⛔ A phase mismatch with no declared conversion **REFUSES** | 252 |
 
-⭐ **Off-grid pairing is what makes OD-15 implementable.** Swiss daily temperature sits at phase 0 and
-the model's grid at phase 21600; resampling would split a daily value, shifting would move a
-timestamp, refusing would discard temperature. Without this operation the rules leave no legal move.
-The Swiss case pairs at an overlap of 0.75 and a displacement of −6 h.
+⚠️ **OFF-GRID PAIRING IS NOT IN THIS TASK — withdrawn 2026-09-10.** An earlier revision listed it here
+as an implementable rule. An independent review found the rule underspecified in five ways (ties,
+instantaneous values, minimum overlap, a self-contradictory single-timestamp representation, and
+whether a paired extreme may be called the target bucket's extreme). It is now **Plan 252 OQ-7, an
+open question specified by Plan 263.**
+
+🔴 **Consequence for this task: a Swiss daily temperature series at phase 0 against a phase-21600
+target currently REFUSES.** That is the correct behaviour under the settled rules and it is not a
+workaround to be invented here — it is why Plan 263 exists and why T6 is blocked on it.
 
 ⚠️ Temporal support (Plan 258) is still consumed — it says whether a value is a moment or a span, which
 determines which bucket it falls in. It no longer selects an interpolation or apportionment METHOD,
@@ -269,10 +272,9 @@ onto `071b62e3`, and re-measured on 2026-09-09. They will drift again.
 **Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on
 quarter-hour marks maps onto both a UTC-hourly and a Nepali-hourly target with **zero** apportionment;
 readings at `00:03`/`00:13`/`00:23` aggregate into a 3-hourly bucket whose edges are the readings
-nearest the nominal boundaries, with **every reading's own timestamp unchanged**; a daily series at
-phase 0 paired onto a phase-21600 target reads back **unchanged, carrying overlap 0.75 and
-displacement −6 h**, and the same pairing attempted on an **accumulation is REFUSED**; an undeclared
-phase mismatch **REFUSES** rather than pairing silently; a boundary whose
+nearest the nominal boundaries, with **every reading's own timestamp unchanged**; a daily series at phase 0 against a
+phase-21600 target **REFUSES**, with the refusal locked by a test (pairing is Plan 263's, not this
+task's); an undeclared phase mismatch **REFUSES** rather than being resolved silently; a boundary whose
 nearest reading exceeds the configured limit produces **NO value** and says why; two equidistant
 readings resolve to the earlier one; an upsample is **REFUSED**; and ⛔ **a test asserts that every input sample is
 consumed WHOLE and AT MOST ONCE, and that no output derives from a partial or synthesised sample** —
@@ -294,10 +296,6 @@ downstream UTC-day assumptions are corrected.
 "from the deployment declaration", silently dropping the per-station override the owner decided — the
 executor task omitting a settled decision. A call site that reads the deployment value without first
 checking the station's own is wrong even though it compiles.
-
-**In (also):** which series are **declared off-grid paired** (Plan 252 OD-16) — for Switzerland,
-the three temperature products against a phase-21600 target. ⛔ Pairing is declared here and applied
-in T3; discovering a mismatch at runtime refuses.
 
 **In (also):** the group-phase invariant Plan 252 OD-12 assigns to this task.
 `_assert_consistent_station_inputs` (`services/run_group_forecast.py:99-112`) already asserts that a
@@ -340,7 +338,7 @@ a stored daily value means:
 |---|---|---|
 | 1 | Swiss day boundary moves from phase 0 to **06:00Z**, the precipitation day (Plan 252 OD-15, owner 2026-09-10; ⛔ the earlier 23:00Z target is **WITHDRAWN**) | this task |
 | 2 | End-period stamping adopted; our bucket labelling changes to match | **Plan 262** |
-| 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; corrected here |
+| 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; **Plan 263** specifies how the off-grid series is consumed; corrected here |
 
 ⛔ **All three invalidate every Swiss artifact, so they must land together.** Doing them separately
 means three retrains and three cutovers.
@@ -360,9 +358,14 @@ mixed-phase interval is permitted at any point**, because every cross-station pr
 combining two day definitions while it lasted.
 ⚠️ An earlier revision called this decision D4, which names a different and already-answered one.
 
-⛔ **Blocked on two things the graph names** (down from three — D7 was answered 2026-09-10):
-Plan 252 **T10**, which propagates OD-15's 06:00Z decision through the documents, and Plan 262 **T3**,
-whose end-stamping code rides this cutover and must land first.
+⛔ **Blocked on THREE things the graph names:** Plan 252 **T10** (propagates OD-15's 06:00Z target),
+Plan 262 **T3** (end-stamping code rides this cutover and must land first), and **Plan 263** — the
+off-grid pairing specification.
+
+🔴 **Plan 263 is a hard blocker, added 2026-09-10.** OD-15 makes Swiss daily temperature an off-grid
+input, and no specified operation currently consumes it: under the settled rules it refuses.
+Retraining before 263 lands would bake in an unspecified treatment of temperature — exactly the silent
+substitution OD-7 says a model cannot detect.
 
 ⚠️ **The boundary VALUE is decided (Plan 252 OD-15: 06:00Z, the precipitation day).** T10 is a
 propagation task, not a decision — do not wait on it for the value.
@@ -530,7 +533,7 @@ Five conditions hold in addition:
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (propagates OD-15's 06:00Z target); Plan 262 T3 (end-stamping lands in the same cutover)"},
+    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (propagates OD-15's 06:00Z target); Plan 262 T3 (end-stamping lands in the same cutover); Plan 263 (off-grid pairing — without it the off-grid temperature series refuses)"},
     {"id": "T7", "phase": 4, "depends_on": ["T4"], "note": "must land BEFORE T6 — rebuilt hindcasts would otherwise be written without a phase"}
   ]
 }

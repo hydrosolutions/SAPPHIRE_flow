@@ -305,7 +305,13 @@ resample using the aggregation method the parameter already carries (`Aggregatio
 series to make it fit is forbidden: a 15-minute nudge silently redistributes accumulated
 precipitation.
 
-⭐ **OD-16 — OFF-GRID PAIRING: the third legal operation, and the only one that implements OD-15.**
+⚠️ **OQ-7 (was "OD-16") — OFF-GRID PAIRING IS A PROPOSAL, NOT A SETTLED DECISION. Demoted
+2026-09-10 after independent review; specification is Plan 263.**
+
+⛔ **Do not implement from this section, and do not cite it as a decision.** It names a gap and
+sketches a direction; the semantics an implementer needs are absent, and an independent review found
+them absent in five specific ways (below). It is recorded here because **OD-15 depends on an operation
+that does not yet exist**, and that dependency must be visible rather than implied.
 
 There is a case neither rule covers, and OD-15 creates it: **the source and the target share a STEP
 but not a PHASE, and the source cannot be sub-divided** — Swiss daily temperature at phase 0 feeding a
@@ -314,10 +320,32 @@ would move a timestamp (forbidden above); refusing would discard temperature ent
 rules as previously written an implementer had no legal move at all.** Named here as a third
 operation:
 
-> **Off-grid pairing.** Each source value is paired with the target bucket it **most overlaps**. The
-> value is used **unchanged**, its timestamp is **unchanged**, and the pairing records the
-> **displacement** and the **overlap fraction**. The series is flagged **off-grid** for as long as the
-> mismatch lasts.
+> **Off-grid pairing (SKETCH).** Each source value is paired with the target bucket it **most
+> overlaps**. The value is used **unchanged**, its timestamp is **unchanged**, and the pairing records
+> the **displacement** and the **overlap fraction**. The series is flagged **off-grid** for as long as
+> the mismatch lasts.
+
+🔴 **What that sketch does NOT define — the five gaps, from an independent review 2026-09-10.**
+Plan 263 must settle every one before any task implements this.
+
+1. **"Most overlaps" is meaningless for an instantaneous value.** A point has zero duration and
+   therefore overlaps every bucket by nothing. The sketch was written for intervals and silently
+   applied to both.
+2. **No minimum overlap.** As written, a 50.1% overlap is as acceptable as 75%. Nothing rejects a
+   barely-related pairing.
+3. **No tie-break** when a value overlaps two buckets equally — which is exactly what happens when the
+   phases differ by half a step.
+4. ⭐ **The representation is self-contradictory as sketched.** It requires the timestamp to be
+   unchanged AND the value to sit on the target grid. The frame carries ONE timestamp column: keep it
+   and the series is not on the target grid; replace it and the "timestamp unchanged" rule is broken.
+   **It needs two time fields — original support and target association — and the sketch never says
+   so.**
+5. ⭐ **The accumulation-versus-statistic line is directionally right but insufficient.** A daily
+   maximum is a property of the interval it was measured over, and the extreme may fall entirely
+   within the non-overlapping remainder. **A paired extreme is therefore NOT the extreme of the target
+   bucket and must never be labelled as one.** A paired value may be a declared proxy feature; it may
+   not impersonate the target bucket's statistic. This weakens the case for `tmind`/`tmaxd`
+   specifically, while leaving the daily mean the strongest case.
 
 For Switzerland: a temperature value covering `D 00:00 → D+1 00:00` overlaps the target bucket
 `D 06:00 → D+1 06:00` by 18 of 24 hours, so it pairs with that bucket at an overlap of 0.75 and a
@@ -333,7 +361,8 @@ displacement of −6 h.
 - **The overlap fraction is recorded on every paired value**, so a consumer can see the approximation
   rather than having to reconstruct it.
 
-⚙️ **Implemented by Plan 254 T3** (the pairing) **and T4** (declaring which series are paired).
+⛔ **NOT implemented by any task yet.** Plan 254 T3/T4 previously claimed to implement it; that was
+withdrawn on 2026-09-10. **Plan 263 specifies it; nothing builds it until 263 settles the five gaps.**
 
 **Fail closed.** An undeclared phase, or a grid mismatch with no declared conversion, refuses. It does
 not guess, and it does not fall back to matching on step alone — the nearest-match trap Plan 253's
@@ -374,7 +403,8 @@ daily forecast means a civil day — that was the reasoning behind the withdrawn
 sub-daily on UTC means the hourly forcing is consumed exactly as delivered. ⚠️ **An earlier revision
 added "and only instantaneous observations are interpolated" here. Deleted — OD-13 forbids
 interpolation outright.** Off-grid instantaneous readings are handled by OD-14's bucket edges, which
-invent nothing.
+invent nothing. ⚠️ **OQ-7's sketch also mentions instantaneous values; that overlap is unresolved and
+is one of the five gaps Plan 263 must settle** — as written, a point has no overlap to be "most" of.
 
 | Product | Grid | As UTC |
 |---|---|---|
@@ -493,17 +523,23 @@ ANSWERS OQ-6 and WITHDRAWS the 23:00Z target.**
 Two of our Swiss inputs cut the day differently — MeteoSwiss precipitation runs 06:00→06:00 UTC,
 temperature runs midnight→midnight (both established from the provider's own product documentation).
 They cannot be reconciled by shifting either one: re-cutting a daily total means splitting it, which
-OD-13 forbids. One input must therefore be accepted as off-grid — **by OD-16's off-grid pairing,
-which is the operation that makes this decision implementable.** ⛔ Without OD-16 the rules leave no
-legal move for the temperature series at all.
+OD-13 forbids. One input must therefore be accepted as off-grid.
+
+🔴 **THE MECHANISM FOR THAT DOES NOT YET EXIST.** The decision to align with precipitation stands —
+it is the right choice and the reasoning below holds. But the operation that would carry the
+off-grid temperature series is **OQ-7, an open question specified by Plan 263**, not a settled rule.
+⛔ **Plan 254 T6 must not retrain Switzerland until Plan 263 lands**, because the retrain would
+otherwise bake in an unspecified treatment of temperature.
 
 ⚖️ **We align with PRECIPITATION.** It is the input that drives runoff, which is what we forecast, so
 the more consequential series is the exact one. **Temperature becomes the off-grid input, displaced by
 6 h**, and that displacement is recorded rather than discovered — it is defensible because temperature
 varies slowly and is used as a daily mean, where a six-hour window shift matters far less than it
-would for a rainfall total. ⭐ **That asymmetry is exactly why OD-16 forbids pairing an accumulation:
-had we aligned the other way, precipitation would have needed pairing, and there is no honest way to
-do it.**
+would for a rainfall total. ⭐ **That asymmetry is exactly why pairing must never apply to an
+accumulation: had we aligned the other way, precipitation would have needed it, and there is no honest
+way to pair a total.** ⚠️ Review 2026-09-10 sharpened this: the daily MEAN is the strong case; a daily
+minimum or maximum is weaker, because the extreme may lie in the part of the window that does not
+overlap. Plan 263 decides whether `tmind`/`tmaxd` may be paired at all.
 
 | | grid | status after cutover |
 |---|---|---|
@@ -685,9 +721,11 @@ real until that task existed: this plan assigned them to 258, Plan 254 assigned 
 neither carried a task. Recorded because the fix was to create an owner, not to re-point a
 reference.)*
 
-**OQ-3 — NARROWED 2026-09-09.** OD-13's no-invention rule removes interpolation and apportionment
-entirely, so the only degradation left to report is a bucket edge that had to reach further than the
-declared limit — a far smaller signal than the original design assumed. Which channel carries it is
+**OQ-3 — NARROWED 2026-09-09, re-widened 2026-09-10.** OD-13's no-invention rule removes
+interpolation and apportionment entirely. Two things remain to report: a bucket edge that had to reach
+further than the declared limit, **and — if OQ-7 is adopted — a paired value's overlap fraction,
+displacement and off-grid provenance.** ⚠️ An earlier revision said the edge was the ONLY remaining
+degradation; that predates OQ-7 — a far smaller signal than the original design assumed. Which channel carries it is
 still Plan 254 D2, still open.
 
 *(Original framing, still accurate about the channel:)* OD-6 said the existing `InputQualityFlag`

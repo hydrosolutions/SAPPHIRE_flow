@@ -159,6 +159,12 @@ exit criteria — Plan 212 owns that deeper screening.
   ⚠️ *(This entry previously carried Plan 261's description — the reanalysis tail — and falsely
   declared a dependency on 239. Corrected 2026-09-10.)*
 
+- **263** — Two sources share a step and not a phase, and no operation consumes the second one —
+  `DRAFT` — Plan 252 OD-15 makes Swiss daily temperature an off-grid input, and under the settled
+  rules nothing legal consumes it: resampling would split a daily value, shifting would move a
+  timestamp, refusing discards temperature. A sketch written into 252 was found underspecified in five
+  ways the same hour and demoted to OQ-7; this plan settles them. **Blocks 254 T6.**
+
 - **261** — The reanalysis tail is never filled, though the values are already here — `DRAFT`
   — measured while validating Plan 239 T1b: past forcing runs permanently ~2.5 days
   short of the issue time, and the FORECAST values that would cover that span are
