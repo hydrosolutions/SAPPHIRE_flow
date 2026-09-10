@@ -129,9 +129,32 @@ behaviour and would hide a wiring mistake behind plausible-looking QC results.
 The Problem section's second defect survives this plan. Options: fix `load_qc_rules` and the
 overlay so rule lists merge rather than replace; or state plainly that a deployment must supply
 a complete rule set and that overlays cannot add rules incrementally.
-*Recommendation: state the limitation.* Changing list-merge semantics in the shared overlay
-would affect every config list in the system, not only QC rules — a far larger blast radius
-than this plan's purpose justifies, and it deserves its own plan if anyone wants it.
+**The author's first recommendation ("state the limitation") was a false binary, and the owner
+rejected it.** Asking whether a hydromet should extend a base set is the right question. What
+the evidence says, measured across the 26 deployed rules:
+
+- **Rule *kinds* are universal.** Range, rate-of-change, spike, frozen-sensor and outlier are
+  WMO-168 Vol I standard checks (`docs/standards/wmo.md:62`); every hydromet runs the same five.
+- **Thresholds split in two.** Some are physics and travel: discharge and precipitation cannot
+  be negative, air temperature sits within ±50 °C, the outlier sigma multiple is a statistical
+  convention. Others are meaningless off-site: the discharge ceiling, every rate limit, and
+  **all** of water level, since a gauge datum is local by definition.
+- **Inheriting kinds is valuable; inheriting thresholds is dangerous.** A missing rule fails
+  open — you lose a check, silently. We have that today: `config.toml` carries 26 rules against
+  28 in code, and among the missing pair is the daily discharge frozen-sensor check. Nobody
+  decided that; it drifted. An inherited *threshold*, by contrast, fails loud and wrong — the
+  Swiss 5,000 ceiling condemns 1,125 genuine monsoon peaks as bad data.
+
+*Recommendation: a base set that declares **which checks apply to which parameter and cadence,
+carrying no threshold values at all**, with every threshold declared locally — and a declared
+check with no local threshold being an **error**, not a default.* That buys drift protection
+without threshold inheritance, and the merge becomes trivial and safe because what is merged is
+a checklist, not values.
+
+**Scope note:** that is a broader change than this plan, which is about *selection*. It also
+does not reach the variation that actually bit us — six stations needing six ceilings is below
+anything a network-level base set can express, and that already has a working mechanism. Decide
+whether it belongs here, in its own plan, or after this one ships.
 
 **D5 — Who owns the hard-coded flag version? NEW, open — and it is a genuine trap.**
 `services/qc.py` emits `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`) instead of the
