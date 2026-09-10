@@ -19,12 +19,12 @@ text and left the superseded sentence in place, so corrections accumulated as co
 revision states every decision once, in its settled form, and confines the history to one Changelog
 section. What remains genuinely unsettled is in § Open decisions, named rather than buried.
 
-📍 **Open-question state as of 2026-09-10 — TWO remain open:**
+📍 **Open-question state as of 2026-09-10 — ONE remains open:**
 
 | | state |
 |---|---|
 | **OQ-3** provenance channel | **OPEN** — narrowed by OD-13; the decision is Plan 254 D2 |
-| **OQ-6** differently-phased sources feeding one model | **OPEN** — settled by T10; Plan 254 T6 is blocked on it |
+| **OQ-6** differently-phased sources feeding one model | ✅ **ANSWERED by the owner 2026-09-10 — see OD-15.** Switzerland adopts the precipitation day; temperature is the recorded off-grid input. T10 records it; Plan 254 T6 is no longer blocked on a decision, only on T10 landing. |
 | OQ-1 target-grid step field | ✅ ANSWERED — the step is per station-and-model pairing in the DB; rejection at onboarding |
 | OQ-2 interval bounds | ✅ CLOSED — Plan 258 T5 owns them |
 | OQ-4 closest-hour rule | ✅ CONFIRMED by owner 2026-09-09 |
@@ -235,7 +235,10 @@ deployment is configured from.
 | 1 | `65700 s` (18:15Z) | Nepal's **exact civil** day boundary — NPT midnight, UTC+05:45 | Reference. Never operated on directly. |
 | 2 | `64800 s` (18:00Z) | Nepal's **provisional operating** boundary — civil midnight rounded to the CLOSEST whole hour (OD-3), which for 18:15Z is 18:00Z — corroborated, not caused, by SnowMapper's UTC+6 day | **What T4 configures**, pending DHM's answer (T7). |
 | 3 | `0 s` (00:00Z) | Switzerland **today**, and what SWITZERLAND keeps declaring until OD-9's parity precondition holds and Plan 254 T6 cuts over. Not a value other deployments inherit — Nepal declares row 2. | **Current for Switzerland.** Declared, never defaulted (OD-11). |
-| 4 | `82800 s` (23:00Z) | Switzerland **after the cutover** — fixed UTC+1 year-round, so every day is exactly 24 h | **Target.** Requires the retrain; Plan 254 T6 owns the move. |
+| 4 | `21600 s` (06:00Z) | Switzerland **after the cutover** — the MeteoSwiss precipitation day, fixed year-round, so every day is exactly 24 h | **Target (owner, 2026-09-10).** Requires the retrain; Plan 254 T6 owns the move. |
+
+⛔ **`82800 s` (23:00Z) was the target until 2026-09-10 and is now WITHDRAWN.** It is kept out of this
+table deliberately: quoting it is the single easiest way to reintroduce the contradiction. See OD-15.
 
 Rows 3 and 4 are one deployment before and after a cutover. Rows 1 and 2 are the intent and what we
 can operate on: a Nepali day configured at `64800 s` runs **00:45–23:45 local**, a known and accepted
@@ -339,20 +342,23 @@ invent nothing.
 |---|---|---|
 | Nepal daily | `(86400 s, OD-3)` | provisionally 18:00Z, pending DHM |
 | Nepal sub-daily | `(3600 s, 0)` | UTC hours, matching forcing exactly |
-| Swiss daily (target) | `(86400 s, 82800 s)` | 23:00Z → 23:00Z, a fixed UTC+1 day |
+| Swiss daily (target) | `(86400 s, 21600 s)` | 06:00Z → 06:00Z, matching the precipitation product (OD-15) |
 
 **Every deployment declares a fixed offset; there is no "UTC default" special case.** A station may
-override it (OD-12), but the deployment-level declaration is always required. Switzerland's target is
-UTC+1 year-round (23:00Z), not DST-following and not UTC midnight — every day is exactly
-24 h, the boundary never moves, and it sits within an hour of civil midnight all year. This is common
-practice among European hydrological services precisely to avoid the 23/25-hour problem. The honest
-cost: in summer the Swiss "day" ends at 01:00 local rather than midnight, a documented one-hour
-displacement that introduces no assumption and fabricates no data.
+override it (OD-12), but the deployment-level declaration is always required. **Switzerland's target
+is 06:00Z year-round (OD-15)** — not DST-following and not UTC midnight. Every day is exactly 24 h and
+the boundary never moves.
 
-⚠️ **Moving Switzerland from UTC midnight to 23:00Z requires a retrain, and the owner accepted that
-(2026-09-05).** Existing Swiss artifacts were trained on UTC calendar days; under OD-7 an artifact is
+⚠️ **This is an OBSERVATION day, not an approximated civil day, and that is a deliberate change of
+intent.** 06:00Z is 07:00 local in winter and 08:00 in summer, so it makes no attempt to sit near
+civil midnight — the earlier 23:00Z target did, and was withdrawn on 2026-09-10. A morning-to-morning
+hydrological day is long-standing practice; the honest cost is that a "day" in our Swiss output is not
+the day a member of the public would mean.
+
+⚠️ **Moving Switzerland from UTC midnight to 06:00Z requires a retrain, and the owner accepted that
+(2026-09-05, target revised 2026-09-10).** Existing Swiss artifacts were trained on UTC calendar days; under OD-7 an artifact is
 valid only for the cut it was trained on. **Plan 254 T6 owns the retrain and the cutover.** Until it
-lands, **Switzerland stays at phase 0** — a config flip alone would feed 23:00Z days to
+lands, **Switzerland stays at phase 0** — a config flip alone would feed 06:00Z days to
 midnight-trained artifacts, exactly the substitution OD-7 says the model cannot detect. Skill scores
 computed against UTC-day observations become invalid for the retrained artifacts, which is a
 recompute through Plan 235's generation mechanism, not a silent overwrite.
@@ -442,6 +448,36 @@ because 10 does not. **This is what to request from DHM: 15-minute data on `:00/
 ⛔ **Period convention and grid phase are INDEPENDENT.** Getting the 45 minutes right and the labelling
 convention wrong yields a silent one-hour error stacked on the offset. They are recorded separately
 and never conflated into one "offset" field. This plan owns the phase; Plan 258 owns the convention.
+
+**OD-15 — SWITZERLAND ADOPTS THE PRECIPITATION DAY: 06:00Z → 06:00Z (owner, 2026-09-10). This
+ANSWERS OQ-6 and WITHDRAWS the 23:00Z target.**
+
+Two of our Swiss inputs cut the day differently — MeteoSwiss precipitation runs 06:00→06:00 UTC,
+temperature runs midnight→midnight (both established from the provider's own product documentation).
+They cannot be reconciled by shifting either one: re-cutting a daily total means splitting it, which
+OD-13 forbids. One input must therefore be accepted as off-grid.
+
+⚖️ **We align with PRECIPITATION.** It is the input that drives runoff, which is what we forecast, so
+the more consequential series is the exact one. **Temperature becomes the off-grid input, displaced by
+6 h**, and that displacement is recorded rather than discovered — it is defensible because temperature
+varies slowly and is used as a daily mean, where a six-hour window shift matters far less than it
+would for a rainfall total.
+
+| | grid | status after cutover |
+|---|---|---|
+| `meteoswiss_rhiresd` / `rprelimd` (precipitation) | `(86400 s, 21600 s)` | **native — exact** |
+| `meteoswiss_tabsd` / `tmind` / `tmaxd` (temperature) | `(86400 s, 0)` | **off-grid by 6 h, recorded** |
+| Swiss operational day | `(86400 s, 21600 s)` | matches precipitation |
+
+⛔ **This WITHDRAWS the 23:00Z target** taken on 2026-09-05. That target existed to sit near civil
+midnight while avoiding DST; this one exists to match the data we actually receive. Both are fixed,
+DST-free, exactly-24-hour days — but they are different days, and **only 06:00Z is now current.**
+🔑 The two goals turned out to be incompatible, and matching the data beat approximating the calendar.
+
+⚠️ **Consequences that must travel with this:** the Swiss "day" is a morning-to-morning observation
+day, not a civil day, so any public-facing label must say so; `meteoswiss_sreld` and `camels-ch` are
+still unread (Plan 252 T6) and may add a third boundary; and Nepal is untouched — its boundary comes
+from DHM (OD-3).
 
 **OD-13 — WE NEVER INVENT A NUMBER (owner, 2026-09-09).** This supersedes OD-6's interpolation and
 apportionment rows and settles the standing contradiction with the repo's no-imputation rule
@@ -595,12 +631,11 @@ means splitting it, which OD-13 forbids. The real options are to declare the mod
 accept one source as off-grid with the mismatch recorded, to re-derive the 06:00 products from
 sub-daily station data (expensive, and outside this system), or to adopt 06:00 as the Swiss
 operational day so precipitation is native and temperature is the off-grid one. ⚠️ **This interacts
-with OD-2's 23:00Z target** — a third candidate boundary — and it must be settled before Plan 254 T6
-retrains anything, because the retrain bakes in whichever answer we choose.
+with the former 23:00Z target**, which is why answering it withdrew that target rather than sitting
+beside it.
 
-⚙️ **Owner: this plan, as T10** (below). ⛔ An earlier revision recorded OQ-6 with no task to settle
-it, while Plan 254 T6 declared itself blocked on it — a dependency on a decision nobody was assigned
-to take.
+✅ **ANSWERED 2026-09-10 — see OD-15: Switzerland adopts the precipitation day (06:00Z), temperature
+becomes the recorded off-grid input, and the 23:00Z target is withdrawn.** T10 propagates it.
 
 **OQ-2 — CLOSED 2026-09-09. Interval bounds are owned by Plan 258 T5**, added as a real task by owner
 decision. ⛔ **They are no longer an orphan; do not describe them as one.** *(The orphan state was
@@ -894,17 +929,16 @@ grid request appears, and the India 08:30 IST precedent is cited.
 
 ### T10 — settle how differently-phased sources feed one model (OQ-6)
 
-**Outcome:** a recorded decision on what happens when two sources carrying the same step but different
-phases feed one model — measured today for Switzerland, where precipitation runs on a 06:00 day and
-temperature on a midnight day.
+**Outcome:** OD-15's decision is written through every affected document, so no superseded target
+survives anywhere.
 
-⛔ **Plan 254 T6 declares itself blocked on this and no task existed to settle it.** This is that task.
+✅ **The DECISION is taken (OD-15, owner 2026-09-10): Switzerland adopts the precipitation day,
+06:00Z.** This task is no longer about choosing — it is about propagating, which is exactly the step
+this family has failed three times running.
 
-**In:** this document. Must consider at least: declare the model's target grid and accept one source
-as off-grid with the displacement recorded; adopt 06:00 as the Swiss operational day so precipitation
-is native; or re-derive the 06:00 products from sub-daily station data. ⚠️ **It interacts with OD-2's
-23:00Z target**, which is a third candidate boundary — the answer must say which of the three
-Switzerland actually adopts, because Plan 254 T6 bakes it into the retrain.
+**In:** this document; `docs/conventions.md`; `docs/architecture-context.md` (with T9); and any place
+naming a Swiss target boundary. ⛔ **Sweep for `82800`, `23:00Z` and "UTC+1 year-round" and assert the
+count** — the withdrawn target is the single easiest contradiction to reintroduce.
 
 **Out:** any code; the retrain itself (Plan 254 T6); re-deriving any product.
 
@@ -917,8 +951,9 @@ consumes the result; it does not implement it.
 **Pre-change:** N/A — decision task. The evidence section above measures the conflict; no plan
 resolves it, and Plan 254 T6 is blocked on it.
 
-**Verification:** N/A — decision task. One boundary is named for Switzerland, the treatment of the
-off-grid source is stated, and OD-2's table is updated to agree.
+**Verification:** N/A — propagation task. `grep -rn "82800\|23:00Z" docs/` returns only the explicit
+withdrawal notes in OD-15 and the boundary table; one Swiss operating boundary (`21600 s`) appears
+throughout; and the temperature displacement is stated wherever the Swiss grid is named.
 
 ### T8 — supersede Plan 228 D4
 
@@ -989,8 +1024,9 @@ Four conditions hold in addition:
 
 1. **One Nepal OPERATING boundary value appears throughout** — `64800 s` (18:00Z) until DHM answers.
    The plan deliberately distinguishes four values (civil reference `65700`, Nepal operating `64800`,
-   Switzerland today `0`, Switzerland after cutover `82800`); the gate is that no *second operating*
-   value for Nepal appears.
+   Switzerland today `0`, Switzerland after cutover `21600`); the gate is that no *second operating*
+   value for Nepal appears, and that **`82800` / `23:00Z` appears nowhere except OD-15's explicit
+   withdrawal**.
 2. **No deployment defaults to phase zero by omission** (OD-11), including the repository-root
    `config.toml` that the Swiss deployment actually loads — not only `config/overlays/`.
 3. **D4's supersession is PROPOSED with the parity precondition stated**, not asserted as done —

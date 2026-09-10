@@ -114,13 +114,13 @@ period-ending labels (`services/operational_inputs.py:225`).
   Nepal depends on it. Switzerland stays at phase 0 until that retrain is ready.
   ⭐ **Plan 262's end-period-stamping change rides the SAME cutover** — identical shape (it changes
   what a stored interval value means, invalidates every artifact, needs a coordinated switch). Three
-  migrations collapse into one. ⚠️ **The atomicity question is now D7, not D4** — an earlier revision used D4 for two different
+  migrations collapse into one. ⚠️ **Atomicity is D7 (ANSWERED: atomic), not D4** — an earlier revision used D4 for two different
   decisions, so the second had no name and no owner.
 
-- **D7 — atomic flip or per-station migration?** Open. The group-phase invariant (Plan 252 OD-12)
-  makes a mixed-phase interval hazardous for any cross-station product, which points hard at atomic;
-  per-station would need a per-station grid record and a period during which two cuts coexist.
-  **Gates T6.**
+- ✅ **D7 — ANSWERED 2026-09-10: ATOMIC.** One coordinated switch, one rollback point. A staged
+  per-station migration would leave two day definitions coexisting, and every cross-station product —
+  the pooled forecast above all — would be combining them; the group-phase invariant (Plan 252 OD-12)
+  already forbids that within a group. **T6 is no longer gated on this.**
 - ✅ **D5 — ANSWERED 2026-09-09: end-period stamping is the house convention, and Plan 262 owns
   adopting it.** Adapters convert at ingest; our own bucket labelling changes to match, in one step
   with skill's completeness path. ⛔ **This plan must not change either independently** — Plan 262
@@ -172,9 +172,9 @@ period-ending labels (`services/operational_inputs.py:225`).
 
 Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
 
-### T1 — settle the four open decisions
+### T1 — settle the remaining open decisions
 
-**Outcome:** every open decision in this plan is answered with rationale — **D2 and D7**, plus
+**Outcome:** every open decision in this plan is answered with rationale — **D2**, plus
 **the six anchoring questions absorbed with Plan 226**, which T8 says moved "verbatim into T1's
 decision set" and which an earlier revision never actually put here.
 
@@ -193,8 +193,8 @@ D1, D3, D4 and D5 are already answered above.
 **Out:** any code change. The decisions exist so they are made once, in the open, rather than inside
 an implementation diff.
 
-**Pre-change:** N/A — decision task. **D2 and D7, plus the six absorbed anchoring questions**, are
-recorded as open above; D1, D3, D4 and D5 are answered. ⛔ An earlier revision said "the four
+**Pre-change:** N/A — decision task. **D2 plus the six absorbed anchoring questions** are recorded as
+open above; D1, D3, D4, D5 and D7 are answered. ⛔ An earlier revision said "the four
 decisions" and called D3 a live contradiction — D3 was answered on 2026-09-09 (the no-imputation rule
 stands), and it cited `touchpoint-maps.md:228`, the wrong line: the rule is at `:247-248`.
 
@@ -310,7 +310,7 @@ a stored daily value means:
 
 | # | Correction | Owner |
 |---|---|---|
-| 1 | Swiss day boundary moves from phase 0 to 23:00Z | this task |
+| 1 | Swiss day boundary moves from phase 0 to **06:00Z**, the precipitation day (Plan 252 OD-15, owner 2026-09-10; ⛔ the earlier 23:00Z target is **WITHDRAWN**) | this task |
 | 2 | End-period stamping adopted; our bucket labelling changes to match | **Plan 262** |
 | 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; corrected here |
 
@@ -319,19 +319,21 @@ means three retrains and three cutovers. ⚠️ **Correction 3 is not yet decide
 252 **OQ-6** asks how two differently-phased sources feed one model, and its answer changes what this
 retrain bakes in. **Do not start T6 before OQ-6 is settled.**
 
-**Outcome:** Switzerland moves from phase 0 to 23:00Z with artifacts, hindcasts, skill generations and
-configuration moving together, and a rollback.
+**Outcome:** Switzerland moves from phase 0 to **06:00Z** with artifacts, hindcasts, skill generations
+and configuration moving together **in a single atomic switch** (D7), and a rollback.
 
-⛔ **This outcome is not writable until D7 is answered.** D7 (atomic flip vs per-station migration) is
-still open, and "moving together" means different things under each: an atomic flip needs one
-coordinated switch with a single rollback point; a per-station migration needs a per-station grid
-record and a mixed-phase interval during which two cuts coexist. Do not draft the sequence before D7.
-⚠️ **An earlier revision called this D4**, which names a different and already-answered decision.
+✅ **D7 is ANSWERED: ATOMIC** (owner, 2026-09-10). One coordinated switch, one rollback point —
+configuration, artifacts, hindcasts and skill generations move together or not at all. ⛔ **No
+mixed-phase interval is permitted at any point**, because every cross-station product would be
+combining two day definitions while it lasted.
+⚠️ An earlier revision called this decision D4, which names a different and already-answered one.
 
-⛔ **Blocked on three things the graph now names:** Plan 252 **T10** (which boundary Switzerland
-actually adopts — OQ-6), Plan 262 **T3** (the end-stamping change rides this cutover, so its code must
-land first), and **D7** (atomic versus per-station). None of these were declared as blockers before
-2026-09-09.
+⛔ **Blocked on two things the graph names** (down from three — D7 was answered 2026-09-10):
+Plan 252 **T10**, which propagates OD-15's 06:00Z decision through the documents, and Plan 262 **T3**,
+whose end-stamping code rides this cutover and must land first.
+
+⚠️ **The boundary VALUE is decided (Plan 252 OD-15: 06:00Z, the precipitation day).** T10 is a
+propagation task, not a decision — do not wait on it for the value.
 
 ⚠️ **Correction 3 needs an ADAPTER change and this sequence did not contain one.** The MeteoSwiss
 06:00 precipitation day is corrected where the data is read, not in the rollout: the adapter must
@@ -496,7 +498,7 @@ Five conditions hold in addition:
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (settles OQ-6, which boundary Switzerland adopts); Plan 262 T3 (end-stamping lands in the same cutover); D7 (atomic vs per-station)"},
+    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (propagates OD-15's 06:00Z target); Plan 262 T3 (end-stamping lands in the same cutover)"},
     {"id": "T7", "phase": 4, "depends_on": ["T4"], "note": "must land BEFORE T6 — rebuilt hindcasts would otherwise be written without a phase"}
   ]
 }
