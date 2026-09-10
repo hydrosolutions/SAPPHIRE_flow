@@ -8,7 +8,8 @@ reviews:
   - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
   - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
-open_decisions: [D14, D15]
+open_decisions: []
+depends_on: [264]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
 related: [035]
@@ -40,9 +41,14 @@ Round 2 also found that a calibration the author recommended would have committe
 rating-table values — the same leak class already stripped once, reintroduced through a
 different door.
 
-**Twelve of fifteen decisions are closed**; D14 (QC threshold calibration) and D15 (how QC
-rules are isolated) are open, and D5's publication constraint now has a standing note in D14.
-T1–T4 are buildable; T7 waits on D14 and D15.
+**All fifteen decisions are closed** (owner, 2026-09-10). T1–T6 are buildable. T7 waits on
+**Plan 264**, which the owner's answer to D15 split out: teaching QC rules which network they
+apply to changes shared code the live Swiss deployment depends on, and that risk gets its own
+plan and its own review rather than a paragraph in this one.
+
+Both round-2 blockers stayed fixed rather than being closed by decision — the replacement
+procedure in D6 and the fail-closed requirements in T7 are design changes, and neither has yet
+been reviewed. **This plan has not had a review pass since those changes landed.**
 
 The two passes between them found eleven blockers, and the pattern is worth stating because
 it should shape how this plan is finished: **the author's measurements of the delivered data
@@ -568,9 +574,12 @@ therefore be constructed in-process by the import CLI and passed to the checker,
 cannot be *persisted* without new schema. Prefer the in-process route; say so explicitly
 rather than writing "override rows".
 
-**Recommendation:** a DHM rule set with limits set from an independent physical basis
-(basin area and regional flood estimates), rounded coarsely, with the rating-table envelope
-used only as a cross-check that is computed at re-measure time and never committed.
+**CLOSED: a physical estimate per station** (owner, 2026-09-10) — each station's plausible
+maximum derived from catchment size and what is known about flooding in the region, rounded
+coarsely. It is independent of both the delivered series and DHM's tables, so it is neither
+circular nor a leak. Cost: six pieces of hydrological judgement, which is the right kind of
+cost for a limit that decides what counts as implausible. The rating-table envelope may be
+used as a **cross-check computed at re-measure time and never committed**; it is not the basis.
 
 **D15 — how the DHM rules are isolated from the Swiss ones. NEW, open; blocks T7.**
 T7 claimed it could add a DHM daily rule set "beside" the Swiss one without changing Swiss
@@ -589,11 +598,15 @@ reasons:
   ("the Swiss defaults are byte-identical") still passes, because the default *function* is
   untouched.
 
-**Recommendation: a separate `QcRuleSet` constructed in-process by the import CLI and never
-merged into the deployment configuration.** It needs no schema change and no selector
-dimension, and it makes the isolation structural rather than a matter of threshold values
-happening not to collide. If instead the owner wants DHM rules to be a deployment concern,
-that is a real feature — a selector dimension on rule lookup — and belongs in its own plan.
+**CLOSED: teach the rules which network they apply to** (owner, 2026-09-10) — the selector
+dimension, not the in-process workaround the author recommended. It is the better answer: the
+collision is a real limitation for any deployment serving two networks, not an artefact of
+this import, and the workaround would have left it in place for the next caller to rediscover.
+
+**It changes shared code the running Swiss deployment depends on, so it is its own plan:
+Plan 264, which now blocks this one's QC task.** That is a deliberate split — the regression
+risk to a live QC path deserves its own review and rollout rather than a paragraph inside a
+data-import plan. T7 consumes the result; it does not build it.
 
 ## Tasks
 
@@ -800,8 +813,9 @@ state. The three faults, all verified in source:
    climatological baseline exists (`services/qc.py:206-208`), and every existing caller passes
    `baselines=[]`. Reporting "gross-outlier: 0 flags" would mean nothing.
 
-**In**: a DHM `QcRuleSet` constructed in-process by the import CLI per D15 — **not** an edit
-to `config/qc_rules.py`'s Swiss defaults and **not** a TOML overlay (which would delete them);
+**In**: a DHM rule set declaring `network = "dhm"`, selected by the network-aware lookup
+**Plan 264** delivers (D15) — **not** an edit to `config/qc_rules.py`'s Swiss defaults and
+**not** a TOML overlay that replaces them; per-station limits from D14's physical basis;
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
 affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
 **Out**: no new QC *rule kind* — the five daily discharge rules exist and this task calibrates
@@ -812,8 +826,10 @@ deployment configuration.
   every station group processed, and that the number of rows *evaluated* per rule equals the
   station's row count. A run where no rule resolved must **fail**, not certify.
 - **Isolation.** Exactly one daily-discharge rule of each id resolves for the DHM series, and
-  a Swiss daily series resolves the Swiss rules unchanged — asserted on both paths, since the
-  previous gate passed identically for the working and broken designs.
+  a Swiss daily series resolves the Swiss rules unchanged — asserted on **both** paths, since
+  the previous gate passed identically for the working and the broken design. This is
+  guaranteed structurally by Plan 264's most-specific-wins selection, not by DHM and Swiss
+  thresholds happening not to collide.
 - **Gaps.** No rate-of-change, spike or frozen-sensor flag is raised across any gap T5 reports.
 - **Provenance.** Flags carry the DHM rule set's version. Note `services/qc.py` hard-codes
   `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`, `:64`, `:83`, `:169`, `:187`,
@@ -827,7 +843,7 @@ value above the Swiss ceiling is flagged by the Swiss rule and not by the DHM ru
 the mechanism, not the delivery; **T5's run is the evidence that the fault is real in the
 delivered data**, and it cannot be a checked-in test without either reading restricted files
 or embedding restricted values.
-**Depends on T4. BLOCKED on D14 and D15.**
+**Depends on T4, and on Plan 264 shipping.** D14 and D15 are closed.
 
 ```json
 {
@@ -842,9 +858,10 @@ or embedding restricted values.
 ```
 
 T1 and T2a are genuinely independent. T5 needs only the parser; T2b needs only the metadata
-artifact; T6 needs neither. Only T7 is gated on open decisions (D14, D15) — everything through
-T4 can be built. The phase order is also the **re-import order** (D6): curves before
-observations before QC, and the replacement runs in reverse.
+artifact; T6 needs neither. Only T7 is gated — on Plan 264, not on an open decision — and everything through
+T4 can be built. T7 additionally waits on **Plan 264**, which is a separate plan with its own
+review — not a blocker inside this one. The phase order is also the **re-import order** (D6):
+curves before observations before QC, and the replacement runs in reverse.
 
 ## Explicitly out of scope
 
