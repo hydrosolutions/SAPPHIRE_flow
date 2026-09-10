@@ -535,13 +535,14 @@ exit criteria — Plan 212 owns that deeper screening.
   verified against main 2026-09-08, 252 hands that decision off in its own
   Non-goals, 254 never mentions stored rows, and 226 excludes backfill twice, so
   T2 was waiting on nobody. T2 has now DECIDED on this plan's own authority —
-  **quarantine**: the 69 keep `time_step_seconds = NULL` permanently, are neither
-  repaired (they are multi-phase, so no honest step exists) nor deleted (they are
-  the only surviving record of what `_pooled` wrote before Plan 222's guard took
-  it dark, which is Plan 257's whole argument), and T3 grandfathers them with a
-  `NOT VALID` CHECK instead of `SET NOT NULL`. ⛔ Still awaiting owner READY, and
-  T1 still needs one Claude and one Codex review — the 2026-09-07 approval was
-  for a statement that no longer exists.
+  **discard**: the 69 are deleted with their `forecast_values` children (children
+  FIRST — the FK does not cascade), after a verified backup, which lets T3 use a
+  plain `SET NOT NULL`. ⚠️ This SUPERSEDES the quarantine design this entry
+  advertised until 2026-09-09: quarantine would have frozen those rows against
+  every future status transition, and its `NOT VALID` CHECK is withdrawn with it.
+  ⛔ Still awaiting owner READY. One Codex review is done (2026-09-09, findings
+  folded); T1 still needs a Claude pass, and its rollback rehearsal must be
+  repeated against the current non-zero-stamp state.
 
 ## Deferred
 
