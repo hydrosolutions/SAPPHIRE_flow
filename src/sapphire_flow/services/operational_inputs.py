@@ -464,6 +464,12 @@ _CONTROL_MEMBER_IDS: frozenset[int | None] = frozenset({None, 0})
 # operational path, which this plan explicitly defers.
 _FILLABLE_PARAMETERS: frozenset[str] = frozenset({"precipitation", "temperature"})
 
+# Parameters stored as a de-accumulated RUNNING TOTAL, for which a run's own
+# first step carries no interval and must never be used. Only `tp` is
+# de-accumulated at ingest (`adapters/meteoswiss_nwp.py:262`); temperature is
+# converted K->degC and nothing else, so ITS first step is a real reading.
+_DEACCUMULATED_PARAMETERS: frozenset[str] = frozenset({"precipitation"})
+
 # The native cadence of stored NWP is a property of the SOURCE, and is DECLARED
 # here rather than inferred from the rows being validated — inferring it is
 # circular: a bucket holding only hours 0,2,...,22 reads as a 2-hourly source,
@@ -505,22 +511,32 @@ def _freshest_control_points(
         # rather than trusted to the caller's query.
         if r.member_id not in _CONTROL_MEMBER_IDS:
             continue
-        # ⛔ NEVER the lead-0 step. Precipitation is de-accumulated at ingest
-        # against a ZERO pad (`adapters/meteoswiss_nwp.py:186`), so the value at
-        # `valid_time == cycle_time` is `tp(0) - 0 = 0` BY CONSTRUCTION — it is
-        # not "no rain in that hour". Those rows are stored: `_expected_valid_times`
-        # starts at h=0 and completeness asserts it. Measured on the staging host,
-        # 2026-09-10: ALL 96,726 lead-0 precipitation rows are exactly 0.0, while
-        # lead 1-5 h averages 0.1037.
+        # ⛔ For a de-accumulated parameter, NEVER the run's own first step.
+        # `_deaccumulate_precipitation` pads by one and diffs
+        # (`adapters/meteoswiss_nwp.py:186`), so the first output is `tp(0)`
+        # itself — the pad is what makes that step survive `diff` at all. ICON's
+        # `tp(0)` is zero because accumulation starts at the run's start, so the
+        # step carries no interval. (Independent review, 2026-09-10: the pad
+        # PRESERVES tp(0); it does not manufacture the zero. Measured on the
+        # staging host the same day, all 96,726 stored lead-0 precipitation rows
+        # are exactly 0.0, against 0.1037 mean at leads 1-5 h.)
         #
         # "Freshest covering cycle" picks the maximum cycle_time, and for a
         # `valid_time` that IS a cycle stamp (00/06/12/18Z) that is always that
-        # cycle's lead 0 — so four of every twenty-four hourly increments would be
-        # zeroed and the daily total silently under-read by ~17%, with no null and
-        # a complete 24-stamp grid. Skipping lead 0 falls back to the next-freshest
-        # covering cycle, which carries a real increment; if none does, the stamp
-        # is absent, the bucket fails the grid check, and the fill declines.
-        if ensure_utc(r.valid_time) == ensure_utc(r.cycle_time):
+        # run's first step — so four of every twenty-four hourly increments would
+        # be zeroed and the daily total silently under-read by ~17%, with no null
+        # and a complete 24-stamp grid. Skipping it falls back to the
+        # next-freshest covering run, which carries a real increment; if none
+        # does, the stamp is absent, the bucket fails the grid check and the fill
+        # declines — the right outcome, because the alternative is a silently
+        # short sum.
+        #
+        # Scoped to de-accumulated parameters (independent review, 2026-09-10):
+        # an unconditional skip also discarded a run's first TEMPERATURE reading,
+        # which is a genuine point value and the freshest one available.
+        if r.parameter in _DEACCUMULATED_PARAMETERS and ensure_utc(
+            r.valid_time
+        ) == ensure_utc(r.cycle_time):
             continue
         key = (r.parameter, ensure_utc(r.valid_time))
         incumbent = freshest.get(key)

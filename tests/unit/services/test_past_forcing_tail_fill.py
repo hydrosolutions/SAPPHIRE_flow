@@ -625,6 +625,45 @@ class TestFillPastForcingTail:
         )[0]
         assert total == 24.0, "lead-0 zeros must not be counted as real increments"
 
+    def test_a_runs_first_temperature_reading_is_kept(self) -> None:
+        """The mirror of the lead-0 rule, and the reason it is scoped rather
+        than unconditional (independent review, 2026-09-10).
+
+        Only precipitation is de-accumulated at ingest. A run's first
+        TEMPERATURE row is a genuine point reading and the freshest one
+        available, so discarding it would replace the best value with an older
+        run's forecast — or, with no older run covering that stamp, fail the
+        grid check and decline to fill a bucket that was perfectly good.
+
+        Here the freshest run's first step is the ONLY source for 00:00, and it
+        must be used.
+        """
+        frame = _reanalysis_frame(7)
+        cycle = _ts(2026, 9, 8)  # a run starting exactly at the bucket boundary
+        records = [
+            WeatherForecastRecord(
+                id=UUID(int=600000 + hour),
+                station_id=_STATION,
+                nwp_source=_NWP,
+                cycle_time=cycle,
+                valid_time=ensure_utc(cycle + timedelta(hours=hour)),
+                parameter="temperature",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=10.0,
+                created_at=cycle,
+            )
+            for hour in range(24)
+        ]
+
+        filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
+
+        row = filled.filter(pl.col("timestamp") == _ts(2026, 9, 8))
+        assert row.get_column("temperature").to_list() == [10.0], (
+            "a run's first temperature reading is real and must not be skipped"
+        )
+
     def test_no_forecasts_leaves_the_frame_unchanged(self) -> None:
         frame = _reanalysis_frame(7)
 
