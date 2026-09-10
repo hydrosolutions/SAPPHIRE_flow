@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import polars as pl
+from structlog.testing import capture_logs
 
 from sapphire_flow.services.operational_inputs import fill_past_forcing_tail
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -488,6 +489,74 @@ class TestFillPastForcingTail:
         filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
 
         assert filled.equals(frame)
+
+    def test_a_cadence_mismatch_is_logged_not_silent(self) -> None:
+        """`_NWP_NATIVE_STEP` is declared, so a source delivering another
+        cadence never completes a bucket and the fill quietly stops being a
+        fill. Failing closed is only safe when it is visible: the warning names
+        the expected and observed step counts, which is what identifies the
+        cause.
+        """
+        frame = _reanalysis_frame(7)
+        records = _hourly_forecast(
+            day=8,
+            parameter="precipitation",
+            cycle_day=8,
+            value_per_hour=1.0,
+            hours=range(0, 24, 3),  # a 3-hourly source
+        )
+
+        with capture_logs() as logs:
+            filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
+
+        assert filled.equals(frame)
+        warning = next(
+            entry
+            for entry in logs
+            if entry["event"] == "operational_inputs.past_forcing_tail_unfilled"
+        )
+        assert warning["reason"] == "no_complete_bucket"
+        assert warning["expected_steps_per_bucket"] == 24
+        assert warning["observed_steps_per_bucket"] == {
+            "precipitation@2026-09-08 00:00:00+00:00": 8
+        }
+
+    def test_a_source_with_no_declared_cadence_is_not_filled(self) -> None:
+        """Independent review round 2 (major). The native cadence is a property
+        of the SOURCE. `ifs_ecmwf` is stored verbatim by the recap Gateway and
+        is lead-dependent (3-hourly, then 6-hourly), so a global hourly grid
+        would have silently accepted 8 three-hourly steps as a whole day on the
+        Nepal route -- which Plan 261 defers entirely. An undeclared source is
+        not filled, and says so before paying for the read.
+        """
+        frame = _reanalysis_frame(7)
+        store = FakeWeatherForecastStore()
+        store.store_weather_forecasts(
+            _hourly_forecast(
+                day=8, parameter="precipitation", cycle_day=8, value_per_hour=1.0
+            )
+        )
+
+        with capture_logs() as logs:
+            filled = fill_past_forcing_tail(
+                frame,
+                station_id=_STATION,
+                nwp_source="ifs_ecmwf",
+                weather_forecast_store=store,  # type: ignore[arg-type]
+                parameters=["precipitation", "temperature"],
+                window_end=_ts(2026, 9, 9),
+                time_step=_DAY,
+                aggregation_methods=_AGG,
+            )
+
+        assert filled.equals(frame)
+        warning = next(
+            entry
+            for entry in logs
+            if entry["event"] == "operational_inputs.past_forcing_tail_unfilled"
+        )
+        assert warning["reason"] == "undeclared_native_cadence"
+        assert warning["declared_sources"] == ["icon_ch2_eps"]
 
     def test_no_forecasts_leaves_the_frame_unchanged(self) -> None:
         frame = _reanalysis_frame(7)

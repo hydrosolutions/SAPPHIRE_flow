@@ -248,7 +248,9 @@ gates.
   imputed / interpolated / filled. **Plan 261 narrows this, it does not retire it:** the
   operational past-forcing leg is EXTENDED at its tail with real stored NWP values
   (`fill_past_forcing_tail`, operational assemblers only, in memory, nothing persisted,
-  interior holes untouched). Nothing is derived, interpolated or invented — a filled
+  interior holes untouched, and only for NWP sources whose native cadence is DECLARED —
+  `icon_ch2_eps` today; `ifs_ecmwf` is lead-dependent and deliberately not declared, so
+  Nepal is unaffected). Nothing is derived, interpolated or invented — a filled
   bucket is a forecast that was actually issued — and `max_nan` still gates values
   exactly as before. Training and hindcast are unchanged and cannot reach the fill
   (`tests/unit/services/test_forecast_fill_does_not_reach_history.py`)

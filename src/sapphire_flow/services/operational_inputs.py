@@ -464,14 +464,29 @@ _CONTROL_MEMBER_IDS: frozenset[int | None] = frozenset({None, 0})
 # operational path, which this plan explicitly defers.
 _FILLABLE_PARAMETERS: frozenset[str] = frozenset({"precipitation", "temperature"})
 
-# The native cadence of the stored NWP the fill reads. DECLARED, never inferred
-# from the rows being validated: inferring it from delivered timestamps is
-# circular — an hourly bucket holding only 0,2,...,22 infers a 2-hourly source,
+# The native cadence of stored NWP is a property of the SOURCE, and is DECLARED
+# here rather than inferred from the rows being validated — inferring it is
+# circular: a bucket holding only hours 0,2,...,22 reads as a 2-hourly source,
 # "completes" at 12 steps, and yields a precipitation total that is silently
-# half of the truth (independent review, 2026-09-09). Measured hourly for
-# ICON-CH2-EPS (121 steps over 5 days). A source delivering anything else is
-# NOT filled and says so in the log — failing closed, never low.
-_NWP_NATIVE_STEP = timedelta(hours=1)
+# half the truth (independent review round 1).
+#
+# `icon_ch2_eps` is hourly by its adapter's own declaration
+# (`adapters/meteoswiss_nwp.py:95`, `_FORECAST_STEP_HOURS = 1`).
+#
+# ⚠ `ifs_ecmwf` is DELIBERATELY ABSENT (independent review round 2). The recap
+# Gateway stores IFS timestamps verbatim — it does not resample
+# (`adapters/recap_gateway.py:613`) — and IFS is lead-dependent (3-hourly, then
+# 6-hourly), so no single step describes it. Plan 261 defers Nepal explicitly
+# ("any change to Nepal's existing recap forecast-fill, which already works"),
+# so the fill does NOT run there rather than run on a guessed grid that would
+# silently accept 8 three-hourly steps as a whole day. Declaring IFS's real
+# lead-dependent grid belongs to whichever plan takes Nepal's past leg on.
+#
+# An undeclared source is not filled, and says so — failing closed is only safe
+# when it is visible.
+_NATIVE_STEP_BY_SOURCE: dict[str, timedelta] = {
+    "icon_ch2_eps": timedelta(hours=1),
+}
 
 
 def _freshest_control_points(
@@ -498,7 +513,7 @@ def _freshest_control_points(
 
 
 def _complete_bucket_grid(
-    bucket: UtcDatetime, time_step: timedelta
+    bucket: UtcDatetime, time_step: timedelta, native_step: timedelta
 ) -> frozenset[UtcDatetime] | None:
     """Every native timestamp a COMPLETE ``bucket`` must contain.
 
@@ -508,12 +523,11 @@ def _complete_bucket_grid(
     caller must treat as "do not fill".
     """
     bucket_s = time_step.total_seconds()
-    native_s = _NWP_NATIVE_STEP.total_seconds()
+    native_s = native_step.total_seconds()
     if native_s <= 0 or bucket_s % native_s != 0:
         return None
     return frozenset(
-        ensure_utc(bucket + i * _NWP_NATIVE_STEP)
-        for i in range(int(bucket_s // native_s))
+        ensure_utc(bucket + i * native_step) for i in range(int(bucket_s // native_s))
     )
 
 
@@ -585,6 +599,19 @@ def fill_past_forcing_tail(
     if fetch_start >= window_end:
         return past_dynamic
 
+    native_step = _NATIVE_STEP_BY_SOURCE.get(nwp_source)
+    if native_step is None:
+        # Resolved BEFORE the read: an undeclared source cannot complete a
+        # bucket, so fetching thousands of rows to discard them would be waste.
+        log.warning(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="undeclared_native_cadence",
+            declared_sources=sorted(_NATIVE_STEP_BY_SOURCE),
+        )
+        return past_dynamic
+
     records = weather_forecast_store.fetch_lookback(
         station_id=station_id,
         nwp_source=nwp_source,
@@ -636,7 +663,7 @@ def fill_past_forcing_tail(
             value = row.get(param)
             if value is None or bucket <= last_measured[param]:
                 continue
-            grid = _complete_bucket_grid(bucket, time_step)
+            grid = _complete_bucket_grid(bucket, time_step, native_step)
             if grid is None or covered[(param, bucket)] != grid:
                 continue
             # No precedence check is needed: `last_measured[param]` is this
@@ -646,6 +673,31 @@ def fill_past_forcing_tail(
             filled.append(f"{param}@{bucket}")
 
     if not filled:
+        # Records were fetched and NONE of them completed a bucket. The usual
+        # cause is a cadence mismatch: `_NWP_NATIVE_STEP` is declared, so a
+        # source delivering anything else never completes the grid and the fill
+        # silently stops being a fill. Say so — failing closed is only safe
+        # when it is visible, and the counts are what identify the cause.
+        observed = {
+            f"{param}@{bucket}": len(stamps)
+            for (param, bucket), stamps in covered.items()
+        }
+        log.warning(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="no_complete_bucket",
+            declared_native_step_seconds=native_step.total_seconds(),
+            expected_steps_per_bucket=len(
+                _complete_bucket_grid(
+                    ensure_utc(min(last_measured.values()) + time_step),
+                    time_step,
+                    native_step,
+                )
+                or ()
+            ),
+            observed_steps_per_bucket=dict(sorted(observed.items())[:6]),
+        )
         return past_dynamic
 
     log.info(
