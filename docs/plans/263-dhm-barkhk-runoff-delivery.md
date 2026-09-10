@@ -641,6 +641,28 @@ notch lower — 5,000 m³/s flags 1,125 genuine monsoon peaks at station 450 pre
 is a *plausible Swiss* maximum rather than an impossible one. A "plausible Nepali maximum" would
 condemn the largest real floods in the record, which are the rows that matter most.
 
+**Owner decision 2026-09-10 — WHERE the thresholds live: station onboarding configuration,
+updatable later.** That settles the shape and is the right call: a QC ceiling is station
+metadata, belongs with the station, and must be correctable without a code change.
+
+**🔴 It also adds scope this plan did not have, because none of that exists today.** Verified:
+there is **no** `station_qc_overrides` table, no store, no Protocol, no config key — the search
+returns nothing anywhere in `src/`, `alembic/`, `config.toml` or `docs/spec/`.
+`StationQcOverride` is a bare dataclass (`types/domain.py:170-176`) that both production callers
+hard-code to an empty list. So per-station QC thresholds cannot be onboarded, cannot be
+persisted, and **cannot be updated later** — the plan's earlier answer (build six in memory
+inside the import) quietly accepted that and would have produced thresholds nobody could change
+without editing code.
+
+Delivering the owner's decision therefore requires: a migration and table, a store and Protocol
+and fake, a config surface on station onboarding, and a loader wired into the QC call path —
+none of it currently in any task. `station_thresholds` (`db/metadata.py`) is a useful precedent
+for the shape (per-station, per-parameter, with a `source` discriminator) but is a **different**
+concern: those are alert danger levels, not QC bounds. Do not overload it.
+
+**Open question for the next session:** does that persistence work belong in this plan, in Plan
+264, or in its own? It is squarely the gap 264 declared out of scope, and it is now load-bearing.
+
 **The target is an impossibility ceiling: a value water cannot produce, only a fault can.**
 Exceeding it means the number is wrong, not that something remarkable happened.
 
