@@ -3,9 +3,9 @@ status: DRAFT
 created: 2026-09-07
 plan: 248
 title: Backfill and tighten forecasts.time_step_seconds — the half Plan 241 deliberately deferred
-scope: Finish the two-release column tightening Plan 241 T4 started. Backfill the MEASURED uniform-daily rows, decide what a truthful cadence is for rows that have none, then tighten the column to NOT NULL. Explicitly NOT the phase/interleaving defect (Plans 252/254), NOT any change to how a cadence is derived at write time.
+scope: Finish the two-release column tightening Plan 241 T4 started. Backfill the MEASURED uniform-daily rows (T1), then tighten the column to NOT NULL (T3). Explicitly NOT the deletion of the 69 non-uniform rows — DESCOPED to Plan 265 on 2026-09-10, because an irreversible deletion needs an operational runbook and a design document is the wrong home for one. NOT the phase/interleaving defect (Plans 252/254), NOT any change to how a cadence is derived at write time.
 depends_on: [241]
-blocks: []
+blocks: [265]
 source: 2026-09-07 — required by Plan 241's own exit gate ("the deferred NOT NULL tightening has a named follow-on plan, or this plan does not close"), and by a live measurement of the staging database taken the same day
 ---
 
@@ -26,7 +26,11 @@ has not moved by a single row since the column shipped, and every row written si
 cadence — which is positive evidence that Plan 241's writer works, and that T1's target population
 is closed.
 
-T1 is scoped, authored and REHEARSED against live staging (below). T2 and T3 remain sketched.
+T1 is scoped, authored and rehearsed against live staging (below — that rehearsal is now historical
+and must be repeated). **T2 is DESCOPED to Plan 265.** T3 is scoped but not authored.
+
+One independent Codex round is folded (2026-09-09) and a second re-check drove the descope
+(2026-09-10). T1 still needs a Claude pass.
 
 ## Why this exists
 
@@ -90,21 +94,29 @@ forecasts with a blemish — they are TWO INTERLEAVED DAILY SERIES, one at exact
 No single scalar describes that. `NOT NULL` can therefore only be reached by inventing a value,
 deleting the rows, or quarantining them — and inventing one is the defect Plan 241 exists to remove.
 
-🔴 **This is a symptom, not the disease.** 4182 of 6457 forecasts carry a non-zero PHASE
+🔴 **This is a symptom, not the disease.** 4182 of 6457 forecasts carried a non-zero PHASE when
+measured 2026-09-07 (that denominator is the 09-07 total; the table is now 11 083 — the ratio was not
+re-measured, and nothing here depends on it)
 (microsecond-bearing `valid_time`s from `climatology_fallback`, `persistence_fallback`,
 `linear_regression_daily` and `_pooled`). They stay uniform in isolation — a constant offset
 preserves the gap — and only collide when pooled across contributors on different phases. **Plans
 252 (a time grid is a step AND a phase) and 254 (phase-aware execution) already own that**; this
-plan must not duplicate them, and should probably WAIT for them, since what they decide determines
-whether these 69 rows get repaired or discarded.
+plan must not duplicate them.
+
+🪤 **This paragraph ended "and should probably WAIT for them" — contradicting the ⛔ section below,
+which establishes that nothing here waits on 252/254** (independent review, 2026-09-10). Removed
+rather than annotated. It is the same superseded-text shape that was removed from T2 in the previous
+round; one instance was fixed and this one, 500 lines away, was missed. The disposition of the 69 is
+settled by Plan 265, on this family's own authority.
 
 ## ⛔ Do not start before
 
 1. ✅ **SATISFIED 2026-09-08** — Plan 241 is merged AND deployed; the column exists in staging.
 2. ✅ **SATISFIED 2026-09-08 — T1, T2 and T3 are ALL independent of 252/254.** T1's carve-out is
    argued below and survives. T2's dependency was **vacuous** and has been discharged: 252 hands the
-   question off in its own Non-goals, 254 never mentions stored rows, and 226 excludes backfill
-   twice. All three verified against `origin/main` 2026-09-08. **T2's decision is now recorded in
+   question off in its own Non-goals, 254 does not OWN the disposition of stored rows (narrowed
+   2026-09-10 — "never mentions them anywhere" was stronger than the check supports), and 226
+   excludes backfill twice. All three verified against `origin/main` 2026-09-08. **T2's decision is now recorded in
    T2 itself, on this plan's authority.** Nothing here waits on 252/254.
 
 ### Why T1 does not depend on Plans 252/254
@@ -136,7 +148,7 @@ write path, so the running system now populates the column itself):
 | forecasts total | **8170** |
 | `time_step_seconds IS NULL` (T1's universe) | **7793** |
 | ├ uniform-daily → T1 backfills | **7724** |
-| └ non-uniform `_pooled` → T2 | **69** |
+| └ non-uniform `_pooled` → Plan 265 | **69** |
 | `time_step_seconds` populated by the live system | **377** |
 | ├ genuinely at phase 0 | 168 |
 | └ ⛔ **non-zero phase, recorded as bare `86400`** | **209** |
@@ -479,9 +491,14 @@ the guard firing.
 🪤 **And specify a quiet window.** The plan stresses that the cycle keeps writing, but
 `CREATE TEMP TABLE … AS` and the later `DO` block are **separate statements** under a plain `BEGIN`,
 which at the default `READ COMMITTED` isolation does **not** give them one stable snapshot — the
-second statement can see rows the first did not. Either stop the writers for T1 and T2, or run at
-`REPEATABLE READ`, or take an explicit lock. "Same transaction" is not by itself sufficient, and the
-census-versus-mutation skew it admits is exactly the kind of drift this plan was written to avoid.
+second statement can see rows the first did not.
+
+✅ **DECIDED 2026-09-10 (independent review round 2): run T1 at `REPEATABLE READ`.** Offering three
+options — quiet window, `REPEATABLE READ`, or an explicit lock — left the safeguard unchosen, and an
+unchosen safeguard is not one. `REPEATABLE READ` is the cheapest of the three here: it needs no
+coordination with the running cycle, and T1 only ever UPDATEs rows whose `time_step_seconds IS NULL`,
+a set the cycle never writes into. The statement below must open
+`BEGIN ISOLATION LEVEL REPEATABLE READ;`, not a plain `BEGIN`.
 
 The 2026-09-08 transcript, run inside a transaction terminated by `ROLLBACK` against the then-real
 7793 rows:
@@ -514,11 +531,12 @@ value had been duplicated between the comparison and the message, so the first r
 -- Plan 248 T1 — backfill forecasts.time_step_seconds for MEASURED uniform-daily rows.
 --
 -- Stores exactly what the reader's inference already returns for these rows, so it
--- changes no published number. Non-uniform rows are left NULL deliberately (T2).
+-- changes no published number. Non-uniform rows are left NULL deliberately (Plan 265).
 --
--- Run as a single transaction. Every assertion RAISES, which aborts and rolls back.
+-- Run as a single transaction at REPEATABLE READ, so the census and the mutation share one
+-- snapshot while the forecast cycle keeps writing. Every assertion RAISES, aborting the whole thing.
 
-BEGIN;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
 
 -- Match the reader exactly: it dedups members via .unique() before measuring the gap,
 -- so the census must group by (forecast_id, valid_time), not count member rows.
@@ -590,8 +608,8 @@ BEGIN
 
     -- The ONE count assertion worth pinning, and it is drift-proof for the right
     -- reason: pooled writes stopped 2026-09-04, so this population is frozen at 69.
-    -- If pooled resumes, this aborts — which is the correct outcome, because T2 has
-    -- not yet decided what those rows should carry.
+    -- If pooled resumes, this aborts — the correct outcome, because Plan 265's deletion
+    -- is scoped to the 69 that exist now, not to rows written after this measurement.
     IF v_non_uniform <> c_expected_non_uniform THEN
         RAISE EXCEPTION 'non-uniform population moved: expected %, found % — pooled writes may have resumed; STOP and re-measure',
             c_expected_non_uniform, v_non_uniform;
@@ -639,118 +657,44 @@ COMMIT;
 ```
 
 
-### T2 — decide what a truthful cadence is for a row that has none
-**Outcome:** a recorded decision for the 69 rows. ✅ **DECIDED 2026-09-08 — DISCARD them.**
+### T2 — DESCOPED to Plan 265 (owner decision, 2026-09-10)
 
-⚠️ **This SUPERSEDES the quarantine decision recorded here earlier the same day.** Quarantine was
-the right answer under the assumption that the rows carried irreplaceable evidence. The owner
-removed that assumption: *"we can discard old forecasts. this is a test deployment, not the final
-operational deployment."* On a test deployment the evidentiary value of 69 stale staging rows does
-not outweigh the cost of carrying a permanent exception through three plans — and carrying it was
-expensive, as the two findings below record.
+⛔ **The deletion is no longer part of this plan.** It is **Plan 265**
+(`265-discard-the-non-uniform-pooled-forecasts.md`), with an executable runbook: one predicate, a
+materialised ID manifest, a backup proven by RESTORE rather than by row count, an independently
+pinned expected-count checkpoint, children-before-headers, and `DELETE … RETURNING` set-equality
+assertions.
 
-**What discarding buys, concretely — both were live defects in the quarantine design:**
+**Why it moved.** T2 began as a decision task and the owner decided: discard. Converting a decision
+into a mutation inside this plan produced a task two review rounds could not settle — round 1 found
+the deletion unspecified; round 2 found three blockers in the specification that answered round 1,
+including an ordering fault the fix itself introduced. The review cost was concentrated entirely in
+the deletion, and it was diverging, not converging.
 
-1. ⛔ **Quarantine would have FROZEN those rows against every future write.** A CHECK constraint is
-   re-evaluated on UPDATE against the whole updated row, so `NOT VALID` does not exempt them once
-   they are touched. `ForecastStore.transition_status` (`store/forecast_store.py:178-196`) issues
-   exactly such an UPDATE, so a quarantined forecast could never move `raw → reviewed → published`
-   again. Found by independent review 2026-09-08 and verified here.
-2. ⛔ **The reader claim made for quarantine was WRONG.** It said the fabricated-hour fallback must
-   survive because the 69 still read through it. They do not. The reader branches on
-   `len(valid_times) >= 2` (`store/forecast_store.py:388-405`): the 69 are multi-timestamp, so they
-   take the **gap-inference** path; the fabricated-hour path serves only single-timestamp NULL rows,
-   of which staging has **zero**. Correction recorded rather than silently fixed, because the error
-   was one of reasoning — the two NULL branches were treated as one.
+🔑 An irreversible deletion needs an operational runbook, and a design document is the wrong home for
+one. This plan keeps what it is good at: T1's measured backfill, which two independent rounds have
+called correct and conservative, and T3's mechanical tightening.
 
-⛔ **Still do NOT mark them `QC_FAILED`.** That reasoning stands and is unaffected: QC never ran on
-these rows and rejected them; they were stored *unchecked* (`qc_status = RAW` hardcoded at the old
-`forecast_combination.py:404`, which is what Plan 253 fixed). Stamping a verdict that was never
-reached would be a fabrication whether the rows are kept or deleted.
+**The decision itself is unchanged and settled** — discard, not repair, not `QC_FAILED`, not
+quarantine. The reasoning, including why quarantine was withdrawn and why non-uniformity (not the
+absent FI declaration) is the binding reason, now lives in Plan 265 so it is stated once.
 
-⛔ **Repair remains impossible** for the reason it always was: the 69 are multi-phase, so there is no
-single honest step to write, and the codebase already raises `ConfigurationError` on this shape in
-the skill path (`validate_homogeneous_time_step_and_phase`, Plan 228 D2).
-
-🪤 **A superseded passage was deleted here (independent review, 2026-09-09 — BLOCKER).** This
-section still opened with *"why the other two options are wrong"* and argued, under a ⛔, that
-**delete is wrong** — twelve lines before the plan chose delete. The supersession note at the top
-of T2 did not save it: a reader hit the ⛔ first. Its surviving content (repair impossible, do not
-stamp `QC_FAILED`) is already stated above, once. Replaced rather than annotated, per
-`docs/conventions.md` — a correction that leaves the wrong text in place documents the
-contradiction instead of removing it.
-
-✅ **Discard, concretely:** delete the 69 forecast rows and their `forecast_values` children in one
-transaction, derive the target set in-transaction (`n_phase > 1`, never a pinned literal), and abort
-if the count is not what a fresh count says it is. After this the `time_step_seconds` NULL set
-contains only rows T1 backfills, which is what lets T3 use a plain `SET NOT NULL`.
-
-⛔ **Deletion is the one irreversible step in this plan.** Take a `pg_dump` of `forecasts` and
-`forecast_values` for the affected ids first, and record where it went. "It is a test deployment" is
-a reason the rows may go, not a reason to skip the backup.
-
-🔒 **The set is closed for the POOLED path — and that scoping matters.** `_pooled` has produced
-nothing since 2026-09-04, and the combiner now rejects mismatched contributors
-(`services/forecast_combination.py:433-465`), so no further multi-phase *pooled* row can be written.
-Re-measured 2026-09-08: still exactly 69, all `_pooled`, all NULL, while the total moved 7793 → 8170.
-
-⚠️ **But the guard counts non-uniform rows across the WHOLE table, while the guarantee covers only
-pooling.** A model writing directly gets no equivalent spacing validation — that is precisely the gap
-`docs/fi-issues/003` describes upstream. So the guard fails safe if the count moves, but its
-diagnosis ("pooled writes may have resumed") can be false: a direct-model row would trip it too.
-Scope the assertion to the `_pooled` cohort, and treat any new non-uniform direct-model row as a
-separate, louder problem.
-
-**In:** this plan document, AND the executable deletion specified below. **Out:** any schema change
-(that is T3); the phase defect itself; why `_pooled` stopped.
-
-🔴 **T2 IS AN EXECUTABLE TASK, NOT A DOCUMENTATION TASK** (independent review, 2026-09-09 —
-BLOCKER). It previously declared `Out: any code change` and `Pre-change: N/A — decision task, no
-behaviour to fail`, while the exit gates and later prose assumed it deleted rows and took a backup.
-That left the formal task graph with 69 NULLs after T1, so **T3's `SET NOT NULL` would have failed**
-— the plan's last task broken by its first task's carve-out.
-
-**Pre-change:** 69 `_pooled` rows are non-uniform, `time_step_seconds IS NULL`, and have
-`forecast_values` children. Re-measured 2026-09-10: still exactly 69, still all `_pooled`, still all
-NULL.
-
-**The deletion, concretely:**
-
-1. **Derive the target set IN-TRANSACTION**, never from a pinned literal: forecasts whose distinct
-   `valid_time` gaps number more than one (`n_distinct_gaps > 1`), joined to `model_id = '_pooled'`
-   and `time_step_seconds IS NULL`. All three conditions, so a future non-pooled non-uniform row
-   cannot be swept up silently.
-2. **Abort unless the derived count equals a freshly measured count** taken in the same transaction.
-   The count is an ASSERTION, not an input: if it is not what a fresh census says, something changed
-   and a human must look.
-3. **Back up first, and prove the backup.** `pg_dump` the target `forecasts` rows and their
-   `forecast_values` children to a named path, then **verify the dump's row counts match the target
-   set** before deleting anything. Recording a path is not a backup gate; a dump that does not
-   contain the rows is worthless, and this is the one irreversible step in the plan.
-4. 🪤 **DELETE CHILDREN FIRST.** `forecast_values.forecast_id` is a plain
-   `sa.ForeignKey("forecasts.id")` with **no** `ondelete="CASCADE"` (`db/metadata.py`), so deleting
-   the headers first raises a foreign-key violation. The earlier text said "delete the rows and their
-   children in one transaction" without stating the order, which is not executable as written.
-5. **Transactional postconditions:** exactly the target rows are gone, no other `forecasts` row was
-   touched (compare total before/after), and no orphaned `forecast_values` remain. Any failure
-   RAISES and rolls back.
-
-**Verification:** the decision and rationale are written here; the deletion's own in-transaction
-postconditions; a re-census showing the NULL set now contains only rows T1 backfills. It names no
-dependency on 252/254 because, verified against `origin/main`, it has none.
-
-⛔ **T3 depends on T2 having actually run**, not merely on T2 being decided. `SET NOT NULL` cannot
-succeed while the 69 NULLs exist.
+⛔ **Ordering: 248 T1 → 265 T1 → 248 T3.** T1 pins `c_expected_non_uniform := 69` and aborts if the
+non-uniform count differs, so Plan 265 must NOT run first — it would delete the 69, leaving T1 to
+find 0 and refuse. This ordering fault existed while T2 sat in this plan as a dependency-free
+parallel task (independent review, 2026-09-10) and is fixed by the cross-plan order above.
 
 ### T3 — tighten the column, and retire the legacy branch
-**Outcome:** `time_step_seconds` is `NOT NULL`, and the reader's single-timestamp fabricated-hour
-fallback is deleted.
+**Outcome:** `time_step_seconds` is `NOT NULL`, and the reader's whole nullable-column branch —
+BOTH the gap-inference path and the single-timestamp fabricated-hour path — is deleted.
+(Reconciled 2026-09-10: this Outcome named only the fabricated-hour path while the body deleted
+both.)
 
-✅ **`SET NOT NULL` is available again.** It was ruled out earlier today only because quarantine
-would have left 69 permanent NULLs; T2 now discards them, so after T1 + T2 there is no NULL row left
+✅ **`SET NOT NULL` is available.** It was ruled out while quarantine was the plan, which would
+have left 69 permanent NULLs. **Plan 265 discards them**, so after T1 + Plan 265 no NULL row remains
 and the plain constraint is both correct and simpler than the `NOT VALID` workaround it replaces.
 That workaround is withdrawn along with its two defects (the update-freeze and the wrong reader
-claim), both recorded in T2 rather than deleted.
+claim), recorded in Plan 265.
 
 ⚠️ **Retire BOTH NULL paths — they live under one branch.** The reader has two NULL paths
 (`store/forecast_store.py:388-405`) and they are reached through a single nullable-column branch, so
@@ -781,7 +725,7 @@ and be "fixed" afterwards by relaxing the constraint.
 `tests/integration/store/test_forecast_store_time_step.py` (BOTH tests — the multi-step legacy one
 and the one-step one share the helper at `:115` that writes NULL, so both become invalid, not just
 the named one); a DB-backed migration test; and the Alembic-head guard.
-**Out:** T1's backfill; T2's deletion; the phase column (Plan 254 T7).
+**Out:** T1's backfill; the deletion (Plan 265); the phase column (Plan 254 T7).
 
 🔴 **The migration ledger was stale (independent review, 2026-09-09).** Re-measured 2026-09-10: the
 repository head is **`0055`** (Plan 253's `input_quality`), pinned as `_RELEASE_B_HEAD` in
@@ -819,11 +763,9 @@ a gate. What remains below is falsifiable.
 - T1 ran under a quiet window or an isolation level that makes census and mutation one snapshot.
 - T1 received a fresh independent review — the 2026-09-07 approval does NOT carry over to the
   re-authored statement. (Codex pass done 2026-09-09; a Claude pass is still outstanding.)
-- T2's backup **contains the target rows**: its dumped `forecasts` and `forecast_values` row counts
-  equal the target set's, verified before any delete. (Strengthened: recording a dump *path* proves
-  a process ran, not that the data is recoverable — and this is the plan's only irreversible step.)
-- T2 deleted the children before the headers, exactly the target rows disappeared, the `forecasts`
-  total fell by exactly that count, and no orphaned `forecast_values` remain.
+- **Plan 265 has RUN** and its own exit gates passed, so no NULL row remains for T3 to trip over.
+  Its deletion gates (manifest, restore-verified backup, `RETURNING` set equality, both table
+  deltas) live there, not here.
 - T3 leaves no NULL rows and no fabricated cadence anywhere in the reader.
 - T3's migration chains from the head current at implementation time and updates the Alembic-head
   pin in the same change.
@@ -835,8 +777,7 @@ a gate. What remains below is falsifiable.
   "plan": 248,
   "tasks": [
     {"id": "T1", "depends_on": [], "parallel": false},
-    {"id": "T2", "depends_on": [], "parallel": true, "executable": true},
-    {"id": "T3", "depends_on": ["T1", "T2"], "parallel": false}
+    {"id": "T3", "depends_on": ["T1"], "parallel": false, "blocked_by_plan": 265}
   ]
 }
 ```
