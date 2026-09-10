@@ -55,7 +55,7 @@ training possible on its own.
   never had to be handled.
 
 This plan proves the **deployment/forcing** half of the Nepal test-basin question. It is a cheap
-**precursor** to [Plan 139](139-nepal-12300-swe-regression-enablement.md) — 139 is still a DRAFT epic whose
+**precursor** to [Plan 139](../139-nepal-12300-swe-regression-enablement.md) — 139 is still a DRAFT epic whose
 W8 sits behind all model/training work, and its W5 (per-station forcing dispatch) is precisely what this
 plan *routes around* rather than owns. Nothing here is a 139 deliverable; 139 can reuse this plan's
 deployment evidence. Hence `depends_on: [82, 120]` only — **139 is related work, not a dependency.**

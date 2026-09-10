@@ -362,14 +362,15 @@ exit criteria — Plan 212 owns that deeper screening.
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
-- **192** — Gateway forcing for 12300 on the mac-mini — `DRAFT` — the weather-forecast adapter selector is
-  deployment-wide (one adapter per stack), so 12300 cannot co-host with the Swiss/BAFU stations. **Two
-  independent Codex rounds folded.** Round 2 forced a restructure: **Stage A** is a throwaway proof
-  (disposable DB, seeded records, one manual 00Z fetch — no schedule, no code change); **Stage B**, the
-  standing daily stack, is built only if the owner wants a daily feed. Corrected a real identity error
-  (station code is `123`, `12300` is the Gateway HRU, polygon `g_123` — the loader derives
-  `g_<station_code>`). Live re-probe: same-day 00Z IFS (+14.75 d), ~4-day retention, and the mini's own
-  probe had produced **0 `ok=True` in 31 days**. Needs `/plan`.
+- **192** — Gateway forcing for 12300 on the mac-mini — `COMPLETE`, archived (2026-09-10) — Stage A passed
+  2026-08-20; **Stage B has run as a standing daily feed for 21 days (18 clean)**: 51-member IFS to +14.75 d,
+  snow since 09-07 (Plan 219), units settled by Plan 243, dead-man live and proven. Owner questions O1–O4 were
+  answered by what was built (light shape, host-triggered, 14:00 UTC, no external HTTP). Corrected a real
+  identity error (station code is `123`, `12300` is the Gateway HRU, polygon `g_123` — the loader derives
+  `g_<station_code>`). ⛔ **Validated ACQUISITION, never the pipeline** — the nepal DB holds 0 forecasts,
+  0 artifacts, 0 observations, 0 assignments; forecasting 12300 is Plan 139. 🔴 Surfaced an unowned
+  prerequisite: nothing ingests ERA5-Land or JSNOW **reanalysis**, so `historical_forcing` is 0 and training
+  has no history.
 - **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
   (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
   `/plan`. Blocks 144.
