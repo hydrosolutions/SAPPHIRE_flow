@@ -6,7 +6,9 @@ plan: 263
 reviews:
   - "codex 2026-09-10 — NOT READY, 5 blockers; all verified, folded"
   - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
-open_decisions: [D14]
+  - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
+  - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
+open_decisions: [D14, D15]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
 related: [035]
@@ -19,9 +21,28 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 
 **DRAFT — NOT READY.** Both mandated independent passes have now run and are folded
 (Codex 2026-09-10; Claude 2026-09-10). Every finding was verified against the cited source
-before folding. **Thirteen of fourteen decisions are closed**; only D14 (QC
-threshold calibration) is open, and it was opened by closing D12. Tasks T1–T4 are unblocked
-and buildable; T7 waits on D14.
+before folding. **Round 2 of review has been folded.** Both passes returned NOT READY and, working
+independently, killed the same two designs the previous round introduced:
+
+- **The re-import story was false on both legs** (D6). Observations orphan rather than
+  update when the day boundary moves, because `timestamp` is part of the natural key; and
+  the curve import is a plain insert that cannot be re-run even once. D6 now carries an
+  explicit replacement procedure instead of a claim about upserts.
+- **The QC task could certify data without checking it** (T7). An empty flag list
+  aggregates to *passed*, so a rule set that fails to match leaves every row marked
+  quality-passed with zero rules run — and the acceptance test as written would have passed
+  in that state.
+
+Both were the author's own additions in the previous fold. The pattern from round 1 repeated
+in a sharper form: **the parts of this plan that assert something about the repository's
+behaviour have been wrong at a much higher rate than the parts that describe the data.**
+Round 2 also found that a calibration the author recommended would have committed restricted
+rating-table values — the same leak class already stripped once, reintroduced through a
+different door.
+
+**Twelve of fifteen decisions are closed**; D14 (QC threshold calibration) and D15 (how QC
+rules are isolated) are open, and D5's publication constraint now has a standing note in D14.
+T1–T4 are buildable; T7 waits on D14 and D15.
 
 The two passes between them found eleven blockers, and the pattern is worth stating because
 it should shape how this plan is finished: **the author's measurements of the delivered data
@@ -228,7 +249,7 @@ source until DHM produces new tables.
 Internal consistency, measured by inverting each daily discharge back through whichever
 curve was valid that day:
 
-- **94,616 of the 94,617 values that have a curve fall inside its tabulated Q range** of their valid curve. The
+- **94,616 of the 94,617 values that have a curve fall inside its tabulated Q range.** The
   daily series is *consistent with* having been produced from these exact tables — which is
   weaker than saying it was; see § What is not established.
 - **One value at station 670 falls outside** its valid curve's range. One exception in
@@ -265,22 +286,26 @@ Design consequence: **no task may assert provenance that rests on any of the abo
 
 ## Two traps, recorded not solved
 
-**Trap 1 — timezone, and what a daily value means.** Partly resolved, still blocking.
+**Trap 1 — timezone, and what a daily value means.** Resolved by a working assumption; the
+underlying uncertainty is unchanged.
 
-The owner has settled the *interpretation*: **each value is a Nepali day**, not a UTC day
-and not an arbitrary 24 hours. That is a real constraint and it rules out the tempting
-shortcut of treating the date as a UTC calendar date.
+The owner settled the *interpretation*: **each value is a Nepali day**, not a UTC day and not
+an arbitrary 24 hours. That rules out the tempting shortcut of treating the date as a UTC
+calendar date.
 
-What remains open is the **boundary**: from when to when DHM considers a Nepali day to run.
-The owner has put that question to DHM and **has not yet had an answer**. Until it comes
-back, the exact instant a value should carry is unknown — and choosing one anyway would be
-inventing a fact about someone else's data.
+The **boundary** — from when to when DHM considers a Nepali day to run — is still unknown.
+The owner has asked several counterparts and expects no rapid answer, and has decided not to
+wait: D6 adopts 00:00–23:59 Asia/Kathmandu as a **stated working assumption**, with a
+replacement procedure for correcting it later. That is a deliberate, revisable choice made in
+the open, not a discovered fact — and the honesty of it depends entirely on the replacement
+procedure actually working, which is why D6 spends more words on that than on the boundary.
 
-The downstream consequence is unchanged and is why this blocks rather than merely waits:
-Nepal is UTC+05:45, so a Nepali day cannot coincide with a UTC calendar day, and the skill
-machinery buckets observations on UTC calendar days. Reconciling those two is the
-time-grid/phase work the owner has **halted**. This plan does not design a grid or phase
-answer, and does not choose a timestamp convention.
+The downstream consequence is unchanged: Nepal is UTC+05:45, so a Nepali day cannot coincide
+with a UTC calendar day, and the skill machinery buckets observations on UTC calendar days.
+Reconciling those two is the time-grid/phase work the owner has **halted**, and this plan
+still does not design a grid or phase answer. Adopting a boundary for *importing* a date-only
+value is not the same act as deciding how forecast and observation grids align — if a later
+task starts reasoning about the second, it has left this plan's scope.
 
 **Trap 2 — Plan 139's `rof` proxy target.** Asked plainly: **this delivery does not
 supersede W1a.** Plan 139 is scoped to gateway HRU `12300`, which resolves to
@@ -300,7 +325,8 @@ feed. Whether to open that is an owner scope call (D9), not a change this plan m
 
 ## Decisions
 
-All closed by the owner, 2026-09-10.
+Closed by the owner on 2026-09-10 unless marked otherwise. **D14 and D15 are open** — both
+opened by review, not by the owner deferring them.
 
 **D1 — Where DHM's rating-table label goes. CLOSED: we number the curves ourselves.**
 `version` is the 1-based chronological ordinal of the curve within its station; DHM's type
@@ -334,18 +360,42 @@ It is a Nepali day (owner). The owner has asked several counterparts for DHM's e
 definition, expects no rapid answer, and has decided not to wait: **assume a Nepali day runs
 00:00–23:59 Asia/Kathmandu, and re-import if we learn otherwise.**
 
-That is a sound call, and it is not free — it makes **re-importability a design requirement**,
-not a nicety:
+That is a sound call, and it is not free — it makes **re-importability a design requirement**.
 
-- The assumption is recorded once, in one named constant, so a later correction is a
-  one-line change rather than an archaeology exercise.
-- T4's import must be **idempotent and re-runnable**: re-running it after a boundary change
-  must converge on the corrected series, not append a second one. Note this interacts with
-  D7 — `source` is part of the observations natural key, so a re-import under the same
-  label upserts in place, which is what we want.
-- The same boundary governs curve validity in T3 (curves are stored as instants), so both
-  imports move together. They must use the *same* constant, or `fetch_curve_at` picks the
-  wrong curve at the seam.
+**The author's first attempt at that requirement was wrong, and both round-2 passes caught it
+independently.** The plan claimed that because `source` is part of the observations natural
+key, a re-import "upserts in place". The natural key is
+`(station_id, timestamp, parameter, source)` (`db/metadata.py:570-576`) — **`timestamp` is in
+it**. A boundary correction changes every timestamp, so a re-import inserts a second ~99,246
+rows under new keys and leaves the originals as orphans. The claimed property holds only for
+a re-run that changes nothing, which is precisely *not* the scenario it was written for.
+
+The curve side is worse: `store_rating_curve` is a plain `sa.insert`
+(`store/rating_curve_store.py:22-36`) against `UNIQUE (station_id, version)`, so T3 cannot be
+re-run even once — the second attempt raises. And the curves cannot simply be deleted first,
+because `observations` carries a composite FK to `rating_curves` with **no `ondelete`**
+(`db/metadata.py:547-552`): once T4 has landed, curve deletion is blocked until the
+observations go.
+
+**The requirement is therefore an explicit replacement procedure, not an upsert.** In this
+order, in one transaction:
+
+1. delete the DHM observations (by tenant/station set and `source = 'manual_import'`);
+2. delete that tenant's rating curves — now unblocked by step 1;
+3. re-run T3, then T4, then T7, against the corrected boundary constant.
+
+Two supporting requirements:
+
+- **One shared boundary constant** across T3 and T4. They must not drift, or `fetch_curve_at`
+  selects the wrong curve at a seam.
+- **T7 always follows T4, never the reverse.** Both observation writers reset QC state on
+  conflict — `store_raw_observations` forces `RAW` explicitly
+  (`store/observation_store.py:104`) and `store_observations` rewrites it from the object —
+  so re-running the import after a QC pass silently discards the QC result.
+
+The rehearsal that proves this is a *boundary-change* rehearsal — import under boundary A,
+re-import under boundary B, assert the A rows are **gone** — not a same-boundary re-run,
+which proves nothing about the case D6 exists for.
 
 **T3 and T4 are unblocked by this.** Trap 1 stands as the record of *why* the assumption is
 an assumption; nothing here designs a grid or phase answer for the halted track.
@@ -356,7 +406,8 @@ that day — but that rested on a claim the author had measured as only *consist
 data, not confirmed (§ What is not established).
 
 **The author's first argument for reversing was overstated, and the second review said so.**
-It claimed the binding would "enrol 92,000 values in a machine that cannot process them".
+It claimed the binding would "enrol 92,000 values in a machine that cannot process them"
+(quoted as written; that count was also wrong — see the Status note on the corrected totals).
 The guard is real — `archive_observation_values` rejects anything that is not
 `RATING_CURVE_DERIVED` with a curve id (`store/observation_version_store.py:45-54`) — but it
 is a filter that *rejects*, not a mechanism that *enrols*, and the path is **unbuilt**:
@@ -370,8 +421,8 @@ The conclusion nevertheless stands, on one verified leg:
 - **The label is an identity, not an annotation.** `source` is part of
   `uq_observations_natural_key` (`db/metadata.py:571-579`), which is exactly what
   `store_observations` upserts on. Choosing wrong is therefore not a later `UPDATE` — it is
-  a second 92,000-row insert plus an explicit delete. The owner should price the decision at
-  that, not at the cost of an edit.
+  a delete plus a re-insert of the full ~99,246-row import. The owner should price the
+  decision at that, not at the cost of an edit.
 
 **This is a three-way choice, not a binary** — the second review found the middle option,
 which the author had missed:
@@ -388,6 +439,14 @@ integrity-checked. **CLOSED on the middle option** (owner, 2026-09-10): `MANUAL_
 throughout, with `rating_curve_id` populated as pure provenance wherever a curve covers the
 day and NULL for the 4,629 days where none does. It records everything we know — including
 the curve link — and claims nothing we do not.
+
+**Documentation consequence, found in round 2 and missed by every pass before it:** three
+places state that this column is set *only* when the source is rating-curve-derived
+(`docs/spec/types-and-protocols.md:810` and `:821`, `docs/architecture-context.md:300`). This
+import lands ~94,617 rows that contradict that as written. The contract is worth widening
+rather than the decision reversing — provenance and derivation are genuinely different
+claims, and the schema already permits the distinction — but it must be **written down**,
+not left as an undocumented exception. T6 carries it.
 
 **D8 — What to ask DHM. CLOSED, and the answer reshapes the finding.**
 **There are no current rating tables** — not withheld, not in this delivery by oversight;
@@ -406,10 +465,10 @@ restriction should be settled before the pilot is placed. Note also D12: with th
 imported as `RAW`, a pilot cannot read them until a QC pass is decided and run.
 
 **D10 — the one out-of-range value at station 670. CLOSED: import as delivered.**
-One value in 99,246 falls outside its contemporaneous curve's range. Note the second
+One value in 94,617 — the subset that has a curve at all — falls outside its range. Note the second
 review's catch: "import it and flag it" is not free — a QC flag requires a rule id, a rule
 version, and a status that is neither raw nor missing (`types/domain.py:88-101`), so
-flagging one row invents a QC rule identity and leaves exactly one QC'd row among 94,616
+flagging one row invents a QC rule identity and leaves exactly one QC'd row among 99,245
 that are not. That is a policy act, and it cannot sit under T4's "no QC policy change".
 **CLOSED: import it as delivered** (owner, 2026-09-10), with T5's re-measure as the standing
 record that it exists. No bespoke QC rule is invented for one row. Note this is now partly
@@ -425,6 +484,12 @@ and `services/tenant_boundary.py:12` hard-errors on an unknown tenant code, so T
 insert a station without an answer. **CLOSED: a new tenant in the existing database** (owner, 2026-09-10) — real isolation for
 restricted data without standing up separate infrastructure, matching how the schema already
 partitions. T2b provisions it; the six stations stay at `onboarding` status regardless.
+
+**Round 2 addition — the tenant needs an identity, not just a topology.** T2b cannot say
+"the tenant D11 names" if D11 names none. Fix the code and display name in T2a's artifact
+alongside the stations, and provision **fetch-before-create**: `store_tenant` is a plain
+insert, so re-running T2b would otherwise fail on the second attempt — the same class of
+defect D6 hit on curves.
 
 **D12 — what QC status the imported rows carry. CLOSED, and the answer is better than the
 recommendation it replaced: run our own daily QC over the series.**
@@ -449,7 +514,11 @@ QC at all.** Measured against the delivered data:
 |---|---|---|
 | range check | max 5,000 m³/s | 1,126 values (1.1%) |
 | rate of change | max 500 m³/s/day | 2,638 values (2.7%) |
-| frozen sensor | 5 equal days | ~536 values (0.5%) |
+| frozen sensor | 5 equal days | 536 values (0.5%) |
+
+These counts are a **floor**, not a prediction: they were measured with an
+elapsed-time guard that the QC service itself does not apply (see T7), so the service will
+flag at least this many and probably more.
 
 The range-check number is the dangerous one: **1,125 of those 1,126 are at station 450**,
 a 31,650 km² basin whose genuine monsoon peaks exceed the Swiss ceiling by nearly threefold.
@@ -472,18 +541,59 @@ tables under linear interpolation put all but one value in range, which is weak 
 directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
 blocking on.
 
-**D14 — how the DHM daily QC thresholds are calibrated. NEW, open; blocks T7.**
+**D14 — how the DHM daily QC thresholds are calibrated. OPEN; blocks T7.**
 Opened by D12's answer. Swiss thresholds cannot be reused (see the table above), so a DHM
-daily rule set is needed. The trap to avoid is **circularity**: deriving a threshold from the
-same record it will then judge guarantees the record passes and makes the QC decorative.
-Options: per-station overrides via the existing `StationQcOverride` seam, with limits set
-from an independent basis (basin area, DHM's own published rating-table maxima, regional
-flood estimates); or a single DHM rule set with limits generous enough to catch only physical
-impossibility. **Recommendation: per-station range limits derived from each station's rating
-table ceiling** — the tables are an *independent* artefact from the daily series, they encode
-DHM's own view of the plausible stage-discharge envelope, and every station has one. Keep
-rate-of-change and frozen-sensor conservative to start, and treat the first QC run's flag
-rate as information about the thresholds, not only about the data.
+daily rule set is needed. Three constraints on any answer, two of them found in round 2:
+
+- **Circularity.** Deriving a threshold from the record it will then judge guarantees the
+  record passes and makes the QC decorative.
+- **The author's proposed escape does not fully work.** It recommended per-station limits
+  from each station's rating-table ceiling, on the grounds that the tables are independent of
+  the daily series. Both round-2 passes rejected that: this plan elsewhere reports the daily
+  values are *consistent with having been produced from those same tables*, so their ceilings
+  are not independent evidence. At most this is a rating-envelope consistency check, and it
+  must be described as one.
+- **🔴 A table-derived limit would publish a restricted value.** A per-station `value_max`
+  taken from the highest tabulated discharge **is** an individual tabulated value, recoverable
+  by anyone reading the config — the exact test § Data handling sets, and the same leak class
+  already stripped from this document once. Any table-derived limit must pass through a
+  deliberately lossy transform (round up to the next 1,000 m³/s, or scale by basin area) and
+  D14's answer must say which.
+
+**Also note the seam is not what the author assumed.** `StationQcOverride` is a dataclass
+only (`types/domain.py:170-176`): there is **no** `station_qc_overrides` table, no store, no
+loader, and both production callers hard-code `overrides=[]`
+(`services/onboarding.py:799`, `flows/ingest_observations.py:308`). Per-station overrides can
+therefore be constructed in-process by the import CLI and passed to the checker, but they
+cannot be *persisted* without new schema. Prefer the in-process route; say so explicitly
+rather than writing "override rows".
+
+**Recommendation:** a DHM rule set with limits set from an independent physical basis
+(basin area and regional flood estimates), rounded coarsely, with the rating-table envelope
+used only as a cross-check that is computed at re-measure time and never committed.
+
+**D15 — how the DHM rules are isolated from the Swiss ones. NEW, open; blocks T7.**
+T7 claimed it could add a DHM daily rule set "beside" the Swiss one without changing Swiss
+behaviour. Both round-2 passes found that is not achievable as stated, for two independent
+reasons:
+
+- `rules_for` matches on **parameter and time step only** (`types/domain.py:160-167`) — no
+  network, tenant or station dimension. Put DHM daily discharge rules in the same rule set
+  and *both* fire on any daily discharge series, with `aggregate_qc_status` taking the worst.
+  The Swiss ceiling would still flag the monsoon peaks, so the calibration would achieve
+  nothing.
+- The config route is worse. `load_qc_rules` returns the Swiss defaults **only when no
+  `[qc_rules]` section exists** (`config/qc_rules.py:263-268`), and the overlay's `_deep_merge`
+  replaces lists wholesale (`config/_overlay.py:44-56`). A DHM rule set delivered through TOML
+  would therefore **delete** the Swiss rules for that deployment — while T7's proposed gate
+  ("the Swiss defaults are byte-identical") still passes, because the default *function* is
+  untouched.
+
+**Recommendation: a separate `QcRuleSet` constructed in-process by the import CLI and never
+merged into the deployment configuration.** It needs no schema change and no selector
+dimension, and it makes the isolation structural rather than a matter of threshold values
+happening not to collide. If instead the owner wants DHM rules to be a deployment concern,
+that is a real feature — a selector dimension on rule lookup — and belongs in its own plan.
 
 ## Tasks
 
@@ -499,7 +609,7 @@ that is neither header nor data is never silently skipped.
 `tests/unit/adapters/test_dhm_files.py`; synthetic fixtures under
 `tests/fixtures/dhm/` (hand-written, never delivered content).
 **Out**: no store writes, no station resolution, no timestamp policy — T1 yields dates and
-values as delivered; the UTC boundary belongs to T3/T4 and is gated on D6.
+values as delivered; the UTC boundary belongs to T3/T4 and follows D6's working assumption.
 **Verification**: `uv run pytest tests/unit/adapters/test_dhm_files.py` — covering a
 truncated block, a non-numeric value, an unknown line inside a rating block, a declared year
 absent from the data, and a negative stage (accepted, not rejected); each asserting the
@@ -519,9 +629,13 @@ Station codes and station-list metadata are publishable (D5); the measurements a
 all six carry, and are well-formed in, every column `stations` requires NOT NULL: `code`,
 `name`, `location` (lon/lat in range, to become POINT srid 4326), `station_kind = river`,
 `network = dhm`, `timezone = Asia/Kathmandu`, `measured_parameters = ["discharge"]` (the
-canonical parameter name, `docs/conventions.md:86-90`), plus `altitude_masl` and drainage
-area. Enumerated deliberately: the previous revision said "every required field", which let
-the test set its own bar.
+canonical parameter name, `docs/conventions.md:87-89`), `station_status = onboarding`,
+`ownership`, `gauging_status`, and **`tenant_id`** (NOT NULL, no server default — omitted
+from the previous revision's "complete" enumeration, which is the same fault it was written
+to fix). `altitude_masl` is nullable but carried. **Drainage area has no column on
+`stations`** — it belongs to `basins` (`db/metadata.py:100`); keep it in the artifact as
+transcribed reference, and do not imply a station field for it.
+**`forecast_targets` stays unset** — see T2b.
 **Pre-change**: N/A — new data. **Gated on the owner's spot-check (D4).**
 
 ### T2b — Station onboarding into the side dataset
@@ -533,9 +647,19 @@ implemented as first written.
 `services/onboarding.py`; whatever tenant provisioning D11 selects.
 **Out**: **no `station_status` promotion** — these stay `onboarding`. Promotion switches on
 ingest and forecasting for a station and is not this plan's to trigger.
-**Verification**: after running it against the D11 target, six rows exist with the expected
-codes, `network = dhm`, `station_status = onboarding`, and the tenant D11 names; re-running
-it is idempotent (no duplicate rows).
+**No QC.** Round 2 found that the onboarding service is itself a QC pass: its Step 5 fetches
+RAW observations and runs `Stage1QualityChecker` over them with the deployment rule set
+(`services/onboarding.py:772-830`). Re-run after T4 — which T2b's own idempotency check
+requires — that would apply the **Swiss** 5,000 m³/s ceiling to the DHM series, producing
+exactly the outcome D12 calls a calibration error wearing QC's clothes. It is guarded today
+only by `station_target` being empty, i.e. by `forecast_targets` being unset — which T2a never
+required until now.
+**Verification**: after running it against the D11 tenant, six rows exist with the expected
+codes, `network = dhm`, `station_status = onboarding`; re-running it produces no duplicate
+rows **and no tenant duplicate** (`store_tenant` is a plain insert — idempotency does not come
+free, so provision fetch-before-create); and **`forecast_targets` is NULL on all six**, with
+an assertion that onboarding's QC step took its `continue` branch for every station rather
+than running.
 **Pre-change**: N/A — new path. **Depends on T2a. Unblocked** — D11 selects a new tenant in
 the existing database; T2b provisions it and inserts against it.
 
@@ -567,9 +691,15 @@ only the database reader would split unit from integration behaviour);
 - Import assertions: all 112 pass `RatingConverter.from_curve` under the D13 interpolation;
   versions are 1..N in date order per station with no gaps; DHM's type label round-trips
   through store and read-back; every imported curve has a non-null `valid_to`.
-**Pre-change**: a RED test proving `fetch_curve_at` raises `MultipleResultsFound` on two
-simultaneously-valid curves, from a synthetic two-curve fixture — the actual defect and its
-actual cause, not a signature error.
+**Also in scope after round 2: T3 must be re-runnable.** `store_rating_curve` is a plain
+insert against `UNIQUE (station_id, version)`, so today a second run raises. D6's replacement
+procedure requires curve deletion to be possible, which the composite FK from `observations`
+blocks unless observations are deleted first. Implement the delete-then-reimport path and
+order it correctly; do not add `ondelete` cascade to a shared FK to make this easier.
+**Pre-change**: two RED tests — (a) `fetch_curve_at` raises `MultipleResultsFound` on two
+simultaneously-valid curves, from a synthetic two-curve fixture; (b) a second `store_rating_curve`
+of the same station+version raises, proving the re-run gap is real. Both the actual defect and
+its actual cause, not signature errors.
 **Unblocked.** D13 selects linear interpolation; D6 supplies the working day boundary
 (00:00–23:59 Asia/Kathmandu). Both are read from **one shared constant** with T4 — the two
 imports must not drift, or `fetch_curve_at` selects the wrong curve at a seam. An inclusive
@@ -583,6 +713,11 @@ labelled `MANUAL_IMPORT` with the covering curve recorded as provenance (D7) and
 `RAW` — genuinely unchecked at that instant. T7 assigns the real quality status.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (observation branch);
 `src/sapphire_flow/store/observation_store.py` (read-only — no change expected).
+**State which writer is used and why.** `store_raw_observations` forces `qc_status = RAW` on
+conflict (`observation_store.py:104`); `store_observations` rewrites the status from the
+object. Either way a T4 re-run after T7 discards the QC result, which is why D6's procedure
+re-runs T7 last. Choose `store_raw_observations` — it is the honest writer for unchecked
+imported data and its conflict predicate already refreshes curve provenance.
 **Out**: no QC rule authored and no QC run — that is T7. No skill or training wiring.
 **Verification**: per-station stored row count equals **T5's re-measured count for that
 station** — expressed as a delta against T5, not as a literal, because which curve is in
@@ -590,14 +725,15 @@ force on a day depends on the D6 boundary and an absolute number would silently 
 whatever the implementer produced; no row exists on any gap day T5 reports; the count of
 values outside their curve's range equals T5's count (currently 1, imported as delivered per
 D10); every row is `MANUAL_IMPORT` at `RAW`, carrying a curve id wherever T5 says a curve
-covers the day and NULL on the 4,629 days it says none does; and **a second run of the import
-changes no row count and no row value**.
+covers the day and NULL on the 4,629 days it says none does. Plus the **boundary-change
+rehearsal** D6 requires: import under boundary A, run the replacement procedure, re-import
+under boundary B, and assert **no row from boundary A survives**. A same-boundary re-run
+assertion is not a substitute — it passes in the one case the requirement does not care about.
 **Pre-change**: N/A — new import path.
-**Unblocked**, on D6's working assumption. **Re-importability is a requirement, not a
-nicety** (D6): re-running after a boundary correction must converge on the corrected series,
-not append a second one. Because D7 fixes one `source` value for the whole import and
-`source` is part of the natural key, a re-import upserts in place — prove that with the
-re-run assertion above, do not assume it.
+**Unblocked**, on D6's working assumption. **Re-importability is a requirement** (D6) — and
+it is delivered by the explicit replacement procedure there, *not* by upsert semantics. The
+previous revision's claim that a re-import "upserts in place" was false: `timestamp` is part
+of the natural key, so a boundary change creates new rows and orphans the old ones.
 
 ### T5 — Delivery re-measure
 
@@ -610,8 +746,10 @@ repo — this script is not type-checked by CI.
 **Permitted output — the complete allowed set**: row and curve counts; counts and
 percentages of missing days, gap runs, curve-less days and out-of-range values; first and
 last dates; gap start dates and lengths; curve validity windows and point counts; per-file
-value-precision percentages. **No stage value, no discharge value, in output or in failure
-diagnostics.**
+value-precision percentages; **and per-rule QC flag counts and rates** (added in round 2 —
+without them the plan's own tool cannot reproduce the figures D12's table and T7's gate rest
+on). **No stage value, no discharge value, in output or in failure diagnostics** — including
+no threshold that is itself a tabulated value (D14).
 **Verification**: `uv run python scripts/dhm_delivery/remeasure.py --check` exits 0 when its
 output matches the aggregate tables in this plan, and prints a diff and exits non-zero when
 it does not.
@@ -621,9 +759,12 @@ it does not.
 
 **Outcome**: the docs this plan invalidates are corrected, and the no-publish constraint
 stops resting on prose. Added after the second review found no task did either.
-**In**: `docs/spec/types-and-protocols.md` (the `RatingCurve` type and the
-`RatingCurveStore` Protocol's `fetch_curve_at` contract); `docs/architecture-context.md`
-§2206 (the `rating_curves` table); `docs/touchpoint-maps.md` — the Persistence / API
+**In**: `docs/spec/types-and-protocols.md` — the `RatingCurve` type, the `RatingCurveStore`
+Protocol's `fetch_curve_at` contract, **and lines 810 and 821, which say `rating_curve_id` is
+set only when the source is rating-curve-derived** (D7 widens that; see below);
+`docs/architecture-context.md` — the `rating_curves` table entry (**at :2278, not the §2206
+this plan inherited from Plan 035 — that line is the `QcStatus` section**) and **:300**, which
+carries the same `rating_curve_id` claim; `docs/touchpoint-maps.md` — the Persistence / API
 write-path map still states that `RatingCurveStore` has **no `Pg*` implementation**, which
 `src/sapphire_flow/store/rating_curve_store.py:18` contradicts; `.gitignore` and
 `.pre-commit-config.yaml` for the guard.
@@ -632,31 +773,61 @@ write-path map still states that `RatingCurveStore` has **no `Pg*` implementatio
 a file placed at a delivered-data path is refused by the new hook.
 **Pre-change**: a RED check — the hook rejects a test path before the doc edits land.
 
-### T7 — DHM daily QC ruleset, and the QC pass
+### T7 — DHM daily QC rule set, and the QC pass
 
-**Outcome**: a DHM daily rule set exists, and every imported observation carries a quality
-status our own QC assigned. Added on the owner's instruction (D12): DHM calls this
-quality-checked regime data, and we check it ourselves rather than inherit or fake that claim.
-**In**: `src/sapphire_flow/config/qc_rules.py` (a DHM daily rule set — **not** an edit to the
-Swiss defaults) and/or per-station `StationQcOverride` rows; the QC pass entry point in
-`src/sapphire_flow/cli/import_dhm_delivery.py`.
-**Out**: no new QC *rule kind* — the five daily discharge rules already exist
-(`config/qc_rules.py:80-114`) and this task calibrates them, it does not write new ones. No
-change to the Swiss rule set or to any operational QC path.
+**Outcome**: a DHM daily rule set exists, isolated from the Swiss one, and every imported
+observation carries a quality status our own QC actually assigned. Added on the owner's
+instruction (D12): DHM calls this quality-checked regime data, and we check it ourselves
+rather than inherit or fake that claim.
+
+**Round 2 rewrote this task.** As first written it could have marked all 99,246 rows
+quality-passed with **zero rules run**, and its acceptance test would have passed in that
+state. The three faults, all verified in source:
+
+1. **It fails open.** `aggregate_qc_status([])` returns `QC_PASSED`
+   (`types/domain.py:104-106`), and `rules_for` returns an empty tuple when nothing matches
+   (`types/domain.py:160-167`). The time step is *inferred* from the median inter-row gap
+   (`services/qc.py:40-47`), so any series whose median gap is not 86,400 s matches no rule,
+   collects no flags, and is written `qc_passed`. "No row left at RAW" is *satisfied* by that
+   state, and the per-rule counts read zero — indistinguishable from "ran and found nothing".
+2. **The rules bridge gaps.** Rate-of-change and spike take the previous and next element of
+   the *list* with no elapsed-time check (`services/qc.py:71-90`, `:150-196`), and
+   frozen-sensor ignores timestamp continuity. Across station 647's 471-day gap they would
+   compare a 2009 value to a 2011 one against a per-day threshold. (The author's own
+   measurements in D12 guarded on consecutive days, so the real service would flag **more**
+   than the table there reports — the table is a floor, not a prediction.)
+3. **One of the five rules is inert.** `_apply_gross_outlier` returns `None` when no
+   climatological baseline exists (`services/qc.py:206-208`), and every existing caller passes
+   `baselines=[]`. Reporting "gross-outlier: 0 flags" would mean nothing.
+
+**In**: a DHM `QcRuleSet` constructed in-process by the import CLI per D15 — **not** an edit
+to `config/qc_rules.py`'s Swiss defaults and **not** a TOML overlay (which would delete them);
+contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
+affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
+**Out**: no new QC *rule kind* — the five daily discharge rules exist and this task calibrates
+and applies them. No change to the Swiss rule set, to any operational QC path, or to the
+deployment configuration.
 **Verification**:
-- `uv run pytest tests/unit/config/test_dhm_qc_rules.py` — the DHM rule set resolves for
-  `discharge` at an 86,400 s step, and the Swiss set is byte-identical to before.
-- A calibration assertion that is **not circular**: station 450's range ceiling must exceed
-  its rating table's highest tabulated discharge, and the tables are an independent artefact
-  from the daily series (D14).
-- After the pass, no observation is left at `RAW`, and the per-rule flag counts are reported
-  against T5's totals so the flag *rate* is visible — a rule flagging a large fraction is a
-  threshold finding, not a data finding, and must be read that way before anything is
-  concluded about DHM's data quality.
-**Pre-change**: a RED test proving the **Swiss** daily range rule flags station 450's genuine
-monsoon peaks — the measured 1,125 values above 5,000 m³/s — so the calibration exists to fix
-a demonstrated fault rather than a suspected one.
-**Depends on T4. BLOCKED on D14.**
+- **Fail closed.** Assert that `rules_for('discharge', 86400s)` returned a non-empty set for
+  every station group processed, and that the number of rows *evaluated* per rule equals the
+  station's row count. A run where no rule resolved must **fail**, not certify.
+- **Isolation.** Exactly one daily-discharge rule of each id resolves for the DHM series, and
+  a Swiss daily series resolves the Swiss rules unchanged — asserted on both paths, since the
+  previous gate passed identically for the working and broken designs.
+- **Gaps.** No rate-of-change, spike or frozen-sensor flag is raised across any gap T5 reports.
+- **Provenance.** Flags carry the DHM rule set's version. Note `services/qc.py` hard-codes
+  `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`, `:64`, `:83`, `:169`, `:187`,
+  `:214`) — only frozen-sensor uses the configured version. Either fix those call sites or
+  state plainly that flag provenance is degraded and why.
+- **Gross-outlier.** Either baselines are computed for the six stations, or the rule is
+  explicitly excluded via `skipped_rule_ids` so a zero count is not mistaken for a clean pass.
+- `uv run pytest tests/unit/config/test_dhm_qc_rules.py`.
+**Pre-change**: a **synthetic** RED test demonstrating the mechanism — a series containing a
+value above the Swiss ceiling is flagged by the Swiss rule and not by the DHM rule. It proves
+the mechanism, not the delivery; **T5's run is the evidence that the fault is real in the
+delivered data**, and it cannot be a checked-in test without either reading restricted files
+or embedding restricted values.
+**Depends on T4. BLOCKED on D14 and D15.**
 
 ```json
 {
@@ -671,8 +842,9 @@ a demonstrated fault rather than a suspected one.
 ```
 
 T1 and T2a are genuinely independent. T5 needs only the parser; T2b needs only the metadata
-artifact; T6 needs neither. Only T7 is still gated on an open decision (D14) — everything
-through T4 can now be built.
+artifact; T6 needs neither. Only T7 is gated on open decisions (D14, D15) — everything through
+T4 can be built. The phase order is also the **re-import order** (D6): curves before
+observations before QC, and the replacement runs in reverse.
 
 ## Explicitly out of scope
 
