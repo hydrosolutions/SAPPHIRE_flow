@@ -150,7 +150,8 @@ gates.
 
 - input assembly: `assemble_station_operational_inputs` /
   `assemble_group_operational_inputs` build four channels — past_targets,
-  past_dynamic (reanalysis), future_dynamic (NWP), static — plus warm-up state
+  past_dynamic (reanalysis, **plus a stored-NWP tail on the operational route** — see
+  the no-imputation contract below), future_dynamic (NWP), static — plus warm-up state
 - hindcast reimplements assembly independently (`_assemble_hindcast_inputs`): never
   calls `assemble_*_operational_inputs`, derives from one model's
   `data_requirements` (not `build_superset_requirements`), and has its own
@@ -248,9 +249,11 @@ gates.
   imputed / interpolated / filled. **Plan 261 narrows this, it does not retire it:** the
   operational past-forcing leg is EXTENDED at its tail with real stored NWP values
   (`fill_past_forcing_tail`, operational assemblers only, in memory, nothing persisted,
-  interior holes untouched, and only for NWP sources whose native cadence is DECLARED —
-  `icon_ch2_eps` today; `ifs_ecmwf` is lead-dependent and deliberately not declared, so
-  Nepal is unaffected). Nothing is derived, interpolated or invented — a filled
+  interior holes untouched, only for `precipitation` / `temperature`
+  (`_FILLABLE_PARAMETERS` — Nepal's snow reaches the same store with `member_id=None`,
+  which is also how a deterministic control run is marked), and only for NWP sources
+  whose native cadence is DECLARED — `icon_ch2_eps` today; `ifs_ecmwf` is lead-dependent
+  and deliberately not declared, so Nepal is unaffected on both counts). Nothing is derived, interpolated or invented — a filled
   bucket is a forecast that was actually issued — and `max_nan` still gates values
   exactly as before. Training and hindcast are unchanged and cannot reach the fill
   (`tests/unit/services/test_forecast_fill_does_not_reach_history.py`)

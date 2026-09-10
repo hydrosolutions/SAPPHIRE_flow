@@ -1862,8 +1862,11 @@ def _binding_nwp_source(
 ) -> str:
     """The station's own NWP source, for Plan 261's past-forcing tail fill on
     the NoForcingRequired path (no resolved track exists there). Empty when the
-    station has no binding — `fetch_lookback` then matches nothing and the
-    series is left as measured, which is the correct best-effort outcome."""
+    station has no binding — the tail fill's undeclared-cadence guard then
+    declines BEFORE any read and says so at WARNING, which is the correct
+    best-effort outcome. (Named indirectly on purpose: the leakage guard in
+    tests/unit/services/test_forecast_fill_does_not_reach_history.py whitelists
+    every module REFERENCING that symbol, and this module is not one of them.)"""
     binding = forecast_bindings.get(station_id)
     return binding.nwp_source if binding is not None else ""
 
