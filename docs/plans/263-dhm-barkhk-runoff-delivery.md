@@ -428,8 +428,9 @@ Two supporting requirements:
 - **One shared boundary constant** across T3 and T4. They must not drift, or `fetch_curve_at`
   selects the wrong curve at a seam.
 - **T7 always follows T4, never the reverse.** Both observation writers reset QC state on
-  conflict — `store_raw_observations` forces `RAW` explicitly
-  (`store/observation_store.py:104`) and `store_observations` rewrites it from the object —
+  conflict — `store_raw_observations` forces `RAW` (`store/observation_store.py:105`, **conditionally** —
+  the `where` at `:111-116` means an unchanged re-run does not reset it) and `store_observations`
+  rewrites it from the object unconditionally (`:48`) —
   so re-running the import after a QC pass silently discards the QC result.
 
 The rehearsal that proves this is a *boundary-change* rehearsal — import under boundary A,
@@ -458,7 +459,7 @@ is hypothetical.
 The conclusion nevertheless stands, on one verified leg:
 
 - **The label is an identity, not an annotation.** `source` is part of
-  `uq_observations_natural_key` (`db/metadata.py:571-579`), which is exactly what
+  `uq_observations_natural_key` (`db/metadata.py:570-577`), which is exactly what
   `store_observations` upserts on. Choosing wrong is therefore not a later `UPDATE` — it is
   a delete plus a re-insert of the full ~99,246-row import. The owner should price the
   decision at that, not at the cost of an edit.
@@ -481,8 +482,9 @@ the curve link — and claims nothing we do not.
 
 **Documentation consequence, found in round 2 and missed by every pass before it:** three
 places state that this column is set *only* when the source is rating-curve-derived
-(`docs/spec/types-and-protocols.md:810` and `:821`, `docs/architecture-context.md:300`). This
-import lands ~94,617 rows that contradict that as written. The contract is worth widening
+(`docs/spec/types-and-protocols.md:810` and `:821`, `docs/architecture-context.md:300`, which is weaker — it says derived observations *reference*
+a curve, never that only they may). This import lands ~94,617 rows that contradict the spec
+lines as written. The contract is worth widening
 rather than the decision reversing — provenance and derivation are genuinely different
 claims, and the schema already permits the distinction — but it must be **written down**,
 not left as an undocumented exception. T6 carries it.
@@ -751,7 +753,8 @@ requires — that would apply the **Swiss** 5,000 m³/s ceiling to the DHM serie
 exactly the outcome D12 calls a calibration error wearing QC's clothes. It is guarded today
 only by `station_target` being empty, i.e. by `forecast_targets` being unset — which T2a never
 required until now.
-**Verification**: after running it against the D11 tenant, six rows exist with the expected
+**Verification**: `uv run python -m sapphire_flow.cli.import_dhm_delivery stations --dry-run`
+then without it; after running against the D11 tenant, six rows exist with the expected
 codes, `network = dhm`, `station_status = onboarding`; re-running it produces no duplicate
 rows **and no tenant duplicate** (`store_tenant` is a plain insert — idempotency does not come
 free, so provision fetch-before-create); and **`forecast_targets` is NULL on all six**, with
@@ -765,9 +768,15 @@ the existing database; T2b provisions it and inserts against it.
 **Outcome**: 112 curves stored with a chronological `version`, DHM's type label kept as
 provenance, half-open validity derived from DHM's inclusive end date, and no station left
 with an open-ended curve.
-**In**: `alembic/versions/0056_rating_curve_source_label.py` (next free revision; no other
-plan claims 0056); **`src/sapphire_flow/db/metadata.py`** (the `rating_curves` table is
-hand-maintained there and both the writer and `_row_to_curve` read their columns from it);
+**In**: `alembic/versions/0056_dhm_delivery_provenance.py` (next free revision; no other plan
+claims 0056) — adding **two** columns: the rating-type provenance column on `rating_curves`
+(D1) **and a delivery-identity column on `observations`** (D6). The second was stated in D6 but
+never reached this task until round 4 caught it; without it the replacement procedure cannot
+identify the 4,629 curve-less rows and falls back to the over-broad predicate D6 exists to
+remove. **`src/sapphire_flow/db/metadata.py`** (both tables are hand-maintained there);
+`src/sapphire_flow/types/observation.py` and `src/sapphire_flow/store/observation_store.py`
+(the new column must reach `RawObservation` and its writer, which mints ids itself at `:73`);
+`src/sapphire_flow/protocols/stores.py` and `tests/fakes/fake_stores.py` to match;
 **`tests/unit/db/test_alembic_head_release_b.py`** (`_RELEASE_B_HEAD` is pinned at `"0055"`
 and asserts a single head — a new migration fails the suite until it is bumped);
 `src/sapphire_flow/types/rating_curve.py`; `src/sapphire_flow/store/rating_curve_store.py`;
@@ -820,7 +829,9 @@ UTC; assert that explicitly on the three known overlap days.
 labelled `MANUAL_IMPORT` with the covering curve recorded as provenance (D7) and imported at
 `RAW` — genuinely unchecked at that instant. T7 assigns the real quality status.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (observation branch);
-`src/sapphire_flow/store/observation_store.py` (read-only — no change expected).
+`src/sapphire_flow/store/observation_store.py` — **not read-only**: T3 adds the delivery
+column and this task writes it on every imported row. The previous revision's "no change
+expected" was left standing after D6 said it could not be.
 **State which writer is used and why.** `store_raw_observations` forces `qc_status = RAW` on
 conflict (`observation_store.py:104`); `store_observations` rewrites the status from the
 object. Either way a T4 re-run after T7 discards the QC result, which is why D6's procedure
@@ -883,8 +894,14 @@ write-path map still states that `RatingCurveStore` has **no `Pg*` implementatio
 `src/sapphire_flow/store/rating_curve_store.py:18` contradicts; `.gitignore` and
 `.pre-commit-config.yaml` for the guard.
 **Out**: no code change.
-**Verification**: `uv run pre-commit run --all-files` passes, and a deliberate `git add` of
-a file placed at a delivered-data path is refused by the new hook.
+**Verification**: `uv run pre-commit run --all-files` passes; and the guard is proven by
+**invoking the named hook directly** on a force-staged synthetic prohibited path, asserting
+non-zero, then asserting an allowed path still passes. A plain `git add` test is not sufficient
+evidence: `.gitignore:21` already ignores `data/`, so the refusal could come from the
+pre-existing ignore rule and the hook could be inert. Note the honest limits — every hook in
+`.pre-commit-config.yaml` is scoped to `^(src|tests|docs|\.github|scripts|tools)/`, so a file at
+the repo root or under a new top-level directory is seen by no hook, and `--no-verify` bypasses
+all of them. The guard narrows the failure; it does not remove the need to not copy the files in.
 **Pre-change**: N/A for the documentation half. For the guard, the discriminating evidence runs
 *after* the hook lands and *before* it is trusted: stage a file at a delivered-data path and
 confirm the hook refuses it, then confirm an ordinary file still commits. The previous revision
@@ -913,7 +930,8 @@ state. The three faults, all verified in source:
    frozen-sensor ignores timestamp continuity. Across station 647's 471-day gap they would
    compare a 2009 value to a 2011 one against a per-day threshold. (The author's own
    measurements in D12 guarded on consecutive days, so the real service would flag **more**
-   than the table there reports — the table is a floor, not a prediction.)
+   than an elapsed-time-guarded measurement would suggest. D12's table now reports the
+   service's own behaviour, measured both ways: the difference is 5 rows in 99,246.)
 3. **One of the five rules is inert.** `_apply_gross_outlier` returns `None` when no
    climatological baseline exists (`services/qc.py:205-209`). **Correction:** an earlier revision
    said "every existing caller passes `baselines=[]`" — that is false. `flows/ingest_observations.py:309`
@@ -935,13 +953,24 @@ one per station, carrying D14's physical ceilings (the network rule alone cannot
 different maxima — see D14);
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
 affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
-**Out**: no new QC *rule kind* — the five daily discharge rules exist and this task calibrates
-and applies them. No change to the Swiss rule set, to any operational QC path, or to the
-deployment configuration.
+**Out**: no new QC *rule kind* — the daily discharge rules already exist (four configured,
+three able to fire — D12) and this task calibrates and applies them. No change to any **Swiss**
+rule's values, and no change to an operational QC path for Swiss stations.
+**This task does change the deployment configuration**, by adding DHM-network rows to
+`config.toml`'s `[qc_rules]` array — that is the route named in **In**, and the previous
+revision's blanket "no change to the deployment configuration" contradicted it. What must not
+change is any existing row; Plan 264's network selection is what makes adding rows safe.
 **Verification**:
 - **Fail closed.** Assert that `rules_for('discharge', 86400s)` returned a non-empty set for
-  every station group processed, and that the number of rows *evaluated* per rule equals the
-  station's row count. A run where no rule resolved must **fail**, not certify.
+  every group processed, and that the rows evaluated per rule equal the group's row count. A run
+  where no rule resolved must **fail**, not certify.
+  **Segment splitting and fail-closed fight each other, and the plan must resolve it here.**
+  `_infer_time_step` returns one hour for any group of fewer than two rows
+  (`services/qc.py:41-42`), so a single day isolated between two gaps — entirely plausible in a
+  record with 1,173 missing days — resolves no daily rule: silently fail-open today, a hard
+  raise once Plan 264 T3 lands. **Segments shorter than two rows are excluded from QC and
+  reported as excluded**, by count and by date, rather than being passed to a checker that
+  cannot classify them. They are not `qc_passed`.
 - **Per-station ceilings actually apply.** Assert each station's **effective merged**
   `value_max` equals that station's D14 figure — six distinct assertions — by calling
   `services/_qc_helpers.py::merge_thresholds` directly. That is the only route that proves the
@@ -955,17 +984,31 @@ deployment configuration.
   the previous gate passed identically for the working and the broken design. This is
   guaranteed structurally by Plan 264's most-specific-wins selection, not by DHM and Swiss
   thresholds happening not to collide.
-- **Gaps.** No rate-of-change, spike or frozen-sensor flag is raised across any gap T5 reports.
+- **Gaps.** No rate-of-change or spike flag is raised across any gap T5 reports. (Frozen-sensor
+  is deliberately absent from the list: D12 established it is not deployed at this cadence, so
+  asserting it would pass vacuously — the clause would look like a gate and test nothing.)
 - **Provenance.** Flags carry the DHM rule set's version. The hard-coded
   `_RULE_VERSION = "1.0"` at five of six flag sites (`services/qc.py:22`) is **Plan 264's D5**,
-  not this plan's to fix — the set review found that correcting it changes every *Swiss* flag's
-  recorded version too, because the Swiss rules declare `"1.0.0"`. T7 consumes the fix and
+  not this plan's to fix — correcting it changes *Swiss* flags' recorded version too, because
+  the Swiss rules declare `"1.0.0"`. (Not **every** flag: `_apply_frozen_sensor`
+  (`services/qc.py:140`) already uses the configured version. And 264's D5 covers a second half
+  this plan does not touch — `services/qc_datum.py:23-26` writes the row-level
+  `observations.qc_rule_version` independently and hard-returns `"1.0"`, so this gate could
+  otherwise pass while the persisted row still disagrees.) T7 consumes the fix and
   asserts DHM flags carry the DHM version; it does not make the compatibility decision.
 - **Gross-outlier is excluded** via `skipped_rule_ids` (D16) — verified to work as assumed
   (`services/qc.py:232,256`, already used in production via `obs_skipped_rules`) — and the
   exclusion is **named in the run's output**, alongside the fact that frozen-sensor is not
   deployed at this cadence. Assert it is skipped, not merely that it produced nothing — a zero flag
   count from a rule that could not fire must never be reportable as a clean pass.
+- **The statuses are actually persisted.** `Stage1QualityChecker.check` returns a dict and
+  writes nothing (`services/qc.py:225-286`) — persistence is the caller's `update_qc`. Assert
+  against the **database** that no imported row remains `RAW` and that the per-status counts sum
+  to the imported total. Without this, a QC branch that computes flags and never stores them
+  passes every other gate here.
+- **The run reports what it did**, per rule: rules resolved, rows evaluated, flags raised, plus
+  the excluded short segments and the skipped rule ids. `check()` exposes none of this today, so
+  the import CLI must record it as it goes — a gate that cannot be observed is not a gate.
 - `uv run pytest tests/unit/config/test_dhm_qc_rules.py`.
 **Pre-change**: a **synthetic** RED test demonstrating the mechanism — a series containing a
 value above the Swiss ceiling is flagged by the Swiss rule and not by the DHM rule. It proves
@@ -1003,5 +1046,6 @@ curves before observations before QC, and the replacement runs in reverse.
   where it lives — alongside the Swiss study or as a separate deployment — is undecided and
   is not settled here.
 - Publishing these measurements in any form (§ Data handling).
-- Any change to the Swiss QC rule set or to an operational QC path. T7 adds a DHM daily rule
-  set beside the existing one; it does not edit it.
+- Any change to an existing Swiss QC rule's values, or to the QC behaviour of Swiss stations.
+  T7 **does** add DHM-network rows to the deployment's rule array (its In); it edits no existing
+  row, and Plan 264's network selection is what keeps the two apart.

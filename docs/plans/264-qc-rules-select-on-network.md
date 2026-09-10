@@ -165,11 +165,17 @@ covered by its own before/after assertion.
 most-specific-wins; the rule set rejects ambiguity at construction; TOML parsing accepts and
 validates the field.
 **In**: `src/sapphire_flow/types/domain.py`; `src/sapphire_flow/config/qc_rules.py`;
-unit tests.
+`config.toml` and `docs/spec/config-reference.toml` (rejecting an unknown field is a parsing
+behaviour change and both files must satisfy the stricter parser); unit tests.
 **Out**: no threshold value changes; no change to `ForecastQcRuleSet` (D1); no change to any
 call site (T2); no change to configuration composition (D4).
 **Verification**: `uv run pytest tests/unit/types/test_qc_rule_selection.py` asserting:
-- a network-specific rule wins over a `None` rule of the same id/parameter/cadence;
+- a network-specific rule wins over a `None` rule of the same id/parameter/cadence —
+  **with the two carrying different `rule_version`s**, so the test discriminates. Selection
+  groups by `(rule_id, parameter, time_step)` while uniqueness keys on that plus
+  `rule_version` and `network`; if the fixture's two rules share a version, an implementation
+  that wrongly grouped by the full uniqueness key would pass while letting a real Swiss and a
+  real DHM rule both fire;
 - a `None` rule still applies where no specific rule exists;
 - the two never both return from one lookup;
 - **duplicates are rejected at construction** — two rules sharing
@@ -205,8 +211,9 @@ gate, so only `tests/unit/scripts/` will catch a break.
 `ForecastQualityChecker`. The earlier revision conflated the two names — the conclusion,
 leave that path alone, is unchanged.) The first revision of this plan listed them as observation-QC
 call sites; that was wrong, and acting on it would have changed forecast QC against D1.
-**Verification**: the mapping is a required parameter, so omission is a type error rather than
-a silent default; **a station absent from the mapping raises** (D3) — asserted by a test, not
+**Verification**: the mapping is a required parameter — **ordered before `skipped_rule_ids`
+or keyword-only**, since that parameter carries a default in both `services/qc.py:232` and
+`protocols/stores.py:1019`, and `scripts/dhm_precip/qc_mask.py:203,208` call positionally; **a station absent from the mapping raises** (D3) — asserted by a test, not
 only stated; `uv run pytest` passes whole; and the golden-fixture equivalence in T4 holds.
 **Pre-change**: a RED test proving that today a station's network cannot influence which rules
 run, because the checker has no access to it.
@@ -232,9 +239,13 @@ have matched and did not) from an **explicitly empty** rule set the caller suppl
 an empty `QcRuleSet` is a caller's declared intent and passes; a non-empty rule set that
 resolves nothing for a series is the error.
 **Out**: no change to what any *resolved* rule does.
-**Verification**: a series whose `(parameter, time_step)` resolves no rule raises rather than
-returning empty flags; a series that resolves rules and trips none still returns `QC_PASSED`;
-and the two are distinguishable in the caller's logs.
+**Verification**: a **non-empty** rule set that resolves nothing for a series raises rather
+than returning empty flags; a series that resolves rules and trips none still returns
+`QC_PASSED`; **an explicitly empty `QcRuleSet` still returns empty flags without raising** —
+asserted directly against the handover builder's path
+(`tests/unit/scripts/test_dhm_precip_*`), because without that case a blanket "no rules
+resolved → raise" satisfies every other assertion here and breaks a deliberate caller; and the
+three outcomes are distinguishable in the caller's logs.
 **Pre-change**: a RED test proving that today a rule set with no matching rule marks every
 observation `qc_passed` with zero rules run.
 
@@ -258,6 +269,30 @@ configured `"1.0.0"` per D5, deliberately and once.
 **Pre-change**: N/A — the fixture *is* the pre-change evidence, and it must be generated and
 committed first.
 
+### T4b — The flag-version correction (D5)
+
+**Outcome**: a QC flag records the version of the rule that actually produced it, and the
+row-level column agrees with it.
+Added after round 4 found D5 was load-bearing — 263's QC task consumes it, and T4's own
+verification already asserts its outcome — while no task owned it.
+**In**: `src/sapphire_flow/services/qc.py` (the five sites using `_RULE_VERSION`; the sixth,
+`_apply_frozen_sensor` at `:140`, already uses the configured version and is the model);
+**`src/sapphire_flow/services/qc_datum.py:23-26`** — the second half, which writes
+`observations.qc_rule_version` independently and hard-returns `"1.0"` for every non-water-level
+parameter. Fixing only the flag sites leaves the persisted column disagreeing with the flags it
+describes.
+**Out**: no threshold change; no change to which rules run.
+**Verification**: for a Swiss daily series, every flag's `rule_version` equals its rule's
+configured version, and `observations.qc_rule_version` equals it too; the golden fixture (T4)
+records the change from `"1.0"` to `"1.0.0"` as the single intended difference.
+**Pre-change**: a RED test proving that today a rule configured with version `"2.0.0"` still
+emits flags stamped `"1.0"` — the defect itself, at both the flag and the column.
+**Blast radius, stated because it is not small**: the changed value is serialised into existing
+`observations.qc_flags` rows, `store/forecast_store.py:92`, `store/hindcast_store.py:56` and
+`api/routes/api_stations.py:96`, over a corpus of `"1.0"` flags with no backfill. D5 must say
+whether that corpus is left as-is (recommended — historical flags honestly record the version
+that ran at the time) or migrated.
+
 ### T5 — Documentation
 
 **Outcome**: the QC selection contract is documented as network-aware; the forecast-QC
@@ -276,14 +311,19 @@ each stated with their reason.
   "phases": [
     { "id": "phase-1", "tasks": ["T4"] },
     { "id": "phase-2", "tasks": ["T1"], "depends_on": ["phase-1"] },
-    { "id": "phase-3", "tasks": ["T2", "T3"], "depends_on": ["phase-2"] },
+    { "id": "phase-3", "tasks": ["T2", "T3", "T4b"], "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3"] }
   ]
 }
 ```
 
 T4 runs **first**: the golden fixture is the pre-change baseline, and it cannot be generated
-after the change it exists to detect.
+after the change it exists to detect. T4b (D5) is sequenced with T2/T3 rather than left
+unowned — T4's verification already asserts its outcome.
+
+**Cross-plan sequencing:** T4's fixture and Plan 263 T7's rule additions both touch
+`config.toml`'s `[qc_rules]` array. The fixture must be captured **before** any DHM row is
+added, or it bakes in the change it exists to detect.
 
 ## Explicitly out of scope
 
