@@ -180,12 +180,30 @@ recorded per series.
 **Outcome:** our own aggregation labels the END of each bucket, and the completeness path agrees.
 **In:** the five functions and the call site listed above, plus `services/skill/service.py:305`.
 Depends on T2, and on Plan 252 T8 for permission to amend Plan 228 D4's locking tests.
-**Pre-change:** ⭐ **the red-first test is the mechanism proof above** — end-stamped hourly rows
-aggregated to daily produce a bucket labelled `D` that spans `D-1 23:00 → D 23:00`. It must fail on
-the LABEL, not on a signature.
-**Verification:** `uv run pytest` — that bucket is labelled `D+1 00:00`; the six test files above are
-re-proven rather than adjusted; and the assembler and the scorer are shown to agree, since a change
-to one alone is the actual hazard.
+🔴 **The fix is MEMBERSHIP and LABEL together — relabelling alone is wrong, corrected 2026-09-10.**
+An earlier revision of this task said the bucket merely acquires the label `D+1 00:00`. That is
+false: the rows it holds are wrong too, so a relabelled bucket is a differently-wrong bucket.
+
+Measured with polars 1.43.2 on end-stamped hourly rows:
+
+| grouping | bucket labelled `09-02 00:00` holds | covers |
+|---|---|---|
+| `closed='left', label='left'` (today) | `09-02 00:00 … 09-02 23:00` | `09-01 23:00 → 09-02 23:00` ❌ |
+| `closed='right', label='right'` (target) | `09-01 01:00 … 09-02 00:00` | `09-01 00:00 → 09-02 00:00` ✅ |
+
+⛔ **`closed` and `label` are independent controls and BOTH must change.** Setting only `label`
+relabels the wrong rows; setting only `closed` regroups them under the wrong name. The correct bucket
+is right-closed `(D, D+1]` and right-labelled, and it names the day it actually covers.
+
+**Pre-change:** the red-first test is the mechanism proof in § the defect above — with today's
+settings the bucket labelled `D` holds rows covering `D-1 23:00 → D 23:00`. ⛔ It must fail on
+**which rows are in the bucket**, not only on the label, or it will pass against a
+label-only change that is still wrong.
+
+**Verification:** `uv run pytest` — for end-stamped hourly input, the bucket labelled `D+1 00:00`
+contains exactly the rows stamped `D 01:00 … D+1 00:00` and therefore covers exactly day `D`; the six
+test files above are re-proven rather than adjusted; and the assembler and the scorer are shown to
+agree, since a change to one alone is the actual hazard.
 
 ### T5 — convert on the way OUT, IF D1 says we must (conditional)
 

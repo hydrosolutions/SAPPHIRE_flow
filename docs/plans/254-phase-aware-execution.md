@@ -239,6 +239,14 @@ does not, nothing does. The contract:
 | A **configurable limit** bounds how far a chosen edge may sit from nominal; beyond it the bucket is **REFUSED**, not built | 252 OD-14 |
 | **Ties** (two readings equidistant from a boundary) resolve deterministically — take the EARLIER, and lock it by test | this task |
 | **How far the chosen edge actually sat** is recorded on the value | 252 OD-14 |
+| **Off-grid pairing**: same step, different phase, source not sub-dividable ⇒ pair each value with the target bucket it MOST OVERLAPS, unchanged, recording displacement and overlap fraction | 252 **OD-16** |
+| ⛔ Off-grid pairing is **REFUSED for accumulations** and permitted only for interval statistics and instantaneous values | 252 OD-16 |
+| ⛔ A phase mismatch that is NOT declared as paired still **REFUSES** | 252 OD-16 |
+
+⭐ **Off-grid pairing is what makes OD-15 implementable.** Swiss daily temperature sits at phase 0 and
+the model's grid at phase 21600; resampling would split a daily value, shifting would move a
+timestamp, refusing would discard temperature. Without this operation the rules leave no legal move.
+The Swiss case pairs at an overlap of 0.75 and a displacement of −6 h.
 
 ⚠️ Temporal support (Plan 258) is still consumed — it says whether a value is a moment or a span, which
 determines which bucket it falls in. It no longer selects an interpolation or apportionment METHOD,
@@ -261,15 +269,35 @@ onto `071b62e3`, and re-measured on 2026-09-09. They will drift again.
 **Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on
 quarter-hour marks maps onto both a UTC-hourly and a Nepali-hourly target with **zero** apportionment;
 readings at `00:03`/`00:13`/`00:23` aggregate into a 3-hourly bucket whose edges are the readings
-nearest the nominal boundaries, with **every reading's own timestamp unchanged**; a boundary whose
+nearest the nominal boundaries, with **every reading's own timestamp unchanged**; a daily series at
+phase 0 paired onto a phase-21600 target reads back **unchanged, carrying overlap 0.75 and
+displacement −6 h**, and the same pairing attempted on an **accumulation is REFUSED**; an undeclared
+phase mismatch **REFUSES** rather than pairing silently; a boundary whose
 nearest reading exceeds the configured limit produces **NO value** and says why; two equidistant
-readings resolve to the earlier one; an upsample is **REFUSED**; and ⛔ **a test asserts that NO output
-value is absent from the input** — the lock that proves nothing was invented.
+readings resolve to the earlier one; an upsample is **REFUSED**; and ⛔ **a test asserts that every input sample is
+consumed WHOLE and AT MOST ONCE, and that no output derives from a partial or synthesised sample** —
+the lock that proves nothing was invented.
+
+🔴 **Corrected 2026-09-10.** An earlier revision demanded that "no output value is absent from the
+input" — impossible for the aggregation this task performs, since a SUM or a MEAN necessarily produces
+a number appearing in no input row. The invariant that actually expresses OD-13 is about how each
+input is CONSUMED (whole, once, never split, never interpolated), not about whether the output value
+appears verbatim in the input.
 
 ### T4 — thread the declared grid through EVERY resampler call site (re-inventory first — 12 as of 2026-09-08, and it has moved twice in a fortnight)
 
-**Outcome:** every assembly path resolves its target grid from the deployment declaration rather than
-assuming phase zero, and the downstream UTC-day assumptions are corrected.
+**Outcome:** every assembly path resolves its target grid **per station — the station override first,
+the deployment declaration as fallback** (Plan 252 OD-12) — rather than assuming phase zero, and the
+downstream UTC-day assumptions are corrected.
+
+⛔ **Resolution ORDER is part of this contract, added 2026-09-10.** An earlier revision said only
+"from the deployment declaration", silently dropping the per-station override the owner decided — the
+executor task omitting a settled decision. A call site that reads the deployment value without first
+checking the station's own is wrong even though it compiles.
+
+**In (also):** which series are **declared off-grid paired** (Plan 252 OD-16) — for Switzerland,
+the three temperature products against a phase-21600 target. ⛔ Pairing is declared here and applied
+in T3; discovering a mismatch at runtime refuses.
 
 **In (also):** the group-phase invariant Plan 252 OD-12 assigns to this task.
 `_assert_consistent_station_inputs` (`services/run_group_forecast.py:99-112`) already asserts that a

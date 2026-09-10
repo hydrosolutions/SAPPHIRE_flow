@@ -305,6 +305,36 @@ resample using the aggregation method the parameter already carries (`Aggregatio
 series to make it fit is forbidden: a 15-minute nudge silently redistributes accumulated
 precipitation.
 
+⭐ **OD-16 — OFF-GRID PAIRING: the third legal operation, and the only one that implements OD-15.**
+
+There is a case neither rule covers, and OD-15 creates it: **the source and the target share a STEP
+but not a PHASE, and the source cannot be sub-divided** — Swiss daily temperature at phase 0 feeding a
+daily model at phase 21600. Resampling would need to split a daily value (OD-13 forbids it); shifting
+would move a timestamp (forbidden above); refusing would discard temperature entirely. 🔴 **Under the
+rules as previously written an implementer had no legal move at all.** Named here as a third
+operation:
+
+> **Off-grid pairing.** Each source value is paired with the target bucket it **most overlaps**. The
+> value is used **unchanged**, its timestamp is **unchanged**, and the pairing records the
+> **displacement** and the **overlap fraction**. The series is flagged **off-grid** for as long as the
+> mismatch lasts.
+
+For Switzerland: a temperature value covering `D 00:00 → D+1 00:00` overlaps the target bucket
+`D 06:00 → D+1 06:00` by 18 of 24 hours, so it pairs with that bucket at an overlap of 0.75 and a
+displacement of −6 h.
+
+⛔ **Its limits, which make it honest rather than a loophole:**
+- **Same step only.** It never substitutes for a resample where one is possible.
+- **Never for an accumulation.** A rainfall total paired across a boundary would attribute rain to
+  the wrong day with no arithmetic to justify it. Restricted to interval **statistics** (means,
+  minima, maxima) and instantaneous values, where the quantity is not additive over the window.
+- **Declared, never inferred.** A deployment declares that a source is paired off-grid; discovering a
+  phase mismatch at runtime **refuses**, exactly as before.
+- **The overlap fraction is recorded on every paired value**, so a consumer can see the approximation
+  rather than having to reconstruct it.
+
+⚙️ **Implemented by Plan 254 T3** (the pairing) **and T4** (declaring which series are paired).
+
 **Fail closed.** An undeclared phase, or a grid mismatch with no declared conversion, refuses. It does
 not guess, and it does not fall back to matching on step alone — the nearest-match trap Plan 253's
 review identified as *dimensionally wrong*: a rate-of-change threshold per 10 minutes is not that
@@ -463,13 +493,17 @@ ANSWERS OQ-6 and WITHDRAWS the 23:00Z target.**
 Two of our Swiss inputs cut the day differently — MeteoSwiss precipitation runs 06:00→06:00 UTC,
 temperature runs midnight→midnight (both established from the provider's own product documentation).
 They cannot be reconciled by shifting either one: re-cutting a daily total means splitting it, which
-OD-13 forbids. One input must therefore be accepted as off-grid.
+OD-13 forbids. One input must therefore be accepted as off-grid — **by OD-16's off-grid pairing,
+which is the operation that makes this decision implementable.** ⛔ Without OD-16 the rules leave no
+legal move for the temperature series at all.
 
 ⚖️ **We align with PRECIPITATION.** It is the input that drives runoff, which is what we forecast, so
 the more consequential series is the exact one. **Temperature becomes the off-grid input, displaced by
 6 h**, and that displacement is recorded rather than discovered — it is defensible because temperature
 varies slowly and is used as a daily mean, where a six-hour window shift matters far less than it
-would for a rainfall total.
+would for a rainfall total. ⭐ **That asymmetry is exactly why OD-16 forbids pairing an accumulation:
+had we aligned the other way, precipitation would have needed pairing, and there is no honest way to
+do it.**
 
 | | grid | status after cutover |
 |---|---|---|
@@ -845,8 +879,13 @@ with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); 
 station-and-model pairing whose step does not divide 24 h**, naming both; `bucket_edge_tolerance`
 parses and is readable by the resampler; **Switzerland declares `"06:00"` with a provenance string and
 NO civil boundary, and is ACCEPTED**; a declared origin that contradicts a declared civil boundary and
-rounding rule is **REJECTED** rather than silently believed; and switching the rounding rule from `nearest` to `down` changes the derived origin
-**without a code change**.
+rounding rule is **REJECTED** rather than silently believed; and switching the rounding rule from
+`nearest` to `down` changes **which declared origins are ACCEPTED** — `18:00` passes under both, while
+`19:00` passes only under `nearest` — **without a code change**.
+
+⛔ **The rounding rule never COMPUTES the origin.** An earlier revision's verification said switching
+the rule "changes the derived origin", contradicting the design above, where the origin is declared
+and the rule only validates it. No correct implementation could satisfy both.
 
 ⚙️ **Where the step check lives.** T4 validates the PHASE in config; the non-dividing-step check runs
 at **station onboarding**, because the step is on the station-and-model pairing, not in config (OQ-1).
