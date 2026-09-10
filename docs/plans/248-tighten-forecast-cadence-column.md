@@ -270,10 +270,15 @@ from `257:179` and is wrong; an earlier revision of this section repeated it. Ve
 frontmatter, not the prose.
 
 ⚠️ **The gap bites immediately (sapphire-flow-f2, verified here): a DOUBLE RETRAIN.** 226 is written
-throughout in terms of MIDNIGHT buckets, while 252 sets the Swiss daily grid to `(86400 s, 82800 s)`
-— 23:00Z→23:00Z, explicitly NOT UTC midnight (`252:119`) — and states that changing the boundary
-**requires retraining**, owner-confirmed (`252:128`). Land 226 first and the models are anchored to
-midnight and retrained, then moved to 23:00Z and retrained AGAIN.
+throughout in terms of MIDNIGHT buckets, while 252 sets the Swiss daily grid to a non-midnight
+boundary and states that changing it **requires retraining**, owner-confirmed. Land 226 first and the
+models are anchored to midnight and retrained, then moved and retrained AGAIN.
+
+⚠️ **Values updated 2026-09-10.** This passage named `(86400 s, 82800 s)` / 23:00Z. **That target is
+WITHDRAWN**; the Swiss boundary is now `(86400 s, 21600 s)` — 06:00Z, the MeteoSwiss precipitation day
+(Plan 252 OD-15). 🔑 The double-retrain reasoning is unaffected: it never depended on WHICH boundary,
+only that the boundary moves. *(Plan 226 is also SUPERSEDED into Plan 254 T8; the line numbers cited
+here predate three rewrites of 252 and should not be trusted.)*
 
 🔴 **And the two plans CONTRADICT each other on who owns that retrain:** `252:135` says *"Sequencing
 the retrain belongs with Plan 226, which already owns"* it, while `254:182` says *"No plan currently

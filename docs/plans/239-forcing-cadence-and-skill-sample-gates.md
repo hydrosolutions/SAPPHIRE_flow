@@ -69,8 +69,9 @@ was trained on the old preparation and is now served the new one.
 **⛔ Do NOT revert T1a, and do NOT retrain yet.** Reverting restores a known defect (models fed at
 the wrong resolution) to remove a skew that is bounded-small on this deployment and on a test system.
 Retraining *now* would be the genuine double retrain: Plan 254 T6 moves Switzerland's daily boundary
-to 23:00Z and requires a retrain anyway, so the correct sequence is **settle the boundary, then
-retrain once, onto the final grid.** Until then staging runs with a known, recorded skew.
+and requires a retrain anyway, so the correct sequence is **settle the boundary, then retrain once,
+onto the final grid.** ⚠️ **Target updated 2026-09-10: the boundary is 06:00Z, the MeteoSwiss
+precipitation day (Plan 252 OD-15) — NOT the 23:00Z this line previously named, which is withdrawn.** Until then staging runs with a known, recorded skew.
 
 📌 **The double-retrain risk was real — it was attached to the wrong plan.** It was raised against
 Plan 226 and refuted there correctly (226 changes labelling, not training inputs, and contains the
@@ -242,6 +243,13 @@ DECLARED INPUT SERIES, not per frame and not per feature class.
 **One membership test; three ways to build the set it tests against.** The predicate is always the
 same — *is every slot this input will read present?* — but WHERE that set comes from differs by
 caller, and that is what the previous version got wrong by assuming a single anchor+count shape.
+
+⛔ **This section assumes LEFT-LABELLED buckets and becomes one interval wrong under Plan 262**
+(2026-09-10). Plan 262 adopts END-period stamping as the house convention, which inverts what
+`floor_to_time_step` and every expected-set below denote. **This plan's held tasks (T1b/T2/T3) must
+not be resumed before Plan 262 T3 lands, and their expected sets must then be re-derived — not
+re-labelled.** Plan 239 carries no dependency on 262 in its frontmatter; that is deliberate for now,
+because 239 is HALTED, but it must be added before it is un-halted.
 
 Given the model's declared `time_step` `S`, and `T0 := floor_to_time_step(T, S)`:
 

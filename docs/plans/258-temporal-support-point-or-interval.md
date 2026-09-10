@@ -15,7 +15,12 @@ source: 2026-09-08 — split out of Plan 252 by owner decision, after a Codex re
 
 **DRAFT.** Split out of Plan 252 on 2026-09-08. Two of its four open decisions are genuine design
 questions that were never asked, which is why bundling this with the grid convention kept failing
-review: the grid half is settled and this half is not.
+review: the grid half is *substantially* settled and this half is not.
+
+⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** As of 2026-09-10 **ONE of
+Plan 252's own questions remains open** — OQ-3, the provenance channel, decided by Plan 254 D2. OQ-6
+was ANSWERED by the owner on 2026-09-10 (Plan 252 OD-15: Switzerland adopts the precipitation day).
+Neither blocks this plan.
 
 ## Why this is a separate plan
 
@@ -38,17 +43,25 @@ CF already supplies this, and **our upstream data already carries it** — confi
 modeller: `time: point` for SWE and snow depth, `time: sum` for runoff, alongside `units` and
 `long_name`, int16-packed with CF `scale_factor`.
 
-| `cell_methods` | Temporal support | Period-ending? | Cross-grid method |
+| `cell_methods` | Temporal support | Period-ending? | Which bucket it falls in |
 |---|---|---|---|
-| `time: point` | instantaneous | **No — a point is not an interval** | linear interpolation, bounded by a maximum gap |
-| `time: sum` | interval accumulation | Yes | overlap apportionment |
-| `time: mean` / `time: maximum` | interval statistic | Yes | the declared `AggregationMethod` |
+| `time: point` | instantaneous | **No — a point is not an interval** | by its own instant |
+| `time: sum` | interval accumulation | Yes | by the interval it closes |
+| `time: mean` / `time: maximum` | interval statistic | Yes | by the interval it closes; combine with the declared `AggregationMethod` |
+
+🔴 **Cross-grid METHODS removed 2026-09-09.** The last column previously read "linear interpolation"
+and "overlap apportionment" — **both are forbidden by Plan 252 OD-13.** Temporal support no longer
+selects a method; it says which bucket a value belongs to, and the bucket edges come from Plan 252
+OD-14. Nothing here invents a value.
 
 ⚠️ **The CF token is `maximum`, not `max`.** `max` is our `AggregationMethod` member; `maximum` is the
 CF cell method. They are not interchangeable and the wrong one would not round-trip.
 
-⛔ **We currently discard all of it.** The recap adapter reads no CF attributes; `cell_methods` appears
-in this repo only as a comment (`adapters/era5_land_reanalysis.py:20`) and in an archived plan.
+⛔ **We currently discard all of it.** The recap adapter reads no CF attributes — that is the claim
+that matters and it is CONFIRMED. ⚠️ The narrower claim that `cell_methods` "appears only as a comment
+at `adapters/era5_land_reanalysis.py:20` and in an archived plan" is REFUTED (2026-09-09): further
+active comments exist at `adapters/recap_gateway.py:140`, `:151`, and several active docs mention it.
+**Nothing READS it at runtime**; the string is not rare.
 
 ## Period-ending, stated once and correctly
 
@@ -79,15 +92,42 @@ separately; never conflate them into one "offset" field.
 
 ## 🔴 Open decisions — these are why the plan is DRAFT
 
-### D1 — AT WHAT CARDINALITY is temporal support recorded? (blocking; no task can be written first)
+### D1 — ANSWERED 2026-09-09: **per (source, parameter)**
+
+⚖️ **Owner decision.** Support is recorded against the combination of source and measurement, because
+that is where the fact lives — a provider computed it that way. `ForcingSource` already keys this
+granularity and `historical_forcing` carries both in its natural key (`db/metadata.py:824-877`), so
+the slot fits what exists. Rejected: one row per canonical parameter (refuted below); the adapter
+channel (a runtime notion, while this is a property of the data).
+
+⚠️ **Still open within D1:** whether a series WE transformed carries the support of its input or of
+the transform. A daily mean we computed from hourly points is an interval, and nothing records that we
+made it one.
+
+### D1 (evidence) — why per-parameter was refuted
 
 The Plan 252 draft put a single `POINT | INTERVAL` value on `ParameterDefinition` and the
 `parameters` row. **That is wrong, and demonstrably so.** The same canonical parameter has different
 support depending on which product it came from:
 
-| canonical parameter | MeteoSwiss | Gateway / ECMWF |
+🔴 **The original worked example was WRONG and is replaced (owner correction, 2026-09-09).** It
+claimed gateway temperature is instantaneous. It is not: the gateway delivers temperature **averaged
+over a time span** and precipitation **summed over one**, then averages both over an **area**. The
+code corroborates — `era5_land_reanalysis.py:10-16` documents `temperature_2m_mean` and a
+`cell_methods: time: sum` accumulation, and `recap_gateway.py:71`, `:195` document basin-average-only
+delivery. Both sides of that example are intervals, so it proved nothing.
+
+**The example that does hold:**
+
+| canonical parameter | gauge / weather station | any gridded product |
 |---|---|---|
-| `temperature` | `TabsD` — a **daily mean** → interval (`adapters/meteoswiss_open_data_reanalysis.py:208`) | `2t` / `2m_temperature` — **instantaneous** → point (`adapters/recap_gateway.py:118`) |
+| `temperature` | a thermometer read at 09:00 — **a point** | `TabsD` daily mean (`adapters/meteoswiss_open_data_reanalysis.py:208-212`), ECMWF hourly mean — **an interval** |
+
+One row per canonical parameter cannot hold both, which is what D1 answers.
+
+⭐ **A THIRD kind of support was surfaced by the same correction and is NOT this plan's:** gateway
+values are averaged over an **area**, not measured at a point in space. Nothing records spatial
+support either. Noted here so it is not lost; it needs its own owner.
 
 One row per canonical parameter cannot hold both. There are **11 canonical parameters** today
 (`discharge`, `humidity`, `precipitation`, `radiation`, `reference_et`,
@@ -131,12 +171,38 @@ and `INTERVAL`. Unknown must either be a third state or be NULL with a documente
 against source CF metadata*. Two independent facts, two fields — do not encode them in one enum, which
 is how a "declared" value silently acquires the authority of a measured one.
 
+### D5 — does a model OUTPUT declare its temporal support? (blocking Plan 254 T8)
+
+This plan covers **input** sources and adapters throughout. Nothing here declares the support of a
+value the system *produces*. But the period-ending rule above binds forecast `valid_time` "by support
+and not blanket" — so Plan 254 T8, which anchors a daily forecast's label, cannot tell whether that
+bucket is stamped on its closing boundary without knowing whether the model emits a point or an
+interval. **No plan owns this.** Added 2026-09-09.
+
+### D6 — who asks DHM about period convention?
+
+Plan 252 T7 explicitly REMOVED the period-convention question from the DHM questionnaire and assigned
+it here (`252` T7). This plan has an audit task (T4) but **no task that asks or amends a provider
+question**, so the evidence T4 would audit against has no route to being obtained. Either this plan
+gains a questionnaire task or 252 T7 takes it back. Added 2026-09-09.
+
 ### D4 — who compares, and where does the comparison live?
 
 Even once the Gateway passes `cell_methods` through, nothing is specified about where it travels or
 who checks it. The Gateway result construction retains values, not source metadata
 (`adapters/recap_gateway.py:806`), and the parameter store contract is **read-only**
 (`protocols/stores.py:914`). A verification step needs a write path that does not exist.
+
+## ✅ Interval bounds — assigned here, and now CARRIED here (T5)
+
+Plan 252 assigns `period_start` / `period_end` to this plan (its OD-5). Plan 254 assigned them to
+Plan 251. **Verified 2026-09-09: this plan's T0–T4 contain no bounds task, and Plan 251 contains no
+`period_start`, `period_end` or interval-bound work at all.**
+
+⚖️ **CLOSED 2026-09-09 by owner decision: this plan owns them, as T5.** They are this plan's shape of
+problem — bounds only exist for values that ARE intervals. ⛔ **They are no longer an orphan; do not
+describe them as one, here or in Plans 252 and 254.** The fix was to create an owner, not to re-point
+a reference at a third plan.
 
 ## ⛔ Upstream dependency — real, and only half-asked
 
@@ -151,16 +217,29 @@ gated on someone else's release.
 
 ## Tasks
 
-⚠️ **All four decisions above must be settled before T1 is written as a contract.** The Plan 252
+⚠️ **All six decisions above must be settled before T1 is written as a contract.** The Plan 252
 review showed exactly what happens otherwise: tasks that cannot be implemented as specified.
 
-### T0 — settle D1–D4
-**Outcome:** four recorded owner decisions. **In:** this document. **Out:** any code.
+### T0 — settle D1–D6
+**Outcome:** six recorded owner decisions. **In:** this document. **Out:** any code.
 **Verification:** each decision is recorded with its rationale and the option it rejected.
 
 ### T1 — declare temporal support at the settled cardinality
-**Outcome:** `TemporalSupport` exists as a type and is carried wherever D1 decided, added **nullable**
-per D2, with a deliberate backfill and a recorded justification per series.
+**Outcome:** `TemporalSupport` exists as a type and is carried at `(source, parameter)` per D1, added
+**nullable** per D2, with a deliberate backfill and a recorded justification per series.
+
+⚙️ **The concrete home, named 2026-09-09** — "wherever D1 decided" was not a contract an implementer
+could build: a **`parameter_support` registry keyed `(source, parameter)`**, additive and nullable.
+⛔ It is NOT a column on `parameters`; that is the per-parameter shape D1 refuted.
+
+🔴 **OBSERVATIONS DO NOT FIT THIS KEY, found 2026-09-10 — this is D1's remaining gap, not a detail.**
+Forcing does fit: `historical_forcing` already carries `(source, parameter)` in its natural key
+(`db/metadata.py:824-877`). But persisted **observations record generic provenance** (values such as
+`measured`) rather than a provider or product identity, so `(source, parameter)` cannot distinguish a
+manually-read gauge from an automatic station — and those differ in exactly the way this plan cares
+about. **T0 must settle how observation series acquire a source identity before T1 can back-fill
+them**; the alternative is that observations are keyed differently from forcing, which is a real
+option but must be chosen, not discovered during implementation.
 **In:** `types/enums.py`, the type D1 selects, `db/metadata.py` plus an additive migration.
 **Out:** reading anything from the source (T3); the aggregation METHOD (Plan 234). Depends on T0.
 **Pre-change:** no temporal-support field exists anywhere; a consumer must infer support from
@@ -173,12 +252,77 @@ defaulted; the migration is additive and the previous image runs against the new
 **In:** the read paths D1 implies. **Out:** the schema constraint (D2 keeps the column nullable).
 Depends on T1. **Verification:** the refusal is locked by a test, not only the success path.
 
+### T6 — ask the Gateway to pass `cell_methods` through
+
+**Outcome:** the request is actually MADE and tracked. ⛔ **T3 declares itself blocked on this and no
+task owned making the ask** — a dependency on someone else's work that nobody was assigned to
+request. Plan 243 asked for `units` only.
+
+**In:** the same channel and people as Plan 243's units request; extend it rather than opening a
+second one. Record where the request lives and how we will know it landed.
+**Out:** implementing the verification (T3). **Depends on T0.**
+**Verification:** N/A — external-request task. The request exists, is linked from this plan, and T3
+names it as its unblocking condition.
+
 ### T3 — verify the declaration against the source (⛔ BLOCKED — do not start)
 **Outcome:** the source's CF `cell_methods` is read at ingest and **checked against** T1's
 declaration, so a mismatch is caught rather than assumed away.
 ⛔ **Blocked on the Gateway CF pass-through above.** Depends on T1, D3, D4.
 **Verification:** a fixture whose `cell_methods` contradicts the declaration fails; agreement records
 the verification, and the recorded state distinguishes *declared* from *verified*.
+
+### T5 — publish the window an interval value covers
+
+⚖️ **Owner decision 2026-09-09: this plan owns it**, as a real task rather than a cross-reference.
+Previously it was assigned here by Plan 252, to Plan 251 by Plan 254, and carried by neither.
+
+**Outcome:** an interval-valued value is published with the start and end of the window it covers, so
+a consumer never has to infer our convention from a single stamp. **⛔ Only for values that ARE
+intervals** — giving a point reading a start and end would invent a span it does not have, which is
+why this task sits behind T1.
+
+**In:** the published API and export shapes. **Out:** internal storage (the stamp plus the declared
+support is sufficient internally); points. Depends on T1.
+
+📌 **Ride the next format version, do not open a second one.** Plan 251 already carries a v2→v3
+transition of the Forecast Lab snapshot; if that lands first, these fields go with it.
+
+**Verification:** an interval value carries bounds matching its declared support and stamp; a point
+value carries none; and a consumer reading only the bounds gets the same window as one applying the
+convention to the stamp.
+
+### T7 — carry support for series WE derive, and for model OUTPUTS
+
+**Outcome:** the two cases T1's input registry does not cover are recorded too.
+
+⛔ **Both were decisions with no implementing task until 2026-09-10.** D1's remainder (a daily mean we
+computed from hourly points is an interval because WE made it one) and D5 (a model's output is a
+moment or a span) each had an owner for the DECISION and nobody to build it — while Plan 254 T8 and
+this plan's T5 both need the answer.
+
+**In:** the resampler's output provenance (the derived case — it knows what it just produced) and the
+model-output path (`forecasts` / `hindcast_forecasts`, alongside the phase column Plan 254 T7 adds).
+Depends on T0 (which settles D1's remainder and D5) and T1.
+
+**Out:** the input registry (T1); the ForecastInterface — ⚠️ **FI declares no output temporal support**
+(verified 2026-09-09: `VariableMetadata` carries `unit`, `timedelta`, `forecast_horizon`, `offset` and
+nothing else, while `SpatialRepresentation` exists for the spatial equivalent). Per CLAUDE.md that
+asymmetry is an **upstream issue to file**, never a SAP3-side workaround — T0 must decide whether to
+file it.
+
+**Verification:** a series produced by our own aggregation reads back carrying the support of the
+transform, not of its input; a stored forecast carries its output support; and Plan 254 T8 can decide
+a daily bucket's stamp from it.
+
+### T8 — ask DHM which end of a period their timestamps mark (D6)
+
+**Outcome:** the question exists in the questionnaire. ⛔ **Plan 252 T7 explicitly REMOVED it and
+assigned it here; this plan had no task to ask it**, so the evidence T4 audits against had no route to
+being obtained.
+
+**In:** `docs/requirements/dhm-data-formats-questions.md`, per parameter. **Out:** the day-boundary
+question (Plan 252 T7). Depends on T0.
+**Verification:** N/A — requirements task. The question is present and per-parameter.
 
 ### T4 — audit every input adapter's temporal support
 **Outcome:** each adapter's series is declared, with the source document that settles it — the same
@@ -192,7 +336,8 @@ uv run pytest tests/unit && uv run pytest tests/integration
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
-1. **All four decisions are recorded** before any task ships.
+1. **All decisions D1–D6 are recorded** before any task ships (D5 and D6 added 2026-09-09), and the
+   interval-bounds task (T5) exists and is not described anywhere as an orphan.
 2. **The migration is additive and reversible-by-redeploy** — nullable, no tightening in this release.
 3. **A declared-but-unverified value is distinguishable from a verified one** — never conflated.
 4. ⛔ **Not a gate: "temporal support comes from CF metadata, never inference".** It cannot be, while
@@ -209,6 +354,10 @@ uv run ruff check src tests && uv run ruff format --check src tests
     {"id": "T1", "phase": 2, "depends_on": ["T0"]},
     {"id": "T2", "phase": 3, "depends_on": ["T1"]},
     {"id": "T4", "phase": 3, "depends_on": ["T1"]},
+    {"id": "T5", "phase": 3, "depends_on": ["T1"]},
+    {"id": "T6", "phase": 1, "depends_on": ["T0"], "note": "the external ask T3 is blocked on; nobody owned it before 2026-09-09"},
+    {"id": "T7", "phase": 3, "depends_on": ["T0", "T1"], "note": "derived-series and model-output support; Plan 254 T8 needs it"},
+    {"id": "T8", "phase": 1, "depends_on": ["T0"], "note": "the DHM period-convention question Plan 252 T7 removed"},
     {"id": "T3", "phase": 4, "depends_on": ["T1"], "blocked_on": "Gateway CF attribute pass-through — extend the Plan 243 units-only request to cell_methods"}
   ]
 }
