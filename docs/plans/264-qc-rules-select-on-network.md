@@ -28,9 +28,24 @@ observation checker are **two**: `flows/ingest_observations.py:304` and
 `services/onboarding.py:772`. As scoped, T2 would have either changed forecast QC — directly
 against D1 — or left the `QualityChecker` Protocol (`protocols/stores.py:1012`) stale.
 
-Three further faults, all folded below: the plan diagnosed a configuration-composition problem
-it never fixed; most-specific-wins had no uniqueness invariant, so two rules could still both
-fire; and the "byte-identical" bar had no oracle.
+Three further faults from that round, all folded below: the plan diagnosed a
+configuration-composition problem it never fixed; most-specific-wins had no uniqueness
+invariant; and the "byte-identical" bar had no oracle.
+
+**Round 2 (2026-09-10) then found the corrected audit was STILL incomplete, and that the
+uniqueness invariant would break working code.** Both are recorded here because they are the
+third and fourth time this plan's claims about the repository have been wrong:
+
+- **`scripts/dhm_precip/` is a third caller** — `qc_mask.py:203,208` and
+  `build_dudh_koshi_handover.py:175` call `Stage1QualityChecker.check` **positionally** with
+  four arguments, and are covered by `tests/unit/scripts/`. T2's new required parameter breaks
+  them, and its own gate ("`uv run pytest` passes whole") would have failed.
+- **The uniqueness invariant would make an existing, deliberate, tested rule set
+  unconstructible.** `scripts/dhm_precip/qc_ruleset.py:96-108` builds two `frozen_sensor` rules
+  sharing `rule_id`, `parameter` and `time_step`, distinguished only by `rule_version`; its
+  docstring documents this as intentional and
+  `tests/unit/scripts/test_dhm_precip_ruleset.py:54` asserts both are returned. The proposed
+  RED test would have tried to prove as a defect the behaviour the repo relies on as a feature.
 
 Split out of Plan 263 deliberately. The owner chose this over the in-process workaround, and
 it changes shared code that the running Swiss deployment depends on — that risk deserves its
@@ -122,9 +137,19 @@ than this plan's purpose justifies, and it deserves its own plan if anyone wants
 `services/qc.py` emits `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`) instead of the
 configured `rule.rule_version`. Plan 263 needs DHM flags to carry the DHM rule set's version,
 which means fixing those sites. **But the Swiss rules declare `rule_version="1.0.0"`**
-(`config/qc_rules.py:47`), so fixing them changes every Swiss flag's recorded version from
+(`config/qc_rules.py:47`), so fixing them changes Swiss flags' recorded version from
 `"1.0"` to `"1.0.0"` — breaking this plan's byte-identical bar and Plan 263's "no operational
 QC change" exclusion at the same time. Neither plan owned this until the set review found it.
+
+Two corrections from round 2: **not every** flag changes — `_apply_frozen_sensor`
+(`services/qc.py:140`) already uses the configured version. And the fix has **a second half
+nobody owns**: the row-level `observations.qc_rule_version` column is written from
+`services/qc_datum.py:23-26`, which hard-returns `"1.0"` for every non-`water_level` parameter
+independently of `QcFlag.rule_version`. Fixing the five flag sites leaves that column at the
+Swiss constant, so Plan 263's "flags carry the DHM version" gate could pass while the persisted
+row still says otherwise. Whatever D5 decides must cover both, and must note that the changed
+value is serialised into existing `observations.qc_flags` rows, the forecast and hindcast
+stores, and the stations API — over a corpus of `"1.0"` flags with no backfill.
 *Recommendation: fix it here, and treat the version change as an intended, announced
 migration* — the current behaviour records a version that does not match the rule that ran,
 which is a provenance defect in its own right, and shipping the network dimension without
@@ -148,28 +173,37 @@ call site (T2); no change to configuration composition (D4).
 - a `None` rule still applies where no specific rule exists;
 - the two never both return from one lookup;
 - **duplicates are rejected at construction** — two rules sharing
-  `(rule_id, parameter, time_step, network)` raise rather than both firing. Added after the
-  set review found most-specific-wins had no uniqueness invariant: without it, "exactly one
-  rule resolves" is an aspiration, and Plan 263's isolation gate consumes it as a guarantee;
+  `(rule_id, **rule_version**, parameter, time_step, network)` raise rather than both firing.
+  **`rule_version` is in the key deliberately**: `scripts/dhm_precip/qc_ruleset.py:96-108`
+  ships two `frozen_sensor` rules that differ only by version, on purpose and under test, and
+  an invariant without `rule_version` would make that rule set unconstructible. Plan 263's
+  isolation gate consumes "exactly one resolves" — with this key it gets that for its own
+  single-version DHM set without outlawing the precipitation one;
 - TOML round-trips a valid `network = "dhm"`, rejects a non-string network, and rejects an
   unknown field rather than ignoring it (the hand-written parser at `config/qc_rules.py:25-37`
   does no runtime type validation today).
-**Pre-change**: a RED test proving that today two rules of the same id, parameter and cadence
-both return from one `rules_for` call — the collision itself, not a proxy for it.
+**Pre-change**: a RED test proving that today a **network-specific** rule cannot suppress a
+generic one of the same id, parameter and cadence — both return from one `rules_for` call. Not
+the earlier formulation ("two rules of the same id, parameter and cadence both return"), which
+is a *feature* the precipitation rule set depends on and asserts.
 
 ### T2 — Thread the network through the observation-QC call sites
 
 **Outcome**: every `Stage1QualityChecker.check` caller supplies a station-to-network mapping,
 and none can silently omit it.
 **In**: `src/sapphire_flow/services/qc.py`; **`src/sapphire_flow/protocols/stores.py`** — the
-`QualityChecker` Protocol at `:1012` declares this signature and must change with it; and the
-**two** production callers, `flows/ingest_observations.py:304` and
-`services/onboarding.py:772`.
+`QualityChecker` Protocol at `:1012` declares this signature and must change with it; and
+**all** callers — `flows/ingest_observations.py:304`, `services/onboarding.py:773`, and
+**`scripts/dhm_precip/qc_mask.py:203,208`** reached from
+**`build_dudh_koshi_handover.py:175`**, which call positionally and sit outside the pyright
+gate, so only `tests/unit/scripts/` will catch a break.
 **Out**: **the forecast QC path is untouched.** `services/run_station_forecast.py:549,557`,
 `services/run_group_forecast.py:285,293` and `services/forecast_combination.py:332` call
 `ForecastOutputQualityChecker` — a *separate* Protocol over `ForecastEnsemble` and
-`ForecastQcRuleSet` (`services/run_station_forecast.py:229`,
-`protocols/stores.py:1024-1033`). The first revision of this plan listed them as observation-QC
+`ForecastQcRuleSet`. (Precisely: `ForecastOutputQualityChecker` is a concrete class at
+`services/forecast_qc.py:230`; the Protocol at `protocols/stores.py:1025` is
+`ForecastQualityChecker`. The earlier revision conflated the two names — the conclusion,
+leave that path alone, is unchanged.) The first revision of this plan listed them as observation-QC
 call sites; that was wrong, and acting on it would have changed forecast QC against D1.
 **Verification**: the mapping is a required parameter, so omission is a type error rather than
 a silent default; **a station absent from the mapping raises** (D3) — asserted by a test, not
@@ -189,7 +223,14 @@ series whose parameter/cadence matches nothing all still yield empty flag lists,
 ingest and onboarding paths are fail-open in exactly this way. Plan 263 was going to bolt a
 local assertion onto its own import; the policy belongs here, once, for every caller.
 **In**: `src/sapphire_flow/services/qc.py`; `src/sapphire_flow/protocols/stores.py`;
-the two call sites' handling of the new error.
+every call site's handling of the new error.
+**🔴 It must not break a deliberate empty pass.** `build_dudh_koshi_handover.py:154` defines
+`_empty_rule_set()` and passes it into `check` on every iteration of `attribute_mask_by_rule`
+(`:174-190`) — an intentional, tested no-rules call. A blanket "no rules resolved → raise"
+breaks it. The contract must distinguish **accidental** non-resolution (a rule set that should
+have matched and did not) from an **explicitly empty** rule set the caller supplied on purpose:
+an empty `QcRuleSet` is a caller's declared intent and passes; a non-empty rule set that
+resolves nothing for a series is the error.
 **Out**: no change to what any *resolved* rule does.
 **Verification**: a series whose `(parameter, time_step)` resolves no rule raises rather than
 returning empty flags; a series that resolves rules and trips none still returns `QC_PASSED`;
@@ -202,9 +243,13 @@ observation `qc_passed` with zero rules run.
 **Outcome**: proof that a deployment serving one network is unaffected.
 Added because "byte-identical before and after" had no oracle — a post-change test cannot
 compare against a "before" that no longer exists.
-**In**: a golden fixture under `tests/fixtures/qc/` — a fixed observation series plus the Swiss
-rule set, with expected flags, statuses and thresholds **generated before T1 lands** and
-committed as the baseline.
+**In**: a golden fixture under `tests/fixtures/qc/` — a fixed observation series plus **the
+rule set loaded from `config.toml`, which is what actually runs**, not
+`_default_swiss_qc_rules()`, which `load_qc_rules` never returns while a `[qc_rules]` section
+exists (`config/qc_rules.py:262-268`). A fixture built from the defaults function would protect
+code that no deployment executes. Expected flags and statuses **generated before T1 lands** and
+committed as the baseline. Note "thresholds" are not a returned field — they appear only inside
+`QcFlag.detail`, so the comparison is over `detail` text.
 **Out**: not a new QC behaviour; purely a regression bar.
 **Verification**: `uv run pytest tests/unit/services/test_qc_swiss_equivalence.py` — the Swiss
 fixture's flags, statuses and thresholds match the golden artifact exactly. **`rule_version` is
