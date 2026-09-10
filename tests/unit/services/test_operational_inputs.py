@@ -279,7 +279,15 @@ class TestPastForcingTailReachesTheWindowThroughTheAssembler:
                 )
         return records
 
-    def _assemble(self, sid: StationId, *, seed_tail: bool, missing_tail: int = 2):
+    def _assemble(
+        self,
+        sid: StationId,
+        *,
+        seed_tail: bool,
+        missing_tail: int = 2,
+        issue_time: UtcDatetime | None = None,
+        extra_records: list[WeatherForecastRecord] | None = None,
+    ):
         (station_store, basin_store, obs_store, nwp_store, state_store, reanalysis) = (
             _make_stores_and_sources(sid)
         )
@@ -306,11 +314,13 @@ class TestPastForcingTailReachesTheWindowThroughTheAssembler:
             nwp_store.store_weather_forecasts(
                 self._tail_forecasts(sid, missing_tail=missing_tail)
             )
+        if extra_records:
+            nwp_store.store_weather_forecasts(extra_records)
         return assemble_station_operational_inputs(
             station_id=sid,
             model=_make_model(),
             model_id=_MODEL_ID,
-            issue_time=_ISSUE,
+            issue_time=issue_time or _ISSUE,
             cycle_time=_CYCLE,
             nwp_source=_NWP_SOURCE,
             forcing_source=reanalysis,
@@ -335,7 +345,51 @@ class TestPastForcingTailReachesTheWindowThroughTheAssembler:
         past_dynamic = result[0].data.past_dynamic
         last = ensure_utc(max(past_dynamic.get_column("timestamp").to_list()))
         assert last == ensure_utc(_ISSUE - timedelta(hours=1))
-        assert past_dynamic.height == past_dynamic.height  # shape asserted below
+        assert past_dynamic.height == result[0].data.past_targets.height
+
+    def test_the_fill_stops_at_the_aligned_bound_not_the_issue_time(self) -> None:
+        """Independent review 2026-09-10 (major). Both assembler tests used a
+        bucket-ALIGNED issue time, so `past_targets_end == issue_time` and
+        mutating either call site to `window_end=issue_time` left the suite
+        green — reinstating the very defect review round 2 fixed.
+
+        An hourly model issued at 00:30 makes them differ: the aligned bound is
+        00:00, and a stored forecast AT 00:00 is the bait. Filling to the issue
+        time would append that in-progress bucket and leave `past_dynamic` one
+        row taller than `past_targets`.
+        """
+        sid = StationId(uuid4())
+        bait = [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=sid,
+                nwp_source=_NWP_SOURCE,
+                cycle_time=ensure_utc(_ISSUE - timedelta(hours=6)),
+                valid_time=_ISSUE,  # exactly the aligned bound
+                parameter=param,
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=9.0,
+                created_at=_NOW,
+            )
+            for param in ("precipitation", "temperature")
+        ]
+
+        result = self._assemble(
+            sid,
+            seed_tail=True,
+            issue_time=ensure_utc(_ISSUE + timedelta(minutes=30)),
+            extra_records=bait,
+        )
+
+        assert result is not None
+        past_dynamic = result[0].data.past_dynamic
+        timestamps = [
+            ensure_utc(ts) for ts in past_dynamic.get_column("timestamp").to_list()
+        ]
+        assert _ISSUE not in timestamps, "the in-progress bucket must never be appended"
+        assert max(timestamps) == ensure_utc(_ISSUE - timedelta(hours=1))
         assert past_dynamic.height == result[0].data.past_targets.height
 
     def test_past_forcing_stays_short_when_no_forecast_covers_the_lag(self) -> None:

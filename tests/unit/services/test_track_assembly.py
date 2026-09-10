@@ -749,6 +749,12 @@ def test_past_forcing_tail_is_filled_on_the_per_track_path() -> None:
         spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
         ensemble_mode=EnsembleMode.SINGLE,
     )
+    # An OFF-MIDNIGHT issue: 06Z for a daily model. `past_targets_end` is the
+    # aligned bound (00:00Z), NOT the issue time — independent review
+    # 2026-09-10 (major): both assembler tests previously used a bucket-aligned
+    # issue time, so `window_end=issue_time` was indistinguishable from the
+    # correct bound and mutating either call site left the suite green.
+    issue_time = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
     window_end = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
     last_measured_day = ensure_utc(window_end - timedelta(days=2))
     # Hourly reanalysis covering only the FIRST of the two lookback days.
@@ -764,19 +770,41 @@ def test_past_forcing_tail_is_filled_on_the_per_track_path() -> None:
         ]
     )
     forecast_store = FakeWeatherForecastStore()
+    cycle = ensure_utc(window_end - timedelta(days=1, hours=6))  # 18Z, two days back
     forecast_store.store_weather_forecasts(
         [
             WeatherForecastRecord(
                 id=uuid4(),
                 station_id=_STATION,
                 nwp_source=_NWP_SOURCE_261,
-                cycle_time=ensure_utc(window_end - timedelta(days=1)),
-                valid_time=ensure_utc(window_end - timedelta(days=1, hours=-hour)),
+                cycle_time=cycle,
+                valid_time=ensure_utc(
+                    window_end - timedelta(days=1) + timedelta(hours=hour)
+                ),
                 parameter="precipitation",
                 spatial_type=SpatialRepresentation.BASIN_AVERAGE,
                 band_id=None,
                 member_id=0,
                 value=2.0,
+                created_at=window_end,
+            )
+            for hour in range(24)
+        ]
+        # A COMPLETE day beyond the aligned bound. If the fill ran to the
+        # issue time instead of `past_targets_end`, this day would be appended
+        # as a partial bucket and `past_dynamic` would outgrow `past_targets`.
+        + [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=ensure_utc(window_end - timedelta(hours=6)),
+                valid_time=ensure_utc(window_end + timedelta(hours=hour)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=3.0,
                 created_at=window_end,
             )
             for hour in range(24)
@@ -789,24 +817,29 @@ def test_past_forcing_tail_is_filled_on_the_per_track_path() -> None:
         model=_FakeModel(requirements),  # type: ignore[arg-type]
         projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
         track_outcome=None,
-        issue_time=window_end,
+        issue_time=issue_time,
         obs_store=obs_store,  # type: ignore[arg-type]
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
         weather_forecast_store=forecast_store,  # type: ignore[arg-type]
         nwp_source=_NWP_SOURCE_261,
-        clock=lambda: window_end,  # type: ignore[arg-type]
+        clock=lambda: issue_time,  # type: ignore[arg-type]
     )
 
     assert isinstance(result, ReadyContext)
     past_dynamic = result.inputs.data.past_dynamic
     timestamps = [ensure_utc(t) for t in past_dynamic.get_column("timestamp").to_list()]
     # Both lookback days present: the measured one and the forecast-filled one.
+    # Crucially the frame ENDS at the aligned bound — the in-progress bucket
+    # (2026-01-10, which the store fully covers) is never appended.
     assert timestamps == [
         last_measured_day,
         ensure_utc(window_end - timedelta(days=1)),
     ]
+    # (no height-vs-past_targets check here: this fixture seeds no
+    # observations, so past_targets is empty by design. The station-assembler
+    # test carries that comparison.)
     filled_value = past_dynamic.filter(
         pl.col("timestamp") == ensure_utc(window_end - timedelta(days=1))
     ).get_column("precipitation")[0]

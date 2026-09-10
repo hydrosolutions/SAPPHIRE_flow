@@ -56,7 +56,11 @@ def _hourly_forecast(
             id=UUID(int=day * 100000 + hour * 100 + cycle_day),
             station_id=_STATION,
             nwp_source=_NWP,
-            cycle_time=_ts(2026, 9, cycle_day),
+            # 18Z of the PREVIOUS day, so no `valid_time` coincides with the
+            # cycle stamp. A same-instant stamp is the de-accumulated lead-0
+            # zero, which the fill deliberately never uses — a fixture that
+            # collides with it is testing an artefact, not the rule.
+            cycle_time=ensure_utc(_ts(2026, 9, cycle_day) - timedelta(hours=6)),
             valid_time=_ts(2026, 9, day, hour),
             parameter=parameter,
             spatial_type=SpatialRepresentation.BASIN_AVERAGE,
@@ -557,6 +561,69 @@ class TestFillPastForcingTail:
         )
         assert warning["reason"] == "undeclared_native_cadence"
         assert warning["declared_sources"] == ["icon_ch2_eps"]
+
+    def test_lead_zero_steps_are_never_used(self) -> None:
+        """Independent review 2026-09-10 (blocker), confirmed on the staging
+        host: ALL 96,726 stored lead-0 precipitation rows are exactly 0.0,
+        because ingest de-accumulates against a zero pad, so the value at
+        `valid_time == cycle_time` is `tp(0) - 0` by construction.
+
+        "Freshest covering cycle" takes the maximum cycle_time, which for a
+        valid_time that IS a cycle stamp is always that cycle's lead 0. Four of
+        every twenty-four hourly increments would be zeroed and the daily total
+        under-read by ~17% -- with a COMPLETE 24-stamp grid and no null, so
+        neither the grid check nor `max_nan` would see it.
+
+        Here: 6-hourly cycles, 1.0 mm every hour, and the lead-0 row of each
+        cycle stored as 0.0 exactly as production does.
+        """
+        frame = _reanalysis_frame(7)
+        records: list[WeatherForecastRecord] = []
+        for cycle_hour in (0, 6, 12, 18):
+            cycle = ensure_utc(_ts(2026, 9, 8) + timedelta(hours=cycle_hour))
+            for lead in range(0, 24 - cycle_hour):
+                valid = ensure_utc(cycle + timedelta(hours=lead))
+                records.append(
+                    WeatherForecastRecord(
+                        id=UUID(int=700000 + cycle_hour * 100 + lead),
+                        station_id=_STATION,
+                        nwp_source=_NWP,
+                        cycle_time=cycle,
+                        valid_time=valid,
+                        parameter="precipitation",
+                        spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                        band_id=None,
+                        member_id=0,
+                        # The de-accumulated lead-0 step is a structural zero.
+                        value=0.0 if lead == 0 else 1.0,
+                        created_at=cycle,
+                    )
+                )
+        # The 00Z bucket stamp itself must come from an EARLIER cycle, as it
+        # does in production (yesterday's 18Z run at lead 6).
+        prior = ensure_utc(_ts(2026, 9, 7) + timedelta(hours=18))
+        records.append(
+            WeatherForecastRecord(
+                id=UUID(int=799999),
+                station_id=_STATION,
+                nwp_source=_NWP,
+                cycle_time=prior,
+                valid_time=_ts(2026, 9, 8),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=1.0,
+                created_at=prior,
+            )
+        )
+
+        filled = _fill(frame, records, window_end=_ts(2026, 9, 9))
+
+        total = filled.filter(pl.col("timestamp") == _ts(2026, 9, 8)).get_column(
+            "precipitation"
+        )[0]
+        assert total == 24.0, "lead-0 zeros must not be counted as real increments"
 
     def test_no_forecasts_leaves_the_frame_unchanged(self) -> None:
         frame = _reanalysis_frame(7)

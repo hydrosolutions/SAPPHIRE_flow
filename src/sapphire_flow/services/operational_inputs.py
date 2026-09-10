@@ -505,6 +505,23 @@ def _freshest_control_points(
         # rather than trusted to the caller's query.
         if r.member_id not in _CONTROL_MEMBER_IDS:
             continue
+        # ⛔ NEVER the lead-0 step. Precipitation is de-accumulated at ingest
+        # against a ZERO pad (`adapters/meteoswiss_nwp.py:186`), so the value at
+        # `valid_time == cycle_time` is `tp(0) - 0 = 0` BY CONSTRUCTION — it is
+        # not "no rain in that hour". Those rows are stored: `_expected_valid_times`
+        # starts at h=0 and completeness asserts it. Measured on the staging host,
+        # 2026-09-10: ALL 96,726 lead-0 precipitation rows are exactly 0.0, while
+        # lead 1-5 h averages 0.1037.
+        #
+        # "Freshest covering cycle" picks the maximum cycle_time, and for a
+        # `valid_time` that IS a cycle stamp (00/06/12/18Z) that is always that
+        # cycle's lead 0 — so four of every twenty-four hourly increments would be
+        # zeroed and the daily total silently under-read by ~17%, with no null and
+        # a complete 24-stamp grid. Skipping lead 0 falls back to the next-freshest
+        # covering cycle, which carries a real increment; if none does, the stamp
+        # is absent, the bucket fails the grid check, and the fill declines.
+        if ensure_utc(r.valid_time) == ensure_utc(r.cycle_time):
+            continue
         key = (r.parameter, ensure_utc(r.valid_time))
         incumbent = freshest.get(key)
         if incumbent is None or ensure_utc(r.cycle_time) > incumbent[0]:
@@ -637,7 +654,11 @@ def fill_past_forcing_tail(
     for (param, valid_time), value in points.items():
         wide_rows.setdefault(valid_time, {"timestamp": valid_time})[param] = value
     fill_frame = resample_to_time_step(
-        pl.DataFrame(list(wide_rows.values())),
+        # `infer_schema_length=None` scans every row: the store read has no
+        # ORDER BY, so a parameter whose first appearance falls past polars'
+        # default 100-row sample would have its column dropped outright and
+        # that series would silently never fill (independent review 2026-09-10).
+        pl.DataFrame(list(wide_rows.values()), infer_schema_length=None),
         time_step,
         aggregation_methods=aggregation_methods,
     )
