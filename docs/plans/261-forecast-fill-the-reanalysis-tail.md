@@ -57,6 +57,27 @@ verified against the cited code before folding.
   the most serious thing either pass caught, because the plan silently contradicted an
   invariant the repo states in prose and suggests a regression test for.
 
+### Review round 3 (2026-09-10) — the PLAN was reviewed, and it was directing a defect
+
+An independent pass over this document, after T1/T2 shipped. One BLOCKER, two MAJORs,
+four MINORs; all verified against the code before folding.
+
+**The BLOCKER was in the plan, not the code.** T1 step 3 said "keep one row per
+`(parameter, valid_time)` by maximum `cycle_time`" — which selects a run's own first step
+whenever a timestamp is a cycle stamp, and for de-accumulated precipitation that step is a
+structural zero. The implementation caught it on its third review round; the plan text
+still said the opposite, so anyone re-implementing from this document would have rebuilt
+the ~17% under-read. Step 3 now carries the rule and its own warning section.
+
+Two of the plan's own claims were false as written and are corrected in place rather than
+annotated: the recency flag does **not** fire on every forecast (only one deployed model
+declares past forcing at all), and D5's "only two parameters in `weather_forecasts`" is
+true of the Swiss route only — Nepal's snow writes to the same store.
+
+The mechanism steps were also rewritten to say what a correct fill does: **per-series**
+anchors and **tail-only** merging, not a frame-wide anchor and "reanalysis precedence",
+which as written permitted interior gap-filling this plan forbids.
+
 ## ⛔ DO NOT OVER-ENGINEER — binding on this plan AND on every reviewer
 
 1. **"No findings" is a complete and welcome review.** Do not manufacture findings.
@@ -170,9 +191,16 @@ the joined series consistent in character across the seam: the reanalysis it con
 a single deterministic trace, and an ensemble mean is an average of 21 possible weathers
 rather than one coherent one.
 
-**D5 — which parameters are filled: precipitation and temperature, and no others.** This
-is settled by measurement, not preference: those are the only two parameters in
-`weather_forecasts`. `relative_sunshine_duration`, `temperature_min` and `temperature_max`
+**D5 — which parameters are filled: precipitation and temperature, and no others.** Those
+are the only two parameters in `weather_forecasts` **on the MeteoSwiss route**.
+
+⚠️ **Corrected 2026-09-10 — this is a decision, not merely a measurement.** The Nepal route
+writes `swe`/`snow_depth`/`snowmelt` into the SAME store
+(`flows/run_forecast_cycle.py:1611` → `store_weather_forecasts`), with `member_id=None` —
+which is also how a deterministic control run is marked. Without an explicit parameter
+allowlist a model declaring past snow would receive forecast-filled snow on a route this
+plan defers. The implementation therefore carries one; the "settled by measurement"
+framing was wrong. `relative_sunshine_duration`, `temperature_min` and `temperature_max`
 have no forecast counterpart and their past legs stay short. **This fully covers
 `cmal_small`, which declares precipitation and temperature only** — the pilot in Plan 262
 is not partially served.
@@ -207,8 +235,21 @@ on the forecast; it remains visible only in the ingest path's own monitoring.
    `forcing_recent_steps` with a default of **2** (`config/deployment.py:78`). With the
    newest reanalysis at 2026-09-07 00:00Z and a daily anchor, the most recent expected
    bucket (2026-09-08) is missing while 2026-09-07 is present — **one** bucket, not two
-   (an earlier revision said two). One missing recent bucket is enough: the flag fires on
-   every forecast, permanently, and a warning that is always on hides the real ones.
+   (an earlier revision said two). One missing recent bucket is enough to fire it.
+
+   ⚠️ **Corrected 2026-09-10 — the flag does NOT fire on every forecast.** `past_forcing_flags`
+   iterates `data_requirements.past_dynamic_features`
+   (`services/run_station_forecast.py:462-472`, `services/run_group_forecast.py:329-336`),
+   and an empty set yields no flags. `linear_regression_daily`, `climatology_fallback` and
+   `persistence_fallback` all declare `past_dynamic_features=frozenset()`; `NwpRegression`
+   and `NwpRainfallRunoff` declare only their own target history, which the FI adapter
+   routes to the target channel, not the forcing one
+   (`adapters/forecast_interface.py:673-675`). **Only `SeasonalPrecipRunoffRegression`
+   overrides `_extra_past_known` (`models/nwp_regression.py:765`)** — plus `cmal_small`
+   under Plan 262. Measured on the staging host the same day: of 1,337 forecasts in 20 h,
+   **zero** carry a `forcing` flag; all 1,337 are DEGRADED from `warm_up` instead. So the
+   quality label IS saturated — by a different cause — and this motivation is narrower
+   than it was written.
 4. **It is what stands between the deep-learning pilot and a real forecast** (Plan 262).
 
 ## Tasks
@@ -237,17 +278,48 @@ distinct reasons that compound:
 So, in order:
 
 1. Resample the reanalysis frame as today.
-2. Read control-member forecast rows over `[newest_reanalysis_bucket + time_step,
-   past_targets_end)` — **strictly after** the last reanalysis bucket, and stopping at
-   `past_targets_end`, never `issue_time`.
-3. Keep one row per `(parameter, valid_time)` by **maximum `cycle_time`** (D3).
+2. Read control-member forecast rows up to `past_targets_end`, never `issue_time`,
+   starting after **each series' OWN last measured bucket** — per series, not frame-wide,
+   because the products publish independently and a frame-wide anchor under-fills every
+   series that lags the others. (Revised: an earlier revision said
+   `newest_reanalysis_bucket`, which was safe only because all five products happened to
+   stop at the same stamp on 2026-09-09.)
+3. Keep one row per `(parameter, valid_time)` by **maximum `cycle_time`** (D3) — but
+   ⛔ **never a run's own first step for a de-accumulated parameter**
+   (`valid_time == cycle_time`); fall through to the next-freshest covering cycle. See
+   the warning below: this is the single most dangerous line in the plan.
 4. Resample those to the model's declared step with the model's own declared aggregation.
-5. Merge into the reanalysis frame with **reanalysis precedence** — a bucket the
-   reanalysis already holds is never overwritten.
-6. Fill a bucket **only when its full complement of NWP steps is present**; otherwise
+5. Merge **tail-only, per series**: fill only buckets strictly after that series' own last
+   measured bucket. (Revised: an earlier revision said "reanalysis precedence — a bucket
+   the reanalysis already holds is never overwritten", which as stated permits writing
+   into a bucket present as a row with a NULL value — interior gap-filling, which this
+   plan forbids.)
+6. Fill a bucket **only when it holds every step of the source's native grid**; otherwise
    leave it absent. A partly-covered bucket would resample to a silently low precipitation
    total with no null, which neither `max_nan`
    (`adapters/forecast_interface.py:1029-1038`) nor the T1b gap flag would see.
+   ⚠️ The cadence must be **DECLARED per `nwp_source`** (`icon_ch2_eps` = 1 h), never
+   inferred from the rows being validated — inference is circular: a bucket holding hours
+   0,2,…,22 reads as a 2-hourly source, "completes" at 12 steps, and yields half the
+   precipitation. **A source with no declared cadence is not filled**, and says so.
+
+### ⛔ The lead-0 trap — read this before touching step 3
+
+Precipitation is stored **de-accumulated**: `adapters/meteoswiss_nwp.py:186` pads by one
+and diffs, so a run's first output is `tp(0)` itself, and ICON's `tp(0)` is zero because
+accumulation starts at the run's start. That step **carries no interval** — it is not "no
+rain in that hour".
+
+"Maximum `cycle_time`" selects exactly that step for every `valid_time` that IS a cycle
+stamp (00/06/12/18Z) — four of every twenty-four hourly increments. The bucket still holds
+a complete grid and no null, so the completeness rule, `max_nan` and the gap flag all
+pass: **every filled daily precipitation total silently under-reads by ~17%**.
+
+Measured on the staging host 2026-09-10: **96,726 of 96,726** stored lead-0 precipitation
+rows are exactly 0.0, against a 0.1037 mean at leads 1–5 h. Temperature at lead 0 averages
+15.91 °C — it is converted K→°C and nothing else, so **the skip applies to de-accumulated
+parameters only**; discarding a run's first temperature reading would throw away the
+freshest real value.
 
 **In — the read path exists; its filters do not.**
 `WeatherForecastStore.fetch_lookback` (`protocols/stores.py:299`,
@@ -289,7 +361,8 @@ gaps. Any write to any store.
 **Verification.** Per assembler: given a reanalysis frame ending N buckets short and stored
 forecasts covering the remainder, the assembled `past_dynamic` covers the full aligned
 window, ends on **`past_targets_end`** (never later), has the **same height as
-`past_targets`**, carries the freshest covering cycle's control value where cycles overlap,
+`past_targets`**, carries the value of the freshest covering cycle **that has a usable step** where cycles
+overlap,
 and leaves the last reanalysis bucket's value **unchanged**. Plus:
 
 - an **off-midnight seam test** — a 06Z cycle for a daily model — asserting numerically
@@ -321,7 +394,16 @@ historical path.
 **Outcome.** `forcing_recent_steps` has a default chosen against re-measured data — quiet
 in normal operation, loud when the source genuinely stalls.
 
-**In.** Re-measure the tail after T1, choose the default, and record the number here.
+**In.** After T1 is deployed: confirm on the host that the past leg now reaches
+`past_targets_end` for a real cycle (exit gate 1), then choose the default and record the
+number here.
+
+⚠️ **Measure the RESIDUAL, not the filled series.** A successfully filled series has no
+missing buckets at all — this plan says so at D6 — so it cannot discriminate a
+`recent_steps` of 1 from 5. The population that can is the cycles where the fill
+**declines**: an incomplete native grid, no covering cycle, or a source with no declared
+cadence. Those are what `forcing_recent_steps` must stay quiet about in normal operation
+and fire on when the source genuinely stalls.
 
 ⚠️ **Verify, do not assume, that the input-quality label is written at all.** Measured
 2026-09-09: **every one of the 4,248 forecasts issued in the last three days has
@@ -352,10 +434,14 @@ plan. The NULL question answered either way, in writing.
 
 1. The operational past forcing leg covers every complete bucket of the aligned lookback
    window for precipitation and temperature, ending on `past_targets_end` and with the
-   same height as `past_targets` — verified on the mini against a real cycle.
-2. Where cycles overlap, the value used is the freshest covering cycle's control member;
-   where the reanalysis already holds a bucket, its value is unchanged. Asserted by test,
-   including an off-midnight seam case, not by inspection.
+   same height as `past_targets`. (The live-host confirmation belongs to T3, which is the
+   only task that runs after deployment — an earlier revision left it here, owned by no
+   task, which is exactly the defect that retired the old gate 5.)
+2. Where cycles overlap, the value used is the control member of the freshest covering
+   cycle **that carries a usable step** — never a run's own first step for a
+   de-accumulated parameter; and every bucket a series already measured is unchanged.
+   Asserted by test, including an off-midnight seam case and a lead-0 case, not by
+   inspection.
 3. Hindcast and training frames are byte-identical to before, proven by test, not by
    argument.
 4. Nothing is written to any store by this plan.
@@ -372,3 +458,10 @@ Interior gap-filling; a new reanalysis source; changing what is ingested; back-f
 stored historical rows; using more than the control member on the past leg; extending the
 fill to parameters with no forecast counterpart; and any change to Nepal's existing recap
 forecast-fill, which already works.
+
+**The Nepal route itself is deferred, explicitly.** `ifs_ecmwf` is stored verbatim by the
+recap Gateway (`adapters/recap_gateway.py:613` — no resampling) on a lead-dependent
+3-hourly-then-6-hourly grid, so no single native step describes it and this fill does not
+run there. Declaring that grid, and filling Nepal's past leg, belongs to whichever plan
+takes it on. (An earlier revision deferred only the Gateway's own upstream fill, which is
+a different thing, and said nothing about this fill running on the Nepal route.)
