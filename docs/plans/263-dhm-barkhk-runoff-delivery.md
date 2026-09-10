@@ -9,7 +9,7 @@ reviews:
   - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
   - "codex 2026-09-10 set — NOT READY; reviewed with 264; 3 seam blockers neither plan owned"
-open_decisions: []
+open_decisions: [D14]
 depends_on: [264]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
@@ -42,7 +42,9 @@ Round 2 also found that a calibration the author recommended would have committe
 rating-table values — the same leak class already stripped once, reintroduced through a
 different door.
 
-**All sixteen decisions are closed.** T1–T6 are buildable. T7 waits only on
+**Fifteen of sixteen closed; D14 is reopened** — the owner found it aimed at a *plausible*
+maximum where the project's own standard calls for a *physical impossibility* gate, which would
+have reproduced the Swiss failure one level down. T1–T6 are buildable. T7 waits on D14 and on
 **Plan 264**, which the owner's answer to D15 split out: teaching QC rules which network they
 apply to changes shared code the live Swiss deployment depends on, and that risk gets its own
 plan and its own review rather than a paragraph in this one.
@@ -603,7 +605,7 @@ tables under linear interpolation put all but one value in range, which is weak 
 directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
 blocking on.
 
-**D14 — how the DHM daily QC thresholds are calibrated. CLOSED: a physical estimate per station.**
+**D14 — how the DHM daily QC thresholds are calibrated. REOPENED 2026-09-10: the closed answer aimed at the wrong target.**
 Opened by D12's answer. Swiss thresholds cannot be reused (see the table above), so a DHM
 daily rule set is needed. Three constraints on any answer, two of them found in round 2:
 
@@ -630,12 +632,33 @@ therefore be constructed in-process by the import CLI and passed to the checker,
 cannot be *persisted* without new schema. Prefer the in-process route; say so explicitly
 rather than writing "override rows".
 
-**CLOSED: a physical estimate per station** (owner, 2026-09-10) — each station's plausible
-maximum derived from catchment size and what is known about flooding in the region, rounded
-coarsely. It is independent of both the delivered series and DHM's tables, so it is neither
-circular nor a leak. Cost: six pieces of hydrological judgement, which is the right kind of
-cost for a limit that decides what counts as implausible. The rating-table envelope may be
-used as a **cross-check computed at re-measure time and never committed**; it is not the basis.
+**Reopened because the author framed the target wrongly, and the owner caught it.** The closed
+answer asked for each station's **plausible maximum**. The project's own standard says a range
+check is something else entirely: *"a physical-impossibility gate, not an outlier filter …
+deliberately unreachable rather than discriminating"* (`docs/standards/wmo.md:89-91`). A
+plausible maximum **is** a discriminating filter, and it would reproduce the Swiss failure one
+notch lower — 5,000 m³/s flags 1,125 genuine monsoon peaks at station 450 precisely because it
+is a *plausible Swiss* maximum rather than an impossible one. A "plausible Nepali maximum" would
+condemn the largest real floods in the record, which are the rows that matter most.
+
+**The target is an impossibility ceiling: a value water cannot produce, only a fault can.**
+Exceeding it means the number is wrong, not that something remarkable happened.
+
+*Recommendation:* derive it from **catchment area against a published flood-envelope curve**
+(Creager / Francou–Rodier or equivalent) — the standard instrument for "the largest discharge
+ever observed anywhere from a basin of this size" — then round up coarsely. That basis is
+**not circular** (external published hydrology, no dependence on this delivery or DHM's tables),
+**not a leak** (the input is catchment area, already in DHM's own published station list; the
+output is a round number far above any real value), **the right shape** (unreachable by
+construction, so it catches faults and never floods), and **cheap** (one number per station from
+an area T2a already transcribes). **The team's hydrologist sets the coefficient** — the author is
+not qualified to and must not guess it here.
+
+The same reframing applies to `max_rate` and the spike tolerance: both are currently written as
+plausibility filters and will flag real monsoon rises unless restated as impossibility gates.
+
+The rating-table envelope may still serve as a **cross-check computed at re-measure time and
+never committed**; it is not the basis.
 
 **How six different limits are actually expressed — the gap the set review found.** Plan 264
 adds a *network* dimension, so one DHM rule serves all six stations with one ceiling. Six
