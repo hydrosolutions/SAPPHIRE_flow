@@ -3,10 +3,13 @@ status: DRAFT
 created: 2026-09-10
 revised: 2026-09-10
 plan: 263
-reviews: ["codex 2026-09-10 — NOT READY, 5 blockers, all verified and folded except D7 which returns to the owner"]
+reviews:
+  - "codex 2026-09-10 — NOT READY, 5 blockers; all verified, folded"
+  - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
+open_decisions: [D6, D7, D10, D11, D12, D13]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
-depends_on: [035]
+related: [035]
 source: 2026-09-10 — measured directly against the delivered files (README.md: "Received without further comments from Subash via Vishnu on September 8, 2026 via email to Beatrice"). Every number in this plan was measured, not inferred.
 ---
 
@@ -14,40 +17,39 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 
 ## Status
 
-**DRAFT — NOT READY.** One independent Codex review has run (2026-09-10) and its findings
-are folded below; every one was verified against the cited source before folding. An
-independent **Claude** pass is still owed before READY.
+**DRAFT — NOT READY.** Both mandated independent passes have now run and are folded
+(Codex 2026-09-10; Claude 2026-09-10). Every finding was verified against the cited source
+before folding. **Six owner decisions are open** (D6, D7, D10, D11, D12, D13), three of
+them opened *by* the reviews.
 
-The review changed the plan materially — it was right about five things the author was
-wrong about:
+The two passes between them found eleven blockers, and the pattern is worth stating because
+it should shape how this plan is finished: **the author's measurements of the delivered data
+held up; the author's claims about this repository did not.** Nothing in the file analysis
+was overturned. What was wrong was a verification command naming a test tier that cannot
+exercise the defect, a migration that breaks a pinned Alembic head, an onboarding task that
+cannot satisfy a NOT NULL tenant, an import that never states the QC status of 96,521 rows,
+and an acceptance criterion whose number depends on the very decision the task is blocked on.
 
-1. **T3 is not unblocked after all.** Curve validity is stored as *instants*, so turning
-   DHM's inclusive end dates into stored intervals requires the same Nepali-day boundary
-   T4 is waiting on. The author declared T3 unblocked; it is not.
-2. **No task created the station rows** every other task's foreign keys require. Now T2b.
-3. **T4's acceptance criterion contradicted the plan's own measurement** — it demanded
-   every value be in range while the plan reports one that is not.
-4. **The draft itself leaked three individual rating-table values** past the constraint
-   the author had just written. Generalised; see § Data handling.
-5. **The in-memory test double diverges** from the store the plan proposes to fix, so
-   fixing only the database reader would split unit and integration behaviour.
+Corrections to the author's own earlier reasoning, recorded so they are not re-derived:
 
-**One finding is not folded and is back with the owner: D7.** See § Decisions.
+1. **T3 is not unblocked** (Codex). Curve validity is stored as instants, so it needs the
+   same Nepali-day boundary T4 waits on.
+2. **The D7 argument was overstated** (Claude). The reprocessing path it invoked is
+   **unbuilt**: `fetch_derived_observations_by_curve` raises `NotImplementedError`
+   (`store/observation_store.py:233`) and `archive_observation_values` has no production
+   caller. The conclusion survives, on two stronger legs; see D7.
+3. **This Status section claimed all nine decisions were closed** while two sections below
+   it reopened one and opened another. Fixed here.
 
-**All nine owner decisions were closed on 2026-09-10** (§ Decisions). Two of the answers
-changed the shape of the work rather than merely selecting an option:
-
-- **The measurements may not be published** (D5). This is a handling constraint on every
-  task, not a footnote — it rules out the checked-in data excerpts the first revision's
-  T1 and T5 assumed. See § Data handling.
-- **DHM has no current rating tables to give us** (D8). The expired-curve finding is
-  therefore not a gap in the delivery that a follow-up email closes; there is nothing to
-  send. A live level→discharge path for these six stations is blocked at source.
+An independent pass also confirmed by reading source that the three code mismatches this
+plan is built on are accurate, that the data-handling constraint is not violated anywhere in
+the current text, and that the plan's exclusions hold — no timezone/grid/phase design, no
+change to Plan 139's scope, no contact with Plans 261/262.
 
 ## What arrived
 
-`.../2025-01-BARHKH/data/runoff/BARKHK PROJECT DATA/` (Dropbox, outside the working
-tree, git-ignored by virtue of living outside the repo):
+`.../2025-01-BARHKH/data/runoff/BARKHK PROJECT DATA/` (Dropbox, outside the working tree —
+*out of tree*, which is not the same as ignored; see § Data handling for the guard):
 
 | File(s) | Content |
 |---|---|
@@ -99,6 +101,10 @@ Consequences, binding on every task below:
   stage, and two tables' point counts and reach). They have been generalised. The test to
   apply is whether a reader could recover a value from the table, not whether the value
   feels structural — that reasoning is what let the three through.
+- **The constraint currently rests on prose alone.** The second review flagged this: the
+  files are out of tree, which is not the same as ignored, so a stray `git add` of a copied
+  file would succeed. T6 adds a mechanical guard — an ignore pattern plus a pre-commit path
+  check — so the constraint does not depend on anyone remembering it.
 - **Open question for the pilot (D9):** if a model is trained on these measurements, it is
   unresolved whether its forecasts inherit the restriction. Worth settling before the pilot
   is placed, not after.
@@ -139,7 +145,7 @@ Two structural facts the dummies did not show at all:
 
 - `RT_` files are **multi-block**: a 5-line file header, then N blocks of
   `Rating Type No` / `From Date` / `To Date` / `From Stage` / points / a dashed separator.
-  17–29 blocks per station (6 for station 684).
+  17–29 blocks per station for five of the six; 6 for station 684.
 - **Stage can be negative.** At least one table's lowest tabulated stage is below zero,
   so any importer or validator that assumes a non-negative stage will reject real data.
 
@@ -268,8 +274,10 @@ answer, and does not choose a timestamp convention.
 
 **Trap 2 — Plan 139's `rof` proxy target.** Asked plainly: **this delivery does not
 supersede W1a.** Plan 139 is scoped to gateway HRU `12300`, which resolves to
-`station_code 123` / `g_123` / `testin_123` in `tests/fixtures/basin_static/nepal-dhm-basins/`
-— a 99.7 km² test basin at 28.244 N, 82.923 E in western Nepal. None of the six delivered
+`station_code "123"` / `g_123` in
+`tests/fixtures/basin_static/nepal-dhm-basins/validation_report.json` — a 99.7 km² test
+basin at 28.244 N, 82.923 E in western Nepal (the fixture family is described as
+test-data placeholder in `tests/fixtures/basin_static/README.md:26`). None of the six delivered
 stations is 12300 or near it; they are 2,935–31,650 km² Koshi and Narayani basins 1.5–5°
 of longitude to the east. Plan 139's W1b is **not** partly satisfied by this: it asks
 for a target for 12300 specifically, and unrelated gauges elsewhere in Nepal do not
@@ -292,8 +300,10 @@ migration. Carried here rather than deferred, since nothing else is waiting on P
 **D2 — The three one-day overlaps. CLOSED: the newer table wins.**
 Import verbatim — no edit to DHM's dates — and fix `fetch_curve_at` to resolve an overlap
 to the curve with the later `valid_from`, matching the last-wins rule
-`fetch_active_curves_batch_at` already documents. This fixes a real pre-existing reader
-defect, not just this import.
+`fetch_active_curves_batch_at` already documents. This is a real pre-existing reader defect,
+but do not over-weight it: `fetch_curve_at` has **no production caller** (only integration
+tests), while the batch sibling is the one wired into the forecast cycle. The fix is cheap
+and correct; it is not urgent on its own.
 
 **D3 — Expired curves. CLOSED: store as delivered.**
 Every curve keeps the `valid_to` DHM gave it. `fetch_active_curve()` consequently returns
@@ -312,159 +322,255 @@ and binds every task.
 **D6 — What a daily value means. CLOSED as far as it can be: it is a Nepali day.**
 The exact day boundary is with DHM, unanswered. See Trap 1. T4 stays blocked.
 
-**D7 — Source label for the discharge. REOPENED by the independent review; owner to
-re-decide.** The owner closed this on the author's recommendation — bind each value to the
-curve in force that day — but that recommendation rested on a claim the author had itself
-measured as only *consistent with* the data, not confirmed (§ What is not established).
+**D7 — Source label for the discharge. REOPENED; owner to re-decide.**
+The owner closed this on the author's recommendation — bind each value to the curve in force
+that day — but that rested on a claim the author had measured as only *consistent with* the
+data, not confirmed (§ What is not established).
 
-The review found the label is not merely descriptive. `RATING_CURVE_DERIVED` plus a curve
-id is the precondition for the rating-curve **reprocessing** path: `archive_observation_values`
-(`store/observation_version_store.py:46`) *rejects* anything else, and that path exists to
-recompute discharge from **water level** when a corrected curve arrives. We have no water
-level for these stations, and never will for this historical record. So the binding would
-not just overstate provenance — it would enrol 92,000 values in a machine that cannot
-process them.
+**The author's first argument for reversing was overstated, and the second review said so.**
+It claimed the binding would "enrol 92,000 values in a machine that cannot process them".
+The guard is real — `archive_observation_values` rejects anything that is not
+`RATING_CURVE_DERIVED` with a curve id (`store/observation_version_store.py:45-54`) — but it
+is a filter that *rejects*, not a mechanism that *enrols*, and the path is **unbuilt**:
+`fetch_derived_observations_by_curve` raises `NotImplementedError`
+(`store/observation_store.py:233`), and nothing in `src/` calls the archive at all. The
+hazard is prospective. Stated as it was, it invited rejection on the grounds that the harm
+is hypothetical.
 
-Recommendation, reversing the author's earlier one: **`MANUAL_IMPORT` throughout, with no
-curve binding**, until DHM confirms how the values were produced. It is the one label that
-claims only what we know — these numbers came from DHM by hand. The curves are still
-imported and still queryable by date; nothing is lost but an assertion we cannot support.
+The conclusion nevertheless stands, on one verified leg:
 
-**D10 — the one out-of-range value at station 670. NEW, open.** One value in 96,521 falls
-outside its contemporaneous curve's range. Options: import it unflagged, import it with a
-QC flag, quarantine it, or ask DHM. Recommendation: import it and flag it — it is real
-delivered data, and silently dropping a value because it contradicts our model of how the
-data was made is exactly the inversion of trust to avoid.
+- **The label is an identity, not an annotation.** `source` is part of
+  `uq_observations_natural_key` (`db/metadata.py:571-579`), which is exactly what
+  `store_observations` upserts on. Choosing wrong is therefore not a later `UPDATE` — it is
+  a second 92,000-row insert plus an explicit delete. The owner should price the decision at
+  that, not at the cost of an edit.
+
+**This is a three-way choice, not a binary** — the second review found the middle option,
+which the author had missed:
+
+| Option | Claims | Archive-eligible |
+|---|---|---|
+| `RATING_CURVE_DERIVED` + curve id | that this curve produced this value | yes |
+| `MANUAL_IMPORT` + curve id | that this curve was in force that day | no |
+| `MANUAL_IMPORT`, no curve id | only that DHM sent us the number | no |
+
+The middle option is representable — the domain type allows it (`types/observation.py:39`)
+and the composite FK is skipped only when the curve id is NULL, so a populated one is still
+integrity-checked. **Recommendation: the middle option.** It records everything we actually
+know, including the curve link, and claims nothing we do not.
 
 **D8 — What to ask DHM. CLOSED, and the answer reshapes the finding.**
 **There are no current rating tables** — not withheld, not in this delivery by oversight;
 they do not exist. So the expired-curve finding is not a follow-up email away from being
 closed, and an operational level→discharge path for these six stations is blocked at
 source. Transcription of the scanned station list is permitted. Still worth asking, but
-not gating this plan: the water-level readings, and tables covering the two stations whose
-records begin years before their earliest table.
+not gating this plan: the water-level readings, how a daily value is aggregated from
+sub-daily readings, whether the tables are read with linear interpolation (D13), and tables
+covering the two stations whose records begin years before their earliest table.
 
 **D9 — A real-gauge pilot. CLOSED: yes.**
 Where it lives — alongside the Swiss study, or as a separate deployment — is still being
 weighed and is **not** this plan's to settle. Note the unresolved publication question in
 § Data handling: whether forecasts trained on restricted measurements inherit the
-restriction should be settled before the pilot is placed.
+restriction should be settled before the pilot is placed. Note also D12: with these rows
+imported as `RAW`, a pilot cannot read them until a QC pass is decided and run.
+
+**D10 — the one out-of-range value at station 670. OPEN.**
+One value in 96,521 falls outside its contemporaneous curve's range. Note the second
+review's catch: "import it and flag it" is not free — a QC flag requires a rule id, a rule
+version, and a status that is neither raw nor missing (`types/domain.py:88-101`), so
+flagging one row invents a QC rule identity and leaves exactly one QC'd row among 96,520
+that are not. That is a policy act, and it cannot sit under T4's "no QC policy change".
+Options: import unflagged and record the exception in the T5 re-measure only; import with a
+purpose-made QC rule identity; or quarantine. **Recommendation: import unflagged, and let
+T5's re-measure be the standing record of it** — it keeps the delivered data intact without
+inventing a QC rule for a single row.
+
+**D11 — what "side dataset" actually means. NEW, open; blocks T2b.**
+D5 said "side dataset first" and the author never defined it. The second review found the
+phrase appears nowhere in the repository outside this plan, and that the gap is not
+cosmetic: `stations.tenant_id` is NOT NULL with no server default (`db/metadata.py:292-297`)
+and `services/tenant_boundary.py:12` hard-errors on an unknown tenant code, so T2b cannot
+insert a station without an answer. Options: a separate database; a new tenant in the
+existing database; the existing tenant with these six left at `onboarding` status.
+**Recommendation: a new tenant.** It gives real isolation for restricted data without
+standing up separate infrastructure, and it matches how the schema already partitions.
+
+**D12 — what QC status the 96,521 imported rows carry. NEW, open; blocks T4.**
+Never stated, and load-bearing: `store_observations` writes the status verbatim
+(`store/observation_store.py:44-48`), the hot read index is partial on `qc_passed`
+(`db/metadata.py:565-570`), and component derivation only consumes passed/suspect
+(`services/component_derivation.py:35-38`). So `RAW` means a pilot trained on this data sees
+nothing, while anything else asserts a QC run that did not happen — which is precisely the
+failure already on record elsewhere in this project, where stations were labelled
+operational without their history ever being QC'd. **Recommendation: `RAW`, and treat
+"make this data visible to a model" as its own later decision with its own QC pass.** Do not
+buy pilot convenience with a false quality claim.
+
+**D13 — interpolation method. NEW, open; blocks T3's acceptance criterion.**
+T3 requires all 112 curves to pass the converter "with the interpolation actually selected",
+and the method was never selected. Measured for this decision: **no tabulated discharge in
+any of the 7,869 points is zero or negative**, so log-linear is representable and the data
+does not force the choice. **Recommendation: linear** — it matches the column default
+(`db/metadata.py:601-606`), and the author's inversion of the daily series through these
+tables under linear interpolation put all but one value in range, which is weak but
+directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
+blocking on.
 
 ## Tasks
 
 Every task inherits § Data handling: no excerpt of the delivered files is checked in, and
-fixtures are synthetic. Verification names the command or test node, per `docs/workflow.md`
-§ Plan Structure.
+fixtures are synthetic.
 
 ### T1 — DHM file parsers
 
 **Outcome**: pure functions parsing a daily-flow file and a rating-table file into frozen
 dataclasses, with no I/O and no DB dependency. Malformed input raises a typed error; a line
 that is neither header nor data is never silently skipped.
-**In**: new module under `src/sapphire_flow/adapters/`; unit tests; synthetic fixtures.
+**In**: `src/sapphire_flow/adapters/dhm_files.py`;
+`tests/unit/adapters/test_dhm_files.py`; synthetic fixtures under
+`tests/fixtures/dhm/` (hand-written, never delivered content).
 **Out**: no store writes, no station resolution, no timestamp policy — T1 yields dates and
 values as delivered; the UTC boundary belongs to T3/T4 and is gated on D6.
-**Verification**: `uv run pytest tests/unit/adapters/test_dhm_files.py`, covering at least:
-a truncated block, a non-numeric value, an unknown line inside a rating block, and a
-declared year absent from the data — each asserting the typed error and its message
-fragment, not just that something raised. Plus the aggregate re-measure below (T5), which
-is the only check that touches the real files.
+**Verification**: `uv run pytest tests/unit/adapters/test_dhm_files.py` — covering a
+truncated block, a non-numeric value, an unknown line inside a rating block, a declared year
+absent from the data, and a negative stage (accepted, not rejected); each asserting the
+typed error and its message fragment, not merely that something raised. **Self-contained:
+the earlier revision made T1's gate depend on T5, which runs after it — that could never
+have been satisfied at T1's completion.**
 **Pre-change**: N/A — new module.
 
 ### T2a — Station metadata artifact
 
-**Outcome**: the six stations' transcribed metadata as a reviewable checked-in artifact
-(`timezone: Asia/Kathmandu`, `network: dhm`, `station_kind: river`). Station codes and the
-station-list metadata are publishable (D5); the measurements are not.
-**In**: fixture/config only.
+**Outcome**: the six stations' transcribed metadata as a reviewable checked-in artifact.
+Station codes and station-list metadata are publishable (D5); the measurements are not.
+**In**: `tests/fixtures/dhm/stations.toml`;
+`tests/unit/config/test_dhm_station_metadata.py`.
 **Out**: no DB writes.
 **Verification**: `uv run pytest tests/unit/config/test_dhm_station_metadata.py` — asserts
-every required field is present and well-formed for all six (coordinates in range, timezone
-resolvable, code non-empty), which is what this task actually produces. The record-span
-cross-check against the delivered files belongs to T5, which has the parser and the files.
+all six carry, and are well-formed in, every column `stations` requires NOT NULL: `code`,
+`name`, `location` (lon/lat in range, to become POINT srid 4326), `station_kind = river`,
+`network = dhm`, `timezone = Asia/Kathmandu`, `measured_parameters = ["discharge"]` (the
+canonical parameter name, `docs/conventions.md:86-90`), plus `altitude_masl` and drainage
+area. Enumerated deliberately: the previous revision said "every required field", which let
+the test set its own bar.
 **Pre-change**: N/A — new data. **Gated on the owner's spot-check (D4).**
 
 ### T2b — Station onboarding into the side dataset
 
-**Outcome**: six `stations` rows exist in the side dataset, so the foreign keys T3 and T4
-depend on can resolve. Added after the independent review found nothing created them.
-**In**: an onboarding entry point writing the T2a artifact to the side dataset.
+**Outcome**: six `stations` rows exist where T3 and T4 can reference them. Added after the
+first review found nothing created them; bounded after the second found it could not be
+implemented as first written.
+**In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (station branch), reusing
+`services/onboarding.py`; whatever tenant provisioning D11 selects.
 **Out**: **no `station_status` promotion** — these stay `onboarding`. Promotion switches on
 ingest and forecasting for a station and is not this plan's to trigger.
-**Verification**: after running it, six rows exist with the expected codes and `network=dhm`,
-and each `station_status` is `onboarding`.
-**Pre-change**: N/A — new path. **Depends on T2a.**
+**Verification**: after running it against the D11 target, six rows exist with the expected
+codes, `network = dhm`, `station_status = onboarding`, and the tenant D11 names; re-running
+it is idempotent (no duplicate rows).
+**Pre-change**: N/A — new path. **Depends on T2a. BLOCKED on D11** — `stations.tenant_id`
+is NOT NULL with no server default and the tenant resolver hard-errors on an unknown code,
+so "which dataset" must be answered before a single row can be inserted.
 
 ### T3 — Rating curve import
 
 **Outcome**: 112 curves stored with a chronological `version`, DHM's type label kept as
 provenance, half-open validity derived from DHM's inclusive end date, and no station left
 with an open-ended curve.
-**In**: migration adding a nullable provenance column; `RatingCurve`; the store; the
-importer; the `fetch_curve_at` fix **and the matching fix to the in-memory double**
-(`tests/fakes/fake_stores.py:1587`, which returns the first match in insertion order while
-its batch sibling at :1625 already resolves last-wins — fixing only the database reader
-would split unit from integration behaviour).
+**In**: `alembic/versions/0056_rating_curve_source_label.py` (next free revision; no other
+plan claims 0056); **`src/sapphire_flow/db/metadata.py`** (the `rating_curves` table is
+hand-maintained there and both the writer and `_row_to_curve` read their columns from it);
+**`tests/unit/db/test_alembic_head_release_b.py`** (`_RELEASE_B_HEAD` is pinned at `"0055"`
+and asserts a single head — a new migration fails the suite until it is bumped);
+`src/sapphire_flow/types/rating_curve.py`; `src/sapphire_flow/store/rating_curve_store.py`;
+**`tests/fakes/fake_stores.py`** (its `fetch_curve_at` at :1587 returns the first
+insertion-order match while its batch sibling at :1625 already resolves last-wins — fixing
+only the database reader would split unit from integration behaviour);
+`src/sapphire_flow/cli/import_dhm_delivery.py` (curve branch).
 **Out**: no conversion of any observation.
-**Verification**: `uv run pytest tests/unit/store/test_rating_curve_store.py
-tests/unit/adapters/test_dhm_rating_import.py`, asserting: all 112 pass
-`RatingConverter.from_curve` with the interpolation actually selected; versions are
-1..N in date order per station with no gaps; DHM's type label round-trips through store and
-read-back; every imported curve has a non-null `valid_to`; and `fetch_curve_at` returns the
-later-starting curve on an overlap — **proven identically against the real store and the
-fake**, so the two cannot drift.
+**Verification**:
+- `uv run pytest tests/integration/store/test_rating_curve_store.py` for the database
+  reader. **This is the integration tier deliberately**: `fetch_curve_at`'s
+  `.one_or_none()` behaviour is a property of a live Postgres result and is not observable
+  from a unit test. The previous revision named `tests/unit/store/test_rating_curve_store.py`,
+  which does not exist — that gate would have exited on a missing file.
+- `uv run pytest tests/unit/store/test_fake_rating_curve_store.py` for the fake, asserting
+  the **same** overlap outcome, so the two cannot drift.
+- `uv run pytest tests/unit/db/test_alembic_head_release_b.py` after bumping the head pin.
+- Import assertions: all 112 pass `RatingConverter.from_curve` under the D13 interpolation;
+  versions are 1..N in date order per station with no gaps; DHM's type label round-trips
+  through store and read-back; every imported curve has a non-null `valid_to`.
 **Pre-change**: a RED test proving `fetch_curve_at` raises `MultipleResultsFound` on two
-simultaneously-valid curves, built from a synthetic two-curve fixture — the actual defect
-and its actual cause, not a signature error.
-**BLOCKED on D6.** Curve validity is stored as `UtcDatetime` instants, so converting DHM's
-inclusive end dates into half-open intervals requires the Nepali-day boundary DHM has not
-yet given us. The independent review caught this; the previous revision wrongly called T3
-unblocked. Everything else in T3 — the migration, the version scheme, the provenance
-column, both reader fixes — can be built and tested against synthetic fixtures first; only
-the import of the real dates waits.
+simultaneously-valid curves, from a synthetic two-curve fixture — the actual defect and its
+actual cause, not a signature error.
+**BLOCKED on D6 and D13.** Curve validity is stored as instants, so converting DHM's
+inclusive end dates needs the Nepali-day boundary DHM has not given us; and the acceptance
+criterion above is undefined until the interpolation method is chosen. Everything else —
+the migration, the version scheme, the provenance column, both reader fixes — can be built
+and tested against synthetic fixtures first; only the import of the real dates waits.
 
 ### T4 — Daily discharge import
 
-**Outcome**: 96,521 observations, no row for any missing day, no `MISSING`-status rows,
-each row labelled per D7 (**reopened — see § Decisions**).
-**In**: importer; observation store.
-**Out**: no QC policy change, no skill or training wiring.
-**Verification**: stored row count per station equals the T5-measured count; no row exists
-on any measured gap day; **96,520 of 96,521 values lie inside their curve's tabulated range
-and exactly one — the known station-670 exception — does not**, handled per D10. The
-earlier "every value in range" criterion contradicted the plan's own measurement and could
-not have passed.
+**Outcome**: 96,521 observations, no row for any missing day, no `MISSING`-status rows, each
+row labelled per D7 and carrying the QC status D12 selects.
+**In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (observation branch);
+`src/sapphire_flow/store/observation_store.py` (read-only — no change expected).
+**Out**: no QC rule authored, no skill or training wiring.
+**Verification**: per-station stored row count equals **T5's re-measured count for that
+station** — expressed as a delta against T5, not as a literal, because which curve is in
+force on a day depends on the D6 boundary and an absolute number would silently ratify
+whatever the implementer produced; no row exists on any gap day T5 reports; the count of
+values outside their curve's range equals T5's count (currently 1, handled per D10); every
+row carries the D12 status and the D7 label.
 **Pre-change**: N/A — new import path.
-**BLOCKED on D6 and D7.** Do not start by picking a day boundary.
+**BLOCKED on D6, D7 and D12.** Do not start by picking a day boundary.
 
 ### T5 — Delivery re-measure
 
 **Outcome**: a re-runnable script reproducing the aggregates in this plan, so a later
-delivery can be diffed against this one, and so the plan's unverifiable claims become
+delivery can be diffed against this one and the plan's unverifiable claims become
 reproducible on the owner's machine.
-**In**: a script under `scripts/`, reading the delivered files in place.
+**In**: `scripts/dhm_delivery/remeasure.py`. Note `scripts/` carries no pyright gate in this
+repo — this script is not type-checked by CI.
 **Out**: not a test gate; not a flow.
 **Permitted output — the complete allowed set**: row and curve counts; counts and
 percentages of missing days, gap runs, curve-less days and out-of-range values; first and
 last dates; gap start dates and lengths; curve validity windows and point counts; per-file
 value-precision percentages. **No stage value, no discharge value, in output or in failure
 diagnostics.**
-**Verification**: the script's output matches the aggregate tables in this plan exactly.
-**Pre-change**: N/A. **Depends on T1** (it needs the parser and nothing else).
+**Verification**: `uv run python scripts/dhm_delivery/remeasure.py --check` exits 0 when its
+output matches the aggregate tables in this plan, and prints a diff and exits non-zero when
+it does not.
+**Pre-change**: N/A. **Depends on T1** — it needs the parser and nothing else.
+
+### T6 — Documentation and the publication guard
+
+**Outcome**: the docs this plan invalidates are corrected, and the no-publish constraint
+stops resting on prose. Added after the second review found no task did either.
+**In**: `docs/spec/types-and-protocols.md` (the `RatingCurve` type and the
+`RatingCurveStore` Protocol's `fetch_curve_at` contract); `docs/architecture-context.md`
+§2206 (the `rating_curves` table); `docs/touchpoint-maps.md` — the Persistence / API
+write-path map still states that `RatingCurveStore` has **no `Pg*` implementation**, which
+`src/sapphire_flow/store/rating_curve_store.py:18` contradicts; `.gitignore` and
+`.pre-commit-config.yaml` for the guard.
+**Out**: no code change.
+**Verification**: `uv run pre-commit run --all-files` passes, and a deliberate `git add` of
+a file placed at a delivered-data path is refused by the new hook.
+**Pre-change**: a RED check — the hook rejects a test path before the doc edits land.
 
 ```json
 {
   "phases": [
     { "id": "phase-1", "tasks": ["T1", "T2a"], "parallel": true },
-    { "id": "phase-2", "tasks": ["T2b", "T5"], "depends_on": ["phase-1"], "parallel": true },
+    { "id": "phase-2", "tasks": ["T2b", "T5", "T6"], "depends_on": ["phase-1"], "parallel": true },
     { "id": "phase-3", "tasks": ["T3"], "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T4"], "depends_on": ["phase-3"] }
   ]
 }
 ```
 
-T1 and T2a are genuinely independent. T5 needs only the parser, so it no longer waits on the
-curve import; T2b needs only the metadata artifact. T3 and T4 both remain blocked on D6.
+T1 and T2a are genuinely independent. T5 needs only the parser; T2b needs only the metadata
+artifact and D11; T6 needs neither. T3 and T4 remain blocked on open decisions.
 
 ## Explicitly out of scope
 
