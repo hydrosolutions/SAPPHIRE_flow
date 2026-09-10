@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-07-03
 plan: 099
-title: Dashboard display timezone — P1 shipped; P2 (the toggle) needs three decisions it never took
-scope: DISPLAY ONLY. Axis timezone labelling (P1, SHIPPED) and an optional UTC/local toggle (P2). Explicitly NOT storage, NOT the API's timestamps, and NOT the operational day boundary — that is Plan 252 (a grid is a step and a phase) and Plan 254 (execution). Display timezone and grid phase are independent; conflating them is how a one-hour error hides behind a 45-minute one.
+title: The API reinterprets a local date range as UTC — and the dashboard toggle that would expose it
+scope: TWO things, in priority order. (1) The API's date-range contract: a naive timestamp is currently read as UTC, so any consumer sending a local-time range silently queries a shifted window — OURS, and it survives whether or not a dashboard toggle is ever built. (2) Display: axis timezone labelling (P1, SHIPPED) and an optional viewer-locale toggle (P2), which we do not implement. Explicitly NOT storage, and NOT the operational day boundary — that is Plan 252 (a grid is a step and a phase) and Plan 254 (execution). Display timezone and grid phase are independent; conflating them is how a one-hour error hides behind a 45-minute one.
 depends_on: [252]
 blocks: []
 source: 2026-07-03 — an unlabeled UTC axis caused a real UTC-vs-CEST misread during a Mac-mini observation investigation
@@ -49,7 +49,7 @@ statement about unlabeled axes is now refuted:
   time axis), matching the forecast chart's "(UTC)". Cheap, removes the foot-gun
   immediately. No data change.
 - **P2 — timezone toggle (the nice-to-have).** A client-side control
-  (dropdown/toggle: **UTC** / **Europe/Zurich**) that re-renders the Plotly
+  (dropdown/toggle: **UTC** / **the viewer's own locale** (Q1)) that re-renders the Plotly
   charts in the chosen zone. Persist the choice (localStorage). Applies to the
   **observation, forecast, forcing and hindcast** charts. ⛔ **NOT the baseline chart** — its x-axis is
   `Day of year` (`stations/detail.html:304`), so a timezone on it is meaningless. An earlier revision
@@ -59,7 +59,10 @@ statement about unlabeled axes is now refuted:
 
 ⛔ **Three are blocking. None has been answered.**
 
-**Q1 — what does "local" MEAN?** Hard-coded `Europe/Zurich`, the deployment's
+**Q1 — ✅ ANSWERED 2026-09-09: the VIEWER'S OWN BROWSER LOCALE**, with the zone always shown on the
+axis. ⛔ An earlier revision recommended the deployment timezone and Q5 recommended UTC; both are
+superseded. *(The original framing, kept because it names the options considered:)* hard-coded
+`Europe/Zurich`, the deployment's
 `default_display_timezone`, or the station's own IANA zone? ⚠️ **Plan 252 OD-12 makes this sharper
 than it was in 2026-07:** the operational day boundary is now declared per deployment with an optional
 **per-station** override, so a deployment-wide display zone can disagree with the grid a given
@@ -84,8 +87,8 @@ cosmetic change, and it was not in the original plan at all.
 **Q4 — scope.** Charts confirmed in scope: observations, forecast, forcing, hindcasts. Out: the
 baseline chart (not a time axis). **Undecided:** the observations table and any raw timestamp text.
 
-**Q5 — default view.** Recommend **UTC** — an ops dashboard benefits from an unambiguous default —
-with the toggle opting into local, persisted in `localStorage`.
+**Q5 — ✅ ANSWERED by Q1.** The default is the viewer's own locale, always labelled with its zone; the
+toggle offers UTC. ⛔ An earlier revision recommended defaulting to UTC, which contradicts Q1.
 
 ## ⛔ The part that IS ours — the API, not the dashboard
 
@@ -102,6 +105,29 @@ window** — worst across a DST transition.
 reinterpret a naive one. Whether that means requiring an offset or documenting and enforcing a single
 rule is Q3. ⚠️ **This survives even if we never build the toggle**, and it should probably move to an
 API plan rather than a dashboard one.
+
+## Tasks
+
+### T1 — make the API's date-range contract explicit
+
+**Outcome:** a date range whose timezone is not stated is never silently reinterpreted.
+
+**In:** the range-parsing boundary (`api/routes/api_stations.py:132-141`, which today parses a naive
+timestamp as UTC) and the API documentation. Either require an explicit offset, or document and
+enforce one rule and reject what is ambiguous.
+
+**Out:** the dashboard toggle (P2, not ours to build); storage; the operational day boundary.
+
+**Pre-change:** `api/routes/api_stations.py:132-141` reads a naive timestamp as UTC while the
+dashboard builds naive local-looking bounds (`api/templates/stations/detail.html:244-245`). They agree
+today only because the display is UTC.
+
+**Verification:** a range carrying an explicit offset is honoured; an ambiguous naive range is
+rejected or documented-and-enforced, with the choice locked by a test; and a range spanning a DST
+transition returns the window the caller meant.
+
+⚠️ **This task may belong in an API plan rather than a display plan.** It is here because this is
+where the defect was found; moving it is an owner call.
 
 ## Non-goals
 

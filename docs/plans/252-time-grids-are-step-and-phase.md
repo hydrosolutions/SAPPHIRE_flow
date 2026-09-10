@@ -17,9 +17,21 @@ source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; inv
 (8 → 7 → 6 blockers) were failed not on the reasoning but on the document: each round patched the
 text and left the superseded sentence in place, so corrections accumulated as contradictions. This
 revision states every decision once, in its settled form, and confines the history to one Changelog
-section. What remains genuinely unsettled is in § Open decisions (OQ-1 … OQ-4), named rather than
-buried. ⛔ **Those four are blocking:** OQ-1 blocks T4, OQ-3 blocks OD-6's reporting clause, OQ-4 is an
-owner confirmation, and OQ-2 blocks Plans 254 and 258 rather than this one.
+section. What remains genuinely unsettled is in § Open decisions, named rather than buried.
+
+📍 **Open-question state as of 2026-09-10 — TWO remain open:**
+
+| | state |
+|---|---|
+| **OQ-3** provenance channel | **OPEN** — narrowed by OD-13; the decision is Plan 254 D2 |
+| **OQ-6** differently-phased sources feeding one model | **OPEN** — settled by T10; Plan 254 T6 is blocked on it |
+| OQ-1 target-grid step field | ✅ ANSWERED — the step is per station-and-model pairing in the DB; rejection at onboarding |
+| OQ-2 interval bounds | ✅ CLOSED — Plan 258 T5 owns them |
+| OQ-4 closest-hour rule | ✅ CONFIRMED by owner 2026-09-09 |
+| OQ-5 hindcast phase column | ✅ CLOSED — folded into Plan 254 T7 |
+
+⛔ **Every reference elsewhere in this plan must agree with this table.** Three review rounds were
+lost to a corrected decision leaving its superseded statement standing somewhere else.
 
 ## The problem in one number
 
@@ -313,8 +325,8 @@ arbitrary series onto a declared target grid.
 
 **OD-1, OD-4, OD-5, OD-10 — MOVED to Plan 258.** The period-ending convention, forecast `valid_time`
 labelling, interval bounds and the CF `cell_methods` vocabulary all depend on whether a value is a
-point or an interval. Plan 258 states each once, by support. ⚠️ Interval bounds are **OQ-2** below —
-258 was given them but has no task carrying them.
+point or an interval. Plan 258 states each once, by support — including **interval bounds, which are
+Plan 258 T5** (owner decision 2026-09-09). ⛔ They are not an orphan; earlier revisions said so.
 
 **OD-2 — sub-daily runs on UTC phase; daily runs on a local-anchored phase.** These are different
 products, not an inconsistency: a daily forecast *means* a civil day, an hourly one does not. Keeping
@@ -408,10 +420,10 @@ existing `InputQualityFlag` channel, which Plan 253 made persistent and API-visi
 mechanism. ⚠️ **That is an intent, not a settled contract: see OQ-3.** The channel does not reach the
 resampler, training or hindcast today, and closing the gap is Plan 254 D2.
 
-⚠️ **This decision is in live contradiction with the repo's no-imputation rule**
+✅ **RESOLVED 2026-09-09 (Plan 254 D3).** The repo's no-imputation rule
 (`docs/touchpoint-maps.md:247-248`: missing operational-input values are gated via `max_nan`, "never
-imputed / interpolated / filled"). One must formally supersede the other. That is **Plan 254 D3**, and
-it is unresolved.
+imputed / interpolated / filled") **WINS**; OD-6's interpolation and apportionment rows are withdrawn
+by OD-13. ⛔ Do not describe this as an open contradiction.
 
 **Why 15 minutes, and why phase matters more than length.** Measured straddling rates per day:
 
@@ -563,7 +575,7 @@ the model. ⛔ Not at forecast time — that fails nightly and unattended.
 verification requires that a step not dividing 24 h is rejected at config load — but no field
 declaring the *operational target grid's* step exists. ⚠️ **Narrowed 2026-09-09:** an earlier wording
 said no step-bearing config field exists at all, which is REFUTED —
-`skill_interpretation[].time_step_hours` (`config/deployment.py:57`) is one. It configures skill
+`skill_interpretation[].time_step_hours` (`config/deployment.py:59`) is one. It configures skill
 interpretation bands, not the assembly target grid, so it is the wrong place for this rejection.
 Either T4 gains a target-grid step field, or the rejection moves to wherever that step is actually
 declared (per model, per parameter, or per channel). **T4 cannot be implemented as written until this
@@ -614,9 +626,9 @@ alongside `forecasts` (owner decision). ⛔ **Do not describe the hindcast phase
 Why it mattered: hindcasts are what skill is computed from, and skill is the one path that already
 partitions by phase, so a phase-blind hindcast store fed a phase-aware scorer.
 
-**OQ-4 — OD-3 needs owner confirmation.** The single whole-hour rule in OD-3 is a reconciliation of
-two contradictory statements in earlier revisions, not a decision the owner took in that form. See the
-Changelog.
+**OQ-4 — ✅ CONFIRMED by the owner 2026-09-09.** OD-3's rule is authoritative: DHM's stated boundary,
+rounded to the CLOSEST whole UTC hour, with the rounding rule itself configurable. ⛔ Do not describe
+it as awaiting confirmation.
 
 ## Relationship to plans already in flight
 
@@ -732,13 +744,11 @@ straddling table, which shows 0/144 against UTC and 24/144 against NPT); `phase 
 
 ### T4 — declare the operational grid boundary per deployment
 
-⚠️ **Blocked on OQ-1** for the step half of its verification. The phase half is implementable today.
-
 **Outcome:** every deployment declares its boundary explicitly, including Switzerland's zero.
 
 **In:** the deployment config model, plus **both** config layers — `config/overlays/` **and the
 repository-root `config.toml`**, which is the active Swiss base and is loaded separately from the
-overlays (`config/deployment.py:468`, where `load_merged_toml` merges the base with the overlays; `docs/v0-scope.md:492-495`). ⛔ **The root file must be in scope**:
+overlays (`load_merged_toml`, `config/deployment.py:478`; `docs/v0-scope.md:492-495`). ⛔ **The root file must be in scope**:
 if the field has no default, the base config must declare it or Switzerland refuses to start. ⚙️ **THREE fields, not one** (OD-3, corrected 2026-09-09 — an earlier revision declared only the
 last and could not express a configurable rounding rule):
 
@@ -747,6 +757,8 @@ last and could not express a configurable rounding rule):
 | `daily_civil_boundary` | `"00:00"` | the boundary the PROVIDER states, in local civil time |
 | `daily_boundary_rounding` | `"nearest"` \| `"down"` | how a mid-hour civil boundary becomes a whole UTC hour |
 | `daily_grid_origin` | `"18:00"` | the resulting operating boundary — **DERIVED, and validated against the first two, never hand-entered independently of them** |
+| `bucket_edge_tolerance` | `"7m30s"` | OD-14's limit: how far the reading nearest a bucket boundary may sit from nominal before the bucket is REFUSED. Default: half the source's reading interval. **Consumed by Plan 254 T3.** |
+| `daily_grid_origin_overrides` | per station | OD-12's optional per-station override, same validation as the deployment value |
 
 The displacement between the civil boundary and the operating one is computed and **recorded on every
 value cut with it**, so it is stated rather than discovered. **Also
@@ -758,6 +770,12 @@ station metadata, validated to the same rules as the deployment value (whole min
 step`). Absent means "use the deployment declaration", which is the only defaulting this plan permits,
 because the deployment value is itself required.
 
+**In (also) — the station-onboarding step rejection (OQ-1).** The operational step lives on the
+station-and-model pairing (`model_assignments.time_step`), so onboarding must refuse a step that does
+not divide 24 h, naming the station and the model. ⛔ **This was a decision with no task until
+2026-09-10** — T4 carries it because T4 is where grid validation lives, even though the field is not
+in config.
+
 **Out:** deriving it from `stations.timezone`, which stays descriptive metadata and is never read to
 make a decision. Enforcing the group-uniformity invariant (Plan 254 T4).
 
@@ -767,7 +785,9 @@ returns nothing (verified 2026-09-09); no deployment declares a boundary.
 **Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s;
 Switzerland's root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** (phase zero is legal and
 required, not an omission); a phase with a non-zero seconds component is **REJECTED**; a deployment
-with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); a `daily_grid_origin`
+with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); **onboarding refuses a
+station-and-model pairing whose step does not divide 24 h**, naming both; `bucket_edge_tolerance`
+parses and is readable by the resampler; a `daily_grid_origin`
 that does NOT follow from its declared civil boundary and rounding rule is **REJECTED** rather than
 silently believed; and switching the rounding rule from `nearest` to `down` changes the derived origin
 **without a code change**.
@@ -794,7 +814,8 @@ the provider's own product documentation established that MeteoSwiss precipitati
 while its temperature runs midnight→midnight (see the evidence section above). **No automated check
 would have found that** — the metadata is not in the files, and the gateway strips what little there
 is. ⛔ **The audit is a DOCUMENTATION-READING task, not a data-inspection one.** Three of eight Swiss
-sources are answered. ⚠️ **Count corrected 2026-09-09: SEVEN forcing sources are stored, not eight**
+sources are answered. ⚠️ **Count: SEVEN forcing sources are stored** (an earlier revision said "three
+of eight"; both numbers were wrong)
 (`camels-ch`, `meteoswiss_rhiresd`, `meteoswiss_rprelimd`, `meteoswiss_sreld`, `meteoswiss_tabsd`,
 `meteoswiss_tmind`, `meteoswiss_tmaxd` — measured on staging). **Five are answered** (the three
 temperature products share one document); `meteoswiss_sreld` and `camels-ch` are open.
@@ -886,6 +907,12 @@ is native; or re-derive the 06:00 products from sub-daily station data. ⚠️ *
 Switzerland actually adopts, because Plan 254 T6 bakes it into the retrain.
 
 **Out:** any code; the retrain itself (Plan 254 T6); re-deriving any product.
+
+⚙️ **Who implements the answer: Plan 254 T4.** ⛔ **T10 produces only a DECISION, and a decision with no
+executor is how this family kept stalling.** Whatever T10 selects — a declared target grid with one
+source recorded as off-grid, or Switzerland adopting the 06:00 day — is threaded through the assembly
+paths by 254 T4, which is already the task that resolves a target grid at every call site. Plan 254 T6
+consumes the result; it does not implement it.
 
 **Pre-change:** N/A — decision task. The evidence section above measures the conflict; no plan
 resolves it, and Plan 254 T6 is blocked on it.
@@ -983,7 +1010,7 @@ Four conditions hold in addition:
     {"id": "T2", "phase": 1, "depends_on": ["T1"]},
     {"id": "T6", "phase": 1, "depends_on": ["T1"]},
     {"id": "T7", "phase": 1, "depends_on": []},
-    {"id": "T4", "phase": 2, "depends_on": ["T2"], "blocked_on": "OQ-1 — no step-bearing config field is named"},
+    {"id": "T4", "phase": 2, "depends_on": ["T2"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
     {"id": "T9", "phase": 2, "depends_on": ["T1"]},
     {"id": "T10", "phase": 1, "depends_on": [], "note": "settles OQ-6; Plan 254 T6 is blocked on it"}

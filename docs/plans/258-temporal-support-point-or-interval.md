@@ -17,9 +17,10 @@ source: 2026-09-08 — split out of Plan 252 by owner decision, after a Codex re
 questions that were never asked, which is why bundling this with the grid convention kept failing
 review: the grid half is *substantially* settled and this half is not.
 
-⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** Plan 252 carries five open
-questions of its own (OQ-1 … OQ-5), two of which — the operational target-grid step field, and the
-operational target-grid step field — block this plan and Plan 254 rather than 252 itself.
+⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** Plan 252 carries open
+questions of its own. As of 2026-09-10 **two remain**: OQ-3 (the provenance channel, decided by
+Plan 254 D2) and OQ-6 (how differently-phased sources feed one model, settled by Plan 252 T10, which
+Plan 254 T6 is blocked on). Neither blocks this plan.
 
 ## Why this is a separate plan
 
@@ -284,6 +285,39 @@ transition of the Forecast Lab snapshot; if that lands first, these fields go wi
 value carries none; and a consumer reading only the bounds gets the same window as one applying the
 convention to the stamp.
 
+### T7 — carry support for series WE derive, and for model OUTPUTS
+
+**Outcome:** the two cases T1's input registry does not cover are recorded too.
+
+⛔ **Both were decisions with no implementing task until 2026-09-10.** D1's remainder (a daily mean we
+computed from hourly points is an interval because WE made it one) and D5 (a model's output is a
+moment or a span) each had an owner for the DECISION and nobody to build it — while Plan 254 T8 and
+this plan's T5 both need the answer.
+
+**In:** the resampler's output provenance (the derived case — it knows what it just produced) and the
+model-output path (`forecasts` / `hindcast_forecasts`, alongside the phase column Plan 254 T7 adds).
+Depends on T0 (which settles D1's remainder and D5) and T1.
+
+**Out:** the input registry (T1); the ForecastInterface — ⚠️ **FI declares no output temporal support**
+(verified 2026-09-09: `VariableMetadata` carries `unit`, `timedelta`, `forecast_horizon`, `offset` and
+nothing else, while `SpatialRepresentation` exists for the spatial equivalent). Per CLAUDE.md that
+asymmetry is an **upstream issue to file**, never a SAP3-side workaround — T0 must decide whether to
+file it.
+
+**Verification:** a series produced by our own aggregation reads back carrying the support of the
+transform, not of its input; a stored forecast carries its output support; and Plan 254 T8 can decide
+a daily bucket's stamp from it.
+
+### T8 — ask DHM which end of a period their timestamps mark (D6)
+
+**Outcome:** the question exists in the questionnaire. ⛔ **Plan 252 T7 explicitly REMOVED it and
+assigned it here; this plan had no task to ask it**, so the evidence T4 audits against had no route to
+being obtained.
+
+**In:** `docs/requirements/dhm-data-formats-questions.md`, per parameter. **Out:** the day-boundary
+question (Plan 252 T7). Depends on T0.
+**Verification:** N/A — requirements task. The question is present and per-parameter.
+
 ### T4 — audit every input adapter's temporal support
 **Outcome:** each adapter's series is declared, with the source document that settles it — the same
 shape as Plan 243's unit register, which is the worked precedent for this exact problem.
@@ -316,6 +350,8 @@ uv run ruff check src tests && uv run ruff format --check src tests
     {"id": "T4", "phase": 3, "depends_on": ["T1"]},
     {"id": "T5", "phase": 3, "depends_on": ["T1"]},
     {"id": "T6", "phase": 1, "depends_on": ["T0"], "note": "the external ask T3 is blocked on; nobody owned it before 2026-09-09"},
+    {"id": "T7", "phase": 3, "depends_on": ["T0", "T1"], "note": "derived-series and model-output support; Plan 254 T8 needs it"},
+    {"id": "T8", "phase": 1, "depends_on": ["T0"], "note": "the DHM period-convention question Plan 252 T7 removed"},
     {"id": "T3", "phase": 4, "depends_on": ["T1"], "blocked_on": "Gateway CF attribute pass-through — extend the Plan 243 units-only request to cell_methods"}
   ]
 }

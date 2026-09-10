@@ -44,7 +44,7 @@ in a fortnight):
 
 | Call site | |
 |---|---|
-| `services/training_data.py:553`, `:567`, `:607` | training (three) — re-measured after the `071b62e3` rebase |
+| `services/training_data.py:553`, `:567`, `:607` | training (three) — ⚠️ drifted TWICE today as main moved; cite the enclosing function and re-measure before use |
 | `services/operational_inputs.py:165`, `:591`, `:707` | operational assembly (three) |
 | `services/hindcast.py:238`, `:302`, `:320` | hindcast (three) |
 | `services/track_assembly.py:282`, `:372` | track assembly (two) |
@@ -164,8 +164,8 @@ period-ending labels (`services/operational_inputs.py:225`).
   ⛔ **Interval bounds (`period_start`/`period_end`) are an ORPHAN, not Plan 251's.** Verified
   2026-09-09: Plan 252 assigns them to Plan 258, this plan previously assigned them to Plan 251,
   Plan 258's task ledger (T0–T4) contains no bounds task, and Plan 251 contains no `period_start`,
-  `period_end` or interval-bound work at all. Tracked as Plan 252 OQ-2 and **owned by nobody** — an
-  owner decision, not a cross-reference to be repaired by pointing at a third plan.
+  `period_end` or interval-bound work at all. ✅ **CLOSED 2026-09-09: Plan 258 T5 owns them**, as a
+  real task. ⛔ Do not describe them as orphaned.
 - Re-opening Plan 228 D1-D3 or its shipped P1/P2 fix.
 
 ## Tasks
@@ -193,9 +193,13 @@ D1, D3, D4 and D5 are already answered above.
 **Out:** any code change. The decisions exist so they are made once, in the open, rather than inside
 an implementation diff.
 
-**Pre-change:** N/A — decision task. The four decisions are recorded as open above, and D3 is a live contradiction between `touchpoint-maps.md:228` and Plan 252 OD-6.
+**Pre-change:** N/A — decision task. **D2 and D7, plus the six absorbed anchoring questions**, are
+recorded as open above; D1, D3, D4 and D5 are answered. ⛔ An earlier revision said "the four
+decisions" and called D3 a live contradiction — D3 was answered on 2026-09-09 (the no-imputation rule
+stands), and it cited `touchpoint-maps.md:228`, the wrong line: the rule is at `:247-248`.
 
-**Verification:** N/A — decision task. Each answer cites the code or contract it rests on, and D1 either files the FI issue or records why none is needed.
+**Verification:** N/A — decision task. Each answer cites the code or contract it rests on. ⛔ D1 is
+already answered (SAP3 preprocessing; no FI issue needed) — this task does not re-take it.
 
 ### T2 — make the fetch-bound helpers grid-aware
 
@@ -203,9 +207,12 @@ an implementation diff.
 exactly-N-complete-buckets at a non-zero phase.
 
 **In:** `floor_to_time_step` (`services/training_data.py:244`), `aligned_lookback_bounds` (`:261`),
-**and the interval-valued read bounds** — `historical_forcing_store.py:71-72` and
-`weather_forecast_store.py:79-80` move to `(start, end]` per D5, while instantaneous reads stay
-`[start, end)`. ⛔ No plan previously inventoried those two stores. Depends on T1.
+**and EVERY interval-valued read bound.** Re-measured 2026-09-10 — there are **four**, not two:
+`historical_forcing_store.py:71-72`, `:177-178`, `:201-202`, and `weather_forecast_store.py:79-80`.
+All move to `(start, end]` per D5; instantaneous reads stay `[start, end)`
+(`observation_store.py:173-174`, `:218-219`). ⛔ An earlier revision inventoried only two of the four —
+**re-run the grep rather than trusting this list**:
+`grep -rn "valid_time >= start" src/sapphire_flow/store/`. Depends on T1.
 
 **Out:** the resampler itself (T3); any call-site change (T4).
 
@@ -315,10 +322,11 @@ retrain bakes in. **Do not start T6 before OQ-6 is settled.**
 **Outcome:** Switzerland moves from phase 0 to 23:00Z with artifacts, hindcasts, skill generations and
 configuration moving together, and a rollback.
 
-⛔ **This outcome is not writable until D4 is answered.** D4 (atomic flip vs per-station migration) is
+⛔ **This outcome is not writable until D7 is answered.** D7 (atomic flip vs per-station migration) is
 still open, and "moving together" means different things under each: an atomic flip needs one
 coordinated switch with a single rollback point; a per-station migration needs a per-station grid
-record and a mixed-phase interval during which two cuts coexist. Do not draft the sequence before D4.
+record and a mixed-phase interval during which two cuts coexist. Do not draft the sequence before D7.
+⚠️ **An earlier revision called this D4**, which names a different and already-answered decision.
 
 ⛔ **Blocked on three things the graph now names:** Plan 252 **T10** (which boundary Switzerland
 actually adopts — OQ-6), Plan 262 **T3** (the end-stamping change rides this cutover, so its code must
@@ -484,12 +492,12 @@ Five conditions hold in addition:
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"]},
+    {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"], "note": "Plan 262 T3 edits the SAME function (labelling); 254 T3 lands first, then 262 T3"},
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5", "T8"], "blocked_on": "Plan 252 T10 (settles OQ-6, which boundary Switzerland adopts); Plan 262 T3 (end-stamping lands in the same cutover); D7 (atomic vs per-station)"},
-    {"id": "T7", "phase": 4, "depends_on": ["T4"]}
+    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (settles OQ-6, which boundary Switzerland adopts); Plan 262 T3 (end-stamping lands in the same cutover); D7 (atomic vs per-station)"},
+    {"id": "T7", "phase": 4, "depends_on": ["T4"], "note": "must land BEFORE T6 — rebuilt hindcasts would otherwise be written without a phase"}
   ]
 }
 ```

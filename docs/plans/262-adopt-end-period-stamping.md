@@ -2,11 +2,11 @@
 status: DRAFT
 created: 2026-09-09
 plan: 262
-title: Our own aggregation stamps the start of a period; every source we ingest stamps the end
+title: Our own aggregation stamps the start of a period; every source whose convention we have established stamps the end
 scope: Adopt END-PERIOD stamping as the house convention for interval-valued data, convert it at the ingest boundary, change the internal bucket labelling that currently contradicts it, and rebuild the derived data whose meaning changes. Explicitly NOT the grid phase or the day boundary (Plan 252), NOT the per-station override (Plan 252 OD-12), NOT which series ARE intervals (Plan 258 — this plan CONSUMES that answer), NOT the Swiss boundary move itself (Plan 254 T6 — but this plan MUST ride the same cutover).
 depends_on: [252, 258]
 blocks: []
-source: 2026-09-09 — a grill-me on the timezone reconciliation asked which end of a span its timestamp marks; measuring the answer found our own aggregation disagreeing with every source we ingest
+source: 2026-09-09 — a grill-me on the timezone reconciliation asked which end of a span its timestamp marks; measuring the answer found our own aggregation disagreeing with every source whose convention has been established
 ---
 
 # Plan 262 — adopt end-period stamping
@@ -37,7 +37,8 @@ ahead of it.
 ⭐ **The start-labelling was never a decision.** It is a library default that was inherited and never
 revisited. An earlier revision of the reconciliation treated it as a design choice worth preserving,
 which framed the question wrongly: this is not a trade between two conventions, it is replacing an
-unexamined default with a stated one that already matches every input we have.
+unexamined default with a stated one that already matches every input whose convention we have
+established. ⚠️ Two remain unread (D2, and Plan 252 T6).
 
 ## The defect this creates — mechanism PROVEN, currently LATENT
 
@@ -137,8 +138,8 @@ T4.
 convention must be established from its documentation rather than assumed. If it is period-beginning
 it needs converting; if the documentation does not say, it cannot be silently assumed either way.
 
-**D3 — ANSWERED 2026-09-09: the MeteoSwiss daily-day question is RESOLVED for three of eight
-sources, and the answer is worse than the question.** Read from the provider's grid-product
+**D3 — ANSWERED 2026-09-09: the MeteoSwiss daily-day question is RESOLVED for five of the seven
+stored forcing sources, and the answer is worse than the question.** Read from the provider's grid-product
 documentation: both precipitation products run **06:00 UTC → 06:00 UTC**, while the temperature
 products run **midnight → midnight**. So this plan is not converting a single unknown convention — it
 is converting sources that **disagree with each other by six hours**. The declaration belongs to
@@ -186,6 +187,20 @@ the LABEL, not on a signature.
 re-proven rather than adjusted; and the assembler and the scorer are shown to agree, since a change
 to one alone is the actual hazard.
 
+### T5 — convert on the way OUT, IF D1 says we must (conditional)
+
+**Outcome:** external consumers expecting the other convention get it, or this task is closed as
+not-needed with the reason recorded.
+
+⛔ **Conditional tasks still need to exist.** D1 asks whether we convert for external consumers; until
+2026-09-10 a "yes" had no task to build it. If Plan 258 T5's published covering window makes the stamp
+unambiguous, the answer is likely no — **close this explicitly rather than leaving it implied.**
+
+**In:** the published API and export shapes. **Out:** internal storage. Depends on T1 (which answers
+D1) and on Plan 258 T5.
+**Verification:** either a consumer-facing value carries the converted stamp and a test locks it, or
+this task is recorded CLOSED with D1's reasoning.
+
 ### T4 — rebuild what the change invalidates, inside Plan 254 T6's cutover
 
 **Outcome:** forcing and weather forecasts re-ingested, artifacts retrained, hindcasts and skill
@@ -218,7 +233,8 @@ uv run python scripts/check_readiness.py docs/plans/262-adopt-end-period-stampin
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 2, "depends_on": ["T1"], "blocked_on": "Plan 258 must declare which series are intervals"},
     {"id": "T3", "phase": 3, "depends_on": ["T2"], "blocked_on": "Plan 252 T8 — amending Plan 228 D4's locking tests"},
-    {"id": "T4", "phase": 4, "depends_on": ["T3"], "blocked_on": "rides Plan 254 T6's cutover"}
+    {"id": "T4", "phase": 4, "depends_on": ["T3"], "blocked_on": "rides Plan 254 T6's cutover"},
+    {"id": "T5", "phase": 3, "depends_on": ["T1"], "note": "conditional on D1; close explicitly if not needed"}
   ]
 }
 ```
