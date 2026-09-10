@@ -545,32 +545,26 @@ exit criteria — Plan 212 owns that deeper screening.
   dropped a model's `AT_MOST`/`min_future_steps` declaration, so the resolver
   could never see it; T4 then persists a forecast's cadence, which T2/T3 make
   reachable. PR #258.
-- **248** — Backfill and tighten `forecasts.time_step_seconds` — `DRAFT`, **no
-  longer blocked** — 241 is merged AND deployed (staging on `0.1.894`, alembic
-  0055), so the column exists and the running system populates it: measured
-  2026-09-10, 11 083 rows with 7 793 NULL and 3 290 stamped, and the NULL cohort
-  has not moved a row across three censuses. **Now two tasks, not three.** T1
-  backfills the 7 724 measured uniform-daily NULL rows at `REPEATABLE READ`; T3
-  tightens to `SET NOT NULL`. ⚠️ **T2 (the deletion) was DESCOPED to Plan 265 on
-  2026-09-10** after two Codex rounds showed the review cost was concentrated
-  there and diverging (round 1: one blocker; round 2: three, including an
-  ordering fault the first fix introduced) — an irreversible deletion needs an
-  operational runbook, not a section in a design document. The earlier note that
-  "the disposition of the 69 depends on 252/254" was **wrong**: 252 hands that
-  decision off in its own Non-goals, 254 does not own the disposition of stored
-  rows, and 226 excludes backfill twice. ⛔ Awaiting owner READY. T1 still needs
-  a Claude pass and its rollback rehearsal repeated against the non-zero-stamp
-  state. Order: **248 T1 → 265 → 248 T3**.
-- **265** — Discard the 69 non-uniform `_pooled` forecasts — `DRAFT` — split out
-  of 248 T2. One operational task for the family's only irreversible step: one
-  predicate (`_pooled` ∧ NULL ∧ `n_distinct_gaps > 1`), a materialised ID
-  manifest, a backup proven by RESTORE and ID comparison rather than row counts,
-  an expected-count checkpoint against the independently pinned 69, children
-  before headers (`forecast_values.forecast_id` does **not** cascade), and
-  `DELETE … RETURNING` set-equality assertions. Supersedes the withdrawn
-  quarantine design, which would have frozen those rows against every future
-  status transition. ⛔ Must run AFTER 248 T1, whose statement pins
-  `c_expected_non_uniform := 69` and aborts if the count has moved.
+- **248** — Tighten `forecasts.time_step_seconds` to `NOT NULL` — `DRAFT`,
+  **REWRITTEN 2026-09-10** after three Codex rounds. Now TWO tasks split on
+  whether the artifact SHIPS. **T1** clears the 7 793 legacy NULL rows on the
+  disposable mac-mini sandbox — two statements, children first, no backup and no
+  manifest, because the data is throwaway and the cycle refills at ~1 336/day.
+  **T2** is the shipped change and gets full rigor: a migration chained from the
+  current head (0055) to `SET NOT NULL`, retiring the reader's whole
+  nullable-column branch, deleting BOTH legacy tests whose helper writes NULL,
+  a DB-backed migration test, the head pin, pyright, and an independent review.
+  ⛔ **T1's shortcut is SANDBOX-ONLY.** The careful backfill and the deletion
+  runbook that three review rounds produced are preserved in the plan's
+  § *operational variant* — that is what a hydromet deployment does instead, and
+  running T1 against one would destroy a real record. Measured 2026-09-10:
+  11 083 rows, 7 793 NULL (cohort unchanged across three censuses), 3 290
+  stamped. ⛔ Awaiting owner READY.
+- **265** — Discard the 69 non-uniform `_pooled` forecasts — `SUPERSEDED` by
+  248's rewrite, same day it was created. It held a deletion runbook for
+  precious data; on a disposable sandbox that machinery is not warranted. Its
+  requirements travelled into 248 § *operational variant*; read it for those, not
+  for instructions.
 
 ## Deferred
 

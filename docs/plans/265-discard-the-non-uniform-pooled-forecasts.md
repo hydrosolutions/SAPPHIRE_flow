@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-09-10
 plan: 265
 title: Discard the 69 non-uniform _pooled forecasts — an irreversible deletion, with its own runbook
@@ -11,9 +11,27 @@ source: 2026-09-10 — split out of Plan 248 T2 on the owner's decision, after t
 
 # Plan 265 — discard the 69 non-uniform `_pooled` forecasts
 
+## ⛔ SUPERSEDED by Plan 248's rewrite (owner decision, 2026-09-10) — do not implement from this file
+
+This plan existed to hold an operational runbook for an irreversible deletion. The owner then
+clarified that the mac-mini is a **disposable sandbox** while the CODE must be robust. On a
+disposable host the 69 rows are cleared by Plan 248 T1's two statements, and none of the machinery
+below — manifest, backup-by-restore, `RETURNING` set-equality, pinned expected count — is warranted.
+
+**Read this file for its requirements, not its instructions.** They travelled intact into Plan 248
+§ *The operational variant*, which is where they belong: the procedure for a hydromet deployment
+whose data IS precious. Nothing here is withdrawn as wrong; it is withdrawn as **not applicable to
+this host**.
+
+⚠️ **If a real deployment ever needs this, lift it from Plan 248's operational-variant section, not
+from here** — that section also carries the three findings this file predates (backup/deletion state
+divergence, the FK-guaranteed orphan check that cannot fail, and the cross-plan cycle that splitting
+the deletion created).
+
 ## Status
 
-**DRAFT.** Awaiting owner READY. Split out of Plan 248 T2 on 2026-09-10.
+**SUPERSEDED.** Was DRAFT; never implemented. Split out of Plan 248 T2 on 2026-09-10 and retired the
+same day.
 
 ⛔ **This plan performs the only irreversible step in the 248 family.** It deletes production rows.
 Nothing here runs without the owner's explicit word, and the backup gate is a hard precondition, not
