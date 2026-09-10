@@ -5,6 +5,9 @@ plan: 264
 title: QC rules select on network, not only parameter and cadence
 scope: Add a network dimension to observation QC rule selection so one deployment can carry rules for more than one network without them colliding. NOT the DHM threshold values themselves (Plan 263), NOT forecast QC, NOT a new rule kind, NOT a change to any threshold currently in force.
 blocks: [263]
+reviews:
+  - "codex 2026-09-10 — reviewed as a set with 263; NOT READY, 3 blockers; the call-site audit was wrong"
+open_decisions: [D4, D5]
 source: 2026-09-10 — the owner's answer to Plan 263 D15. Opened because Plan 263's QC task cannot isolate a DHM rule set from the Swiss one on the current lookup; both independent reviews of that plan found the same thing.
 ---
 
@@ -12,8 +15,22 @@ source: 2026-09-10 — the owner's answer to Plan 263 D15. Opened because Plan 2
 
 ## Status
 
-**DRAFT.** Owner sets READY. Non-trivial and it touches a live path: one independent Claude
-and one independent Codex review before READY.
+**DRAFT — NOT READY.** One independent Codex review has run (2026-09-10, reviewing this plan
+together with Plan 263 as a set) and is folded. An independent Claude pass is still owed.
+
+**The review found the author's call-site audit was wrong**, which is worth recording because
+it was the one part of this plan asserting a fact about the repository. T2 listed three
+forecast files as callers of the observation quality checker. They are not: they call
+`ForecastOutputQualityChecker`, a separate Protocol over `ForecastEnsemble` and
+`ForecastQcRuleSet` (`services/run_station_forecast.py:229`). The author matched on the method
+name `check(` and attributed the hits to the wrong checker. The real production callers of the
+observation checker are **two**: `flows/ingest_observations.py:304` and
+`services/onboarding.py:772`. As scoped, T2 would have either changed forecast QC — directly
+against D1 — or left the `QualityChecker` Protocol (`protocols/stores.py:1012`) stale.
+
+Three further faults, all folded below: the plan diagnosed a configuration-composition problem
+it never fixed; most-specific-wins had no uniqueness invariant, so two rules could still both
+fire; and the "byte-identical" bar had no oracle.
 
 Split out of Plan 263 deliberately. The owner chose this over the in-process workaround, and
 it changes shared code that the running Swiss deployment depends on — that risk deserves its
@@ -40,6 +57,13 @@ planning Plan 263:
    (`config/_overlay.py:44-56`). A deployment that adds Nepali rules by config loses the Swiss
    ones — silently, because the defaults *function* is untouched and any test asserting "the
    defaults are unchanged" still passes.
+
+   **This plan does not fix (2), and the first revision was wrong to imply it did.** Adding a
+   network dimension changes *selection*, not *composition*: after this plan ships, an overlay
+   that supplies a `[qc_rules]` section still replaces the built-in set wholesale. What changes
+   is that a complete rule set can now express both networks without collision. **Configuration
+   overlays remain unsuitable for adding rules incrementally**, and D4 records that as a stated
+   limitation rather than a fixed one.
 
 This is a real limitation for the Nepal deployment generally, not only for the historical
 import that surfaced it: any deployment serving both networks hits it.
@@ -86,68 +110,146 @@ it; see T2 for the audit.
 The alternative is to fall back to the `None` rules, which is indistinguishable from correct
 behaviour and would hide a wiring mistake behind plausible-looking QC results.
 
+**D4 — Configuration composition: fix it here, or state the limitation? NEW, open.**
+The Problem section's second defect survives this plan. Options: fix `load_qc_rules` and the
+overlay so rule lists merge rather than replace; or state plainly that a deployment must supply
+a complete rule set and that overlays cannot add rules incrementally.
+*Recommendation: state the limitation.* Changing list-merge semantics in the shared overlay
+would affect every config list in the system, not only QC rules — a far larger blast radius
+than this plan's purpose justifies, and it deserves its own plan if anyone wants it.
+
+**D5 — Who owns the hard-coded flag version? NEW, open — and it is a genuine trap.**
+`services/qc.py` emits `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`) instead of the
+configured `rule.rule_version`. Plan 263 needs DHM flags to carry the DHM rule set's version,
+which means fixing those sites. **But the Swiss rules declare `rule_version="1.0.0"`**
+(`config/qc_rules.py:47`), so fixing them changes every Swiss flag's recorded version from
+`"1.0"` to `"1.0.0"` — breaking this plan's byte-identical bar and Plan 263's "no operational
+QC change" exclusion at the same time. Neither plan owned this until the set review found it.
+*Recommendation: fix it here, and treat the version change as an intended, announced
+migration* — the current behaviour records a version that does not match the rule that ran,
+which is a provenance defect in its own right, and shipping the network dimension without
+fixing it means DHM flags would be stamped with a Swiss rule's version. The byte-identical bar
+then applies to flags, statuses and thresholds, with `rule_version` explicitly exempted and
+covered by its own before/after assertion.
+
 ## Tasks
 
 ### T1 — The network dimension in the rule model and lookup
 
 **Outcome**: `QcRuleParams` carries `network: str | None`; `rules_for` selects
-most-specific-wins; TOML parsing accepts and validates the field.
+most-specific-wins; the rule set rejects ambiguity at construction; TOML parsing accepts and
+validates the field.
 **In**: `src/sapphire_flow/types/domain.py`; `src/sapphire_flow/config/qc_rules.py`;
 unit tests.
 **Out**: no threshold value changes; no change to `ForecastQcRuleSet` (D1); no change to any
-call site (T2).
-**Verification**: `uv run pytest tests/unit/types/test_qc_rule_selection.py` asserting: a
-network-specific rule wins over a `None` rule of the same id/parameter/cadence; a `None` rule
-still applies where no specific rule exists; the two never both return for one lookup; and an
-unknown field in TOML is rejected rather than ignored.
+call site (T2); no change to configuration composition (D4).
+**Verification**: `uv run pytest tests/unit/types/test_qc_rule_selection.py` asserting:
+- a network-specific rule wins over a `None` rule of the same id/parameter/cadence;
+- a `None` rule still applies where no specific rule exists;
+- the two never both return from one lookup;
+- **duplicates are rejected at construction** — two rules sharing
+  `(rule_id, parameter, time_step, network)` raise rather than both firing. Added after the
+  set review found most-specific-wins had no uniqueness invariant: without it, "exactly one
+  rule resolves" is an aspiration, and Plan 263's isolation gate consumes it as a guarantee;
+- TOML round-trips a valid `network = "dhm"`, rejects a non-string network, and rejects an
+  unknown field rather than ignoring it (the hand-written parser at `config/qc_rules.py:25-37`
+  does no runtime type validation today).
 **Pre-change**: a RED test proving that today two rules of the same id, parameter and cadence
 both return from one `rules_for` call — the collision itself, not a proxy for it.
 
-### T2 — Thread the network through every call site
+### T2 — Thread the network through the observation-QC call sites
 
-**Outcome**: every `Stage1QualityChecker.check` caller supplies the station-to-network
-mapping, and none can silently omit it.
-**In**: `src/sapphire_flow/services/qc.py`; the call sites —
-`flows/ingest_observations.py:305`, `services/onboarding.py:796`, and the forecast-path
-callers at `services/run_station_forecast.py:549,557`,
-`services/run_group_forecast.py:285,293`, `services/forecast_combination.py:332`.
-**Audit the forecast callers before changing them**: they pass forecast ensembles through this
-same observation checker, and whether "network" is even meaningful there is not obvious. If it
-is not, say so in the plan and give them an explicit exemption rather than a plausible-looking
-default.
-**Out**: no behaviour change for a single-network deployment.
+**Outcome**: every `Stage1QualityChecker.check` caller supplies a station-to-network mapping,
+and none can silently omit it.
+**In**: `src/sapphire_flow/services/qc.py`; **`src/sapphire_flow/protocols/stores.py`** — the
+`QualityChecker` Protocol at `:1012` declares this signature and must change with it; and the
+**two** production callers, `flows/ingest_observations.py:304` and
+`services/onboarding.py:772`.
+**Out**: **the forecast QC path is untouched.** `services/run_station_forecast.py:549,557`,
+`services/run_group_forecast.py:285,293` and `services/forecast_combination.py:332` call
+`ForecastOutputQualityChecker` — a *separate* Protocol over `ForecastEnsemble` and
+`ForecastQcRuleSet` (`services/run_station_forecast.py:229`,
+`protocols/stores.py:1024-1033`). The first revision of this plan listed them as observation-QC
+call sites; that was wrong, and acting on it would have changed forecast QC against D1.
 **Verification**: the mapping is a required parameter, so omission is a type error rather than
-a silent default; `uv run pytest` passes whole; and a Swiss-only fixture produces **identical
-flags, statuses and rule versions** before and after — the byte-identical bar from § What this
-does not change.
-**Pre-change**: N/A — mechanical threading, guarded by the equivalence test above.
+a silent default; **a station absent from the mapping raises** (D3) — asserted by a test, not
+only stated; `uv run pytest` passes whole; and the golden-fixture equivalence in T4 holds.
+**Pre-change**: a RED test proving that today a station's network cannot influence which rules
+run, because the checker has no access to it.
 
-### T3 — Documentation
+### T3 — Fail closed when no rule resolves
 
-**Outcome**: the QC selection contract is documented as network-aware, and the forecast-QC
-asymmetry (D1) is written down rather than left for the next reader to discover.
+**Outcome**: `Stage1QualityChecker` distinguishes "rules ran and found nothing" from "no rules
+resolved", and the second is an error rather than a pass.
+Added after the set review: the author's justification for most-specific-wins was that
+exact-match could resolve zero rules and be reported as passed — but **most-specific-wins does
+not close that path either**. An empty rule set, a TOML set omitting the generic rules, or a
+series whose parameter/cadence matches nothing all still yield empty flag lists, and
+`aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`). Today the live
+ingest and onboarding paths are fail-open in exactly this way. Plan 263 was going to bolt a
+local assertion onto its own import; the policy belongs here, once, for every caller.
+**In**: `src/sapphire_flow/services/qc.py`; `src/sapphire_flow/protocols/stores.py`;
+the two call sites' handling of the new error.
+**Out**: no change to what any *resolved* rule does.
+**Verification**: a series whose `(parameter, time_step)` resolves no rule raises rather than
+returning empty flags; a series that resolves rules and trips none still returns `QC_PASSED`;
+and the two are distinguishable in the caller's logs.
+**Pre-change**: a RED test proving that today a rule set with no matching rule marks every
+observation `qc_passed` with zero rules run.
+
+### T4 — Equivalence for a Swiss-only deployment
+
+**Outcome**: proof that a deployment serving one network is unaffected.
+Added because "byte-identical before and after" had no oracle — a post-change test cannot
+compare against a "before" that no longer exists.
+**In**: a golden fixture under `tests/fixtures/qc/` — a fixed observation series plus the Swiss
+rule set, with expected flags, statuses and thresholds **generated before T1 lands** and
+committed as the baseline.
+**Out**: not a new QC behaviour; purely a regression bar.
+**Verification**: `uv run pytest tests/unit/services/test_qc_swiss_equivalence.py` — the Swiss
+fixture's flags, statuses and thresholds match the golden artifact exactly. **`rule_version` is
+the one exempted field** and carries its own assertion: it changes from `"1.0"` to the
+configured `"1.0.0"` per D5, deliberately and once.
+**Pre-change**: N/A — the fixture *is* the pre-change evidence, and it must be generated and
+committed first.
+
+### T5 — Documentation
+
+**Outcome**: the QC selection contract is documented as network-aware; the forecast-QC
+asymmetry (D1), the composition limitation (D4) and the version migration (D5) are written down
+rather than left for the next reader to discover.
 **In**: `docs/spec/types-and-protocols.md`; `docs/touchpoint-maps.md`;
 `docs/standards/wmo.md` if it states the QC rule contract.
 **Out**: no code change.
 **Verification**: bounded inspection — every doc statement about QC rule selection names the
-network dimension, and the forecast-QC exemption is stated with its reason.
+network dimension; the forecast-QC exemption, the overlay limitation and the version change are
+each stated with their reason.
 **Pre-change**: N/A — documentation.
 
 ```json
 {
   "phases": [
-    { "id": "phase-1", "tasks": ["T1"] },
-    { "id": "phase-2", "tasks": ["T2"], "depends_on": ["phase-1"] },
-    { "id": "phase-3", "tasks": ["T3"], "depends_on": ["phase-2"] }
+    { "id": "phase-1", "tasks": ["T4"] },
+    { "id": "phase-2", "tasks": ["T1"], "depends_on": ["phase-1"] },
+    { "id": "phase-3", "tasks": ["T2", "T3"], "depends_on": ["phase-2"] },
+    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3"] }
   ]
 }
 ```
+
+T4 runs **first**: the golden fixture is the pre-change baseline, and it cannot be generated
+after the change it exists to detect.
 
 ## Explicitly out of scope
 
 - The DHM threshold *values* — Plan 263 D14 and its QC task own those.
 - Forecast QC rule selection (D1).
-- Per-station QC overrides. `StationQcOverride` is a dataclass with no table, no store and no
-  loader, and both production callers hard-code an empty list. That is a separate gap; this
-  plan does not close it and does not depend on it.
-- Any change to a threshold currently in force.
+- Per-station QC overrides **as persisted rows**. `StationQcOverride` is a dataclass with no
+  table, no store and no loader, and both production callers hard-code an empty list. This plan
+  does not add that schema. **Note for the set:** the dataclass *can already* express a
+  per-station threshold in memory, and Plan 263's six station-specific limits are built that
+  way — so the capability Plan 263 needs is not blocked on this exclusion. Plan 263 T7 owns
+  constructing them; this plan owns only which rule they merge into.
+- Any change to a threshold *value* currently in force. (Flag `rule_version` **does** change,
+  once and deliberately — D5.)
+- Fixing configuration composition so overlays can add rules incrementally (D4).
