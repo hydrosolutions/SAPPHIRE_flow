@@ -347,7 +347,7 @@ feed. Whether to open that is an owner scope call (D9), not a change this plan m
 
 ## Decisions
 
-All closed by the owner on 2026-09-10. **D16 is open**, raised by the cross-plan review.
+All closed by the owner on 2026-09-10; D16 was raised by the cross-plan review and closed the same day.
 
 **D1 — Where DHM's rating-table label goes. CLOSED: we number the curves ourselves.**
 `version` is the 1-based chronological ordinal of the curve within its station; DHM's type
@@ -408,12 +408,20 @@ order, in one transaction:
    which would take a newer curve DHM sends later;
 3. re-run T3, then T4, then T7, against the corrected boundary constant.
 
-**The delivery needs an identity for steps 1 and 2 to be safe**, and the set review was right
-that "by tenant and source" is not one. Carry a delivery marker on the imported rows — the
-simplest being the rating curves' provenance column (D1) and, for observations, the curve
-binding plus the import's own recorded id — and make the deletion predicate name it. The
-rehearsal must assert that an unrelated manual observation and an unrelated curve, both
-created before the replacement, **survive it**.
+**The delivery needs an identity for steps 1 and 2 to be safe**, and round 4 found the
+author's proposed identity does not exist. It said to use "the curve binding plus the import's
+own recorded id". Neither half works: `observations` has **no column able to hold an import
+id** (`db/metadata.py:497-555`), `store_raw_observations` mints `id` itself
+(`observation_store.py:73`) so the CLI cannot pre-assign one, and the curve-binding half fails
+on precisely the **4,629 rows D7 leaves with a NULL curve id** — which would be
+indistinguishable from any other manual import, reinstating the over-broad predicate this was
+written to remove.
+
+**T3's migration must therefore add a delivery column to `observations` as well as the
+provenance column on `rating_curves`**, and T4's In list can no longer call the observation
+store "read-only". The rehearsal must assert that the curve-less rows are deleted too, and that
+an unrelated manual observation and an unrelated curve, both created before the replacement,
+**survive it**.
 
 Two supporting requirements:
 
@@ -533,23 +541,44 @@ status each row carries is then whatever our QC decides, which is the only statu
 true by construction.
 
 **The machinery already exists and already covers this cadence.** `Stage1QualityChecker`
-(`services/qc.py:225`) selects rules by inferred time step, and the default rule set already
-carries a full daily (86,400 s) discharge tier: range, rate-of-change, frozen-sensor, spike
-and gross-outlier (`config/qc_rules.py:80-114`). Nothing new has to be built to run QC on a
-daily series.
+(`services/qc.py:225`) selects rules by inferred time step. Nothing new has to be built to run
+QC on a daily series.
+
+**🔴 But the earlier revisions of this plan described the wrong rule set, and so did their
+evidence.** They read `config/qc_rules.py`'s `_default_swiss_qc_rules()` and assumed it was
+what runs. It is not: `load_qc_rules` returns the built-ins **only when no `[qc_rules]` section
+exists**, and this repo's `config.toml:207` supplies one — 26 rules, not the 28 in code. The
+defaults function is dead at runtime. Measured against the config actually in force, the daily
+discharge tier is **four rules, not five**:
+
+| Daily discharge rule | In force? | Threshold |
+|---|---|---|
+| range check | yes | max 5,000 m³/s |
+| rate of change | yes | max 500 m³/s/day |
+| spike | yes | tolerance **0.5** (the code default is 0.1) |
+| gross outlier | yes, but **inert** — no baselines (D16) | k-sigma 5 |
+| frozen sensor | **absent — no daily discharge rule exists** | — |
+
+So **three rules can actually fire**. Every "five rules" statement in earlier revisions was
+wrong, and the frozen-sensor row in the table below described a rule that is not deployed.
 
 **But the thresholds are Swiss, and applying them unchanged would be worse than not running
 QC at all.** Measured against the delivered data:
 
-| Daily rule | Swiss threshold | Would flag |
-|---|---|---|
-| range check | max 5,000 m³/s | 1,126 values (1.1%) |
-| rate of change | max 500 m³/s/day | 2,638 values (2.7%) |
-| frozen sensor | 5 equal days | 536 values (0.5%) |
+Re-measured against the **deployed** thresholds, and simulating the service's own behaviour
+(no elapsed-time guard) rather than an idealised one:
 
-These counts are a **floor**, not a prediction: they were measured with an
-elapsed-time guard that the QC service itself does not apply (see T7), so the service will
-flag at least this many and probably more.
+| Daily rule in force | Would flag | of which from gap-bridging |
+|---|---|---|
+| range check | 1,126 (1.13%) | — |
+| rate of change | 2,642 (2.66%) | 4 |
+| spike (tolerance 0.5) | 665 (0.67%) | 1 |
+| frozen sensor | rule not deployed — cannot fire | — |
+| gross outlier | inert, no baselines (D16) | — |
+
+**The gap-bridging defect is real but small here** — 5 rows across 99,246. Earlier revisions
+implied it was a major source of false flags; measured, it is not. Fix it for correctness, not
+because it distorts this import.
 
 The range-check number is the dangerous one: **1,125 of those 1,126 are at station 450**,
 a 31,650 km² basin whose genuine monsoon peaks exceed the Swiss ceiling by nearly threefold.
@@ -626,7 +655,10 @@ the implementer, as T7 did, means a silent zero flag count that reads like a cle
 **CLOSED** (owner, 2026-09-10): **drop gross-outlier from the DHM set for this import**,
 explicitly via `skipped_rule_ids` — never by letting it resolve and report zero. Bootstrapping
 baselines from unchecked data in order to judge that same data is the circularity D14 exists to
-avoid. The four remaining rules — range, rate-of-change, frozen-sensor, spike — carry the pass.
+avoid. **Three** rules then carry the pass — range, rate-of-change and spike. Frozen-sensor is
+not deployed at this cadence at all (D12), so the DHM set has no fourth rule to fall back on;
+that thinness is a reason to look again at the rule set later, not a reason to bootstrap
+baselines circularly now.
 
 A 52-year daily record is ample to compute proper baselines **after** it has been QC'd by those
 four, which is the honest order. That is deliberately left for later work and is not scoped
@@ -742,7 +774,8 @@ and asserts a single head — a new migration fails the suite until it is bumped
 **`tests/fakes/fake_stores.py`** (its `fetch_curve_at` at :1587 returns the first
 insertion-order match while its batch sibling at :1625 already resolves last-wins — fixing
 only the database reader would split unit from integration behaviour);
-`src/sapphire_flow/cli/import_dhm_delivery.py` (curve branch).
+`src/sapphire_flow/cli/import_dhm_delivery.py` (curve branch);
+**`tests/unit/store/test_fake_rating_curve_store.py`** (new).
 **Out**: no conversion of any observation.
 **Verification**:
 - `uv run pytest tests/integration/store/test_rating_curve_store.py` for the database
@@ -751,7 +784,9 @@ only the database reader would split unit from integration behaviour);
   from a unit test. The previous revision named `tests/unit/store/test_rating_curve_store.py`,
   which does not exist — that gate would have exited on a missing file.
 - `uv run pytest tests/unit/store/test_fake_rating_curve_store.py` for the fake, asserting
-  the **same** overlap outcome, so the two cannot drift.
+  the **same** overlap outcome, so the two cannot drift. **This file does not exist yet and is
+  listed under In above** — round 4 caught the previous revision naming a second nonexistent
+  path in the very bullet that fixed the first one.
 - `uv run pytest tests/unit/db/test_alembic_head_release_b.py` after bumping the head pin.
 - Import assertions: all 112 pass `RatingConverter.from_curve` under the D13 interpolation;
   versions are 1..N in date order per station with no gaps; DHM's type label round-trips
@@ -768,8 +803,10 @@ procedure requires curve deletion to be possible, which the composite FK from `o
 blocks unless observations are deleted first. Implement the delete-then-reimport path and
 order it correctly; do not add `ondelete` cascade to a shared FK to make this easier.
 **Pre-change**: two RED tests — (a) `fetch_curve_at` raises `MultipleResultsFound` on two
-simultaneously-valid curves, from a synthetic two-curve fixture; (b) a second `store_rating_curve`
-of the same station+version raises, proving the re-run gap is real. Both the actual defect and
+simultaneously-valid curves, from a synthetic two-curve fixture; (b) a second
+`store_rating_curve` of the same station+version raises — **at the integration tier**, since
+the fake stores by `curve.id` in a dict (`tests/fakes/fake_stores.py:1573-1575`) and enforces
+no uniqueness, so this can never go RED against it. Both the actual defect and
 its actual cause, not signature errors.
 **Unblocked.** D13 selects linear interpolation; D6 supplies the working day boundary
 (00:00–23:59 Asia/Kathmandu). Both are read from **one shared constant** with T4 — the two
@@ -825,8 +862,11 @@ without them the plan's own tool cannot reproduce the figures D12's table and T7
 on). **No stage value, no discharge value, in output or in failure diagnostics** — including
 no threshold that is itself a tabulated value (D14).
 **Verification**: `uv run python scripts/dhm_delivery/remeasure.py --check` exits 0 when its
-output matches the aggregate tables in this plan, and prints a diff and exits non-zero when
-it does not.
+output matches the aggregate tables in this plan, and prints a diff and exits non-zero when it
+does not. **The QC flag counts are compared as exact values, not as a floor** — the earlier
+"floor, not a prediction" hedge made this gate unsatisfiable by construction, and it is no
+longer needed now the counts are measured against the deployed thresholds and the service's
+actual gap behaviour (D12).
 **Pre-change**: N/A. **Depends on T1** — it needs the parser and nothing else.
 
 ### T6 — Documentation and the publication guard
@@ -875,13 +915,22 @@ state. The three faults, all verified in source:
    measurements in D12 guarded on consecutive days, so the real service would flag **more**
    than the table there reports — the table is a floor, not a prediction.)
 3. **One of the five rules is inert.** `_apply_gross_outlier` returns `None` when no
-   climatological baseline exists (`services/qc.py:206-208`), and every existing caller passes
-   `baselines=[]`. Reporting "gross-outlier: 0 flags" would mean nothing.
+   climatological baseline exists (`services/qc.py:205-209`). **Correction:** an earlier revision
+   said "every existing caller passes `baselines=[]`" — that is false. `flows/ingest_observations.py:309`
+   passes real baselines fetched at `:297`; only `services/onboarding.py:800` passes an empty
+   list. The DHM import has no baselines either way, so the conclusion stands, but the stated
+   reason did not.
 
 **In**: a DHM rule set declaring `network = "dhm"`, selected by the network-aware lookup
-**Plan 264** delivers (D15) — **not** an edit to `config/qc_rules.py`'s Swiss defaults and
-**not** a TOML overlay that replaces them (Plan 264 does not change composition, so an overlay
-still replaces the list wholesale — its D4); **six in-process `StationQcOverride` objects**,
+**Plan 264** delivers (D15). **The route is `config.toml`'s own `[[qc_rules.rules]]` array** —
+the rule list already in force, to which DHM-network rules are added alongside the existing
+ones. Round 4 found the previous revision excluded every route it named (not the code defaults,
+not a TOML overlay) while never naming one that works, leaving only the in-process workaround
+the owner rejected at D15 — which would have needed nothing from Plan 264 at all, making the
+dependency vacuous. Adding to the base rule list is the route that genuinely requires 264's
+network dimension, because that is where DHM and Swiss rules coexist and would otherwise
+collide. **Not** an edit to `config/qc_rules.py`'s dead defaults, and **not** a separate TOML
+overlay (which replaces the list wholesale — 264's D4); **six in-process `StationQcOverride` objects**,
 one per station, carrying D14's physical ceilings (the network rule alone cannot express six
 different maxima — see D14);
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
@@ -894,8 +943,13 @@ deployment configuration.
   every station group processed, and that the number of rows *evaluated* per rule equals the
   station's row count. A run where no rule resolved must **fail**, not certify.
 - **Per-station ceilings actually apply.** Assert each station's **effective merged**
-  `value_max` equals that station's D14 figure — six distinct assertions. A single shared DHM
-  maximum must fail this. Without it, the rest of the isolation work buys nothing.
+  `value_max` equals that station's D14 figure — six distinct assertions — by calling
+  `services/_qc_helpers.py::merge_thresholds` directly. That is the only route that proves the
+  merge: asserting on the override objects proves nothing, and reading `QcFlag.detail` embeds a
+  discharge value and so collides with the no-values rule. The override must match on all four
+  of `station_id`, `rule_id`, `parameter` and `time_step` — **a wrong `time_step` silently
+  falls back to the 5,000 ceiling**, which is exactly the failure this gate exists to catch.
+  A single shared DHM maximum must fail this.
 - **Isolation.** Exactly one daily-discharge rule of each id resolves for the DHM series, and
   a Swiss daily series resolves the Swiss rules unchanged — asserted on **both** paths, since
   the previous gate passed identically for the working and the broken design. This is
@@ -907,8 +961,10 @@ deployment configuration.
   not this plan's to fix — the set review found that correcting it changes every *Swiss* flag's
   recorded version too, because the Swiss rules declare `"1.0.0"`. T7 consumes the fix and
   asserts DHM flags carry the DHM version; it does not make the compatibility decision.
-- **Gross-outlier is excluded** via `skipped_rule_ids` (D16) and the exclusion is **named in
-  the run's output**. Assert it is skipped, not merely that it produced nothing — a zero flag
+- **Gross-outlier is excluded** via `skipped_rule_ids` (D16) — verified to work as assumed
+  (`services/qc.py:232,256`, already used in production via `obs_skipped_rules`) — and the
+  exclusion is **named in the run's output**, alongside the fact that frozen-sensor is not
+  deployed at this cadence. Assert it is skipped, not merely that it produced nothing — a zero flag
   count from a rule that could not fire must never be reportable as a clean pass.
 - `uv run pytest tests/unit/config/test_dhm_qc_rules.py`.
 **Pre-change**: a **synthetic** RED test demonstrating the mechanism — a series containing a
