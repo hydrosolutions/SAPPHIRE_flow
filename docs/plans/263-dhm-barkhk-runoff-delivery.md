@@ -9,7 +9,7 @@ reviews:
   - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
   - "codex 2026-09-10 set — NOT READY; reviewed with 264; 3 seam blockers neither plan owned"
-open_decisions: [D16]
+open_decisions: []
 depends_on: [264]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
@@ -42,9 +42,7 @@ Round 2 also found that a calibration the author recommended would have committe
 rating-table values — the same leak class already stripped once, reintroduced through a
 different door.
 
-**Fifteen of sixteen decisions are closed.** D16 (the gross-outlier rule's missing baselines)
-was opened by a cross-plan review and is the owner's call — it is scientific behaviour, not an
-implementation detail. T1–T6 are buildable. T7 waits on D16 and on
+**All sixteen decisions are closed.** T1–T6 are buildable. T7 waits only on
 **Plan 264**, which the owner's answer to D15 split out: teaching QC rules which network they
 apply to changes shared code the live Swiss deployment depends on, and that risk gets its own
 plan and its own review rather than a paragraph in this one.
@@ -618,19 +616,22 @@ building those six and proving each station's effective merged ceiling; Plan 264
 which rule they merge into.** Without that split written down, an implementation could satisfy
 both plans with a single shared DHM maximum and pass every stated gate.
 
-**D16 — the gross-outlier rule needs baselines that cannot exist yet. NEW, open; blocks T7.**
+**D16 — the gross-outlier rule needs baselines that cannot exist yet. CLOSED: drop the rule for this import.**
 The set review found this is a chicken-and-egg, not an implementation detail. `_apply_gross_outlier`
 needs a climatological baseline per station and day-of-year (`services/qc.py:206-208`), and the
 existing lifecycle computes baselines **only from observations that are already `QC_PASSED`**
 (`services/onboarding.py:836-870`) — which these will not be until the QC pass runs, and which
 these stations skip anyway because they carry no forecast targets (T2b). Leaving the choice to
 the implementer, as T7 did, means a silent zero flag count that reads like a clean pass.
-Options: run QC twice (first pass without gross-outlier, compute baselines from what passes,
-second pass with it); compute baselines from the raw series directly; or drop gross-outlier from
-the DHM set for this import. *Recommendation: drop it, explicitly, via `skipped_rule_ids`* — a
-52-year daily record is ample for baselines later, but bootstrapping them from unchecked data to
-then judge that same data is the circularity D14 exists to avoid. Revisit once the series has
-been QC'd by the other four rules. **This is scientific behaviour, so it is the owner's call.**
+**CLOSED** (owner, 2026-09-10): **drop gross-outlier from the DHM set for this import**,
+explicitly via `skipped_rule_ids` — never by letting it resolve and report zero. Bootstrapping
+baselines from unchecked data in order to judge that same data is the circularity D14 exists to
+avoid. The four remaining rules — range, rate-of-change, frozen-sensor, spike — carry the pass.
+
+A 52-year daily record is ample to compute proper baselines **after** it has been QC'd by those
+four, which is the honest order. That is deliberately left for later work and is not scoped
+here; T7's only obligation is that the exclusion is explicit in the run's output, so a reader
+can never mistake "this rule was not run" for "this rule found nothing".
 
 **D15 — how the DHM rules are isolated from the Swiss ones. CLOSED: the rules learn their network.**
 T7 claimed it could add a DHM daily rule set "beside" the Swiss one without changing Swiss
@@ -906,16 +907,16 @@ deployment configuration.
   not this plan's to fix — the set review found that correcting it changes every *Swiss* flag's
   recorded version too, because the Swiss rules declare `"1.0.0"`. T7 consumes the fix and
   asserts DHM flags carry the DHM version; it does not make the compatibility decision.
-- **Gross-outlier.** Per D16 — and whichever way it closes, the outcome is explicit in the
-  run's output. A zero flag count from a rule that could not fire must never be reportable as a
-  clean pass.
+- **Gross-outlier is excluded** via `skipped_rule_ids` (D16) and the exclusion is **named in
+  the run's output**. Assert it is skipped, not merely that it produced nothing — a zero flag
+  count from a rule that could not fire must never be reportable as a clean pass.
 - `uv run pytest tests/unit/config/test_dhm_qc_rules.py`.
 **Pre-change**: a **synthetic** RED test demonstrating the mechanism — a series containing a
 value above the Swiss ceiling is flagged by the Swiss rule and not by the DHM rule. It proves
 the mechanism, not the delivery; **T5's run is the evidence that the fault is real in the
 delivered data**, and it cannot be a checked-in test without either reading restricted files
 or embedding restricted values.
-**Depends on T4, and on Plan 264 shipping (its D5 included). BLOCKED on D16.**
+**Depends on T4, and on Plan 264 shipping (its D5 included).** All decisions closed.
 
 ```json
 {
