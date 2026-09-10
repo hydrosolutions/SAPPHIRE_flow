@@ -1,6 +1,7 @@
 ---
-status: DRAFT
+status: COMPLETE
 created: 2026-08-20
+completed: 2026-09-10
 plan: 192
 title: Second isolated mac-mini stack — operational recap-gateway forcing for HRU 12300
 scope: Prove that recap Data Gateway forcing works end-to-end for Nepal test basin 12300 on the mac-mini, WITHOUT disturbing the live Swiss/BAFU stack. Stage A is a throwaway one-shot proof (disposable DB, one direct fetch-and-store call). Stage B — only if the owner wants a STANDING daily feed — is a second, isolated Compose stack running `[adapters.weather_forecast] type = "recap_gateway"`. Models, training and targets stay in Plan 139.
@@ -13,8 +14,45 @@ supersedes: []
 
 ## Status
 
-**DRAFT — four rounds of independent Codex review folded in (2026-08-20); needs `/plan` before READY.**
-Grounded in a live gateway re-probe (evidence appendix) and a code re-read of the Flow-1 dispatch.
+**COMPLETE — 2026-09-10.** Stage A executed and passed (2026-08-20); Stage B built in the LIGHT shape
+and has run as a standing daily feed since. Four rounds of independent Codex review were folded in before
+build (2026-08-20), grounded in a live gateway re-probe (evidence appendix) and a code re-read of the
+Flow-1 dispatch.
+
+### What this plan delivered, measured 2026-09-10
+
+| | |
+|---|---|
+| Feed record | **21 days, 18 clean** — 2 upstream `source_data_missing` (08-29/08-30, self-healed), 1 self-inflicted (a manual run at the wrong hour, 09-04) |
+| Schedule | launchd `docker run`, 14:00 UTC daily (16:00 local, per O3) |
+| Monitoring | dead-man LIVE — wired to `secrets/nepal_deadman_url`, pings `/start` + `/fail`, and **fired for real on 09-04** |
+| Payload | 51-member IFS ensemble, 84 steps, **+14.75 d**, precipitation + temperature |
+| Snow | `snow_depth` / `snowmelt` / `swe` since 2026-09-07 (Plan 219), 241 hourly steps each, `unavailable_hru_count=0` |
+| Units | settled by **Plan 243** — the Gateway sends none; every conversion is registered with a named authority |
+| Isolation | held: `-p sapphire-nepal`, own volume/network/DB, no host ports, Swiss stack never disturbed |
+
+### ⛔ What this plan did NOT deliver — do not misread the running feed
+
+This validated **acquisition**, not the pipeline. Measured in the nepal DB on 2026-09-10:
+`model_assignments` **0**, `model_artifacts` **0**, `observations` **0**, `historical_forcing` **0**,
+`forecasts` **0**. **No forecast has ever been produced for 12300.** That was always Plan 139's scope
+(§ Non-goals), but the plumbing rows that DO exist (`stations` 1, `basins` 1, polygon binding 1) make it
+easy to overclaim.
+
+🔴 **A prerequisite surfaced here that no plan owns:** the feed collects FORECAST channels only. Nothing
+ingests ERA5-Land or JSNOW **reanalysis** into the nepal DB, so there is no training history —
+`historical_forcing` is 0 and no job would ever fill it. The data exists (307 complete days of `rof` + `tp`
+for `g_123`, measured 2026-08-20); the JOB does not. Closing 139's target-source decision does not make
+training possible on its own.
+
+### Open questions — all four answered BY THE IMPLEMENTATION
+
+- **O1** → standing daily feed, **LIGHT shape** (small standing Postgres + host-scheduled script). Built.
+- **O2** → **option (b)**: externally triggered by the host wrapper, no freshness heartbeat. Built.
+- **O3** → **14:00 UTC**, chosen because `pf` members are absent early (measured: absent 09:27 UTC, all 50
+  present 12:59 UTC on 2026-08-20). The plist records the DST caveat.
+- **O4** → **no external HTTP needed**; no `api`/`caddy` was added, so the ports-concatenation trap (D2/B1)
+  never had to be handled.
 
 This plan proves the **deployment/forcing** half of the Nepal test-basin question. It is a cheap
 **precursor** to [Plan 139](139-nepal-12300-swe-regression-enablement.md) — 139 is still a DRAFT epic whose

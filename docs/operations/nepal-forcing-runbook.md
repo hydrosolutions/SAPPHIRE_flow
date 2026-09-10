@@ -1,7 +1,7 @@
 # Nepal 12300 gateway-forcing feed — mac-mini runbook
 
 **Status:** READY. **Owner:** Bea (marti@hydrosolutions.ch).
-**Spec:** [Plan 192](../plans/192-recap-second-stack-12300-operational-test.md) (Stage B, light shape).
+**Spec:** [Plan 192](../plans/archive/192-recap-second-stack-12300-operational-test.md) (Stage B, light shape; COMPLETE and archived 2026-09-10).
 **Related:** [recap probe runbook](recap-probe-runbook.md) — the source-side twin of this feed.
 
 > A once-daily, unattended fetch of recap Data Gateway IFS forcing for Nepal test basin **12300**,
