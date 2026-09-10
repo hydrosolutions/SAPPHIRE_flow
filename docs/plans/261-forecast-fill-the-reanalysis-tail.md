@@ -377,7 +377,13 @@ failing on an absent helper proves only that the helper is unwritten.
 
 ### T2 — prove the historical paths did not move
 
-**Outcome.** Hindcast and training frames are byte-identical to before T1.
+**Outcome.** No historical assembler can reach the fill — proven **structurally**, by
+reference and by signature, not by comparing frames. (Revised 2026-09-10: an earlier
+revision said "byte-identical frames", which nothing built proves and which is the weaker
+property anyway — a frame comparison passes for whatever inputs the test happens to pick,
+while the structural check fails the moment the fill is referenced outside the two
+operational assemblers or either historical assembler grows a `WeatherForecastStore`
+parameter.)
 
 **In.** One test per historical assembler (`hindcast.py`, `training_data.py`). This is the
 whole of what an earlier design needed a leakage subsystem for.
@@ -409,9 +415,12 @@ and fire on when the source genuinely stalls.
 2026-09-09: **every one of the 4,248 forecasts issued in the last three days has
 `input_quality` NULL**, including the 06:00Z cycle, on a host running 0.1.894 — which
 contains T1b. The write path exists (`run_station_forecast.py:620`), so either the deploy
-landed after that cycle or the flag is not reaching the row. If the label is not being
-written, that is a **finding to report, not a defect for this plan to fix** — record it
-against a new plan.
+landed after that cycle or the flag is not reaching the row.
+
+✅ **Answered 2026-09-10 — no investigation needed, and no new plan.** The label IS being
+written: of 1,337 forecasts in the following 20 h, all 1,337 carry a DEGRADED label (see
+§"Why this matters now"). The 09-09 NULLs are deploy timing — Plan 239 T1b merged at
+`071b62e3`, 2026-09-09 11:11 UTC, after the 06:00Z cycle this paragraph singles out.
 
 **Out.** Building any new quality mechanism. Any fill-provenance signal (D6).
 
@@ -442,8 +451,8 @@ plan. The NULL question answered either way, in writing.
    de-accumulated parameter; and every bucket a series already measured is unchanged.
    Asserted by test, including an off-midnight seam case and a lead-0 case, not by
    inspection.
-3. Hindcast and training frames are byte-identical to before, proven by test, not by
-   argument.
+3. Neither historical assembler can reach the fill — proven by test (reference whitelist
+   plus signature check), not by argument.
 4. Nothing is written to any store by this plan.
 5. `forcing_recent_steps`'s default is chosen against re-measured data, not against
    today's permanently-short tail.

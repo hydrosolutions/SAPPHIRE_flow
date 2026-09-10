@@ -399,8 +399,11 @@ past forcing series, and the outcome is recorded here with its cause, whatever i
 
 **In.** One cycle run on the mini **after Plan 261's T1 is deployed**, and a written
 result: whether `discover_group_runs` yielded the group, whether the future-coverage gate
-passed (it should — required steps resolves to 1), whether the past leg reached the issue
-time, and what the model returned.
+passed (it should — required steps resolves to 1), whether the past leg reached
+`past_targets_end` — the aligned lookback bound, which for an off-midnight cycle is the
+preceding bucket boundary and **never** the issue time (Plan 261 stops there deliberately;
+filling to the issue time is the partial-bucket defect Plan 239 T1a exists to prevent) —
+and what the model returned.
 
 **Out.** Changing anything to make it pass. Adjusting the model's declaration. Running
 before 261 is deployed — that was the earlier plan and is superseded.
@@ -539,7 +542,7 @@ uv run pyright src
   the Dockerfile.
 - Plan 261's T1 is deployed on the mini before T5 runs.
 - T5's observed outcome is written into this plan with its cause, including whether the
-  past forcing leg reached the issue time.
+  past forcing leg reached `past_targets_end` (the aligned bound, NOT the issue time).
 - No `station_status` was written by anything in this plan.
 - No provenance field was filled with a value this plan could not source; the two
   flagged gaps are either closed by the modeller or still recorded as open.

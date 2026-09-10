@@ -422,6 +422,14 @@ discriminating — each new test was verified RED against the specific mutant it
 ships at **2**. Past forcing measured **2.29 days** behind on staging, so DEGRADED fires on
 essentially every forecast until Plan 261 lands. The owner was shown this and chose to ship.
 
+⚠️ **Corrected 2026-09-10 (measured, see Plan 261 §"Why this matters now"): it fires on
+NONE.** `past_forcing_flags` iterates `data_requirements.past_dynamic_features`, and only
+`SeasonalPrecipRunoffRegression` declares any today — the fallbacks and
+`linear_regression_daily` declare an empty set, and `NwpRegression`/`NwpRainfallRunoff`
+declare only target history, which the FI adapter routes to the target channel. Of 1,337
+forecasts in 20 h, zero carried a `forcing` flag; all 1,337 were DEGRADED from `warm_up`.
+The sentence above stands as what was believed at the time, not as fact.
+
 #### T1b — folded from the Codex CROSS-CHECK of the fix, 2026-09-09
 
 The fix was re-reviewed by an independent Codex pass. Five findings verified CLOSED; two were only
