@@ -208,10 +208,11 @@ decision. So there are three positions, not two:
 ⛔ **A plan that contradicts a locked decision without superseding it is how the contradiction survives
 review.** T9 supersedes it explicitly.
 
-**What survives and what does not.** The architecture's *intent* is right and is kept: a daily
-aggregate should mean the local hydrological day, and a Nepali day is not a UTC day
-(`architecture-context.md:2933` says exactly that). Its *mechanism* — derive the boundary from each
-station's IANA zone — is refuted, on the measured ground that a DST-observing zone has no uniform
+**What survives and what does not.** The architecture's *intent* is kept only in its weak form: a
+daily aggregate should mean a day the local users recognise, and a Nepali day is not a UTC day
+(`architecture-context.md:2933`). ⚠️ **It does NOT survive as "the local CIVIL day"** — OD-15 moved
+Switzerland to a morning-to-morning observation day, which no member of the public would call a day.
+Its *mechanism* — derive the boundary from each station's IANA zone — is refuted, on the measured ground that a DST-observing zone has no uniform
 civil-day grid at all (OD-2: Zurich civil days run 23, 24 or 25 hours). For Nepal the two mechanisms
 give an identical answer, because `Asia/Kathmandu` has no DST. **This is a supersession of mechanism,
 not of intent.**
@@ -241,8 +242,11 @@ deployment is configured from.
 table deliberately: quoting it is the single easiest way to reintroduce the contradiction. See OD-15.
 
 Rows 3 and 4 are one deployment before and after a cutover. Rows 1 and 2 are the intent and what we
-can operate on: a Nepali day configured at `64800 s` runs **00:45–23:45 local**, a known and accepted
-approximation.
+can operate on: a Nepali day configured at `64800 s` (18:00Z) starts at **23:45 NPT** and runs
+**23:45 → 23:45 local**, a known and accepted 15-minute displacement from civil midnight.
+⚠️ **Corrected 2026-09-10: an earlier revision said "00:45–23:45 local", which spans 23 hours and is
+impossible on an 86400 s grid.** 18:00Z + 5:45 = 23:45 NPT, so the day begins a quarter-hour BEFORE
+civil midnight, not three-quarters after it.
 
 ### Phase is measured from UTC midnight — and that is a choice
 
@@ -331,8 +335,12 @@ labelling, interval bounds and the CF `cell_methods` vocabulary all depend on wh
 point or an interval. Plan 258 states each once, by support — including **interval bounds, which are
 Plan 258 T5** (owner decision 2026-09-09). ⛔ They are not an orphan; earlier revisions said so.
 
-**OD-2 — sub-daily runs on UTC phase; daily runs on a local-anchored phase.** These are different
-products, not an inconsistency: a daily forecast *means* a civil day, an hourly one does not. Keeping
+**OD-2 — sub-daily runs on UTC phase; daily runs on a declared local-anchored phase.** These are
+different products, not an inconsistency: a daily forecast means **a named day in some local
+convention**, an hourly one does not. ⚠️ **"Civil day" was withdrawn here on 2026-09-10 by OD-15.**
+Switzerland's day is now an OBSERVATION day (06:00Z, the precipitation product's) and is deliberately
+NOT a civil day; Nepal's is a civil day rounded to a whole hour (OD-3). The plan must not argue that a
+daily forecast means a civil day — that was the reasoning behind the withdrawn 23:00Z target. Keeping
 sub-daily on UTC means the hourly forcing is consumed exactly as delivered. ⚠️ **An earlier revision
 added "and only instantaneous observations are interpolated" here. Deleted — OD-13 forbids
 interpolation outright.** Off-grid instantaneous readings are handled by OD-14's bucket edges, which
@@ -623,7 +631,7 @@ bucket edges chosen from the nearest actual reading, the configurable refusal li
 recording how far the chosen edge sat from nominal. ⛔ **An earlier revision stated OD-14 and named no
 implementer at all.** If T3 does not carry these, nothing does.
 
-**OQ-6 — how do two sources with DIFFERENT day boundaries feed ONE model?** Measured above:
+**OQ-6 — ✅ ANSWERED 2026-09-10 by OD-15. How do two sources with DIFFERENT day boundaries feed ONE model?** Measured:
 precipitation arrives on a 06:00 day, temperature on a midnight day. Same step, different phase, so
 by this plan's own alignable rule they are NOT alignable — yet today we combine them silently.
 ⛔ **We cannot fix this by shifting either one:** re-cutting a daily total to a different boundary
@@ -789,14 +797,27 @@ last and could not express a configurable rounding rule):
 
 | field | example | meaning |
 |---|---|---|
-| `daily_civil_boundary` | `"00:00"` | the boundary the PROVIDER states, in local civil time |
-| `daily_boundary_rounding` | `"nearest"` \| `"down"` | how a mid-hour civil boundary becomes a whole UTC hour |
-| `daily_grid_origin` | `"18:00"` | the resulting operating boundary — **DERIVED, and validated against the first two, never hand-entered independently of them** |
+| `daily_grid_origin` | `"18:00"` (Nepal) / `"06:00"` (Switzerland) | ⭐ **PRIMARY. The operating boundary in UTC, always DECLARED.** Never computed from anything else. |
+| `daily_boundary_provenance` | `"civil-midnight, rounded nearest"` / `"MeteoSwiss precipitation day"` | why that value; **optional, and descriptive only** |
+| `daily_civil_boundary` | `"00:00"` | OPTIONAL — the local civil boundary, only where one exists |
+| `daily_boundary_rounding` | `"nearest"` \| `"down"` | OPTIONAL — used only to CHECK a declared origin against a declared civil boundary, never to produce it |
+
+🔴 **Corrected 2026-09-10. An earlier revision made `daily_grid_origin` DERIVED from a civil boundary
+plus a rounding rule. That was wrong twice over:** it reintroduced derivation, which OD-12 forbids
+("declared, never derived"); and **it cannot express Switzerland at all** — 06:00Z is an observation
+day inherited from the data provider, and there is no civil midnight anywhere that rounds to it. The
+derived design fitted Nepal and silently excluded the only deployment we actually run.
+
+⚙️ Where both a civil boundary and a rounding rule ARE declared (Nepal), the config **validates** that
+the declared origin follows from them and refuses a mismatch. Where they are absent (Switzerland), the
+origin stands on its own with its provenance recorded. Changing the rounding rule therefore changes
+what is *accepted*, not what is *computed*.
 | `bucket_edge_tolerance` | `"7m30s"` | OD-14's limit: how far the reading nearest a bucket boundary may sit from nominal before the bucket is REFUSED. Default: half the source's reading interval. **Consumed by Plan 254 T3.** |
 | `daily_grid_origin_overrides` | per station | OD-12's optional per-station override, same validation as the deployment value |
 
-The displacement between the civil boundary and the operating one is computed and **recorded on every
-value cut with it**, so it is stated rather than discovered. **Also
+Where a civil boundary is declared, the displacement between it and the operating boundary is computed
+and **recorded on every value cut with it**, so it is stated rather than discovered. Where none is
+declared, the provenance string carries that role. **Also
 `docs/spec/config-reference.toml`**, which states that it documents every config field — a new field
 absent from it breaks that promise. Depends on T2.
 
@@ -822,14 +843,16 @@ Switzerland's root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** 
 required, not an omission); a phase with a non-zero seconds component is **REJECTED**; a deployment
 with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); **onboarding refuses a
 station-and-model pairing whose step does not divide 24 h**, naming both; `bucket_edge_tolerance`
-parses and is readable by the resampler; a `daily_grid_origin`
-that does NOT follow from its declared civil boundary and rounding rule is **REJECTED** rather than
-silently believed; and switching the rounding rule from `nearest` to `down` changes the derived origin
+parses and is readable by the resampler; **Switzerland declares `"06:00"` with a provenance string and
+NO civil boundary, and is ACCEPTED**; a declared origin that contradicts a declared civil boundary and
+rounding rule is **REJECTED** rather than silently believed; and switching the rounding rule from `nearest` to `down` changes the derived origin
 **without a code change**.
 
-⛔ **The non-dividing-step rejection is NOT in this task.** The step lives on the station-and-model
-pairing, not in config (OQ-1), so that check belongs to **station onboarding**. T4 validates the
-PHASE; onboarding validates the STEP.
+⚙️ **Where the step check lives.** T4 validates the PHASE in config; the non-dividing-step check runs
+at **station onboarding**, because the step is on the station-and-model pairing, not in config (OQ-1).
+Both are in T4's scope — the task spans the two places grid validity is decided. ⚠️ **An earlier
+revision of this task said the rejection was NOT in T4 while its In-section added it, a flat
+contradiction introduced on 2026-09-10.**
 
 ⛔ **Removed: "a value finer than the step's resolution is rejected."** It is not implementable — a
 `timedelta` does not retain how it was written, which is the same reason the precision rule is stated
@@ -927,7 +950,7 @@ leave OD-3 unresolved.
 **Verification:** N/A — requirements task. Q3.3 and Q8.3 each demand a specific hour, the 15-minute
 grid request appears, and the India 08:30 IST precedent is cited.
 
-### T10 — settle how differently-phased sources feed one model (OQ-6)
+### T10 — PROPAGATE OD-15 (which answered OQ-6) through every affected document
 
 **Outcome:** OD-15's decision is written through every affected document, so no superseded target
 survives anywhere.
@@ -937,23 +960,26 @@ survives anywhere.
 this family has failed three times running.
 
 **In:** this document; `docs/conventions.md`; `docs/architecture-context.md` (with T9); and any place
-naming a Swiss target boundary. ⛔ **Sweep for `82800`, `23:00Z` and "UTC+1 year-round" and assert the
-count** — the withdrawn target is the single easiest contradiction to reintroduce.
+naming a Swiss target boundary. ⛔ **Sweep for `82800`, `23:00Z`, "UTC+1 year-round" AND "civil day"**
+— the withdrawn target is the easiest contradiction to reintroduce, and its RATIONALE survived the
+first sweep even though its value did not.
 
 **Out:** any code; the retrain itself (Plan 254 T6); re-deriving any product.
 
 ⚙️ **Who implements the answer: Plan 254 T4.** ⛔ **T10 produces only a DECISION, and a decision with no
-executor is how this family kept stalling.** Whatever T10 selects — a declared target grid with one
-source recorded as off-grid, or Switzerland adopting the 06:00 day — is threaded through the assembly
-paths by 254 T4, which is already the task that resolves a target grid at every call site. Plan 254 T6
+executor is how this family kept stalling.** OD-15's selection — Switzerland adopts the 06:00 day,
+temperature recorded as the off-grid input — is threaded through the assembly paths by 254 T4, which is already the task that resolves a target grid at every call site. Plan 254 T6
 consumes the result; it does not implement it.
 
 **Pre-change:** N/A — decision task. The evidence section above measures the conflict; no plan
 resolves it, and Plan 254 T6 is blocked on it.
 
-**Verification:** N/A — propagation task. `grep -rn "82800\|23:00Z" docs/` returns only the explicit
-withdrawal notes in OD-15 and the boundary table; one Swiss operating boundary (`21600 s`) appears
-throughout; and the temperature displacement is stated wherever the Swiss grid is named.
+**Verification:** N/A — propagation task. ⛔ **The gate is that every match is a withdrawal note, a
+historical changelog entry, or the unrelated DST example — NOT that the count is small.** A
+2026-09-10 sweep returned 13 matches across Plans 239, 248, 252 and 254, every one legitimate; an
+earlier wording of this gate demanded "only OD-15" and was therefore unpassable. Also: one Swiss
+operating boundary (`21600 s`) appears throughout; the temperature displacement is stated wherever the
+Swiss grid is named; and **no surviving passage argues the Swiss day is a CIVIL day.**
 
 ### T8 — supersede Plan 228 D4
 
@@ -1025,8 +1051,11 @@ Four conditions hold in addition:
 1. **One Nepal OPERATING boundary value appears throughout** — `64800 s` (18:00Z) until DHM answers.
    The plan deliberately distinguishes four values (civil reference `65700`, Nepal operating `64800`,
    Switzerland today `0`, Switzerland after cutover `21600`); the gate is that no *second operating*
-   value for Nepal appears, and that **`82800` / `23:00Z` appears nowhere except OD-15's explicit
-   withdrawal**.
+   value for Nepal appears, and that **every surviving `82800` / `23:00Z` match is a withdrawal note, a
+   historical changelog entry, or the unrelated DST example — never a live target.** ⛔ The gate is the
+   NATURE of each match, not the count; an earlier wording demanded "only OD-15" and was unpassable
+   against 13 legitimate matches. **And sweep the RATIONALE too** — "civil day", "UTC+1 year-round" —
+   because on 2026-09-10 the value was withdrawn everywhere while the argument for it survived.
 2. **No deployment defaults to phase zero by omission** (OD-11), including the repository-root
    `config.toml` that the Swiss deployment actually loads — not only `config/overlays/`.
 3. **D4's supersession is PROPOSED with the parity precondition stated**, not asserted as done —
@@ -1049,7 +1078,7 @@ Four conditions hold in addition:
     {"id": "T4", "phase": 2, "depends_on": ["T2"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
     {"id": "T9", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T10", "phase": 1, "depends_on": [], "note": "settles OQ-6; Plan 254 T6 is blocked on it"}
+    {"id": "T10", "phase": 1, "depends_on": [], "note": "PROPAGATES OD-15 (which ANSWERED OQ-6); Plan 254 T6 waits on it landing, not on a decision"}
   ]
 }
 ```
@@ -1108,7 +1137,10 @@ applied in this pass:
 
 - **OD-3 stated as one rule.** The plan previously said both "adopt DHM's boundary if it maps to a
   whole UTC hour" and "whatever DHM names is what we adopt", unconditionally. Reconciled: we adopt
-  DHM's boundary, expressed as the whole UTC hour at or before it, recording any displacement. The
+  DHM's boundary, expressed as the CLOSEST whole UTC hour, recording the displacement. ⚠️ *(This entry
+  originally read "at or before it" and "flagged for owner confirmation"; the owner confirmed the
+  CLOSEST-hour rule on 2026-09-09 — see OD-3 and OQ-4. Corrected here rather than left to contradict
+  them.)* The
   whole-hour constraint is forced by hourly forcing, not a preference. **Flagged for owner
   confirmation** — this is a reconciliation of two texts, not a new owner decision.
 - **`docs/workflow.md:378-390` corrected to `:198`** (measured 2026-09-09). The same stale citation

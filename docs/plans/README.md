@@ -150,8 +150,16 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
+- **262** — Our own aggregation stamps the start of a period; every source whose convention we have
+  established stamps the end — `DRAFT` — every ingested source we have checked is period-ending while
+  our own `group_by_dynamic` labels bucket starts by an unexamined library default. The one-hour shift
+  is PROVEN by execution but LATENT: all stored forcing is already daily, so the hourly→daily path
+  never runs today. Nepal is hourly. Rides Plan 254 T6's cutover. Depends on 252 and 258.
+
+  ⚠️ *(This entry previously carried Plan 261's description — the reanalysis tail — and falsely
+  declared a dependency on 239. Corrected 2026-09-10.)*
+
 - **261** — The reanalysis tail is never filled, though the values are already here — `DRAFT`
-- **262** — Our own aggregation stamps the start of a period; every source we ingest stamps the end — `DRAFT`
   — measured while validating Plan 239 T1b: past forcing runs permanently ~2.5 days
   short of the issue time, and the FORECAST values that would cover that span are
   already stored. Concatenates them onto past forcing **in memory**, in the two
@@ -185,8 +193,9 @@ exit criteria — Plan 212 owns that deeper screening.
   UTC+6 coincidence corroborates 18:00Z and constrains nothing. Whatever DHM names is
   what we adopt. Four distinct boundary values are now tabulated in 252; do not quote
   one without checking which.
-- **254** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
-  The resampler has **seven** call sites, not three, and `floor_to_time_step` /
+- **254** — Phase-aware execution — `DRAFT` — the behavioural half.
+  The resampler has **TWELVE** invocation sites (re-measured 2026-09-10; this entry said seven, and
+  before that three — ⛔ never cite a call-site count from prose), and `floor_to_time_step` /
   `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
   would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 253's
   input-quality channel cannot carry resampling provenance (hindcasts were excluded

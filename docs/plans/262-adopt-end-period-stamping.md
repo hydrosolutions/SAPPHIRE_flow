@@ -70,7 +70,7 @@ established from MeteoSwiss's grid-product documentation that **both precipitati
 06:00 UTC → 06:00 UTC** while **temperature runs midnight → midnight**. We store all of them stamped
 `00:00` and treat all of them as midnight-to-midnight. So Swiss precipitation is displaced +6 h, and
 our own two inputs disagree with each other by six hours. **That is Plan 252's to declare** (its
-evidence section, and **OQ-6** on how differently-phased sources feed one model) and Plan 254 T6's to
+evidence section, and **OD-15**, which answered it: Switzerland adopts the precipitation day) and Plan 254 T6's to
 correct — in the same retrain this plan rides.
 
 ## What changes, measured
@@ -143,7 +143,7 @@ stored forcing sources, and the answer is worse than the question.** Read from t
 documentation: both precipitation products run **06:00 UTC → 06:00 UTC**, while the temperature
 products run **midnight → midnight**. So this plan is not converting a single unknown convention — it
 is converting sources that **disagree with each other by six hours**. The declaration belongs to
-Plan 252 (see its evidence section and **OQ-6**); the correction rides Plan 254 T6 with this plan's
+Plan 252 (see its evidence section and **OD-15**); the correction rides Plan 254 T6 with this plan's
 change. ⚠️ `meteoswiss_sreld` and `camels-ch` remain unread and still block T2 for those two sources.
 
 ## Non-goals

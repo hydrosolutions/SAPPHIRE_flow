@@ -17,10 +17,10 @@ source: 2026-09-08 — split out of Plan 252 by owner decision, after a Codex re
 questions that were never asked, which is why bundling this with the grid convention kept failing
 review: the grid half is *substantially* settled and this half is not.
 
-⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** Plan 252 carries open
-questions of its own. As of 2026-09-10 **two remain**: OQ-3 (the provenance channel, decided by
-Plan 254 D2) and OQ-6 (how differently-phased sources feed one model, settled by Plan 252 T10, which
-Plan 254 T6 is blocked on). Neither blocks this plan.
+⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** As of 2026-09-10 **ONE of
+Plan 252's own questions remains open** — OQ-3, the provenance channel, decided by Plan 254 D2. OQ-6
+was ANSWERED by the owner on 2026-09-10 (Plan 252 OD-15: Switzerland adopts the precipitation day).
+Neither blocks this plan.
 
 ## Why this is a separate plan
 
@@ -229,11 +229,17 @@ review showed exactly what happens otherwise: tasks that cannot be implemented a
 **nullable** per D2, with a deliberate backfill and a recorded justification per series.
 
 ⚙️ **The concrete home, named 2026-09-09** — "wherever D1 decided" was not a contract an implementer
-could build: a **`parameter_support` registry keyed `(source, parameter)`**, additive and nullable,
-covering every source kind that carries timestamped values — observation feeds, forcing sources
-(`historical_forcing` already keys `(source, parameter)` in its natural key, `db/metadata.py:824-877`)
-and weather-forecast sources. ⛔ It is NOT a column on `parameters`; that is the per-parameter shape
-D1 refuted.
+could build: a **`parameter_support` registry keyed `(source, parameter)`**, additive and nullable.
+⛔ It is NOT a column on `parameters`; that is the per-parameter shape D1 refuted.
+
+🔴 **OBSERVATIONS DO NOT FIT THIS KEY, found 2026-09-10 — this is D1's remaining gap, not a detail.**
+Forcing does fit: `historical_forcing` already carries `(source, parameter)` in its natural key
+(`db/metadata.py:824-877`). But persisted **observations record generic provenance** (values such as
+`measured`) rather than a provider or product identity, so `(source, parameter)` cannot distinguish a
+manually-read gauge from an automatic station — and those differ in exactly the way this plan cares
+about. **T0 must settle how observation series acquire a source identity before T1 can back-fill
+them**; the alternative is that observations are keyed differently from forcing, which is a real
+option but must be chosen, not discovered during implementation.
 **In:** `types/enums.py`, the type D1 selects, `db/metadata.py` plus an additive migration.
 **Out:** reading anything from the source (T3); the aggregation METHOD (Plan 234). Depends on T0.
 **Pre-change:** no temporal-support field exists anywhere; a consumer must infer support from

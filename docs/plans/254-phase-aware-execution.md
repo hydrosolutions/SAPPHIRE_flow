@@ -315,9 +315,13 @@ a stored daily value means:
 | 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; corrected here |
 
 ⛔ **All three invalidate every Swiss artifact, so they must land together.** Doing them separately
-means three retrains and three cutovers. ⚠️ **Correction 3 is not yet decided, only measured** — Plan
-252 **OQ-6** asks how two differently-phased sources feed one model, and its answer changes what this
-retrain bakes in. **Do not start T6 before OQ-6 is settled.**
+means three retrains and three cutovers.
+
+✅ **Correction 3 is DECIDED (Plan 252 OD-15, owner 2026-09-10), not merely measured.** Switzerland
+adopts the precipitation day; temperature becomes the recorded off-grid input, displaced 6 h. ⛔ **T6
+must therefore RECORD that displacement on every temperature series it retrains against** — an
+earlier revision named the correction without any task carrying it. What T6 still waits on is Plan 252
+T10 landing the propagation, not a decision.
 
 **Outcome:** Switzerland moves from phase 0 to **06:00Z** with artifacts, hindcasts, skill generations
 and configuration moving together **in a single atomic switch** (D7), and a rollback.
@@ -338,7 +342,7 @@ propagation task, not a decision — do not wait on it for the value.
 ⚠️ **Correction 3 needs an ADAPTER change and this sequence did not contain one.** The MeteoSwiss
 06:00 precipitation day is corrected where the data is read, not in the rollout: the adapter must
 record each product's native boundary and the assembly must stop treating them as identical. That work
-belongs to **Plan 252 T6** (the audit that establishes it) and to whichever task acts on OQ-6's answer
+belongs to **Plan 252 T6** (the audit that establishes it) and to **this plan's T4**, which threads OD-15's answer through the assembly paths
 — it is named here so the cutover does not silently assume someone else did it.
 
 **In:** the rollout sequence — persist training grids (T5), retrain, rerun phase-correct hindcasts,
