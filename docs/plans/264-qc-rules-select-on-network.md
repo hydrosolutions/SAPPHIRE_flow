@@ -7,7 +7,7 @@ scope: Add a network dimension to observation QC rule selection so one deploymen
 blocks: [263]
 reviews:
   - "codex 2026-09-10 — reviewed as a set with 263; NOT READY, 3 blockers; the call-site audit was wrong"
-open_decisions: [D4, D5]
+open_decisions: [D4]
 source: 2026-09-10 — the owner's answer to Plan 263 D15. Opened because Plan 263's QC task cannot isolate a DHM rule set from the Swiss one on the current lookup; both independent reviews of that plan found the same thing.
 ---
 
@@ -150,8 +150,14 @@ Swiss constant, so Plan 263's "flags carry the DHM version" gate could pass whil
 row still says otherwise. Whatever D5 decides must cover both, and must note that the changed
 value is serialised into existing `observations.qc_flags` rows, the forecast and hindcast
 stores, and the stations API — over a corpus of `"1.0"` flags with no backfill.
-*Recommendation: fix it here, and treat the version change as an intended, announced
-migration* — the current behaviour records a version that does not match the rule that ran,
+**CLOSED: fix it** (owner, 2026-09-10), covered by T4b. The owner also settled the historical
+half and the risk framing behind it: **the Swiss deployment is a sandbox, not production** — it
+can be wiped and rebuilt if needed. Existing `"1.0"` flags therefore need no migration decision,
+and this plan's repeated "changes shared code the live Swiss deployment depends on" framing is
+**overstated**: the blast radius is a test deployment. The byte-identical bar in T4 is kept
+anyway — it is cheap and it catches unintended selection changes — but it is a correctness
+check, not a production-safety gate, and no task should be scoped as though a national service
+were downstream. Original reasoning: — the current behaviour records a version that does not match the rule that ran,
 which is a provenance defect in its own right, and shipping the network dimension without
 fixing it means DHM flags would be stamped with a Swiss rule's version. The byte-identical bar
 then applies to flags, statuses and thresholds, with `rule_version` explicitly exempted and
