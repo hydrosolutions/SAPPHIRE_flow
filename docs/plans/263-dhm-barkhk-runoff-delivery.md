@@ -8,7 +8,8 @@ reviews:
   - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
   - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
-open_decisions: []
+  - "codex 2026-09-10 set — NOT READY; reviewed with 264; 3 seam blockers neither plan owned"
+open_decisions: [D16]
 depends_on: [264]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
@@ -41,14 +42,31 @@ Round 2 also found that a calibration the author recommended would have committe
 rating-table values — the same leak class already stripped once, reintroduced through a
 different door.
 
-**All fifteen decisions are closed** (owner, 2026-09-10). T1–T6 are buildable. T7 waits on
+**Fifteen of sixteen decisions are closed.** D16 (the gross-outlier rule's missing baselines)
+was opened by a cross-plan review and is the owner's call — it is scientific behaviour, not an
+implementation detail. T1–T6 are buildable. T7 waits on D16 and on
 **Plan 264**, which the owner's answer to D15 split out: teaching QC rules which network they
 apply to changes shared code the live Swiss deployment depends on, and that risk gets its own
 plan and its own review rather than a paragraph in this one.
 
-Both round-2 blockers stayed fixed rather than being closed by decision — the replacement
-procedure in D6 and the fail-closed requirements in T7 are design changes, and neither has yet
-been reviewed. **This plan has not had a review pass since those changes landed.**
+**Round 3 reviewed this plan together with Plan 264, as a set** — and found three blockers
+that neither plan owned alone, which is what reviewing them separately would have missed:
+
+- **Plan 264 does not make six station-specific limits expressible**, because it adds a
+  *network* dimension and D14 asks for *per-station* ceilings. The capability exists
+  (`StationQcOverride`, merged per station by the checker) but neither plan claimed it, so an
+  implementation could have satisfied both with one shared maximum. T7 now owns the six
+  overrides and asserts each station's effective ceiling.
+- **The general fail-open path was owned by nobody.** This plan had bolted a local assertion
+  onto its own import while the live ingest and onboarding paths stayed fail-open. That policy
+  moved to Plan 264, once, for every caller.
+- **Fixing the flag-version defect changes Swiss output**, because the Swiss rules declare
+  `"1.0.0"` while flags emit a hard-coded `"1.0"`. That compatibility decision is now Plan
+  264's D5; this plan consumes it.
+
+Also folded: the replacement procedure's delete predicates were dangerously broad (they would
+have taken later, unrelated manual imports and any newer curve), and T4's rehearsal invoked a
+procedure ending in T7 — a hidden dependency on Plan 264 through the back door.
 
 The two passes between them found eleven blockers, and the pattern is worth stating because
 it should shape how this plan is finished: **the author's measurements of the delivered data
@@ -331,8 +349,7 @@ feed. Whether to open that is an owner scope call (D9), not a change this plan m
 
 ## Decisions
 
-Closed by the owner on 2026-09-10 unless marked otherwise. **D14 and D15 are open** — both
-opened by review, not by the owner deferring them.
+All closed by the owner on 2026-09-10. **D16 is open**, raised by the cross-plan review.
 
 **D1 — Where DHM's rating-table label goes. CLOSED: we number the curves ourselves.**
 `version` is the 1-based chronological ordinal of the curve within its station; DHM's type
@@ -386,9 +403,19 @@ observations go.
 **The requirement is therefore an explicit replacement procedure, not an upsert.** In this
 order, in one transaction:
 
-1. delete the DHM observations (by tenant/station set and `source = 'manual_import'`);
-2. delete that tenant's rating curves — now unblocked by step 1;
+1. delete the observations **this delivery imported** — not every `manual_import` row for
+   these stations, which would also destroy any later manual import that has nothing to do
+   with the September 2026 delivery;
+2. delete the rating curves **this delivery imported** — likewise not "the tenant's curves",
+   which would take a newer curve DHM sends later;
 3. re-run T3, then T4, then T7, against the corrected boundary constant.
+
+**The delivery needs an identity for steps 1 and 2 to be safe**, and the set review was right
+that "by tenant and source" is not one. Carry a delivery marker on the imported rows — the
+simplest being the rating curves' provenance column (D1) and, for observations, the curve
+binding plus the import's own recorded id — and make the deletion predicate name it. The
+rehearsal must assert that an unrelated manual observation and an unrelated curve, both
+created before the replacement, **survive it**.
 
 Two supporting requirements:
 
@@ -547,7 +574,7 @@ tables under linear interpolation put all but one value in range, which is weak 
 directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
 blocking on.
 
-**D14 — how the DHM daily QC thresholds are calibrated. OPEN; blocks T7.**
+**D14 — how the DHM daily QC thresholds are calibrated. CLOSED: a physical estimate per station.**
 Opened by D12's answer. Swiss thresholds cannot be reused (see the table above), so a DHM
 daily rule set is needed. Three constraints on any answer, two of them found in round 2:
 
@@ -581,7 +608,31 @@ circular nor a leak. Cost: six pieces of hydrological judgement, which is the ri
 cost for a limit that decides what counts as implausible. The rating-table envelope may be
 used as a **cross-check computed at re-measure time and never committed**; it is not the basis.
 
-**D15 — how the DHM rules are isolated from the Swiss ones. NEW, open; blocks T7.**
+**How six different limits are actually expressed — the gap the set review found.** Plan 264
+adds a *network* dimension, so one DHM rule serves all six stations with one ceiling. Six
+station-specific maxima therefore cannot come from the rule alone. They come from
+`StationQcOverride`, which already expresses exactly this and which
+`Stage1QualityChecker.check` already merges per station and rule — it simply has no
+persistence, so the import constructs the six in memory and passes them in. **Plan 263 T7 owns
+building those six and proving each station's effective merged ceiling; Plan 264 owns only
+which rule they merge into.** Without that split written down, an implementation could satisfy
+both plans with a single shared DHM maximum and pass every stated gate.
+
+**D16 — the gross-outlier rule needs baselines that cannot exist yet. NEW, open; blocks T7.**
+The set review found this is a chicken-and-egg, not an implementation detail. `_apply_gross_outlier`
+needs a climatological baseline per station and day-of-year (`services/qc.py:206-208`), and the
+existing lifecycle computes baselines **only from observations that are already `QC_PASSED`**
+(`services/onboarding.py:836-870`) — which these will not be until the QC pass runs, and which
+these stations skip anyway because they carry no forecast targets (T2b). Leaving the choice to
+the implementer, as T7 did, means a silent zero flag count that reads like a clean pass.
+Options: run QC twice (first pass without gross-outlier, compute baselines from what passes,
+second pass with it); compute baselines from the raw series directly; or drop gross-outlier from
+the DHM set for this import. *Recommendation: drop it, explicitly, via `skipped_rule_ids`* — a
+52-year daily record is ample for baselines later, but bootstrapping them from unchecked data to
+then judge that same data is the circularity D14 exists to avoid. Revisit once the series has
+been QC'd by the other four rules. **This is scientific behaviour, so it is the owner's call.**
+
+**D15 — how the DHM rules are isolated from the Swiss ones. CLOSED: the rules learn their network.**
 T7 claimed it could add a DHM daily rule set "beside" the Swiss one without changing Swiss
 behaviour. Both round-2 passes found that is not achievable as stated, for two independent
 reasons:
@@ -704,6 +755,12 @@ only the database reader would split unit from integration behaviour);
 - Import assertions: all 112 pass `RatingConverter.from_curve` under the D13 interpolation;
   versions are 1..N in date order per station with no gaps; DHM's type label round-trips
   through store and read-back; every imported curve has a non-null `valid_to`.
+**Where deletion lives.** Neither store exposes a delete today
+(`store/rating_curve_store.py:18-36`, `store/observation_store.py:33-64`), so the replacement
+needs one. Add bounded, delivery-scoped delete operations to both stores and their Protocols
+and fakes — not ad-hoc SQL in the CLI, which would put a destructive operation outside the
+store boundary every other write in this repo respects. One transaction spans both deletes.
+
 **Also in scope after round 2: T3 must be re-runnable.** `store_rating_curve` is a plain
 insert against `UNIQUE (station_id, version)`, so today a second run raises. D6's replacement
 procedure requires curve deletion to be possible, which the composite FK from `observations`
@@ -739,8 +796,11 @@ whatever the implementer produced; no row exists on any gap day T5 reports; the 
 values outside their curve's range equals T5's count (currently 1, imported as delivered per
 D10); every row is `MANUAL_IMPORT` at `RAW`, carrying a curve id wherever T5 says a curve
 covers the day and NULL on the 4,629 days it says none does. Plus the **boundary-change
-rehearsal** D6 requires: import under boundary A, run the replacement procedure, re-import
-under boundary B, and assert **no row from boundary A survives**. A same-boundary re-run
+rehearsal** D6 requires — **stopping at T4**: import under boundary A, run the replacement's
+delete steps, re-run T3 and T4 under boundary B, and assert **no row from boundary A survives**
+and that an unrelated manual observation and curve do survive. The rehearsal deliberately
+excludes the T7 re-run: D6's full procedure ends with QC, but requiring that here would make
+T4 depend on Plan 264 through the back door. T7 owns re-running itself. A same-boundary re-run
 assertion is not a substitute — it passes in the one case the requirement does not care about.
 **Pre-change**: N/A — new import path.
 **Unblocked**, on D6's working assumption. **Re-importability is a requirement** (D6) — and
@@ -784,7 +844,11 @@ write-path map still states that `RatingCurveStore` has **no `Pg*` implementatio
 **Out**: no code change.
 **Verification**: `uv run pre-commit run --all-files` passes, and a deliberate `git add` of
 a file placed at a delivered-data path is refused by the new hook.
-**Pre-change**: a RED check — the hook rejects a test path before the doc edits land.
+**Pre-change**: N/A for the documentation half. For the guard, the discriminating evidence runs
+*after* the hook lands and *before* it is trusted: stage a file at a delivered-data path and
+confirm the hook refuses it, then confirm an ordinary file still commits. The previous revision
+asked the new hook to reject something before the hook existed, which is not a test anyone can
+run.
 
 ### T7 — DHM daily QC rule set, and the QC pass
 
@@ -815,7 +879,10 @@ state. The three faults, all verified in source:
 
 **In**: a DHM rule set declaring `network = "dhm"`, selected by the network-aware lookup
 **Plan 264** delivers (D15) — **not** an edit to `config/qc_rules.py`'s Swiss defaults and
-**not** a TOML overlay that replaces them; per-station limits from D14's physical basis;
+**not** a TOML overlay that replaces them (Plan 264 does not change composition, so an overlay
+still replaces the list wholesale — its D4); **six in-process `StationQcOverride` objects**,
+one per station, carrying D14's physical ceilings (the network rule alone cannot express six
+different maxima — see D14);
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
 affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
 **Out**: no new QC *rule kind* — the five daily discharge rules exist and this task calibrates
@@ -825,25 +892,30 @@ deployment configuration.
 - **Fail closed.** Assert that `rules_for('discharge', 86400s)` returned a non-empty set for
   every station group processed, and that the number of rows *evaluated* per rule equals the
   station's row count. A run where no rule resolved must **fail**, not certify.
+- **Per-station ceilings actually apply.** Assert each station's **effective merged**
+  `value_max` equals that station's D14 figure — six distinct assertions. A single shared DHM
+  maximum must fail this. Without it, the rest of the isolation work buys nothing.
 - **Isolation.** Exactly one daily-discharge rule of each id resolves for the DHM series, and
   a Swiss daily series resolves the Swiss rules unchanged — asserted on **both** paths, since
   the previous gate passed identically for the working and the broken design. This is
   guaranteed structurally by Plan 264's most-specific-wins selection, not by DHM and Swiss
   thresholds happening not to collide.
 - **Gaps.** No rate-of-change, spike or frozen-sensor flag is raised across any gap T5 reports.
-- **Provenance.** Flags carry the DHM rule set's version. Note `services/qc.py` hard-codes
-  `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`, `:64`, `:83`, `:169`, `:187`,
-  `:214`) — only frozen-sensor uses the configured version. Either fix those call sites or
-  state plainly that flag provenance is degraded and why.
-- **Gross-outlier.** Either baselines are computed for the six stations, or the rule is
-  explicitly excluded via `skipped_rule_ids` so a zero count is not mistaken for a clean pass.
+- **Provenance.** Flags carry the DHM rule set's version. The hard-coded
+  `_RULE_VERSION = "1.0"` at five of six flag sites (`services/qc.py:22`) is **Plan 264's D5**,
+  not this plan's to fix — the set review found that correcting it changes every *Swiss* flag's
+  recorded version too, because the Swiss rules declare `"1.0.0"`. T7 consumes the fix and
+  asserts DHM flags carry the DHM version; it does not make the compatibility decision.
+- **Gross-outlier.** Per D16 — and whichever way it closes, the outcome is explicit in the
+  run's output. A zero flag count from a rule that could not fire must never be reportable as a
+  clean pass.
 - `uv run pytest tests/unit/config/test_dhm_qc_rules.py`.
 **Pre-change**: a **synthetic** RED test demonstrating the mechanism — a series containing a
 value above the Swiss ceiling is flagged by the Swiss rule and not by the DHM rule. It proves
 the mechanism, not the delivery; **T5's run is the evidence that the fault is real in the
 delivered data**, and it cannot be a checked-in test without either reading restricted files
 or embedding restricted values.
-**Depends on T4, and on Plan 264 shipping.** D14 and D15 are closed.
+**Depends on T4, and on Plan 264 shipping (its D5 included). BLOCKED on D16.**
 
 ```json
 {
