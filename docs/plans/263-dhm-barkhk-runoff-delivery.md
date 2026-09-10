@@ -1,6 +1,7 @@
 ---
 status: DRAFT
 created: 2026-09-10
+revised: 2026-09-10
 plan: 263
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
@@ -13,11 +14,18 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 ## Status
 
 **DRAFT.** Owner sets READY. Non-trivial: one independent Claude and one independent
-Codex review before READY.
+Codex review before READY. The task breakdown has not been reviewed since the decisions
+below were folded in.
 
-Nine owner decisions are open (§ Owner decisions). Four of them (D1, D2, D3, D6)
-change the schema or the migration chain, so the task breakdown below is provisional
-until they are closed.
+**All nine owner decisions were closed on 2026-09-10** (§ Decisions). Two of the answers
+changed the shape of the work rather than merely selecting an option:
+
+- **The measurements may not be published** (D5). This is a handling constraint on every
+  task, not a footnote — it rules out the checked-in data excerpts the first revision's
+  T1 and T5 assumed. See § Data handling.
+- **DHM has no current rating tables to give us** (D8). The expired-curve finding is
+  therefore not a gap in the delivery that a follow-up email closes; there is nothing to
+  send. A live level→discharge path for these six stations is blocked at source.
 
 ## What arrived
 
@@ -52,6 +60,29 @@ is correct.
 
 These values are **transcribed by eye from a scan** and must be owner-confirmed
 before they become station rows (D4).
+
+## Data handling (owner constraint, D5)
+
+**These measurements may not be published.** Station codes may be; the discharge values
+and the rating tables may not, except in aggregated form from which individual values
+cannot be recovered.
+
+Consequences, binding on every task below:
+
+- **No excerpt of the delivered files may be checked into this repository** — not as a
+  test fixture, not as a doc example, not as an expected-output file. Test fixtures are
+  **synthetic**, hand-written to exhibit each structural feature (multi-block tables,
+  repeated type labels, a negative stage, a missing year, an overlapping day).
+- The delivered files stay where they are, outside the working tree. Nothing copies them in.
+- Aggregates are fine: counts, coverage percentages, date ranges, validity windows.
+  What this plan already records — record spans, missing-day counts, curve validity
+  windows, and the station metadata (which comes from DHM's own *published* station list)
+  — is aggregate or public and stays. One borderline line is retained deliberately: a
+  single table's lowest stage, quoted as evidence that stage can be negative. It is a
+  structural fact about table shape, not a measurement. Flag if you read it otherwise.
+- **Open question for the pilot (D9):** if a model is trained on these measurements, it is
+  unresolved whether its forecasts inherit the restriction. Worth settling before the pilot
+  is placed, not after.
 
 ## The shape of the gap
 
@@ -174,15 +205,22 @@ curve was valid that day:
 
 ## Two traps, recorded not solved
 
-**Trap 1 — timezone, and what a daily value means.** DHM timestamps are Nepal local
-(UTC+05:45). Converting at the boundary with `ensure_utc()` is the locked convention and
-is fine. But a `DFL_` row carries a **date with no time at all**, and a Nepal-local
-calendar day maps to `18:15Z` on the previous UTC day. Plan 228's skill machinery buckets
-observations on **UTC-calendar** days, so a Nepal-local daily series aligned honestly will
-never land on a UTC-calendar bucket. That is the time-grid/phase question, which the owner
-has **halted**. This plan therefore does not choose a timestamp convention — D6 records
-the question and blocks the observation-import task on it. Nothing here designs a grid or
-phase answer.
+**Trap 1 — timezone, and what a daily value means.** Partly resolved, still blocking.
+
+The owner has settled the *interpretation*: **each value is a Nepali day**, not a UTC day
+and not an arbitrary 24 hours. That is a real constraint and it rules out the tempting
+shortcut of treating the date as a UTC calendar date.
+
+What remains open is the **boundary**: from when to when DHM considers a Nepali day to run.
+The owner has put that question to DHM and **has not yet had an answer**. Until it comes
+back, the exact instant a value should carry is unknown — and choosing one anyway would be
+inventing a fact about someone else's data.
+
+The downstream consequence is unchanged and is why this blocks rather than merely waits:
+Nepal is UTC+05:45, so a Nepali day cannot coincide with a UTC calendar day, and the skill
+machinery buckets observations on UTC calendar days. Reconciling those two is the
+time-grid/phase work the owner has **halted**. This plan does not design a grid or phase
+answer, and does not choose a timestamp convention.
 
 **Trap 2 — Plan 139's `rof` proxy target.** Asked plainly: **this delivery does not
 supersede W1a.** Plan 139 is scoped to gateway HRU `12300`, which resolves to
@@ -196,108 +234,128 @@ and it ends in 2019 for four of the six. What this delivery makes possible is a
 that spans the same decades (ERA5-Land / Caravan), not against the operational gateway
 feed. Whether to open that is an owner scope call (D9), not a change this plan makes to 139.
 
-## Owner decisions
+## Decisions
 
-**D1 — Where does DHM's "Rating Type No" go?** It cannot be `version` (it repeats, and
-604.5 type 4 has two different tables). Recommendation: `version` becomes the 1-based
-chronological ordinal of the curve within its station, and the type number is recorded as
-provenance in a new nullable column. That needs a migration and lands inside Plan 035's
-open scope — so: extend 035, or carry it here?
+All closed by the owner, 2026-09-10.
 
-**D2 — The three one-day overlaps.** Options: (a) import verbatim and fix
-`fetch_curve_at` to be last-wins like its batch sibling; (b) truncate the earlier curve by
-one day at import and record the edit; (c) refuse the import and ask DHM. Recommendation:
-(a) — the reader inconsistency is a real defect worth fixing regardless, and (b) silently
-edits delivered data.
+**D1 — Where DHM's rating-table label goes. CLOSED: we number the curves ourselves.**
+`version` is the 1-based chronological ordinal of the curve within its station; DHM's type
+label is recorded alongside as provenance. Needs a nullable provenance column and a
+migration. Carried here rather than deferred, since nothing else is waiting on Plan 035.
 
-**D3 — Should the newest curve per station be stored open-ended?** Storing it as delivered
-(closed, already expired) means `fetch_active_curve()` returns `None` for every DHM station
-and the partial unique index never applies. Recommendation: store as delivered. An
-open-ended curve would assert a validity DHM did not give us, on tables 2–6 years stale.
+**D2 — The three one-day overlaps. CLOSED: the newer table wins.**
+Import verbatim — no edit to DHM's dates — and fix `fetch_curve_at` to resolve an overlap
+to the curve with the later `valid_from`, matching the last-wins rule
+`fetch_active_curves_batch_at` already documents. This fixes a real pre-existing reader
+defect, not just this import.
 
-**D4 — Confirm the six stations' transcribed metadata.** The coordinates, elevations and
-drainage areas above were read off a scan by eye. Recommendation: owner confirms against
-the PDF before any station row is written.
+**D3 — Expired curves. CLOSED: store as delivered.**
+Every curve keeps the `valid_to` DHM gave it. `fetch_active_curve()` consequently returns
+`None` for all six stations, and that is the correct answer: no station has a currently
+valid table.
 
-**D5 — Import target.** Operational DB, or a research artifact first? Note the standing
-hazard: `station_status` gates both forecasting *and* ingest, so promoting these six to
-`operational` has consequences beyond this import.
+**D4 — Transcribed station metadata. CLOSED: owner will confirm, and transcription is
+permitted.** DHM has confirmed we may transcribe the scanned station list (D8). The
+coordinates, elevations and drainage areas in § The six stations still need the owner's
+spot-check before they become station rows.
 
-**D6 — Timestamp convention for a date-only Nepal-local daily value.** BLOCKED on the
-halted time-grid track. Recording only; see Trap 1.
+**D5 — Import target. CLOSED: side dataset first, and the data may not be published.**
+See § Data handling — the publication constraint is the load-bearing half of this answer
+and binds every task.
 
-**D7 — `ObservationSource` for the daily discharge.** `MANUAL_IMPORT` (honest about how
-it reached us) or `RATING_CURVE_DERIVED` with the DHM curve id (honest about how it was
-produced, and makes the curve binding queryable via `fk_observations_rating_curve_station`).
-Recommendation: `RATING_CURVE_DERIVED` where a curve covers the day, `MANUAL_IMPORT` for
-the 4,629 values with no curve — but that is a two-valued source column for one series,
-so the owner should weigh it.
+**D6 — What a daily value means. CLOSED as far as it can be: it is a Nepali day.**
+The exact day boundary is with DHM, unanswered. See Trap 1. T4 stays blocked.
 
-**D8 — Questions to put back to Subash / DHM.** Recommendation: (i) a current rating curve
-for each station — every one we hold has expired; (ii) the water-level series, without
-which none of the rating machinery has an input; (iii) how a daily flow value is computed
-from sub-daily readings; (iv) a machine-readable station list, or confirmation we may
-transcribe the scan; (v) curves covering 604.5 pre-1983 and 670 pre-1968.
+**D7 — Source label for the discharge. CLOSED: reflect how each value was produced.**
+`RATING_CURVE_DERIVED`, bound to the curve, on the ~95% of days a curve covers;
+`MANUAL_IMPORT` on the 4,629 days with no curve. The source column is therefore
+two-valued across one series by design — that is the honest shape, and the curve binding
+stays queryable.
 
-**D9 — Does a real-gauge pilot open?** See Trap 2. Scope call, not this plan's to make.
+**D8 — What to ask DHM. CLOSED, and the answer reshapes the finding.**
+**There are no current rating tables** — not withheld, not in this delivery by oversight;
+they do not exist. So the expired-curve finding is not a follow-up email away from being
+closed, and an operational level→discharge path for these six stations is blocked at
+source. Transcription of the scanned station list is permitted. Still worth asking, but
+not gating this plan: the water-level readings, and tables covering the two stations whose
+records begin years before their earliest table.
+
+**D9 — A real-gauge pilot. CLOSED: yes.**
+Where it lives — alongside the Swiss study, or as a separate deployment — is still being
+weighed and is **not** this plan's to settle. Note the unresolved publication question in
+§ Data handling: whether forecasts trained on restricted measurements inherit the
+restriction should be settled before the pilot is placed.
 
 ## Tasks
 
-Provisional — D1/D2/D3/D6 change the shape of T3 and T4.
+Every task inherits § Data handling: no excerpt of the delivered files is checked in, and
+fixtures are synthetic.
 
 ### T1 — DHM file parsers
 
-**Outcome**: pure functions parsing a `DFL_` and an `RT_` file into frozen dataclasses,
-with no I/O and no DB dependency. Rejects malformed input with a typed error; does not
-silently skip lines.
-**In**: new module under `src/sapphire_flow/adapters/`; unit tests.
-**Out**: no store writes, no station resolution, no timestamp policy (T1 yields dates and
-local-naive values; UTC conversion is T4's boundary, gated on D6).
-**Verification**: unit tests over checked-in miniature fixtures — a 2-year `DFL_`, a
-3-block `RT_` including the negative-stage and repeated-type cases. Plus a bounded
-inspection: the parser reproduces the measured counts (96,521 daily values, 112 curves,
-0 unparsable lines) over the real delivery.
+**Outcome**: pure functions parsing a daily-flow file and a rating-table file into frozen
+dataclasses, with no I/O and no DB dependency. Rejects malformed input with a typed error;
+never silently skips a line.
+**In**: new module under `src/sapphire_flow/adapters/`; unit tests; synthetic fixtures.
+**Out**: no store writes, no station resolution, no timestamp policy — T1 yields dates and
+values as delivered; the UTC boundary belongs to T4 and is gated on D6.
+**Verification**: unit tests over **hand-written synthetic fixtures** exhibiting each
+structural feature (multi-block tables, a repeated type label, a negative stage, a declared
+year absent from the data, an inclusive-end overlap). Plus one bounded inspection run
+against the real delivery *in place*, asserting only the aggregate counts already recorded
+in this plan — 96,521 daily values, 112 curves, 0 unparsable lines — and printing no values.
 **Pre-change**: N/A — new module.
 
 ### T2 — Station identity and onboarding fixture
 
 **Outcome**: the six stations' metadata as a reviewable, checked-in artifact with
-`timezone: Asia/Kathmandu`, `network: dhm`, `station_kind: river`.
+`timezone: Asia/Kathmandu`, `network: dhm`, `station_kind: river`. Station codes and the
+station-list metadata are publishable (D5); the measurements are not.
 **In**: fixture/config only.
 **Out**: no DB writes; no `station_status` promotion.
-**Verification**: each station's fixture record range equals its `DFL_` file's measured
-first/last date (the six-for-six check above, re-run as a test).
-**Pre-change**: N/A — new data. **Blocked on D4.**
+**Verification**: each station's fixture record range equals its file's measured first and
+last date — the six-for-six check, re-run as a test over the aggregate dates only.
+**Pre-change**: N/A — new data. **Gated on the owner's spot-check (D4).**
 
 ### T3 — Rating curve import
 
-**Outcome**: 112 curves as `RatingCurve` rows with correct chronological `version`,
-half-open validity, and DHM type-number provenance.
-**In**: importer + whatever D1 requires (migration, `RatingCurve` field, store).
+**Outcome**: 112 curves stored with a chronological `version`, DHM's type label kept as
+provenance, half-open validity derived from DHM's inclusive end date, and no station left
+with an open-ended curve.
+**In**: migration adding a nullable provenance column; `RatingCurve`; the store; the
+importer; the `fetch_curve_at` fix.
 **Out**: no conversion of any observation.
 **Verification**: all 112 round-trip through `RatingConverter.from_curve` without raising;
-`fetch_curve_at` returns exactly one curve for every day in each station's record where
-one exists, **including the three overlap days**.
-**Pre-change**: a RED test proving `fetch_curve_at` raises `MultipleResultsFound` on
-2011-08-06 for station 447 — the actual defect, not a signature error. **Blocked on D1, D2, D3.**
+`fetch_curve_at` returns exactly one curve for every day of each station's record where a
+curve exists, **including the three overlap days**, and returns the later-starting curve on
+each of those three.
+**Pre-change**: a RED test proving `fetch_curve_at` raises `MultipleResultsFound` for
+station 447 on 2011-08-06 — the actual defect and its actual cause, not a signature error.
+Reproduce it with a synthetic two-curve fixture, not a delivered excerpt.
+**Unblocked** — D1, D2 and D3 are closed.
 
 ### T4 — Daily discharge import
 
-**Outcome**: 96,521 observations, no row for any missing day, no `MISSING`-status rows.
+**Outcome**: 96,521 observations, no row for any missing day, no `MISSING`-status rows,
+each row labelled per D7.
 **In**: importer; observation store.
-**Out**: no QC policy change, no skill/training wiring.
+**Out**: no QC policy change, no skill or training wiring.
 **Verification**: stored row count per station equals the measured count; no row exists on
-any measured gap day; every stored value is inside its curve's tabulated range where a
-curve exists.
-**Pre-change**: N/A — new import path. **Blocked on D6 and D7.**
+any measured gap day; every stored value lies inside its curve's tabulated range where a
+curve exists; the ~4,629 curve-less days carry the manual-import label and no curve binding.
+**Pre-change**: N/A — new import path.
+**BLOCKED on D6** — DHM has not yet said when a Nepali day begins and ends, and this task
+cannot assign a timestamp without that. Do not start it by picking a boundary.
 
 ### T5 — Delivery reconciliation report
 
-**Outcome**: a committed, re-runnable report reproducing every measured number in this
-plan, so a later delivery can be diffed against this one.
-**In**: a script under `scripts/`; its output artifact.
-**Out**: not a test gate; not a flow.
-**Verification**: the script's output matches the tables in this plan exactly.
+**Outcome**: a re-runnable check reproducing every **aggregate** in this plan, so a later
+delivery can be diffed against this one.
+**In**: a script under `scripts/`.
+**Out**: not a test gate; not a flow. **Its output contains counts, coverage and date
+ranges only — no discharge values, no rating-table rows.** If the committed artifact would
+carry a value, it is not committed.
+**Verification**: the script's output matches the aggregate tables in this plan exactly.
 **Pre-change**: N/A.
 
 ```json
@@ -306,16 +364,22 @@ plan, so a later delivery can be diffed against this one.
     { "id": "phase-1", "tasks": ["T1", "T2"], "parallel": true },
     { "id": "phase-2", "tasks": ["T3"], "depends_on": ["phase-1"] },
     { "id": "phase-3", "tasks": ["T4"], "depends_on": ["phase-2"] },
-    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3"] }
+    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-2"] }
   ]
 }
 ```
 
+T5 now depends on T3 rather than T4, so the reconciliation report is not held up by the
+blocked import.
+
 ## Explicitly out of scope
 
 - A live DHM API adapter (the questionnaire track, `project_dhm_data_interface`).
-- Any operational level→discharge path — **there is no level data in this delivery**, and
-  no station has a currently-valid curve.
+- Any operational level→discharge path — **there is no level data in this delivery**, no
+  station has a currently-valid curve, and DHM has none to give (D8). Blocked at source.
 - The halted time-grid / phase work (Plans 252/254/258, 239).
 - Plans 261/262 — another session owns those.
-- Any change to Plan 139's scope; D9 records the question only.
+- Any change to Plan 139's scope. The owner has approved a real-gauge pilot (D9), but
+  where it lives — alongside the Swiss study or as a separate deployment — is undecided and
+  is not settled here.
+- Publishing these measurements in any form (§ Data handling).
