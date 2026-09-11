@@ -371,14 +371,19 @@ exit criteria — Plan 212 owns that deeper screening.
     nothing and the `rule_version` correction (D5, closed: fix it). **D4 open** —
     configuration composition. Four rounds have each found a wrong repository claim in it;
     the golden fixture in T4 must be captured before any DHM row reaches `config.toml`.
-  - **269** — Per-station QC thresholds that can be onboarded and corrected — `DRAFT`,
-    `blocks: [268]`, **new 2026-09-11, no review yet**. Builds the persistence tier the
-    owner's 268 D14 decision requires and that neither sibling owns: `StationQcOverride` is
-    a bare dataclass with no table, store, Protocol or config key, and both live callers
-    hard-code `overrides=[]`. Mirrors the **dead** `forecast_qc_overrides` schema
-    (migration 0012, read by nothing, six call sites hard-coded) and the live
-    `station_thresholds` read wiring (whose writer is likewise uncalled). Zero-row
-    equivalence is a property of the existing merge, not a hope. Four decisions open.
+  - **269** — Per-station QC thresholds declared in onboarding configuration — `DRAFT`,
+    `blocks: [268]`. Delivers the surface the owner's 268 D14 decision requires and that
+    neither sibling owns: `StationQcOverride` is a bare dataclass and both live callers
+    hard-code `overrides=[]`, so a per-station ceiling cannot be declared at all.
+    **Materially rewritten 2026-09-11 after two independent NOT READY reviews** (Codex
+    5 blockers, Claude 3 — both found independently that no task ever wrote a row). The
+    database tier was **dropped** to match `docs/spec/types-and-protocols.md`, which stages
+    this as onboarding TOML now and a DB migration at v1 — removing the migration, the
+    production store registration and the per-table grant, and making threshold removal
+    correct by construction. All five decisions now closed; the rewrite is **UNREVIEWED**
+    and needs a fresh complete round. 🪤 When v1 does add the table, the schema model is
+    `station_thresholds` (natural-key PK + timestamps), **not** `forecast_qc_overrides`,
+    which is the one comparable table with neither.
 
 - **106** — v1 (Nepal DHM) critical-path roadmap — `READY` (locked 2026-07-08) — **the
   sequencing plan. Read this first for v1 planning.** Locks the wave order (0 stabilize →

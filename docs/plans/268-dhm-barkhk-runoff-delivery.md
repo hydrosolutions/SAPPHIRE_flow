@@ -997,9 +997,19 @@ the owner rejected at D15 — which would have needed nothing from Plan 264 at a
 dependency vacuous. Adding to the base rule list is the route that genuinely requires 264's
 network dimension, because that is where DHM and Swiss rules coexist and would otherwise
 collide. **Not** an edit to `config/qc_rules.py`'s dead defaults, and **not** a separate TOML
-overlay (which replaces the list wholesale — 264's D4); **six in-process `StationQcOverride` objects**,
-one per station, carrying D14's physical ceilings (the network rule alone cannot express six
-different maxima — see D14);
+overlay (which replaces the list wholesale — 264's D4); **six per-station ceilings carrying D14's
+physical maxima** (the network rule alone cannot express six different maxima — see D14).
+**🔴 Reshaped by Plan 269, and NOT yet folded into this task's design.** The earlier text here
+read "six in-process `StationQcOverride` objects", which the owner's 2026-09-10 answer to D14
+rules out — an in-memory threshold cannot be onboarded or corrected. Plan 269 delivers them as
+**onboarding configuration blocks resolved through its validation boundary**. Two independent
+reviews of 269 (2026-09-11) found that leaving this sentence unchanged makes the
+`depends_on: [269]` edge **vacuous**, because this task's gate proves the merge by calling
+`merge_thresholds` directly — which passes identically for in-memory objects. **Before this task
+is READY it must:** declare the six ceilings as configuration, resolve them through Plan 269's
+boundary rather than constructing them, and state that the import CLI below may not build
+overrides in memory either. That CLI is a **third** QC call site which Plan 269 T3/T4 do not
+wire — this task owns it;
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
 affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
 **Out**: no new QC *rule kind* — the daily discharge rules already exist (four configured,
@@ -1079,9 +1089,11 @@ or embedding restricted values.
 ```
 
 T1 and T2a are genuinely independent. T5 needs only the parser; T2b needs only the metadata
-artifact; T6 needs neither. Only T7 is gated — on Plan 264, not on an open decision — and everything through
-T4 can be built. T7 additionally waits on **Plan 264**, which is a separate plan with its own
-review — not a blocker inside this one. The phase order is also the **re-import order** (D6):
+artifact; T6 needs neither. Only T7 is gated, and everything through T4 can be built. T7 waits on
+**three** things, not one: open decision **D14** (the ceiling values), **Plan 264** (the network
+dimension, so DHM and Swiss rules coexist without colliding), and **Plan 269** (the configuration
+surface those ceilings are declared in — see T7's In). Each is a separate plan with its own
+review, not a blocker inside this one. The phase order is also the **re-import order** (D6):
 curves before observations before QC, and the replacement runs in reverse.
 
 ## Explicitly out of scope
