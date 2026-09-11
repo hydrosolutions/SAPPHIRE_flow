@@ -9,8 +9,10 @@ rows on staging precisely because nothing outside tests had ever written one, so
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 from uuid import uuid4
+
+import pytest
+import sqlalchemy as sa
 
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
@@ -22,10 +24,6 @@ from scripts.create_station_group import (
     plan_station_group,
 )
 from tests.conftest import make_station_config
-
-if TYPE_CHECKING:
-    import pytest
-    import sqlalchemy as sa
 
 _NOW = ensure_utc(datetime(2026, 9, 11, 12, tzinfo=UTC))
 
@@ -133,12 +131,18 @@ class TestTheWriteIsAtomic:
 
         name = f"atomicity-{uuid4()}"
         code = f"C{uuid4().hex[:6]}"
+        station_id = StationId(uuid4())
 
+        # 🪤 This seed must COMMIT — `main()` opens its own connection and cannot see
+        # an uncommitted row — so unlike every other test here it does NOT ride the
+        # rolled-back `db_connection` fixture. That makes cleanup THIS test's
+        # responsibility: `db_engine` is session-scoped, and a surviving station
+        # breaks any later test asserting an empty fetch. It did exactly that before
+        # the teardown below was added.
+        self._committed_station_ids.append(station_id)
         with db_engine.begin() as seed:
             PgStationStore(seed).store_station(
-                make_station_config(
-                    station_id=StationId(uuid4()), code=code, network="bafu"
-                )
+                make_station_config(station_id=station_id, code=code, network="bafu")
             )
 
         class _ExplodingAudit:
@@ -176,3 +180,33 @@ class TestTheWriteIsAtomic:
             "the group row must roll back with the failed audit write — if it "
             "survives, main() let store_group open its own transaction"
         )
+
+    @pytest.fixture(autouse=True)
+    def _clean_committed_seeds(self, db_engine: sa.Engine):  # noqa: ANN202
+        """Delete EXACTLY the rows this test commits, by primary key.
+
+        🪤 **This is the only test here that commits.** Every other one rides the
+        `db_connection` fixture, whose transaction is rolled back; this one cannot,
+        because `main()` opens its own connection and would not see an uncommitted
+        station. `db_engine` is SESSION-scoped, so the row outlives the test and is
+        visible to every later one.
+
+        Measured, not theorised: without this teardown the committed RIVER station
+        made `test_station_store.py::test_empty_returns_empty_list` fail — it asserts
+        that NO river stations exist. Clean main passes 719/719; this branch failed
+        1 until the rows were removed.
+
+        ⛔ Deletes by collected id, never a `LIKE` pattern — a broad delete in a
+        shared database would reach other tests' rows and turn one leak into
+        several.
+        """
+        committed: list[object] = []
+        self._committed_station_ids = committed
+        yield
+        if not committed:
+            return
+        with db_engine.begin() as conn:
+            conn.execute(
+                sa.text("DELETE FROM stations WHERE id = ANY(:ids)"),
+                {"ids": [str(sid) for sid in committed]},
+            )
