@@ -655,9 +655,12 @@ persisted, and **cannot be updated later** — the plan's earlier answer (build 
 inside the import) quietly accepted that and would have produced thresholds nobody could change
 without editing code.
 
-Delivering the owner's decision therefore requires: a migration and table, a store and Protocol
-and fake, a config surface on station onboarding, and a loader wired into the QC call path.
-**Plan 269 now owns all of it** (opened 2026-09-11; `blocks: [268]`), so this plan's remaining
+Delivering the owner's decision requires a config surface on station onboarding and a loader
+wired into the QC call path. **Plan 269 owns that** (opened 2026-09-11; `blocks: [268]`) — as
+**configuration, not persistence**: after four independent reviews the owner settled it on
+2026-09-11 to match `docs/spec/types-and-protocols.md`, which stages this as onboarding TOML now
+and a DB migration at v1. The migration, table, store, Protocol and fake this paragraph used to
+demand are **not** Plan 269's and are **currently unowned, deferred to v1**. So this plan's remaining
 share of D14 is the *values* and the lossy transform that keeps a table-derived ceiling from
 publishing a restricted tabulated value — not the mechanism. T7 changes shape accordingly: the
 six ceilings become configured rows rather than in-memory constructions. `station_thresholds` (`db/metadata.py`) is a useful precedent

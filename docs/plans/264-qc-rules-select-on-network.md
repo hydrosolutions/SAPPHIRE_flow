@@ -360,13 +360,19 @@ added, or it bakes in the change it exists to detect.
 - Forecast QC rule selection (D1).
 - Per-station QC overrides **as persisted rows**. `StationQcOverride` is a dataclass with no
   table, no store and no loader, and both production callers hard-code an empty list. This plan
-  does not add that schema. **Plan 269 now owns it** (opened 2026-09-11), because the owner's
-  2026-09-10 answer to Plan 268 D14 — thresholds live in station onboarding configuration,
-  updatable later — cannot be met in memory. The earlier note here said Plan 268 T7 would
-  construct them in memory and that the capability was therefore unblocked; that is no longer
-  the route. This plan still owns only which rule an override merges into. **Precedence between
-  the two mechanisms is Plan 269 D2** — station beats network beats generic — and it is stated
-  there, once.
+  does not add that schema. **Nor does Plan 269, and this note said otherwise until 2026-09-11.**
+  Plan 269 delivers per-station thresholds as **onboarding configuration**, matching
+  `docs/spec/types-and-protocols.md` § StationQcOverride ("Loaded from station onboarding TOML;
+  v1 migrates to DB"); it explicitly out-of-scopes the table, store, migration and grant. **The
+  persisted tier is therefore UNOWNED and deferred to v1** — say so rather than pointing at a
+  plan that dropped it. The earlier note here also said Plan 268 T7 would construct overrides in
+  memory; that is no longer the route either. This plan still owns only which rule an override
+  merges into. **How the two mechanisms compose is Plan 269 D2**: 264 selects *which rule*
+  applies, 269 adjusts *that rule's thresholds*. The earlier phrasing here — "station beats
+  network beats generic" — is **retracted**: an override cannot suppress a rule, and having no
+  `rule_version` it merges onto **every** resolved rule sharing its four-part key.
+  🔴 **This plan owes 269 an edit if 269 lands first**: T1/T2 must update the `rules_for` call
+  site inside 269's resolution boundary when the network parameter becomes required.
 - Any change to a threshold *value* currently in force. (Flag `rule_version` **does** change,
   once and deliberately — D5.)
 - Fixing configuration composition so overlays can add rules incrementally (D4).

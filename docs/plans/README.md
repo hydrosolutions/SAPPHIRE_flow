@@ -372,18 +372,21 @@ exit criteria — Plan 212 owns that deeper screening.
     configuration composition. Four rounds have each found a wrong repository claim in it;
     the golden fixture in T4 must be captured before any DHM row reaches `config.toml`.
   - **269** — Per-station QC thresholds declared in onboarding configuration — `DRAFT`,
-    `blocks: [268]`. Delivers the surface the owner's 268 D14 decision requires and that
-    neither sibling owns: `StationQcOverride` is a bare dataclass and both live callers
-    hard-code `overrides=[]`, so a per-station ceiling cannot be declared at all.
-    **Materially rewritten 2026-09-11 after two independent NOT READY reviews** (Codex
-    5 blockers, Claude 3 — both found independently that no task ever wrote a row). The
-    database tier was **dropped** to match `docs/spec/types-and-protocols.md`, which stages
-    this as onboarding TOML now and a DB migration at v1 — removing the migration, the
-    production store registration and the per-table grant, and making threshold removal
-    correct by construction. All five decisions now closed; the rewrite is **UNREVIEWED**
-    and needs a fresh complete round. 🪤 When v1 does add the table, the schema model is
-    `station_thresholds` (natural-key PK + timestamps), **not** `forecast_qc_overrides`,
-    which is the one comparable table with neither.
+    `blocks: [268]`, all 5 decisions closed. Delivers the surface the owner's 268 D14 decision
+    requires and that neither sibling owns: `StationQcOverride` is a bare dataclass and every
+    live caller hard-codes `overrides=[]`, so a per-station ceiling cannot be declared at all.
+    **Four independent reviews across two rounds, all NOT READY**; revision 3 (2026-09-11) is
+    **UNREVIEWED**. R1 found no task ever wrote a row → owner dropped the DB tier to match
+    `docs/spec/types-and-protocols.md` (TOML now, DB at v1). R2 found it resolved against
+    `station_by_id` (the onboarding **batch**, not the registry) — which on the 5-basin staging
+    overlay would have **refused onboarding outright** — plus a third production entrypoint
+    (`scripts/onboard.py`) and a false claim of independence from 264. ⭐ Owner 2026-09-11:
+    fail-hard **splits by call site** — strict in onboarding, degrade-and-log on scheduled
+    ingest, because there the trigger is DB state (a renamed station) and it would halt ingest
+    fleet-wide. 🪤 The config surface is **base-`config.toml` only**: an overlay declaring the
+    array replaces it wholesale (`config/_overlay.py:50-56`), the same trap 268 T7 routes around.
+    🔴 **The persisted DB tier is now UNOWNED, deferred to v1**; when it lands the schema model
+    is `station_thresholds`, **not** `forecast_qc_overrides` (no PK, no timestamps).
 
 - **106** — v1 (Nepal DHM) critical-path roadmap — `READY` (locked 2026-07-08) — **the
   sequencing plan. Read this first for v1 planning.** Locks the wave order (0 stabilize →
