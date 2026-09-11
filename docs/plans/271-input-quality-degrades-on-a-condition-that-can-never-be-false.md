@@ -10,6 +10,8 @@ reviews:
   - "codex 2026-09-11 r2 citation verification — NOT READY, 0 blockers + 3 majors + 3 minors; all verified, all folded"
   - "claude 2026-09-11 r3 coherence/implementability — NOT READY, 3 blockers + 7 majors + 4 minors; all verified, all folded"
   - "codex 2026-09-11 r3 citation verification — NOT READY, 0 blockers + 1 major + 3 minors; all verified, all folded"
+  - "claude 2026-09-11 r4 implementability — NOT READY, 1 blocker + 2 majors + 3 minors; all verified, all folded"
+  - "codex 2026-09-11 r4 citation verification — NOT READY, 0 blockers + 1 major + 3 minors; all verified, all folded"
   - "gpt-6-astra 2026-09-11 expert consultation on D1 — recommends complying with the FI mapping; folded as the recommendation, not as the decision"
 title: Four documents disagree about what a state-free model's warm-up source is, and the running code picks the one that degrades every forecast
 scope: Resolve the four-way conflict over what `warm_up_source` means for a model that holds no state, make the classifier honour the resolution, and correct whichever documents lose. Covers the `warm_up` category ONLY. NOT implementing warm-up state persistence (already built, see §What already exists), NOT a change to the ForecastInterface signature, NOT the `observation`/`NWP`/`forcing` categories, NOT Plan 270's forcing-gap detection.
@@ -70,7 +72,8 @@ three questions — two documents give the same answer — and only one was ever
 deliberately:
 
 - **`NULL`** was written when warm-up was conceived as a *conceptual-model* concept.
-  `architecture-context.md:108-112` describes warm-up entirely in terms of conceptual models
+  `architecture-context.md:108`, `:109` and `:112` describe warm-up entirely in terms of
+  conceptual models
   deriving soil moisture, snow and groundwater, with ML models explicitly excluded ("ML models
   do not produce state; this step is a no-op for them"). `NULL` there means **the axis does
   not apply to this model**.
@@ -138,7 +141,7 @@ that cycle with a REAL problem — 85.4 h stale observations — are indistingui
 512 carrying ONLY a structural artefact (all 514 carry the cold-start flag; 512 carry nothing
 else).
 
-**There is exactly one real consumer, and it is broken today.** The API's `degraded_only=true`
+**The consumer broken today is the API's degraded-only filter.** The API's `degraded_only=true`
 filter (`api/routes/api_stations.py:274`, `store/forecast_store.py:243`) returns 100% of rows.
 ⚠️ **No dashboard indicator exists** (`architecture-context.md:110`) — an earlier revision of
 this plan claimed dashboard harm that does not exist.
@@ -212,20 +215,6 @@ with D5. ⭐ **This closes the T2 ambiguity round 3 raised**: the golden fixture
 (`tests/fixtures/plan151_t8b_canonical_snapshot.json`) is **REGENERATED**, not treated as an
 error. Its model `fake_station_model` declares nothing and is therefore state-free.
 
-*(Superseded framing, kept for one revision: D5 was previously open and stated to block T1 and
-T2. Both are now unblocked.)*
-- *Mandatory* follows the `model_tier` pattern, where `discover_models` **re-raises**
-  `ConfigurationError` (`services/model_registry.py:122-124`) rather than skipping — so one
-  undeclared class darkens the ENTIRE model registry.
-- *Defaulted* already has a working precedent in the same trio T1 piggybacks on:
-  `declared_static_naming` (`services/caravan_statics.py:161-186`) defaults on absence and raises
-  only on a malformed declaration. ⭐ Round 3 surfaced this; the owner should see it before deciding.
-- 🔴 **It gates T2, not only T1** (round 3): the golden fixture's model is `fake_station_model`
-  (`tests/fixtures/plan151_t8b_canonical_snapshot.json:5`), a test fake injected directly into
-  `_run_single_model` that NEVER passes through `discover_models`, so neither the propagation nor
-  any mandatory check runs for it. Whether T2 reads such a model as state-free (fixture regenerated)
-  or as undeclared-and-therefore-an-error IS D5. **T2 must specify the behaviour for a model that
-  never went through `discover_models`.**
 
 **D4 — ✅ CLOSED: this ships BEFORE the deep-learning pilot.** The pilot does not depend on it,
 but whoever watches that pilot would otherwise be reading a health signal stuck on for every
@@ -247,10 +236,10 @@ first specified would not have worked.
 state store, and the classification SURVIVES FI adaptation.
 
 🔴 **The trap that sank the first draft — the adapter forwards NOTHING.** `discover_models`
-wraps every FI model (`services/model_registry.py:107`, `adapt_if_fi`) before anything
+wraps every FI model (`services/model_registry.py:108`, `adapt_if_fi`) before anything
 downstream sees it, so `isinstance(adapted_model, …)` inspects the ADAPTER, not the model. This
 is a known, already-solved problem here: `_assert_model_classification_declared`
-(`services/model_registry.py:61-88`) exists precisely to "read classification declarations off
+(`services/model_registry.py:62-89`) exists precisely to "read classification declarations off
 the RAW model and copy them onto the ADAPTED model", and does so today for `model_tier`,
 `alert_eligibility` and `static_naming` — added as a Plan 155 D16 blocker for this exact reason.
 **The declaration must be ATTRIBUTE-shaped and propagated there**, alongside those three. A
@@ -274,8 +263,17 @@ UNCLASSIFIABLE. T1 must either provide the same config-dict route, or state expl
 does not and why that is safe for models we do not own.
 
 **Shape.** A two-valued domain state, so `CLAUDE.md` forbids a `bool` — an enum (e.g.
-`WarmUpStatePolicy.KEEPS_STATE` / `.STATE_FREE`) declared as a class attribute, with the
+`WarmUpStatePolicy.KEEPS_STATE` / `.STATE_FREE`) declared as a plain CLASS ATTRIBUTE, with the
 config-dict route above where a model's class is not ours to edit.
+
+🔴 **DO NOT add a member to `StationForecastModel` or `GroupForecastModel`** (round 4, verified by
+execution on Python 3.12.10). Both are `@runtime_checkable` Protocols carrying data members, and
+`isinstance` against such a Protocol returns **False** when a data member is absent. They are
+isinstance-gated in production at `services/model_onboarding.py:547`, `:577`, `:690`, `:697`. A
+Protocol member would therefore make onboarding REJECT exactly the model D5 declares legal — one
+that declares nothing — and would break the bare adapter's protocol assertion, since propagation
+runs only inside `discover_models`. Read the policy with `getattr(model, …, sentinel)` instead;
+`declared_static_naming`, the precedent D5 rests on, puts nothing on a Protocol either.
 ⭐ **D5 settles the absence rule:** a class declaring nothing is state-free; a class declaring
 something uninterpretable raises. Mirror `declared_static_naming`
 (`services/caravan_statics.py:161-186`), NOT `_declared_model_tier`, which raises on absence.
@@ -283,8 +281,10 @@ something uninterpretable raises. Mirror `declared_static_naming`
 `runtime_checkable` protocols with overlapping semantics and the same name is a trap for the
 next reader.
 
-**In:** `src/sapphire_flow/types/enums.py`, `src/sapphire_flow/protocols/forecast_model.py`,
-`services/model_registry.py:61-88` (propagation), and **all SEVEN registered classes**
+**In:** `src/sapphire_flow/types/enums.py` (the enum), `src/sapphire_flow/types/ids.py:35-51`
+(the config dict, beside `MODEL_TIERS`/`ALERT_ELIGIBILITIES`), `services/model_registry.py:62-89`
+(propagation), and **all SEVEN registered classes**
+⛔ **NOT `protocols/forecast_model.py`** — see the Protocol warning above.
 (`pyproject.toml:174-184`): `LinearRegressionDaily`, `ClimatologyFallbackModel`,
 `PersistenceFallbackModel`, `NwpRegression`, `NwpRainfallRunoff`,
 `SeasonalPrecipRunoffRegression`, and the optional `CmalPoolPT`.
@@ -325,8 +325,7 @@ to `None` on the `COLD_START` branch and to a real age on `FRESH`
 of `FRESH`: `(fresh, age NULL)` = a state-free model, `(fresh, age 3.2)` = a genuine recent
 snapshot. They are distinguishable ONLY by the age field. T2 must state that a state-free model
 sets the age to `None`, and T3 must give the replacement text for
-`docs/architecture-context.md:1846`, whose current `(NULL when fresh or ML)` is already wrong for
-the snapshot case.
+`docs/architecture-context.md:1846` — T3 carries the exact replacement text.
 
 🔴 **The signature must change, and that widens the edit surface.** `load_warm_up_state`
 (`services/operational_inputs.py:96-101`) receives a `ModelId`, never a model object, so T1's
@@ -352,19 +351,23 @@ form matters because it is the persisted DB value. ⚠️ Both are literal grep 
 revision claimed 23 was "an impact inventory, not a grep count", which overclaimed. PLUS a
 **golden fixture**: `tests/fixtures/plan151_t8b_canonical_snapshot.json:11`
 hard-codes `"warm_up_source": "cold_start"` with its flag and detail text, and is loaded and
-compared by `tests/unit/flows/test_run_forecast_cycle.py:8837`. **T2 fails that test unless the
+compared by `tests/unit/flows/test_run_forecast_cycle.py:8905-8912` (path named at `:8837`). **T2 fails that test unless the
 fixture is regenerated.**
 
 **Pre-change:** every forecast in the retained window is `cold_start`; `degraded_only=true`
 returns 100% of rows.
 
 **Verification:** a locking test per branch — state-free ⇒ no flag; state-keeping-and-missing ⇒
-`COLD_START` and degraded. ⚠️ **Scope the second to the DETERMINISTIC route, and cite the right
-guard.** `services/run_station_forecast.py:536` (`reject_stateful_ensemble_states`, the
-OUTPUT-side guard) is what refuses a stateful model on the ensemble fan-out. `:434`
-(`reject_prior_state_for_fanout`, `services/ensemble_fanout.py:56-57`) raises only when
-`prior_state is not None` — which is NOT the branch under test, so a test built from `:434`
-would pass without proving anything. An earlier revision cited `:434`.
+`COLD_START` and degraded. ⚠️ **Build it on the DETERMINISTIC route** (`services/run_station_forecast.py:501`), asserting on
+the forecast's own provenance and quality — **NOT on either fan-out guard**.
+`reject_prior_state_for_fanout` (called `:425`) raises only when `prior_state` is NOT `None`, and
+`reject_stateful_ensemble_states` (called `:527`) only when a model RETURNS per-member states
+(`services/ensemble_fanout.py:43`); both are inert for a state-keeping model with NO stored state,
+so a test anchored on either passes without proving anything.
+⚠️ **This citation was wrong in rounds 1, 2, 3 AND 4** (`:434` → `:536` → and in fact `:425`/`:527`,
+which are the CALLS; `:434`/`:536` are failure-cause lines inside the return blocks). Round 3
+corrected exit gate 2 and left this paragraph untouched — the same fix-one-site failure that round
+found at D1. This text now matches gate 2 deliberately.
 
 ### T3 — correct BOTH losing documents (D1's amendment)
 
@@ -373,7 +376,9 @@ would pass without proving anything. An earlier revision cited `:434`.
 
 **In:** `docs/spec/types-and-protocols.md:1788` ⚠️ **(found in round 2 — the first draft missed it,
 and `CLAUDE.md` calls this spec *authoritative for implementation*)**;
-`docs/architecture-context.md:1845`, `:1846` (give it replacement text — see T2), and the
+`docs/architecture-context.md:1845`; `:1846`, whose current `(NULL when fresh or ML)` is wrong in
+two ways after T2 and becomes **`# hours since the loaded state snapshot; NULL for a state-free
+model and for a cold start`**; and the
 warm-up prose at `:108`, `:109` and `:112` framing warm-up as conceptual-model-only.
 ⛔ **NOT `:110`** — that is the input-quality bullet whose `None = unknown/legacy row` statement
 this plan's own reason 2 depends on KEEPING, and `:111` is an unrelated per-track bullet. An
@@ -486,7 +491,7 @@ required unconditionally). Depends on T2, T3.
   `isinstance` capability would have inspected the FI ADAPTER rather than the model (the adapter
   forwards nothing, which `model_registry.py` already exists to work around), and keying it on
   the state signature would have matched EVERY model because `prior_state` is already on the base
-  protocol. A **fourth** conflicting source was found, ranked above the one already named. T2's
+  protocol. A **fourth** conflicting source was found. T2's
   edit surface gained a signature change, two call sites and the entire GROUP route; its test
   surface gained 6 references and a golden fixture. T4 was unbuildable in phase 1. Three
   citations were wrong, including one that would have produced a locking test passing for the
@@ -507,6 +512,19 @@ required unconditionally). Depends on T2, T3.
   ⚖️ **The count dispute settled by direct measurement:** the reviewers disagreed 17 vs 23; both
   were right — 17 uppercase `COLD_START` + 6 lowercase `cold_start`, and the lowercase form is the
   persisted DB value, so 23 is the impact inventory.
+- **2026-09-11 (r4 folds)** — two reviews: 1 blocker, 3 majors, 6 minors. ⭐ **A verified design
+  trap**: T1 had said to add the policy to `protocols/forecast_model.py`. Both forecast Protocols
+  are `@runtime_checkable` with data members and are isinstance-gated at four production sites in
+  `services/model_onboarding.py`; proven by execution on 3.12.10, `isinstance` returns False when a
+  data member is absent — so the member would have made ONBOARDING REJECT exactly the model D5
+  declares legal. Now read by `getattr` with a sentinel, and no Protocol is touched. ⚠️ The
+  ensemble-guard citation was wrong for the FOURTH round running, and for the second time because a
+  correction landed at the exit gate and not at the task it gates; T2's verification is now gate 2's
+  text verbatim. Two live copies of the superseded D5-open framing were deleted — a parenthetical
+  "superseded, kept for one revision" fence did NOT neutralise a bold imperative four bullets later,
+  exactly as this repo's own record on correction notes says. `types/ids.py` added to T1. The
+  circular "see T3"/"see T2" replacement text for `architecture-context.md:1846` is now written out.
+  Four line references re-measured.
 - **2026-09-11 (owner closes D5 + D6)** — silence is legal and an uninterpretable declaration is
   fatal, following `declared_static_naming` rather than `_declared_model_tier`; and a model that
   never passes through `discover_models` is state-free, which regenerates the golden fixture
