@@ -12,21 +12,19 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import pytest
-
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.ids import StationGroupId, StationId
+from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from scripts.create_station_group import (
-    GroupPlan,
     apply_station_group,
     plan_station_group,
 )
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
+    import pytest
     import sqlalchemy as sa
 
 _NOW = ensure_utc(datetime(2026, 9, 11, 12, tzinfo=UTC))
@@ -119,54 +117,55 @@ class TestTheWriteIsAtomic:
     after the group row would leave an EMPTY, UNAUDITED group behind while the CLI
     reported failure.
 
-    The success-only tests above cannot see that: they only ever commit. This one
-    forces a failure mid-write and asserts nothing survives.
+    🪤 **This runs through `main()` on purpose.** A confirming review caught the first
+    version of this test building its OWN store with the transaction factory —
+    duplicating the production wiring instead of exercising it, so deleting the
+    factory from `main()` would have restored the defect while the test stayed green.
+    That is the same defect class as a seam test calling its helper directly. The
+    only thing patched here is the audit store, which must fail on demand; the
+    engine, the connection, the group store and its wiring are all real.
     """
 
     def test_a_failure_after_the_group_row_leaves_no_group(
-        self, db_engine: sa.Engine
+        self, db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from contextlib import nullcontext
+        from scripts.create_station_group import main as cli_main
 
         name = f"atomicity-{uuid4()}"
-        station_id = StationId(uuid4())
+        code = f"C{uuid4().hex[:6]}"
 
         with db_engine.begin() as seed:
             PgStationStore(seed).store_station(
                 make_station_config(
-                    station_id=station_id, code=f"C{uuid4().hex[:6]}", network="bafu"
+                    station_id=StationId(uuid4()), code=code, network="bafu"
                 )
             )
 
-        plan = GroupPlan(
-            name=name,
-            tenant_id=DEFAULT_TENANT_ID,
-            group_id=StationGroupId(uuid4()),
-            group_exists=False,
-            members_to_add=((f"C{station_id}", station_id),),
-            already_members=(),
-            unresolved_codes=(),
-            wrong_tenant_codes=(),
-        )
-
         class _ExplodingAudit:
+            def __init__(self, conn: object) -> None:
+                del conn
+
             def append_entry(self, entry: object) -> None:
                 del entry
                 raise RuntimeError("audit write failed")
 
-        with (
-            pytest.raises(RuntimeError, match="audit write failed"),
-            db_engine.begin() as write_conn,
-        ):
-            apply_station_group(
-                plan,
-                group_store=PgStationGroupStore(
-                    write_conn,
-                    transaction_factory=lambda: nullcontext(write_conn),
-                ),
-                clock=_clock,
-                audit_log_store=_ExplodingAudit(),
-            )
+        # 🪤 `str(url)` MASKS the password as `***`, so `main()` would fail to
+        # connect, return 1, and leave no group — passing this test for an entirely
+        # unrelated reason. Found by diagnosing why the mutation below did NOT fail.
+        monkeypatch.setenv(
+            "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+        )
+        # Imported INSIDE `main()`, so it is not an attribute of that module —
+        # patch it at its source.
+        monkeypatch.setattr(
+            "sapphire_flow.store.audit_log_store.PgAuditLogStore", _ExplodingAudit
+        )
+
+        exit_code = cli_main(
+            ["--name", name, "--station-code", code, "--network", "bafu", "--apply"]
+        )
+
+        assert exit_code == 1, "the CLI must report failure"
 
         with db_engine.connect() as check:
             survivor = PgStationGroupStore(check).fetch_group_by_name(
@@ -174,6 +173,6 @@ class TestTheWriteIsAtomic:
             )
 
         assert survivor is None, (
-            "the group row must roll back with the failed audit write — "
-            "if it survives, store_group opened its own transaction"
+            "the group row must roll back with the failed audit write — if it "
+            "survives, main() let store_group open its own transaction"
         )

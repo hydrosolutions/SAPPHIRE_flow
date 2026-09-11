@@ -352,6 +352,11 @@ class TestTheDryRunGuard:
     apply functions DIRECTLY, so moving the write above the `--apply` check would
     leave them all green while the default invocation started writing. These call
     `main()` and are the only thing that can catch that.
+
+    🪤 They monkeypatch `sqlalchemy.create_engine` rather than a seam in this module:
+    a confirming review pointed out that an injectable `_engine_for` wrapper was
+    indirection existing only for tests, and erased the engine's type to `object`.
+    Patch the library boundary; leave production code alone.
     """
 
     def test_the_default_invocation_writes_nothing(
@@ -365,7 +370,7 @@ class TestTheDryRunGuard:
         monkeypatch.setattr(
             mod, "apply_station_group", lambda *a, **k: applied.append(a)
         )
-        monkeypatch.setattr(mod, "_engine_for", lambda _url: _FakeEngine())
+        monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **k: _FakeEngine())
 
         exit_code = mod.main(["--name", "g", "--station-code", "2009"])
 
@@ -386,7 +391,7 @@ class TestTheDryRunGuard:
         monkeypatch.setattr(
             mod, "apply_station_group", lambda *a, **k: applied.append(a)
         )
-        monkeypatch.setattr(mod, "_engine_for", lambda _url: _FakeEngine())
+        monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **k: _FakeEngine())
 
         exit_code = mod.main(["--name", "g", "--station-code", "2009", "--apply"])
 

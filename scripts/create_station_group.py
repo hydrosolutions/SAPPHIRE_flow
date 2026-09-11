@@ -269,16 +269,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _engine_for(database_url: str) -> object:
-    """A seam, not an abstraction: it exists so `main`'s dry-run guard can be tested
-    without a database. Every other test calls the planning/apply functions directly,
-    so nothing else would notice if the write moved above that guard.
-    """
-    import sqlalchemy as sa
-
-    return sa.create_engine(database_url, pool_pre_ping=True)
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -287,12 +277,14 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
         return 1
 
+    import sqlalchemy as sa
+
     from sapphire_flow.store.audit_log_store import PgAuditLogStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
 
     clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
-    engine = _engine_for(database_url)
+    engine = sa.create_engine(database_url, pool_pre_ping=True)
 
     try:
         with engine.connect() as conn:
