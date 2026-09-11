@@ -518,6 +518,13 @@ exit criteria — Plan 212 owns that deeper screening.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
   readiness. Docs-first; no change to the v1.0 Nepal critical path.
+- **266** — CAP 1.2-conformant hydrological alert publication — `DRAFT`
+  (low-priority v1+) — preserve internal alerts as decision-support inputs, then add an
+  opt-in CAP Message Producer, immutable Alert/Update/Cancel history, explicit authority
+  and warning-area policy, and an authenticated restricted CAP source/RSS feed. `Actual`
+  is observation-only until forecast review/publication provenance exists. Needs the
+  ordinary Claude + Codex plan reviews and an additional operational-warning/security
+  review before READY.
 - **111** — Benchmarking against BAFU's operational forecasts — collector **MERGED
   (#72)**; scorer/publication **BLOCKED on external gate G1** (low-priority). Route-C
   hourly collector archives hydrodaten Plotly-JSON forecasts (54 stations, quantiles

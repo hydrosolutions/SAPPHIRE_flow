@@ -200,7 +200,7 @@ whenever this section is touched.
 | Gap | WMO reference | Plan | Earliest |
 |-----|--------------|------|----------|
 | **Impact-based warnings** | WMO-1150 | Add impact layer (exposure, vulnerability) on top of existing danger levels. Nepal DHM may handle alerting in-house. | v1 |
-| **CAP alert format** | WMO-1109 | CAP XML serializer for alert records. Optional API endpoint or push feed for DHM integration. | v1 |
+| **CAP alert format** | WMO-1109 | Plan 266 (`docs/plans/266-cap-1-2-conformant-alert-publication.md`, `status: DRAFT`) specifies a CAP 1.2 Message Producer, immutable Alert/Update/Cancel issuance history, and authenticated CAP source/RSS feed. Nothing is implemented or verified yet; keep this row deferred until the plan's named conformance tests run against built code. | v1+ (low priority) |
 | **WIGOS Station Identifiers** | WMO-1192 | Column added in v0 (present in `stations` table, `wigos_id`). **Correction (Plan 253 T4a, measured 2026-09-02):** the previous row claimed "Swiss stations have WIGOS IDs in v0" -- false; `wigos_id` is populated on **0 of 148** stations. Population is unstarted work, not a v0 accomplishment, and remains explicitly out of this plan's scope (populating the column is separate work). | v0 (column, done), v1 (population, including Swiss -- not started) |
 | **WaterML 2.0 / WHOS** | WHOS | Optional WaterML 2.0 serializer for observation and forecast time series. Only if international data sharing is required. | v1+ |
 | **Advanced EPS calibration** | WMO-1254 Tier 2/3 | MOS (Tier 2) after 6–12 months NWP archive. EMOS/BMA (Tier 3) post-v1. | v1 |
