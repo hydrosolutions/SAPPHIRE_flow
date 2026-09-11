@@ -71,6 +71,8 @@ class PgWeatherForecastStore:
         nwp_source: str,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters: list[str] | None = None,
+        member_ids: frozenset[int | None] | None = None,
     ) -> list[WeatherForecastRecord]:
         q = sa.select(weather_forecasts).where(
             sa.and_(
@@ -80,6 +82,19 @@ class PgWeatherForecastStore:
                 weather_forecasts.c.valid_time < end,
             )
         )
+        if parameters is not None:
+            q = q.where(weather_forecasts.c.parameter.in_(parameters))
+        if member_ids is not None:
+            # NULL never matches IN, so a set containing None needs an explicit
+            # IS NULL branch — dropping it would silently exclude every
+            # deterministic (member_id NULL) series.
+            concrete = sorted(m for m in member_ids if m is not None)
+            clauses = []
+            if concrete:
+                clauses.append(weather_forecasts.c.member_id.in_(concrete))
+            if None in member_ids:
+                clauses.append(weather_forecasts.c.member_id.is_(None))
+            q = q.where(sa.or_(*clauses)) if clauses else q.where(sa.false())
         rows = self._conn.execute(q).mappings().all()
         return [_row_to_record(row) for row in rows]
 

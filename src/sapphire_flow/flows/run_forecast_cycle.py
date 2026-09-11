@@ -1856,6 +1856,21 @@ def _nominal_cycle_source(
     )
 
 
+def _binding_nwp_source(
+    forecast_bindings: dict[StationId, StationWeatherSource],
+    station_id: StationId,
+) -> str:
+    """The station's own NWP source, for Plan 261's past-forcing tail fill on
+    the NoForcingRequired path (no resolved track exists there). Empty when the
+    station has no binding — the tail fill's undeclared-cadence guard then
+    declines BEFORE any read and says so at WARNING, which is the correct
+    best-effort outcome. (Named indirectly on purpose: the leakage guard in
+    tests/unit/services/test_forecast_fill_does_not_reach_history.py whitelists
+    every module REFERENCING that symbol, and this module is not one of them.)"""
+    binding = forecast_bindings.get(station_id)
+    return binding.nwp_source if binding is not None else ""
+
+
 def _resolve_per_track_run_inputs(
     *,
     eligible_station_ids: frozenset[StationId],
@@ -1976,6 +1991,12 @@ def _resolve_per_track_run_inputs(
                 station_store=station_store,
                 basin_store=basin_store,
                 forcing_source=forcing_source,
+                # Plan 261 T1: a NoForcingRequired assignment has no resolved
+                # track to take an NWP source from, so the past-forcing tail
+                # fill uses the station's own binding. A station without one
+                # simply goes unfilled — the fill is best-effort by design.
+                weather_forecast_store=weather_forecast_store,
+                nwp_source=_binding_nwp_source(forecast_bindings, sid),
                 clock=clock,
                 static_naming_models=_assigned_models_for(sid),
             )
@@ -2044,6 +2065,8 @@ def _resolve_per_track_run_inputs(
                     station_store=station_store,
                     basin_store=basin_store,
                     forcing_source=forcing_source,
+                    weather_forecast_store=weather_forecast_store,
+                    nwp_source=track.key.nwp_source,
                     clock=clock,
                     static_naming_models=_assigned_models_for(sid),
                     expected_member_ids=expected_member_ids,

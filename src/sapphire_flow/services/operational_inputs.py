@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -11,6 +12,7 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
+    floor_to_time_step,
     resample_to_time_step,
     resolved_aggregation_methods,
     validate_time_step_cadence,
@@ -31,7 +33,6 @@ from sapphire_flow.types.model import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import (
@@ -449,6 +450,309 @@ def raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
+# Plan 261 T1: the control run is `member_id in {None, 0}` — deterministic
+# sources (snow) carry None, an ensemble's control carries 0. Mirrors
+# `_pivot_nwp_records`'s SINGLE branch so the filled past leg and the future
+# leg select the same series.
+_CONTROL_MEMBER_IDS: frozenset[int | None] = frozenset({None, 0})
+
+# Plan 261 D5: the fill covers these parameters and no others. Not a
+# convenience — `member_id=None` means "deterministic", which is BOTH an
+# ensemble-free control run AND how recap Gateway stores Nepal's snow
+# (`adapters/recap_gateway.py:1574`). Without this restriction a model
+# declaring past snow would receive forecast-filled snow on the Nepal
+# operational path, which this plan explicitly defers.
+_FILLABLE_PARAMETERS: frozenset[str] = frozenset({"precipitation", "temperature"})
+
+# Parameters stored as a de-accumulated RUNNING TOTAL, for which a run's own
+# first step carries no interval and must never be used. Only `tp` is
+# de-accumulated at ingest (`adapters/meteoswiss_nwp.py:262`); temperature is
+# converted K->degC and nothing else, so ITS first step is a real reading.
+_DEACCUMULATED_PARAMETERS: frozenset[str] = frozenset({"precipitation"})
+
+# The native cadence of stored NWP is a property of the SOURCE, and is DECLARED
+# here rather than inferred from the rows being validated — inferring it is
+# circular: a bucket holding only hours 0,2,...,22 reads as a 2-hourly source,
+# "completes" at 12 steps, and yields a precipitation total that is silently
+# half the truth (independent review round 1).
+#
+# `icon_ch2_eps` is hourly by its adapter's own declaration
+# (`adapters/meteoswiss_nwp.py:95`, `_FORECAST_STEP_HOURS = 1`).
+#
+# ⚠ `ifs_ecmwf` is DELIBERATELY ABSENT (independent review round 2). The recap
+# Gateway stores IFS timestamps verbatim — it does not resample
+# (`adapters/recap_gateway.py:613`) — and IFS is lead-dependent (3-hourly, then
+# 6-hourly), so no single step describes it. Plan 261 defers Nepal explicitly
+# ("any change to Nepal's existing recap forecast-fill, which already works"),
+# so the fill does NOT run there rather than run on a guessed grid that would
+# silently accept 8 three-hourly steps as a whole day. Declaring IFS's real
+# lead-dependent grid belongs to whichever plan takes Nepal's past leg on.
+#
+# An undeclared source is not filled, and says so — failing closed is only safe
+# when it is visible.
+_NATIVE_STEP_BY_SOURCE: dict[str, timedelta] = {
+    "icon_ch2_eps": timedelta(hours=1),
+}
+
+
+def _freshest_control_points(
+    records: list[WeatherForecastRecord],
+) -> dict[tuple[str, UtcDatetime], float]:
+    """One value per ``(parameter, valid_time)``, from the cycle issued LAST
+    among those covering it (Plan 261 D3).
+
+    The freshest covering cycle is typically one issued on the day in question
+    (lead ~= 0), which is the closest thing to an observation the store holds.
+    """
+    freshest: dict[tuple[str, UtcDatetime], tuple[UtcDatetime, float]] = {}
+    for r in records:
+        # The store-side `member_ids` filter is a COST measure (a ~21x read).
+        # Selecting the control run is CORRECTNESS, so it is enforced here too
+        # rather than trusted to the caller's query.
+        if r.member_id not in _CONTROL_MEMBER_IDS:
+            continue
+        # ⛔ For a de-accumulated parameter, NEVER the run's own first step.
+        # `_deaccumulate_precipitation` pads by one and diffs
+        # (`adapters/meteoswiss_nwp.py:186`), so the first output is `tp(0)`
+        # itself — the pad is what makes that step survive `diff` at all. ICON's
+        # `tp(0)` is zero because accumulation starts at the run's start, so the
+        # step carries no interval. (Independent review, 2026-09-10: the pad
+        # PRESERVES tp(0); it does not manufacture the zero. Measured on the
+        # staging host the same day, all 96,726 stored lead-0 precipitation rows
+        # are exactly 0.0, against 0.1037 mean at leads 1-5 h.)
+        #
+        # "Freshest covering cycle" picks the maximum cycle_time, and for a
+        # `valid_time` that IS a cycle stamp (00/06/12/18Z) that is always that
+        # run's first step — so four of every twenty-four hourly increments would
+        # be zeroed and the daily total silently under-read by ~17%, with no null
+        # and a complete 24-stamp grid. Skipping it falls back to the
+        # next-freshest covering run, which carries a real increment; if none
+        # does, the stamp is absent, the bucket fails the grid check and the fill
+        # declines — the right outcome, because the alternative is a silently
+        # short sum.
+        #
+        # Scoped to de-accumulated parameters (independent review, 2026-09-10):
+        # an unconditional skip also discarded a run's first TEMPERATURE reading,
+        # which is a genuine point value and the freshest one available.
+        if r.parameter in _DEACCUMULATED_PARAMETERS and ensure_utc(
+            r.valid_time
+        ) == ensure_utc(r.cycle_time):
+            continue
+        key = (r.parameter, ensure_utc(r.valid_time))
+        incumbent = freshest.get(key)
+        if incumbent is None or ensure_utc(r.cycle_time) > incumbent[0]:
+            freshest[key] = (ensure_utc(r.cycle_time), r.value)
+    return {key: value for key, (_cycle, value) in freshest.items()}
+
+
+def _complete_bucket_grid(
+    bucket: UtcDatetime, time_step: timedelta, native_step: timedelta
+) -> frozenset[UtcDatetime] | None:
+    """Every native timestamp a COMPLETE ``bucket`` must contain.
+
+    Compared as a SET, not a count: a count is satisfied by any twelve rows,
+    including twelve two-hourly ones standing in for twenty-four hourly ones.
+    ``None`` when ``time_step`` is not a whole number of native steps, which the
+    caller must treat as "do not fill".
+    """
+    bucket_s = time_step.total_seconds()
+    native_s = native_step.total_seconds()
+    if native_s <= 0 or bucket_s % native_s != 0:
+        return None
+    return frozenset(
+        ensure_utc(bucket + i * native_step) for i in range(int(bucket_s // native_s))
+    )
+
+
+def fill_past_forcing_tail(
+    past_dynamic: pl.DataFrame,
+    *,
+    station_id: StationId,
+    nwp_source: str,
+    weather_forecast_store: WeatherForecastStore,
+    parameters: list[str],
+    window_end: UtcDatetime,
+    time_step: timedelta,
+    aggregation_methods: dict[str, AggregationMethod],
+) -> pl.DataFrame:
+    """Extend each past-forcing series to the end of the aligned lookback
+    window using stored NWP forecasts (Plan 261 T1).
+
+    Operational assemblers only. Nothing is persisted; the rows exist inside
+    this frame and nowhere else, which is what keeps forecast values out of
+    training and hindcast BY CONSTRUCTION (D2) rather than by a guard.
+
+    Three rules carry the correctness, all of them from review round 2:
+
+    * **Resample each source separately.** The reanalysis frame is already at
+      ``time_step``; NWP rows are native-cadence. Concatenating them and
+      resampling once would sum a daily precipitation total together with 24
+      hourly increments in the same bucket.
+    * **Stop at ``window_end``, never at the issue time.** ``window_end`` is
+      ``aligned_lookback_bounds``' exclusive end, which deliberately omits the
+      in-progress bucket; filling past it appends a partial bucket that the
+      resample then presents as a whole one, and leaves this frame one row
+      longer than ``past_targets``.
+    * **Reanalysis precedence, TAIL only.** A bucket the reanalysis already
+      holds is never overwritten, and only buckets strictly after a series'
+      own last measured bucket are filled. Interior holes are deliberately
+      left alone (owner decision, 2026-09-09).
+
+    A bucket is filled only when its full complement of native steps is
+    present: a partly covered bucket would resample to a silently low
+    precipitation total with no null, which neither ``max_nan`` nor the
+    past-forcing gap flag would catch.
+    """
+    if past_dynamic.is_empty() or not parameters:
+        return past_dynamic
+
+    # D5: restrict to the parameters this plan fills BEFORE anchoring, so an
+    # out-of-scope series neither pulls the read window back nor gets filled.
+    present = [
+        p for p in parameters if p in past_dynamic.columns and p in _FILLABLE_PARAMETERS
+    ]
+    if not present:
+        return past_dynamic
+
+    # Per-series anchor: the last bucket this parameter actually measured.
+    # Per-series, not per-frame, because the products publish independently.
+    last_measured: dict[str, UtcDatetime] = {}
+    for param in present:
+        stamps = (
+            past_dynamic.filter(pl.col(param).is_not_null())
+            .get_column("timestamp")
+            .to_list()
+        )
+        if stamps:
+            last_measured[param] = ensure_utc(max(stamps))
+    if not last_measured:
+        return past_dynamic
+
+    fetch_start = ensure_utc(min(last_measured.values()) + time_step)
+    if fetch_start >= window_end:
+        return past_dynamic
+
+    native_step = _NATIVE_STEP_BY_SOURCE.get(nwp_source)
+    if native_step is None:
+        # Resolved BEFORE the read: an undeclared source cannot complete a
+        # bucket, so fetching thousands of rows to discard them would be waste.
+        log.warning(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="undeclared_native_cadence",
+            declared_sources=sorted(_NATIVE_STEP_BY_SOURCE),
+        )
+        return past_dynamic
+
+    records = weather_forecast_store.fetch_lookback(
+        station_id=station_id,
+        nwp_source=nwp_source,
+        start=fetch_start,
+        end=window_end,
+        parameters=list(last_measured),
+        member_ids=_CONTROL_MEMBER_IDS,
+    )
+    if not records:
+        log.info(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="no_forecast_records",
+            start=str(fetch_start),
+            end=str(window_end),
+        )
+        return past_dynamic
+
+    points = _freshest_control_points(records)
+
+    wide_rows: dict[UtcDatetime, dict[str, object]] = {}
+    for (param, valid_time), value in points.items():
+        wide_rows.setdefault(valid_time, {"timestamp": valid_time})[param] = value
+    fill_frame = resample_to_time_step(
+        # `infer_schema_length=None` scans every row: the store read has no
+        # ORDER BY, so a parameter whose first appearance falls past polars'
+        # default 100-row sample would have its column dropped outright and
+        # that series would silently never fill (independent review 2026-09-10).
+        pl.DataFrame(list(wide_rows.values()), infer_schema_length=None),
+        time_step,
+        aggregation_methods=aggregation_methods,
+    )
+
+    # A bucket is complete only when it holds EVERY native timestamp the grid
+    # requires, per parameter, on the RAW points — the resample aggregates
+    # whatever it is handed without judging coverage. Compared as a set, not a
+    # count: twelve two-hourly rows satisfy a count of twelve while carrying
+    # half the precipitation.
+    covered: dict[tuple[str, UtcDatetime], set[UtcDatetime]] = defaultdict(set)
+    for param, valid_time in points:
+        bucket = floor_to_time_step(valid_time, time_step)
+        covered[(param, bucket)].add(valid_time)
+
+    merged: dict[UtcDatetime, dict[str, object]] = {
+        ensure_utc(row["timestamp"]): dict(row)
+        for row in past_dynamic.iter_rows(named=True)
+    }
+    filled: list[str] = []
+    for row in fill_frame.iter_rows(named=True):
+        bucket = ensure_utc(row["timestamp"])
+        for param in last_measured:
+            value = row.get(param)
+            if value is None or bucket <= last_measured[param]:
+                continue
+            grid = _complete_bucket_grid(bucket, time_step, native_step)
+            if grid is None or covered[(param, bucket)] != grid:
+                continue
+            # No precedence check is needed: `last_measured[param]` is this
+            # series' last NON-NULL bucket, so every bucket past it is null or
+            # absent. The tail-only rule above is the single guard.
+            merged.setdefault(bucket, {"timestamp": bucket})[param] = value
+            filled.append(f"{param}@{bucket}")
+
+    if not filled:
+        # Records were fetched and NONE of them completed a bucket. The usual
+        # cause is a cadence mismatch: `_NWP_NATIVE_STEP` is declared, so a
+        # source delivering anything else never completes the grid and the fill
+        # silently stops being a fill. Say so — failing closed is only safe
+        # when it is visible, and the counts are what identify the cause.
+        observed = {
+            f"{param}@{bucket}": len(stamps)
+            for (param, bucket), stamps in covered.items()
+        }
+        log.warning(
+            "operational_inputs.past_forcing_tail_unfilled",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            reason="no_complete_bucket",
+            declared_native_step_seconds=native_step.total_seconds(),
+            expected_steps_per_bucket=len(
+                _complete_bucket_grid(
+                    ensure_utc(min(last_measured.values()) + time_step),
+                    time_step,
+                    native_step,
+                )
+                or ()
+            ),
+            observed_steps_per_bucket=dict(sorted(observed.items())[:6]),
+        )
+        return past_dynamic
+
+    log.info(
+        "operational_inputs.past_forcing_tail_filled",
+        station_id=str(station_id),
+        nwp_source=nwp_source,
+        filled=sorted(filled),
+    )
+    columns = list(past_dynamic.columns)
+    return pl.DataFrame(
+        [
+            {column: row.get(column) for column in columns}
+            for _ts, row in sorted(merged.items())
+        ],
+        schema=past_dynamic.schema,
+    ).sort("timestamp")
+
+
 def _merge_declared_aggregations(
     requirements: list[ModelDataRequirements],
 ) -> frozenset[tuple[str, AggregationMethod]]:
@@ -707,6 +1011,20 @@ def assemble_station_operational_inputs(
             past_dynamic = resample_to_time_step(
                 past_dynamic,
                 time_step,
+                aggregation_methods=resolved_aggregation_methods(reqs),
+            )
+            # Plan 261 T1: MeteoSwiss publishes ~2.4 days behind, so the
+            # measured leg always stops short of the window. Extend it from
+            # stored forecasts (freshest covering cycle, control member) —
+            # in memory, never persisted.
+            past_dynamic = fill_past_forcing_tail(
+                past_dynamic,
+                station_id=station_id,
+                nwp_source=nwp_source,
+                weather_forecast_store=weather_forecast_store,
+                parameters=past_dynamic_features,
+                window_end=past_targets_end,
+                time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
             )
     else:

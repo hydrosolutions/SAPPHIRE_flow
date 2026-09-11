@@ -221,6 +221,191 @@ def _make_stores_and_sources(
     return station_store, basin_store, obs_store, nwp_store, state_store, reanalysis
 
 
+class TestPastForcingTailReachesTheWindowThroughTheAssembler:
+    """Plan 261 T1, independent review 2026-09-09 (major): the fill's own unit
+    tests call the helper directly, so removing the call from the assembler --
+    or passing it an empty parameter list -- left them all green. These exercise
+    the PRODUCTION route.
+    """
+
+    @staticmethod
+    def _short_reanalysis(
+        reanalysis: FakeWeatherReanalysisSource, sid: StationId, *, missing_tail: int
+    ) -> None:
+        """Hourly reanalysis over the aligned window, stopping `missing_tail`
+        buckets short of its end -- the real MeteoSwiss publication lag."""
+        window_start = ensure_utc(
+            _ISSUE
+            - _SmallModelRequirements.data_requirements.lookback_steps
+            * timedelta(hours=1)
+        )
+        records = []
+        step = 0
+        while True:
+            ts = ensure_utc(window_start + step * timedelta(hours=1))
+            if ts >= ensure_utc(_ISSUE - missing_tail * timedelta(hours=1)):
+                break
+            for param in ("precipitation", "temperature"):
+                records.append(
+                    make_raw_historical_forcing(
+                        station_id=sid, parameter=param, valid_time=ts, value=1.0
+                    )
+                )
+            step += 1
+        reanalysis.set_records(records)
+
+    @staticmethod
+    def _tail_forecasts(
+        sid: StationId, *, missing_tail: int
+    ) -> list[WeatherForecastRecord]:
+        records = []
+        for back in range(1, missing_tail + 1):
+            vt = ensure_utc(_ISSUE - back * timedelta(hours=1))
+            for param in ("precipitation", "temperature"):
+                records.append(
+                    WeatherForecastRecord(
+                        id=uuid4(),
+                        station_id=sid,
+                        nwp_source=_NWP_SOURCE,
+                        cycle_time=_CYCLE,
+                        valid_time=vt,
+                        parameter=param,
+                        spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                        band_id=None,
+                        member_id=0,
+                        value=7.0,
+                        created_at=_NOW,
+                    )
+                )
+        return records
+
+    def _assemble(
+        self,
+        sid: StationId,
+        *,
+        seed_tail: bool,
+        missing_tail: int = 2,
+        issue_time: UtcDatetime | None = None,
+        extra_records: list[WeatherForecastRecord] | None = None,
+    ):
+        (station_store, basin_store, obs_store, nwp_store, state_store, reanalysis) = (
+            _make_stores_and_sources(sid)
+        )
+        # The shared fixture registers only a FORECAST-role source, and
+        # `fetch_reanalysis_bindings` returns REANALYSIS-role ones — so
+        # `past_dynamic` is empty in every test built on it alone. This route
+        # needs a real reanalysis binding.
+        from sapphire_flow.types.station import StationWeatherSource
+
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                # A DIFFERENT source name: one nwp_source serves exactly one
+                # role per station. The fill reads the FORECAST source; this
+                # binding is what makes the reanalysis leg non-empty at all.
+                nwp_source="meteoswiss_rprelimd",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        self._short_reanalysis(reanalysis, sid, missing_tail=missing_tail)
+        if seed_tail:
+            nwp_store.store_weather_forecasts(
+                self._tail_forecasts(sid, missing_tail=missing_tail)
+            )
+        if extra_records:
+            nwp_store.store_weather_forecasts(extra_records)
+        return assemble_station_operational_inputs(
+            station_id=sid,
+            model=_make_model(),
+            model_id=_MODEL_ID,
+            issue_time=issue_time or _ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=5,
+            time_step=timedelta(hours=1),
+        )
+
+    def test_past_forcing_reaches_the_window_end_when_forecasts_cover_the_lag(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+
+        result = self._assemble(sid, seed_tail=True)
+
+        assert result is not None
+        past_dynamic = result[0].data.past_dynamic
+        last = ensure_utc(max(past_dynamic.get_column("timestamp").to_list()))
+        assert last == ensure_utc(_ISSUE - timedelta(hours=1))
+        assert past_dynamic.height == result[0].data.past_targets.height
+
+    def test_the_fill_stops_at_the_aligned_bound_not_the_issue_time(self) -> None:
+        """Independent review 2026-09-10 (major). Both assembler tests used a
+        bucket-ALIGNED issue time, so `past_targets_end == issue_time` and
+        mutating either call site to `window_end=issue_time` left the suite
+        green — reinstating the very defect review round 2 fixed.
+
+        An hourly model issued at 00:30 makes them differ: the aligned bound is
+        00:00, and a stored forecast AT 00:00 is the bait. Filling to the issue
+        time would append that in-progress bucket and leave `past_dynamic` one
+        row taller than `past_targets`.
+        """
+        sid = StationId(uuid4())
+        bait = [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=sid,
+                nwp_source=_NWP_SOURCE,
+                cycle_time=ensure_utc(_ISSUE - timedelta(hours=6)),
+                valid_time=_ISSUE,  # exactly the aligned bound
+                parameter=param,
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=9.0,
+                created_at=_NOW,
+            )
+            for param in ("precipitation", "temperature")
+        ]
+
+        result = self._assemble(
+            sid,
+            seed_tail=True,
+            issue_time=ensure_utc(_ISSUE + timedelta(minutes=30)),
+            extra_records=bait,
+        )
+
+        assert result is not None
+        past_dynamic = result[0].data.past_dynamic
+        timestamps = [
+            ensure_utc(ts) for ts in past_dynamic.get_column("timestamp").to_list()
+        ]
+        assert _ISSUE not in timestamps, "the in-progress bucket must never be appended"
+        assert max(timestamps) == ensure_utc(_ISSUE - timedelta(hours=1))
+        assert past_dynamic.height == result[0].data.past_targets.height
+
+    def test_past_forcing_stays_short_when_no_forecast_covers_the_lag(self) -> None:
+        """The discriminating half: same assembler, same lag, no stored
+        forecasts. Without this the test above would pass on an assembler that
+        never calls the fill at all."""
+        sid = StationId(uuid4())
+
+        result = self._assemble(sid, seed_tail=False)
+
+        assert result is not None
+        past_dynamic = result[0].data.past_dynamic
+        last = ensure_utc(max(past_dynamic.get_column("timestamp").to_list()))
+        assert last == ensure_utc(_ISSUE - timedelta(hours=3))
+
+
 class TestAssembleStationOperationalInputs:
     def test_happy_path_returns_inputs_and_fresh_metadata(self) -> None:
         sid = StationId(uuid4())

@@ -150,7 +150,8 @@ gates.
 
 - input assembly: `assemble_station_operational_inputs` /
   `assemble_group_operational_inputs` build four channels — past_targets,
-  past_dynamic (reanalysis), future_dynamic (NWP), static — plus warm-up state
+  past_dynamic (reanalysis, **plus a stored-NWP tail on the operational route** — see
+  the no-imputation contract below), future_dynamic (NWP), static — plus warm-up state
 - hindcast reimplements assembly independently (`_assemble_hindcast_inputs`): never
   calls `assemble_*_operational_inputs`, derives from one model's
   `data_requirements` (not `build_superset_requirements`), and has its own
@@ -244,8 +245,24 @@ gates.
 - data requirements must match what input assembly actually provides
 - output shape and station / issue-time identity remain stable
 - assignment priority and fallback semantics remain explicit
-- **no imputation** — missing operational-input values are gated (`max_nan`), never
-  imputed / interpolated / filled
+- **no imputation** — missing operational-input VALUES are gated (`max_nan`), never
+  imputed / interpolated / filled. **Plan 261 narrows this, it does not retire it:** the
+  operational past-forcing leg is EXTENDED at its tail with real stored NWP values
+  (`fill_past_forcing_tail`, operational assemblers only, in memory, nothing persisted,
+  interior holes untouched, only for `precipitation` / `temperature`
+  (`_FILLABLE_PARAMETERS` — Nepal's snow reaches the same store with `member_id=None`,
+  which is also how a deterministic control run is marked), and only for NWP sources
+  whose native cadence is DECLARED — `icon_ch2_eps` today; `ifs_ecmwf` is lead-dependent
+  and deliberately not declared, so Nepal is unaffected on both counts). Nothing is
+  interpolated, synthesised or carried forward: every value is a stored NWP value that
+  was actually issued. 🪤 Be precise about what a filled bucket IS, because the loose
+  reading invites exactly the interior-filling this contract still forbids — it is the
+  native grid AGGREGATED to the model step (the same resampling reanalysis buckets get,
+  and only when the step's full native complement is present), and consecutive steps may
+  come from DIFFERENT cycles, since the source is the freshest covering cycle per step.
+  So it is neither one issued forecast nor a derived estimate. `max_nan` still gates
+  values exactly as before. Training and hindcast are unchanged and cannot reach the fill
+  (`tests/unit/services/test_forecast_fill_does_not_reach_history.py`)
 - `resample_to_time_step` is shared across **operational, training, AND
   hindcast** `past_targets` assembly (Plan 228 P1 — hindcast used to build
   `past_targets` from raw, unresampled rows; fixed) — a change there hits all
@@ -269,7 +286,9 @@ gates.
 - forecast-cycle test covering assignment → input assembly → model execution
 - regression test for `ModelFailure` behavior when expected data is missing
 - regression test that missing operational data is *gated, not filled* (assert
-  `max_nan`, not imputation)
+  `max_nan`, not imputation) — scoped to VALUES; the Plan 261 tail extension is the
+  one sanctioned exception, and its own guards live in
+  `tests/unit/services/test_past_forcing_tail_fill.py`
 - `assess_input_quality` coverage (`test_input_quality.py`) when changing staleness /
   degraded-input thresholds or `OperationalInputMetadata` fields
 - log/observability assertion if changing operational warnings

@@ -152,6 +152,72 @@ class TestFetchLookback:
         assert 0.0 not in values
         assert 3.0 not in values
 
+    def test_filters_by_parameter_and_member(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 261: these filters are a cost measure — the operational
+        past-forcing fill reads this per station per cycle, and the unfiltered
+        read is ~21x larger. `member_ids` is a SET because the control run is
+        `member_id in {None, 0}`: NULL never matches SQL `IN`, so a set holding
+        None needs its own `IS NULL` branch."""
+        sid = _seed_station(db_connection)
+        store = PgWeatherForecastStore(db_connection)
+
+        vt = ensure_utc(datetime(2025, 6, 1, 12, tzinfo=UTC))
+        start = ensure_utc(datetime(2025, 6, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2025, 6, 2, tzinfo=UTC))
+        store.store_weather_forecasts(
+            [
+                _make_record(
+                    sid,
+                    valid_time=vt,
+                    parameter="precipitation",
+                    member_id=0,
+                    value=1.0,
+                ),
+                _make_record(
+                    sid,
+                    valid_time=vt,
+                    parameter="precipitation",
+                    member_id=1,
+                    value=2.0,
+                ),
+                _make_record(
+                    sid,
+                    valid_time=vt,
+                    parameter="precipitation",
+                    member_id=None,
+                    value=3.0,
+                ),
+                _make_record(
+                    sid, valid_time=vt, parameter="temperature", member_id=0, value=4.0
+                ),
+            ]
+        )
+
+        unfiltered = store.fetch_lookback(sid, _NWP, start, end)
+        assert len(unfiltered) == 4
+
+        by_parameter = store.fetch_lookback(
+            sid, _NWP, start, end, parameters=["precipitation"]
+        )
+        assert {r.value for r in by_parameter} == {1.0, 2.0, 3.0}
+
+        control = store.fetch_lookback(
+            sid, _NWP, start, end, member_ids=frozenset({None, 0})
+        )
+        assert {r.value for r in control} == {1.0, 3.0, 4.0}
+
+        both = store.fetch_lookback(
+            sid,
+            _NWP,
+            start,
+            end,
+            parameters=["precipitation"],
+            member_ids=frozenset({None, 0}),
+        )
+        assert {r.value for r in both} == {1.0, 3.0}
+
     def test_returns_empty_when_no_match(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)
         store = PgWeatherForecastStore(db_connection)

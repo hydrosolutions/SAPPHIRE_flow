@@ -487,6 +487,8 @@ class FakeWeatherForecastStore:
         nwp_source: str,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters: list[str] | None = None,
+        member_ids: frozenset[int | None] | None = None,
     ) -> list[WeatherForecastRecord]:
         return [
             r
@@ -494,6 +496,8 @@ class FakeWeatherForecastStore:
             if r.station_id == station_id
             and r.nwp_source == nwp_source
             and start <= r.valid_time < end
+            and (parameters is None or r.parameter in parameters)
+            and (member_ids is None or r.member_id in member_ids)
         ]
 
     def fetch_received_cycles(

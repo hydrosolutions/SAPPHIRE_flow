@@ -6,6 +6,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import polars as pl
 from structlog.testing import capture_logs
 
 from sapphire_flow.services.track_assembly import (
@@ -48,11 +49,13 @@ from tests.fakes.fake_stores import (
     FakeBasinStore,
     FakeObservationStore,
     FakeStationStore,
+    FakeWeatherForecastStore,
 )
 
 _STATION = StationId(uuid4())
 _MODEL = ModelId("track_assembly_test_model")
 _STEP = timedelta(hours=24)
+_NWP_SOURCE_261 = "icon_ch2_eps"
 _ISSUE = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
 _NOW = ensure_utc(datetime(2026, 1, 10, 1, tzinfo=UTC))
 
@@ -159,6 +162,8 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -222,6 +227,8 @@ def test_per_feature_horizon_caps_each_column_independently() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -296,6 +303,8 @@ def test_expected_member_ids_thread_onto_contract_for_ensemble_only() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
         expected_member_ids=frozenset({0, 1}),
     )
@@ -341,6 +350,8 @@ def test_nwp_age_hours_from_this_assignments_own_resolved_cycle() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -367,6 +378,8 @@ def test_no_forcing_required_assignment_gets_null_provenance_and_no_contract() -
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -413,6 +426,8 @@ def test_unavailable_track_outcome_short_circuits_without_assembling() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -472,6 +487,8 @@ def test_isolated_missing_daily_bucket_yields_incomplete_at_cycle_not_raise() ->
             station_store=station_store,  # type: ignore[arg-type]
             basin_store=basin_store,  # type: ignore[arg-type]
             forcing_source=reanalysis,  # type: ignore[arg-type]
+            weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+            nwp_source=_NWP_SOURCE_261,
             clock=_clock,  # type: ignore[arg-type]
         )
 
@@ -538,6 +555,8 @@ def test_partial_trailing_day_excluded_at_a_non_midnight_cycle() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=lambda: issue_time,  # type: ignore[arg-type]
     )
 
@@ -613,6 +632,8 @@ def test_freshness_reflects_the_partial_bucket_not_the_aligned_window() -> None:
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=lambda: issue_time,  # type: ignore[arg-type]
     )
 
@@ -679,6 +700,8 @@ def test_past_dynamic_is_resampled_to_the_declared_step_on_the_per_track_path() 
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
         clock=_clock,  # type: ignore[arg-type]
     )
 
@@ -691,3 +714,254 @@ def test_past_dynamic_is_resampled_to_the_declared_step_on_the_per_track_path() 
         f"per-track past_dynamic arrived at {gaps}, not the declared {_STEP}"
     )
     assert len(stamps) == requirements.lookback_steps
+
+
+def test_past_forcing_tail_is_filled_on_the_per_track_path() -> None:
+    """Plan 261 T1, independent review 2026-09-09 (major): the fill's unit
+    tests call the helper directly, so removing the call from THIS assembler
+    left them green. Mirrors
+    `test_operational_inputs.py::TestPastForcingTailReachesTheWindowThroughTheAssembler`.
+
+    A daily model, hourly reanalysis stopping one whole day short of the
+    aligned window, and a complete 24-hour control-member forecast covering
+    that missing day.
+    """
+    from sapphire_flow.types.station import StationWeatherSource
+
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    station_store.store_weather_source(
+        StationWeatherSource(
+            station_id=_STATION,
+            nwp_source="era5_land",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+    )
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset(),
+        past_dynamic_features=frozenset({"precipitation"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),  # DAILY
+        lookback_steps=2,
+        forecast_horizon_steps=1,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    # An OFF-MIDNIGHT issue: 06Z for a daily model. `past_targets_end` is the
+    # aligned bound (00:00Z), NOT the issue time — independent review
+    # 2026-09-10 (major): both assembler tests previously used a bucket-aligned
+    # issue time, so `window_end=issue_time` was indistinguishable from the
+    # correct bound and mutating either call site left the suite green.
+    issue_time = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+    window_end = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+    last_measured_day = ensure_utc(window_end - timedelta(days=2))
+    # Hourly reanalysis covering only the FIRST of the two lookback days.
+    reanalysis.set_records(
+        [
+            make_raw_historical_forcing(
+                station_id=_STATION,
+                parameter="precipitation",
+                valid_time=ensure_utc(last_measured_day + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(24)
+        ]
+    )
+    forecast_store = FakeWeatherForecastStore()
+    cycle = ensure_utc(window_end - timedelta(days=1, hours=6))  # 18Z, two days back
+    forecast_store.store_weather_forecasts(
+        [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=cycle,
+                valid_time=ensure_utc(
+                    window_end - timedelta(days=1) + timedelta(hours=hour)
+                ),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=2.0,
+                created_at=window_end,
+            )
+            for hour in range(24)
+        ]
+        # A COMPLETE day beyond the aligned bound. If the fill ran to the
+        # issue time instead of `past_targets_end`, this day would be appended
+        # as a partial bucket and `past_dynamic` would outgrow `past_targets`.
+        + [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=ensure_utc(window_end - timedelta(hours=6)),
+                valid_time=ensure_utc(window_end + timedelta(hours=hour)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=3.0,
+                created_at=window_end,
+            )
+            for hour in range(24)
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=issue_time,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=forecast_store,  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
+        clock=lambda: issue_time,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    past_dynamic = result.inputs.data.past_dynamic
+    timestamps = [ensure_utc(t) for t in past_dynamic.get_column("timestamp").to_list()]
+    # Both lookback days present: the measured one and the forecast-filled one.
+    # Crucially the frame ENDS at the aligned bound — the in-progress bucket
+    # (2026-01-10, which the store fully covers) is never appended.
+    assert timestamps == [
+        last_measured_day,
+        ensure_utc(window_end - timedelta(days=1)),
+    ]
+    # (no height-vs-past_targets check here: this fixture seeds no
+    # observations, so past_targets is empty by design. The station-assembler
+    # test carries that comparison.)
+    filled_value = past_dynamic.filter(
+        pl.col("timestamp") == ensure_utc(window_end - timedelta(days=1))
+    ).get_column("precipitation")[0]
+    assert filled_value == 48.0  # 24 h x 2.0, SUM
+
+
+def test_the_per_track_fill_stops_at_the_aligned_bound_not_the_issue_time() -> None:
+    """Independent Codex review 2026-09-11 (major): the per-track fill's bound
+    was pinned only by a DAILY model issued at 06Z, where mutating this call
+    site to `window_end=issue_time` fetches six hours of the current day, the
+    completeness gate rejects that partial bucket and the asserted output never
+    moves. Measured: the mutation left 1184 service tests green.
+
+    `test_operational_inputs.py::test_the_fill_stops_at_the_aligned_bound_not_the_issue_time`
+    already carries the discriminating shape for the STATION path; this is its
+    per-track mirror. An HOURLY model issued at 00:30 makes the two bounds
+    differ, and a stored forecast AT the aligned bound is the bait: one hourly
+    record COMPLETES an hourly bucket, so nothing masks the mutation.
+    """
+    from sapphire_flow.types.station import StationWeatherSource
+
+    hourly = timedelta(hours=1)
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    station_store.store_weather_source(
+        StationWeatherSource(
+            station_id=_STATION,
+            nwp_source="era5_land",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+    )
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset(),
+        past_dynamic_features=frozenset({"precipitation"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({hourly}),
+        lookback_steps=3,
+        forecast_horizon_steps=1,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    window_end = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))  # the aligned bound
+    issue_time = ensure_utc(window_end + timedelta(minutes=30))
+    # Reanalysis reaches the first lookback bucket only; 22:00 and 23:00 are
+    # the fill's work.
+    reanalysis.set_records(
+        [
+            make_raw_historical_forcing(
+                station_id=_STATION,
+                parameter="precipitation",
+                valid_time=ensure_utc(window_end - timedelta(hours=3)),
+                value=1.0,
+            )
+        ]
+    )
+    cycle = ensure_utc(window_end - timedelta(hours=6))
+    forecast_store = FakeWeatherForecastStore()
+    forecast_store.store_weather_forecasts(
+        [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=cycle,
+                valid_time=ensure_utc(window_end - timedelta(hours=hours_back)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=2.0,
+                created_at=window_end,
+            )
+            for hours_back in (2, 1)
+        ]
+        # THE BAIT: exactly at the aligned bound. Filling to `issue_time`
+        # would append this in-progress bucket — and for an hourly model one
+        # record is a COMPLETE bucket, so the completeness gate cannot hide it.
+        + [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=_STATION,
+                nwp_source=_NWP_SOURCE_261,
+                cycle_time=cycle,
+                valid_time=window_end,
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=0,
+                value=9.0,
+                created_at=window_end,
+            )
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=issue_time,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=forecast_store,  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
+        clock=lambda: issue_time,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    timestamps = [
+        ensure_utc(t)
+        for t in result.inputs.data.past_dynamic.get_column("timestamp").to_list()
+    ]
+    assert window_end not in timestamps, (
+        "the in-progress bucket must never be appended on the per-track path"
+    )
+    assert timestamps == [
+        ensure_utc(window_end - timedelta(hours=3)),
+        ensure_utc(window_end - timedelta(hours=2)),
+        ensure_utc(window_end - timedelta(hours=1)),
+    ]
