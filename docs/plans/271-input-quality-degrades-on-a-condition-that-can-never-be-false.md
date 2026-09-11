@@ -6,9 +6,11 @@ plan: 271
 reviews:
   - "claude 2026-09-11 r1 design/proportionality — NOT READY, 2 blockers + 4 majors + 3 minors; all verified, all folded"
   - "codex 2026-09-11 r1 citation verification — NOT READY, 2 blockers + 2 majors + 2 minors; all verified, all folded"
+  - "claude 2026-09-11 r2 task-implementability — NOT READY, 3 blockers + 6 majors + 5 minors; all verified, all folded"
+  - "codex 2026-09-11 r2 citation verification — NOT READY, 0 blockers + 3 majors + 3 minors; all verified, all folded"
   - "gpt-6-astra 2026-09-11 expert consultation on D1 — recommends complying with the FI mapping; folded as the recommendation, not as the decision"
-title: Three documents disagree about what a state-free model's warm-up source is, and the running code picks the one that degrades every forecast
-scope: Resolve the three-way conflict over what `warm_up_source` means for a model that holds no state, make the classifier honour the resolution, and correct whichever documents lose. Covers the `warm_up` category ONLY. NOT implementing warm-up state persistence (already built, see §What already exists), NOT a change to the ForecastInterface signature, NOT the `observation`/`NWP`/`forcing` categories, NOT Plan 270's forcing-gap detection.
+title: Four documents disagree about what a state-free model's warm-up source is, and the running code picks the one that degrades every forecast
+scope: Resolve the four-way conflict over what `warm_up_source` means for a model that holds no state, make the classifier honour the resolution, and correct whichever documents lose. Covers the `warm_up` category ONLY. NOT implementing warm-up state persistence (already built, see §What already exists), NOT a change to the ForecastInterface signature, NOT the `observation`/`NWP`/`forcing` categories, NOT Plan 270's forcing-gap detection.
 depends_on: []
 blocks: []
 related: [270, 023, 262, 253]
@@ -44,12 +46,15 @@ confirmed present in the *running* worker, not merely in the checkout).
 
 Not a Plan 261 regression, and not new: every forecast in the retained window, ~1,335/day.
 
-## 🔴 The conflict — three sources, three answers
+## 🔴 The conflict — FOUR sources, three answers
 
-What should `warm_up_source` be for a model that holds no state?
+What should `warm_up_source` be for a model that holds no state? ⚠️ **Round 2 found a FOURTH
+source** — the type/Protocol spec, which `CLAUDE.md` ranks ABOVE the architecture document for
+implementation. TWO documents say `NULL`, and T3 must correct both or exit gate 4 fails.
 
 | source | answer | where |
 |---|---|---|
+| **Our type/Protocol spec** (ranked *authoritative for implementation* by `CLAUDE.md`) | **`NULL`** — `# NULL for ML models` | `docs/spec/types-and-protocols.md:1788` |
 | **Our architecture document** | **`NULL`** — "NULL for ML models" | `docs/architecture-context.md:1845` |
 | **The ForecastInterface contract** (co-designed with hydrosolutions) | **`FRESH`** — "a state-free FI model … always runs `WarmUpSource.FRESH` — already legal SAP3 behaviour for stateless models" | `ForecastInterface/docs/model_interface.md:82` |
 | **The running code** | **`COLD_START`** | `services/operational_inputs.py:96-113` → `services/input_quality.py:120-127` |
@@ -72,7 +77,12 @@ three questions, and only one of them was ever asked deliberately:
 - **`COLD_START`** answers no question at all. It is the unconsidered default: `load_warm_up_state`
   returns `COLD_START` whenever the store is empty, and the store is empty for every model that
   does not produce state. The rule dates to commit `77937c1b` (2026-04-13), implementing
-  **Plan 023 Step 2** — the WMO-compliance plan — which predates both other statements.
+  **Plan 023 Step 2** — the WMO-compliance plan. ⚠️ **Corrected round 2:** an earlier revision
+  said this predates the other statements. It does not — `NULL for ML models` dates to `f87d6de1`
+  (2026-03-11) and came FIRST; the code's answer came LAST, which if anything strengthens the
+  case that it was never a considered choice. Plan 023 also explicitly excluded the pipeline
+  wiring (`archive/023-degraded-forecast-input-quality.md:738-740`); the empty-store ⇒
+  `COLD_START` path arrived separately in `7c642642`.
 
 ### 🔑 The proposed resolution (RECOMMENDED, NOT TAKEN — this is D1)
 
@@ -89,10 +99,10 @@ So the conflict is resolvable without declaring anyone wrong. The proposal:
 Adopt FI's `FRESH`, and **amend `architecture-context.md:1845` in the same change** so the
 repository carries one answer rather than two. Three reasons:
 
-1. FI is the cross-organisation contract and `CLAUDE.md:70-77` makes compliance mandatory.
+1. FI is the cross-organisation contract and `CLAUDE.md:54-69` makes compliance mandatory.
    This is the "our side violates the FI → fix our side" path, not the "file an FI issue" path.
 2. `NULL` is already taken on the sibling field: `input_quality = None` means *unknown/legacy
-   row* (`architecture-context.md:112`). Overloading `NULL` to also mean "deliberately not
+   row* (`architecture-context.md:110`). Overloading `NULL` to also mean "deliberately not
    applicable" destroys the distinction between "we did not assess this" and "we assessed it
    and there is nothing to report".
 3. Project type rules prefer an explicit enum member over an overloaded `None`.
@@ -108,7 +118,7 @@ already specified the SAP3 mapping. Filing an FI issue here would be the wrong o
 
 ## What already exists, so nobody re-scopes it
 
-- **Warm-up state persistence is fully built and wired.** `protocols/stores.py:562`,
+- **Warm-up state persistence is fully built and wired.** `protocols/stores.py:563`,
   `services/operational_inputs.py:96-113`, and five `store_state` call sites in
   `flows/run_forecast_cycle.py` (`:2906`, `:2939`, `:3194`, `:3273`, `:3561`). The only missing
   piece is a model that returns non-`None` state. Do not plan a build here.
@@ -125,7 +135,7 @@ that cycle with a REAL problem — 85.4 h stale observations — are indistingui
 
 **There is exactly one real consumer, and it is broken today.** The API's `degraded_only=true`
 filter (`api/routes/api_stations.py:274`, `store/forecast_store.py:243`) returns 100% of rows.
-⚠️ **No dashboard indicator exists** (`architecture-context.md:112`) — an earlier revision of
+⚠️ **No dashboard indicator exists** (`architecture-context.md:110`) — an earlier revision of
 this plan claimed dashboard harm that does not exist.
 
 **It does NOT threaten the WMO claim.** `docs/standards/wmo.md:188` scopes its evidence to
@@ -157,8 +167,12 @@ NATIVE models — `linear_regression_daily.py:52`, `climatology_fallback.py:38`,
 `persistence_fallback.py:36` — never touch the FI adapter and are equally state-free, so route
 derivation would leave the saturation in place). Not an empty state table or a single `None`
 return (a stateful model that LOST its state looks identical on its first cycle). An explicit
-capability, detected by `isinstance`, exactly as SAP3 already detects `RetrainableModel`
+capability, following the optional-capability pattern FI documents
 (`forecast_interface/interface/protocol.py:55-58`).
+⚠️ **Corrected round 2:** an earlier revision said "exactly as SAP3 already detects
+`RetrainableModel`". SAP3 does NOT — `RetrainableModel` appears nowhere in `src/`, and
+`docs/requirements/03-forecast-interface-adherence.md:51` records that `isinstance` routing as
+**designed, unbuilt**. The decision stands; the precedent it cited did not exist.
 
 **D3 — ✅ CLOSED, AGAINST the recommendation: leave the history alone and record the period.**
 All three advisors recommended selective reclassification; the owner chose the conservative
@@ -171,74 +185,149 @@ discoverable from the data, not only from this plan.
 📎 The outstanding "do those 514 include combined products?" measurement no longer blocks a
 decision; it is now only needed to state the period's extent accurately in T4.
 
+**D5 — 🔴 OPEN: is the declaration mandatory or defaulted?** See the changelog; it must be
+settled before T1 is built, because a mandatory declaration darkens the whole registry if one
+class misses it.
+
 **D4 — ✅ CLOSED: this ships BEFORE the deep-learning pilot.** The pilot does not depend on it,
 but whoever watches that pilot would otherwise be reading a health signal stuck on for every
 forecast and could not see the pilot misbehaving. ⚠️ Sequencing only — this plan does not block
 the pilot's own preparatory work, which is owned by another session and must not be disturbed.
+⚠️ **This sequencing is OWNER-HELD and deliberately NOT encoded in the graph.** `blocks:` stays
+empty and Plan 262 stays in `related:`, because 271 does not block the pilot technically — it
+is a judgement about what should land first. Recorded here so it is not mistaken for an
+unenforced dependency (round 2 finding).
 
 ## Tasks
 
-Now writable: D1 and D2 determine the shape and both are closed.
+D1 and D2 are closed, so these are writable. ⚠️ **Round 2 rewrote T1 and T2**: the mechanism as
+first specified would not have worked.
 
 ### T1 — a model declares whether it keeps state between runs
 
-**Outcome.** A capability protocol exists SAP3-side, and every model is classifiable as
-state-keeping or state-free without inspecting how it was constructed or what is in the store.
+**Outcome.** Every model is classifiable as state-keeping or state-free without inspecting the
+state store, and the classification SURVIVES FI adaptation.
 
-**In:** `src/sapphire_flow/protocols/`, `src/sapphire_flow/types/`, and the five model classes.
-**Out:** any change to the FI package; any change to `predict` signatures.
+🔴 **The trap that sank the first draft — the adapter forwards NOTHING.** `discover_models`
+wraps every FI model (`services/model_registry.py:107`, `adapt_if_fi`) before anything
+downstream sees it, so `isinstance(adapted_model, …)` inspects the ADAPTER, not the model. This
+is a known, already-solved problem here: `_assert_model_classification_declared`
+(`services/model_registry.py:61-88`) exists precisely to "read classification declarations off
+the RAW model and copy them onto the ADAPTED model", and does so today for `model_tier`,
+`alert_eligibility` and `static_naming` — added as a Plan 155 D16 blocker for this exact reason.
+**The declaration must be ATTRIBUTE-shaped and propagated there**, alongside those three. A
+capability protocol alone would silently misclassify every FI-routed model — including
+`cmal_pool_pt` today and `cmal_small` next, the very model D4 cites as the reason to ship.
 
-⚠️ **Why a SAP3-side protocol and not an FI one.** FI reserves an additive `StatefulModel`
-sub-protocol for FI models and has not shipped it — FI is state-free in v0 and no FI model is
-stateful today. Our native models need classifying NOW. Define ours SAP3-side; when FI's lands,
-it is additive and the two compose. This is not a workaround of the FI contract: it classifies
-models FI does not cover.
+🔴 **And it must not key on the state signature.** `prior_state: bytes | None = None` is already
+on the base `StationForecastModel.predict` (`protocols/forecast_model.py:36`) and on all three
+native models, and `isinstance` against a `runtime_checkable` Protocol is STRUCTURAL — so a
+protocol keyed on that signature matches EVERY model and classifies nothing. The declaration
+must be a member no current model has.
 
-**Verification:** each of the five deployed models reports state-free; a purpose-built
-state-keeping fake reports state-keeping; the classification never consults the state store.
+**Shape.** A two-valued domain state, so `CLAUDE.md` forbids a `bool` — an enum (e.g.
+`WarmUpStatePolicy.KEEPS_STATE` / `.STATE_FREE`) declared as a class attribute.
+⚠️ Choose a name that does NOT collide with FI's reserved `StatefulModel`; two
+`runtime_checkable` protocols with overlapping semantics and the same name is a trap for the
+next reader.
+
+**In:** `src/sapphire_flow/types/enums.py`, `src/sapphire_flow/protocols/forecast_model.py`,
+`services/model_registry.py:61-88` (propagation), and **all SEVEN registered classes**
+(`pyproject.toml:174-184`): `LinearRegressionDaily`, `ClimatologyFallbackModel`,
+`PersistenceFallbackModel`, `NwpRegression`, `NwpRainfallRunoff`,
+`SeasonalPrecipRunoffRegression`, and the optional `CmalPoolPT`.
+⚠️ An earlier revision said "five". Five is the count of models OBSERVED ISSUING on the host;
+seven is the count REGISTERED in the repository. T1's scope is the seven.
+**Out:** the FI package; any `predict` signature change.
+
+⚖️ **Why SAP3-side and not upstream — judged SOUND by independent review.** FI reserves
+`StatefulModel` for FI models, has not shipped it, and explicitly delegates detection to SAP3.
+Three of our models never touch FI at all and still need classifying. This classifies models the
+FI contract does not cover; it is not the forbidden patch-around.
+**Composition rule, stated now rather than left open:** while FI ships no state extension, an
+FI-routed model is state-free by contract; when FI's extension lands, an FI model satisfying it
+is state-keeping and the SAP3 attribute defers to it.
+
+**Verification:** all seven classes report a policy; a purpose-built state-keeping fake reports
+state-keeping; **an FI-ADAPTED model still reports its raw model's policy after `discover_models`**
+(the propagation test — this is the one that would have caught the original defect); the
+classification never reads the state store.
 
 ### T2 — the classifier honours the declaration
 
 **Outcome.** A state-free model produces `FRESH` and NO `warm_up` flag. A state-keeping model
 with no stored state still produces `COLD_START` and still degrades.
 
-**In:** `services/operational_inputs.py:96-113`, `services/input_quality.py:120-127`, and the
-**17 `COLD_START` references across 5 test files** (`test_input_quality.py`,
-`test_operational_inputs.py`, `test_run_station_forecast.py`, `test_run_group_forecast.py`,
-`tests/integration/test_e2e_pipeline.py`) — these encode the current rule and must be updated
-deliberately, not mechanically. Depends on T1.
+🔴 **The signature must change, and that widens the edit surface.** `load_warm_up_state`
+(`services/operational_inputs.py:96-101`) receives a `ModelId`, never a model object, so T1's
+classification cannot be applied inside it as-is. Changing it touches **both** call sites:
+`services/run_station_forecast.py:378` (station route) and
+`services/operational_inputs.py:1132` (the GROUP/`OperationalInputMetadata` route). ⚠️ The GROUP
+route was ABSENT from the first draft's scope even though `services/run_group_forecast.py:315`
+and `:359` stamp `warm_up_source` from exactly that metadata.
+
+**In:** `services/operational_inputs.py:96-113` and `:1132`,
+`services/run_station_forecast.py:378`, `services/run_group_forecast.py:315,359`, and the test
+surface below. Depends on T1.
+📎 `services/input_quality.py:120` is **read-only — confirm no change is needed**: it already
+reads `if warm_up_source is not None and warm_up_source != WarmUpSource.FRESH`, so `FRESH`
+already suppresses the block. Listing it as an edit invites an unnecessary change to a function
+three other categories share.
+
+**Test surface — measured, and larger than the first draft claimed:**
+**23 `COLD_START` occurrences across 5 files** (input-quality 5, operational-inputs 4,
+station 8, group 4, e2e 2 — an earlier revision said 17, which was a literal grep count, not an
+impact inventory), PLUS a **golden fixture**: `tests/fixtures/plan151_t8b_canonical_snapshot.json:11`
+hard-codes `"warm_up_source": "cold_start"` with its flag and detail text, and is loaded and
+compared by `tests/unit/flows/test_run_forecast_cycle.py:8837`. **T2 fails that test unless the
+fixture is regenerated.**
 
 **Pre-change:** every forecast in the retained window is `cold_start`; `degraded_only=true`
 returns 100% of rows.
 
 **Verification:** a locking test per branch — state-free ⇒ no flag; state-keeping-and-missing ⇒
-degraded. ⚠️ Scope the second to the **deterministic route**: stateful models are refused on the
-ensemble fan-out as `UNSUPPORTED_STATEFUL_ENSEMBLE` (`services/run_station_forecast.py:434`,
-`:536`) and ensemble-first is locked, so the ensemble route cannot exercise it.
+`COLD_START` and degraded. ⚠️ **Scope the second to the DETERMINISTIC route, and cite the right
+guard.** `services/run_station_forecast.py:536` (`reject_stateful_ensemble_states`, the
+OUTPUT-side guard) is what refuses a stateful model on the ensemble fan-out. `:434`
+(`reject_prior_state_for_fanout`, `services/ensemble_fanout.py:56-57`) raises only when
+`prior_state is not None` — which is NOT the branch under test, so a test built from `:434`
+would pass without proving anything. An earlier revision cited `:434`.
 
-### T3 — correct the architecture document (D1's amendment)
+### T3 — correct BOTH losing documents (D1's amendment)
 
 **Outcome.** Exactly one answer to "what is a state-free model's warm-up source" survives in
 `docs/`.
 
-**In:** `docs/architecture-context.md:1845` (the `NULL for ML models` comment) and `:1846`, plus
-the warm-up prose at `:108-112` which frames warm-up as conceptual-model-only. Record that the
-value changed and why, with the FI mapping cited as the authority.
+**In:** `docs/spec/types-and-protocols.md:1788` ⚠️ **(found in round 2 — the first draft missed
+it, and `CLAUDE.md` ranks this spec ABOVE the architecture document for implementation)**;
+`docs/architecture-context.md:1845`, `:1846`, and the warm-up prose at `:108-112` framing
+warm-up as conceptual-model-only. Record that the value changed and why, citing the FI mapping
+as the authority.
+📎 Also disposition — do not necessarily change — the other surfaces that carry this field:
+`types/forecast.py:59`, `store/forecast_store.py:77,432,448`, `api/routes/api_forecasts.py:83`,
+`api/schemas.py:123`, `db/metadata.py:1134`, `alembic/versions/0001_v0_schema.py:477`,
+`docs/conventions.md:415`, `docs/spec/database-schema.md:284,856`, `docs/touchpoint-maps.md:394`.
+Most need no edit; the plan must say so rather than leave them unexamined.
 **Out:** `docs/standards/wmo.md` — its row scopes evidence to persistence and API serialisation
-only (`:188`) and never rested on this rule. Do not touch it.
+only (`:188`) and never rested on this rule.
+📎 Gate 5's "FI unchanged, and why" needs a home that outlives this plan: record it in
+`docs/requirements/03-forecast-interface-adherence.md`.
 
-**Verification:** a grep for the old convention returns only the changelog note recording its
-withdrawal.
+**Verification:** a grep for the old convention returns only changelog notes recording its
+withdrawal — across BOTH documents.
 
 ### T4 — record the historical period (D3)
 
 **Outcome.** The interval during which `cold_start` meant "state-free model" is discoverable
-FROM THE DATA, not only from this plan — so a later reader computing a degraded-rate trend can
-see the discontinuity rather than mistake it for a quality change.
+FROM THE DATA, so a later reader charting a degraded-rate trend sees the discontinuity rather
+than mistaking it for a change in forecast quality.
 
-**In:** the changelog here plus wherever the deployment records version-scoped behaviour
-changes. Measure first whether the affected rows include combined products, and state the
-interval and the first version carrying the new meaning.
+**In:** the changelog here plus wherever the deployment records version-scoped behaviour changes.
+Measure first whether the affected rows include combined products, then state the interval and
+the first version carrying the new meaning.
+⚠️ **Depends on T2** — "the first version carrying the new meaning" does not exist until T2 is
+built and the version bumped. An earlier revision put T4 in phase 1 with no dependencies, which
+was unbuildable.
 **Out:** re-stamping any historical row. D3 forbids it.
 
 ### T5 — verify on staging
@@ -247,7 +336,7 @@ interval and the first version carrying the new meaning.
 
 **In.** After T2 deploys: confirm the `warm_up` category produces no flag for state-free models,
 that any forecast with genuinely stale observations still carries its `observation` flag, and
-that `degraded_only=true` returns a strict subset rather than everything. Depends on T2, T3.
+that `degraded_only=true` returns a strict, non-empty subset. Depends on T2, T3.
 
 ## Dependency graph
 
@@ -255,10 +344,10 @@ that `degraded_only=true` returns a strict subset rather than everything. Depend
 {
   "plan": 271,
   "nodes": [
-    {"id": "T1", "phase": 1, "depends_on": []},
-    {"id": "T3", "phase": 1, "depends_on": [], "note": "doc-only; parallel with T1"},
-    {"id": "T4", "phase": 1, "depends_on": [], "note": "measurement + record; parallel"},
+    {"id": "T1", "phase": 1, "depends_on": [], "note": "declaration + propagation through the FI adapter"},
+    {"id": "T3", "phase": 1, "depends_on": [], "note": "doc-only, two documents; parallel with T1"},
     {"id": "T2", "phase": 2, "depends_on": ["T1"]},
+    {"id": "T4", "phase": 3, "depends_on": ["T2"], "note": "needs the shipped version number (round 2 fix)"},
     {"id": "T5", "phase": 3, "depends_on": ["T2", "T3"], "note": "needs a deployed cycle"}
   ]
 }
@@ -268,41 +357,58 @@ that `degraded_only=true` returns a strict subset rather than everything. Depend
 
 1. In one staging cycle the `warm_up` category produces **no flag** for state-free models, while
    any forecast with stale observations still carries its `observation` flag. ⚠️ Stated on the
-   `warm_up` category's flag presence, NOT the aggregate level — Plan 270 and Plan 239's forcing
-   flags move the same aggregate, so it cannot isolate this change.
+   category's flag PRESENCE, not the aggregate level — Plan 270 and Plan 239's forcing flags move
+   the same aggregate. ⚠️ **If the cycle contains no stale-observation forecast, this gate is NOT
+   met by default** (the measured cycle had 2 of 514); fall back to T2's unit test.
 2. A locking test proves a state-keeping model missing its state is STILL `COLD_START` and still
-   degrades, on the deterministic route.
-3. `degraded_only=true` returns a strict subset of forecasts, not all of them.
-4. Exactly one answer to "what is a state-free model's warm-up source" survives in `docs/`.
+   degrades, on the deterministic route, built against `run_station_forecast.py:536`.
+3. `degraded_only=true` returns a **non-empty, non-total** subset. ⚠️ "A strict subset" alone is
+   satisfied by the empty set, which is also what a broken filter returns.
+4. Exactly one answer to "what is a state-free model's warm-up source" survives in `docs/` —
+   checked across BOTH `types-and-protocols.md` and `architecture-context.md`.
 5. No change to the `observation`, `NWP` or `forcing` categories. FI unchanged, with the reason
-   recorded so it does not read as an omission.
+   recorded in `docs/requirements/03-forecast-interface-adherence.md` (not only here).
 6. No historical row re-stamped (D3), and the affected interval recorded where a data consumer
    will find it.
+7. An FI-adapted model reports its raw model's state policy after `discover_models` — the
+   propagation that the original T1 would have got wrong.
 
 ## Related, explicitly NOT in scope
 
-- **Plan 270** — forcing-gap detection. Measured the same saturation and correctly scoped it out
-  as unowned (`270:139-141`). 271 is the owner it was waiting for; neither changes the other's
-  subject.
-- **Plan 023** — introduced the rule (commit `77937c1b`, 2026-04-13). Read its rationale before
-  overriding it. ⚠️ An earlier revision of this plan misattributed the rule to Plan 239, which
-  added the *forcing* flags to an already-existing gate.
-- **Plan 262** — the deep-learning pilot. D4 sequences this plan ahead of it. `cmal_small` is
-  pure ML on a 30-day lookback and needs no persisted state (`262:84`, `262:91`), so it is one
-  more model T1 classifies as state-free. It does not need this plan to run.
-- **Building warm-up state persistence.** Already built and wired (`protocols/stores.py:562`,
+- **Plan 270** — forcing-gap detection. Measured the same saturation and scoped it out as
+  unowned (`270:139-141`). 271 is the owner it was waiting for.
+- **Plan 023** — introduced the rule (commit `77937c1b`). Read its rationale before overriding
+  it. ⚠️ An earlier revision misattributed the rule to Plan 239, which added the *forcing* flags
+  to an already-existing gate.
+- **Plan 262** — the deep-learning pilot. `cmal_small` is pure ML on a 30-day lookback and needs
+  no persisted state (`262:84`, `262:91`), so it is one more model T1 classifies as state-free.
+- **Building warm-up state persistence.** Already built and wired (`protocols/stores.py:563`,
   `services/operational_inputs.py:96-113`, five `store_state` sites in
   `flows/run_forecast_cycle.py`). What is genuinely open — and unowned — is whether any model
-  will ever produce state, given FI is state-free by design and stateful models are refused on
-  the ensemble route. Not started here.
+  will ever produce state. Not started here.
 
 ## Changelog
 
 - **2026-09-11 (initial)** — drafted from the first post-deploy cycle of Plan 261 T1.
-- **2026-09-11 (r1 folds)** — two independent reviews (Claude design, Codex verification) both
-  NOT READY, converging on the same blocker: FI already specifies the mapping. An expert
-  consultation then surfaced a THIRD conflicting source, `architecture-context.md:1845`. Subject
-  changed from "an open design space" to "a three-way conflict and its resolution".
-- **2026-09-11 (owner decisions)** — D1–D4 all closed. D3 was decided AGAINST the unanimous
-  recommendation of all three advisors; recorded as the owner's call with its consequence stated.
-  Tasks written, since D1 and D2 now determine their shape.
+- **2026-09-11 (r1 folds)** — two independent reviews, both NOT READY, converging on the same
+  blocker: FI already specifies the mapping. An expert consultation surfaced a third conflicting
+  source. Subject changed from "an open design space" to "a conflict and its resolution".
+- **2026-09-11 (owner decisions)** — D1–D4 closed. D3 decided AGAINST the unanimous advice of
+  three advisors; recorded as the owner's call with its consequence stated. Tasks written.
+- **2026-09-11 (r2 folds)** — two further independent reviews: 3 blockers, 9 majors, 8 minors
+  between them, all verified before folding. ⭐ **The mechanism was wrong twice over**: an
+  `isinstance` capability would have inspected the FI ADAPTER rather than the model (the adapter
+  forwards nothing, which `model_registry.py` already exists to work around), and keying it on
+  the state signature would have matched EVERY model because `prior_state` is already on the base
+  protocol. A **fourth** conflicting source was found, ranked above the one already named. T2's
+  edit surface gained a signature change, two call sites and the entire GROUP route; its test
+  surface gained 6 references and a golden fixture. T4 was unbuildable in phase 1. Three
+  citations were wrong, including one that would have produced a locking test passing for the
+  wrong reason. The count of models was "five" (observed) where it should be seven (registered).
+  ⚖️ The FI-adherence judgement in T1 was independently assessed as SOUND.
+- 🔴 **OPEN — D5, surfaced by round 2 and NOT yet decided by the owner:** is the declaration
+  MANDATORY on every model, or does it default to state-free? If mandatory on the `model_tier`
+  pattern, `discover_models` **re-raises** `ConfigurationError`
+  (`services/model_registry.py:122-124`) rather than skipping — so one undeclared class would
+  darken the ENTIRE model registry. Defaulting is safer but lets a genuinely stateful model be
+  silently misclassified. This must be settled before T1 is built.
