@@ -3,12 +3,12 @@ status: DRAFT
 created: 2026-09-10
 plan: 264
 title: QC rules select on network, not only parameter and cadence
-scope: Add a network dimension to observation QC rule selection so one deployment can carry rules for more than one network without them colliding. NOT the DHM threshold values themselves (Plan 263), NOT forecast QC, NOT a new rule kind, NOT a change to any threshold currently in force.
-blocks: [263]
+scope: Add a network dimension to observation QC rule selection so one deployment can carry rules for more than one network without them colliding. NOT the DHM threshold values themselves (Plan 268), NOT forecast QC, NOT a new rule kind, NOT a change to any threshold currently in force.
+blocks: [268]
 reviews:
-  - "codex 2026-09-10 — reviewed as a set with 263; NOT READY, 3 blockers; the call-site audit was wrong"
+  - "codex 2026-09-10 — reviewed as a set with 268; NOT READY, 3 blockers; the call-site audit was wrong"
 open_decisions: [D4]
-source: 2026-09-10 — the owner's answer to Plan 263 D15. Opened because Plan 263's QC task cannot isolate a DHM rule set from the Swiss one on the current lookup; both independent reviews of that plan found the same thing.
+source: 2026-09-10 — the owner's answer to Plan 268 D15. Opened because Plan 268's QC task cannot isolate a DHM rule set from the Swiss one on the current lookup; both independent reviews of that plan found the same thing.
 ---
 
 # Plan 264 — QC rules select on network
@@ -16,7 +16,7 @@ source: 2026-09-10 — the owner's answer to Plan 263 D15. Opened because Plan 2
 ## Status
 
 **DRAFT — NOT READY.** One independent Codex review has run (2026-09-10, reviewing this plan
-together with Plan 263 as a set) and is folded. An independent Claude pass is still owed.
+together with Plan 268 as a set) and is folded. An independent Claude pass is still owed.
 
 **The review found the author's call-site audit was wrong**, which is worth recording because
 it was the one part of this plan asserting a fact about the repository. T2 listed three
@@ -47,7 +47,7 @@ third and fourth time this plan's claims about the repository have been wrong:
   `tests/unit/scripts/test_dhm_precip_ruleset.py:54` asserts both are returned. The proposed
   RED test would have tried to prove as a defect the behaviour the repo relies on as a feature.
 
-Split out of Plan 263 deliberately. The owner chose this over the in-process workaround, and
+Split out of Plan 268 deliberately. The owner chose this over the in-process workaround, and
 it changes shared code that the running Swiss deployment depends on — that risk deserves its
 own review and its own rollout, not a paragraph inside a Nepal data-import plan.
 
@@ -60,7 +60,7 @@ QcRuleSet.rules_for(parameter, time_step)   # types/domain.py:160-167
 ```
 
 There is no network, tenant or station dimension. Two consequences, both measured while
-planning Plan 263:
+planning Plan 268:
 
 1. **Rules for a second network collide with the first.** Add a DHM daily discharge rule
    beside the Swiss one and *both* match any daily discharge series;
@@ -104,7 +104,7 @@ The alternative — exact match only, every rule naming its network — was reje
 require the built-in defaults to enumerate every network a deployment might serve, and a
 station whose network nobody listed would silently get **no rules**, which
 `aggregate_qc_status([])` then reports as *passed*. Fail-open by omission is the failure mode
-Plan 263 already had to design out of its QC task; do not reintroduce it here.
+Plan 268 already had to design out of its QC task; do not reintroduce it here.
 
 ## Owner decisions
 
@@ -158,10 +158,10 @@ whether it belongs here, in its own plan, or after this one ships.
 
 **D5 — Who owns the hard-coded flag version? NEW, open — and it is a genuine trap.**
 `services/qc.py` emits `_RULE_VERSION = "1.0"` at five of six flag sites (`:22`) instead of the
-configured `rule.rule_version`. Plan 263 needs DHM flags to carry the DHM rule set's version,
+configured `rule.rule_version`. Plan 268 needs DHM flags to carry the DHM rule set's version,
 which means fixing those sites. **But the Swiss rules declare `rule_version="1.0.0"`**
 (`config/qc_rules.py:47`), so fixing them changes Swiss flags' recorded version from
-`"1.0"` to `"1.0.0"` — breaking this plan's byte-identical bar and Plan 263's "no operational
+`"1.0"` to `"1.0.0"` — breaking this plan's byte-identical bar and Plan 268's "no operational
 QC change" exclusion at the same time. Neither plan owned this until the set review found it.
 
 Two corrections from round 2: **not every** flag changes — `_apply_frozen_sensor`
@@ -169,7 +169,7 @@ Two corrections from round 2: **not every** flag changes — `_apply_frozen_sens
 nobody owns**: the row-level `observations.qc_rule_version` column is written from
 `services/qc_datum.py:23-26`, which hard-returns `"1.0"` for every non-`water_level` parameter
 independently of `QcFlag.rule_version`. Fixing the five flag sites leaves that column at the
-Swiss constant, so Plan 263's "flags carry the DHM version" gate could pass while the persisted
+Swiss constant, so Plan 268's "flags carry the DHM version" gate could pass while the persisted
 row still says otherwise. Whatever D5 decides must cover both, and must note that the changed
 value is serialised into existing `observations.qc_flags` rows, the forecast and hindcast
 stores, and the stations API — over a corpus of `"1.0"` flags with no backfill.
@@ -211,7 +211,7 @@ call site (T2); no change to configuration composition (D4).
   `(rule_id, **rule_version**, parameter, time_step, network)` raise rather than both firing.
   **`rule_version` is in the key deliberately**: `scripts/dhm_precip/qc_ruleset.py:96-108`
   ships two `frozen_sensor` rules that differ only by version, on purpose and under test, and
-  an invariant without `rule_version` would make that rule set unconstructible. Plan 263's
+  an invariant without `rule_version` would make that rule set unconstructible. Plan 268's
   isolation gate consumes "exactly one resolves" — with this key it gets that for its own
   single-version DHM set without outlawing the precipitation one;
 - TOML round-trips a valid `network = "dhm"`, rejects a non-string network, and rejects an
@@ -256,7 +256,7 @@ exact-match could resolve zero rules and be reported as passed — but **most-sp
 not close that path either**. An empty rule set, a TOML set omitting the generic rules, or a
 series whose parameter/cadence matches nothing all still yield empty flag lists, and
 `aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`). Today the live
-ingest and onboarding paths are fail-open in exactly this way. Plan 263 was going to bolt a
+ingest and onboarding paths are fail-open in exactly this way. Plan 268 was going to bolt a
 local assertion onto its own import; the policy belongs here, once, for every caller.
 **In**: `src/sapphire_flow/services/qc.py`; `src/sapphire_flow/protocols/stores.py`;
 every call site's handling of the new error.
@@ -302,7 +302,7 @@ committed first.
 
 **Outcome**: a QC flag records the version of the rule that actually produced it, and the
 row-level column agrees with it.
-Added after round 4 found D5 was load-bearing — 263's QC task consumes it, and T4's own
+Added after round 4 found D5 was load-bearing — 268's QC task consumes it, and T4's own
 verification already asserts its outcome — while no task owned it.
 **In**: `src/sapphire_flow/services/qc.py` (the five sites using `_RULE_VERSION`; the sixth,
 `_apply_frozen_sensor` at `:140`, already uses the configured version and is the model);
@@ -350,19 +350,19 @@ T4 runs **first**: the golden fixture is the pre-change baseline, and it cannot 
 after the change it exists to detect. T4b (D5) is sequenced with T2/T3 rather than left
 unowned — T4's verification already asserts its outcome.
 
-**Cross-plan sequencing:** T4's fixture and Plan 263 T7's rule additions both touch
+**Cross-plan sequencing:** T4's fixture and Plan 268 T7's rule additions both touch
 `config.toml`'s `[qc_rules]` array. The fixture must be captured **before** any DHM row is
 added, or it bakes in the change it exists to detect.
 
 ## Explicitly out of scope
 
-- The DHM threshold *values* — Plan 263 D14 and its QC task own those.
+- The DHM threshold *values* — Plan 268 D14 and its QC task own those.
 - Forecast QC rule selection (D1).
 - Per-station QC overrides **as persisted rows**. `StationQcOverride` is a dataclass with no
   table, no store and no loader, and both production callers hard-code an empty list. This plan
   does not add that schema. **Note for the set:** the dataclass *can already* express a
-  per-station threshold in memory, and Plan 263's six station-specific limits are built that
-  way — so the capability Plan 263 needs is not blocked on this exclusion. Plan 263 T7 owns
+  per-station threshold in memory, and Plan 268's six station-specific limits are built that
+  way — so the capability Plan 268 needs is not blocked on this exclusion. Plan 268 T7 owns
   constructing them; this plan owns only which rule they merge into.
 - Any change to a threshold *value* currently in force. (Flag `rule_version` **does** change,
   once and deliberately — D5.)

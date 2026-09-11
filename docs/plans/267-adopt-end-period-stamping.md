@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-09-09
-plan: 262
+plan: 267
 title: Our own aggregation stamps the start of a period; every source whose convention we have established stamps the end
 scope: Adopt END-PERIOD stamping as the house convention for interval-valued data, convert it at the ingest boundary, change the internal bucket labelling that currently contradicts it, and rebuild the derived data whose meaning changes. Explicitly NOT the grid phase or the day boundary (Plan 252), NOT the per-station override (Plan 252 OD-12), NOT which series ARE intervals (Plan 258 — this plan CONSUMES that answer), NOT the Swiss boundary move itself (Plan 254 T6 — but this plan MUST ride the same cutover).
 depends_on: [252, 258]
@@ -9,7 +9,7 @@ blocks: []
 source: 2026-09-09 — a grill-me on the timezone reconciliation asked which end of a span its timestamp marks; measuring the answer found our own aggregation disagreeing with every source whose convention has been established
 ---
 
-# Plan 262 — adopt end-period stamping
+# Plan 267 — adopt end-period stamping
 
 ## Status
 
@@ -233,7 +233,7 @@ rollback covering them, and no second cutover exists.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/262-adopt-end-period-stamping.md
+uv run python scripts/check_readiness.py docs/plans/267-adopt-end-period-stamping.md
 ```
 
 1. **The assembler and the scorer change together** — never one without the other.
@@ -246,7 +246,7 @@ uv run python scripts/check_readiness.py docs/plans/262-adopt-end-period-stampin
 
 ```json
 {
-  "plan": 262,
+  "plan": 267,
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 2, "depends_on": ["T1"], "blocked_on": "Plan 258 must declare which series are intervals"},

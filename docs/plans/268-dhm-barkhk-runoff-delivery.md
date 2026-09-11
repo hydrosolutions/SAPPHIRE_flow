@@ -2,7 +2,7 @@
 status: DRAFT
 created: 2026-09-10
 revised: 2026-09-10
-plan: 263
+plan: 268
 reviews:
   - "codex 2026-09-10 — NOT READY, 5 blockers; all verified, folded"
   - "claude 2026-09-10 — NOT READY, 6 blockers + 7 majors; found most of what codex missed; all verified, folded"
@@ -17,7 +17,7 @@ related: [035]
 source: 2026-09-10 — measured directly against the delivered files (README.md: "Received without further comments from Subash via Vishnu on September 8, 2026 via email to Beatrice"). Every number in this plan was measured, not inferred.
 ---
 
-# Plan 263 — DHM Barkhk delivery: parse, verify and import
+# Plan 268 — DHM Barkhk delivery: parse, verify and import
 
 ## Status
 
@@ -687,7 +687,7 @@ adds a *network* dimension, so one DHM rule serves all six stations with one cei
 station-specific maxima therefore cannot come from the rule alone. They come from
 `StationQcOverride`, which already expresses exactly this and which
 `Stage1QualityChecker.check` already merges per station and rule — it simply has no
-persistence, so the import constructs the six in memory and passes them in. **Plan 263 T7 owns
+persistence, so the import constructs the six in memory and passes them in. **Plan 268 T7 owns
 building those six and proving each station's effective merged ceiling; Plan 264 owns only
 which rule they merge into.** Without that split written down, an implementation could satisfy
 both plans with a single shared DHM maximum and pass every stated gate.

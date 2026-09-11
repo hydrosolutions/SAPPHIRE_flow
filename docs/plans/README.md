@@ -150,14 +150,15 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
-- **262** — Our own aggregation stamps the start of a period; every source whose convention we have
+- **267** — Our own aggregation stamps the start of a period; every source whose convention we have
   established stamps the end — `DRAFT` — every ingested source we have checked is period-ending while
   our own `group_by_dynamic` labels bucket starts by an unexamined library default. The one-hour shift
   is PROVEN by execution but LATENT: all stored forcing is already daily, so the hourly→daily path
   never runs today. Nepal is hourly. Rides Plan 254 T6's cutover. Depends on 252 and 258.
 
   ⚠️ *(This entry previously carried Plan 261's description — the reanalysis tail — and falsely
-  declared a dependency on 239. Corrected 2026-09-10.)*
+  declared a dependency on 239. Corrected 2026-09-10. **Renumbered 262 → 267 on 2026-09-11**: number 262 was
+  published twice; the `cmal_small` pilot landed first and keeps it.)*
 
 - **263** — Two sources share a step and not a phase, and no operation consumes the second one —
   `DRAFT` — Plan 252 OD-15 makes Swiss daily temperature an off-grid input, and under the settled

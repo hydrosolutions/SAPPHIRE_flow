@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-10
 plan: 263
 title: Two sources share a step and not a phase, and no operation consumes the second one
-scope: Specify the ONE operation that lets a source on a different phase feed a model, when the source cannot be sub-divided. Settle the five semantics an independent review found missing: instantaneous values, ties, minimum overlap, the dual-time representation, and what a paired statistic may be called. Explicitly NOT the day boundary or which source wins (Plan 252 OD-15, decided), NOT the resampler's other rules (Plan 254 T3), NOT end-period stamping (Plan 262).
+scope: Specify the ONE operation that lets a source on a different phase feed a model, when the source cannot be sub-divided. Settle the five semantics an independent review found missing: instantaneous values, ties, minimum overlap, the dual-time representation, and what a paired statistic may be called. Explicitly NOT the day boundary or which source wins (Plan 252 OD-15, decided), NOT the resampler's other rules (Plan 254 T3), NOT end-period stamping (Plan 267).
 depends_on: [252]
 blocks: [254]
 source: 2026-09-10 — a Codex review of PR #269 found that Plan 252 OD-15 depends on an operation that does not exist, and that the sketch written to fill the gap was underspecified in five specific ways
@@ -104,7 +104,7 @@ at all is an owner decision this plan must put.**
 
 - The day boundary, and which source wins — Plan 252 OD-15, decided.
 - The resampler's other rules — Plan 254 T3.
-- End-period stamping — Plan 262.
+- End-period stamping — Plan 267.
 - Re-deriving the MeteoSwiss products from station data. It would remove the mismatch and is a far
   larger piece of work outside this system; recorded so the option is visible, not proposed.
 

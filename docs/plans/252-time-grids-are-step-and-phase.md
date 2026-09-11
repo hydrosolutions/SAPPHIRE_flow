@@ -142,7 +142,7 @@ staging 2026-09-09: one distinct time-of-day across all SEVEN stored forcing sou
 📌 **Not urgent, but it must ride the retrain.** The misalignment has been consistent since 1961, so
 models learned the same skew they are served — this is a wrong question modelled consistently, not a
 live corruption. Correcting it invalidates every Swiss artifact, so it goes into **Plan 254 T6's
-cutover** with the boundary move and Plan 262's stamping change. Owner decision 2026-09-09.
+cutover** with the boundary move and Plan 267's stamping change. Owner decision 2026-09-09.
 
 ## What the code does today
 

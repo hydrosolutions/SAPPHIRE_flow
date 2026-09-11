@@ -112,7 +112,7 @@ period-ending labels (`services/operational_inputs.py:225`).
   boundary move rides the retrain required to clear the live train/serve skew, so it costs one retrain
   rather than two, and it proves the declared-boundary mechanism on a deployment we control before
   Nepal depends on it. Switzerland stays at phase 0 until that retrain is ready.
-  ⭐ **Plan 262's end-period-stamping change rides the SAME cutover** — identical shape (it changes
+  ⭐ **Plan 267's end-period-stamping change rides the SAME cutover** — identical shape (it changes
   what a stored interval value means, invalidates every artifact, needs a coordinated switch). Three
   migrations collapse into one. ⚠️ **Atomicity is D7 (ANSWERED: atomic), not D4** — an earlier revision used D4 for two different
   decisions, so the second had no name and no owner.
@@ -121,14 +121,14 @@ period-ending labels (`services/operational_inputs.py:225`).
   per-station migration would leave two day definitions coexisting, and every cross-station product —
   the pooled forecast above all — would be combining them; the group-phase invariant (Plan 252 OD-12)
   already forbids that within a group. **T6 is no longer gated on this.**
-- ✅ **D5 — ANSWERED 2026-09-09: end-period stamping is the house convention, and Plan 262 owns
+- ✅ **D5 — ANSWERED 2026-09-09: end-period stamping is the house convention, and Plan 267 owns
   adopting it.** Adapters convert at ingest; our own bucket labelling changes to match, in one step
-  with skill's completeness path. ⛔ **This plan must not change either independently** — Plan 262
+  with skill's completeness path. ⛔ **This plan must not change either independently** — Plan 267
   sequences them and rides T6's cutover.
 
   ⚙️ **The read-side change is T2's, and it is now specified rather than left as a choice.** ⛔ The
   earlier text cited `ObservationStore` as the example — **wrong**: observations are instantaneous and
-  Plan 262 leaves them untouched. The stores that actually carry interval values and are half-open,
+  Plan 267 leaves them untouched. The stores that actually carry interval values and are half-open,
   measured 2026-09-09:
   `historical_forcing_store.py:71-72` and `weather_forecast_store.py:79-80`, both
   `valid_time >= start AND valid_time < end`.
@@ -258,8 +258,8 @@ because neither exists any more.
 **In:** `resample_to_time_step` (`services/training_data.py:286`) and its `group_by_dynamic` call
 (`:374`), which supplies only `every=`; installed polars 1.43.2 defaults to `closed='left'`,
 `label='left'`, which skill's completeness path assumes (`services/skill/service.py:305`), so both
-change together. ⚠️ **Period-ending labelling itself is Plan 262 T3, not this task** — T3 makes the
-resampler grid- and edge-aware; 262 changes which end it labels. They touch the same function and
+change together. ⚠️ **Period-ending labelling itself is Plan 267 T3, not this task** — T3 makes the
+resampler grid- and edge-aware; 267 changes which end it labels. They touch the same function and
 must be sequenced, not merged. The return type changes per D2. Depends on T1, T2.
 
 🔑 **Cite the SYMBOL, not the line.** These numbers were correct on `dc442d57`, wrong after rebasing
@@ -337,7 +337,7 @@ a stored daily value means:
 | # | Correction | Owner |
 |---|---|---|
 | 1 | Swiss day boundary moves from phase 0 to **06:00Z**, the precipitation day (Plan 252 OD-15, owner 2026-09-10; ⛔ the earlier 23:00Z target is **WITHDRAWN**) | this task |
-| 2 | End-period stamping adopted; our bucket labelling changes to match | **Plan 262** |
+| 2 | End-period stamping adopted; our bucket labelling changes to match | **Plan 267** |
 | 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; **Plan 263** specifies how the off-grid series is consumed; corrected here |
 
 ⛔ **All three invalidate every Swiss artifact, so they must land together.** Doing them separately
@@ -359,7 +359,7 @@ combining two day definitions while it lasted.
 ⚠️ An earlier revision called this decision D4, which names a different and already-answered one.
 
 ⛔ **Blocked on THREE things the graph names:** Plan 252 **T10** (propagates OD-15's 06:00Z target),
-Plan 262 **T3** (end-stamping code rides this cutover and must land first), and **Plan 263** — the
+Plan 267 **T3** (end-stamping code rides this cutover and must land first), and **Plan 263** — the
 off-grid pairing specification.
 
 🔴 **Plan 263 is a hard blocker, added 2026-09-10.** OD-15 makes Swiss daily temperature an off-grid
@@ -529,11 +529,11 @@ Five conditions hold in addition:
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"], "note": "Plan 262 T3 edits the SAME function (labelling); 254 T3 lands first, then 262 T3"},
+    {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"], "note": "Plan 267 T3 edits the SAME function (labelling); 254 T3 lands first, then 267 T3"},
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (propagates OD-15's 06:00Z target); Plan 262 T3 (end-stamping lands in the same cutover); Plan 263 (off-grid pairing — without it the off-grid temperature series refuses)"},
+    {"id": "T6", "phase": 5, "depends_on": ["T4", "T5", "T7", "T8"], "blocked_on": "Plan 252 T10 (propagates OD-15's 06:00Z target); Plan 267 T3 (end-stamping lands in the same cutover); Plan 263 (off-grid pairing — without it the off-grid temperature series refuses)"},
     {"id": "T7", "phase": 4, "depends_on": ["T4"], "note": "must land BEFORE T6 — rebuilt hindcasts would otherwise be written without a phase"}
   ]
 }

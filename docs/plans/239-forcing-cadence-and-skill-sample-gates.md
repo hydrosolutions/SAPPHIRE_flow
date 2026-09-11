@@ -244,11 +244,11 @@ DECLARED INPUT SERIES, not per frame and not per feature class.
 same — *is every slot this input will read present?* — but WHERE that set comes from differs by
 caller, and that is what the previous version got wrong by assuming a single anchor+count shape.
 
-⛔ **This section assumes LEFT-LABELLED buckets and becomes one interval wrong under Plan 262**
-(2026-09-10). Plan 262 adopts END-period stamping as the house convention, which inverts what
+⛔ **This section assumes LEFT-LABELLED buckets and becomes one interval wrong under Plan 267**
+(2026-09-10). Plan 267 adopts END-period stamping as the house convention, which inverts what
 `floor_to_time_step` and every expected-set below denote. **This plan's held tasks (T1b/T2/T3) must
-not be resumed before Plan 262 T3 lands, and their expected sets must then be re-derived — not
-re-labelled.** Plan 239 carries no dependency on 262 in its frontmatter; that is deliberate for now,
+not be resumed before Plan 267 T3 lands, and their expected sets must then be re-derived — not
+re-labelled.** Plan 239 carries no dependency on 267 in its frontmatter; that is deliberate for now,
 because 239 is HALTED, but it must be added before it is un-halted.
 
 Given the model's declared `time_step` `S`, and `T0 := floor_to_time_step(T, S)`:
