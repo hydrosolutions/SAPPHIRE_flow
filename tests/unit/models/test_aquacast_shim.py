@@ -21,7 +21,10 @@ trip the D1 relabel guard.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
+from forecast_interface import HorizonSemantics
 
 from sapphire_flow.types.enums import AlertEligibility, ModelTier, StaticNaming
 
@@ -99,3 +102,109 @@ class TestRealConfigPrecipitationGuard:
         from sapphire_flow.models.aquacast import CmalPoolPT
 
         assert CmalPoolPT().input_requirement is not None
+
+
+class TestCmalSmallDeclaration:
+    """Plan 262 T1. Needs the real package (construction touches `aquacast`), so these
+    SKIP in CI's required `unit` job — the extra-free digest assertions live in
+    `test_aquacast_shim_translation.py`. Do not claim CI coverage for this class.
+    """
+
+    def test_constructs_and_binds_the_thirty_day_config(self) -> None:
+        """The 30-day lookback is the entire reason this artifact is reachable on Swiss
+        data and `cmal_pool_pt`'s 210 is not.
+        """
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        req = CmalSmall().input_requirement
+
+        assert len(req.static) == 78
+        assert set(req.targets) == {"discharge"}
+
+    def test_declares_group_scope(self) -> None:
+        """Both aquacast artifacts are GROUP-scoped: `_scope` returns STATION only when
+        the config names exactly one gauge, and this one names 15,489 basins.
+        """
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        assert CmalSmall().artifact_scope.value == "group"
+
+    def test_declares_the_owners_classification(self) -> None:
+        """Owner decision 2026-09-09: ranked with the real forecasting models, but
+        barred from raising alerts until it is seen to work on Swiss rivers. Note the
+        eligibility DIFFERS from `CmalPoolPT`'s — a copied declaration would be wrong.
+        """
+        from sapphire_flow.models.aquacast import CmalPoolPT, CmalSmall
+
+        assert CmalSmall.model_tier is ModelTier.SKILL
+        assert CmalSmall.alert_eligibility is AlertEligibility.NO_EVENT_INFORMATION
+        assert CmalSmall.static_naming is StaticNaming.CARAVAN
+        assert CmalPoolPT.alert_eligibility is not CmalSmall.alert_eligibility
+
+    def test_horizon_is_relaxable_on_every_future_known_variable(self) -> None:
+        """Plan 241 landed the propagation; this records what the artifact declares, so
+        `resolve_required_steps` returns min(1, 10) = 1 and the 5-day ICON feed clears
+        the coverage gate.
+        """
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        req = CmalSmall().input_requirement
+        # `dynamic` is keyed by time step, then spatial representation, then namespace.
+        daily = req.dynamic[timedelta(days=1)]
+        spec = next(iter(daily.data.values()))
+        future_known = {
+            name: var
+            for namespace in spec.future_known.values()
+            for name, var in namespace.items()
+        }
+
+        assert set(future_known) == {"precipitation", "temperature"}
+        for var in future_known.values():
+            assert var.horizon_semantics is HorizonSemantics.AT_MOST
+            assert var.min_future_steps == 1
+            # The TRAINED horizon; `resolve_required_steps` takes min(1, 10) = 1.
+            assert var.future_steps == 10
+
+    def test_every_past_known_variable_uses_the_thirty_day_lookback(self) -> None:
+        """Measured on the real artifact: discharge, precipitation and temperature all
+        declare 30 — which is what the two pilot stations' discharge depth has to reach
+        before the model will produce anything.
+        """
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        daily = CmalSmall().input_requirement.dynamic[timedelta(days=1)]
+        spec = next(iter(daily.data.values()))
+        past_known = {
+            name: var
+            for namespace in spec.past_known.values()
+            for name, var in namespace.items()
+        }
+
+        assert set(past_known) == {"discharge", "precipitation", "temperature"}
+        assert {var.lookback for var in past_known.values()} == {30}
+
+    def test_config_hash_is_the_vendored_files_digest(self) -> None:
+        """The digest is taken from the same file `__init__` binds, so the hash and the
+        bound config cannot drift apart.
+        """
+        import hashlib
+        from importlib import resources
+
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        expected = hashlib.sha256(
+            resources.files("sapphire_flow.models.aquacast.configs")
+            .joinpath("cmal_small.yaml")
+            .read_bytes()
+        ).hexdigest()
+
+        assert CmalSmall().config_hash == expected
+
+    def test_both_shims_expose_a_config_hash(self) -> None:
+        """`config_hash` lives on the BASE class, so adding it for `cmal_small` also
+        makes `cmal_pool_pt` importable for the first time. That is a deliberate,
+        additive consequence: it opens a path, it promotes nothing.
+        """
+        from sapphire_flow.models.aquacast import CmalPoolPT, CmalSmall
+
+        assert CmalPoolPT().config_hash != CmalSmall().config_hash

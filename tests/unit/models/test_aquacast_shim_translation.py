@@ -26,7 +26,9 @@ What did NOT move here — construction against the REAL vendored config, and re
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from random import Random
 from typing import Any
 
@@ -776,3 +778,40 @@ class TestAreaMissingAtPredictTime:
         assert "thun" in result.message
         assert result.issue_datetime == _ISSUE
         assert shim._inner.hindcast_calls == []  # noqa: SLF001 -- inner must NOT run
+
+
+class TestVendoredConfigDigest:
+    """Plan 262 T1. These live in the EXTRA-FREE module deliberately: they read the
+    vendored file's bytes through `importlib.resources` and never construct a shim, so
+    CI's required `unit` job (which syncs without the `aquacast` extra) actually runs
+    them. Every assertion that needs a constructed shim skips there — see
+    `test_aquacast_shim.py`.
+    """
+
+    def test_the_vendored_cmal_small_config_matches_the_pinned_digest(self) -> None:
+        """The config is copied byte-identically from the owner's trained model tree.
+        Pinning its digest here means a hand-edit or a re-export cannot pass silently —
+        which matters because `config_hash` is the artifact/config drift check the
+        importer refuses to import without.
+        """
+        digest = hashlib.sha256(
+            resources.files("sapphire_flow.models.aquacast.configs")
+            .joinpath("cmal_small.yaml")
+            .read_bytes()
+        ).hexdigest()
+
+        assert digest == (
+            "94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45"
+        )
+
+    def test_each_vendored_config_has_its_own_digest(self) -> None:
+        """A `config_hash` that collapsed to one value for every artifact would pass the
+        importer's equality check while proving nothing about WHICH config is bound.
+        """
+        configs = resources.files("sapphire_flow.models.aquacast.configs")
+        digests = {
+            name: hashlib.sha256(configs.joinpath(name).read_bytes()).hexdigest()
+            for name in ("cmal_small.yaml", "cmal_pool_pt.yaml")
+        }
+
+        assert len(set(digests.values())) == len(digests)

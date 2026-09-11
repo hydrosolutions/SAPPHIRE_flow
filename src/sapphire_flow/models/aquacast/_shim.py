@@ -41,6 +41,7 @@ scaling).
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 from datetime import timedelta
 from importlib import resources
@@ -497,6 +498,20 @@ class AquacastShim:
         return self._inner.artifact_scope
 
     @property
+    def config_hash(self) -> str:
+        """SHA-256 of the VENDORED config's bytes — the artifact/config drift check
+        `import_external_artifact` refuses to import without
+        (`services/model_import.py`, Plan 262 T1).
+
+        Digested from the same file `__init__` binds, so the hash and the bound config
+        cannot drift apart: there is no second source to keep in step. Reaches the
+        importer through `ForecastInterfaceAdapter`, which proxies it by `getattr`.
+        """
+        return hashlib.sha256(
+            _config_path(type(self).CONFIG_FILENAME).read_bytes()
+        ).hexdigest()
+
+    @property
     def input_requirement(self) -> InputRequirement:
         return _canonical_requirement(self._inner.input_requirement)
 
@@ -569,3 +584,20 @@ class CmalPoolPT(AquacastShim):
     CONFIG_FILENAME = "cmal_pool_pt.yaml"
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.SKILL_FORECAST
+
+
+class CmalSmall(AquacastShim):
+    """`cmal_small` — the small CMAL artifact (15,489 training basins), Plan 262.
+
+    DAILY only, precipitation + temperature, 78 Caravan-named statics,
+    ArtifactScope.GROUP. Its **30-day lookback** is the entire reason this artifact is
+    reachable on Swiss data and `cmal_pool_pt`'s 210 is not.
+
+    `NO_EVENT_INFORMATION`, not `SKILL_FORECAST` (owner, 2026-09-09): ranked with the
+    real forecasting models, but barred from raising alerts until it has been seen to
+    work on Swiss rivers.
+    """
+
+    CONFIG_FILENAME = "cmal_small.yaml"
+    model_tier = ModelTier.SKILL
+    alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION
