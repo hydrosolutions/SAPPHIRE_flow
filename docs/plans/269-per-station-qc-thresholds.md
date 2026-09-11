@@ -1,11 +1,12 @@
 ---
-status: DRAFT
+status: BLOCKED
 created: 2026-09-11
 revised: 2026-09-11
 plan: 269
 title: Per-station QC thresholds declared in onboarding configuration
 scope: Deliver per-station observation QC threshold overrides through configuration — a validated TOML surface, one pure resolution boundary, threading into the scheduled observation-ingest flow, and an edit-time validation command. NOT the onboarding QC path (descoped, see § What this deliberately does not do), NOT a database table, store or migration (the spec defers that to v1), NOT the DHM threshold values themselves (Plan 268 D14), NOT forecast QC overrides, NOT rule selection (Plan 264), NOT an API surface, NOT a new rule kind.
 blocks: [268]
+blocked_by: [272]
 related: [264, 268, 012]
 reviews:
   - "codex 2026-09-11 r1 — NOT READY, 5 blockers; killed the write path and the migration"
@@ -26,7 +27,57 @@ source: 2026-09-11 — the owner's 2026-09-10 decision on Plan 268 D14 (per-stat
 
 ## Status
 
-**DRAFT — NOT READY. Revision 6, 2026-09-11; UNREVIEWED.**
+**BLOCKED on Plan 272 (owner, 2026-09-11). Revision 6; round 6's findings are NOT folded.**
+
+Twelve independent reviews across six rounds, every one NOT READY (blockers per gate: 5/3, 3/3,
+1/2, 1/3, 1/3, 1/4 — not converging). Round 6 found the reason the path this plan wires cannot
+serve its own primary case, and the owner paused the plan rather than fold a seventh time.
+
+**🔴 The ingest path cannot apply a daily ceiling at all.** QC selects rules by a cadence inferred
+from a fixed three-hour window (`flows/ingest_observations.py:277-280`), `_infer_time_step`
+returns one hour for fewer than two rows (`services/qc.py:40-47`), and `rules_for` matches on
+exact equality (`types/domain.py:160-167`) — while `config.toml` declares only 600 s and 86400 s
+rules. So **all 12 daily rules are unreachable on the scheduled path**, and no daily rule is ever
+selected for a per-station override to merge onto. **Plan 272 owns that defect**; this plan
+resumes once its fix is chosen, because the fix decides whether T3 is worth building.
+
+**Round 6's other findings are recorded here and remain UNFOLDED**, so a later reader does not
+mistake this revision for reviewed-and-clean:
+
+- **Two further inert classes beyond the two D3 enumerates** — a cadence mismatch (above) and a
+  `k_sigma` override on a station with **no climatological baseline**, which `_apply_gross_outlier`
+  returns `None` for (`services/qc.py:203-209`). The "exactly two classes" claim in D3 is false;
+  the enumeration should become an open list.
+- **`is_applicable(station, rule_id)` cannot express the class it was introduced for.** The datum
+  skip is parameter-dependent (`services/qc_datum.py:29-32` keys on `parameter == "water_level"`),
+  and QC runs per `(station, parameter)`. The predicate needs `parameter`, and probably cadence.
+- **The phase graph is broken, by this revision's own fix.** Folding round 5's minor about T5's
+  dependency retargeted `phase-3` from `phase-2` to `phase-1` and severed the only edge sequencing
+  T2 before T3/T4. Nothing now depends on phase-2.
+- **T4 imports T3's helper while declared parallel to it**, and the prose asserts they are
+  independent — the same defect revision 4 was corrected for.
+- **The withdrawn 268 lifecycle prerequisite is still live** in two places (the round-4 narrative
+  and T6's verification list), contradicting its own withdrawal.
+- **T3 still says "lenient mode"** after D3 deleted the mode; **T1's `Out` still says other config
+  loaders are untouched** while its own verification says the opposite.
+- **The shared predicate is placed in a Prefect flow module** and imported into a read-only
+  script path; `docs/architecture-context.md` assigns eligibility filtering to services.
+- **The overlay rejection sits in `_overlay.py`**, so a stray key halts every config load
+  including the forecast cycle — which contradicts this plan's own Preserve-Existing-Logic
+  argument. It belongs in `load_onboarding_config`, which resolves overlay paths itself.
+- **`rule_id` should be the existing `QcRuleId` `Literal`** (`types/domain.py:137-147`), not a
+  bare `str` — CLAUDE.md makes that unconditional.
+- **T4 is undefined when `SAPPHIRE_CONFIG` is unset** — it would exit 0 having validated nothing.
+- Citation drift: the T4 insertion point is `:212`, not `:209`; the TOML key is
+  `time_step_seconds`, not `time_step`; `services/qc.py:79` is the lookup, `:80` the comparison.
+
+**A process note, recorded because it is the dominant failure mode.** Most of the findings above
+are internal contradictions introduced by folding the previous round — a correction made in one
+place while the old text stood elsewhere. That pattern has recurred in five consecutive rounds,
+including one case of annotating a superseded passage in Plan 268 while this plan's own T6, in the
+same commit, instructed deleting rather than annotating. Any future fold should sweep by meaning
+across the whole document and its siblings, and re-read the result, before declaring a round
+closed.
 
 **Eight independent reviews across four rounds, every one NOT READY.** Blocker counts per gate:
 5/3, 3/3, 1/2, 1/3. That is not convergence, and the reason is diagnosable: **every round found a

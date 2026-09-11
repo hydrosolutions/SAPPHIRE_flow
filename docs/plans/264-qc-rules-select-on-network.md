@@ -249,6 +249,16 @@ run, because the checker has no access to it.
 
 ### T3 — Fail closed when no rule resolves
 
+**🔴 SEQUENCING BLOCKER, added 2026-09-11 — T3 must not land before Plan 272.** Plan 269's
+round-6 reviews measured that configured rules are already unreachable on the scheduled ingest
+path: the QC window is a fixed three hours (`flows/ingest_observations.py:277-280`),
+`_infer_time_step` returns one hour for fewer than two rows (`services/qc.py:40-47`), `rules_for`
+matches on exact equality (`types/domain.py:160-167`), and `config.toml` declares only 600 s and
+86400 s rules — so **every daily `(station, parameter)` group resolves zero rules today**. T3's
+policy is right, but landing it against that defect turns a silent fail-open into a **fleet-wide
+halt on every scheduled run**, and T3's unit test would pass while doing it. Plan 272 owns the
+reachability fix; T3 lands after it, or together with it.
+
 **Outcome**: `Stage1QualityChecker` distinguishes "rules ran and found nothing" from "no rules
 resolved", and the second is an error rather than a pass.
 Added after the set review: the author's justification for most-specific-wins was that
