@@ -25,8 +25,8 @@ source: 2026-09-11 — measured on the mac mini in Plan 261 T1's first post-depl
 
 ## Status
 
-DRAFT. **D1–D4 were closed by the owner on 2026-09-11; D5 is OPEN and blocks both T1 and T2**
-— see the decisions section. Tasks are written. The
+DRAFT. **All six decisions (D1–D6) are CLOSED by the owner as of 2026-09-11**, and the tasks
+are written. Nothing in this plan now waits on a decision. The
 subject was a three-way conflict between our architecture document, the co-designed
 ForecastInterface contract, and the running code; D1 resolves it. ⚠️ This revision is material
 and UNREVIEWED — it needs one fresh independent round before it can be considered. Only the
@@ -157,7 +157,7 @@ rule. Plan 023 owns that rule and should be cited when it changes.
 | Dashboard | — | **No indicator exists.** No effect. |
 | Tests | **23** references across 5 files — 17 uppercase `COLD_START` + 6 lowercase `cold_start` — PLUS a golden fixture | ⚠️ The change is NOT a one-liner. These encode the current rule. |
 
-## The decisions — D1–D4 CLOSED by the owner 2026-09-11; D5 OPEN
+## The decisions — ALL SIX CLOSED by the owner, 2026-09-11
 
 **D1 — ✅ CLOSED: a state-free model records `FRESH`.** The owner adopted the FI mapping. The
 resolution proposed above is therefore the resolution: `FRESH` = the axis applies and there is
@@ -193,8 +193,27 @@ discoverable from the data, not only from this plan.
 📎 The outstanding "do those 514 include combined products?" measurement no longer blocks a
 decision; it is now only needed to state the period's extent accurately in T4.
 
-**D5 — 🔴 OPEN: is the declaration mandatory or defaulted?** It must be settled before **T1 AND
-T2** are built.
+**D5 — ✅ CLOSED 2026-09-11: silence is legal, an UNINTERPRETABLE declaration is fatal.**
+A model that declares nothing is treated as **state-free**. A model that declares something the
+system cannot interpret **raises** and stops the load. This follows the working precedent in the
+same trio T1 piggybacks on — `declared_static_naming` (`services/caravan_statics.py:161-186`)
+defaults on absence and raises only on a malformed declaration.
+⚖️ The owner rejected BOTH extremes, and the reasons are worth keeping: a mandatory declaration
+follows the `model_tier` path where `discover_models` **re-raises** `ConfigurationError`
+(`services/model_registry.py:122-124`), so one forgotten model would darken the ENTIRE registry
+and stop forecasting outright; pure defaulting would silently misclassify a genuinely stateful
+model and lose the alarm this plan exists to preserve. Silence-legal/gibberish-fatal keeps the
+alarm for malformed declarations without the catastrophic failure mode.
+
+**D6 — ✅ CLOSED 2026-09-11: a model that never passes through `discover_models` is state-free.**
+Test fakes are handed directly to `_run_single_model` and never reach the registry, so neither
+the propagation nor the D5 check ever runs for them. They are treated as state-free, consistent
+with D5. ⭐ **This closes the T2 ambiguity round 3 raised**: the golden fixture
+(`tests/fixtures/plan151_t8b_canonical_snapshot.json`) is **REGENERATED**, not treated as an
+error. Its model `fake_station_model` declares nothing and is therefore state-free.
+
+*(Superseded framing, kept for one revision: D5 was previously open and stated to block T1 and
+T2. Both are now unblocked.)*
 - *Mandatory* follows the `model_tier` pattern, where `discover_models` **re-raises**
   `ConfigurationError` (`services/model_registry.py:122-124`) rather than skipping — so one
   undeclared class darkens the ENTIRE model registry.
@@ -256,7 +275,10 @@ does not and why that is safe for models we do not own.
 
 **Shape.** A two-valued domain state, so `CLAUDE.md` forbids a `bool` — an enum (e.g.
 `WarmUpStatePolicy.KEEPS_STATE` / `.STATE_FREE`) declared as a class attribute, with the
-config-dict route above if D5 and this decision require it.
+config-dict route above where a model's class is not ours to edit.
+⭐ **D5 settles the absence rule:** a class declaring nothing is state-free; a class declaring
+something uninterpretable raises. Mirror `declared_static_naming`
+(`services/caravan_statics.py:161-186`), NOT `_declared_model_tier`, which raises on absence.
 ⚠️ Choose a name that does NOT collide with FI's reserved `StatefulModel`; two
 `runtime_checkable` protocols with overlapping semantics and the same name is a trap for the
 next reader.
@@ -293,6 +315,9 @@ classification never reads the state store.
 
 **Outcome.** A state-free model produces `FRESH` and NO `warm_up` flag. A state-keeping model
 with no stored state still produces `COLD_START` and still degrades.
+
+📌 **D6: a model handed straight to `_run_single_model` (test fakes) never reaches the registry
+and is state-free.** The golden fixture is therefore REGENERATED, not an error.
 
 🔴 **The companion field, named for the first time in round 3.** `warm_up_state_age_hours` is set
 to `None` on the `COLD_START` branch and to a real age on `FRESH`
@@ -482,7 +507,11 @@ required unconditionally). Depends on T2, T3.
   ⚖️ **The count dispute settled by direct measurement:** the reviewers disagreed 17 vs 23; both
   were right — 17 uppercase `COLD_START` + 6 lowercase `cold_start`, and the lowercase form is the
   persisted DB value, so 23 is the impact inventory.
-- 🔴 **OPEN — D5, surfaced by round 2 and NOT yet decided by the owner:** is the declaration
+- **2026-09-11 (owner closes D5 + D6)** — silence is legal and an uninterpretable declaration is
+  fatal, following `declared_static_naming` rather than `_declared_model_tier`; and a model that
+  never passes through `discover_models` is state-free, which regenerates the golden fixture
+  rather than erroring on it. Both extremes were rejected deliberately. No decision is now open.
+- *(historical)* **D5 as first surfaced by round 2:** is the declaration
   MANDATORY on every model, or does it default to state-free? If mandatory on the `model_tier`
   pattern, `discover_models` **re-raises** `ConfigurationError`
   (`services/model_registry.py:122-124`) rather than skipping — so one undeclared class would
