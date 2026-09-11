@@ -1,20 +1,34 @@
 ---
 status: DRAFT
 created: 2026-09-09
-revised: 2026-09-09
+revised: 2026-09-11
 plan: 262
 title: Onboard cmal_small on a two-station Swiss group — the first deep-learning model in the pipeline
 scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour. The operational forcing series itself is Plan 261's subject and is now a PREREQUISITE, not an accepted shortfall.
 depends_on: [261]
 blocks: []
-source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the aquacast revision pinned in `pyproject.toml`, and the live mac-mini staging database at v0.1.889.
+source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the aquacast revision pinned in `pyproject.toml`, and the live mac-mini staging database at v0.1.889. Re-measured 2026-09-11 against v0.1.901 after Plan 261 merged and deployed; every dated claim below was re-checked on that date and the results are recorded in place.
 ---
 
 # Plan 262 — onboard `cmal_small` on a two-station Swiss group
 
 ## Status
 
-**DRAFT — reviewed once (Claude + Codex, 2026-09-09); all findings folded.**
+**DRAFT — NOT READY. Two rounds of review now exist and they covered different texts.**
+
+| round | date | what it reviewed | outcome |
+|---|---|---|---|
+| 1 | 2026-09-09 | the **pre-rewrite** plan (Claude + Codex) | findings folded — then the plan was REWRITTEN the same day, so this round does not cover the current text |
+| 2 | 2026-09-11 | **this revision** (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors, all folded below |
+
+⚠️ Round 1's "all findings folded" line previously stood alone here, which read as though the
+current text had been reviewed. It had not. Recording which text a round covered is the point —
+see the same error, made and corrected the same week, in Plan 261's own review history.
+
+🔑 **Round 2's two Codex passes are ONE round, not two, and they DISAGREED**: the second called
+all RED evidence discriminating, the first found T1's inverted. Adjudicated by reading the code —
+the first was right. A confirming pass must be given that question explicitly rather than left to
+re-derive it.
 
 Owner decision, 2026-09-09: **start now with the small group.** Of the three ways to
 handle the history gate — wait for the fleet to reach 30 days in early October, start
@@ -85,6 +99,12 @@ Its horizon **is** relaxable: at the pin the predicate is
 (`aquacast/operational/requirement.py:214-231` at `5460f898`). Plan 241 landed the
 propagation and is deployed on the mini in 0.1.889, so `resolve_required_steps` returns
 `min(1, 10) = 1` and our 5-day ICON feed clears the coverage gate.
+
+🪤 **Line citations into `docs/touchpoint-maps.md` and `flows/run_forecast_cycle.py` drift
+between sessions** — three in this plan went stale within two days, because other work keeps
+editing those files (Plan 261 alone added six lines to the touchpoint map on 2026-09-11). The
+claims were all still true; only the line numbers moved. **Re-verify every line citation at
+implementation time, and prefer the section heading or symbol name where one exists.**
 
 ⚠️ Every aquacast citation in this plan is given **at the pinned revision**, not at a
 local checkout's HEAD. The two differ by roughly 27 lines and the horizon predicate was
@@ -195,6 +215,18 @@ so the pilot's first live run is a real forecast rather than a documented failur
 supersedes the earlier answer to run T5 ahead of the forcing work; nothing else is
 delayed by it.
 
+⚠️ **The dependency was previously stated three ways** — `depends_on: [261]` (plan-wide) in the
+frontmatter, "parallel except T5" in this paragraph, and **no 261 edge at all** in the phase
+graph. Independent review 2026-09-11 (major). It is now encoded **once**: the frontmatter keeps
+`depends_on: [261]` as the prerequisite of record, and **phase-4 carries an explicit
+`requires_deployed: [261]` gate** so the constraint lives where an executor reads it. The prose
+here describes that gate, it does not define it.
+
+✅ **The gate is SATISFIED as of 2026-09-11.** Plan 261 merged (`75cf80cf`, PR #270) and deployed
+to the mini at v0.1.901. Its first cycle filled the past forcing tail **143 times with zero
+declines**, and the past leg reached `past_targets_end`. Nothing in this plan is waiting on it
+any longer.
+
 ## Tasks
 
 ### T1 — vendor the config, add the shim subclass, and expose `config_hash`
@@ -219,7 +251,12 @@ delayed by it.
   bound config from drifting — the discipline Plan 157 D1 assumed when it made the
   config package data.
 - `src/sapphire_flow/models/aquacast/__init__.py` — export `CmalSmall`.
-- `pyproject.toml` — a `cmal_small` entry point; patch version bump.
+- `pyproject.toml` — a `cmal_small` entry point; patch version bump. **And
+  `src/sapphire_flow/__init__.py`**, which the mandatory bump also rewrites (CLAUDE.md
+  § Version Bumping) — previously omitted from this list, independent review 2026-09-11 (minor).
+- The test modules the Verification below names: `tests/unit/models/test_aquacast_shim.py`,
+  `tests/unit/services/test_model_import.py`, and the **extra-free** module carrying the digest
+  assertion. A task whose verification runs tests its In does not list is under-scoped.
 - `docs/reference/cmal-small-static-features.md` — record that the config is now
   vendored in-repo, so the 78-name denominator is reviewable without the owner's
   Dropbox; the resolution table itself is unchanged.
@@ -249,10 +286,20 @@ required unit job syncs without the extra, so every declaration test skips there
 extra-free module and accept that the declaration assertions are locally-verified only —
 do not claim CI coverage for them.
 
-**Pre-change.** RED, and it must fail for the missing provenance rather than a missing
-symbol: call `import_external_artifact` with a constructed aquacast shim and assert
-today's `ConfigurationError` naming `config_hash`. A test that fails with
-`AttributeError: CmalSmall` proves only that the class is unwritten.
+**Pre-change.** 🔴 **Corrected — independent review 2026-09-11 (major).** The previous wording
+("assert today's `ConfigurationError` naming `config_hash`") is **not RED**: that assertion
+**passes before the change and fails after it**. It is a characterization test written
+backwards, and a suite containing it would go green on the unmodified tree and red on the
+finished one.
+
+The RED test asserts the **end state**, on the symbol that already exists so the failure cannot
+be a missing class: call `import_external_artifact` with a constructed **`CmalPoolPT`** and a
+valid fixture, and assert the import **proceeds past the `config_hash` gate**
+(`services/model_import.py:386-393`) — to a successful import, or to a named downstream
+sentinel. Today it stops at the missing-hash `ConfigurationError`; after T1 it does not.
+
+🪤 A test failing with `AttributeError: CmalSmall` still proves only that the class is unwritten
+— which is why the RED case is written against `CmalPoolPT`, not the new subclass.
 
 ### T2 — an aquacast-enabled image for the forecast worker alone
 
@@ -266,11 +313,18 @@ and torch. Every other service's image is unchanged.
 `WITH_AQUACAST=1` and the `aquacast_token` build secret in the **`environment:`** form
 that `recap_dg_client_token` already uses (`docker-compose.yml:488-491`) — never a
 `file:` entry, which would break `docker compose build` and `config` wherever that file
-is absent. `docs/standards/cicd.md` gains a row for the new image and build argument.
+is absent. `docs/standards/cicd.md` gains a row for the new image and build argument **and — independent
+review 2026-09-11, found by BOTH passes independently — a rewrite of its § Upgrade procedure**
+(see below). `docs/touchpoint-maps.md:799` states that every built service uses
+`image: sapphire-flow:${VERSION}`; this task makes that false, so it is edited here too, and
+its topology line gains the `prefect-worker-backup` service it currently omits.
 
-**Out.** The shared anchor and its four other consumers (`prefect-worker-ingest`,
-`prefect-worker-backup`, `api`, `init` — `docker-compose.yml:81,149,208,263,365`), which
-must keep building the default, torch-free image. Making the extra a default anywhere.
+**Out.** The shared anchor and its four other consumers — `prefect-worker-ingest`
+(`docker-compose.yml:149`), `prefect-worker-backup` (`:208`), `api` (`:263`) and `init`
+(`:365`) — which must keep building the default, torch-free image. 🪤 The previous wording gave
+**five** line numbers for four services, and the extra one (`:81`) is `prefect-worker` itself,
+the service this task moves OFF the anchor — an implementer following the numbers would have
+left the changed service behind (independent review 2026-09-11, minor). Making the extra a default anywhere.
 Any change to `mem_limit`. The Dockerfile, which already accepts both inputs
 (`Dockerfile:39-45`, `required=false`).
 
@@ -279,6 +333,29 @@ worker image installs it, because it pulls torch and the whole ML stack"
 (`Dockerfile:30-33`). Putting the argument on the shared anchor would have violated
 that, and all five services share one image tag today, so it would have shipped torch
 everywhere.
+
+### 🔴 This task changes the deploy, and must own that change
+
+**Independent review 2026-09-11 — returned by BOTH passes independently, which is the strongest
+signal this corpus produces.** Today all five services resolve to one literal tag
+(`sapphire-flow:${VERSION}`, `docker-compose.yml:82,150,209,264,366`), and
+`docs/standards/cicd.md` § Upgrade procedure depends on exactly that:
+
+- step 3 — `docker compose run --rm --build init` — builds **only the `init` service's image**
+- step 4 — `docker compose up -d` — carries the note *"step 3 already built the image, so
+  `up -d` reuses it — no redundant second build"*
+
+With two tags that guarantee is false. Nothing at step 3 builds the worker's aquacast image, so
+**the ML build is no longer preflighted before migrations run**: either compose builds it
+implicitly during step 4 — moving a multi-minute arm64 torch build inside the window where both
+workers are stopped — or the step fails outright. ⚠️ Not hypothetical: that exact procedure was
+run on the mini on 2026-09-11 to deploy Plan 261.
+
+**In (added).** `docs/standards/cicd.md` § Upgrade procedure is rewritten so step 3 builds
+**both** images before `init` runs, and step 4's "already built" note is corrected to name both.
+
+**Exit gate (added).** Following the documented procedure verbatim on a clean checkout produces
+both tags, and the aquacast image exists **before** `alembic upgrade head` runs.
 
 **Verification.** `docker compose config` shows the four anchor consumers unchanged and
 `prefect-worker` on its own tag; a default build still yields an image without `torch`;
@@ -306,7 +383,7 @@ operator-script list (`Dockerfile:144-150`, Plan 218), the test that **locks** t
 (`tests/unit/deploy/test_dockerfile_operator_scripts.py` — adding a script is a
 deliberate edit in three places, not an automatic pickup), the two documents that carry
 literal copies of the list (`docs/deployment/mac-mini-staging.md:746`,
-`docs/touchpoint-maps.md:777`), unit tests, and one integration test against real
+`docs/touchpoint-maps.md:796` — **not `:777`, re-verified 2026-09-11**), unit tests, and one integration test against real
 Postgres. It threads a real `WritePrincipal` and `AuditLogStore`.
 
 **Out.** A generalised fleet-onboarding flow. Any station-status change — the script
@@ -332,11 +409,27 @@ recorded there.
 **Outcome.** `cmal_small` is assigned to the pilot group at a daily `time_step`, and
 `discover_group_runs` yields the pair.
 
-**In.** The assignment path only — `create_group_assignment`, invoked through the
-operator script extended with an `--assign-model` step, or through the existing
-`onboard-model` route if that proves the smaller change.
+**In.** The assignment path only — `create_group_assignment`
+(`services/model_onboarding.py:1023`), invoked through **T3a's operator script, extended here
+with an `--assign-model` step**. That extension, its tests and its operational invocation are
+this task's work.
 
-**Out.** Everything in T3a.
+🔴 **The `onboard-model` alternative is REMOVED — independent review 2026-09-11 (major).** It
+was offered as "the smaller change if it proves so", and it is not assignment-only: that flow
+**registers the model before artifact handling, then trains, hindcasts and scores it**
+(`flows/onboard_model.py` imports `run_hindcast_flow`, `compute_skills_task` and
+`train_group_model`). All three are forbidden by this plan's own Out — "any retraining,
+hindcast or skill run". Leaving it as an option meant the plan offered a route that violated
+its own scope, and the two routes produced different files, tests and invocations.
+
+🔑 It also sharpens the FK argument below rather than weakening it: the foreign key is real, but
+**import is not the only thing that can create a `models` row** — `onboard-model` does too. The
+ordering constraint holds because *this* plan creates that row by import; it is not a property
+of the schema alone.
+
+**Out.** Everything in T3a **except** the `--assign-model` extension named above, which is
+explicitly this task's. ⚠️ The previous wording ("Everything in T3a") contradicted this task's
+own In, which proposed editing T3a's script (independent review 2026-09-11, major).
 
 ⛔ **This cannot run before T4.** `group_model_assignments.model_id` is a foreign key to
 `models.id` (`db/metadata.py:1035`), model *discovery* does not create that row, and the
@@ -375,6 +468,18 @@ record:
 | `trained_at` | **the training-completion time, 2026-08-31 13:41:55** (`logs/train.log:632`) | **Not** `BundleMeta.created_at`: the bundle is stamped whenever a checkpoint snapshot is built, and the best checkpoint is from **epoch 5**, so its stamp long predates completion. **Not** the file's 14:05 mtime either. Three different numbers; only one is the training completion. |
 | `expected_config_hash` | computed **at import time from `config.yaml` in the owner's model tree** | Copying the constant T1 pins into the repo would compare the repo file against itself — a check that can never fail. The owner's tree is the only independent source; the bundle carries no config digest. |
 | `source_commit` | **left null** unless the training checkout revision is recovered | The artifact records aquacast **`0.1.346`**; the pinned revision is **`0.1.356`**, four days later. The pin cannot be the training source. |
+
+🔴 **PREREQUISITE — T4 cannot start until the `trained_at` timezone is confirmed.**
+Independent review 2026-09-11 (blocker). `import_external_artifact` takes
+`trained_at: UtcDatetime` as a **required, non-defaulted** parameter
+(`services/model_import.py:296`), while Flagged gap 2 records that `logs/train.log` timestamps
+**carry no offset**. The plan therefore required T4 to complete while permitting the one input
+it cannot proceed without to stay unknown — and T4 gates phases 3 and 4.
+
+There is no honest way to run T4 on an unconfirmed offset: writing `13:41:55` as UTC when it may
+be local Europe/Zurich puts a **two-hour error into an immutable provenance record**, which is
+the precise failure this task's rewrite exists to prevent. Ask the modeller; do not infer it
+from the file mtime, which is a third unrelated number.
 
 **Out.** Writing a new importer. Importing `cmal_pool_pt`. Importing against a station.
 
@@ -423,6 +528,32 @@ the window would still be 29/30 and the model would refuse.
 **2026-09-18**, and there are **zero** holes from 2026-08-19 onward (measured). So with
 261's tail fill deployed, the first complete 30-day window — and the first stored forecast
 — is available from **2026-09-18**, with no additional work and no interior-fill decision.
+
+### ✅ Re-measured 2026-09-11 (v0.1.901, after 261 deployed) — the date HOLDS
+
+Independent review re-checked every dated claim above rather than trusting it:
+
+- **Zero interior forcing holes from 2026-08-19 onward, both pilot stations, both parameters.**
+  The only absent day in the window is `2026-09-10` — the **tail**, which 261 now supplies in
+  memory and which is therefore *correctly* absent from `historical_forcing` (this plan stores
+  nothing). 🪤 Counting stored days will always understate coverage by the tail; do not read
+  that as a hole.
+- **Discharge is an unbroken 31 `qc_passed` days** (2026-08-12 → 09-11) at both stations, up
+  from the 29 measured on 09-09 and progressing exactly as predicted.
+- Live DB unchanged: `station_groups` 0, `group_model_assignments` 0, `models` 9.
+
+⭐ **The fill reaches the GROUP path — verified, and it was the biggest latent risk to this
+task.** Plan 261 wired `fill_past_forcing_tail` into the two operational assemblers, and this
+model is GROUP-scoped, so it was not obvious it applied.
+`run_group_forecast.assemble_group_operational_inputs` calls `assemble_station_operational_inputs`
+per station and stacks the frames, and the fill is called **inside** that function. Had it not,
+T5 would have been unrunnable on a completed window.
+
+🔑 **What 261 does NOT do for this plan**, measured the same day on the station path: its tail
+fill leaves the interior 2026-08-18 hole untouched, and a model whose window still contains that
+day fails on it — `nwp_regression` serves 73 of 148 stations with *"insufficient
+antecedent-precip history: got 44, need 45"*. `cmal_small` escapes that only because its 30-day
+window clears 08-18 on 09-18. Running T5 earlier meets the same wall, for the same reason.
 
 Run T5 on or after that date and the expected result is a stored forecast for both
 stations: the pilot's two members are the *only* two with enough discharge depth, so the
@@ -480,9 +611,11 @@ carries the reciprocal reference naming plan 262.
 1. **The artifact's training source commit.** The bundle records aquacast package version
    `0.1.346`, not a commit hash, so the exact training revision cannot be recovered from
    the artifact. `source_commit` stays null until the modeller supplies it.
-2. **The timezone of `trained_at`.** `logs/train.log` timestamps carry no offset. The
-   value must be confirmed as UTC or local before it is written, since
-   `import_external_artifact` takes a `UtcDatetime`.
+2. 🔴 **The timezone of `trained_at` — BLOCKING for T4, not merely flagged.**
+   `logs/train.log` timestamps carry no offset. The value must be confirmed as UTC or local
+   before it is written, since `import_external_artifact` takes a required, non-defaulted
+   `UtcDatetime` (`services/model_import.py:296`). ⚠️ Unlike gap 1, this one **cannot be
+   carried into execution**: T4 has no honest output without it. See T4's prerequisite.
 
 Related and worth the modeller's eye: we would run a **`0.1.346` bundle under a
 `0.1.356` runtime**. `ModelLoader.model_from_bundle` rebuilds from `bundle.config` and
@@ -494,10 +627,12 @@ first thing that would.
 
 - **`_pooled` cannot change on these two stations — confirmed, not assumed.** GROUP
   dispatch never combines: `build_combined_forecasts` is called only from the Phase B
-  per-station loop (`flows/run_forecast_cycle.py:2932`, `:3262`), both *before* the
+  per-station loop (`flows/run_forecast_cycle.py:2955`, `:3285` — **re-verified 2026-09-11;
+  the previously cited `:2932`/`:3262` had drifted**), both *before* the
   Phase B2 group loop opens at `:3341`, and it takes an in-memory
   `MultiModelForecastResult` rather than reading the store, so a group forecast cannot
-  re-enter combination on a later cycle either. `docs/touchpoint-maps.md:381` states it,
+  re-enter combination on a later cycle either. `docs/touchpoint-maps.md:400` states it
+  (**not `:381` — re-verified 2026-09-11, the file has grown**),
   and Plan 241 dropped its own T5 on exactly this ground
   (`241-adopt-declared-horizon-semantics.md:339-345`). A GROUP-scoped `cmal_small` is
   not a pooled contributor. *The first revision of this plan claimed the opposite and
@@ -544,8 +679,12 @@ uv run pyright src
 - T5's observed outcome is written into this plan with its cause, including whether the
   past forcing leg reached `past_targets_end` (the aligned bound, NOT the issue time).
 - No `station_status` was written by anything in this plan.
-- No provenance field was filled with a value this plan could not source; the two
-  flagged gaps are either closed by the modeller or still recorded as open.
+- No provenance field was filled with a value this plan could not source. 🔴 **Corrected —
+  independent review 2026-09-11:** the two flagged gaps are **not** interchangeable and this gate
+  previously let either remain open. **Gap 2 (the `trained_at` timezone) MUST be closed before
+  T4 runs** — it is a required, non-defaulted parameter. **Only `source_commit` (gap 1) may
+  remain null at exit**, because the importer accepts null there and the artifact genuinely does
+  not record it.
 
 ```json
 {
@@ -568,7 +707,8 @@ uv run pyright src
     {
       "id": "phase-4",
       "tasks": ["T5", "T6"],
-      "depends_on": ["phase-3"]
+      "depends_on": ["phase-3"],
+      "requires_deployed": [261]
     }
   ]
 }
