@@ -14,7 +14,8 @@ source: 2026-09-09 — read-only measurement of the repo, the owner's model tree
 
 ## Status
 
-**DRAFT — NOT READY. Two rounds of review now exist and they covered different texts.**
+**READY — set by the owner on 2026-09-11 (`d0a4b09b`).** T4's provenance prerequisite
+and T3b's live-activation prerequisite still apply. Review coverage is recorded below.
 
 | round | date | what it reviewed | outcome |
 |---|---|---|---|
@@ -22,9 +23,11 @@ source: 2026-09-09 — read-only measurement of the repo, the owner's model tree
 | 2 | 2026-09-11 | the **pre-fold** text of this revision (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors |
 | 3 | 2026-09-11 | **the fold of round 2** (Codex, confirming) | 6 of 9 FIXED, no blocker remaining; 1 major + 3 minors MOVED or STILL PRESENT — folded in turn, and this table is one of them |
 
-⛔ **The current text has not itself been reviewed end to end.** Round 3 reviewed the fold of
-round 2; this paragraph and the four corrections beside it postdate round 3. That is the honest
-state, and it is the same distinction round 2 caught round 1 failing to make.
+A complete Codex pass over `ba1c807a` on 2026-09-11 found one remaining major:
+T3b would activate the pilot before T5's complete-window check. The owner accepted that
+finding and requested this fold and a fresh review. T3b now owns the live-activation gate;
+the independent re-review result will be reported separately, without implying that earlier
+reviews cover the amended text.
 
 ⚠️ Round 1's "all findings folded" line previously stood alone here, which read as though the
 current text had been reviewed. It had not. Recording which text a round covered is the point —
@@ -293,12 +296,13 @@ uv run ruff check src tests && uv run ruff format --check src tests
 Plus a test asserting `CmalSmall().input_requirement` carries
 `horizon_semantics=AT_MOST` and `min_future_steps=1` on both future-known variables.
 
-⚠️ **Only the digest test can run without the `aquacast` extra.** Constructing any shim
-imports `aquacast.operational.config`/`.model` in `AquacastShim.__init__`, and CI's
-required unit job syncs without the extra, so every declaration test skips there
-(`tests/unit/models/test_aquacast_shim.py:1-28`). Put the digest assertion in the
-extra-free module and accept that the declaration assertions are locally-verified only —
-do not claim CI coverage for them.
+**Keep the digest assertion in an extra-free module.** Constructing any shim imports
+`aquacast.operational.config`/`.model` in `AquacastShim.__init__`, so declaration tests
+require the `aquacast` extra. Normal token-backed CI unit runs install that extra and
+explicitly prove that the shim discovery test ran (`.github/workflows/ci.yml`,
+"Install (aquacast extra)" and "Prove the aquacast shim test ran"). Only the documented
+tokenless Dependabot PR exception with an unchanged `uv.lock` installs without it and
+skips the shim tests. Local verification still uses `uv sync --extra aquacast`.
 
 **Pre-change.** 🔴 **Corrected — independent review 2026-09-11 (major).** The previous wording
 ("assert today's `ConfigurationError` naming `config_hash`") is **not RED**: that assertion
@@ -398,6 +402,34 @@ Record the built image size delta and the build duration here — an ML stack on
 host is the one place this plan could turn out disproportionate, and a number settles
 it.
 
+### ✅ MEASURED on the mac mini, 2026-09-11 — the ML stack is PROPORTIONATE
+
+Both images built from the same checkout (`794b8f73`) in an isolated clone, never the
+deployed tree; probe images and clone removed afterwards, live stack untouched.
+
+| image | size | build |
+|---|---|---|
+| default (`p262-default:probe`) | **2.09 GB** | 37 s |
+| aquacast (`p262-aquacast:probe`) | **3.58 GB** | 70 s |
+| **delta** | **+1.49 GB** | **+33 s** |
+
+⚠️ **The durations are WARM-CACHE figures** — 15 layers were CACHED, because the host had
+built 0.1.901 the same morning. A cold build is materially longer; the differential step
+is the uncached `uv sync --frozen --no-dev --extra aquacast`. Quote the SIZE delta freely;
+do not quote the durations as cold-build numbers.
+
+**The RED evidence the task asked for, both directions:**
+
+```
+DEFAULT image:   aquacast: False   torch: False
+AQUACAST image:  aquacast OK 0.1.356   torch OK 2.9.1+cpu
+```
+
+⭐ Two things worth keeping: the aquacast image resolves **0.1.356 — the pinned revision**,
+so the pin holds through a real container build and not just `uv sync` on a dev machine;
+and torch installs as **`+cpu`**, so there is no CUDA payload inflating an arm64 image
+that will never have a GPU.
+
 **Pre-change.** RED: with today's compose, export `WITH_AQUACAST=1` and build; the
 resulting worker image still has no `aquacast` and no `torch`. That discriminates
 between "the argument is unwired" and "the argument is wired but the build failed" —
@@ -438,7 +470,7 @@ against it fails on the missing module, which is not discriminating RED evidence
 `fetch_groups_for_model` assertion in T3b is the real acceptance criterion and is
 recorded there.
 
-### T3b — assign the model to the group (after the import)
+### T3b — assign the model to the group (after import and live input verification)
 
 **Outcome.** `cmal_small` is assigned to the pilot group at a daily `time_step`, and
 `discover_group_runs` yields the pair.
@@ -472,10 +504,35 @@ own In, which proposed editing T3a's script (independent review 2026-09-11, majo
 so an assignment attempted in phase 1 would violate the FK. This ordering is the whole
 reason T3 is split.
 
+**Live-activation prerequisite (owner-accepted review finding, 2026-09-11).**
+`create_group_assignment` immediately writes an ACTIVE assignment, and
+`fetch_groups_for_model` exposes it to ordinary forecast cycles. Postponing T5 alone
+does not postpone the first live attempt. Develop and test the script extension now,
+but do not run its live `--assign-model` step until the intended first cycle's inputs
+have been checked on staging through `assemble_group_operational_inputs`, without
+calling prediction or writing an assignment.
+
+The check must retain **both 2009 and 2091** and confirm, per station, the exact 30-day
+daily grid for discharge, precipitation and temperature: no missing timestamps or
+non-finite values, with the past window ending at `past_targets_end` (exclusive).
+Inspect the assembled frames, including Plan 261's in-memory tail fill, rather than
+counting stored forcing rows. Confirm future forcing passes the model's declared
+coverage requirement for the same cycle. Record the issue time, NWP cycle and per-station
+result here before activation. September 18 is the currently predicted eligibility
+date, not a substitute for that measurement.
+
+If either station fails, leave the pilot unassigned and defer only its live activation.
+After the check passes, perform T3b and observe the first ensuing cycle as T5 in the
+same operational session. If activation is deferred to a different cycle, repeat the
+input check for that cycle. This is a manual runbook gate; no new scheduler, runtime
+eligibility framework, station-status change or pause of the existing fleet is needed.
+
 **Verification.** An integration test asserting that the assigned model is returned by
 `fetch_groups_for_model` — the exact lookup `discover_group_runs` performs
 (`services/run_group_forecast.py:231`). Without that, the assignment could write rows
-the cycle never sees. Then, on the mini, the same assertion against the real group.
+the cycle never sees. On the mini, first record the live input check above and verify
+the pilot is still unassigned, then create the assignment and repeat the lookup against
+the real group. T5 records the first cycle following activation.
 
 **Pre-change.** RED: the `fetch_groups_for_model` assertion, run before the assignment
 exists, fails because the lookup returns nothing — not because a symbol is missing.
@@ -536,7 +593,8 @@ by far the largest artifact to cross it.
 **Outcome.** The cycle reaches `run_group_forecast` for the pilot group with a complete
 past forcing series, and the outcome is recorded here with its cause, whatever it is.
 
-**In.** One cycle run on the mini **after Plan 261's T1 is deployed**, and a written
+**In.** The first cycle following T3b's gated live activation, **after Plan 261's T1 is deployed**,
+observed in the same operational session as T3b, and a written
 result: whether `discover_group_runs` yielded the group, whether the future-coverage gate
 passed (it should — required steps resolves to 1), whether the past leg reached
 `past_targets_end` — the aligned lookback bound, which for an off-midnight cycle is the
@@ -589,7 +647,8 @@ day fails on it — `nwp_regression` serves 73 of 148 stations with *"insufficie
 antecedent-precip history: got 44, need 45"*. `cmal_small` escapes that only because its 30-day
 window clears 08-18 on 09-18. Running T5 earlier meets the same wall, for the same reason.
 
-Run T5 on or after that date and the expected result is a stored forecast for both
+Use that date to plan T3b's live input check; activate only when that check passes and
+observe T5 immediately afterward. The expected result is a stored forecast for both
 stations: the pilot's two members are the *only* two with enough discharge depth, so the
 all-or-nothing group behaviour has nothing to trip over; the statics resolve 78/78; the
 future window is 5 days against a required 1.
@@ -711,6 +770,8 @@ uv run pyright src
   `docs/deployment/mac-mini-staging.md` and `docs/touchpoint-maps.md` script lists match
   the Dockerfile.
 - Plan 261's T1 is deployed on the mini before T5 runs.
+- T3b's live input check is recorded for both pilot stations before the ACTIVE
+  assignment is created; T5 records the first ensuing cycle, not a later selected success.
 - T5's observed outcome is written into this plan with its cause, including whether the
   past forcing leg reached `past_targets_end` (the aligned bound, NOT the issue time).
 - No `station_status` was written by anything in this plan.
