@@ -313,6 +313,16 @@ import **proceeds past the `config_hash` gate** (`services/model_import.py:386-3
 successful import or a specifically named downstream sentinel. Today it stops at the
 missing-hash `ConfigurationError`; after T1 it does not.
 
+**The fixture, confirmed sound 2026-09-11 (narrow third pass, after two wrong wordings).** Supply
+an existing group via `group_store`, **no** station target, a working `clock`, and compatible or
+omitted tenant/principal arguments. Between the scope check and the hash gate the importer checks
+only supplied-tenant consistency, `clock()`, and conditional principal tenant isolation — **no
+further unavoidable model check** stands in the way. 🪤 Compute the expected digest from
+**`cmal_pool_pt.yaml`**, NOT the `cmal_small.yaml` this task vendors: the test constructs
+`CmalPoolPT`. For the downstream sentinel, assert the `ModelLoadError` wrapper **and** its cause
+at deserialization — that proves passage through both the missing-hash and the hash-equality
+checks. Before T1 the missing-hash `ConfigurationError` fails that assertion; after T1 it passes.
+
 🪤 **The adapter wrapper is load-bearing, not incidental — confirming review 2026-09-11
 (major).** A *raw* `CmalPoolPT()` never reaches the hash gate at all: the shim forwards **FI's**
 scope enum, `_declared_artifact_scope` requires an `isinstance` of **SAP3's** `ArtifactScope`
