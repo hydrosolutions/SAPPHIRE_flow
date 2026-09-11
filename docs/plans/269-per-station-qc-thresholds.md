@@ -16,6 +16,8 @@ reviews:
   - "claude 2026-09-11 r3 — NOT READY, 2 blockers; 268's ceilings inert, and the suite cannot prove wiring"
   - "codex 2026-09-11 r4 — NOT READY, 1 blocker + 7 majors; Step 2.5 writes observations; the spike knob is undocumented"
   - "claude 2026-09-11 r4 — NOT READY, 3 blockers + 9 majors; onboarding QC skips 268's stations entirely"
+  - "codex 2026-09-11 r5 — NOT READY, 1 blocker + 3 majors; the datum-skipped inert class; my 268 lifecycle edit was false"
+  - "claude 2026-09-11 r5 — NOT READY, 3 blockers + 5 majors; strict mode unsatisfiable; the water-level datum frame"
 open_decisions: []
 source: 2026-09-11 — the owner's 2026-09-10 decision on Plan 268 D14 (per-station QC ceilings live in station onboarding configuration, updatable later) cannot be delivered on the current code. Descoped to one code path on 2026-09-11 after eight independent reviews, because the onboarding path generated most of the defects and delivers nothing to the case the plan exists for.
 ---
@@ -24,7 +26,7 @@ source: 2026-09-11 — the owner's 2026-09-10 decision on Plan 268 D14 (per-stat
 
 ## Status
 
-**DRAFT — NOT READY. Revision 5, 2026-09-11; UNREVIEWED.**
+**DRAFT — NOT READY. Revision 6, 2026-09-11; UNREVIEWED.**
 
 **Eight independent reviews across four rounds, every one NOT READY.** Blocker counts per gate:
 5/3, 3/3, 1/2, 1/3. That is not convergence, and the reason is diagnosable: **every round found a
@@ -37,6 +39,50 @@ the deciding evidence — the onboarding half **delivers nothing to Plan 268**, 
 exists for (see below). Removing it deletes the union registry, the resolution window, the
 write-order guarantee, the strict/lenient split by call site and the cross-path equality task —
 the origin of nearly every blocker since round 2 — rather than repairing them a fourth time.
+
+### What round 5 changed
+
+Ten reviews across five rounds. Round 5 confirmed **the descope did not hollow out the plan** —
+the `blocks: [268]` edge is still real, through T1 and T2 — and found three defects in what
+remained.
+
+- **The strictness enum had no satisfiable consumer.** T4 was to resolve in *strict* mode, but a
+  raising resolver returns no `Resolution`, so T4 could never print the inert list its own gate
+  demanded. And with the onboarding path gone, strict had **no other caller** — the plan was
+  about to ship a dead tier of exactly the kind its own § "Two dead tiers" warns about.
+  **The enum is deleted.** The resolver never raises on a resolvable-spec failure: it always
+  returns a `Resolution`, and each caller decides what to do with `rejected`. Policy belongs to
+  callers; classification belongs to the resolver.
+- **🔴 A second inert class inside the one wired path.** `obs_skipped_rules` returns
+  `{range_check, gross_outlier}` for a water-level station with no datum
+  (`services/qc_datum.py:29-32`), and `services/qc.py:256-257` `continue`s **before**
+  `_merge_thresholds` at `:258`. So a `range_check` ceiling on an `operational`, `GAUGED`
+  station sitting squarely inside the judged set is silently inert. Both gates found this
+  independently. Applicability is therefore **per station *and rule*, not per station**.
+- **The judged predicate had no owner for T4.** Copying `flows/ingest_observations.py:601-609`
+  into the script would fork a live gate and let "inert" and "effective" drift apart. T3 now
+  extracts one named helper and T4 imports it.
+- **A water-level ceiling had no stated frame.** Observations are datum-shifted before the
+  checker sees them (`services/qc_datum.py:41-52`), so base water-level thresholds are
+  gauge-relative (`config.toml:313` is `-5.0 … 30.0`). A ceiling written in metres above sea
+  level passes every validation this plan lists and is wrong by the station's datum.
+- **The descope's cost reaches the wired path.** Onboarding computes climatological baselines
+  from `QC_PASSED` observations only (`services/onboarding.py:842-848`). With onboarding QC left
+  on base thresholds, values a per-station ceiling would have passed are excluded from the
+  baseline — and the ingest path's `gross_outlier` rule, which **does** receive the override,
+  is then judged against a censored baseline. Stated now, rather than "history only".
+- **My edit to Plan 268 was false and is withdrawn.** Revision 5 wrote into 268 that it must
+  promote its six gauges and set forecast targets before any ceiling could apply. Both gates
+  rejected it: 268 T7 runs its own QC pass from its own import CLI, which passes through neither
+  gate, and the checker inspects no lifecycle. The true statement is narrower and now says so.
+- **Three stale self-references, again.** This plan claimed `268:704-705` still instructed
+  in-memory construction — text the **same commit** had corrected. Third occurrence of that
+  pattern. The genuinely un-folded target is 268 T7's own `In` (`268:1013-1035`), which 268
+  itself flags. T6 is retargeted, and the superseded sentence in 268 has been **deleted** rather
+  than annotated, since a correction beside wrong text documents the contradiction.
+- **A fabricated citation.** Revision 5 justified placing the enum and result type in `types/`
+  as CLAUDE.md's rule. CLAUDE.md never mentions `types/` — the convention is real, the
+  attribution was invented. Removed.
 
 ### What round 4 established
 
@@ -62,9 +108,10 @@ the origin of nearly every blocker since round 2 — rather than repairing them 
   `docs/spec/types-and-protocols.md:583-590` lists only `tolerance`. A validator built from the
   spec would reject the effective setting and accept an inert one. **The spec is wrong**, and T6
   fixes it; this is a repository defect independent of this plan.
-- **The sweep of Plan 268 was incomplete again** — `268:704-705` still assigned in-memory
-  construction to its T7, two lines from the corrected text. Third incomplete sweep; T6 now
-  sweeps by meaning and names the specific line.
+- **The sweep of Plan 268 was incomplete again** — at the time, `268:704-705` still assigned
+  in-memory construction to its T7, two lines from the corrected text. *(Superseded by round 5:
+  that passage is now corrected and the superseded sentence deleted; the live un-folded target is
+  268 T7's own `In` at `268:1013-1035`. See § What round 5 changed.)*
 
 ## Problem
 
@@ -114,9 +161,16 @@ deliberate, owner-approved descope, and the reasoning is worth keeping because i
 - The two paths have **genuinely different judgement predicates**, so "one policy" was never
   available: ingest gates on `station_status`/`gauging_status`, onboarding on forecast targets.
 
-**The cost, stated plainly**: a station's backfilled history is QC'd on base thresholds, so a
-historical series can be judged by a ceiling its operator has since corrected. Re-running QC over
-history is not in this plan. If that becomes load-bearing, it is a follow-on that should be
+**The cost, stated plainly, and it does not stop at history.** A station's backfilled history is
+QC'd on base thresholds, so a historical series can be judged by a ceiling its operator has since
+corrected. Re-running QC over history is not in this plan. **The second half reaches the wired
+path**: onboarding computes climatological baselines from `QC_PASSED` observations only
+(`services/onboarding.py:842-848`), so every value a per-station ceiling would have passed is
+excluded from the baseline — and the ingest path's `gross_outlier` rule, which **does** receive
+the override (`services/qc.py:212-216`), is then judged against a baseline censored by the
+un-overridden ceiling. Round 5 found this; it is a real limitation, not a rounding error.
+(Verified *not* a hazard: onboarding's re-QC cannot overwrite ingest verdicts — it fetches
+`qc_status=RAW` only, `services/onboarding.py:780-782`.) If that becomes load-bearing, it is a follow-on that should be
 designed against the onboarding path's own gate, not bolted onto this one.
 
 **With nothing declared, QC output is unchanged.** `merge_thresholds` over an empty list returns
@@ -145,23 +199,39 @@ Four pieces, no persistence, one code path:
    `dict[str, float | None]` where `None` means inherit (`types/domain.py:176`), and TOML has no
    null, so **omitting the key is the only encoding**.
 
+   **🔴 A water-level threshold is expressed in the datum-shifted frame, not metres above sea
+   level.** Observations are shifted by the station's datum before the checker sees them
+   (`services/qc_datum.py:41-52`, applied at `flows/ingest_observations.py:299-302`), so the base
+   thresholds are gauge-relative — `config.toml:313` is `-5.0 … 30.0`. A ceiling written in
+   m a.s.l. passes every validation listed in T1 and T2 and is wrong by the station's datum.
+   T1 documents the frame; nothing can detect the error automatically.
+
 2. **One pure resolution boundary.**
-   `resolve_station_qc_overrides(specs, stations, rule_set, judged_station_ids, on_unresolvable)
-   -> Resolution`.
+   `resolve_station_qc_overrides(specs, stations, rule_set, is_applicable) -> Resolution`.
    It resolves each spec's `(code, network)` to a `StationId`, checks the named rule exists for
    that parameter and cadence, validates the **merged** thresholds against the base rule, and
-   either raises or drops-and-reports per `on_unresolvable`.
+   classifies every spec. **It never raises on a resolvable-spec failure** — it always returns a
+   `Resolution`, and each caller decides what to do with it.
 
-   **`judged_station_ids` is a parameter, not an inference.** Round 4 found the previous
-   signature could not compute what its own result promised: "will this run judge that station"
-   is the caller's predicate, and the two callers' predicates genuinely differ. The resolver never
-   derives eligibility from `StationConfig`.
+   That is a deliberate reversal. Revision 5 gave it a strict/lenient `Enum`, and round 5 found
+   strict unsatisfiable (a raising resolver returns no result, so the one strict caller could not
+   print the classification its own gate required) **and unconsumed** after the descope — a dead
+   tier of exactly the kind § "Two dead tiers beside this one" warns about. **Classification
+   belongs to the resolver; policy belongs to callers.**
 
-   **`on_unresolvable` is an `Enum`** (CLAUDE.md § Enums over booleans — "strict mode"/"lenient
-   mode" prose would be satisfied by a `bool`). **`Resolution` is a frozen dataclass** carrying
-   the resolved overrides, rejected specs with reasons, specs resolving outside
-   `judged_station_ids`, and fan-out records. Both live in `types/`, not `services/`, per
-   CLAUDE.md's placement of domain enums and frozen value types.
+   **`is_applicable(station, rule_id) -> bool` is supplied by the caller, per station *and
+   rule*.** Round 4 established that the resolver cannot infer applicability; round 5 established
+   that a per-*station* predicate is not enough. `obs_skipped_rules` drops
+   `{range_check, gross_outlier}` for a water-level station with no datum
+   (`services/qc_datum.py:29-32`), and `services/qc.py:256-257` skips the rule **before**
+   merging at `:258` — so a ceiling on a station inside the judged set can still be inert. The
+   resolver never derives applicability from `StationConfig`.
+
+   **`Resolution` is a frozen dataclass** carrying the resolved overrides, rejected specs with
+   reasons, specs that resolved but are not applicable, and fan-out records. It and any
+   supporting types live in `src/sapphire_flow/types/`, following the repository's existing
+   placement of domain value types. (Revision 5 attributed that to CLAUDE.md; CLAUDE.md says
+   nothing about directories, and the invented citation is withdrawn.)
 
 3. **One loader.** `config/onboarding.py` already parses `[[onboarding.calculated]]` into
    `OnboardingConfig`; the threshold specs join it there. Three modules carry their own private
@@ -223,10 +293,16 @@ With one code path the previous split by call site is unnecessary. On the schedu
   state, not a config edit**: decommissioning, renaming or re-coding a station would otherwise
   stop observation ingest fleet-wide with nobody watching, which `docs/workflow.md` § Preserve
   Existing Logic forbids introducing.
-- **A spec that resolves but will not be applied** — the station is outside
-  `judged_station_ids` — is reported the same way. This is not an edge case: **Plan 268's six
-  gauges are exactly this class** until 268 promotes them. Declared-but-inert is the same
-  fail-open this plan exists to kill, so it is surfaced, not assumed.
+- **A spec that resolves but will not be applied is reported the same way**, and there are
+  **two** such classes, not one:
+  1. the station is outside the run's judged set — **Plan 268's six gauges are exactly this**
+     on the ingest path until 268 promotes them;
+  2. the station is judged, but *that rule* is skipped for it — a `range_check` or
+     `gross_outlier` ceiling on a water-level station with **no datum**
+     (`services/qc_datum.py:29-32`), which `services/qc.py:256-257` skips before merging.
+
+  Declared-but-inert is the same fail-open this plan exists to kill, so both are surfaced.
+  This is why `is_applicable` is keyed on station **and rule**.
 - **Configuration that will not parse still raises.** T1's rejections happen at parse time, before
   T2 sees a spec, and the loader parses the whole `[onboarding]` section. Leniency governs
   **resolvable-spec failures only** — T3 tests both classes so the distinction is pinned.
@@ -236,8 +312,12 @@ With one code path the previous split by call site is unnecessary. On the schedu
   this** — `api/routes/health.py` resolves check types dynamically — **but `ops/watchdog.py` does
   not probe it**, because the watchdog queries explicitly named check types and a new enum member
   does not extend it. A watchdog probe is a named follow-on, not a claim this plan may make.
-- **The edit-time command (T4) is the strict consumer**, so an operator correcting a ceiling finds
-  out immediately rather than on the next run.
+- **The resolver itself never raises on a resolvable-spec failure.** It classifies; the caller
+  decides. T3 reports and continues; T4 exits non-zero when anything was rejected; Plan 268 T7's
+  import CLI may treat a rejection as fatal for its own run. Revision 5's strict/lenient enum is
+  deleted — round 5 found its strict branch both unsatisfiable and unconsumed.
+- **The edit-time command (T4) is what makes a correction safe**, so an operator finds out when
+  they make the edit rather than on the next scheduled run.
 
 ### D4 — An override attached to a rule that resolves to nothing. **CLOSED by T2.**
 Round 1 deferred this to Plan 264 T3; both reviews found that false — 264 raises only when a
@@ -277,8 +357,9 @@ offending key —
   or `tolerance`**; `gross_outlier` → `k_sigma`. **`max_delta` is the knob production actually
   uses** (`config.toml:271`, `:327`) and `services/qc.py:161` checks it before `tolerance`;
   revision 4's allowlist, taken from the spec, would have rejected it and accepted an inert
-  `tolerance` override. Where a rule has two modes, the override's keys must match the mode the
-  base rule selects;
+  `tolerance` override. **Mode *compatibility* with the base rule is T2's, not T1's** — a parser
+  cannot know which mode a rule selects, and revision 5 asked T1 for a check its own `Out`
+  excludes;
 - **a value well-typed but nonsensical for its rule** — a negative `max_rate` (every comparison
   then exceeds it, `services/qc.py:79`), a non-positive or fractional `min_consecutive` (silently
   truncated by `int()`, `:98`), a negative spike threshold;
@@ -286,8 +367,17 @@ offending key —
   are rejected at parse, because `merge_thresholds` applies every match in order and the last
   would silently win;
 - **an overlay declaring this key is rejected before the merge**, with a diagnostic naming the
-  base file. Verified that no existing overlay carries it (`config/overlays/staging-5-stations.toml`,
-  `mac-mini.toml`), so nothing in the repository breaks;
+  base file. Verified that no existing overlay carries it
+  (`config/overlays/staging-5-stations.toml`, `mac-mini.toml`), so nothing in the repository
+  breaks. **Stated because it is not obvious**: the rejection sits in `_overlay.py`, which nine
+  other modules call across eleven sites (including `config/qc_rules.py`,
+  `config/deployment.py` and `flows/run_forecast_cycle.py:353,619,649`), so an overlay carrying
+  this key fails **every** config load, the forecast cycle included — not just onboarding. That
+  is the intended consequence of "configuration that will not parse still raises", but revision 5
+  wrongly described the other callers as untouched;
+- **the frame is documented for water-level thresholds** — expressed in the datum-shifted frame
+  the base rule uses, not m a.s.l. (Design sketch §1). No validation can catch a frame error, so
+  the reference file must state it;
 - **omitting a key is the only way to express "inherit"**;
 - a config with no such block, **and a config with no `[onboarding]` section** (making
   `load_onboarding_config()` return `None`, `config/onboarding.py:153-155`), each yield an empty
@@ -299,26 +389,30 @@ offending key —
 **Outcome**: declared specs become `StationQcOverride` values valid by construction, from one pure
 function, with unapplicable specs classified rather than guessed at.
 **In**: a named new module `src/sapphire_flow/services/station_qc_overrides.py` holding the
-function; the `on_unresolvable` **`Enum`** and the frozen **`Resolution`** result in
-`src/sapphire_flow/types/` (CLAUDE.md places domain enums and frozen value types there, not in
-`services/`); unit tests. Naming the module matters: three other tasks import the symbol.
-**Out**: no I/O — registry, rule set and `judged_station_ids` are parameters, which is what keeps
-it testable without a database. **The function never infers eligibility from `StationConfig`**;
-each caller supplies its own judged set. No threading into any flow (T3). No change to
-`StationQcOverride`.
+function, and the frozen **`Resolution`** result in `src/sapphire_flow/types/`, following the
+repository's placement of domain value types; unit tests. Naming the module matters: two other
+tasks import the symbol. **No strictness enum** — see D3.
+**Out**: no I/O — registry, rule set and `is_applicable` are parameters, which is what keeps it
+testable without a database. **The function never infers applicability from `StationConfig`**;
+the caller supplies the predicate. It **never raises** on a resolvable-spec failure. No threading
+into any flow (T3). No change to `StationQcOverride`.
 **Verification**: `uv run pytest` on the new module asserting —
 - a station code resolves by `(code, network)`, proven by a fixture where two stations share a
   code across different networks — well-defined because `uq_stations_network_code`
   (`db/metadata.py:300`) makes the pair globally unique;
 - an unknown station code, an unknown `rule_id`, or a `(rule_id, parameter, time_step)` triple
-  matching no rule **raises in strict mode and is dropped-and-reported in lenient mode**, with the
-  offending spec named in both, and **multiple failures reported together** rather than only the
-  first — T4 prints every rejection, which a fail-fast resolver cannot supply;
+  matching no rule lands in `Resolution.rejected` with the spec and a reason named — and
+  **every** failure is reported, not only the first, since T4 prints them all;
+- **an override whose keys select a different mode than the base rule's is rejected** — a
+  `max_delta` override against a `tolerance`-mode spike rule silently switches `_apply_spike`
+  from proportional to absolute (`services/qc.py:161` branches on the **merged** dict), and only
+  this layer can see the base rule. Test both directions;
 - **merged-threshold validation against the base rule** — a partial `range_check` override
   supplying only `value_min` above the rule's `value_max` is rejected, which only this layer can
   see;
-- **a spec resolving to a station outside `judged_station_ids` is classified as such** — neither
-  a rejection nor a silent success;
+- **both inert classes are classified** — a spec for a station the run will not judge, **and** a
+  spec whose rule is skipped for that station (a `range_check` ceiling on a water-level station
+  with no datum). Neither is a rejection and neither is a silent success;
 - **an override matching two rules differing only by `rule_version` is applied to both and the
   fan-out reported** (D2), against an **inline two-version fixture**, citing
   `scripts/dhm_precip/qc_ruleset.py:67-93` as the motivating case rather than importing it, since
@@ -335,8 +429,11 @@ what it could not apply, and never halts on a resolvable-spec failure.
 **In**: `src/sapphire_flow/flows/ingest_observations.py` — specs from `config/onboarding.py`'s
 loader (no fourth private `_load_*`), resolved **once** at flow level in **lenient** mode against
 the `all_stations` the flow already holds (`:586-592`; three kind-filtered calls whose union is
-the whole table, since `StationKind` has exactly three members — do not add a fourth query), with
-`judged_station_ids` taken from the flow's own `eligible` set (`:601-609`); a new keyword
+the whole table, since `StationKind` has exactly three members — do not add a fourth query).
+**T3 extracts the judged predicate at `:601-609` into one named pure function in this module**
+and builds `is_applicable` from it together with `obs_skipped_rules(parameter, datum)`
+(`services/qc_datum.py:29-32`) — the extraction is the point, because T4 must import the *same*
+callable rather than copy a live gate that would then drift. A new keyword
 parameter on `_run_qc_task` beside `qc_rules` replacing the `overrides=[]` at `:308`; the drop and
 inert counts on `IngestResult`; and the health record. **`src/sapphire_flow/types/enums.py`** (the
 new `PipelineCheckType` member) and **`docs/spec/types-and-protocols.md`**'s enum mirror are in
@@ -357,6 +454,10 @@ positionally).
   `WARNING` `PipelineHealthRecord` under the new check type, plus the log line and the count;
 - **a spec that resolves to a station outside `eligible` is reported the same way** — Plan 268's
   six gauges are exactly this class;
+- **a `range_check` ceiling on an `operational`, `GAUGED` water-level station with no datum is
+  reported inert** — it sits inside the judged set, yet `services/qc.py:256-257` skips the rule
+  before merging. Without this case the two-station test above passes while the second inert
+  class stays silent, which is the defect round 5 found;
 - **the health record and the counts survive both early returns.** `IngestResult` is built at
   `:613`, `:660` and `:773`, and the first two return **before** the QC loop; the existing
   `_append_fetch_health_record` precedent fires at `:645`, after the first of them. Resolution and
@@ -364,7 +465,9 @@ positionally).
   no-eligible early return at `:611`**, or a drop on such a run is reported nowhere;
 - **resolution happens once per flow run** — asserted by spying on `resolve_station_qc_overrides`
   itself, **not** the loader: an implementation that loads once and re-resolves inside the
-  per-`(station, parameter)` loop (`:690`) passes a loader-call count;
+  per-`(station, parameter)` loop (`:690`) passes a loader-call count. If the symbol is imported
+  by name into the flow module, the spy must patch **the flow module's binding**, not the
+  defining module, or the test asserts against the wrong target;
 - **a malformed or duplicate declaration still raises on this path** — leniency governs
   resolvable-spec failures, not parse failures (D3);
 - **an unset `SAPPHIRE_CONFIG`, and a config with no `[onboarding]` section, each yield zero
@@ -380,16 +483,22 @@ status of a specific observation — not on a missing symbol.
 
 **Outcome**: an operator correcting a ceiling learns immediately whether it resolves and whether
 it will actually apply, instead of finding out on the next scheduled run or not at all.
-**In**: a `--validate-config` branch in `scripts/onboard.py`, inserted **after the configuration
-load (`:196-209`) and engine creation, and before `_run_migrations` (`:234-238`)**; it loads the
-specs, fetches the live registry, resolves in **strict** mode, prints every rejection and every
-declared-but-inert spec, and exits non-zero only on a rejection; unit tests.
+**In**: a `--validate-config` branch in `scripts/onboard.py` that **returns immediately after the
+configuration load at `:209`**, creating its own read-only engine from `DATABASE_URL`
+(`:170-177`) rather than reusing the one at `:234`; it loads the specs, fetches the live registry,
+resolves through T2 (which never raises), prints every rejection and every inert spec, and exits
+non-zero iff `Resolution.rejected` is non-empty. It **imports T3's extracted judged-predicate
+helper** to build `is_applicable`; it must not reimplement it. Unit tests.
+Revision 5 placed this after engine creation and called it read-only — but the `--download` block
+is at `:223-228`, *earlier*, so `--validate-config --download` would have downloaded first, and
+the dry-run early return at `:213-220` bypassed validation entirely. Both gates found it.
 **Out**: **strictly read-only.** It must not download (`:223`), must not run migrations (`:237`),
 must not onboard (`:339`) and must not write. No change to any flow, to QC, or to T2's function —
 this is a second caller, not new logic. No new CLI module.
 **Verification**: `uv run pytest tests/unit/scripts/` asserting —
 - a config naming an unknown station **exits non-zero** and names that spec, with **every**
-  rejection printed when several are wrong, not just the first;
+  rejection printed when several are wrong, not just the first — which a resolver that raised on
+  the first failure could not supply, and which is why T2 classifies rather than raises;
 - **a ceiling for a station that exists but is not currently judged exits zero and is reported as
   inert** — the Plan 268 case: legitimate but not yet effective, and an operator must be able to
   tell that apart from a typo;
@@ -414,8 +523,9 @@ rule set is the one **loaded from `config.toml`** — what actually runs — not
 `_default_swiss_qc_rules()`, which `load_qc_rules` never returns while a `[qc_rules]` section
 exists. Thresholds are not a returned field; they appear only inside `QcFlag.detail`, so the
 comparison is over `detail` text.
-**Exit gate**: the baseline is captured and committed **before T3 lands**, as a test phase 4 must
-keep green — the oracle cannot be generated after the change it exists to detect.
+**Pre-change**: N/A — this task *is* the pre-change evidence. Its baseline is captured and
+committed **before T3 lands**, as a test phase 4 must keep green; the oracle cannot be generated
+after the change it exists to detect.
 
 ### T6 — Documentation, the spec corrections, and the sibling sweep
 
@@ -438,10 +548,14 @@ production has used since before this plan and which the spec has never listed; 
   reader does not mistake it for an oversight — and Plan 268's dependency on **station promotion
   and forecast targets** is stated in 268, since no ceiling can apply to its six gauges until it
   makes that call;
-- **the sibling sweep is by meaning, not by string.** Two sweeps have now missed live text:
-  `268:704-705` still assigned in-memory construction to T7 after the ownership sentence above it
-  was corrected, and an earlier one left an "open question" reopening what it had just closed. A
-  search for old wording would have caught neither;
+- **the sibling sweep is by meaning, and aimed at the right target.** Three sweeps have now
+  missed live text or aimed at text already fixed. The genuinely un-folded target is **Plan 268
+  T7's own `In` (`268:1013-1035`)**, which 268 itself flags as "Reshaped by Plan 269, and NOT yet
+  folded into this task's design" — its gate still proves the merge by calling `merge_thresholds`
+  directly, which passes identically for in-memory objects. Earlier revisions of this plan pointed
+  the sweep at `268:704-705`, text the same commit had already corrected. **Where a passage is
+  superseded, delete it** rather than annotating it — a correction sitting beside wrong text
+  documents the contradiction instead of resolving it;
 - `forecast_qc_overrides` is recorded as schema-only with its six hard-coded call sites;
   `StationStore.store_thresholds` as having no caller;
 - the configuration shape's costs are stated: overlay wholesale-replacement, no record of *when* a
@@ -453,7 +567,7 @@ production has used since before this plan and which the spec has never listed; 
   "phases": [
     { "id": "phase-1", "tasks": ["T1"] },
     { "id": "phase-2", "tasks": ["T2"], "depends_on": ["phase-1"] },
-    { "id": "phase-3", "tasks": ["T5"], "depends_on": ["phase-2"] },
+    { "id": "phase-3", "tasks": ["T5"], "depends_on": ["phase-1"] },
     { "id": "phase-4", "tasks": ["T3", "T4"], "depends_on": ["phase-3"], "parallel": true },
     { "id": "phase-5", "tasks": ["T6"], "depends_on": ["phase-4"] }
   ]
@@ -461,7 +575,8 @@ production has used since before this plan and which the spec has never listed; 
 ```
 
 T5 sits **before** T3: its baseline is pre-change evidence and cannot be captured after the change
-it exists to detect. T3 and T4 are genuinely independent — both consume T2, neither consumes the
+it exists to detect. It consumes nothing from T2 — round 5 noted the graph asserted a dependency
+the text contradicts — so it is gated only on being captured before phase 4. T3 and T4 are genuinely independent — both consume T2, neither consumes the
 other, and unlike revision 4 no task's exit gate now depends on a sibling declared parallel to it.
 
 **Cross-plan sequencing.**
@@ -471,12 +586,21 @@ other, and unlike revision 4 no task's exit gate now depends on a sibling declar
   site** — a required edit to 264, recorded there.
 - **Plan 264 T4's golden fixture must be captured before any DHM rule reaches `config.toml`.**
   This plan changes no QC output with nothing declared (T5), so it does not threaten that fixture.
-- **Plan 268 must decide station promotion and forecast targets before any ceiling can bite.** Its
-  six gauges are `station_status = onboarding` with `forecast_targets` unset, so they are judged
-  by neither QC path. This plan reports that as inert rather than silently doing nothing, but the
-  lifecycle decision is 268's. Its T7 must also declare the six ceilings as configuration and
-  resolve them through T2 rather than constructing them in memory — `268:704-705` still says
-  otherwise, and T6 sweeps it.
+- **🔑 How Plan 268 gets its ceilings, stated plainly, because the descope makes it look
+  otherwise.** The `blocks: [268]` edge is **still real, through T1 and T2 only**. T3 and T4
+  deliver nothing to 268: its six gauges are `station_status = onboarding`, so the ingest gate
+  never reaches them. **268 T7 runs its own QC pass from its own import CLI**
+  (`src/sapphire_flow/cli/import_dhm_delivery.py`, which does not exist yet) and 268 explicitly
+  claims ownership of wiring it. What this plan supplies is the declaration surface (T1) and the
+  resolver (T2); T7 supplies its own judged set and calls them. A reader could otherwise conclude
+  the descope hollowed the edge out — it did not.
+  **An earlier revision wrote into 268 that it must promote its gauges and set forecast targets
+  before any ceiling could apply. That was false and has been withdrawn**: T7's pass goes through
+  neither the ingest eligibility gate nor onboarding's forecast-target gate, and the checker
+  inspects no lifecycle. The true statement is narrower — those ceilings are inert *on the
+  scheduled ingest path* until promotion, which T3 reports.
+  T7 must still declare the six as configuration and resolve them through T2; its `In`
+  (`268:1013-1035`) is not yet folded, and T6 sweeps it.
 
 ## Explicitly out of scope
 

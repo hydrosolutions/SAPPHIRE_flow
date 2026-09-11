@@ -702,11 +702,10 @@ never committed**; it is not the basis.
 adds a *network* dimension, so one DHM rule serves all six stations with one ceiling. Six
 station-specific maxima therefore cannot come from the rule alone. They come from
 `StationQcOverride`, which already expresses exactly this and which
-`Stage1QualityChecker.check` already merges per station and rule — it simply has no
-persistence. **SUPERSEDED 2026-09-11**: the import does **not** construct the six in memory —
-Plan 269 supplies them from configuration, and T7 declares them there and resolves them through
-269's boundary. **T7 still owns the ceiling VALUES and proving each station's effective merged
-ceiling; Plan 264 owns only which rule they merge into; Plan 269 owns how they are declared and
+`Stage1QualityChecker.check` already merges per station and rule. **They are declared as
+configuration and resolved through Plan 269's boundary — the import does not construct them in
+memory.** **T7 owns the ceiling VALUES and proving each station's effective merged ceiling;
+Plan 264 owns only which rule they merge into; Plan 269 owns how they are declared and
 resolved.** Without that split written down, an implementation could satisfy
 both plans with a single shared DHM maximum and pass every stated gate.
 
@@ -808,13 +807,14 @@ implemented as first written.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (station branch), reusing
 `services/onboarding.py`; whatever tenant provisioning D11 selects.
 **Out**: **no `station_status` promotion** — these stay `onboarding`.
-🔴 **Consequence surfaced by Plan 269's round-4 review (2026-09-11), and this plan must decide
-it:** the ingest flow judges only `operational` stations
-(`flows/ingest_observations.py:601-609`) and onboarding's QC step skips any station whose
-`forecast_targets` is unset (`services/onboarding.py:774-778`) — which T2a leaves unset on all
-six by design. **So no per-station ceiling can apply to these gauges on any QC path until this
-plan promotes them and sets their targets.** Plan 269 reports such a ceiling as declared-but-inert
-rather than silently doing nothing, but the lifecycle decision is this plan's, not 269's.
+ℹ️ **Note, corrected 2026-09-11 after Plan 269's round-5 review.** An earlier edit here claimed
+this plan must promote the six and set their forecast targets before any ceiling could apply.
+**That was wrong** and is withdrawn: T7 runs its own QC pass from its own import CLI, which does
+not go through the ingest eligibility gate (`flows/ingest_observations.py:601-609`) or
+onboarding's forecast-target gate (`services/onboarding.py:774-778`), and
+`Stage1QualityChecker.check` inspects no station lifecycle at all. What is true is narrower: a
+ceiling declared for these six is inert **on the scheduled ingest path** until promotion, which
+Plan 269 T3 reports rather than silently ignoring. T7's own pass is unaffected.
 Promotion switches on
 ingest and forecasting for a station and is not this plan's to trigger.
 **No QC.** Round 2 found that the onboarding service is itself a QC pass: its Step 5 fetches
