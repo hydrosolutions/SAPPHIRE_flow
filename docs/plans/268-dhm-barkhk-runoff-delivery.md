@@ -667,8 +667,15 @@ six ceilings become configured rows rather than in-memory constructions. `statio
 for the shape (per-station, per-parameter, with a `source` discriminator) but is a **different**
 concern: those are alert danger levels, not QC bounds. Do not overload it.
 
-**Open question for the next session:** does that persistence work belong in this plan, in Plan
-264, or in its own? It is squarely the gap 264 declared out of scope, and it is now load-bearing.
+**That question is CLOSED** (2026-09-11): the surface is Plan 269's, as onboarding configuration;
+the persisted DB tier is nobody's and is deferred to v1. This paragraph previously asked whether
+the work belonged here, in 264, or in its own plan — a leftover that reopened what the text above
+had just settled. 🔴 **One live interaction remains for T7**: the ingest flow judges only stations
+whose `station_status` is `operational` (`flows/ingest_observations.py:601-609`), and T2b/T7 keep
+these six at `onboarding` by design (`:799`). A ceiling declared for them therefore resolves but
+is **never applied** on the ingest path until promotion. Plan 269 T3 reports that class as
+degraded rather than leaving it silent; this plan must still decide whether the six are promoted
+before their ceilings are expected to bite.
 
 **The target is an impossibility ceiling: a value water cannot produce, only a fault can.**
 Exceeding it means the number is wrong, not that something remarkable happened.
