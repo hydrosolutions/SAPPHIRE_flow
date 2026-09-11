@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
@@ -62,7 +63,7 @@ import structlog
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType
 from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
-from sapphire_flow.types.station import StationGroup
+from sapphire_flow.types.station import StationConfig, StationGroup
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
@@ -76,7 +77,9 @@ _DEFAULT_NETWORK = "bafu"
 
 
 class _StationLookup(Protocol):
-    def fetch_station_by_code(self, code: str, network: str) -> object | None: ...
+    def fetch_station_by_code(
+        self, code: str, network: str
+    ) -> StationConfig | None: ...
 
 
 class _GroupStore(Protocol):
@@ -102,10 +105,17 @@ class GroupPlan:
     members_to_add: tuple[tuple[str, StationId], ...]
     already_members: tuple[str, ...]
     unresolved_codes: tuple[str, ...]
+    wrong_tenant_codes: tuple[str, ...] = ()
 
     @property
     def is_noop(self) -> bool:
         return self.group_exists and not self.members_to_add
+
+    @property
+    def blocking_codes(self) -> tuple[str, ...]:
+        """Every code that makes this run unsafe to apply. One property so a new
+        rejection reason cannot be added to the plan and forgotten at the gate."""
+        return self.unresolved_codes + self.wrong_tenant_codes
 
 
 def plan_station_group(
@@ -128,16 +138,22 @@ def plan_station_group(
     resolved: list[tuple[str, StationId]] = []
     unresolved: list[str] = []
     already: list[str] = []
+    wrong_tenant: list[str] = []
     for code in station_codes:
         station = station_store.fetch_station_by_code(code, network)
         if station is None:
             unresolved.append(code)
             continue
-        station_id: StationId = station.id  # type: ignore[attr-defined]
-        if station_id in current_members:
+        # A station resolvable but owned by ANOTHER tenant would pass the dry run
+        # and then fail on the membership's composite tenant FK at apply time
+        # (independent review 2026-09-11). Refuse it here, where nothing is written.
+        if station.tenant_id != tenant_id:
+            wrong_tenant.append(code)
+            continue
+        if station.id in current_members:
             already.append(code)
         else:
-            resolved.append((code, station_id))
+            resolved.append((code, station.id))
 
     return GroupPlan(
         name=name,
@@ -147,6 +163,7 @@ def plan_station_group(
         members_to_add=tuple(resolved),
         already_members=tuple(already),
         unresolved_codes=tuple(unresolved),
+        wrong_tenant_codes=tuple(wrong_tenant),
     )
 
 
@@ -162,10 +179,10 @@ def apply_station_group(
     """Create the group if absent, then add the missing members. Never touches
     station status, and never removes a member.
     """
-    if plan.unresolved_codes:
+    if plan.blocking_codes:
         raise ValueError(
-            "refusing to write: unresolved station codes "
-            f"{', '.join(plan.unresolved_codes)}"
+            "refusing to write: unusable station codes "
+            f"{', '.join(plan.blocking_codes)}"
         )
 
     if not plan.group_exists:
@@ -218,6 +235,8 @@ def _render(plan: GroupPlan, *, applied: bool) -> str:
         lines.append(f"  already: {', '.join(plan.already_members)}")
     if plan.unresolved_codes:
         lines.append(f"  UNKNOWN: {', '.join(plan.unresolved_codes)}")
+    if plan.wrong_tenant_codes:
+        lines.append(f"  OTHER TENANT: {', '.join(plan.wrong_tenant_codes)}")
     if plan.is_noop:
         lines.append("  -> no change (idempotent re-run)")
     return "\n".join(lines)
@@ -250,6 +269,16 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _engine_for(database_url: str) -> object:
+    """A seam, not an abstraction: it exists so `main`'s dry-run guard can be tested
+    without a database. Every other test calls the planning/apply functions directly,
+    so nothing else would notice if the write moved above that guard.
+    """
+    import sqlalchemy as sa
+
+    return sa.create_engine(database_url, pool_pre_ping=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -258,14 +287,12 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
         return 1
 
-    import sqlalchemy as sa
-
-    from sapphire_flow.store.audited_writer import make_audited_stores
+    from sapphire_flow.store.audit_log_store import PgAuditLogStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
 
     clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
-    engine = sa.create_engine(database_url, pool_pre_ping=True)
+    engine = _engine_for(database_url)
 
     try:
         with engine.connect() as conn:
@@ -279,10 +306,10 @@ def main(argv: list[str] | None = None) -> int:
                 group_store=PgStationGroupStore(read_conn),
             )
 
-            if plan.unresolved_codes:
+            if plan.blocking_codes:
                 print(_render(plan, applied=False))
                 print(
-                    "\nERROR: unresolved station codes — nothing written.",
+                    "\nERROR: unusable station codes — nothing written.",
                     file=sys.stderr,
                 )
                 return 1
@@ -292,16 +319,24 @@ def main(argv: list[str] | None = None) -> int:
                 print("\nRe-run with --apply to write.")
                 return 0
 
-            # The mutation and its audit INSERT share ONE real transaction, so a
-            # failed audit write rolls the group write back with it.
+            # 🪤 The group store must be told to JOIN this transaction. Left to its
+            # default it sets `self._begin = conn.engine.begin` — a NEW engine-level
+            # transaction — so `store_group` would commit independently while
+            # `add_station_to_group` and the audit INSERT (both plain
+            # `self._conn.execute`) stayed in ours. A failure after the group row
+            # would then roll those back and leave an EMPTY, UNAUDITED group behind
+            # while the CLI reported failure. Independent review found this; the
+            # success-only tests could not.
             with engine.begin() as write_conn:
-                stores = make_audited_stores(write_conn)
                 apply_station_group(
                     plan,
-                    group_store=stores["group_store"],  # type: ignore[arg-type]
+                    group_store=PgStationGroupStore(
+                        write_conn,
+                        transaction_factory=lambda: nullcontext(write_conn),
+                    ),
                     clock=clock,
                     description=args.description,
-                    audit_log_store=stores["audit_log_store"],
+                    audit_log_store=PgAuditLogStore(write_conn),
                     operator=args.operator,
                 )
     except Exception as exc:  # noqa: BLE001 - operator CLI reports, never traces

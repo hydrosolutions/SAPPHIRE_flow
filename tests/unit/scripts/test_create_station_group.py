@@ -18,7 +18,11 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.station import StationGroup
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
-from scripts.create_station_group import apply_station_group, plan_station_group
+from scripts.create_station_group import (
+    GroupPlan,
+    apply_station_group,
+    plan_station_group,
+)
 
 _NOW = ensure_utc(datetime(2026, 9, 11, 12, tzinfo=UTC))
 
@@ -28,21 +32,25 @@ def _clock():  # noqa: ANN202
 
 
 class _FakeStation:
-    def __init__(self, station_id: StationId) -> None:
+    def __init__(self, station_id: StationId, tenant_id=DEFAULT_TENANT_ID) -> None:  # noqa: ANN001
         self.id = station_id
+        self.tenant_id = tenant_id
 
 
 class _FakeStationLookup:
     """Resolves only the codes it was given, so an unknown code is a real miss."""
 
-    def __init__(self, by_code: dict[str, StationId]) -> None:
+    def __init__(self, by_code: dict[str, StationId], *, tenants=None) -> None:  # noqa: ANN001
         self._by_code = by_code
+        self._tenants = tenants or {}
         self.status_writes = 0
 
     def fetch_station_by_code(self, code: str, network: str) -> object | None:
         del network
         station_id = self._by_code.get(code)
-        return _FakeStation(station_id) if station_id is not None else None
+        if station_id is None:
+            return None
+        return _FakeStation(station_id, self._tenants.get(code, DEFAULT_TENANT_ID))
 
     def update_station_status(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -69,6 +77,51 @@ class _FakeGroupStore:
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
         self.added.append((group_id, station_id))
+
+
+class _FakeConn:
+    """`PgStationGroupStore.__init__` reads `conn.engine` for its default
+    transaction factory, so a bare object is not enough even when the stores never
+    execute anything.
+    """
+
+    @property
+    def engine(self) -> _FakeEngine:
+        return _FakeEngine()
+
+    def execution_options(self, **kwargs: object) -> _FakeConn:
+        del kwargs
+        return self
+
+    def __enter__(self) -> _FakeConn:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeEngine:
+    """Enough engine to let `main` run its dry-run branch: a connect() context and a
+    begin() context. Neither executes anything — the stores are monkeypatched out.
+    """
+
+    def connect(self) -> _FakeConn:
+        return _FakeConn()
+
+    def begin(self) -> _FakeConn:
+        return _FakeConn()
+
+
+_PLAN = GroupPlan(
+    name="g",
+    tenant_id=DEFAULT_TENANT_ID,
+    group_id=StationGroupId(uuid4()),
+    group_exists=False,
+    members_to_add=(("2009", StationId(uuid4())),),
+    already_members=(),
+    unresolved_codes=(),
+    wrong_tenant_codes=(),
+)
 
 
 class _FakeAuditLog:
@@ -259,3 +312,83 @@ class TestApplying:
         apply_station_group(plan, group_store=store, clock=_clock)
 
         assert lookup.status_writes == 0
+
+
+class TestTenantSafety:
+    def test_a_station_from_another_tenant_is_refused_before_any_write(self) -> None:
+        """It resolves by code, so only a tenant check catches it. Left through, the
+        dry run reports success and the apply fails on the membership's composite
+        tenant FK — after the group row already exists.
+        """
+        from sapphire_flow.types.ids import TenantId
+
+        a, other = StationId(uuid4()), StationId(uuid4())
+        store = _FakeGroupStore()
+        plan = plan_station_group(
+            name="g",
+            station_codes=["2009", "8888"],
+            network="bafu",
+            tenant_id=DEFAULT_TENANT_ID,
+            station_store=_FakeStationLookup(
+                {"2009": a, "8888": other},
+                tenants={"8888": TenantId(uuid4())},
+            ),
+            group_store=store,
+        )
+
+        assert plan.wrong_tenant_codes == ("8888",)
+        assert [code for code, _ in plan.members_to_add] == ["2009"]
+        assert "8888" in plan.blocking_codes
+
+        with pytest.raises(ValueError, match="8888"):
+            apply_station_group(plan, group_store=store, clock=_clock)
+
+        assert store.stored == []
+        assert store.added == []
+
+
+class TestTheDryRunGuard:
+    """Independent review 2026-09-11 (minor): every other test calls the planning and
+    apply functions DIRECTLY, so moving the write above the `--apply` check would
+    leave them all green while the default invocation started writing. These call
+    `main()` and are the only thing that can catch that.
+    """
+
+    def test_the_default_invocation_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import scripts.create_station_group as mod
+
+        applied: list[object] = []
+        monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+        monkeypatch.setattr(mod, "plan_station_group", lambda **_: _PLAN)
+        monkeypatch.setattr(
+            mod, "apply_station_group", lambda *a, **k: applied.append(a)
+        )
+        monkeypatch.setattr(mod, "_engine_for", lambda _url: _FakeEngine())
+
+        exit_code = mod.main(["--name", "g", "--station-code", "2009"])
+
+        assert exit_code == 0
+        assert applied == [], "a dry run must not reach the write path"
+
+    def test_apply_reaches_the_write_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The discriminating other half — without it, a main() that never writes at
+        all would pass the test above.
+        """
+        import scripts.create_station_group as mod
+
+        applied: list[object] = []
+        monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+        monkeypatch.setattr(mod, "plan_station_group", lambda **_: _PLAN)
+        monkeypatch.setattr(
+            mod, "apply_station_group", lambda *a, **k: applied.append(a)
+        )
+        monkeypatch.setattr(mod, "_engine_for", lambda _url: _FakeEngine())
+
+        exit_code = mod.main(["--name", "g", "--station-code", "2009", "--apply"])
+
+        assert exit_code == 0
+        assert len(applied) == 1

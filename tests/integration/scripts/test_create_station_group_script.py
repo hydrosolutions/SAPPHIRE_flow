@@ -12,12 +12,18 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.ids import StationId
+from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
-from scripts.create_station_group import apply_station_group, plan_station_group
+from scripts.create_station_group import (
+    GroupPlan,
+    apply_station_group,
+    plan_station_group,
+)
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
@@ -103,3 +109,71 @@ class TestGroupCreationAgainstPostgres:
         )
         assert stored is not None
         assert len(stored.station_ids) == 2, "a re-run must not duplicate members"
+
+
+class TestTheWriteIsAtomic:
+    """Independent review 2026-09-11 (major): `PgStationGroupStore` defaults its
+    transaction factory to `conn.engine.begin` — a NEW engine-level transaction — so
+    `store_group` would commit independently while `add_station_to_group` and the
+    audit INSERT (both plain `self._conn.execute`) stayed in the caller's. A failure
+    after the group row would leave an EMPTY, UNAUDITED group behind while the CLI
+    reported failure.
+
+    The success-only tests above cannot see that: they only ever commit. This one
+    forces a failure mid-write and asserts nothing survives.
+    """
+
+    def test_a_failure_after_the_group_row_leaves_no_group(
+        self, db_engine: sa.Engine
+    ) -> None:
+        from contextlib import nullcontext
+
+        name = f"atomicity-{uuid4()}"
+        station_id = StationId(uuid4())
+
+        with db_engine.begin() as seed:
+            PgStationStore(seed).store_station(
+                make_station_config(
+                    station_id=station_id, code=f"C{uuid4().hex[:6]}", network="bafu"
+                )
+            )
+
+        plan = GroupPlan(
+            name=name,
+            tenant_id=DEFAULT_TENANT_ID,
+            group_id=StationGroupId(uuid4()),
+            group_exists=False,
+            members_to_add=((f"C{station_id}", station_id),),
+            already_members=(),
+            unresolved_codes=(),
+            wrong_tenant_codes=(),
+        )
+
+        class _ExplodingAudit:
+            def append_entry(self, entry: object) -> None:
+                del entry
+                raise RuntimeError("audit write failed")
+
+        with (
+            pytest.raises(RuntimeError, match="audit write failed"),
+            db_engine.begin() as write_conn,
+        ):
+            apply_station_group(
+                plan,
+                group_store=PgStationGroupStore(
+                    write_conn,
+                    transaction_factory=lambda: nullcontext(write_conn),
+                ),
+                clock=_clock,
+                audit_log_store=_ExplodingAudit(),
+            )
+
+        with db_engine.connect() as check:
+            survivor = PgStationGroupStore(check).fetch_group_by_name(
+                DEFAULT_TENANT_ID, name
+            )
+
+        assert survivor is None, (
+            "the group row must roll back with the failed audit write — "
+            "if it survives, store_group opened its own transaction"
+        )
