@@ -253,9 +253,15 @@ gates.
   (`_FILLABLE_PARAMETERS` — Nepal's snow reaches the same store with `member_id=None`,
   which is also how a deterministic control run is marked), and only for NWP sources
   whose native cadence is DECLARED — `icon_ch2_eps` today; `ifs_ecmwf` is lead-dependent
-  and deliberately not declared, so Nepal is unaffected on both counts). Nothing is derived, interpolated or invented — a filled
-  bucket is a forecast that was actually issued — and `max_nan` still gates values
-  exactly as before. Training and hindcast are unchanged and cannot reach the fill
+  and deliberately not declared, so Nepal is unaffected on both counts). Nothing is
+  interpolated, synthesised or carried forward: every value is a stored NWP value that
+  was actually issued. 🪤 Be precise about what a filled bucket IS, because the loose
+  reading invites exactly the interior-filling this contract still forbids — it is the
+  native grid AGGREGATED to the model step (the same resampling reanalysis buckets get,
+  and only when the step's full native complement is present), and consecutive steps may
+  come from DIFFERENT cycles, since the source is the freshest covering cycle per step.
+  So it is neither one issued forecast nor a derived estimate. `max_nan` still gates
+  values exactly as before. Training and hindcast are unchanged and cannot reach the fill
   (`tests/unit/services/test_forecast_fill_does_not_reach_history.py`)
 - `resample_to_time_step` is shared across **operational, training, AND
   hindcast** `past_targets` assembly (Plan 228 P1 — hindcast used to build

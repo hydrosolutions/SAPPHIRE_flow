@@ -9,6 +9,17 @@ filled rows exist only inside an operational assembler's frame and are never
 persisted. That is a structural property, so this is a structural test — it
 fails the moment the fill spreads to a historical path, which no value-based
 assertion on today's frames would catch.
+
+KNOWN LIMIT, recorded so this file is not read as more than it proves
+(independent Codex review 2026-09-11): both checks are structural — a
+reference scan and a signature scan — so they catch DIRECT wiring only. A
+historical assembler that reached the fill INDIRECTLY, through some
+intermediate wrapper carrying the forecast store on a context object, would
+leave both green. That is accepted rather than fixed: the alternative is a
+runtime provenance guard, which D6 deliberately declined ("we ship what data
+we have"), and the plan's DO-NOT-OVER-ENGINEER rule binds here. What keeps
+the indirect route closed today is that neither historical assembler takes a
+`WeatherForecastStore` at all — which is exactly what the second test pins.
 """
 
 from __future__ import annotations
