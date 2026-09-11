@@ -147,6 +147,7 @@ COPY --chown=app:app \
     scripts/backfill_meteoswiss_history.py \
     scripts/backfill_era5_land_history.py \
     scripts/validate_forcing_reference.py \
+    scripts/create_station_group.py \
     /app/scripts/
 
 ENV PATH="/app/.venv/bin:$PATH"

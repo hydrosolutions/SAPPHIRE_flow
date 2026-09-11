@@ -27,6 +27,9 @@ _CURATED_SCRIPTS = frozenset(
         "backfill_meteoswiss_history.py",
         "backfill_era5_land_history.py",
         "validate_forcing_reference.py",
+        # Plan 262 T3a: the operator route for station-group CREATION, which had
+        # no non-test caller before it.
+        "create_station_group.py",
     }
 )
 

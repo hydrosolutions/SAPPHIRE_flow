@@ -747,8 +747,8 @@ Canonical templates:
 
 A curated set of operator CLIs ships inside the runtime image at
 `/app/scripts` — `import_caravan_attributes.py`, `onboard.py`,
-`backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`, and
-`validate_forcing_reference.py` (see
+`backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`,
+`validate_forcing_reference.py`, and `create_station_group.py` (see
 `docs/plans/218-ship-operator-scripts-in-the-image.md` D1/D2 for what's
 excluded and why; this is not all of `scripts/`).
 
