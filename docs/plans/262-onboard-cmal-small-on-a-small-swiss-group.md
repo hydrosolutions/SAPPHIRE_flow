@@ -19,7 +19,12 @@ source: 2026-09-09 — read-only measurement of the repo, the owner's model tree
 | round | date | what it reviewed | outcome |
 |---|---|---|---|
 | 1 | 2026-09-09 | the **pre-rewrite** plan (Claude + Codex) | findings folded — then the plan was REWRITTEN the same day, so this round does not cover the current text |
-| 2 | 2026-09-11 | **this revision** (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors, all folded below |
+| 2 | 2026-09-11 | the **pre-fold** text of this revision (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors |
+| 3 | 2026-09-11 | **the fold of round 2** (Codex, confirming) | 6 of 9 FIXED, no blocker remaining; 1 major + 3 minors MOVED or STILL PRESENT — folded in turn, and this table is one of them |
+
+⛔ **The current text has not itself been reviewed end to end.** Round 3 reviewed the fold of
+round 2; this paragraph and the four corrections beside it postdate round 3. That is the honest
+state, and it is the same distinction round 2 caught round 1 failing to make.
 
 ⚠️ Round 1's "all findings folded" line previously stood alone here, which read as though the
 current text had been reviewed. It had not. Recording which text a round covered is the point —
@@ -218,9 +223,18 @@ delayed by it.
 ⚠️ **The dependency was previously stated three ways** — `depends_on: [261]` (plan-wide) in the
 frontmatter, "parallel except T5" in this paragraph, and **no 261 edge at all** in the phase
 graph. Independent review 2026-09-11 (major). It is now encoded **once**: the frontmatter keeps
-`depends_on: [261]` as the prerequisite of record, and **phase-4 carries an explicit
-`requires_deployed: [261]` gate** so the constraint lives where an executor reads it. The prose
-here describes that gate, it does not define it.
+`depends_on: [261]` as the prerequisite of record, and **phase-4 carries a
+`requires_deployed: [261]` annotation** so the constraint is visible where an executor reads the
+graph. The prose here describes it, it does not define it.
+
+⚠️ **`requires_deployed` is a MANUALLY CHECKED note, not an enforced gate — confirming review
+2026-09-11 (minor).** Nothing in this repo consumes that key; the phase graph records ordering
+for a human or an orchestrator that honours `depends_on` only. It is written down so the
+constraint is not lost, and it is satisfied by the deployment recorded below. Do not read it as
+automatic enforcement, and do not build machinery to make it one — that would be exactly the
+over-engineering this plan forbids. The earlier claim that the dependency is "encoded once" was
+also wrong: `depends_on: [261]` remains in the frontmatter, deliberately, as the prerequisite of
+record. The two now say the same thing rather than three different things.
 
 ✅ **The gate is SATISFIED as of 2026-09-11.** Plan 261 merged (`75cf80cf`, PR #270) and deployed
 to the mini at v0.1.901. Its first cycle filled the past forcing tail **143 times with zero
@@ -293,10 +307,20 @@ backwards, and a suite containing it would go green on the unmodified tree and r
 finished one.
 
 The RED test asserts the **end state**, on the symbol that already exists so the failure cannot
-be a missing class: call `import_external_artifact` with a constructed **`CmalPoolPT`** and a
-valid fixture, and assert the import **proceeds past the `config_hash` gate**
-(`services/model_import.py:386-393`) — to a successful import, or to a named downstream
-sentinel. Today it stops at the missing-hash `ConfigurationError`; after T1 it does not.
+be a missing class: call `import_external_artifact` with **`ForecastInterfaceAdapter(CmalPoolPT())`**
+— a valid GROUP target, and an `expected_config_hash` computed independently — and assert the
+import **proceeds past the `config_hash` gate** (`services/model_import.py:386-393`), to a
+successful import or a specifically named downstream sentinel. Today it stops at the
+missing-hash `ConfigurationError`; after T1 it does not.
+
+🪤 **The adapter wrapper is load-bearing, not incidental — confirming review 2026-09-11
+(major).** A *raw* `CmalPoolPT()` never reaches the hash gate at all: the shim forwards **FI's**
+scope enum, `_declared_artifact_scope` requires an `isinstance` of **SAP3's** `ArtifactScope`
+(`services/model_import.py:218`), and the conversion happens only in
+`ForecastInterfaceAdapter.__init__` (`adapters/forecast_interface.py:473`,
+`ArtifactScope(fi_model.artifact_scope.value)`). So the unwrapped version fails **earlier, for
+an unrelated reason, both before AND after T1** — red for the wrong cause is not red. The first
+correction of this task's RED made exactly that mistake.
 
 🪤 A test failing with `AttributeError: CmalSmall` still proves only that the class is unwritten
 — which is why the RED case is written against `CmalPoolPT`, not the new subclass.
@@ -629,7 +653,8 @@ first thing that would.
   dispatch never combines: `build_combined_forecasts` is called only from the Phase B
   per-station loop (`flows/run_forecast_cycle.py:2955`, `:3285` — **re-verified 2026-09-11;
   the previously cited `:2932`/`:3262` had drifted**), both *before* the
-  Phase B2 group loop opens at `:3341`, and it takes an in-memory
+  Phase B2 group loop opens (the `# --- Phase B2: per-group forecast loop ---` marker, `:3360`
+  as of 2026-09-11 — **cite the marker, not the line**), and it takes an in-memory
   `MultiModelForecastResult` rather than reading the store, so a group forecast cannot
   re-enter combination on a later cycle either. `docs/touchpoint-maps.md:400` states it
   (**not `:381` — re-verified 2026-09-11, the file has grown**),
