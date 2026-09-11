@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-09
 revised: 2026-09-11
 plan: 262
