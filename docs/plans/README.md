@@ -355,6 +355,31 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — v1 Nepal feature (B)
 
+- **Nepal observation-ingest family (264 / 268 / 269)** — three `DRAFT` plans that must be
+  read together; none is READY and implementation has not started.
+  - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
+    `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
+    review). Fifteen of sixteen decisions closed; **D14 reopened** — the DHM daily QC
+    threshold calibration, which needs a hydrologist for the values and must avoid three
+    traps: deriving a threshold from the record it judges (circular), reusing the rating
+    tables (not independent evidence), and publishing a restricted tabulated value unless
+    passed through a deliberately lossy transform. The delivery itself is **unpublishable**;
+    never check an excerpt into the repo.
+  - **264** — QC rules select on network, not only parameter and cadence — `DRAFT`,
+    `blocks: [268]`. Adds a network dimension with most-specific-wins so a DHM rule set does
+    not collide with the Swiss one, plus a fail-closed policy for a rule set that resolves
+    nothing and the `rule_version` correction (D5, closed: fix it). **D4 open** —
+    configuration composition. Four rounds have each found a wrong repository claim in it;
+    the golden fixture in T4 must be captured before any DHM row reaches `config.toml`.
+  - **269** — Per-station QC thresholds that can be onboarded and corrected — `DRAFT`,
+    `blocks: [268]`, **new 2026-09-11, no review yet**. Builds the persistence tier the
+    owner's 268 D14 decision requires and that neither sibling owns: `StationQcOverride` is
+    a bare dataclass with no table, store, Protocol or config key, and both live callers
+    hard-code `overrides=[]`. Mirrors the **dead** `forecast_qc_overrides` schema
+    (migration 0012, read by nothing, six call sites hard-coded) and the live
+    `station_thresholds` read wiring (whose writer is likewise uncalled). Zero-row
+    equivalence is a property of the existing merge, not a hope. Four decisions open.
+
 - **106** — v1 (Nepal DHM) critical-path roadmap — `READY` (locked 2026-07-08) — **the
   sequencing plan. Read this first for v1 planning.** Locks the wave order (0 stabilize →
   1 forcing → 2 obs/rating → 3 auth/deploy → 4 DHM go-live → 5 v1.x), classifies every

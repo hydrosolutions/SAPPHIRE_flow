@@ -360,10 +360,13 @@ added, or it bakes in the change it exists to detect.
 - Forecast QC rule selection (D1).
 - Per-station QC overrides **as persisted rows**. `StationQcOverride` is a dataclass with no
   table, no store and no loader, and both production callers hard-code an empty list. This plan
-  does not add that schema. **Note for the set:** the dataclass *can already* express a
-  per-station threshold in memory, and Plan 268's six station-specific limits are built that
-  way — so the capability Plan 268 needs is not blocked on this exclusion. Plan 268 T7 owns
-  constructing them; this plan owns only which rule they merge into.
+  does not add that schema. **Plan 269 now owns it** (opened 2026-09-11), because the owner's
+  2026-09-10 answer to Plan 268 D14 — thresholds live in station onboarding configuration,
+  updatable later — cannot be met in memory. The earlier note here said Plan 268 T7 would
+  construct them in memory and that the capability was therefore unblocked; that is no longer
+  the route. This plan still owns only which rule an override merges into. **Precedence between
+  the two mechanisms is Plan 269 D2** — station beats network beats generic — and it is stated
+  there, once.
 - Any change to a threshold *value* currently in force. (Flag `rule_version` **does** change,
   once and deliberately — D5.)
 - Fixing configuration composition so overlays can add rules incrementally (D4).

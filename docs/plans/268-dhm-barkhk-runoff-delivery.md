@@ -10,7 +10,7 @@ reviews:
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
   - "codex 2026-09-10 set — NOT READY; reviewed with 264; 3 seam blockers neither plan owned"
 open_decisions: [D14]
-depends_on: [264]
+depends_on: [264, 269]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
 related: [035]
@@ -44,7 +44,8 @@ different door.
 
 **Fifteen of sixteen closed; D14 is reopened** — the owner found it aimed at a *plausible*
 maximum where the project's own standard calls for a *physical impossibility* gate, which would
-have reproduced the Swiss failure one level down. T1–T6 are buildable. T7 waits on D14 and on
+have reproduced the Swiss failure one level down. T1–T6 are buildable. T7 waits on D14, on
+the per-station threshold tier in Plan 269, and on
 **Plan 264**, which the owner's answer to D15 split out: teaching QC rules which network they
 apply to changes shared code the live Swiss deployment depends on, and that risk gets its own
 plan and its own review rather than a paragraph in this one.
@@ -655,8 +656,11 @@ inside the import) quietly accepted that and would have produced thresholds nobo
 without editing code.
 
 Delivering the owner's decision therefore requires: a migration and table, a store and Protocol
-and fake, a config surface on station onboarding, and a loader wired into the QC call path —
-none of it currently in any task. `station_thresholds` (`db/metadata.py`) is a useful precedent
+and fake, a config surface on station onboarding, and a loader wired into the QC call path.
+**Plan 269 now owns all of it** (opened 2026-09-11; `blocks: [268]`), so this plan's remaining
+share of D14 is the *values* and the lossy transform that keeps a table-derived ceiling from
+publishing a restricted tabulated value — not the mechanism. T7 changes shape accordingly: the
+six ceilings become configured rows rather than in-memory constructions. `station_thresholds` (`db/metadata.py`) is a useful precedent
 for the shape (per-station, per-parameter, with a `source` discriminator) but is a **different**
 concern: those are alert danger levels, not QC bounds. Do not overload it.
 
