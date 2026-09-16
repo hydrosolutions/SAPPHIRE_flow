@@ -26,7 +26,7 @@ BANNER = "Illustrative scenario — synthetic data, not an operational forecast"
 
 
 def _calendar_time(value: str) -> str:
-    datetime.fromisoformat(value)
+    ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
     return value
 
 
