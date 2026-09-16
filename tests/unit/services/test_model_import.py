@@ -766,3 +766,100 @@ class TestUnitOfWorkAppliesToTheFakeBackedPath:
         # status forever — the fake-backed path had no rollback at all.
         assert artifact_store._records == {}  # noqa: SLF001
         assert artifact_store._bytes == {}  # noqa: SLF001
+
+
+class TestAquacastShimProvenanceGate:
+    """Plan 262 T1's RED case. Needs the real package (constructing a shim touches
+    `aquacast`), so it SKIPS in CI's required `unit` job.
+
+    ⚠️ This test's SHAPE was specified wrongly twice; the corrections are the point:
+
+    1. Asserting today's `ConfigurationError` naming `config_hash` would PASS before
+       the change and fail after — a characterization test written backwards.
+    2. Using a RAW ``CmalPoolPT()`` never reaches the hash gate at all: the shim
+       forwards ForecastInterface's scope enum, ``_declared_artifact_scope`` requires
+       an ``isinstance`` of SAP3's ``ArtifactScope``, and only
+       ``ForecastInterfaceAdapter.__init__`` converts it. It would fail EARLIER, for
+       an unrelated reason, before AND after — red for the wrong cause is not red.
+
+    So: wrap in the adapter, and assert passage PAST the hash gate. ``CmalPoolPT`` is
+    used rather than ``CmalSmall`` because it already existed — a failure can
+    therefore never be "the new class is unwritten".
+    """
+
+    def test_the_adapter_carries_config_hash_past_the_importers_drift_gate(
+        self,
+    ) -> None:
+        pytest.importorskip("aquacast", reason="needs the `aquacast` extra")
+
+        import hashlib
+        from importlib import resources
+
+        from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+        from sapphire_flow.models.aquacast import CmalPoolPT
+        from sapphire_flow.types.station import StationGroup
+        from tests.fakes.fake_stores import FakeStationGroupStore
+
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="aquacast-provenance-gate",
+            station_ids=frozenset(),
+            created_at=_TRAINED_AT,
+        )
+        group_store.store_group(group)
+
+        adapted = ForecastInterfaceAdapter(CmalPoolPT())
+        expected = hashlib.sha256(
+            resources.files("sapphire_flow.models.aquacast.configs")
+            .joinpath("cmal_pool_pt.yaml")
+            .read_bytes()
+        ).hexdigest()
+
+        # The sentinel: import proceeds past BOTH the missing-hash and the
+        # hash-equality checks, and stops only where the bytes fail to deserialize.
+        # Before T1 this raised ConfigurationError naming `config_hash` instead —
+        # a DIFFERENT exception type, so this assertion genuinely fails beforehand.
+        with pytest.raises(ModelLoadError, match="deserialize"):
+            _import(
+                model=adapted,
+                model_id=ModelId("cmal_pool_pt"),
+                artifact_bytes=b"not-a-real-checkpoint",
+                expected_config_hash=expected,
+                group_id=group.id,
+                group_store=group_store,
+            )
+
+    def test_a_wrong_expected_hash_is_still_refused(self) -> None:
+        """The other direction: exposing `config_hash` must not disable the drift check
+        it exists to enable. Without this, a constant or empty digest would pass above.
+
+        🪤 Matched on "config/artifact mismatch", NOT on the bare word `config_hash` —
+        the missing-hash refusal also contains that word, so a loose match would make
+        this test pass identically before and after the change and prove nothing.
+        """
+        pytest.importorskip("aquacast", reason="needs the `aquacast` extra")
+
+        from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+        from sapphire_flow.models.aquacast import CmalPoolPT
+        from sapphire_flow.types.station import StationGroup
+        from tests.fakes.fake_stores import FakeStationGroupStore
+
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="aquacast-provenance-gate-mismatch",
+            station_ids=frozenset(),
+            created_at=_TRAINED_AT,
+        )
+        group_store.store_group(group)
+
+        with pytest.raises(ConfigurationError, match="config/artifact mismatch"):
+            _import(
+                model=ForecastInterfaceAdapter(CmalPoolPT()),
+                model_id=ModelId("cmal_pool_pt"),
+                artifact_bytes=b"not-a-real-checkpoint",
+                expected_config_hash="0" * 64,
+                group_id=group.id,
+                group_store=group_store,
+            )

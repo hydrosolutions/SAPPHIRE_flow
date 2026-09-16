@@ -15,7 +15,7 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 | `postgres` | `postgis/postgis:16-3.4` | — | `pg_isready -U sapphire` | `unless-stopped` | v0+v1 |
 | `pgbouncer` | `pgbouncer/pgbouncer` | postgres (healthy) | `pg_isready -h localhost -p 6432` | `unless-stopped` | **v1** (§A3) |
 | `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` | v0+v1 |
-| `prefect-worker` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0** (§A6) |
+| `prefect-worker` | custom (**sapphire-flow-aquacast** — its OWN tag, built with `WITH_AQUACAST=1`; Plan 262 T2) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0** (§A6) — the ONLY image carrying aquacast/torch |
 | `prefect-worker-ingest` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — dedicated `ingest` pool worker isolating `*/5` obs ingest from the shared `default` pool (Plan 098) |
 | `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
@@ -173,11 +173,27 @@ Responsibilities are split across two stages:
 
 ### Upgrade procedure
 
-0. Export the private-clone build token so `--build` steps can fetch `recap-dg-client`: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` (or supply it from the CI/host secret store). The base `docker-compose.yml` declares this as an env-sourced build secret (`recap_dg_client_token`) and passes it into the four building services (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain `docker compose ... up -d --build` now clones the private dependency — the manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` pre-build is no longer required (it remains a valid fallback). The token must still be provided by the host/CI; compose only plumbs it through.
+0. Export the private-clone build tokens so `--build` steps can fetch `recap-dg-client` — and, for the forecast worker's image, `aquacast`: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` and `export AQUACAST_TOKEN=$(cat secrets/aquacast_token)` (Plan 262 T2; the Dockerfile mounts the aquacast secret with `required=false`, so the four default-image services build without it) (or supply it from the CI/host secret store). The base `docker-compose.yml` declares this as an env-sourced build secret (`recap_dg_client_token`) and passes it into the four building services (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain `docker compose ... up -d --build` now clones the private dependency — the manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` pre-build is no longer required (it remains a valid fallback). The token must still be provided by the host/CI; compose only plumbs it through.
 1. Pull external images: `docker compose pull --ignore-buildable` (local-build-only — the `sapphire-flow` app image is built in step 3, not pulled; `--ignore-buildable` pulls only the external `postgres`/`prefect`/`caddy` images and skips the buildable app services, which have no registry)
 2. Stop workers (graceful): `docker compose stop prefect-worker prefect-worker-ingest` (v0 both workers; v1: `prefect-worker-ops prefect-worker-training`)
-3. Build the fresh image + run init: `docker compose run --rm --build init` (`--build` rebuilds the local `sapphire-flow:${VERSION}` image FIRST so migrations run on the new image, then applies migrations, creates both pools, reroutes deployments; requires `RECAP_DG_CLIENT_TOKEN` exported per step 0. Compose supports `--build` on `run` since v2.13)
-4. Restart all: `docker compose up -d` (step 3 already built the image, so `up -d` reuses it — no redundant second build; add `--build` only if the image is not already present, e.g. after a host-level image prune)
+3. Build **BOTH** images + run init:
+   ```bash
+   docker compose build prefect-worker          # sapphire-flow-aquacast:${VERSION}
+   docker compose run --rm --build init         # sapphire-flow:${VERSION}, then migrate
+   ```
+   ⚠️ **Two images exist since Plan 262 T2** — `prefect-worker` builds
+   `sapphire-flow-aquacast:${VERSION}` (the `aquacast` extra: torch and the whole ML stack)
+   while the other four build the default `sapphire-flow:${VERSION}`. `run --rm --build init`
+   builds **only the service it runs**, so without the explicit `build prefect-worker` first,
+   the ML image is never preflighted: `up -d` at step 4 would either build it implicitly —
+   moving a multi-minute arm64 build inside the window where the workers are stopped — or
+   fail outright. Build it FIRST so a broken ML build is discovered **before**
+   `alembic upgrade head` mutates the schema.
+   Requires `RECAP_DG_CLIENT_TOKEN` **and `AQUACAST_TOKEN`** exported per step 0. (Compose
+   supports `--build` on `run` since v2.13.)
+4. Restart all: `docker compose up -d` (step 3 already built both images, so `up -d` reuses
+   them — no redundant build; add `--build` only if an image is not already present, e.g.
+   after a host-level image prune)
 
 > **Plan 098 note**: both v0 workers must be quiesced in step 2 before `init`/`alembic upgrade head` re-runs — leaving `prefect-worker-ingest` running during the upgrade breaks the sequence. Phase 1 (routing `ingest-observations` to the `ingest` pool) and Phase 2 (the `prefect-worker-ingest` container that serves it) ship together in a single image build + compose update; a partial deploy leaves the `ingest` pool workerless and the obs feed dead.
 

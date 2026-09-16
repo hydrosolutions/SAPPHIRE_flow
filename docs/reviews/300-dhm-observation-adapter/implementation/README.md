@@ -39,3 +39,19 @@ hashes and ZIP integrity. Each report states its verification limits.
 
 The full-suite merge gate and live Nepal activation prerequisites remain open.
 No implementation changes, push, PR, merge or deployment were performed.
+
+## Subsequent full-suite run and PR
+
+The owner subsequently requested the full suite followed by a PR. `uv run pytest`
+passed on `558dd18d`: 6,335 passed, 51 skipped, 15 deselected, 54 warnings in
+996.31 seconds. [PR #278](https://github.com/hydrosolutions/SAPPHIRE_flow/pull/278)
+was opened. Current main (`925ec599`) was then merged into the feature branch to
+resolve conflicts confined to the package-version entries in `pyproject.toml`,
+`src/sapphire_flow/__init__.py` and `uv.lock`; the combined version is `0.1.913`.
+No DHM behavior changed during that resolution.
+
+The full default suite was rerun after the merge and version bump: **6,408 passed,
+53 skipped, 15 deselected, 54 warnings in 952.16 seconds**. The repository's
+default selection excludes live, deployment and slow tests. Review findings
+remain unapplied and are disclosed in the PR; live Nepal activation prerequisites
+remain open.

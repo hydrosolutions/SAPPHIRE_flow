@@ -27,6 +27,9 @@ _CURATED_SCRIPTS = frozenset(
         "backfill_meteoswiss_history.py",
         "backfill_era5_land_history.py",
         "validate_forcing_reference.py",
+        # Plan 262 T3a: the operator route for station-group CREATION, which had
+        # no non-test caller before it.
+        "create_station_group.py",
     }
 )
 
@@ -185,4 +188,37 @@ class TestRuntimeStageShipsCuratedOperatorScripts:
                     offending.append(src)
         assert not offending, (
             f"COPY sources reference excluded scripts/directories: {offending}"
+        )
+
+
+class TestTheCiSmokeCheckListMatches:
+    """Plan 262 T3a: the curated list is duplicated in a FIFTH place —
+    `.github/workflows/ci.yml`'s "Smoke-check operator scripts" step hardcodes it to
+    verify the built image ships exactly that set.
+
+    Nothing guarded it. Adding `create_station_group.py` to the Dockerfile, this
+    module's constant and the two documents left every local check green, and CI
+    failed on the image containing one script more than the workflow expected. A
+    list that must be edited in five places needs a test that reads all five.
+    """
+
+    def test_the_workflow_expects_the_same_curated_set(self) -> None:
+        workflow = (_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+        marker = "Smoke-check operator scripts"
+        assert marker in workflow, "the smoke-check step was renamed or removed"
+
+        step = workflow[workflow.index(marker) :]
+        listed = {
+            token.strip().rstrip("\\").strip()
+            for token in step.split("expected=$(printf", 1)[1]
+            .split("| sort)", 1)[0]
+            .splitlines()
+            if token.strip().rstrip("\\").strip().endswith(".py")
+        }
+
+        assert listed == _CURATED_SCRIPTS, (
+            "the CI smoke-check list and the curated list disagree\n"
+            f"only in CI: {sorted(listed - _CURATED_SCRIPTS)}\n"
+            f"only in the curated set: {sorted(_CURATED_SCRIPTS - listed)}"
         )

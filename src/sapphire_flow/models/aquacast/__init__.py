@@ -5,6 +5,7 @@ from sapphire_flow.models.aquacast._shim import (
     CANONICAL_TO_AQUACAST_NAME,
     AquacastShim,
     CmalPoolPT,
+    CmalSmall,
 )
 from sapphire_flow.models.aquacast._units import (
     m3_per_s_to_mm_per_day,
@@ -16,6 +17,7 @@ __all__ = [
     "CANONICAL_TO_AQUACAST_NAME",
     "AquacastShim",
     "CmalPoolPT",
+    "CmalSmall",
     "m3_per_s_to_mm_per_day",
     "mm_per_day_to_m3_per_s",
 ]

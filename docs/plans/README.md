@@ -3,6 +3,8 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
+- **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — COMPLETE; reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
+
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
 YAML `status:` frontmatter is the only machine-readable status source for active
@@ -46,7 +48,8 @@ Do not add a separate acceptance-map table or persistent run-state file.
   `COMPLETE` — offline implementation and 308 focused checks passed; archived.
   [Independent patch reviews](../reviews/300-dhm-observation-adapter/implementation/README.md)
   completed with five distinct low-severity findings awaiting disposition; no
-  blocking implementation defect was found. The full-suite merge gate remains.
+  blocking implementation defect was found. The full default suite passed after
+  merging current main: 6,408 passed, 53 skipped, 15 deselected (2026-09-16).
   Owner-relayed BIPAD confirmation establishes the request/response
   contract for direct DHM adapter development. Captured examples support offline
   parsing, history/pagination and Flow 2 integration; real DHM connection settings

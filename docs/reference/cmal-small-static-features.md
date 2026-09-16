@@ -1,10 +1,17 @@
 # `cmal_small` — declared static features (vendored)
 
 **78 static features**, read from `cmal_small/config.yaml` in the owner's model tree
-(`2025-01-BARHKH/models/global/cmal_small/`, dated 2026-08-31). That file is **not** in this repo,
-so this list is vendored to make the model's contract reviewable without it — an independent review
-of the alias change could confirm the mechanism but explicitly could not ratify the 78-name
-denominator.
+(`2025-01-BARHKH/models/global/cmal_small/`, dated 2026-08-31).
+
+✅ **That config is now IN this repo (Plan 262 T1, 2026-09-11)**, vendored byte-identically as
+`src/sapphire_flow/models/aquacast/configs/cmal_small.yaml`, SHA-256
+`94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` — pinned by a test that runs
+without the `aquacast` extra, so a hand-edit or a re-export cannot pass silently. **The 78-name
+denominator below is therefore now independently reviewable from the repo alone**, which it was
+not when this file was written; the resolution table itself is unchanged.
+
+🔑 The same digest is what `AquacastShim.config_hash` returns, taken from this vendored file's
+bytes — so the drift check the importer enforces and the config the shim binds cannot diverge.
 
 ## Resolution against the `caravan:` namespace
 
