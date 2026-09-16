@@ -314,6 +314,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     OBSERVATION_REPROCESSED = "observation_reprocessed"
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
+    STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
 
 class StationOwnership(Enum):
     OWN = "own"
@@ -1337,7 +1338,9 @@ assign successes AND their tenant-mismatch rejections (Slice E, 2026-07-24 —
 `services/onboarding.py::onboard_from_camelsch`, `services/training.py::promote_artifact`/
 `store_and_promote_artifact`, `services/model_onboarding.py::create_station_assignment`/
 `create_group_assignment`, the scheduled `flows/train_models.py::train_models_flow`'s foreign-tenant
-unit skip).
+unit skip), and station-group CREATION (Plan 262 T3a, 2026-09-11 —
+`scripts/create_station_group.py`, which writes `STATION_GROUP_CREATED` inside the same
+transaction as the group and membership rows, so a failed audit insert rolls all three back).
 
 ### `WritePrincipal` / `PrincipalId` (Plan 147 Slice E, R5/G6 LOCKED)
 

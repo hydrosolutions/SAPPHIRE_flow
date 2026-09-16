@@ -341,7 +341,11 @@ class AuditEventType(Enum):
     STATION_ONBOARDED and MODEL_ASSIGNED are additive members (Plan 147
     Slice B) not present in the original spec-only draft. API_KEY_SCOPE_CHANGED
     is additive too (Plan 215 T6/T1) — one row per `grant`/`revoke-station`/
-    `set-scope-mode` write, reusing this same append path.
+    `set-scope-mode` write, reusing this same append path. STATION_GROUP_CREATED
+    is additive too (Plan 262 T3a) — group CREATION had no operator route at all
+    before it, and no non-test caller of `store_group`. `audit_log.event_type` is
+    plain text with no check constraint (only `actor_type` is constrained), so a new
+    member needs NO migration.
     """
 
     LOGIN = "login"
@@ -356,6 +360,7 @@ class AuditEventType(Enum):
     API_KEY_REQUEST = "api_key_request"
     FORECAST_STATUS_CHANGE = "forecast_status_change"
     FORECAST_ADJUSTED = "forecast_adjusted"
+    STATION_GROUP_CREATED = "station_group_created"
     MODEL_PROMOTED = "model_promoted"
     MODEL_REJECTED = "model_rejected"
     STATION_STATUS_CHANGE = "station_status_change"

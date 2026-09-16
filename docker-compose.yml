@@ -2,8 +2,12 @@
 # For local dev, add the dev overlay to expose postgres, prefect, and API ports:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
-# Shared build config for the four services that build the sapphire-flow image
-# (prefect-worker, prefect-worker-ingest, api, init — all share the same image).
+# Shared build config for the four services that build the DEFAULT, torch-free
+# sapphire-flow image (prefect-worker-ingest, prefect-worker-backup, api, init).
+# Plan 262 T2: `prefect-worker` is NO LONGER one of them — it builds its own
+# aquacast/torch-bearing image below, because the Dockerfile's rule is that "only
+# the forecast-cycle worker image installs it". Anything added to this anchor
+# reaches those four and NOT the forecast worker; check both when changing builds.
 # The recap_dg_client_token BUILD-time secret authenticates the private
 # hydrosolutions/recap-dg-client git clone during the builder's `uv sync`
 # (Dockerfile lines 20-33; docs/standards/security.md § recap-dg-client
@@ -78,8 +82,21 @@ services:
         max-file: "5"
 
   prefect-worker:
-    build: *app-build
-    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
+    # Plan 262 T2: its OWN build + tag, deliberately NOT the shared `*app-build`
+    # anchor. This is the only image that installs the `aquacast` extra, which pulls
+    # torch and the whole ML stack (`Dockerfile` — "only the forecast-cycle worker
+    # image installs it"). Putting WITH_AQUACAST on the anchor would have shipped
+    # torch into all five images, since they shared one tag.
+    # ⚠️ Two tags now exist, so a deploy must build BOTH — see
+    # `docs/standards/cicd.md` § Upgrade procedure, which step 3 covers explicitly.
+    build:
+      context: .
+      args:
+        WITH_AQUACAST: "1"
+      secrets:
+        - recap_dg_client_token
+        - aquacast_token
+    image: sapphire-flow-aquacast:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: prefect worker start --pool default --type process
     # Plan 086: bound the blast radius of an over-budget NWP-on forecast cycle.
     # An over-limit run is cgroup-killed INSIDE this container (still a SIGKILL)
@@ -487,6 +504,14 @@ secrets:
   # before `docker compose up --build`; compose plumbs it into the build.
   recap_dg_client_token:
     environment: RECAP_DG_CLIENT_TOKEN
+  # BUILD-time secret (NOT a runtime secret), Plan 262 T2: authenticates the private
+  # hydrosolutions/aquacast clone during the forecast worker's `uv sync --extra
+  # aquacast`. Env-sourced, matching recap_dg_client_token above — never a `file:`
+  # entry, which would break `docker compose build` and `config` on any host that
+  # lacks the file. The Dockerfile mounts it with `required=false`, so the four
+  # default-image services build without it.
+  aquacast_token:
+    environment: AQUACAST_TOKEN
   # Nepal v1: the recap Data Gateway API key (`sapphire_dg_api_key`) is NOT
   # declared here. It is a Nepal-only secret provided by the
   # `docker-compose.recap.yml` overlay (Plan 082 Task 2A). Swiss deployments

@@ -80,15 +80,21 @@ class TestAuditActorType:
 
 class TestAuditEventType:
     """Plan 147 Slice B: promotes the spec-only enum
-    (`docs/spec/types-and-protocols.md:334`) to runtime, plus the additive
-    STATION_ONBOARDED/MODEL_ASSIGNED members."""
+    (`docs/spec/types-and-protocols.md`) to runtime, plus the additive
+    STATION_ONBOARDED/MODEL_ASSIGNED members, and STATION_GROUP_CREATED
+    (Plan 262 T3a — group creation became an audited operation)."""
 
     def test_exists_as_runtime_enum(self) -> None:
         _require_audit_event_type()
 
-    def test_has_exactly_eighteen_values(self) -> None:
+    def test_has_exactly_nineteen_values(self) -> None:
+        """The count is a deliberate lock: a new member must be a conscious edit
+        HERE, in the expected set below, and in the authoritative spec
+        (`docs/spec/types-and-protocols.md`) — three places, like the Dockerfile's
+        curated script list. Plan 262 T3a took it from 18 to 19.
+        """
         audit_event_type = _require_audit_event_type()
-        assert len(audit_event_type) == 18
+        assert len(audit_event_type) == 19
 
     def test_values_match_spec_plus_additive_members(self) -> None:
         audit_event_type = _require_audit_event_type()
@@ -111,6 +117,7 @@ class TestAuditEventType:
             "observation_reprocessed",
             "station_onboarded",
             "model_assigned",
+            "station_group_created",
         }
         assert {e.value for e in audit_event_type} == expected
 
