@@ -6,7 +6,7 @@ fresh independent review. Branch: `docs/plan-300-review`; separate worktree:
 at `f2dc569ccb513ac913126d3d24d58ad2d1b18d84`.
 
 Reviewed commit: `78a2b9ff` (`docs(plan-300): fold independent review corrections`).
-Reviewed plan: [DHM observation adapter](../../../plans/300-dhm-observation-adapter.md).
+Reviewed plan: [DHM observation adapter](../../../plans/archive/300-dhm-observation-adapter.md).
 SHA-256: `3c5be87b391ff358af8bd389bdd1b4f464e82d190b71cc66e2225ed7f9936432`.
 The plan stayed unchanged throughout all three passes. Reviewers were instructed
 to review the complete revised plan against repository code and captured

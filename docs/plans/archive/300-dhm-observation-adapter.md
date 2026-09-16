@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-16
 plan: 300
 title: DHM water-level observation adapter from the confirmed API contract
@@ -27,7 +27,7 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
 - On 2026-09-16 the owner relayed BIPAD's technical contact's confirmation that
   the captured requests and responses exactly replicate the upstream DHM API.
   Treat the request/response contract as confirmed; do not request it again.
-- [Working examples and raw captures](../requirements/dhm-api-examples/README.md)
+- [Working examples and raw captures](../../requirements/dhm-api-examples/README.md)
   include latest metadata, history, continuation and empty pages. The manifest
   preserves original public-host URLs and response hashes.
 - Local HTTP tests exercised the BIPAD host without credentials, not DHM directly.
@@ -316,6 +316,11 @@ an instruction.
 Test null units, `"m a.s.l."` with a non-`masl` reference, and a relative level
 with a populated datum as station-local failures alongside a valid station.
 
+**Implemented and verified (2026-09-16):** immutable config/bindings and Pydantic
+response boundaries preserve all 118 captured values/timestamps. Initial tests
+failed on the absent adapter; parser and configuration checks now pass, including
+zero/null, malformed readings, booleans, non-finite values and station isolation.
+
 ### T2 — Fetch complete bounded station histories through the ingest protocols
 
 **Outcome:** Pagination, watermark filtering and station-local failure handling
@@ -336,6 +341,12 @@ null values, bad timestamps and transport/HTTP failure. Test both public protoco
 methods produce consistent observations/outcomes. Tests make no live requests.
 Include multi-window boundary completeness, limit exhaustion, deterministic
 request pacing, preserved base-path prefix and no credential-bearing diagnostics.
+
+**Implemented and verified (2026-09-16):** short-page continuation and later-page
+failure tests first failed against the single-page implementation. The completed
+adapter passes those checks plus bounded multi-window recovery, overlap/conflict
+handling, repeated pages, unsafe continuations, total page budget and injected
+pacing. Both station-fetch capabilities retain existing result types.
 
 ### T3 — Select DHM in the existing ingestion setup and document activation
 
@@ -375,7 +386,8 @@ than two hours remain RAW despite successful storage. Use an explicitly injected
 deterministic rule set so this checks integration, not Swiss threshold suitability.
 
 **Verification:** `uv run pytest tests/unit/config/ tests/unit/adapters/test_dhm.py
-tests/unit/flows/test_ingest_observations.py -q` (one shell command). Include a
+tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_ingest_observations_dhm.py -q`
+(one shell command). Include a
 fake-store flow test with DHM-shaped HTTP data exercising observation storage and
 station failure isolation. Its eligible rows use the station shape in decision 2.
 Include an eligible WEATHER station and an unbound river beside a valid DHM river;
@@ -412,6 +424,18 @@ watermarks and QC windows) and the captured-example
 README with final configuration, cursor/QC behaviour and activation boundaries.
 Run `uv run pytest tests/unit/test_config.py -q` for the config reference example.
 
+**Implemented and verified (2026-09-16):** initial flow tests exposed the discharge
+cursor, incomplete six-hour recovery and unconditional BAFU construction. Final
+focused task/regression run: **308 passed**, including config, adapter, DHM flow,
+existing ingest/weather/fetch-health/restatement/derivation, recorder and config
+reference tests. Tests cover preceding QC context, pre-existing RAW rows, exclusive
+QC bounds, failed-station cursors, supervised recovery, client construction/fetch
+failure cleanup, empty-run non-allocation and injected-client ownership. Repository
+ruff lint/format checks pass. New modules are type-clean; the source pyright ratchet
+passes (363 errors versus the 400-error repository baseline). All six named docs
+are updated. Independent patch review and the full suite remain pre-PR/merge gates;
+this implementation pass did not run them or activate a live deployment.
+
 ## Standards and dependencies
 
 Reuse the existing Flow 2, observation store, fetch outcomes and QC rules. Relevant
@@ -430,14 +454,14 @@ be reported `QC_PASSED` with zero rules run (fewer than two rows infers one hour
 The configured daily rules are another exact match, not a sub-daily fallback.
 When the 600 s rules do match, omitting a datum only skips `range_check` and
 `gross_outlier`, not the Swiss rate/spike/frozen
-thresholds. [Plan 264](264-qc-rules-select-on-network.md) owns network-aware QC
-selection and zero-match failure policy; [Plan 272](272-qc-rules-unreachable-on-inferred-cadence.md)
+thresholds. [Plan 264](../264-qc-rules-select-on-network.md) owns network-aware QC
+selection and zero-match failure policy; [Plan 272](../272-qc-rules-unreachable-on-inferred-cadence.md)
 owns cadence reachability and must precede or land with 264's relevant activation.
 T3's DHM history-window extension touches `_run_qc_task`, also a candidate
 implementation site for Plan 272 T2/D1(b). It does not select or pre-empt Plan 272's
 cadence-reachability solution; whichever implementation lands second must reconcile
 that shared site and preserve both plans' regression cases.
-[Plan 268](268-dhm-barkhk-runoff-delivery.md) owns the separate DHM historical
+[Plan 268](../268-dhm-barkhk-runoff-delivery.md) owns the separate DHM historical
 discharge-import/QC work; it does not establish suitable live water-level thresholds.
 Approved DHM level rules, cadence reachability and network-aware selection are
 operational-activation prerequisites, not blockers for offline adapter tests with
@@ -446,12 +470,15 @@ plan does not silently adopt Swiss thresholds or repurpose discharge limits.
 
 ## Review and exit gates
 
-The owner authorised implementation on 2026-09-16 after delegating disposition of
+Implementation T1–T3 is complete and this plan is archived. The owner authorised
+implementation on 2026-09-16 after delegating disposition of
 the four third-round Claude findings to an independent Codex agent. That agent
 accepted all four as scope/ownership clarifications, with bounded adjustments;
-these are folded in without changing parsing, pagination or QC policy. This READY
-status records the owner's instruction to proceed, not autonomous reviewer approval.
-The [review reports and disposition](../reviews/300-dhm-observation-adapter/README.md)
+these were folded in without changing parsing, pagination or QC policy. READY was
+recorded before implementation from the owner's instruction to proceed, not
+autonomous reviewer approval. COMPLETE records the bounded offline implementation,
+not patch-review approval, merge or operational activation.
+The [review reports and disposition](../../reviews/300-dhm-observation-adapter/README.md)
 are preserved against their reviewed revisions.
 Under `docs/workflow.md`, the owner separately commissions Claude and Codex reviews,
 plus an additional relevant review for the external data contract, and decides

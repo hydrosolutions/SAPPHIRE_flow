@@ -115,7 +115,7 @@ class BatchStationDataSource(Protocol):
     calls. NOT part of `StationDataSource` (touchpoint-maps.md: widening that
     Protocol was the explicit rejected alternative) — `fetch_observations_batch`
     stays an ADDITION any `StationDataSource` implementation may also offer.
-    `HydroScraperAdapter` and `ReplayStationAdapter` both satisfy this; a
+    `HydroScraperAdapter`, `DhmAdapter`, and `ReplayStationAdapter` satisfy this; a
     `StationDataSource` that only implements the base Protocol does not, and
     should not be handed to `ingest_observations_flow` as its `adapter=`.
     """

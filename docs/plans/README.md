@@ -42,8 +42,9 @@ Do not add a separate acceptance-map table or persistent run-state file.
 
 ## Nepal observation integration
 
-- **300** — [DHM water-level observation adapter](300-dhm-observation-adapter.md) —
-  `READY` — owner-relayed BIPAD confirmation establishes the request/response
+- **300** — [DHM water-level observation adapter](archive/300-dhm-observation-adapter.md) —
+  `COMPLETE` — offline implementation and 308 focused checks passed; archived.
+  Independent patch review and full-suite merge gate remain. Owner-relayed BIPAD confirmation establishes the request/response
   contract for direct DHM adapter development. Captured examples support offline
   parsing, history/pagination and Flow 2 integration; real DHM connection settings
   remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit

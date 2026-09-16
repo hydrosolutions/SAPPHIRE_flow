@@ -7,7 +7,7 @@ separate worktree: `/private/tmp/sapphire-plan300-review`. Its base is
 review branch was created.
 
 Reviewed commit: `ed2da78a` (`docs(plan-300): fold second-round review findings`).
-Reviewed plan: [DHM observation adapter](../../../plans/300-dhm-observation-adapter.md).
+Reviewed plan: [DHM observation adapter](../../../plans/archive/300-dhm-observation-adapter.md).
 SHA-256: `da917035848a0b1eaa6ca7cac4c5693ab272171e8145e4124046798b029e0c54`.
 The plan stayed unchanged throughout all three passes. Reviewers were instructed
 to assess the complete plan and relevant code/captures without reading previous
@@ -24,8 +24,10 @@ Reports are preserved as returned, with terminal newlines. Claude's remaining
 findings concern coordination with Plan 272's candidate QC-window change,
 HTTP-client cleanup scope, Plan 268 discharge-only station promotion, and explicit
 document paths in T3's scope. The clean verdicts do not override those findings.
-No third-round findings have been folded in or accepted/rejected on the owner's
-behalf. The plan remains `DRAFT`; owner disposition and READY are outstanding.
+At this round's close no findings had been folded in and the plan remained DRAFT.
+The owner subsequently delegated disposition to an independent Codex agent and
+directed implementation after fold-in; see [disposition](codex-disposition.md).
+These reports remain evidence about the reviewed revision, not the later patch.
 
 These were read-only plan reviews, without implementation tests or direct-DHM
 connectivity checks. Each report states its verification limitations. Separately,

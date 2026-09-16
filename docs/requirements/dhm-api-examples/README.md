@@ -15,7 +15,9 @@ URL, credentials and network provisioning remain deployment inputs; no direct DH
 connection has been tested. Provider confirmation of the contract does not turn
 our one-station sample into proof of national coverage, latency or completeness.
 
-Implementation is proposed in [Plan 300](../../plans/300-dhm-observation-adapter.md).
+The offline adapter and Flow 2 integration are implemented by
+[Plan 300](../../plans/archive/300-dhm-observation-adapter.md). Direct-DHM connectivity and
+operational activation remain separate from that implementation.
 
 ## Finding
 
@@ -148,3 +150,132 @@ those text-file hashes. `original-responses.zip` preserves the exact downloaded
 bytes and the original capture manifest. First-round reviews checked the original
 bytes before this mechanical normalization. `schema-excerpt.json` preserves the
 relevant published definitions, including their discrepancies with actual responses.
+
+## Configuring the implemented adapter
+
+Use a Nepal overlay selected by `SAPPHIRE_CONFIG_OVERLAY` with the existing base
+`SAPPHIRE_CONFIG`. The station code and direct host below must be supplied by DHM;
+the captured API ID is an example, not an official station-code mapping.
+
+```toml
+[adapters.river_stations]
+type = "dhm"
+endpoint = "https://DHM-HOST/api/v1/"
+timeout_s = 30
+page_size = 500
+window_hours = 24
+max_pages_per_station = 100
+min_request_interval_s = 1.0
+
+[[adapters.river_stations.bindings]]
+network = "dhm"
+station_code = "CONFIRMED-DHM-CODE"
+api_station_id = 168
+level_reference = "unknown"
+```
+
+These limits are implementation defaults, not a provider polling agreement.
+`max_pages_per_station` counts requests across all windows, including a terminal
+empty page. A short page with `next` is followed; `count` is ignored. Repeated
+pages, limit exhaustion, unsafe continuations and later-page failures discard
+that station's entire fetch. There is no in-adapter retry or automatic BIPAD fallback.
+
+Bindings require unique `(network, station_code)` keys and positive integer API
+IDs. Supported operational rows are DHM gauged rivers with measured `water_level`.
+Other kinds/networks are skipped; missing bindings or level capability are station
+configuration failures. `gauge_zero` and `unknown` require unit `m` and a null QC
+datum; `masl` permits `m` or `m a.s.l.` and may carry an independently confirmed
+datum. Null units and incompatible pairs are rejected before requests. Raw metres
+are retained; an unknown reference does not establish rating-curve readiness.
+
+Scheduled ingest uses history after the latest stored water-level timestamp, or
+the flow's one-hour default when there is no stored level. It requests one second
+outside each window then keeps `(since, end]` locally. The API prefix is retained.
+HTTPS with verified TLS is required and redirects are disabled. Endpoints must
+not embed credentials, queries or fragments. Flow-created DHM clients close after
+fetch, including failure; explicitly injected clients remain caller-owned.
+
+## Bounded connection check after DHM provisions access
+
+First confirm the official mapping, metre/reference metadata and provider-approved
+request rate. Load the one approved `StationConfig` through the station store and
+parse the deployment settings with `load_river_station_config(base_path, overlays)`.
+In a supervised Python session, inject a verified `httpx.Client` using the actual
+DHM authentication scheme and call:
+
+```python
+adapter = DhmAdapter(config=dhm_config, http_client=client, clock=clock)
+result = adapter.fetch_observations_batch([station], {station.id: start})
+```
+
+Here `clock` and `start` are offset-aware times, the range is deliberately short,
+and `client`, `dhm_config` and `station` are the approved session inputs. The batch
+call reads the API only; it does not write observations. Check the station outcome,
+identity, UTC measurement times and levels against the provider's example. Close
+the session-owned client. Authentication/secret wiring is intentionally not
+guessed by this adapter; production activation waits for the supplied scheme.
+
+Offline contract and integration checks:
+
+```sh
+uv run pytest tests/unit/adapters/test_dhm.py tests/unit/config/test_dhm.py tests/unit/config/test_river_stations.py tests/unit/flows/test_ingest_observations_dhm.py -q
+```
+
+## Supervised recovery of a stuck station
+
+Malformed readings or conflicting duplicates after the stored watermark can
+block every retry, including newer data. There is no independent editable cursor:
+the next watermark is derived from genuine stored observations. Identify and
+preserve the rejected interval and seek provider correction first.
+
+If correction is unavailable, an operator must explicitly approve the omitted
+interval. Pause concurrent ingest for the recovery operation, record the station,
+old watermark, excluded interval, reason and operator approval, and select
+`approved_since` sufficiently after the rejected interval to account for the
+request's one-second lower-bound padding. Fetch a bounded later interval via
+`adapter.fetch_observations_batch([station], {station.id: approved_since})`.
+Stop on any failed outcome. Store only genuine returned rows with the existing
+observation store; never insert a fabricated row or edit measurement timestamps.
+
+In the same supervised session, use the existing QC task with the actual approved
+QC rules, station datum and recovered timestamps:
+
+```python
+from sapphire_flow.flows.ingest_observations import _run_qc_task
+
+obs_store.store_raw_observations(result.observations)
+counts = _run_qc_task.fn(
+    obs_store, baseline_store, station.id, "water_level",
+    qc_rules=approved_rules, now=clock(), datum=station.water_level_datum_masl,
+    fetched_times=tuple(row.timestamp for row in result.observations),
+)
+```
+
+`result` here is the successful bounded recovery result, with only this station's
+water levels. Keep its timestamps available until QC completes: storage and QC are
+not atomic. If QC raises, resume QC over that explicit interval before resuming
+normal polling. Read back the stored values/statuses and confirm the next normal
+poll starts after their genuine watermark. Record the remaining gap for later
+reconciliation. The integration test exercises this sequence with fake stores;
+the deployment-specific executable procedure still needs an operational rehearsal.
+This does not provide an automatic skip, multi-year bootstrap or correction replay.
+
+## Activation prerequisites
+
+- Approved direct host/authentication/network, station mappings, datum metadata
+  and request limits; eligible station rows must already exist.
+- Approved DHM level QC rules and Plan 272 cadence reachability before/with
+  Plan 264 network-aware selection. At this base, nonmatching inferred cadence
+  can mark a row passed with zero rules; Swiss thresholds are not Nepal approval.
+- A verified recovery procedure for interrupted QC and stuck watermarks. The
+  widened interval processes all RAW rows inside it, but not older RAW history.
+- The Plan 300 activation follow-on's measurement-freshness monitoring: a clean
+  empty poll reports request success indefinitely even for a silent gauge. The
+  existing monitoring interval config does not implement that check.
+- Plan 268's six discharge-only rows remain `onboarding`. The activation follow-on,
+  coordinated with Plan 143, owns live eligibility before any promotion; unchanged
+  discharge-only rows would report configuration failures under DHM selection.
+- Rating curves and confirmed reference metadata before discharge derivation.
+
+These are live-activation requirements; they do not require another copy of the
+confirmed API contract. No direct-DHM connection or live activation is claimed.

@@ -29,6 +29,8 @@ from sapphire_flow.types.enums import (
 )
 
 if TYPE_CHECKING:
+    from sapphire_flow.config.dhm import DhmConfig
+    from sapphire_flow.config.river_stations import HydroScraperConfig
     from sapphire_flow.protocols.adapters import BatchStationDataSource
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
@@ -81,27 +83,16 @@ def _load_qc_rules() -> QcRuleSet:
     return _default_swiss_qc_rules()
 
 
-def _load_adapter_endpoint() -> str:
-    from typing import Any, cast
-
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is None:
-        return "https://lindas.admin.ch/query"
+def _load_adapter_config() -> HydroScraperConfig | DhmConfig:
     from sapphire_flow.config._overlay import (
         _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
-        load_merged_toml,
     )
+    from sapphire_flow.config.river_stations import load_river_station_config
 
-    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
-    # (same behaviour as the prior tomllib.loads return type).
-    data = cast(
-        "dict[str, Any]",
-        load_merged_toml(Path(config_path), _resolve_overlay_paths()),
-    )
-    return (
-        data.get("adapters", {})
-        .get("river_stations", {})
-        .get("endpoint", "https://lindas.admin.ch/query")
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    return load_river_station_config(
+        Path(config_path) if config_path is not None else None,
+        _resolve_overlay_paths(),
     )
 
 
@@ -125,6 +116,30 @@ def _cursor_parameter_for_kind(kind: StationKind) -> str:
         raise ConfigurationError(
             f"No cursor parameter mapping for station kind: {kind!r}"
         ) from None
+
+
+def _cursor_parameter_for_station(station: StationConfig) -> str:
+    if station.network == "dhm" and station.station_kind == StationKind.RIVER:
+        return "water_level"
+    return _cursor_parameter_for_kind(station.station_kind)
+
+
+def _fetch_configured_dhm(
+    config: DhmConfig,
+    station_configs: list[StationConfig],
+    since: dict[StationId, UtcDatetime],
+    now: UtcDatetime,
+) -> HydroScraperBatchResult:
+    import httpx
+
+    from sapphire_flow.adapters.dhm import DhmAdapter
+
+    # Allocate only once fetch is ready; construction and fetch share the lifetime.
+    with httpx.Client(
+        timeout=config.timeout_s, verify=True, follow_redirects=False
+    ) as client:
+        adapter = DhmAdapter(config=config, http_client=client, clock=lambda: now)
+        return _fetch_observations_task(adapter, station_configs, since)
 
 
 def _aggregate_qc_status(flags: list[object]) -> QcStatus:
@@ -275,9 +290,23 @@ def _run_qc_task(
     now: UtcDatetime,
     datum: float | None = None,
     context_window_hours: float = 2.0,
+    fetched_times: tuple[UtcDatetime, ...] = (),
 ) -> dict[str, int]:
     window_start = ensure_utc(now - timedelta(hours=context_window_hours))
     window_end = ensure_utc(now + timedelta(hours=1))
+    if fetched_times:
+        window_start = ensure_utc(
+            min(
+                window_start,
+                min(fetched_times) - timedelta(hours=context_window_hours),
+            )
+        )
+        window_end = ensure_utc(
+            max(
+                window_end,
+                max(fetched_times) + timedelta(microseconds=1),
+            )
+        )
 
     all_obs = obs_store.fetch_observations(
         station_id=station_id,
@@ -546,16 +575,21 @@ def ingest_observations_flow(
         if pipeline_health_store is None:
             pipeline_health_store = stores["pipeline_health_store"]  # type: ignore[assignment]
 
+    dhm_config: DhmConfig | None = None
     if adapter is None:
         import httpx
 
         from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+        from sapphire_flow.config.dhm import DhmConfig
 
-        endpoint = _load_adapter_endpoint()
-        adapter = HydroScraperAdapter(
-            endpoint=endpoint,
-            http_client=httpx.Client(timeout=30.0),
-        )
+        adapter_config = _load_adapter_config()
+        if isinstance(adapter_config, DhmConfig):
+            dhm_config = adapter_config
+        else:
+            adapter = HydroScraperAdapter(
+                endpoint=adapter_config.endpoint,
+                http_client=httpx.Client(timeout=30.0),
+            )
 
     if qc_rules is None:
         qc_rules = _load_qc_rules()
@@ -628,12 +662,16 @@ def ingest_observations_flow(
     default_since = ensure_utc(now - timedelta(hours=default_lookback_hours))
     since: dict[StationId, UtcDatetime] = {}
     for station in eligible:
-        param = _cursor_parameter_for_kind(station.station_kind)
+        param = _cursor_parameter_for_station(station)
         latest = obs_store.fetch_latest_timestamp(station.id, param)
         since[station.id] = latest if latest is not None else default_since
 
     # --- Step 2.1: Fetch observations ---
-    batch_result = _fetch_observations_task(adapter, eligible, since)
+    batch_result = (
+        _fetch_configured_dhm(dhm_config, eligible, since, now)
+        if dhm_config is not None
+        else _fetch_observations_task(adapter, eligible, since)
+    )
     raw_obs = batch_result.observations
     log.info("ingest.fetch_complete", observations=len(raw_obs))
 
@@ -686,6 +724,21 @@ def ingest_observations_flow(
     totals = {"passed": 0, "failed": 0, "suspect": 0}
     errors: list[str] = []
     qc_failed_station_ids: set[StationId] = set()
+    dhm_station_ids = {
+        s.id
+        for s in eligible
+        if s.network == "dhm" and s.station_kind == StationKind.RIVER
+    }
+    recovered_times: dict[tuple[StationId, str], list[UtcDatetime]] = {}
+    for observation in raw_obs:
+        if (
+            observation.station_id in dhm_station_ids
+            and observation.parameter == "water_level"
+        ):
+            recovered_times.setdefault(
+                (observation.station_id, observation.parameter),
+                [],
+            ).append(observation.timestamp)
 
     for station_id, parameter in station_params:
         try:
@@ -698,6 +751,7 @@ def ingest_observations_flow(
                 now=now,
                 datum=datums.get((station_id, parameter)),
                 context_window_hours=context_window_hours,
+                fetched_times=tuple(recovered_times.get((station_id, parameter), ())),
             )
             totals["passed"] += counts["passed"]
             totals["failed"] += counts["failed"]

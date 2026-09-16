@@ -24,6 +24,8 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 
 def _make_station_config(code: str) -> StationConfig:
     now = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
@@ -220,3 +222,65 @@ measured_parameters = ["discharge"]
         assert configs[1].code == "2033"
         assert configs[1].location.altitude_masl == 245.0
         assert configs[1].measured_parameters == frozenset({"discharge"})
+
+
+class TestBafuSourceSelection:
+    def test_dhm_config_rejected_before_client_creation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import argparse
+
+        import httpx
+        import pytest
+
+        from sapphire_flow.exceptions import ConfigurationError
+        from sapphire_flow.tools.record_fixtures import _run_bafu
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.toml").write_text(
+            '[adapters.river_stations]\ntype = "dhm"\nendpoint = "https://dhm.example/"'
+        )
+
+        def forbidden_client(**kwargs: object) -> httpx.Client:
+            pytest.fail("DHM config must fail before BAFU client construction")
+
+        monkeypatch.setattr(httpx, "Client", forbidden_client)
+        with pytest.raises(
+            ConfigurationError, match="BAFU recorder requires hydro_scraper"
+        ):
+            _run_bafu(
+                argparse.Namespace(
+                    start="2026-05-05T00:00:00Z", end="2026-05-06T00:00:00Z"
+                )
+            )
+
+    def test_missing_type_retains_bafu_recording_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import argparse
+
+        from sapphire_flow.tools import record_fixtures
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.toml").write_text(
+            '[adapters.river_stations]\nendpoint = "https://lindas.admin.ch/query"'
+        )
+        station_file = tmp_path / "stations.toml"
+        station_file.write_text(
+            '[[stations]]\ncode = "2009"\nname = "Test"\nlon = 7.4\nlat = 46.9\n'
+        )
+        calls: list[object] = []
+
+        def record(**kwargs: object) -> None:
+            calls.append(kwargs["adapter"])
+
+        monkeypatch.setattr(record_fixtures, "record_observations", record)
+        record_fixtures._run_bafu(
+            argparse.Namespace(
+                start="2026-05-05T00:00:00Z",
+                end="2026-05-06T00:00:00Z",
+                stations=station_file,
+                output=tmp_path,
+            )
+        )
+        assert len(calls) == 1

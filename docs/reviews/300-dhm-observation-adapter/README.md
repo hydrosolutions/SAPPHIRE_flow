@@ -3,7 +3,7 @@
 Reviewed 2026-09-16 on branch `docs/plan-300-review`, in a separate worktree created
 from freshly fetched `origin/main` at `f2dc569ccb513ac913126d3d24d58ad2d1b18d84`.
 
-Reviewed plan: [DHM observation adapter](../../plans/300-dhm-observation-adapter.md).
+Reviewed plan: [DHM observation adapter](../../plans/archive/300-dhm-observation-adapter.md).
 SHA-256: `a239f76eae2ec27b8e6ab18ecba91810ead0d2b852eeec95d4c18dab89d65605`.
 The plan stayed unchanged throughout all three passes.
 

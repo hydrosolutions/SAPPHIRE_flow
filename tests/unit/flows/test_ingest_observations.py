@@ -9,7 +9,7 @@ import polars as pl
 from sapphire_flow.adapters.replay.station import ReplayStationAdapter
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
-    _load_adapter_endpoint,
+    _load_adapter_config,
     _run_qc_task,
     ingest_observations_flow,
 )
@@ -701,12 +701,12 @@ class TestIngestObservationsFlowWithReplayAdapter:
         assert result.stations_failed == 0
 
 
-class TestLoadAdapterEndpoint:
+class TestLoadAdapterConfig:
     def test_default_when_no_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
         monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
 
-        assert _load_adapter_endpoint() == "https://lindas.admin.ch/query"
+        assert _load_adapter_config().endpoint == "https://lindas.admin.ch/query"
 
     def test_reads_endpoint_from_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -718,7 +718,7 @@ class TestLoadAdapterEndpoint:
         monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_file))
         monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
 
-        assert _load_adapter_endpoint() == "https://base.example/query"
+        assert _load_adapter_config().endpoint == "https://base.example/query"
 
     def test_overlay_patches_endpoint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -734,4 +734,4 @@ class TestLoadAdapterEndpoint:
         monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_file))
         monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_file))
 
-        assert _load_adapter_endpoint() == "https://overlay.example/query"
+        assert _load_adapter_config().endpoint == "https://overlay.example/query"
