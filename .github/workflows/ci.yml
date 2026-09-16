@@ -518,9 +518,14 @@ jobs:
         run: |
           set -euo pipefail
           shipped=$(docker run --rm --entrypoint sh "sapphire-flow:ci-${{ github.sha }}" -c 'ls /app/scripts' | sort)
+          # Plan 218's curated list. ⚠️ FIFTH copy — the others are the Dockerfile
+          # COPY, tests/unit/deploy/test_dockerfile_operator_scripts.py, and the two
+          # documents that quote it. That test now reads THIS list too, so a new
+          # script cannot pass locally and fail here (Plan 262 T3a).
           expected=$(printf '%s\n' \
             backfill_era5_land_history.py \
             backfill_meteoswiss_history.py \
+            create_station_group.py \
             import_caravan_attributes.py \
             onboard.py \
             validate_forcing_reference.py | sort)
