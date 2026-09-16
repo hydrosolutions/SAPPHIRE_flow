@@ -18,6 +18,7 @@ from sapphire_flow.cli.nepal_demo_schemas import (
     BasinInput,
     DemoBundle,
     Instant,
+    parse_utc_instant,
     stamp,
 )
 from sapphire_flow.services.nepal_demo import build_scenario
@@ -273,7 +274,7 @@ def main() -> None:
         export_bundle(
             basin_file=args.basin_file,
             output_dir=args.output_dir,
-            issued_at=ensure_utc(datetime.fromisoformat(issued)),
+            issued_at=parse_utc_instant(issued),
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

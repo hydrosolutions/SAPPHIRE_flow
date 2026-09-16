@@ -13,7 +13,7 @@ from pydantic import (
 )
 from shapely.geometry import Point, shape
 
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.nepal_demo import (
     FORECAST_OFFSETS,
     OBSERVATION_GAPS,
@@ -25,8 +25,12 @@ from sapphire_flow.types.nepal_demo import (
 BANNER = "Illustrative scenario — synthetic data, not an operational forecast"
 
 
+def parse_utc_instant(value: str) -> UtcDatetime:
+    return ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
 def _calendar_time(value: str) -> str:
-    ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    parse_utc_instant(value)
     return value
 
 
@@ -185,7 +189,7 @@ class ForecastSeries(Boundary):
 
     @model_validator(mode="after")
     def consistent_issue(self) -> Self:
-        issue = ensure_utc(datetime.fromisoformat(self.issued_at))
+        issue = parse_utc_instant(self.issued_at)
         expected = [stamp(issue + timedelta(hours=h)) for h in FORECAST_OFFSETS]
         if self.valid_times != expected:
             raise ValueError(
@@ -203,7 +207,7 @@ class ForecastSeries(Boundary):
 
     def to_domain(self) -> DemoIssue:
         return DemoIssue(
-            issued_at=ensure_utc(datetime.fromisoformat(self.issued_at)),
+            issued_at=parse_utc_instant(self.issued_at),
             lower=tuple(self.series.lower),
             median=tuple(self.series.median),
             upper=tuple(self.series.upper),
@@ -299,7 +303,7 @@ class DemoBundle(Boundary):
             m.station.latitude,
         ]:
             raise ValueError("station identity/coordinates mismatch")
-        first = ensure_utc(datetime.fromisoformat(s.forecasts[0].issued_at))
+        first = parse_utc_instant(s.forecasts[0].issued_at)
         if m.generated_at != stamp(first):
             raise ValueError("generated_at must equal the fixed first issue time")
         if len({f.forecast_id for f in s.forecasts}) != len(s.forecasts):

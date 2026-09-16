@@ -58,4 +58,4 @@ no failures (54 warnings; 18m12s). Live/deployment/slow marker exclusions remain
 configured in pyproject.toml. This branch has not been pushed or merged.
 
 Independent Claude and Codex patch reviews plus the focused contract review found
-no defects. Backend version: 0.1.910.
+no defects. Backend version: 0.1.911.

@@ -121,7 +121,7 @@ pyright on the four changed modules reports no errors. Broader `ruff check .` ha
 reports pre-existing formatting in migrations 0031/0036. These untouched files are
 outside the workflow's src/tests gate. The default full regression suite passed
 after the final code change; see the close-out below.
-Version is bumped to 0.1.910. No model/DB/API/frontend changes or external deployment.
+Version is bumped to 0.1.911. No model/DB/API/frontend changes or external deployment.
 Codex repository patch review and focused contract patch review found no defects.
 Claude patch review also found no defects. Its non-blocking seed-label note is
 resolved by documenting generator_seed as the base seed, with forecast stream
