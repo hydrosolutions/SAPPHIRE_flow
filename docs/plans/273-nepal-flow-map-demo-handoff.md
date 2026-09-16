@@ -119,14 +119,37 @@ T4 verification: 76 targeted checks pass (48 Nepal + 28 existing API regressions
 pyright on the four changed modules reports no errors. Broader `ruff check .` has
 12 pre-existing E501 findings in migrations 0037/0038; `ruff format --check .`
 reports pre-existing formatting in migrations 0031/0036. These untouched files are
-outside the workflow's src/tests gate. Full pytest remains required before merge.
+outside the workflow's src/tests gate. The default full regression suite passed
+after the final code change; see the close-out below.
 Version is bumped to 0.1.903. No model/DB/API/frontend changes or external deployment.
 Codex repository patch review and focused contract patch review found no defects.
 Claude patch review also found no defects. Its non-blocking seed-label note is
 resolved by documenting generator_seed as the base seed, with forecast stream
 base+1 (already explicit in per-asset provenance). T4 complete; backend is ready
-for frontend import, with browser rendering and full-suite-before-merge gates
-remaining outside this delivery.
+for frontend import; browser rendering remains separately verified by the frontend
+owner. The backend full-suite gate is now satisfied for commit f3c7596b.
+
+
+## Regression close-out — 2026-09-16
+
+Executed on code commit `f3c7596b`:
+`uv run --no-sync --no-cache pytest -q --maxfail=5`.
+Exit status 0: **6311 passed, 51 skipped, 15 deselected, 54 warnings** in
+1092.09 seconds (18m12s). The failure limit was not reached; the selected suite
+completed at 100%. Docker-backed integration tests used the disposable PostGIS
+fixture. An initial sandbox-limited collection was interrupted; the completed run
+used Docker access outside the sandbox.
+
+This is the repository's default selection from pyproject.toml, excluding markers
+`deployment`, `live`, `live_lindas`, `live_stac` and `slow`. It is not a claim that
+live-service or full deployment tests ran. Warnings include upstream deprecations,
+an unregistered existing live_lindas_lag marker, numerical warnings in skill tests,
+CRS conversion and structlog formatting; none caused a failure. No code changes
+were needed. Local raw log: `/private/tmp/nepal-backend-full-suite.log`.
+
+The backend regression gate is closed. Frontend import/playback evidence remains
+owned by the flow-map session; real model/station deployment belongs to the
+DL deploy session. No push, PR, merge or deployment was performed here.
 
 ```json
 {"phases":[{"id":"contract","tasks":["T1"],"parallel":false},

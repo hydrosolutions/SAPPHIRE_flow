@@ -51,3 +51,8 @@ Backend branch: `feat/nepal-demo-export`; worktree: `/private/tmp/sapphire-nepal
 The included schema describes this backend contract. Successful backend validation
 does not establish frontend import or browser rendering; those checks belong to
 the frontend agent.
+
+Backend regression close-out: the default suite completed on code commit
+`f3c7596b` with 6311 passed, 51 skipped and 15 deselected, no failures.
+See [Plan 273](../plans/273-nepal-flow-map-demo-handoff.md#regression-close-out--2026-09-16)
+for the command, scope and remaining frontend verification.

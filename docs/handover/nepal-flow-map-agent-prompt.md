@@ -52,8 +52,10 @@ Backend checks: 48 Nepal service/CLI/contract tests plus 28 existing station/for
 API tests pass (76 total), changed-module pyright passes, and repository src/tests
 lint and formatting pass. The delivery passes Draft 2020-12 and semantic validation;
 its basin is byte-identical to v1. Whole-tree lint/format additionally reports
-pre-existing migration-file issues outside src/tests. Full suite remains a before-merge
-gate; this branch has not been pushed or merged.
+pre-existing migration-file issues outside src/tests. The default full regression
+suite completed on code commit f3c7596b: **6311 passed, 51 skipped, 15 deselected**,
+no failures (54 warnings; 18m12s). Live/deployment/slow marker exclusions remain as
+configured in pyproject.toml. This branch has not been pushed or merged.
 
 Independent Claude and Codex patch reviews plus the focused contract review found
 no defects. Backend version: 0.1.903.
