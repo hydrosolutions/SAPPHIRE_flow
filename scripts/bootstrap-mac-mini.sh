@@ -131,6 +131,90 @@ backup_target_verified() {
     mount | grep -q " on ${mount_root} "
 }
 
+run() {
+    # Runs a command, or prints "would run" under --dry-run.
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        printf '%s[bootstrap] would run:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"
+        return 0
+    fi
+    "$@"
+}
+
+bootout_label() {
+    # Unloads one launchd label and VERIFIES it is gone. Same rule as the
+    # container check below: a non-zero `bootout` is not conclusive on its own
+    # (it also returns non-zero when the job was never loaded), so the verdict
+    # comes from a positive check that the label no longer resolves.
+    # Returns 0 only when the label is confirmed absent.
+    local label="$1" domain="$2"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        printf '%s[bootstrap] would run:%s launchctl bootout %s/%s\n' \
+            "${C_YELLOW}" "${C_RESET}" "${domain}" "${label}"
+        return 0
+    fi
+    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+    if launchctl print "${domain}/${label}" >/dev/null 2>&1; then
+        fail "launchd job still registered after bootout: ${label}"
+        return 1
+    fi
+    return 0
+}
+
+teardown_stack() {
+    # Stops the stack and reports whether it ACTUALLY stopped.
+    #
+    # Previously this swallowed every failure with `|| true` and then printed
+    # "uninstall complete" unconditionally, so a teardown that left containers
+    # running reported success. Two rules fix that:
+    #   1. a non-zero `docker compose down` is a failure, not a shrug;
+    #   2. exit 0 from `down` is not by itself proof the containers are gone —
+    #      verify positively with `ps -q`, and treat a FAILED verification as
+    #      UNKNOWN, never as "nothing running". That second rule is the
+    #      silent-success bug already fixed once in prune-docker.sh
+    #      (tests/unit/ops/test_launchd_prune_docker.py); it must not be
+    #      reintroduced here.
+    # Returns 0 only when the stack is verifiably down.
+    local incomplete=0
+    local uid_val
+    uid_val="$(id -u)"
+    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog \
+                 ch.hydrosolutions.sapphire-docker-prune; do
+        if [ -f "${HOME}/Library/LaunchAgents/${label}.plist" ]; then
+            log "bootout ${label}"
+            bootout_label "${label}" "gui/${uid_val}" || incomplete=1
+        else
+            log "no plist at ${HOME}/Library/LaunchAgents/${label}.plist (skipping)"
+        fi
+    done
+
+    local compose_args=(-f "${REPO_ROOT}/docker-compose.yml")
+    if [ -f "${REPO_ROOT}/docker-compose.macmini.yml" ]; then
+        compose_args+=(-f "${REPO_ROOT}/docker-compose.macmini.yml")
+    fi
+
+    log "docker compose down"
+    if ! run docker compose "${compose_args[@]}" down; then
+        fail "docker compose down failed"
+        incomplete=1
+    fi
+
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        local remaining
+        if remaining="$(docker compose "${compose_args[@]}" ps -q 2>/dev/null)"; then
+            if [ -n "${remaining}" ]; then
+                fail "containers still running after 'docker compose down'"
+                incomplete=1
+            fi
+        else
+            fail "could not verify containers were stopped ('docker compose ps' failed)"
+            fail "  NOT assuming this means no containers are running."
+            incomplete=1
+        fi
+    fi
+
+    return "${incomplete}"
+}
+
 # Allow tests to `source` this script and call `backup_target_verified`
 # directly without running the interactive bootstrap flow (Plan 194).
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
@@ -164,38 +248,19 @@ on_err() {
 }
 trap on_err ERR
 
-run() {
-    # Runs a command, or prints "would run" under --dry-run.
-    if [ "${DRY_RUN}" -eq 1 ]; then
-        printf '%s[bootstrap] would run:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"
-        return 0
-    fi
-    "$@"
-}
-
 # ============================================================================
 # UNINSTALL
 # ============================================================================
 if [ "${UNINSTALL}" -eq 1 ]; then
     hdr "Uninstalling SAPPHIRE Mac-mini stack"
-    UID_VAL="$(id -u)"
-    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog; do
-        plist="${HOME}/Library/LaunchAgents/${label}.plist"
-        if [ -f "${plist}" ]; then
-            log "bootout ${label}"
-            run launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
-        else
-            log "no plist at ${plist} (skipping)"
-        fi
-    done
-    log "docker compose down"
-    if [ -f "${REPO_ROOT}/docker-compose.macmini.yml" ]; then
-        run docker compose \
-            -f "${REPO_ROOT}/docker-compose.yml" \
-            -f "${REPO_ROOT}/docker-compose.macmini.yml" \
-            down || true
-    else
-        run docker compose -f "${REPO_ROOT}/docker-compose.yml" down || true
+    if ! teardown_stack; then
+        fail "uninstall INCOMPLETE — the stack did not verifiably stop (see above)."
+        fail "Do NOT treat this host as torn down."
+        exit 1
+    fi
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        success "dry-run complete; no changes made."
+        exit 0
     fi
     success "uninstall complete. Remove ~/Library/LaunchAgents/ch.hydrosolutions.*.plist"
     success "and ${REPO_ROOT}/secrets/ manually if you want a full wipe."
