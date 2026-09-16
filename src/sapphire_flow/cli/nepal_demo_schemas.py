@@ -342,4 +342,4 @@ class DemoBundle(Boundary):
 
 
 def stamp(value: datetime) -> str:
-    return value.isoformat().replace("+00:00", "Z")
+    return ensure_utc(value).isoformat().replace("+00:00", "Z")
