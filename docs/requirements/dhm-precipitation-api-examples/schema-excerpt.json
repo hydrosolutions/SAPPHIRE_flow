@@ -1,0 +1,496 @@
+{
+  "paths": {
+    "/api/{version}/rain-stations/": {
+      "get": {
+        "operationId": "api_rain-stations_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "status__iexact",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "created_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "created_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "measured_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "measured_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station_series_id",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ward",
+            "in": "query",
+            "description": "Ward is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "municipality",
+            "in": "query",
+            "description": "Municipality is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "district",
+            "in": "query",
+            "description": "District is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "province",
+            "in": "query",
+            "description": "Province is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/RainStation"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/rain/": {
+      "get": {
+        "operationId": "api_rain_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "status__iexact",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "measured_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "measured_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station_series_id",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "is_hourly",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "is_daily",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ward",
+            "in": "query",
+            "description": "Ward is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "municipality",
+            "in": "query",
+            "description": "Municipality is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "district",
+            "in": "query",
+            "description": "District is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "province",
+            "in": "query",
+            "description": "Province is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Rain"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "Rain": {
+      "required": [
+        "title",
+        "averages"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "title": {
+          "title": "Title",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "basin": {
+          "title": "Basin",
+          "type": "string",
+          "maxLength": 255,
+          "x-nullable": true
+        },
+        "measuredOn": {
+          "title": "Measured on",
+          "type": "string",
+          "format": "date-time",
+          "x-nullable": true
+        },
+        "point": {
+          "title": "Point",
+          "type": "string",
+          "x-nullable": true
+        },
+        "elevation": {
+          "title": "Elevation",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "image": {
+          "title": "Image",
+          "type": "string",
+          "format": "uri",
+          "maxLength": 200,
+          "x-nullable": true
+        },
+        "averages": {
+          "title": "Averages",
+          "type": "object"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "description": {
+          "title": "Description",
+          "type": "string",
+          "x-nullable": true
+        },
+        "stationSeriesId": {
+          "title": "Station series id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "isHourly": {
+          "title": "Is hourly",
+          "type": "boolean"
+        },
+        "isDaily": {
+          "title": "Is daily",
+          "type": "boolean"
+        },
+        "ward": {
+          "title": "Ward",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "municipality": {
+          "title": "Municipality",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "district": {
+          "title": "District",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "province": {
+          "title": "Province",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "station": {
+          "title": "Rain Station",
+          "type": "integer",
+          "x-nullable": true
+        }
+      }
+    },
+    "RainStation": {
+      "required": [
+        "title",
+        "averages"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "affectedDemography": {
+          "title": "Affected demography",
+          "type": "string",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "title": {
+          "title": "Title",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "basin": {
+          "title": "Basin",
+          "type": "string",
+          "maxLength": 255,
+          "x-nullable": true
+        },
+        "measuredOn": {
+          "title": "Measured on",
+          "type": "string",
+          "format": "date-time",
+          "x-nullable": true
+        },
+        "point": {
+          "title": "Point",
+          "type": "string",
+          "x-nullable": true
+        },
+        "elevation": {
+          "title": "Elevation",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "image": {
+          "title": "Image",
+          "type": "string",
+          "format": "uri",
+          "maxLength": 200,
+          "x-nullable": true
+        },
+        "averages": {
+          "title": "Averages",
+          "type": "object"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "description": {
+          "title": "Description",
+          "type": "string",
+          "x-nullable": true
+        },
+        "stationSeriesId": {
+          "title": "Station series id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "dataSource": {
+          "title": "Data source",
+          "type": "string",
+          "maxLength": 50,
+          "x-nullable": true
+        },
+        "dataSourceId": {
+          "title": "Data source id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "ward": {
+          "title": "Ward",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "municipality": {
+          "title": "Municipality",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "district": {
+          "title": "District",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "province": {
+          "title": "Province",
+          "type": "integer",
+          "x-nullable": true
+        }
+      }
+    }
+  }
+}
