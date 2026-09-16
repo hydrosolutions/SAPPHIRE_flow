@@ -14,7 +14,13 @@ from pydantic import (
 from shapely.geometry import Point, shape
 
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.nepal_demo import DemoScenario
+from sapphire_flow.types.nepal_demo import (
+    FORECAST_OFFSETS,
+    OBSERVATION_GAPS,
+    OBSERVATION_OFFSETS,
+    DemoIssue,
+    DemoScenario,
+)
 
 BANNER = "Illustrative scenario — synthetic data, not an operational forecast"
 
@@ -85,17 +91,20 @@ class Provenance(Boundary):
         return self
 
 
-class ForecastMetadata(Boundary):
-    forecast_id: Nonempty
-    issued_at: Instant
+class ForecastCycle(Boundary):
+    cycle_hours: Literal[6]
+    cadence_seconds: Literal[10800]
+    horizon_steps: Literal[24]
+    issue_count: Literal[8]
     representation: Literal["quantiles"]
-    quantile_levels: list[Discharge]
-    cadence_seconds: Literal[3600]
-    horizon_start: Instant
-    horizon_end: Instant
-    valid_times: list[Instant]
-    qc_status: Literal["synthetic_eligible"]
-    eligibility_note: Nonempty
+    quantile_levels: Annotated[list[Discharge], Field(min_length=3, max_length=3)]
+    starts_at_issue_time: Literal[False]
+
+    @model_validator(mode="after")
+    def levels(self) -> Self:
+        if self.quantile_levels != [0.25, 0.5, 0.75]:
+            raise ValueError("quantile levels must be 0.25/0.5/0.75")
+        return self
 
 
 class Units(Boundary):
@@ -104,12 +113,12 @@ class Units(Boundary):
 
 class Supersession(Boundary):
     cycle_hours: Literal[6]
-    label: Literal["Single-issue illustrative scenario"]
-    note: Literal["No earlier forecast cycles are supplied in this demonstration."]
+    label: Literal["Eight illustrative forecast issues"]
+    note: Nonempty
 
 
 class Manifest(Boundary):
-    schema_version: Literal["flow-map-region-bundle/v1"]
+    schema_version: Literal["flow-map-region-bundle/v2"]
     region: Literal["nepal"]
     generated_at: Instant
     source_mode: Literal["illustrative"]
@@ -123,13 +132,12 @@ class Manifest(Boundary):
     station: Identity
     units: Units
     timezone: Literal["Asia/Kathmandu"]
-    forecast: ForecastMetadata
+    forecast_cycle: ForecastCycle
     thresholds: None
     threshold_basis: Literal["none_available"]
     comparator: None
     date_basis: Literal["demonstration_date"]
     date_label: Nonempty
-    verification_label: Nonempty
     verification_note: Nonempty
     supersession: Supersession
 
@@ -148,37 +156,64 @@ class ValueSeries(Boundary):
 
 
 class History(ValueSeries):
+    valid_times: Annotated[list[Instant], Field(min_length=211, max_length=211)]
+    values: Annotated[list[Discharge | None], Field(min_length=211, max_length=211)]
+    gaps: Annotated[list[Gap], Field(min_length=2, max_length=2)]
     window_start: Instant
     window_end: Instant
     cadence_seconds: Literal[3600]
 
 
-class Outturn(ValueSeries):
-    kind: Literal["verification_outturn"]
-    starts_at_issue_time: Literal[False]
-
-
 class Quantiles(Boundary):
-    lower: list[Discharge] = Field(alias="0.25")
-    median: list[Discharge] = Field(alias="0.5")
-    upper: list[Discharge] = Field(alias="0.75")
+    lower: list[Discharge] = Field(alias="0.25", min_length=24, max_length=24)
+    median: list[Discharge] = Field(alias="0.5", min_length=24, max_length=24)
+    upper: list[Discharge] = Field(alias="0.75", min_length=24, max_length=24)
 
 
 class ForecastSeries(Boundary):
     source_mode: Literal["illustrative"]
     unit: Literal["m3/s"]
     forecast_id: Nonempty
-    valid_times: list[Instant]
+    issued_at: Instant
+    valid_times: Annotated[list[Instant], Field(min_length=24, max_length=24)]
+    horizon_start: Instant
+    horizon_end: Instant
     series: Quantiles
-    gaps: list[Gap]
+    gaps: Annotated[list[Gap], Field(max_length=0)]
+    qc_status: Literal["synthetic_eligible"]
+    eligibility_note: Nonempty
+
+    @model_validator(mode="after")
+    def consistent_issue(self) -> Self:
+        issue = ensure_utc(datetime.fromisoformat(self.issued_at))
+        expected = [stamp(issue + timedelta(hours=h)) for h in FORECAST_OFFSETS]
+        if self.valid_times != expected:
+            raise ValueError(
+                "forecast valid times must be +3..+72 hours at 3-hour cadence"
+            )
+        if (self.horizon_start, self.horizon_end) != (
+            expected[0],
+            stamp(issue + timedelta(hours=75)),
+        ):
+            raise ValueError("forecast horizon must be half-open")
+        if self.forecast_id != f"DEMO-NP-001-{issue:%Y%m%dT%H%M%SZ}":
+            raise ValueError("forecast identity must match its issue time")
+        self.to_domain()
+        return self
+
+    def to_domain(self) -> DemoIssue:
+        return DemoIssue(
+            issued_at=ensure_utc(datetime.fromisoformat(self.issued_at)),
+            lower=tuple(self.series.lower),
+            median=tuple(self.series.median),
+            upper=tuple(self.series.upper),
+        )
 
 
 class Series(Boundary):
     region: Literal["nepal"]
     observations: History
-    forecast: ForecastSeries
-    verification: Outturn
-    superseded: Annotated[list[object], Field(max_length=0)]
+    forecasts: Annotated[list[ForecastSeries], Field(min_length=8, max_length=8)]
 
 
 class BasinProperties(Boundary):
@@ -246,6 +281,9 @@ class StationDocument(Boundary):
 
 
 class DemoBundle(Boundary):
+    model_config = ConfigDict(
+        json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema"}
+    )
     manifest: Manifest
     series: Series
     station: StationDocument
@@ -254,51 +292,43 @@ class DemoBundle(Boundary):
     @model_validator(mode="after")
     def consistent_bundle(self) -> Self:
         m, s = self.manifest, self.series
-        f, h, outturn = m.forecast, s.observations, s.verification
+        history = s.observations
         point = self.station.features[0]
         if point.properties != m.station or point.geometry.coordinates != [
             m.station.longitude,
             m.station.latitude,
         ]:
             raise ValueError("station identity/coordinates mismatch")
-        if s.forecast.forecast_id != f.forecast_id:
-            raise ValueError("forecast identity mismatch")
-        if f.quantile_levels != [0.25, 0.5, 0.75]:
-            raise ValueError("quantile levels must be 0.25/0.5/0.75")
-        issue = ensure_utc(datetime.fromisoformat(f.issued_at))
-        history_times = [stamp(issue + timedelta(hours=h)) for h in range(-168, 0)]
-        forecast_times = [stamp(issue + timedelta(hours=h)) for h in range(1, 73)]
-        if h.valid_times != history_times or any(
-            times != forecast_times
-            for times in (f.valid_times, s.forecast.valid_times, outturn.valid_times)
+        first = ensure_utc(datetime.fromisoformat(s.forecasts[0].issued_at))
+        if m.generated_at != stamp(first):
+            raise ValueError("generated_at must equal the fixed first issue time")
+        if len({f.forecast_id for f in s.forecasts}) != len(s.forecasts):
+            raise ValueError("forecast identities must be unique")
+        expected_times = [
+            stamp(first + timedelta(hours=h)) for h in OBSERVATION_OFFSETS
+        ]
+        if history.valid_times != expected_times:
+            raise ValueError(
+                "observation times must span -168h through final issue at +42h"
+            )
+        if (history.window_start, history.window_end) != (
+            expected_times[0],
+            stamp(first + timedelta(hours=43)),
         ):
-            raise ValueError("valid times must match the hourly history/horizon")
-        if (h.window_start, h.window_end, f.horizon_start, f.horizon_end) != (
-            history_times[0],
-            f.issued_at,
-            forecast_times[0],
-            stamp(issue + timedelta(hours=73)),
-        ):
-            raise ValueError("history/horizon windows must be half-open")
-        for block, offsets in ((h, (-48, -42)), (outturn, (41, 43))):
-            expected = [
-                {
-                    "start": stamp(issue + timedelta(hours=offsets[0])),
-                    "end": stamp(issue + timedelta(hours=offsets[1])),
-                }
-            ]
-            if [gap.model_dump() for gap in block.gaps] != expected:
-                raise ValueError("gap intervals must match the scenario")
-        if s.forecast.gaps:
-            raise ValueError("demo forecast has no gaps")
-        q = s.forecast.series
+            raise ValueError("observation window must be half-open")
+        expected_gaps = [
+            {
+                "start": stamp(first + timedelta(hours=start)),
+                "end": stamp(first + timedelta(hours=end)),
+            }
+            for start, end in OBSERVATION_GAPS
+        ]
+        if [gap.model_dump() for gap in history.gaps] != expected_gaps:
+            raise ValueError("gap intervals must match the scenario")
         DemoScenario(
-            issued_at=issue,
-            history=tuple(h.values),
-            lower=tuple(q.lower),
-            median=tuple(q.median),
-            upper=tuple(q.upper),
-            outturn=tuple(outturn.values),
+            first_issued_at=first,
+            observations=tuple(history.values),
+            forecasts=tuple(f.to_domain() for f in s.forecasts),
         )
         if self.basin.attribution != self.basin.features[0].properties.source:
             raise ValueError("basin attribution must match its source")

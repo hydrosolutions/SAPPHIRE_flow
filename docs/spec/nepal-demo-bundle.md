@@ -67,6 +67,8 @@ The issue timestamp only selects the forecast sampling window. Never sort issues
 by error or shrink their deviations toward observations. A fixed common event
 context is allowed; no improving-skill narrative or validation metric is encoded.
 Changing the observation stream must leave all forecast arrays unchanged.
+`generator_seed` is the base seed: observations use it directly and forecasts use
+base + 1; both stream seeds are recorded in per-asset provenance.
 Reproducibility is guaranteed for the fixed generator seed and first issue time.
 
 The schema_version value changes to flow-map-region-bundle/v2.
@@ -97,10 +99,10 @@ outlet coverage. That optional derivative is frontend-owned and outside the
 four-document validation object; this exporter ships only the authoritative basin.
 
 JSON Schema dialect: **Draft 2020-12**, explicitly declared by `$schema`.
-Use a complete validator. The generated vocabulary is documented with the delivered
-schema; expect `$defs`, `$ref`, `anyOf`, type, properties, required,
-additionalProperties, const/enum, pattern, items, minItems/maxItems,
-minimum/maximum and title annotations. No custom keywords. Pydantic's semantic
+Use a complete validator. The delivered schema uses `$schema`, `$defs`, `$ref`,
+`anyOf`, `type`, `properties`, `required`, `additionalProperties`, `const`, `enum`,
+`pattern`, `items`, `minItems`, `maxItems`, `minLength`, `minimum`, `maximum` and
+`title`. No custom keywords. Pydantic's semantic
 validation additionally enforces identities, exact schedules, half-open windows,
 quantile order and gap masks; frontend must keep equivalent semantic checks.
 Reject wrong versions, inconsistent counts/cadence, duplicate IDs, misordered issues,

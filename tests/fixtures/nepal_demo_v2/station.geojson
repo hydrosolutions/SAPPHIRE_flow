@@ -1,0 +1,24 @@
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          86.668726,
+          27.269326
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "backend_uuid": null,
+        "code": "DEMO-NP-001",
+        "display_name": "Illustrative demo gauge",
+        "latitude": 27.269326,
+        "longitude": 86.668726,
+        "network": "demo"
+      },
+      "type": "Feature"
+    }
+  ],
+  "region": "nepal",
+  "type": "FeatureCollection"
+}

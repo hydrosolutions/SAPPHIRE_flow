@@ -1,4 +1,4 @@
-# Nepal multi-cycle backend handoff (v2 preparation)
+# Nepal multi-cycle backend handoff (v2)
 
 Worktree `/private/tmp/sapphire-nepal-demo`, branch `feat/nepal-demo-export`.
 This responds to `SAPPHIRE_FLOW_NEPAL_CYCLES_EXPORT_PROMPT.md`.
@@ -33,4 +33,27 @@ the four-document schema. Backend does not generate that copy.
 
 The real Dudh Koshi/Rabuwa outline, fictional GIS outlet point, synthetic labels,
 null thresholds/comparator and Swiss isolation remain as agreed. No checksums.
-Export path and completed verification evidence will be recorded after implementation.
+
+## Import now
+
+Copy all five files from `/private/tmp/nepal-demo-rabuwa-v2/` into a Nepal-only
+asset location. The durable example is `tests/fixtures/nepal_demo_v2/` in the backend
+worktree; its bytes match the delivery. `schema.json` validates the assembled object
+`{manifest: region.json, series: series.json, station: station.geojson, basin: basin.geojson}`.
+The exact schema vocabulary and semantic checks are listed in the contract above.
+
+Replace the v1 single-forecast importer and local synthetic/ghost generation with
+this sequence. Keep Swiss startup defaults and assets isolated. Verify all eight
+steps: no future observations/issues; full bands for active and predecessor issues;
+explicit null gaps; synthetic banner/provenance/disclaimers at every step. The
+backend does not claim successful frontend import or browser rendering.
+
+Backend checks: 48 Nepal service/CLI/contract tests plus 28 existing station/forecast
+API tests pass (76 total), changed-module pyright passes, and repository src/tests
+lint and formatting pass. The delivery passes Draft 2020-12 and semantic validation;
+its basin is byte-identical to v1. Whole-tree lint/format additionally reports
+pre-existing migration-file issues outside src/tests. Full suite remains a before-merge
+gate; this branch has not been pushed or merged.
+
+Independent Claude and Codex patch reviews plus the focused contract review found
+no defects. Backend version: 0.1.903.

@@ -47,9 +47,9 @@ class TestExportBundle:
             for key, name in FILES.items()
         }
         bundle = DemoBundle.model_validate(raw)
-        assert bundle.manifest.forecast.issued_at == "2025-08-13T00:00:00Z"
+        assert bundle.series.forecasts[0].issued_at == "2025-08-13T00:00:00Z"
         assert bundle.series.observations.valid_times[0] == "2025-08-06T00:00:00Z"
-        assert bundle.series.verification.valid_times[-1] == "2025-08-16T00:00:00Z"
+        assert bundle.series.observations.valid_times[-1] == "2025-08-14T18:00:00Z"
 
     def test_invalid_basin_publishes_nothing(self, tmp_path: Path) -> None:
         basin = tmp_path / "invalid.geojson"
@@ -58,7 +58,7 @@ class TestExportBundle:
             export_bundle(basin_file=basin, output_dir=tmp_path / "out")
         assert list(tmp_path.iterdir()) == [basin]
 
-    def test_four_files_are_reproducible_and_preserve_geometry(
+    def test_data_and_schema_are_reproducible_and_preserve_geometry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import socket
@@ -72,14 +72,14 @@ class TestExportBundle:
         for name in ("a", "b"):
             export_bundle(basin_file=BASIN, output_dir=tmp_path / name)
         assert sorted(p.name for p in (tmp_path / "a").iterdir()) == sorted(
-            FILES.values()
+            [*FILES.values(), "schema.json"]
         )
-        for filename in FILES.values():
+        for filename in [*FILES.values(), "schema.json"]:
             assert (tmp_path / "a" / filename).read_bytes() == (
                 tmp_path / "b" / filename
             ).read_bytes()
             assert (tmp_path / "a" / filename).read_bytes() == (
-                ROOT / "tests/fixtures/nepal_demo" / filename
+                ROOT / "tests/fixtures/nepal_demo_v2" / filename
             ).read_bytes()
         raw = {
             key: json.loads((tmp_path / "a" / filename).read_text())
@@ -87,9 +87,11 @@ class TestExportBundle:
         }
         DemoBundle.model_validate(raw)
         assert raw["basin"]["features"] == json.loads(BASIN.read_text())["features"]
-        assert raw["manifest"]["forecast"]["horizon_end"] == "2025-08-15T01:00:00Z"
+        assert raw["series"]["forecasts"][-1]["horizon_end"] == "2025-08-16T21:00:00Z"
         assert raw["manifest"]["thresholds"] is None
-        assert raw["series"]["superseded"] == []
+        assert len(raw["series"]["forecasts"]) == 8
+        assert "verification" not in raw["series"]
+        assert "superseded" not in raw["series"]
 
     @pytest.mark.parametrize("kind", ["directory", "file", "symlink"])
     def test_existing_destination_unchanged(self, tmp_path: Path, kind: str) -> None:

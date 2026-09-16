@@ -22,10 +22,15 @@ from sapphire_flow.cli.nepal_demo_schemas import (
 )
 from sapphire_flow.services.nepal_demo import build_scenario
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.nepal_demo import (
+    FORECAST_OFFSETS,
+    OBSERVATION_GAPS,
+    OBSERVATION_OFFSETS,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.nepal_demo import DemoScenario
+    from sapphire_flow.types.nepal_demo import DemoIssue, DemoScenario
 
 SEED = 20260916
 DEFAULT_ISSUE = ensure_utc(datetime(2025, 8, 12, tzinfo=UTC))
@@ -37,10 +42,28 @@ FILENAMES = {
 }
 
 
+def serialize_issue(issue: DemoIssue) -> dict[str, object]:
+    return {
+        "source_mode": "illustrative",
+        "unit": "m3/s",
+        "forecast_id": f"DEMO-NP-001-{issue.issued_at:%Y%m%dT%H%M%SZ}",
+        "issued_at": stamp(issue.issued_at),
+        "valid_times": [
+            stamp(issue.issued_at + timedelta(hours=h)) for h in FORECAST_OFFSETS
+        ],
+        "horizon_start": stamp(issue.issued_at + timedelta(hours=3)),
+        "horizon_end": stamp(issue.issued_at + timedelta(hours=75)),
+        "series": {"0.25": issue.lower, "0.5": issue.median, "0.75": issue.upper},
+        "gaps": [],
+        "qc_status": "synthetic_eligible",
+        "eligibility_note": "Eligible only for illustrative playback; "
+        "synthetic values, no operational QC or trained model.",
+    }
+
+
 def serialize_bundle(scenario: DemoScenario, basin: BasinInput) -> DemoBundle:
-    issue = scenario.issued_at
-    history_times = [stamp(issue + timedelta(hours=h)) for h in range(-168, 0)]
-    forecast_times = [stamp(issue + timedelta(hours=h)) for h in range(1, 73)]
+    issue = scenario.first_issued_at
+    history_times = [stamp(issue + timedelta(hours=h)) for h in OBSERVATION_OFFSETS]
     station = {
         "network": "demo",
         "code": "DEMO-NP-001",
@@ -48,21 +71,6 @@ def serialize_bundle(scenario: DemoScenario, basin: BasinInput) -> DemoBundle:
         "backend_uuid": None,
         "longitude": 86.668726,
         "latitude": 27.269326,
-    }
-    forecast = {
-        "forecast_id": f"DEMO-NP-001-{issue:%Y%m%dT%H%M%SZ}",
-        "issued_at": stamp(issue),
-        "representation": "quantiles",
-        "quantile_levels": [0.25, 0.5, 0.75],
-        "cadence_seconds": 3600,
-        "horizon_start": forecast_times[0],
-        "horizon_end": stamp(issue + timedelta(hours=73)),
-        "valid_times": forecast_times,
-        "qc_status": "synthetic_eligible",
-        "eligibility_note": (
-            "Eligible only for illustrative playback; synthetic values, "
-            "no operational QC or trained model."
-        ),
     }
     provenance = {
         "basin": {
@@ -89,12 +97,13 @@ def serialize_bundle(scenario: DemoScenario, basin: BasinInput) -> DemoBundle:
         "forecast": {
             "kind": "synthetic",
             "attribution": (
-                f"Invented rise/peak/recession, seed {SEED}; no trained model."
+                f"Independent invented issue curves, seed {SEED + 1}; "
+                "no trained model or observation input."
             ),
         },
     }
     manifest = {
-        "schema_version": "flow-map-region-bundle/v1",
+        "schema_version": "flow-map-region-bundle/v2",
         "region": "nepal",
         "generated_at": stamp(issue),
         "source_mode": "illustrative",
@@ -106,57 +115,53 @@ def serialize_bundle(scenario: DemoScenario, basin: BasinInput) -> DemoBundle:
         "station": station,
         "units": {"discharge": "m3/s"},
         "timezone": "Asia/Kathmandu",
-        "forecast": forecast,
+        "forecast_cycle": {
+            "cycle_hours": 6,
+            "cadence_seconds": 10800,
+            "horizon_steps": 24,
+            "issue_count": 8,
+            "representation": "quantiles",
+            "quantile_levels": [0.25, 0.5, 0.75],
+            "starts_at_issue_time": False,
+        },
         "thresholds": None,
         "threshold_basis": "none_available",
         "comparator": None,
         "date_basis": "demonstration_date",
         "date_label": "Demonstration date — synthetic values, "
         "not a record of conditions on this date",
-        "verification_label": "Verification outturn — synthetic; arrives after "
-        "the issue time, not a forecast input",
-        "verification_note": "Invented outturn; agreement or disagreement is arbitrary "
-        "and is not evidence of forecast skill. No score is computed.",
+        "verification_note": "Observations after each issue are synthetic "
+        "verification outturn only; "
+        "they are not inputs to any forecast. Agreement or disagreement is arbitrary, "
+        "with no designed convergence and no evidence of forecast skill. "
+        "No score is computed.",
         "supersession": {
             "cycle_hours": 6,
-            "label": "Single-issue illustrative scenario",
-            "note": "No earlier forecast cycles are supplied in this demonstration.",
+            "label": "Eight illustrative forecast issues",
+            "note": "At each issue, earlier issues retain their full quantile bands "
+            "as superseded forecasts. Hide future issues and observations after "
+            "the active issue time.",
         },
     }
     series: dict[str, object] = {
         "region": "nepal",
-        "superseded": [],
         "observations": {
             "source_mode": "illustrative",
             "unit": "m3/s",
             "window_start": history_times[0],
-            "window_end": stamp(issue),
+            "window_end": stamp(issue + timedelta(hours=43)),
             "cadence_seconds": 3600,
             "valid_times": history_times,
-            "values": scenario.history,
-            "gaps": [{"start": history_times[120], "end": history_times[126]}],
+            "values": scenario.observations,
+            "gaps": [
+                {
+                    "start": stamp(issue + timedelta(hours=start)),
+                    "end": stamp(issue + timedelta(hours=end)),
+                }
+                for start, end in OBSERVATION_GAPS
+            ],
         },
-        "forecast": {
-            "source_mode": "illustrative",
-            "unit": "m3/s",
-            "forecast_id": forecast["forecast_id"],
-            "valid_times": forecast_times,
-            "series": {
-                "0.25": scenario.lower,
-                "0.5": scenario.median,
-                "0.75": scenario.upper,
-            },
-            "gaps": [],
-        },
-        "verification": {
-            "source_mode": "illustrative",
-            "unit": "m3/s",
-            "kind": "verification_outturn",
-            "starts_at_issue_time": False,
-            "valid_times": forecast_times,
-            "values": scenario.outturn,
-            "gaps": [{"start": forecast_times[40], "end": forecast_times[42]}],
-        },
+        "forecasts": [serialize_issue(forecast) for forecast in scenario.forecasts],
     }
     return DemoBundle.model_validate(
         {
@@ -218,7 +223,12 @@ def export_bundle(
     if os.path.lexists(output_dir):
         raise FileExistsError(f"output already exists: {output_dir}")
     basin = BasinInput.model_validate_json(basin_file.read_bytes())
-    bundle = serialize_bundle(build_scenario(issued_at, Random(SEED)), basin)
+    bundle = serialize_bundle(
+        build_scenario(
+            issued_at, observation_rng=Random(SEED), forecast_rng=Random(SEED + 1)
+        ),
+        basin,
+    )
     documents = bundle.model_dump(mode="json", by_alias=True)
     serialized = {
         FILENAMES[key]: json.dumps(
@@ -227,6 +237,16 @@ def export_bundle(
         + "\n"
         for key, value in documents.items()
     }
+    serialized["schema.json"] = (
+        json.dumps(
+            DemoBundle.model_json_schema(),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     # TemporaryDirectory owns only its staging container, not the published path.
     with tempfile.TemporaryDirectory(
         prefix=".nepal-export-", dir=output_dir.parent

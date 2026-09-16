@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-16
 revised: 2026-09-16
 plan: 273
@@ -103,6 +103,30 @@ specified the illustrative observation curve. These wording corrections are appl
 The frozen v1 contract is included in the plan commit. READY records the owner’s
 forwarded implementation request and continuing automode authorization. V1's 61
 passing checks do not establish v2 behavior; new RED/GREEN evidence follows.
+
+## Implementation evidence — 2026-09-16
+
+T1 complete: reviewed v2 plan/spec/handoff committed as 92bbf660 before code.
+T2/T3 complete: RED reproduced against v1 (missing build_issue and missing
+series.forecasts), followed by 48 passing Nepal generator/boundary/export checks.
+Eight complete forecasts, independent RNG streams, spanning observations and
+strict sequence/gap validation are implemented. V1 schema/example are preserved.
+Five-file export at `/private/tmp/nepal-demo-rabuwa-v2/` equals the v2 fixture;
+Draft 2020-12 and semantic validation pass, and basin.geojson is byte-identical to v1.
+
+T4 verification: 76 targeted checks pass (48 Nepal + 28 existing API regressions).
+`uv run ruff check src/ tests/` and `uv run ruff format --check src/ tests/` pass;
+pyright on the four changed modules reports no errors. Broader `ruff check .` has
+12 pre-existing E501 findings in migrations 0037/0038; `ruff format --check .`
+reports pre-existing formatting in migrations 0031/0036. These untouched files are
+outside the workflow's src/tests gate. Full pytest remains required before merge.
+Version is bumped to 0.1.903. No model/DB/API/frontend changes or external deployment.
+Codex repository patch review and focused contract patch review found no defects.
+Claude patch review also found no defects. Its non-blocking seed-label note is
+resolved by documenting generator_seed as the base seed, with forecast stream
+base+1 (already explicit in per-asset provenance). T4 complete; backend is ready
+for frontend import, with browser rendering and full-suite-before-merge gates
+remaining outside this delivery.
 
 ```json
 {"phases":[{"id":"contract","tasks":["T1"],"parallel":false},
