@@ -630,8 +630,10 @@ only (`types/domain.py:170-176`): there is **no** `station_qc_overrides` table, 
 loader, and both production callers hard-code `overrides=[]`
 (`services/onboarding.py:799`, `flows/ingest_observations.py:308`). Per-station overrides can
 therefore be constructed in-process by the import CLI and passed to the checker, but they
-cannot be *persisted* without new schema. Prefer the in-process route; say so explicitly
-rather than writing "override rows".
+cannot be *persisted* without new schema. **SUPERSEDED 2026-09-11** — the owner ruled the
+in-process route out (a threshold nobody can correct is not "updatable later"), and Plan 269 now
+supplies them as **configuration resolved through its shared boundary**. Do not build them in
+memory.
 
 **Reopened because the author framed the target wrongly, and the owner caught it.** The closed
 answer asked for each station's **plausible maximum**. The project's own standard says a range
@@ -667,8 +669,15 @@ six ceilings become configured rows rather than in-memory constructions. `statio
 for the shape (per-station, per-parameter, with a `source` discriminator) but is a **different**
 concern: those are alert danger levels, not QC bounds. Do not overload it.
 
-**Open question for the next session:** does that persistence work belong in this plan, in Plan
-264, or in its own? It is squarely the gap 264 declared out of scope, and it is now load-bearing.
+**That question is CLOSED** (2026-09-11): the surface is Plan 269's, as onboarding configuration;
+the persisted DB tier is nobody's and is deferred to v1. This paragraph previously asked whether
+the work belonged here, in 264, or in its own plan — a leftover that reopened what the text above
+had just settled. 🔴 **One live interaction remains for T7**: the ingest flow judges only stations
+whose `station_status` is `operational` (`flows/ingest_observations.py:601-609`), and T2b/T7 keep
+these six at `onboarding` by design (`:799`). A ceiling declared for them therefore resolves but
+is **never applied** on the ingest path until promotion. Plan 269 T3 reports that class as
+degraded rather than leaving it silent; this plan must still decide whether the six are promoted
+before their ceilings are expected to bite.
 
 **The target is an impossibility ceiling: a value water cannot produce, only a fault can.**
 Exceeding it means the number is wrong, not that something remarkable happened.
@@ -693,10 +702,11 @@ never committed**; it is not the basis.
 adds a *network* dimension, so one DHM rule serves all six stations with one ceiling. Six
 station-specific maxima therefore cannot come from the rule alone. They come from
 `StationQcOverride`, which already expresses exactly this and which
-`Stage1QualityChecker.check` already merges per station and rule — it simply has no
-persistence, so the import constructs the six in memory and passes them in. **Plan 268 T7 owns
-building those six and proving each station's effective merged ceiling; Plan 264 owns only
-which rule they merge into.** Without that split written down, an implementation could satisfy
+`Stage1QualityChecker.check` already merges per station and rule. **They are declared as
+configuration and resolved through Plan 269's boundary — the import does not construct them in
+memory.** **T7 owns the ceiling VALUES and proving each station's effective merged ceiling;
+Plan 264 owns only which rule they merge into; Plan 269 owns how they are declared and
+resolved.** Without that split written down, an implementation could satisfy
 both plans with a single shared DHM maximum and pass every stated gate.
 
 **D16 — the gross-outlier rule needs baselines that cannot exist yet. CLOSED: drop the rule for this import.**
@@ -796,7 +806,16 @@ first review found nothing created them; bounded after the second found it could
 implemented as first written.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (station branch), reusing
 `services/onboarding.py`; whatever tenant provisioning D11 selects.
-**Out**: **no `station_status` promotion** — these stay `onboarding`. Promotion switches on
+**Out**: **no `station_status` promotion** — these stay `onboarding`.
+ℹ️ **Note, corrected 2026-09-11 after Plan 269's round-5 review.** An earlier edit here claimed
+this plan must promote the six and set their forecast targets before any ceiling could apply.
+**That was wrong** and is withdrawn: T7 runs its own QC pass from its own import CLI, which does
+not go through the ingest eligibility gate (`flows/ingest_observations.py:601-609`) or
+onboarding's forecast-target gate (`services/onboarding.py:774-778`), and
+`Stage1QualityChecker.check` inspects no station lifecycle at all. What is true is narrower: a
+ceiling declared for these six is inert **on the scheduled ingest path** until promotion, which
+Plan 269 T3 reports rather than silently ignoring. T7's own pass is unaffected.
+Promotion switches on
 ingest and forecasting for a station and is not this plan's to trigger.
 **No QC.** Round 2 found that the onboarding service is itself a QC pass: its Step 5 fetches
 RAW observations and runs `Stage1QualityChecker` over them with the deployment rule set
