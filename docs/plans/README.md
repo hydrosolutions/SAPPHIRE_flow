@@ -44,7 +44,10 @@ Do not add a separate acceptance-map table or persistent run-state file.
 
 - **300** — [DHM water-level observation adapter](archive/300-dhm-observation-adapter.md) —
   `COMPLETE` — offline implementation and 308 focused checks passed; archived.
-  Independent patch review and full-suite merge gate remain. Owner-relayed BIPAD confirmation establishes the request/response
+  [Independent patch reviews](../reviews/300-dhm-observation-adapter/implementation/README.md)
+  completed with five distinct low-severity findings awaiting disposition; no
+  blocking implementation defect was found. The full-suite merge gate remains.
+  Owner-relayed BIPAD confirmation establishes the request/response
   contract for direct DHM adapter development. Captured examples support offline
   parsing, history/pagination and Flow 2 integration; real DHM connection settings
   remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit
