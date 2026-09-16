@@ -27,6 +27,7 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **Every code change updates affected docs** — no exceptions
 - **Planning and independent-review agents may read a DRAFT plan, but implementation agents may not execute it.** Only the owner may set its YAML `status: READY`.
 - **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). The owner deliberately starts one independent Claude and one independent Codex pass; no model approves its own output. High-risk work receives one additional owner-commissioned review. Human owners decide findings, READY, PR creation, and merge. See `docs/workflow.md` § Multi-Model Review.
+- **Keep review reports out of commits.** Store planning and implementation review rounds locally; put only concise outcomes and unresolved findings in the PR description. Commit full reports only when the owner explicitly requests them.
 - **Use the plain prompt skills:** `/plan` reviews or refines a plan, `/implement` builds one READY plan, and `/review` performs one independent read-only review. They do not launch each other, retry, fix findings, or manage state. See `docs/workflow.md` § Prompt Guides.
 - **Before merge:** the full test suite must pass after the final code change, either locally or in CI.
 

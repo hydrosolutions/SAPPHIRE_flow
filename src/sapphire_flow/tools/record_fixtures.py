@@ -236,6 +236,15 @@ def _run_bafu(args: argparse.Namespace) -> None:
     try:
         with open("config.toml", "rb") as f:
             data = tomllib.load(f)
+        if (
+            data.get("adapters", {})
+            .get("river_stations", {})
+            .get("type", "hydro_scraper")
+            != "hydro_scraper"
+        ):
+            raise ConfigurationError(
+                "BAFU recorder requires hydro_scraper adapter type"
+            )
         endpoint: str = data["adapters"]["river_stations"]["endpoint"]
     except (
         FileNotFoundError,

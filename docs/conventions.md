@@ -178,6 +178,24 @@ raise immediately.
 The `foreign_forecast` adapter role is defined via the `ForeignForecastSource` Protocol
 (`protocols/adapters.py`). Implementation deferred — no adapter class exists in v0.
 
+Flow 2 also supports `[adapters.river_stations] type = "dhm"` (Plan 300).
+`config/river_stations.py` reads the existing base/overlay TOML and parses the
+source choice; `config/dhm.py` converts DHM settings and explicit `(network, code)`
+bindings into immutable values. `DhmAdapter` implements both station-fetch
+capabilities and returns measured water levels in metres and UTC. DHM river
+cursors use `water_level`; Swiss river/lake and weather cursor choices are unchanged.
+Each DHM station fetch is complete or failed, with bounded history windows/pages
+and no in-adapter retry. Unsupported networks/kinds are skipped without outcomes;
+supported gauges with bad bindings or level metadata report `CONFIGURATION_ERROR`.
+
+DHM QC reads extend to cover recovered measurements plus preceding context and
+an exclusive end after the newest measurement. All RAW rows inside that interval
+receive existing QC; finalised rows and stored values are unchanged. This does not
+recover RAW rows older than the interval after a previous QC failure. See the
+[DHM examples and activation procedure](requirements/dhm-api-examples/README.md)
+for configuration, datum constraints, recovery and the required operational
+follow-ons. A clean empty fetch is not evidence of a fresh gauge.
+
 ---
 
 ## Model discovery

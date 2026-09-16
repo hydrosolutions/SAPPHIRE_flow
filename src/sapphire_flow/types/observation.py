@@ -74,7 +74,7 @@ class ArchivedObservationValue:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class StationFetchOutcome:
     """Plan 175 T3/D9 — one station's result from
-    ``HydroScraperAdapter.fetch_observations_batch``. ``failure_cause is
+    an observation adapter's batch fetch. ``failure_cause is
     None`` means the station polled cleanly (which may still mean zero
     observations, if nothing new was published)."""
 

@@ -1004,6 +1004,22 @@ When this map applies, the context packet should name: which touch trigger appli
 
 ### Touchpoint map: LINDAS / BAFU observation ingest
 
+**DHM observation ingest (Plan 300) shares Flow 2's integration boundary.** When
+editing selection, watermarks, per-station outcomes or QC intervals also inspect:
+`config/river_stations.py` (merged source selection), `config/dhm.py` (typed
+configuration/bindings), `adapters/dhm.py` (history parsing, pagination, pacing),
+`flows/ingest_observations.py` (DHM construction/fetch client lifetime,
+`_cursor_parameter_for_station`, `_run_qc_task` recovered timestamps),
+`types/enums.py::FetchOutcomeCause`, and `tools/record_fixtures.py` (BAFU type guard).
+Focused checks are `tests/unit/adapters/test_dhm.py`,
+`tests/unit/config/test_dhm.py`, `tests/unit/config/test_river_stations.py`,
+`tests/unit/flows/test_ingest_observations_dhm.py`, and the existing ingest,
+weather, fetch-health, restatement, derivation and recorder tests. DHM shares the
+outcome protocols, not LINDAS's rate limiter or snapshot-empty policy. Plan 272
+also owns a candidate change to the QC-window site: reconcile both regression
+sets when its cadence-reachability implementation lands. See the
+[DHM activation procedure](requirements/dhm-api-examples/README.md).
+
 Use this map when a task touches anything that calls `lindas.admin.ch` — the shared
 rate limiter, either LINDAS-caller adapter, the operational ingest's per-station
 fetch-failure reporting, or either LINDAS-caller cron schedule. See

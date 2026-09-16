@@ -42,6 +42,21 @@ behavior changes—the **Pre-change** failure that the same evidence exposes. Us
 Do not add a separate acceptance-map table or persistent run-state file.
 
 
+## Nepal observation integration
+
+- **300** — [DHM water-level observation adapter](archive/300-dhm-observation-adapter.md) —
+  `COMPLETE` — offline implementation and 308 focused checks passed; archived.
+  Independent patch reviews completed with five distinct low-severity findings
+  recorded in PR #278; no
+  blocking implementation defect was found. The full default suite passed after
+  merging current main: 6,408 passed, 53 skipped, 15 deselected (2026-09-16).
+  Owner-relayed BIPAD confirmation establishes the request/response
+  contract for direct DHM adapter development. Captured examples support offline
+  parsing, history/pagination and Flow 2 integration; real DHM connection settings
+  remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit
+  conversion and rating curves remain separate. The owner approved implementation
+  on 2026-09-16 after independent review and incorporation of the accepted findings.
+
 ## Archived by the 2026-08-28 stale-status audit
 
 Each had `status: READY` while its work was already present on `main`. Archived on **code-artifact
@@ -626,8 +641,9 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 1. **Multi-tenant / deployment isolation** (east HSOL / west DHM) — blocks the
    multi-tenant wave.
-2. **DHM observation adapter** — real-time DHM gauge ingest (distinct from the
-   gateway *forcing* adapter 081).
+2. **DHM observation adapter** — now tracked by **Plan 300 (DRAFT)**, based on
+   owner-confirmed request/response examples; distinct from the gateway *forcing*
+   adapter 081. Generic unit conversion remains gap #3 below.
 3. **water_level unit normalization** — cm / m-above-ground → canonical metres at the
    adapter boundary (Plan 101 only *guards* the metres assumption).
 4. **ERA5-Land reanalysis adapter** (`WeatherReanalysisSource` for Nepal) — folded

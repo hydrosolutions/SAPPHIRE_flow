@@ -238,7 +238,7 @@ class ObservationSource(Enum):
 
 
 class FetchOutcomeCause(Enum):
-    """Plan 175 D9 — the per-station LINDAS fetch failure taxonomy. `NO_DATA`
+    """Per-station observation fetch failure taxonomy. `NO_DATA`
     and `MALFORMED_RESPONSE` are deliberately split: pre-Plan-175 code could
     not tell a legitimately-empty poll from a bad timestamp, since both
     collapsed to the same empty `list[RawObservation]`."""
@@ -248,6 +248,7 @@ class FetchOutcomeCause(Enum):
     TRANSPORT_ERROR = "transport_error"
     MALFORMED_RESPONSE = "malformed_response"
     NO_DATA = "no_data"
+    CONFIGURATION_ERROR = "configuration_error"
 
 
 class GaugingStatus(Enum):

@@ -1,0 +1,1078 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "BIPAD API",
+    "version": "v1"
+  },
+  "host": "bipadportal.gov.np",
+  "schemes": [
+    "https"
+  ],
+  "basePath": "/",
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "securityDefinitions": {
+    "Basic": {
+      "type": "basic"
+    }
+  },
+  "security": [
+    {
+      "Basic": []
+    }
+  ],
+  "paths": {
+    "/api/{version}/river-stations/": {
+      "get": {
+        "operationId": "api_river-stations_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "status__iexact",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station_series_id",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ward",
+            "in": "query",
+            "description": "Ward is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "municipality",
+            "in": "query",
+            "description": "Municipality is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "district",
+            "in": "query",
+            "description": "District is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "province",
+            "in": "query",
+            "description": "Province is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/RiverStation"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/river-stations/{id}/": {
+      "get": {
+        "operationId": "api_river-stations_read",
+        "description": "",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RiverStation"
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "description": "A unique integer value identifying this river station.",
+          "required": true,
+          "type": "integer"
+        }
+      ]
+    },
+    "/api/{version}/river-trimed/": {
+      "get": {
+        "operationId": "api_river-trimed_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "status__iexact",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "trim_type",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "trim_by",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station_series_id",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ward",
+            "in": "query",
+            "description": "Ward is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "municipality",
+            "in": "query",
+            "description": "Municipality is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "district",
+            "in": "query",
+            "description": "District is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "province",
+            "in": "query",
+            "description": "Province is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/RiverTrimed"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/river-trimed/{id}/": {
+      "get": {
+        "operationId": "api_river-trimed_read",
+        "description": "",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/RiverTrimed"
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/river/": {
+      "get": {
+        "operationId": "api_river_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "status__iexact",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__gt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "water_level_on__lt",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station_series_id",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "station",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ward",
+            "in": "query",
+            "description": "Ward is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "municipality",
+            "in": "query",
+            "description": "Municipality is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "district",
+            "in": "query",
+            "description": "District is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "province",
+            "in": "query",
+            "description": "Province is in",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/River"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/river/{id}/": {
+      "get": {
+        "operationId": "api_river_read",
+        "description": "",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/River"
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/streamflow/": {
+      "get": {
+        "operationId": "api_streamflow_list",
+        "description": "",
+        "parameters": [
+          {
+            "name": "comid",
+            "in": "query",
+            "description": "",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "A search term.",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "ordering",
+            "in": "query",
+            "description": "Which field to use when ordering the results.",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/StreamFlow"
+              }
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    "/api/{version}/streamflow/{id}/": {
+      "get": {
+        "operationId": "api_streamflow_read",
+        "description": "",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "schema": {
+              "$ref": "#/definitions/StreamFlow"
+            }
+          }
+        },
+        "tags": [
+          "api"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "description": "A unique integer value identifying this stream flow.",
+          "required": true,
+          "type": "integer"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "RiverStation": {
+      "required": [
+        "title"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "affectedDemography": {
+          "title": "Affected demography",
+          "type": "string",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "title": {
+          "title": "Title",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "basin": {
+          "title": "Basin",
+          "type": "string",
+          "maxLength": 255,
+          "x-nullable": true
+        },
+        "point": {
+          "title": "Point",
+          "type": "string",
+          "x-nullable": true
+        },
+        "waterLevel": {
+          "title": "Water level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "image": {
+          "title": "Image",
+          "type": "string",
+          "format": "uri",
+          "maxLength": 200,
+          "x-nullable": true
+        },
+        "dangerLevel": {
+          "title": "Danger level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "warningLevel": {
+          "title": "Warning level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "waterLevelOn": {
+          "title": "Water level on",
+          "type": "string",
+          "format": "date-time",
+          "x-nullable": true
+        },
+        "status": {
+          "title": "Status",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "elevation": {
+          "title": "Elevation",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "steady": {
+          "title": "Steady",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "description": {
+          "title": "Description",
+          "type": "string",
+          "x-nullable": true
+        },
+        "stationSeriesId": {
+          "title": "Station series id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "dataSource": {
+          "title": "Data source",
+          "type": "string",
+          "maxLength": 50,
+          "x-nullable": true
+        },
+        "dataSourceId": {
+          "title": "Data source id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "ward": {
+          "title": "Ward",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "municipality": {
+          "title": "Municipality",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "district": {
+          "title": "District",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "province": {
+          "title": "Province",
+          "type": "integer",
+          "x-nullable": true
+        }
+      }
+    },
+    "RiverTrimed": {
+      "required": [
+        "trimType",
+        "trimBy",
+        "title"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "trimType": {
+          "title": "Trim type",
+          "type": "string",
+          "enum": [
+            "daily"
+          ]
+        },
+        "trimBy": {
+          "title": "Trim by",
+          "type": "string",
+          "enum": [
+            "avg"
+          ]
+        },
+        "title": {
+          "title": "Title",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "basin": {
+          "title": "Basin",
+          "type": "string",
+          "maxLength": 255,
+          "x-nullable": true
+        },
+        "point": {
+          "title": "Point",
+          "type": "string",
+          "x-nullable": true
+        },
+        "waterLevel": {
+          "title": "Water level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "image": {
+          "title": "Image",
+          "type": "string",
+          "format": "uri",
+          "maxLength": 200,
+          "x-nullable": true
+        },
+        "dangerLevel": {
+          "title": "Danger level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "warningLevel": {
+          "title": "Warning level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "waterLevelOn": {
+          "title": "Water level on",
+          "type": "string",
+          "format": "date-time",
+          "x-nullable": true
+        },
+        "status": {
+          "title": "Status",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "elevation": {
+          "title": "Elevation",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "steady": {
+          "title": "Steady",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "description": {
+          "title": "Description",
+          "type": "string",
+          "x-nullable": true
+        },
+        "stationSeriesId": {
+          "title": "Station series id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "dataSource": {
+          "title": "Data source",
+          "type": "string",
+          "maxLength": 50,
+          "x-nullable": true
+        },
+        "dataSourceId": {
+          "title": "Data source id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "ward": {
+          "title": "Ward",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "municipality": {
+          "title": "Municipality",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "district": {
+          "title": "District",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "province": {
+          "title": "Province",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "station": {
+          "title": "Rain Station",
+          "type": "integer",
+          "x-nullable": true
+        }
+      }
+    },
+    "River": {
+      "required": [
+        "title"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "title": {
+          "title": "Title",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "basin": {
+          "title": "Basin",
+          "type": "string",
+          "maxLength": 255,
+          "x-nullable": true
+        },
+        "point": {
+          "title": "Point",
+          "type": "string",
+          "x-nullable": true
+        },
+        "waterLevel": {
+          "title": "Water level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "image": {
+          "title": "Image",
+          "type": "string",
+          "format": "uri",
+          "maxLength": 200,
+          "x-nullable": true
+        },
+        "dangerLevel": {
+          "title": "Danger level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "warningLevel": {
+          "title": "Warning level",
+          "type": "number",
+          "x-nullable": true
+        },
+        "waterLevelOn": {
+          "title": "Water level on",
+          "type": "string",
+          "format": "date-time",
+          "x-nullable": true
+        },
+        "status": {
+          "title": "Status",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "elevation": {
+          "title": "Elevation",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "steady": {
+          "title": "Steady",
+          "type": "string",
+          "maxLength": 25,
+          "x-nullable": true
+        },
+        "description": {
+          "title": "Description",
+          "type": "string",
+          "x-nullable": true
+        },
+        "stationSeriesId": {
+          "title": "Station series id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "dataSource": {
+          "title": "Data source",
+          "type": "string",
+          "maxLength": 50,
+          "x-nullable": true
+        },
+        "dataSourceId": {
+          "title": "Data source id",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "x-nullable": true
+        },
+        "ward": {
+          "title": "Ward",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "municipality": {
+          "title": "Municipality",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "district": {
+          "title": "District",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "province": {
+          "title": "Province",
+          "type": "integer",
+          "x-nullable": true
+        },
+        "station": {
+          "title": "Rain Station",
+          "type": "integer",
+          "x-nullable": true
+        }
+      }
+    },
+    "StreamFlow": {
+      "required": [
+        "comid",
+        "data",
+        "returnPeriod"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "ID",
+          "type": "integer",
+          "readOnly": true
+        },
+        "createdOn": {
+          "title": "Created on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "modifiedOn": {
+          "title": "Modified on",
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "comid": {
+          "title": "Comid",
+          "type": "integer",
+          "maximum": 2147483647,
+          "minimum": -2147483648
+        },
+        "data": {
+          "title": "Data",
+          "type": "object"
+        },
+        "returnPeriod": {
+          "title": "Return period",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

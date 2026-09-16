@@ -2,6 +2,16 @@
 
 **To:** DHM data team &nbsp; **From:** hydrosolutions (SAPPHIRE Flow) &nbsp; **Date:** 2026-07-13
 
+**Update — 2026-09-16:** The owner reports BIPAD's technical contact confirmed that
+its requests/responses exactly replicate the DHM API. [Captured working examples](dhm-api-examples/README.md)
+now establish the development contract: station metadata/latest readings,
+station/time-range history, response fields and observed pagination. Do not resend
+the requests for dummy examples or treat the absence of those examples as a blocker.
+Direct DHM connection provisioning, complete history coverage, datum/rating tables,
+and QC/correction semantics remain open. The original checklist below is retained
+for those details; the linked evidence supersedes its claims that API documentation
+and examples are unavailable.
+
 Thank you for the sample files (**daily flow**, **staff-gauge readings**, **rating table**) and the **QC document**. To build the automatic link that reads DHM data into the SAPPHIRE forecasting system, we need to confirm a few practical details about *how* the real data will reach us and *exactly* what each field means.
 
 **How to use this list:** please fill in the **"Your answer"** column. Short answers are perfect — a "Yes/No", a number, or one line is enough. **"Not sure — will check with senior staff"** is a completely fine answer; just mark it so we know to follow up. Items marked **⭐** are the ones we need first in order to start.

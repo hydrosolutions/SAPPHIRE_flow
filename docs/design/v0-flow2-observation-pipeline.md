@@ -278,6 +278,31 @@ Each rule has a `rule_id` and `rule_version` for traceability.
 
 ## 5. Adapter design considerations
 
+### DHM adapter (Plan 300)
+
+Flow 2 selects `DhmAdapter` when the merged `[adapters.river_stations]` table has
+`type = "dhm"`; missing type keeps LINDAS. The existing injectable adapter path
+remains available. The LINDAS-specific non-incremental description below does not
+apply to DHM: DHM requests `/river/` history after each station's `water_level`
+watermark, with a single injected batch end, bounded windows and pages, and local
+boundary filtering/deduplication. Configuration carries explicit official-code to
+API-ID bindings. Unsafe continuation URLs, malformed readings and incomplete
+fetches fail that station without advancing its cursor through partial data.
+
+Recovered DHM level timestamps extend the QC read interval by the configured
+preceding context; its exclusive end includes the newest recovered measurement.
+All RAW rows within that interval receive existing QC, including older rows from
+previous failures if they fall inside it. Values and finalised rows are preserved.
+The other sources retain their current QC windows and cursors. Flow-created DHM
+clients are owned only for construction/fetch and close on exceptions too;
+injected clients remain caller-owned. Existing BAFU/DB lifecycles are unchanged.
+
+The BAFU fixture recorder rejects non-`hydro_scraper` selection before client
+construction. No live activation, freshness monitor, rating conversion or new
+scientific thresholds are included. The
+[DHM examples and operational procedure](../requirements/dhm-api-examples/README.md)
+document datum constraints, supervision and activation prerequisites.
+
 ### camelsch adapter (historical import)
 
 The `camelsch` library returns pandas DataFrames. Our adapter wraps this:

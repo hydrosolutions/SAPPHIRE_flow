@@ -248,17 +248,18 @@ class PipelineCheckType(Enum):
         # `/api/v1/health/detail` and the dashboard.
 
 class FetchOutcomeCause(Enum):
-    # Plan 175 D9 — sapphire_flow.types.enums. The per-station LINDAS fetch
-    # failure taxonomy `HydroScraperAdapter.fetch_observations_batch` (see
+    # Per-station observation fetch failure taxonomy (Plans 175/300).
+    # Adapters implementing `fetch_observations_batch` (see
     # `StationDataSource` below) reports on `StationFetchOutcome.
     # failure_cause`. `NO_DATA` and `MALFORMED_RESPONSE` are deliberately
     # split: the pre-Plan-175 `_parse_bindings` collapsed a bad timestamp and
     # a legitimately-empty response into the same `[]`.
-    RATE_LIMITED = "rate_limited"       # 429 after the shared limiter's retry budget was exhausted
+    RATE_LIMITED = "rate_limited"       # 429; BAFU retries via its limiter, DHM reports immediately
     HTTP_STATUS_ERROR = "http_status_error"  # any other non-2xx, carries the status code in failure_detail
-    TRANSPORT_ERROR = "transport_error"  # httpx.HTTPError after retry exhaustion, no response at all
-    MALFORMED_RESPONSE = "malformed_response"  # unparseable measurementTime, or a rejected site_code
-    NO_DATA = "no_data"                 # well-formed response with no usable bindings
+    TRANSPORT_ERROR = "transport_error"  # request failed; retries are source-specific
+    MALFORMED_RESPONSE = "malformed_response"  # invalid readings/envelope or incomplete DHM pagination
+    NO_DATA = "no_data"                 # BAFU snapshot has no usable bindings; DHM empty windows are clean
+    CONFIGURATION_ERROR = "configuration_error"  # supported DHM gauge lacks valid binding/level metadata
 
 class NotificationChannel(Enum):
     EMAIL = "email"
@@ -3721,6 +3722,29 @@ WeatherForecastResult = PointForecast | BasinAverageForecast | ElevationBandFore
 Defined in `types/weather.py`.
 
 #### StationDataSource
+
+**DHM implementation (Plan 300):** `adapters/dhm.py::DhmAdapter` also satisfies
+`BatchStationDataSource`, retaining the shared outcome types below. Explicit
+`config/dhm.py::DhmBinding` values map `(network, station code)` to API station IDs.
+The adapter parses the confirmed DHM history contract into metre-valued
+`water_level`, UTC `waterLevelOn`, and `ObservationSource.MEASURED`; no discharge
+or datum conversion is inferred. Null levels are omitted, malformed non-null
+records fail the station, and failed outcomes carry no partial observations.
+History uses `(since, clock()]`, bounded windows and validated same-origin/path
+continuations; `count` and short pages do not establish completeness. Empty pages
+terminate even when they carry a fabricated `next`.
+
+For DHM, unsupported station kinds/networks have no outcome; a supported DHM river
+with missing level capability/binding or incompatible unit/datum metadata returns
+`CONFIGURATION_ERROR`. Empty completed windows are clean (`failure_cause=None`),
+not BAFU's snapshot-specific `NO_DATA`. Request/HTTP/malformed failures use the
+existing causes without retries or sensitive response/exception text.
+Flow 2 reads DHM river water-level cursors and extends only their level QC intervals
+to include recovered rows and preceding context, including the latest measurement
+under the store's exclusive upper-bound convention. Existing scientific rules and
+the Swiss/weather default intervals are unchanged. See the
+[DHM activation procedure](../requirements/dhm-api-examples/README.md) for the
+remaining QC reachability, freshness and interrupted-QC recovery prerequisites.
 
 ```python
 class StationDataSource(Protocol):

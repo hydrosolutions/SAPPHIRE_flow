@@ -530,8 +530,27 @@ type = "hydro_scraper"                # maps to HydroScraperAdapter class
 endpoint = "https://lindas.admin.ch/query"  # LINDAS SPARQL endpoint (public, no auth)
 max_cache_age_hours = 24
 
+# Plan 300: select DHM in a Nepal overlay using the same table (do not append
+# a duplicate table to this file). Missing type retains hydro_scraper.
+# type = "dhm"
+# endpoint = "https://DHM-HOST/api/v1/"  # supplied host; HTTPS, no URL credentials/query
+# timeout_s = 30                       # finite HTTPX phase timeout
+# page_size = 500
+# window_hours = 24
+# max_pages_per_station = 100          # total across all windows, including terminal pages
+# min_request_interval_s = 1.0         # positive; provider polling agreement still required
+# [[adapters.river_stations.bindings]]
+# network = "dhm"
+# station_code = "CONFIRMED-DHM-CODE"   # official code, not inferred from portal title
+# api_station_id = 168                 # explicit positive integer mapping
+# level_reference = "unknown"          # gauge_zero | masl | unknown
+# gauge_zero/unknown require unit "m" and a null QC datum. masl permits "m"
+# or "m a.s.l.". Null/incompatible units fail that station before any request.
+# No auth scheme is assumed; direct-DHM secret wiring is a deployment follow-on.
+
 [adapters.river_stations.monitoring]
 expected_interval_hours = 0.17        # BAFU: every 10 min
+# This key does not yet wire a DHM measurement-freshness monitor.
 
 # Plan 111 route-C BAFU forecast collector (`collect-bafu-forecasts`,
 # quarantined, evaluation-only — see docs/plans/archive/111*.md). Setting
