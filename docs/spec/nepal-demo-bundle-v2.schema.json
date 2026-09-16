@@ -1,0 +1,803 @@
+{
+  "$defs": {
+    "BasinDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "attribution": {
+          "minLength": 1,
+          "title": "Attribution",
+          "type": "string"
+        },
+        "features": {
+          "items": {
+            "$ref": "#/$defs/BasinFeature"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Features",
+          "type": "array"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "type": {
+          "const": "FeatureCollection",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "features",
+        "region",
+        "attribution"
+      ],
+      "title": "BasinDocument",
+      "type": "object"
+    },
+    "BasinFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "geometry": {
+          "$ref": "#/$defs/BasinGeometry"
+        },
+        "id": {
+          "const": "NP_1_00092",
+          "title": "Id",
+          "type": "string"
+        },
+        "properties": {
+          "$ref": "#/$defs/BasinProperties"
+        },
+        "type": {
+          "const": "Feature",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "properties",
+        "geometry"
+      ],
+      "title": "BasinFeature",
+      "type": "object"
+    },
+    "BasinGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinates": {
+          "items": {
+            "items": {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "minItems": 4,
+              "type": "array"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "minItems": 1,
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "type": {
+          "const": "MultiPolygon",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "title": "BasinGeometry",
+      "type": "object"
+    },
+    "BasinProperties": {
+      "additionalProperties": false,
+      "properties": {
+        "basin_id": {
+          "const": "NP_1_00092",
+          "title": "Basin Id",
+          "type": "string"
+        },
+        "name": {
+          "const": "Dudh Koshi at Rabuwa",
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "basin_id",
+        "name",
+        "source"
+      ],
+      "title": "BasinProperties",
+      "type": "object"
+    },
+    "ForecastCycle": {
+      "additionalProperties": false,
+      "properties": {
+        "cadence_seconds": {
+          "const": 10800,
+          "title": "Cadence Seconds",
+          "type": "integer"
+        },
+        "cycle_hours": {
+          "const": 6,
+          "title": "Cycle Hours",
+          "type": "integer"
+        },
+        "horizon_steps": {
+          "const": 24,
+          "title": "Horizon Steps",
+          "type": "integer"
+        },
+        "issue_count": {
+          "const": 8,
+          "title": "Issue Count",
+          "type": "integer"
+        },
+        "quantile_levels": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Quantile Levels",
+          "type": "array"
+        },
+        "representation": {
+          "const": "quantiles",
+          "title": "Representation",
+          "type": "string"
+        },
+        "starts_at_issue_time": {
+          "const": false,
+          "title": "Starts At Issue Time",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cycle_hours",
+        "cadence_seconds",
+        "horizon_steps",
+        "issue_count",
+        "representation",
+        "quantile_levels",
+        "starts_at_issue_time"
+      ],
+      "title": "ForecastCycle",
+      "type": "object"
+    },
+    "ForecastSeries": {
+      "additionalProperties": false,
+      "properties": {
+        "eligibility_note": {
+          "minLength": 1,
+          "title": "Eligibility Note",
+          "type": "string"
+        },
+        "forecast_id": {
+          "minLength": 1,
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "maxItems": 0,
+          "title": "Gaps",
+          "type": "array"
+        },
+        "horizon_end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "horizon_start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "issued_at": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "qc_status": {
+          "const": "synthetic_eligible",
+          "title": "Qc Status",
+          "type": "string"
+        },
+        "series": {
+          "$ref": "#/$defs/Quantiles"
+        },
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "maxItems": 24,
+          "minItems": 24,
+          "title": "Valid Times",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_mode",
+        "unit",
+        "forecast_id",
+        "issued_at",
+        "valid_times",
+        "horizon_start",
+        "horizon_end",
+        "series",
+        "gaps",
+        "qc_status",
+        "eligibility_note"
+      ],
+      "title": "ForecastSeries",
+      "type": "object"
+    },
+    "Gap": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Gap",
+      "type": "object"
+    },
+    "History": {
+      "additionalProperties": false,
+      "properties": {
+        "cadence_seconds": {
+          "const": 3600,
+          "title": "Cadence Seconds",
+          "type": "integer"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Gaps",
+          "type": "array"
+        },
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "maxItems": 211,
+          "minItems": 211,
+          "title": "Valid Times",
+          "type": "array"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxItems": 211,
+          "minItems": 211,
+          "title": "Values",
+          "type": "array"
+        },
+        "window_end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Window End",
+          "type": "string"
+        },
+        "window_start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Window Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_mode",
+        "unit",
+        "valid_times",
+        "values",
+        "gaps",
+        "window_start",
+        "window_end",
+        "cadence_seconds"
+      ],
+      "title": "History",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "backend_uuid": {
+          "title": "Backend Uuid",
+          "type": "null"
+        },
+        "code": {
+          "const": "DEMO-NP-001",
+          "title": "Code",
+          "type": "string"
+        },
+        "display_name": {
+          "const": "Illustrative demo gauge",
+          "title": "Display Name",
+          "type": "string"
+        },
+        "latitude": {
+          "maximum": 27.269326,
+          "minimum": 27.269326,
+          "title": "Latitude",
+          "type": "number"
+        },
+        "longitude": {
+          "maximum": 86.668726,
+          "minimum": 86.668726,
+          "title": "Longitude",
+          "type": "number"
+        },
+        "network": {
+          "const": "demo",
+          "title": "Network",
+          "type": "string"
+        }
+      },
+      "required": [
+        "network",
+        "code",
+        "display_name",
+        "longitude",
+        "latitude",
+        "backend_uuid"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "Manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "banner_text": {
+          "const": "Illustrative scenario — synthetic data, not an operational forecast",
+          "title": "Banner Text",
+          "type": "string"
+        },
+        "comparator": {
+          "title": "Comparator",
+          "type": "null"
+        },
+        "date_basis": {
+          "const": "demonstration_date",
+          "title": "Date Basis",
+          "type": "string"
+        },
+        "date_label": {
+          "minLength": 1,
+          "title": "Date Label",
+          "type": "string"
+        },
+        "forecast_cycle": {
+          "$ref": "#/$defs/ForecastCycle"
+        },
+        "generated_at": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "generator_seed": {
+          "const": 20260916,
+          "title": "Generator Seed",
+          "type": "integer"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "flow-map-region-bundle/v2",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "spread_label": {
+          "const": "Illustrative spread — not calibrated uncertainty",
+          "title": "Spread Label",
+          "type": "string"
+        },
+        "station": {
+          "$ref": "#/$defs/Identity"
+        },
+        "supersession": {
+          "$ref": "#/$defs/Supersession"
+        },
+        "threshold_basis": {
+          "const": "none_available",
+          "title": "Threshold Basis",
+          "type": "string"
+        },
+        "thresholds": {
+          "title": "Thresholds",
+          "type": "null"
+        },
+        "timezone": {
+          "const": "Asia/Kathmandu",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "uncertainty_meaning": {
+          "const": "illustrative_spread",
+          "title": "Uncertainty Meaning",
+          "type": "string"
+        },
+        "units": {
+          "$ref": "#/$defs/Units"
+        },
+        "verification_note": {
+          "minLength": 1,
+          "title": "Verification Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "region",
+        "generated_at",
+        "source_mode",
+        "generator_seed",
+        "banner_text",
+        "provenance",
+        "uncertainty_meaning",
+        "spread_label",
+        "station",
+        "units",
+        "timezone",
+        "forecast_cycle",
+        "thresholds",
+        "threshold_basis",
+        "comparator",
+        "date_basis",
+        "date_label",
+        "verification_note",
+        "supersession"
+      ],
+      "title": "Manifest",
+      "type": "object"
+    },
+    "PointGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "coordinates": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Coordinates",
+          "type": "array"
+        },
+        "type": {
+          "const": "Point",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "title": "PointGeometry",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "basemap": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "basin": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "forecast": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "observations": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "station": {
+          "$ref": "#/$defs/SourceNote"
+        }
+      },
+      "required": [
+        "basin",
+        "basemap",
+        "station",
+        "observations",
+        "forecast"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Quantiles": {
+      "additionalProperties": false,
+      "properties": {
+        "0.25": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxItems": 24,
+          "minItems": 24,
+          "title": "0.25",
+          "type": "array"
+        },
+        "0.5": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxItems": 24,
+          "minItems": 24,
+          "title": "0.5",
+          "type": "array"
+        },
+        "0.75": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxItems": 24,
+          "minItems": 24,
+          "title": "0.75",
+          "type": "array"
+        }
+      },
+      "required": [
+        "0.25",
+        "0.5",
+        "0.75"
+      ],
+      "title": "Quantiles",
+      "type": "object"
+    },
+    "Series": {
+      "additionalProperties": false,
+      "properties": {
+        "forecasts": {
+          "items": {
+            "$ref": "#/$defs/ForecastSeries"
+          },
+          "maxItems": 8,
+          "minItems": 8,
+          "title": "Forecasts",
+          "type": "array"
+        },
+        "observations": {
+          "$ref": "#/$defs/History"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "observations",
+        "forecasts"
+      ],
+      "title": "Series",
+      "type": "object"
+    },
+    "SourceNote": {
+      "additionalProperties": false,
+      "properties": {
+        "attribution": {
+          "minLength": 1,
+          "title": "Attribution",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "real_geometry",
+            "third_party_raster",
+            "synthetic"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attribution"
+      ],
+      "title": "SourceNote",
+      "type": "object"
+    },
+    "StationDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "features": {
+          "items": {
+            "$ref": "#/$defs/StationFeature"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Features",
+          "type": "array"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "type": {
+          "const": "FeatureCollection",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "region",
+        "features"
+      ],
+      "title": "StationDocument",
+      "type": "object"
+    },
+    "StationFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "geometry": {
+          "$ref": "#/$defs/PointGeometry"
+        },
+        "properties": {
+          "$ref": "#/$defs/Identity"
+        },
+        "type": {
+          "const": "Feature",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "properties",
+        "geometry"
+      ],
+      "title": "StationFeature",
+      "type": "object"
+    },
+    "Supersession": {
+      "additionalProperties": false,
+      "properties": {
+        "cycle_hours": {
+          "const": 6,
+          "title": "Cycle Hours",
+          "type": "integer"
+        },
+        "label": {
+          "const": "Eight illustrative forecast issues",
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cycle_hours",
+        "label",
+        "note"
+      ],
+      "title": "Supersession",
+      "type": "object"
+    },
+    "Units": {
+      "additionalProperties": false,
+      "properties": {
+        "discharge": {
+          "const": "m3/s",
+          "title": "Discharge",
+          "type": "string"
+        }
+      },
+      "required": [
+        "discharge"
+      ],
+      "title": "Units",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "basin": {
+      "$ref": "#/$defs/BasinDocument"
+    },
+    "manifest": {
+      "$ref": "#/$defs/Manifest"
+    },
+    "series": {
+      "$ref": "#/$defs/Series"
+    },
+    "station": {
+      "$ref": "#/$defs/StationDocument"
+    }
+  },
+  "required": [
+    "manifest",
+    "series",
+    "station",
+    "basin"
+  ],
+  "title": "DemoBundle",
+  "type": "object"
+}

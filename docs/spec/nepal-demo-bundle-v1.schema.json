@@ -1,0 +1,853 @@
+{
+  "$defs": {
+    "BasinDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "FeatureCollection",
+          "title": "Type",
+          "type": "string"
+        },
+        "features": {
+          "items": {
+            "$ref": "#/$defs/BasinFeature"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Features",
+          "type": "array"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "attribution": {
+          "minLength": 1,
+          "title": "Attribution",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "features",
+        "region",
+        "attribution"
+      ],
+      "title": "BasinDocument",
+      "type": "object"
+    },
+    "BasinFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "Feature",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "const": "NP_1_00092",
+          "title": "Id",
+          "type": "string"
+        },
+        "properties": {
+          "$ref": "#/$defs/BasinProperties"
+        },
+        "geometry": {
+          "$ref": "#/$defs/BasinGeometry"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "properties",
+        "geometry"
+      ],
+      "title": "BasinFeature",
+      "type": "object"
+    },
+    "BasinGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "MultiPolygon",
+          "title": "Type",
+          "type": "string"
+        },
+        "coordinates": {
+          "items": {
+            "items": {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "minItems": 4,
+              "type": "array"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "minItems": 1,
+          "title": "Coordinates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "title": "BasinGeometry",
+      "type": "object"
+    },
+    "BasinProperties": {
+      "additionalProperties": false,
+      "properties": {
+        "basin_id": {
+          "const": "NP_1_00092",
+          "title": "Basin Id",
+          "type": "string"
+        },
+        "name": {
+          "const": "Dudh Koshi at Rabuwa",
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "basin_id",
+        "name",
+        "source"
+      ],
+      "title": "BasinProperties",
+      "type": "object"
+    },
+    "ForecastMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "forecast_id": {
+          "minLength": 1,
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "issued_at": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "representation": {
+          "const": "quantiles",
+          "title": "Representation",
+          "type": "string"
+        },
+        "quantile_levels": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "Quantile Levels",
+          "type": "array"
+        },
+        "cadence_seconds": {
+          "const": 3600,
+          "title": "Cadence Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "title": "Valid Times",
+          "type": "array"
+        },
+        "qc_status": {
+          "const": "synthetic_eligible",
+          "title": "Qc Status",
+          "type": "string"
+        },
+        "eligibility_note": {
+          "minLength": 1,
+          "title": "Eligibility Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "forecast_id",
+        "issued_at",
+        "representation",
+        "quantile_levels",
+        "cadence_seconds",
+        "horizon_start",
+        "horizon_end",
+        "valid_times",
+        "qc_status",
+        "eligibility_note"
+      ],
+      "title": "ForecastMetadata",
+      "type": "object"
+    },
+    "ForecastSeries": {
+      "additionalProperties": false,
+      "properties": {
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "forecast_id": {
+          "minLength": 1,
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "title": "Valid Times",
+          "type": "array"
+        },
+        "series": {
+          "$ref": "#/$defs/Quantiles"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_mode",
+        "unit",
+        "forecast_id",
+        "valid_times",
+        "series",
+        "gaps"
+      ],
+      "title": "ForecastSeries",
+      "type": "object"
+    },
+    "Gap": {
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Gap",
+      "type": "object"
+    },
+    "History": {
+      "additionalProperties": false,
+      "properties": {
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "title": "Valid Times",
+          "type": "array"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "window_start": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Window Start",
+          "type": "string"
+        },
+        "window_end": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Window End",
+          "type": "string"
+        },
+        "cadence_seconds": {
+          "const": 3600,
+          "title": "Cadence Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_mode",
+        "unit",
+        "valid_times",
+        "values",
+        "gaps",
+        "window_start",
+        "window_end",
+        "cadence_seconds"
+      ],
+      "title": "History",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "const": "demo",
+          "title": "Network",
+          "type": "string"
+        },
+        "code": {
+          "const": "DEMO-NP-001",
+          "title": "Code",
+          "type": "string"
+        },
+        "display_name": {
+          "const": "Illustrative demo gauge",
+          "title": "Display Name",
+          "type": "string"
+        },
+        "longitude": {
+          "maximum": 86.668726,
+          "minimum": 86.668726,
+          "title": "Longitude",
+          "type": "number"
+        },
+        "latitude": {
+          "maximum": 27.269326,
+          "minimum": 27.269326,
+          "title": "Latitude",
+          "type": "number"
+        },
+        "backend_uuid": {
+          "title": "Backend Uuid",
+          "type": "null"
+        }
+      },
+      "required": [
+        "network",
+        "code",
+        "display_name",
+        "longitude",
+        "latitude",
+        "backend_uuid"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "Manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "flow-map-region-bundle/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "generated_at": {
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "generator_seed": {
+          "const": 20260916,
+          "title": "Generator Seed",
+          "type": "integer"
+        },
+        "banner_text": {
+          "const": "Illustrative scenario — synthetic data, not an operational forecast",
+          "title": "Banner Text",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "uncertainty_meaning": {
+          "const": "illustrative_spread",
+          "title": "Uncertainty Meaning",
+          "type": "string"
+        },
+        "spread_label": {
+          "const": "Illustrative spread — not calibrated uncertainty",
+          "title": "Spread Label",
+          "type": "string"
+        },
+        "station": {
+          "$ref": "#/$defs/Identity"
+        },
+        "units": {
+          "$ref": "#/$defs/Units"
+        },
+        "timezone": {
+          "const": "Asia/Kathmandu",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "forecast": {
+          "$ref": "#/$defs/ForecastMetadata"
+        },
+        "thresholds": {
+          "title": "Thresholds",
+          "type": "null"
+        },
+        "threshold_basis": {
+          "const": "none_available",
+          "title": "Threshold Basis",
+          "type": "string"
+        },
+        "comparator": {
+          "title": "Comparator",
+          "type": "null"
+        },
+        "date_basis": {
+          "const": "demonstration_date",
+          "title": "Date Basis",
+          "type": "string"
+        },
+        "date_label": {
+          "minLength": 1,
+          "title": "Date Label",
+          "type": "string"
+        },
+        "verification_label": {
+          "minLength": 1,
+          "title": "Verification Label",
+          "type": "string"
+        },
+        "verification_note": {
+          "minLength": 1,
+          "title": "Verification Note",
+          "type": "string"
+        },
+        "supersession": {
+          "$ref": "#/$defs/Supersession"
+        }
+      },
+      "required": [
+        "schema_version",
+        "region",
+        "generated_at",
+        "source_mode",
+        "generator_seed",
+        "banner_text",
+        "provenance",
+        "uncertainty_meaning",
+        "spread_label",
+        "station",
+        "units",
+        "timezone",
+        "forecast",
+        "thresholds",
+        "threshold_basis",
+        "comparator",
+        "date_basis",
+        "date_label",
+        "verification_label",
+        "verification_note",
+        "supersession"
+      ],
+      "title": "Manifest",
+      "type": "object"
+    },
+    "Outturn": {
+      "additionalProperties": false,
+      "properties": {
+        "source_mode": {
+          "const": "illustrative",
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "valid_times": {
+          "items": {
+            "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$",
+            "type": "string"
+          },
+          "title": "Valid Times",
+          "type": "array"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        },
+        "gaps": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "title": "Gaps",
+          "type": "array"
+        },
+        "kind": {
+          "const": "verification_outturn",
+          "title": "Kind",
+          "type": "string"
+        },
+        "starts_at_issue_time": {
+          "const": false,
+          "title": "Starts At Issue Time",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_mode",
+        "unit",
+        "valid_times",
+        "values",
+        "gaps",
+        "kind",
+        "starts_at_issue_time"
+      ],
+      "title": "Outturn",
+      "type": "object"
+    },
+    "PointGeometry": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "Point",
+          "title": "Type",
+          "type": "string"
+        },
+        "coordinates": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Coordinates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "title": "PointGeometry",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "basin": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "basemap": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "station": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "observations": {
+          "$ref": "#/$defs/SourceNote"
+        },
+        "forecast": {
+          "$ref": "#/$defs/SourceNote"
+        }
+      },
+      "required": [
+        "basin",
+        "basemap",
+        "station",
+        "observations",
+        "forecast"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Quantiles": {
+      "additionalProperties": false,
+      "properties": {
+        "0.25": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "0.25",
+          "type": "array"
+        },
+        "0.5": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "0.5",
+          "type": "array"
+        },
+        "0.75": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "0.75",
+          "type": "array"
+        }
+      },
+      "required": [
+        "0.25",
+        "0.5",
+        "0.75"
+      ],
+      "title": "Quantiles",
+      "type": "object"
+    },
+    "Series": {
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "observations": {
+          "$ref": "#/$defs/History"
+        },
+        "forecast": {
+          "$ref": "#/$defs/ForecastSeries"
+        },
+        "verification": {
+          "$ref": "#/$defs/Outturn"
+        },
+        "superseded": {
+          "items": {},
+          "maxItems": 0,
+          "title": "Superseded",
+          "type": "array"
+        }
+      },
+      "required": [
+        "region",
+        "observations",
+        "forecast",
+        "verification",
+        "superseded"
+      ],
+      "title": "Series",
+      "type": "object"
+    },
+    "SourceNote": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "real_geometry",
+            "third_party_raster",
+            "synthetic"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "attribution": {
+          "minLength": 1,
+          "title": "Attribution",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attribution"
+      ],
+      "title": "SourceNote",
+      "type": "object"
+    },
+    "StationDocument": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "FeatureCollection",
+          "title": "Type",
+          "type": "string"
+        },
+        "region": {
+          "const": "nepal",
+          "title": "Region",
+          "type": "string"
+        },
+        "features": {
+          "items": {
+            "$ref": "#/$defs/StationFeature"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Features",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "region",
+        "features"
+      ],
+      "title": "StationDocument",
+      "type": "object"
+    },
+    "StationFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "Feature",
+          "title": "Type",
+          "type": "string"
+        },
+        "properties": {
+          "$ref": "#/$defs/Identity"
+        },
+        "geometry": {
+          "$ref": "#/$defs/PointGeometry"
+        }
+      },
+      "required": [
+        "type",
+        "properties",
+        "geometry"
+      ],
+      "title": "StationFeature",
+      "type": "object"
+    },
+    "Supersession": {
+      "additionalProperties": false,
+      "properties": {
+        "cycle_hours": {
+          "const": 6,
+          "title": "Cycle Hours",
+          "type": "integer"
+        },
+        "label": {
+          "const": "Single-issue illustrative scenario",
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "const": "No earlier forecast cycles are supplied in this demonstration.",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cycle_hours",
+        "label",
+        "note"
+      ],
+      "title": "Supersession",
+      "type": "object"
+    },
+    "Units": {
+      "additionalProperties": false,
+      "properties": {
+        "discharge": {
+          "const": "m3/s",
+          "title": "Discharge",
+          "type": "string"
+        }
+      },
+      "required": [
+        "discharge"
+      ],
+      "title": "Units",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "manifest": {
+      "$ref": "#/$defs/Manifest"
+    },
+    "series": {
+      "$ref": "#/$defs/Series"
+    },
+    "station": {
+      "$ref": "#/$defs/StationDocument"
+    },
+    "basin": {
+      "$ref": "#/$defs/BasinDocument"
+    }
+  },
+  "required": [
+    "manifest",
+    "series",
+    "station",
+    "basin"
+  ],
+  "title": "DemoBundle",
+  "type": "object"
+}
