@@ -3,255 +3,110 @@ status: READY
 created: 2026-09-16
 revised: 2026-09-16
 plan: 273
-title: Nepal illustrative demo — backend data producer and offline export
+title: Nepal illustrative multi-cycle export v2
 related: [139, 143, 192, 198, 204, 219, 268]
 ---
 
-# Plan 273 — Nepal illustrative demo data
+# Plan 273 — Nepal multi-cycle animation data
 
-## Outcome and ownership
+## Owner request and scope
 
-SAPPHIRE Flow supplies a deterministic, validated offline data bundle.
-SAPPHIRE-flow-map consumes it and owns startup region selection, rendering,
-playback, basemap configuration and recording. We can implement and test the
-producer without waiting for the frontend UI.
+The owner forwarded `SAPPHIRE-flow-map/docs/SAPPHIRE_FLOW_NEPAL_CYCLES_EXPORT_PROMPT.md`
+and requested changed backend output. This supersedes the single-issue scenario
+committed as 715c6aaa (v0.1.902). Prior automode authorization persists for bounded
+implementation and reviews; no push, PR, merge or deployment is authorized.
 
-The owner selected clearly labelled illustrative forecasts on 2026-09-16 and
-then clarified that this repo supplies the backend. This supersedes the earlier
-recommendation that the map generate the synthetic data itself. No operational
-forecasting changes are needed; the backend deliverable is a data producer/export.
-The owner subsequently instructed “proceed. switch to automode”. This delegates
-implementation and routine review corrections for this bounded offline producer;
-PR creation, push, merge and deployment remain excluded.
+Supply eight issues six hours apart, each a full 72-hour band at three-hourly steps;
+one hourly observation record from seven days before first issue THROUGH final issue;
+remove separate verification and superseded arrays; avoid designed convergence;
+update supersession metadata. Values remain synthetic, geometry real and unchanged.
+The exact v2 contract is `docs/spec/nepal-demo-bundle.md`. Breaking shape gets v2,
+not a changed interpretation of v1. Preserve v1 schema/example for reference.
 
-**Geometry decision, 2026-09-16:** owner confirmed using the Dudh Koshi/Rabuwa
-data associated with Sandro's `nepal_20010` fine-tune and requested removal of
-checksum requirements. A matching basin outline has been extracted to
-`docs/handover/nepal-demo-assets/dudh-koshi-rabuwa.geojson`. Keep only its basin
-ID, name and plain source note; forecasts remain synthetic.
+Cadence: owner's stated 3h/72h/6h product matches aquacast's global subdaily config.
+Dudh Koshi's fine-tune has hourly targets; document the difference rather than claim
+this demo runs that model. First issue 2025-08-12T00:00:00Z, final +42h. Forecast
+samples +3..+72h (24); horizon end +75h exclusive. Observations hourly -168..+42h
+(211), end +43h exclusive, gaps [-48,-42) and [17,19). Display obs <= active issue.
 
-In: one fictional station, simulated discharge history, one fixed synthetic
-forecast with illustrative spread, existing basin geometry, versioned files,
-tests and export instructions.
-Out: operational onboarding, trained models, FI adapters, DB writes, restricted
-DHM data, live weather requests, API routes, Prefect, Docker, deployment,
-real warning thresholds, skill claims or frontend edits. This is a fixture
-producer, not a forecast model registered with the operational pipeline.
+Independent random streams for observations and forecasts. Issue peak time relative
+to first issue, amplitude and width are independent draws from fixed distributions,
+never functions of issue index or observation error. Time only selects each issue's
+sampling window. No fitted convergence, scores, weather, FI model, DB/API changes,
+operational onboarding or frontend edits. Same seed and first issue -> same bytes.
 
-## Repository evidence
+The JSON Schema is explicitly Draft 2020-12 and ships as schema.json alongside the
+four data files. Frontend replaces its partial validator. An optional separate,
+labelled render-only geometry derivative is acceptable, with source/method/tolerance
+provenance and geometry/outlet checks, preserving the authoritative full outline;
+its generation remains frontend-owned and outside the exported bundle schema.
 
-- Freshly fetched main: `f2dc569c`, 2026-09-16 inspection. Plan 273 is available.
-  Isolated worktree `/private/tmp/sapphire-nepal-demo`, branch
-  `feat/nepal-demo-export`, created from that main.
-- The concurrently implemented frontend now has `schemas/flow-map-region-bundle-v1.schema.json`
-  and `scripts/build_nepal_bundle.py`. Adopt its field layout, explicit gap lists,
-  half-open windows and `synthetic_eligible` playback state. Its hard-coded old
-  Nepal location and Polygon metadata require a small consumer update for Rabuwa.
-  Record that pending integration explicitly, without waiting on the UI or editing it.
-  A later consumer addition requires supersession fields: provide its metadata
-  with an explicitly empty older-cycle list, preserving the approved single-issue scope.
-- Forecast Lab v2 is explicitly BAFU-only and remains unchanged. Generic APIs
-  can support later real data; this export requires no server or token.
-- Aquacast `configs/basins/dudh_koshi.txt` names `nepal_20010`; the original
-  station metadata identifies it as Dudh Kosi at Rabuwa. The BARHKH GIS package
-  identifies the corresponding Rabuwabazar basin as `NP_1_00092`. The extracted
-  GeoJSON preserves that MultiPolygon in EPSG:4326 (about 3,720 km²).
-  This replaces the unrelated small test-basin fixture. See the adjacent asset
-  README for source paths and the GIS outlet used for the fictional display point.
-- The seeded Nepal station has placeholder geometry and is not used.
-  Geopandas, shapely and Pydantic already exist; no new dependency is needed.
-  Existing CLI conventions use module invocation and structlog.
-  `cli/export_forecast_lab.py` demonstrates validation-before-write.
+## Repository and execution
 
-## Shared contract
-
-Use the frontend's proposed four-file layout and identifier. Pin exact fields
-in T1 and maintain one authoritative schema/example here; the consumer pins
-that version. Frontend completion is not required. Align to the inspected consumer and document
-the remaining geometry/schema import change as a separate integration step.
-
-| File | Backend-supplied content |
-|---|---|
-| `region.json` | Version, region, source mode, deterministic timestamps, label, units, timezone, provenance, fictional station identity, forecast representation/cadence, null comparator/thresholds. |
-| `series.json` | Simulated history and one forecast: ordered UTC times, values, illustrative quantile levels and aligned arrays. Exact nested names are fixed in T1. |
-| `station.geojson` | One fictional point, code `DEMO-NP-001`, network `demo`, null backend UUID and source note. Use the basin's GIS outlet: longitude 86.668726, latitude 27.269326. |
-| `basin.geojson` | The extracted Dudh Koshi/Rabuwa MultiPolygon with feature properties `basin_id`, `name`, and `source`. |
-
-Every document declares `region: nepal`. The backend does not download basemap tiles. Its required provenance note
-delegates actual basemap attribution to the map configuration.
-Distinguish real basin geometry from synthetic station/history/forecast.
-
-Required label:
-**Illustrative scenario — synthetic data, not an operational forecast**.
-History is explicitly simulated. Spread carries
-`uncertainty_meaning: illustrative_spread`; no calibrated coverage claim.
-Use the consumer’s `synthetic_eligible` playback state, never operational
-`qc_passed`. No operational QC enum changes.
-Thresholds and comparator are null; no Swiss danger levels or skill scores.
-
-Declare discharge wire unit `m3/s` (rendered m³/s) and display timezone
-`Asia/Kathmandu`. All stored timestamps are UTC RFC3339 with Z.
-Issue time and forecast valid times remain distinct.
-
-Proposed scenario: seven days of hourly synthetic history strictly before issue,
-a labelled six-hour missing interval, and 72 hourly forecast steps at issue +1
-through +72 hours. Invent a rise, peak and recession with nonnegative ordered
-p25/median/p75. This is presentation data, not a trained/physical runoff model.
-No rainfall causality or predictive accuracy is implied. Pin explicit null/omitted
-gap representation in T1; zero remains a valid discharge, never a missing marker.
-
-Default issue and generation times are fixed. Use the consumer’s past demonstration issue date, 2025-08-12T00:00:00Z.
-Include its synthetic verification-outturn series for playback, with a delayed,
-lower peak and explicit missing interval; label it as invented and never compute
-skill scores. Verification is at issue +1 through +72, not at issue itself.
-An optional CLI issue-time argument
-is parsed at the boundary. The generator takes typed UTC input; no wall clock,
-global randomness, live data or host-specific paths enter output. Use a locally seeded RNG (20260916, recorded by the consumer schema), passed
-explicitly to the pure builder, alongside analytic rise/peak/recession curves.
-
-## Implementation shape
-
-Keep the pure builder in `services/nepal_demo.py`, small immutable domain
-values in `types/nepal_demo.py`, and boundary models/validation in `cli/nepal_demo_schemas.py`, with CLI in
-`cli/export_nepal_demo.py`. Pydantic is restricted to input/output boundaries.
-A committed generated JSON Schema and a synthetic example are the shared
-references. No production forecast schema or FI change is involved.
-
-Export command:
-
-```bash
-uv run python -m sapphire_flow.cli.export_nepal_demo \
-  --basin-file docs/handover/nepal-demo-assets/dudh-koshi-rabuwa.geojson \
-  --output-dir /tmp/nepal-demo
-```
-
-Require a fresh output directory and refuse an existing destination. Validate
-the whole bundle, stage beside its destination, then publish the completed
-directory by atomic no-replace rename (Linux/macOS; fail clearly elsewhere). On failure, clean up only exporter-owned temporary files;
-never expose a partial bundle or overwrite an existing output.
-Do not write automatically into the other repo or Swiss asset directories.
-The consumer explicitly stages the exported directory into its Nepal namespace.
-
-The command must work without DATABASE_URL, API credentials, deployment config,
-network access or containers. Runtime diagnostics use structlog and do not enter
-the deterministic artifacts.
-The explicit `--basin-file` avoids depending on a developer's Dropbox or locating
-test fixtures at runtime. Validate the GeoJSON shape and coordinates; no hashes
-or source-manifest machinery are required.
+Worktree `/private/tmp/sapphire-nepal-demo`, branch `feat/nepal-demo-export`.
+Fresh origin/main checked this turn: f2dc569c, no upstream Plan273 replacement.
+Start implementation from a clean named branch after the reviewed plan is committed.
+Reuse the existing service/domain/boundary/CLI modules and atomic no-replace publisher.
+No dependencies or packaging changes except mandatory patch version bump.
 
 ## Tasks
 
-### T1 — Agree the exact file contract
+### T1 — Pin v2 contract and review
 
-**Outcome:** exact contract in `docs/spec/nepal-demo-bundle.md`, aligned to the
-current frontend field layout. Document the required Rabuwa schema update.
-**In / Out:** specification, this plan and handoff prompt; no production schema
-or frontend edits.
-**Pre-change:** N/A — contract/planning. Frontend section 8 leaves series
-structure incomplete and assigns generation to its own N5.
-**Verification:** account for each consumer field, identity, synthetic QC,
-null/gap semantics, basemap provenance and file layout. Record the inspected consumer revision and residual integration changes; do not
-wait for UI implementation. No claim of consumer acceptance until verified.
+Outcome: versioned specification, cadence decision, schema dialect, render-copy
+policy and exact consumer migration. In/out: plan/spec/handoff, no frontend edits.
+Pre-change: N/A, contract work; v1 only contains one forecast.
+Verification: independent Claude design, Codex repository, and focused contract
+reviews of full revised plan before implementation. Resolve concrete findings
+under owner's automode authorization, then record READY.
 
-### T2 — Generate and validate the deterministic scenario
+### T2 — Generate and validate multiple issues
 
-**Outcome:** pure builder, domain values, boundary/schema and small synthetic
-example; identical explicit inputs produce identical serialized bytes.
-**In / Out:** proposed modules, `docs/spec/nepal-demo-bundle-v1.schema.json`,
-`tests/unit/services/test_nepal_demo.py`,
-`tests/fixtures/nepal_demo/`; no model registration, production QC or DB.
-**Pre-change:** new behavior tests fail before the generator/contract exists.
-**Verification:** `uv run pytest tests/unit/services/test_nepal_demo.py -q`.
-Check history/horizon, monotonic UTC times, cadence, explicit missing interval,
-ordered nonnegative quantiles, aligned lengths, illustrative provenance and
-absence of operational-QC claims. Reject wrong region/source mode, naive time,
-non-finite values, unordered quantiles and length mismatches. Validate the example
-against the generated schema; repeated generation is byte-identical.
+Outcome: immutable scenario/issue values, independent seeded streams, eight complete
+quantile forecasts, one spanning observation record, no separate verification series.
+In: types/nepal_demo.py, services/nepal_demo.py, cli/nepal_demo_schemas.py and tests.
+Pre-change: tests for eight issues/new shape fail against v1.
+Verification: targeted service and boundary tests check exact schedules, IDs,
+observation cutoff at every issue, nonnegative ordered quantiles, masks, invalid
+version/count/order/cadence/QC/geometry rejection. A changed observation RNG must
+leave every forecast unchanged; fixed-seed peak parameters must not be sorted into
+a progressive convergence story. No skill scoring in runtime or output.
 
-### T3 — Export the complete bundle without infrastructure
+### T3 — Export, schema and handoff
 
-**Outcome:** CLI exports the four files, including the supplied Rabuwa geometry.
-**In / Out:** CLI and `tests/unit/cli/test_export_nepal_demo.py`; no downloads,
-other-repo writes, stores, API, config, deployment or Swiss artifact changes.
-**Pre-change:** CLI behavior tests fail before the exporter exists.
-**Verification:** `uv run pytest tests/unit/cli/test_export_nepal_demo.py -q`.
-Run with DB/auth unset and network calls blocked. Check cross-file identity,
-versions, times, units, geometry and station/source-outlet agreement. Compare
-bytes from two exports to fresh destinations. Inject write/conversion failure:
-no partial published directory. Existing output must be refused and unchanged, including dangling symlinks and
-a destination created after staging. Use ctypes with Linux `renameat2(RENAME_NOREPLACE)` and macOS
-`renamex_np(RENAME_EXCL)`; unsupported platforms fail without publishing.
+Outcome: four data files plus schema.json in fresh output directory, v2 example
+at tests/fixtures/nepal_demo_v2 and schema at docs/spec/nepal-demo-bundle-v2.schema.json.
+Retain v1 reference files, existing geometry and atomic filesystem behavior.
+In: CLI serialization, generated schema/fixture, existing CLI tests, runbook/handoff.
+Pre-change: old CLI emits v1/no schema, short observations and one issue.
+Verification: `uv run pytest tests/unit/services/test_nepal_demo.py tests/unit/cli/test_nepal_demo_schemas.py tests/unit/cli/test_export_nepal_demo.py -q`;
+validate generated fixture with Draft202012Validator, including negative nullable
+value/schema tests; two exports byte-equal; v1 rejected; existing destination/write
+failure/race protections pass. Run CLI with fresh destination and no infrastructure.
 
-### T4 — Document and deliver
+### T4 — Verify and deliver
 
-**Outcome:** `docs/operations/nepal-flow-map-demo.md` documents the command,
-scenario, labels, geometry provenance, contract and explicit import handoff.
-Provide generated artifacts at an agreed local path.
-**In / Out:** runbook, plan/index, exporter output outside source; no frontend
-rendering, recording, hosting or deployment.
-**Pre-change:** N/A — documentation/handoff.
-**Verification:** run the documented CLI into a fresh temporary directory and
-validate all files. Producer completion is independently testable. Record consumer
-import compatibility separately when its importer is available; do not claim the
-animation is complete from producer tests alone.
+Outcome: consumer handoff answers all five changes, cadence, dialect/vocabulary and
+render-copy policy. In: affected docs, patch version, committed branch and local export.
+Pre-change: N/A, delivery/checks. Verification: focused tests + existing 28 station/
+forecast API regressions, repository lint/format, changed-module pyright, independent
+Claude and Codex patch reviews plus focused contract review. Full suite required
+before merge; frontend import/rendering is separately verified by frontend owner.
+Do not claim the animation complete from backend tests.
 
-## Reviews and implementation gates
+## Review record
 
-The first independent Codex pass found one P2: unspecified basin metadata.
-Resolved by explicitly defining basin feature ID/properties in the contract.
-The current consumer-aligned plan receives independent Claude and Codex passes
-plus a focused contract review before implementation. Both independent Codex passes completed: corrected the obsolete handoff link,
-documented consumer schema vocabulary support, and required atomic no-replace
-publication (including a destination race regression). Claude Sonnet completed the text-only design pass. Its corrections are
-recorded: name the platform-specific no-replace primitives, make gap/null
-equivalence explicit, and define horizon_start as the first valid time. These
-clarify the existing design. The earlier interrupted Claude attempts are not
-counted as completed reviews. READY records the owner’s “proceed; switch to
-automode” authorization, not a reviewer granting approval. Owner automode authorization permits routine corrections and implementation;
-no agent report grants authority to push, open a PR, merge or deploy.
-
-Implementation starts on the isolated clean named branch at freshly fetched main.
-Run focused tests, lint/format/type checks and update affected docs. Code commits
-include the patch version bump. The full suite is required before merge.
-
-Implementation evidence (2026-09-16):
-- T1: contract aligned to inspected frontend field layout; geometry and schema-validator
-  changes remain explicitly assigned to frontend integration.
-- T2/T3 RED: newly added behavior tests failed collection for the absent producer/exporter.
-  GREEN: 33 producer/export/schema tests pass; fixture passes the generated schema.
-  Tests cover deterministic bytes, preserved geometry, invalid contracts, zeros/nulls,
-  CLI time shifting, write failures, existing destinations and the publication race.
-- T4: documented CLI exported four files to `/private/tmp/nepal-demo-rabuwa-v1`;
-  committed example is `tests/fixtures/nepal_demo/`.
-- Existing station/forecast API regression checks: 28 pass (61 combined).
-  Repository-wide ruff lint/format pass; changed-module pyright: zero errors.
-- Independent Codex repository review and focused contract/safety review completed
-  with no findings, including the final empty superseded-cycle fields. Claude
-  Sonnet reviewed the complete final base-branch diff (schema, fixtures, geometry,
-  version files and docs included) with no correctness findings. Its earlier
-  TypeAdapter style suggestion was declined: explicit `[str]` is needed to avoid
-  unknown-type inference, as verified by pyright. A final type-only annotation
-  made the empty list's boundary dictionary type explicit; pyright remains clean.
-- Fresh isolated uv environment also passes the 61 checks and the module CLI.
-  Publication primitives were exercised natively on macOS; Linux awaits CI.
-- Full-suite/CI and frontend rendering remain unverified; they are required before
-  merge / animation acceptance respectively. No operational endpoint was added.
-  Backend implementation is complete on the feature branch; READY is retained
-  until owner integration/merge disposition.
-
-## Later real forecasts
-
-Real station/data/model readiness and DHM publication restrictions remain separate
-work under Plans 143/268 and related QC plans. The Nepal weather feed is not a
-discharge forecast. None of those operational dependencies blocks this producer.
+V2 independent Codex repository and focused contract reviews found no defects.
+Claude design review clarified that schema_version changes value, replaced
+ambiguous “duplicate outturn” wording with “no separate verification series”, and
+specified the illustrative observation curve. These wording corrections are applied.
+The frozen v1 contract is included in the plan commit. READY records the owner’s
+forwarded implementation request and continuing automode authorization. V1's 61
+passing checks do not establish v2 behavior; new RED/GREEN evidence follows.
 
 ```json
-{
-  "phases": [
-    {"id": "contract", "tasks": ["T1"], "parallel": false},
-    {"id": "producer", "tasks": ["T2"], "depends_on": ["contract"]},
-    {"id": "export", "tasks": ["T3"], "depends_on": ["producer"]},
-    {"id": "handoff", "tasks": ["T4"], "depends_on": ["export"]}
-  ]
-}
+{"phases":[{"id":"contract","tasks":["T1"],"parallel":false},
+{"id":"producer","tasks":["T2"],"depends_on":["contract"]},
+{"id":"export","tasks":["T3"],"depends_on":["producer"]},
+{"id":"handoff","tasks":["T4"],"depends_on":["export"]}]}
 ```

@@ -3,7 +3,7 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
-- **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — READY; implemented and independently reviewed on `feat/nepal-demo-export`; held for integration.
+- **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — READY; v2 multi-cycle revision READY on `feat/nepal-demo-export`; implementation underway.
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 

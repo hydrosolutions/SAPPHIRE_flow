@@ -1,34 +1,36 @@
-# Current Nepal backend handoff
+# Nepal multi-cycle backend handoff (v2 preparation)
 
-This replaces the earlier producer/consumer proposal. The authoritative backend
-worktree is `/private/tmp/sapphire-nepal-demo`, branch `feat/nepal-demo-export`.
-Read `docs/spec/nepal-demo-bundle.md` and Plan 273 there.
+Worktree `/private/tmp/sapphire-nepal-demo`, branch `feat/nepal-demo-export`.
+This responds to `SAPPHIRE_FLOW_NEPAL_CYCLES_EXPORT_PROMPT.md`.
 
-Ready-to-import export: `/private/tmp/nepal-demo-rabuwa-v1/`.
-Durable example: `tests/fixtures/nepal_demo/` in that backend worktree.
+The v2 contract is `docs/spec/nepal-demo-bundle.md`. Expect eight issues six hours
+apart, 24 three-hourly points through +72h each, every issue carrying p25/median/p75.
+The first issue remains 2025-08-12T00:00:00Z. One hourly observation record has
+211 values from -168h through the last issue (+42h), inclusive. Display only obs
+<= the active issue and only that issue plus its predecessors. The full band is
+available immediately on issue; no progressive forecast reveal.
 
-Use the backend’s four-file export, mapping region.json -> manifest,
-series.json -> series, station.geojson -> station, basin.geojson -> basin.
-The backend adopts your existing series field layout, half-open windows,
-`synthetic_eligible` playback status and synthetic verification outturn.
+`series.forecasts` replaces the single forecast; separate `verification` and
+`superseded` arrays are removed. `manifest.forecast_cycle` declares schedule,
+representation and counts. Retain the verification disclaimer in metadata.
+Forecasts use independent parameter draws without conditioning on observed values
+or sequence index; synthetic observations have a separate seeded random stream.
 
-Update the old Nepal location and basin schema to Dudh Koshi at Rabuwa:
-fictional display point longitude 86.668726, latitude 27.269326; source basin
-NP_1_00092, EPSG:4326 MultiPolygon. Preserve the real basin outline from Sandro’s
-fine-tune station nepal_20010. Basin properties are basin_id, name and source;
-feature ID is NP_1_00092. See the backend spec for exact fields.
+Cadence decision: 3h/72h/6h follows the owner's intended product and aquacast's
+global subdaily config. The station-specific Dudh Koshi fine-tune config is hourly;
+this is a demonstration of the intended product, not a claim about that trained model.
 
-The backend’s generated schema uses standard JSON Schema ($ref/$defs/anyOf,
-array constraints). Your current custom validators do not implement
-that vocabulary fully; use a complete validator or add support with negative
-tests, including invalid nullable values. Keep geometry types MultiPolygon-capable.
+Dialect is JSON Schema Draft 2020-12, with explicit `$schema`; schema.json ships
+alongside the four data documents. Use a complete validator and preserve semantic
+schedule/identity/gap checks. Wire version is flow-map-region-bundle/v2; reject v1
+rather than interpreting its one-issue shape as a cycle sequence.
 
-Default: demonstration issue date 2025-08-12T00:00:00Z; 168 hourly history samples,
-72 forecast steps at +1..+72h, matching synthetic verification (starts_at_issue_time
-false), explicit null gaps. Superseded cycles are explicitly empty, with the
-required supersession metadata labelled as a single-issue demonstration. Values are invented and never operational. Thresholds
-and comparator stay null. No checksums. Do not regenerate a different scenario.
+A separately labelled render-only simplified basin copy is acceptable. Keep the
+full authoritative basin.geojson unchanged alongside it, record source and method/
+tolerance, check topology/coordinates/outlet coverage, and use no simplified
+geometry for hydrological calculations. This optional derivative stays outside
+the four-document schema. Backend does not generate that copy.
 
-Retain Swiss defaults and region isolation. Frontend rendering, startup selection,
-basemap attribution and animation remain owned by your repo. Backend completion
-is not a claim that your import/rendering has been verified.
+The real Dudh Koshi/Rabuwa outline, fictional GIS outlet point, synthetic labels,
+null thresholds/comparator and Swiss isolation remain as agreed. No checksums.
+Export path and completed verification evidence will be recorded after implementation.

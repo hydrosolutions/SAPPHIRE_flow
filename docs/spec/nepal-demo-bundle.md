@@ -1,119 +1,107 @@
-# Nepal illustrative bundle v1
+# Nepal illustrative bundle v2 — multi-cycle animation
 
-SAPPHIRE Flow produces four offline files. SAPPHIRE-flow-map imports and renders
-these files. This specification follows the consumer implementation inspected on
-2026-09-16; its old geometry constants require the update described below.
+Version: `flow-map-region-bundle/v2`. This replaces the single-issue v1 wire
+shape; v1 is rejected by the new parser, never silently reinterpreted. The frozen
+[v1 contract](nepal-demo-bundle-v1.md), v1 schema and example remain available.
+Four data files retain their names: region.json -> manifest, series.json -> series,
+station.geojson -> station, basin.geojson -> basin. The exporter also ships
+**schema.json**, identical to `nepal-demo-bundle-v2.schema.json`, validating the
+assembled four-key object. Every data document has `region: nepal`.
 
-The machine-readable schema is generated from the export boundary models into
-`nepal-demo-bundle-v1.schema.json`. It validates an object whose keys are
-`manifest`, `series`, `station`, `basin`, mapped respectively to `region.json`,
-`series.json`, `station.geojson`, `basin.geojson`. Every document declares
-`region: nepal`; only the manifest declares `schema_version: flow-map-region-bundle/v1`.
-Closed boundary models reject extra keys. No checksums are used.
+## Cycles and time convention
 
-## Manifest
+The first default issue is **2025-08-12T00:00:00Z**. There are **8 issues**, exactly
+**6 hours apart**, ending 2025-08-13T18:00:00Z. Each has **24 three-hourly steps**
+at issue +3, +6, ..., +72 hours. No forecast sample occurs at issue time.
+This follows the owner's intended demo product and aquacast's
+`configs/global/subdaily/cmal_global_subdaily.yaml` (72 hours, aggregation 3h,
+issues 00/06/12/18 UTC). The station-specific fine-tune config
+`configs/finetune_sweep/dudh_koshi/full_model.yaml` instead uses hourly targets
+and currently lists three-hourly issue hours. This demo does not assert that an
+operational Nepal model is configured or validated for the requested schedule.
 
-Preserve the existing consumer names: `generated_at`, `generator_seed: 20260916`,
-`source_mode: illustrative`, `banner_text`, `provenance`, `uncertainty_meaning`,
-`spread_label`, `station`, `units`, `timezone`, `forecast`, `thresholds`,
-`threshold_basis`, `comparator`, `date_basis`, `date_label`, `verification_label`,
-`verification_note`, `supersession`.
-
-Banner: **Illustrative scenario — synthetic data, not an operational forecast**.
-Spread: **Illustrative spread — not calibrated uncertainty**.
-`uncertainty_meaning` is `illustrative_spread`. `date_basis` is `demonstration_date`.
-History and verification are invented, never real gauge measurements. Verification
-agreement/disagreement is arbitrary, never evidence of skill. No scores are supplied.
-
-Station: network `demo`, code `DEMO-NP-001`, display name `Illustrative demo gauge`,
-backend UUID null, longitude **86.668726**, latitude **27.269326**. This fictional
-point uses the Rabuwa GIS outlet as geographical context; it does not assert the
-precise location of the real DHM instrument. Discharge unit `m3/s`; display timezone
-`Asia/Kathmandu`. Stored instants are UTC RFC3339 at second precision with Z.
-
-`provenance` has basin/basemap/station/observations/forecast entries, each with
-`kind` and plain `attribution`. Basin kind is `real_geometry`, basemap is
-`third_party_raster`, and the remaining entries are `synthetic`. The basemap note
-refers to attribution from frontend configuration; no tiles are provided here.
-
-`forecast` contains `forecast_id`, `issued_at`, `representation: quantiles`,
-`quantile_levels: [0.25, 0.5, 0.75]`, `cadence_seconds: 3600`, `horizon_start`,
-`horizon_end`, `valid_times`, `qc_status: synthetic_eligible`, `eligibility_note`.
-That QC string means eligible for illustrative playback only, not operational QC.
-Thresholds/comparator are null; threshold basis is `none_available`.
-
-## Series
-
-`series.json` has `region`, `observations`, `forecast`, `verification`, `superseded`.
-The concurrently updated consumer requires supersession metadata. This one-issue
-scenario supplies `superseded: []` and manifest `supersession` with
-`cycle_hours: 6` (consumer playback configuration only),
-`label: Single-issue illustrative scenario`, and
-`note: No earlier forecast cycles are supplied in this demonstration.`
-No prior forecast cycles or operational schedule are implied.
-All three blocks have `source_mode: illustrative`, `unit: m3/s`, ordered
-`valid_times` and `gaps` (objects with `start`/`end`). History and verification
-carry `values`; forecast carries `series` with exactly keys `0.25`, `0.5`, `0.75`.
-
-History additionally declares `window_start`, `window_end`, `cadence_seconds`.
-Forecast declares its matching `forecast_id`. Verification declares
-`kind: verification_outturn`, `starts_at_issue_time: false`; its times match the
-forecast. All windows and gap intervals are **half-open [start,end)**.
-`horizon_start` equals the first valid time, issue +1 hour.
-`horizon_end` is one cadence after the last valid time (issue +73 hours).
-
-Default issue/generation time: **2025-08-12T00:00:00Z**, deliberately a past
-illustrative date, not a record of actual conditions. An explicit issue override
-shifts all times. No wall clock, network or database affects generation.
-
-- History: 168 hourly samples at issue -168 through -1 hours; six null samples
-  at -48 through -43 hours (gap [-48,-42)).
-- Forecast: 72 hourly samples at +1 through +72 hours, no missing values,
-  nonnegative ordered p25/median/p75, invented rise/peak/recession.
-- Verification outturn: same 72 times, a delayed lower peak, null at +41/+42
-  hours (gap [+41,+43)); never used to construct the forecast.
-
-The validator requires a value to be null if and only if its valid time falls
-in a declared gap interval; any disagreement is rejected.
-All values are finite/nonnegative or explicit nulls matching gap intervals;
-zero is a real value and must not be substituted for missing data. The validator
-checks lengths, cadence, identities, times, ordering and gaps across files.
-
-## Geography
-
-`station.geojson` is a FeatureCollection with one Point. Feature properties
-exactly equal manifest.station, including longitude/latitude.
-`basin.geojson` is a FeatureCollection with `region`, plain `attribution`, one
-MultiPolygon feature with `id: NP_1_00092` and these properties:
+`manifest.forecast_cycle` replaces `manifest.forecast` and contains:
 
 ```json
-{
-  "basin_id": "NP_1_00092",
-  "name": "Dudh Koshi at Rabuwa",
-  "source": "BARHKH NepalCaravanified/nepal_watersheds_merged_dedup.gpkg; basin outlines by Nicolas"
-}
+{"cycle_hours":6,"cadence_seconds":10800,"horizon_steps":24,"issue_count":8,
+ "representation":"quantiles","quantile_levels":[0.25,0.5,0.75],
+ "starts_at_issue_time":false}
 ```
 
-Preserve the source geometry from `docs/handover/nepal-demo-assets/dudh-koshi-rabuwa.geojson`
-in EPSG:4326, longitude first. Reject empty/invalid geometry, nonfinite or out-of-range
-coordinates, incorrect basin identity and an outline not covering the display point.
-Source station `nepal_20010` is identified by Sandro's fine-tune configuration;
-only basin geometry is reused. See the asset README for the source mapping.
+`series.forecasts` replaces `series.forecast`: ordered oldest to newest, each with
+`source_mode: illustrative`, `unit: m3/s`, unique `forecast_id`, `issued_at`,
+`valid_times`, full `series` keys `0.25`, `0.5`, `0.75`, `gaps: []`,
+`qc_status: synthetic_eligible`, `eligibility_note`, `horizon_start`, `horizon_end`.
+All 24 values in each quantile are finite, nonnegative and ordered. Every issue
+is complete when issued. IDs are deterministic from the demo station and issue.
+Windows remain **[start,end)**: horizon_start is issue +3h, horizon_end is issue
++75h, one cadence beyond the last +72h sample. All times are UTC RFC3339 seconds Z.
+The optional `--issued-at` shifts the FIRST issue and all derived timestamps.
 
-## Consumer integration
+## One observation record
 
-The inspected frontend uses the same field layout but still pins the unrelated
-old station at (82.92333, 28.24417), a 99.73 km² Polygon, and different basin
-properties. Update those schema constants/types to the Rabuwa Point/MultiPolygon
-and properties above. Import these four documents instead of regenerating its
-old scenario. The importer currently reads a combined object; assemble it using
-the key-to-filename mapping above. Pin one shared schema revision. The generated Pydantic schema uses `$ref`,
-`$defs`, `anyOf` and array constraints: the current consumer custom validators
-do not support all of these. Use a complete JSON Schema validator (or extend the
-consumer validator) and test rejection of malformed nullable values and geometry;
-copying the schema alone is insufficient. The Python
-export boundary additionally performs semantic checks beyond JSON Schema.
+`series.observations` retains source_mode/unit/valid_times/values/gaps,
+window_start/window_end/cadence_seconds, at **hourly cadence (3600 seconds)**.
+It contains **211 samples**, from first issue -168h through last issue (+42h)
+inclusive. Its half-open window ends at first issue +43h. Explicit gaps are
+[-48h,-42h) and [+17h,+19h), relative to first issue; null iff inside a gap.
+Zero remains a valid discharge value. There is no separate verification series
+and no superseded array. At animation step k, display observations at times
+**<= issue[k]**, all of issue k, and only predecessor issues (indices <k).
+Do not show later observations or later forecasts. Fading does not change data.
 
-Frontend import/animation completion is a separate verification step. Backend
-checks alone do not establish frontend compatibility. Swiss paths and operational
-APIs remain outside this export.
+`manifest.verification_note` states: observations later than an issue are never
+inputs to it; agreement or disagreement is arbitrary and illustrative, not
+forecast skill; no skill score is computed. `verification_label` is removed.
+`manifest.supersession` has cycle_hours 6, label `Eight illustrative forecast issues`,
+and a note that predecessors retain complete bands and future issues are hidden.
+
+## Independence and labels
+
+Generate observations using a separately seeded random stream: an invented
+positive Gaussian discharge hump with a small oscillation and bounded noise.
+Its particular amplitude/shape is presentation data, not a physical calibration. Draw each issue's
+absolute peak time (relative to the first issue), amplitude and width independently
+from the SAME distributions, without conditioning on issue index or observed values.
+The issue timestamp only selects the forecast sampling window. Never sort issues
+by error or shrink their deviations toward observations. A fixed common event
+context is allowed; no improving-skill narrative or validation metric is encoded.
+Changing the observation stream must leave all forecast arrays unchanged.
+Reproducibility is guaranteed for the fixed generator seed and first issue time.
+
+The schema_version value changes to flow-map-region-bundle/v2.
+Retained manifest fields: region, generated_at (fixed to first
+issue, not wall clock), generator_seed 20260916, source_mode illustrative,
+banner_text, provenance, uncertainty_meaning illustrative_spread, spread_label,
+station, units, timezone, thresholds null, threshold_basis none_available,
+comparator null, date_basis demonstration_date, date_label and verification_note.
+Banner: **Illustrative scenario — synthetic data, not an operational forecast**.
+Spread: **Illustrative spread — not calibrated uncertainty**.
+Station remains demo/DEMO-NP-001, Illustrative demo gauge, backend_uuid null,
+longitude 86.668726 / latitude 27.269326. Display timezone Asia/Kathmandu.
+Provenance separates real_geometry basin, third_party_raster basemap attribution
+from frontend config, and synthetic station/observations/forecast.
+
+## Geometry and schema
+
+The authoritative NP_1_00092 Dudh Koshi at Rabuwa MultiPolygon is unchanged,
+EPSG:4326 longitude first. station.geojson feature properties equal manifest.station.
+Basin feature id/properties and attribution are unchanged from v1: basin_id,
+name, plain source note. No checksum. See the asset README for fine-tune mapping.
+
+A separately named and labelled **render copy** is acceptable for display only.
+Keep the full outline alongside it; do not replace basin.geojson or use a simplified
+outline for hydrological calculations. Record the simplification method/tolerance
+and source filename in its provenance, validate topology/coordinates and retain
+outlet coverage. That optional derivative is frontend-owned and outside the
+four-document validation object; this exporter ships only the authoritative basin.
+
+JSON Schema dialect: **Draft 2020-12**, explicitly declared by `$schema`.
+Use a complete validator. The generated vocabulary is documented with the delivered
+schema; expect `$defs`, `$ref`, `anyOf`, type, properties, required,
+additionalProperties, const/enum, pattern, items, minItems/maxItems,
+minimum/maximum and title annotations. No custom keywords. Pydantic's semantic
+validation additionally enforces identities, exact schedules, half-open windows,
+quantile order and gap masks; frontend must keep equivalent semantic checks.
+Reject wrong versions, inconsistent counts/cadence, duplicate IDs, misordered issues,
+incorrect QC/source labels, crossed quantiles, mismatched gaps or invalid geometry.
