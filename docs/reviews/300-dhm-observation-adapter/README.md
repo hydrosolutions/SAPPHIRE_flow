@@ -1,4 +1,4 @@
-# Plan 300 — independent review reports
+# Plan 300 — first-round independent review reports
 
 Reviewed 2026-09-16 on branch `docs/plan-300-review`, in a separate worktree created
 from freshly fetched `origin/main` at `f2dc569ccb513ac913126d3d24d58ad2d1b18d84`.
@@ -18,8 +18,11 @@ poll semantics, cursor edit scope, affected documentation, unit/reference
 validation and a reference to Plan 273 absent from this base. The additional
 contract review raised unsafe short-page termination.
 
-No findings have been accepted, rejected or fixed by the owner in this pass.
-The plan remains `DRAFT`; these reports are not implementation approval. There
-was no implementation, full test run, commit, push, PR, merge or deployment.
+At the close of this first pass no findings had been accepted, rejected or fixed.
+The owner subsequently requested a commit, correction fold-in and fresh review.
+Commit `fc8114df` preserves the first-round snapshot (with documented EOF
+normalization of readable capture files and the Codex report). The plan remains
+`DRAFT`; these first-round reports are not approval of the revised plan. There
+was no implementation, full test run, push, PR, merge or deployment.
 Each report records its own verification limitations. Original API payloads
 remain in `docs/requirements/dhm-api-examples/` with their capture manifest.
