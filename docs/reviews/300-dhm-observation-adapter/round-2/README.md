@@ -26,9 +26,10 @@ documentation scope, the historical RAW limitation, and fixture-recorder adapter
 selection.
 
 The first-round snapshot is committed as `fc8114df`; its corrections are in
-`78a2b9ff`. No second-round findings have been folded into the reviewed plan or
-accepted/rejected on the owner's behalf. The plan remains `DRAFT`; owner
-disposition and READY are outstanding.
+`78a2b9ff`. At the close of this round no second-round findings had been folded
+into the reviewed plan. The owner subsequently requested all ten findings be
+folded in and a fresh complete review. These reports remain evidence against
+`78a2b9ff`, not approval of the revised DRAFT. Owner READY remains outstanding.
 
 These were read-only plan reviews. No implementation or runtime test suite was
 run. Each report records its evidence-verification limitations; there was no

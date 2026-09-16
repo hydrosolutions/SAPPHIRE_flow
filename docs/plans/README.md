@@ -48,9 +48,9 @@ Do not add a separate acceptance-map table or persistent run-state file.
   parsing, history/pagination and Flow 2 integration; real DHM connection settings
   remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit
   conversion and rating curves remain separate. First-round corrections are
-  committed; [second-round reviews](../reviews/300-dhm-observation-adapter/round-2/README.md)
-  returned clean Codex and contract verdicts, with ten Claude findings awaiting
-  owner disposition. Owner READY remains outstanding.
+  committed; the owner requested the ten findings from the
+  [second-round reviews](../reviews/300-dhm-observation-adapter/round-2/README.md)
+  be folded in. The revised DRAFT awaits a fresh complete review and owner READY.
 
 ## Archived by the 2026-08-28 stale-status audit
 

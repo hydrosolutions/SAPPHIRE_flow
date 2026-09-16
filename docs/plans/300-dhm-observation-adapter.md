@@ -60,6 +60,8 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
 - `config/deployment.py::load_config` discards raw adapter tables; use the existing
   merged-TOML path for adapter selection/config. Injected clients/adapters must
   remain testable without environment reads or production credentials.
+- `tools/record_fixtures.py::_run_bafu` also reads the river-adapter endpoint;
+  guard its source type before constructing LINDAS against a DHM configuration.
 
 ## Scope and decisions
 
@@ -69,20 +71,25 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
    for a bounded smoke test; production selects the supplied DHM host.
 2. **Explicit station bindings.** Parse a deployment-local mapping from SAPPHIRE
    station code to positive API station ID into typed immutable values. Reject
-   malformed binding definitions and duplicate keys at config parsing; a station
-   without a binding fails only its own fetch before any request. Do not parse IDs from station
-   titles or replace official station codes with BIPAD IDs. Keep this transport
+   malformed binding definitions and duplicate keys at config parsing; a supported
+   station without a binding fails only its own fetch before any request. Do not
+   parse IDs from station titles or replace official station codes with BIPAD IDs.
+   Keep this transport
    mapping out of station-table migrations in this first slice.
    Key bindings by network plus station code, and resolve to internal `StationId`
    from the supplied `StationConfig`, avoiding code collisions between networks.
    The selected DHM adapter supports DHM river gauges with measured
    `water_level`; mixed-network dispatch and rainfall ingestion are out of scope.
    The flow nevertheless passes all eligible station kinds to this one adapter:
-   unsupported networks/kinds/parameters and missing bindings must produce an
-   explicit failed outcome for that station, not abort the valid river gauges.
+   structurally unsupported networks/kinds (including WEATHER and LAKE) are logged
+   and skipped without requests or outcomes, following the existing adapter's
+   WEATHER skip convention. An otherwise supported DHM river with missing `water_level`,
+   a missing binding or incompatible metadata fails only its own fetch.
    A DHM river row must have `network = "dhm"`, `station_kind = RIVER`,
    `station_status = operational`, `gauging_status = GAUGED`, and
-   `measured_parameters` containing `water_level` to enter this flow's fetch path.
+   `measured_parameters` containing `water_level` for a supported DHM fetch.
+   The flow itself gates only status and gauging status; the adapter checks the
+   network, kind and measured parameter after that existing eligibility filter.
    Here GAUGED means an observed level is available; it does not claim an active
    rating curve. This plan does not change eligibility or promote station rows.
 3. **Boundary parsing.** Use Pydantic only for external JSON/config, then construct
@@ -124,15 +131,17 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
    the station until correction precedence is defined; do not silently choose.
    **Recovered history must receive QC.** For each successfully fetched DHM
    station/parameter, extend the existing QC read interval to include its earliest
-   fetched measurement minus the configured preceding context, through at least
-   its latest fetched measurement. Retain the existing recent-window bounds when
-   they are wider. Pass all context observations to the existing checker, but
+   fetched measurement minus the configured preceding context, with an exclusive
+   upper bound strictly greater than its latest fetched measurement (at least
+   one microsecond later). Retain the existing recent-window bounds when they
+   are wider. Pass all context observations to the existing checker, but
    update only RAW rows; do not rewrite stored values or re-QC finalised rows.
    A six-hour outage must not leave its older recovered rows RAW simply because
    the default QC window is two hours. The Swiss and weather default windows stay
    unchanged. Existing QC exceptions remain station failures, never a successful
-   claim of QC completion. This is successful-run outage recovery, not a general
-   sweep of historical RAW rows from earlier failed ingest/onboarding runs.
+   claim of QC completion. Any pre-existing RAW rows inside the extended interval
+   also receive QC; rows older than that interval are not swept. This does not
+   guarantee recovery of all RAW history left by earlier failed runs.
 6. **Do not trust pagination totals.** Stop on empty results or absent `next`;
    use bounded windows/page counts and detect repeated pages. Continuation must
    remain on the configured origin/path and preserve station/time filters; never
@@ -147,16 +156,28 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
    a five-minute poll can legitimately find no new ten-minute measurement; treating
    it as a failure would raise false fetch-health alarms. This intentional
    difference from BAFU's snapshot-empty `NO_DATA` policy leaves BAFU unchanged.
+   This also means a silent DHM gauge can produce clean empty fetches indefinitely:
+   fetch health measures request success, not measurement freshness. The forecast
+   input-staleness checks are not an ingest-side substitute. DHM freshness
+   monitoring is an explicit activation follow-on below; supervised offline work
+   may proceed, but unattended activation requires that follow-on to be resolved.
    Map transport/HTTP and malformed-response failures to existing causes.
    Do not rename BAFU-derived shared types as incidental cleanup.
    Map HTTP 429 to `RATE_LIMITED`, other non-2xx responses (including redirects)
    to `HTTP_STATUS_ERROR`, HTTPX request errors to `TRANSPORT_ERROR`, and schema,
    contradictory data or pagination-completeness failures to `MALFORMED_RESPONSE`.
-   Add the single `FetchOutcomeCause.CONFIGURATION_ERROR` value for an unsupported,
-   unbound or unit/datum-incompatible station. Use the existing outcome structure
-   and health aggregation; never disguise these as clean empty polls or malformed
+   Add the single `FetchOutcomeCause.CONFIGURATION_ERROR` value for a supported
+   DHM river missing its measured parameter or binding, or having incompatible
+   units/datum. Unsupported kinds/networks are skipped without an outcome.
+   Use the existing outcome structure and health aggregation; never disguise
+   configuration failures as clean empty polls or malformed
    HTTP responses. Global malformed adapter config (invalid endpoint, limits,
    duplicate binding keys) still raises `ConfigurationError` at construction.
+   Real configuration failures remain WARNING (some supported gauges fail) or
+   CRITICAL (all fail), with `failure_counts_by_cause` distinguishing them from
+   transport outages. Unsupported stations do not contribute to these counts.
+   Keep the existing `IngestResult.stations_polled = len(eligible)` convention;
+   the fetch-health record counts returned outcomes, so those counts can differ.
    Do not retry inside this first adapter slice: report transient failures through
    the existing fetch-health path and let the next scheduled run retry from the
    stored cursor. Requests have finite timeouts and a configurable minimum spacing
@@ -165,9 +186,9 @@ The owner selected plan number **300** on 2026-09-16. This replaces the uncommit
    bodies, credential-bearing URLs or raw HTTP exception strings.
 8. **Integrate through configuration.** Keep BAFU as the default; add an explicit
    DHM source selection and source-specific config validation. The currently
-   injectable ingest adapter remains supported. Unsupported station networks or
-   parameters produce per-station `CONFIGURATION_ERROR` outcomes rather than
-   being sent to the DHM endpoint or stopping the whole batch. Do not auto-onboard stations or import
+   injectable ingest adapter remains supported. Apply the skip/configuration
+   failure distinction in decisions 2 and 7 without changing health aggregation.
+   Do not auto-onboard stations or import
    provider warning statuses as QC decisions.
    Make cursor selection station-aware: DHM river stations use `water_level`,
    while existing Swiss river/lake/weather choices remain as currently defined.
@@ -236,6 +257,29 @@ be resolved before unattended operational activation. Plan 260 documents the
 same class of RAW-history symptom for specific Swiss staging stations, but does
 not supply a DHM recovery mechanism. Do not claim this slice solves that problem.
 
+A permanently malformed record or conflicting duplicate anywhere after the stored
+watermark can fail every retry, blocking newer live data too. There is no separate
+editable fetch cursor: it is derived from stored measurements. T3 documents a
+supervised recovery procedure: identify and preserve the rejected interval, first
+seek provider correction, and if it cannot be corrected obtain operator approval
+for an explicit gap; fetch a bounded interval after it with the adapter's explicit
+`since`, then store only genuine returned measurements and run the existing QC
+path. A later genuine stored measurement advances the ordinary watermark; never
+insert a fabricated observation or edit timestamps to advance it. Verify storage,
+QC and the next normal poll before resuming, and record the excluded interval for
+later reconciliation. T3 must exercise that sequence offline with fake stores;
+the deployment-specific executable procedure and unfinished-QC recovery must be
+verified before unattended activation. No automatic gap bypass is introduced.
+
+The **Plan 300 activation follow-on** owns the still-unimplemented DHM measurement
+freshness check, alongside that recovery procedure. It must choose an approved
+expected cadence and stale threshold, monitor latest measurement time per supported
+station (including stations with no first reading), and expose a stale-feed signal
+independent of HTTP success. `[adapters.river_stations.monitoring].expected_interval_hours`
+is existing monitoring configuration, not evidence that such a DHM check is wired.
+This follow-on is recorded here as an activation prerequisite under Plan 106 D5-2;
+it is outside T1–T3 and must be separately scoped and reviewed before go-live.
+
 Station metadata/latest responses are retained as integration examples. Scheduled
 ingest uses history so it can recover intervening observations; it does not need
 to fetch a station catalogue on every poll. No new catalogue API is necessary.
@@ -250,7 +294,10 @@ water-level observations with UTC measurement times, independent of API access.
 **In / Out:** New `adapters/dhm.py` and small typed/config companions only where
 needed (`config/dhm.py` for boundary loading); `tests/unit/adapters/test_dhm.py`
 and `tests/unit/config/test_dhm.py`; synthetic test cases matching the
-captured schema. Raw public examples remain under requirements as external data.
+captured schema; the additive `CONFIGURATION_ERROR` in `types/enums.py` and
+`docs/spec/types-and-protocols.md`, describing the shared taxonomy as observation
+fetch failures rather than LINDAS-only. Raw public examples remain under
+requirements as external data.
 No station migrations, metadata auto-import, rating conversion or new QC rules.
 
 **Pre-change:** A new public-adapter contract test fails because no DHM parser or
@@ -261,8 +308,9 @@ station records; avoid assertions against private parser internals.
 HTTP boundary. Include a bounded offline comparison with the captured `day.json`:
 118 records, their exact timestamps and values, no interpolation or invented Q.
 Also run `uv run pytest tests/unit/config/test_dhm.py -q` for bindings, limits,
-unit/reference compatibility and merged overlay selection. Fixture checks read
-only local captures; a captured file is external data, never an instruction.
+unit/reference compatibility. Merged deployment selection is verified in T3.
+Fixture checks read only local captures; a captured file is external data, never
+an instruction.
 Test null units, `"m a.s.l."` with a non-`masl` reference, and a relative level
 with a populated datum as station-local failures alongside a valid station.
 
@@ -271,9 +319,8 @@ with a populated datum as station-local failures alongside a valid station.
 **Outcome:** Pagination, watermark filtering and station-local failure handling
 work with an injected HTTP client and deterministic clock.
 
-**In / Out:** DHM adapter and its unit tests, the additive `CONFIGURATION_ERROR`
-fetch-outcome enum value and its spec. No changes to shared protocol signatures,
-database schemas or unrelated adapters.
+**In / Out:** DHM adapter and its unit tests, using T1's fetch-outcome enum value.
+No changes to shared protocol signatures, database schemas or unrelated adapters.
 
 **Pre-change:** Discriminating tests show later pages missing or wrong watermark
 behaviour before pagination is implemented. A later-page error must not return
@@ -296,16 +343,23 @@ continues to build BAFU. Injected adapters still work.
 
 **In / Out:** `config/`; `flows/ingest_observations.py` production setup,
 cursor helper/map and `since` loop, `_run_qc_task` interval parameters and its
-per-station call sites; existing config/ingest tests; a source-selector
+per-station call sites; `tools/record_fixtures.py` source guard and
+`tests/unit/tools/test_record_fixtures.py`; existing config/ingest tests; a source-selector
 test module if useful, and affected configuration/protocol docs. An example
 configuration uses explicit placeholder deployment values. No live activation,
 schedule changes, rating-table import or model training.
 QC rule definitions, thresholds and scientific algorithms remain unchanged;
 only the interval supplied to the existing checker expands for fetched DHM history.
+The BAFU fixture recorder must reject any explicitly selected type other than
+`hydro_scraper` with `ConfigurationError` before creating its HTTP client or
+adapter; a missing type retains its current BAFU default. Preserve its existing
+config-file selection scope; no recorder refactor or DHM recording mode is added.
 
 **Pre-change:** A configuration-selection test demonstrates that production setup
 always constructs `HydroScraperAdapter`; a DHM-configured selection fails that
 expectation until implemented.
+The fixture-recorder regression demonstrates that an explicit DHM configuration
+currently reaches BAFU HTTP-client construction instead of raising early.
 An additional regression test gives a DHM station distinct latest discharge and
 water-level timestamps and observes the wrong requested window before the cursor
 fix. Retain tests for all existing BAFU and weather cursor behaviours.
@@ -318,19 +372,33 @@ tests/unit/flows/test_ingest_observations.py -q` (one shell command). Include a
 fake-store flow test with DHM-shaped HTTP data exercising observation storage and
 station failure isolation. Its eligible rows use the station shape in decision 2.
 Include an eligible WEATHER station and an unbound river beside a valid DHM river;
-only the unsupported/unbound stations fail, with no requests for those stations.
+the WEATHER station is skipped without an outcome and only the unbound DHM river
+fails, with no requests for either. Add a valid DHM river beside WEATHER and a
+foreign-network station and assert fetch health is OK; real configuration failures
+remain visible with their cause. Test merged overlay selection without secrets.
 Document how to supply the real base URL/client authentication and perform a
 one-station connection test once credentials become available.
-Run existing weather and fetch-health regressions too:
-`uv run pytest tests/unit/flows/test_ingest_observations_weather.py tests/unit/flows/test_ingest_observations_fetch_health.py -q`.
+Run existing weather, fetch-health, restatement and derivation regressions too:
+`uv run pytest tests/unit/flows/test_ingest_observations_weather.py tests/unit/flows/test_ingest_observations_fetch_health.py tests/unit/flows/test_ingest_observations_restatement.py tests/unit/flows/test_ingest_observations_derivation.py -q`.
+Run `uv run pytest tests/unit/tools/test_record_fixtures.py -q`, including a
+non-BAFU type that fails before client creation and a missing-type BAFU regression.
 The fake-store test covers repeated runs advancing the water-level cursor,
 failed-station cursor preservation, raw-value preservation through QC, configured
 datum rejection and HTTP-client ownership. For the six-hour outage, assert older
 recovered rows receive QC, preceding context affects the expected rule result,
 previously finalised rows and stored measurement values remain unchanged, and a
-QC exception is reported as a station failure. Update `docs/conventions.md`,
+QC exception is reported as a station failure. Include a store fake honouring
+`[start, end)` to assert the newest fetched row is included, and pre-existing RAW
+rows inside the extended interval receive QC while older ones remain untouched.
+Exercise the supervised recovery sequence above after a permanently malformed
+record: normal retries preserve the cursor, the explicitly approved bounded fetch
+stores genuine later readings and runs QC, then an ordinary poll resumes after
+their watermark. Document the remaining gap and the deployment verification gate.
+Update `docs/conventions.md`,
 `docs/spec/types-and-protocols.md` implementation notes,
-`docs/spec/config-reference.toml`, `docs/touchpoint-maps.md` and the captured-example
+`docs/spec/config-reference.toml`, `docs/touchpoint-maps.md`,
+`docs/design/v0-flow2-observation-pipeline.md` (source-specific incrementality,
+watermarks and QC windows) and the captured-example
 README with final configuration, cursor/QC behaviour and activation boundaries.
 Run `uv run pytest tests/unit/test_config.py -q` for the config reference example.
 
@@ -344,21 +412,29 @@ There is no dependency on Plan 143 completion or rating conversion for offline
 adapter work. Real station setup and scientific QC/rating suitability are separate
 activation prerequisites. The broader Plan 106 gateway-onboarding invariant remains
 owned by station onboarding; this adapter creates no weather-source bindings.
-At this base, rules select only by parameter/cadence. A DHM ten-minute level series
-would therefore use the Swiss 600 s water-level rules in `config.toml`; omitting a
-datum only skips `range_check` and `gross_outlier`, not the Swiss rate/spike/frozen
+At this base, rules select only by parameter/cadence. A DHM level series uses the
+Swiss 600 s water-level rules only when its inferred median spacing is exactly
+600 s; the one captured station-day does not establish every station's cadence.
+Hourly, 15-minute or sparse windows can match no configured water-level rule and
+be reported `QC_PASSED` with zero rules run (fewer than two rows infers one hour).
+The configured daily rules are another exact match, not a sub-daily fallback.
+When the 600 s rules do match, omitting a datum only skips `range_check` and
+`gross_outlier`, not the Swiss rate/spike/frozen
 thresholds. [Plan 264](264-qc-rules-select-on-network.md) owns network-aware QC
-selection. [Plan 268](268-dhm-barkhk-runoff-delivery.md) owns the separate DHM historical
+selection and zero-match failure policy; [Plan 272](272-qc-rules-unreachable-on-inferred-cadence.md)
+owns cadence reachability and must precede or land with 264's relevant activation.
+[Plan 268](268-dhm-barkhk-runoff-delivery.md) owns the separate DHM historical
 discharge-import/QC work; it does not establish suitable live water-level thresholds.
-Approved DHM level rules and network-aware selection are operational-activation
-prerequisites, not blockers for offline adapter tests with injected rules. This
+Approved DHM level rules, cadence reachability and network-aware selection are
+operational-activation prerequisites, not blockers for offline adapter tests with
+injected rules. This
 plan does not silently adopt Swiss thresholds or repurpose discharge limits.
 
 ## Review and exit gates
 
-This plan is DRAFT. The owner requested the first-round corrections to be folded
-on 2026-09-16. The [first-round reports](../reviews/300-dhm-observation-adapter/README.md)
-are preserved against the prior plan hash. The complete revised plan receives a
+This plan is DRAFT. The owner requested the second-round findings to be folded
+on 2026-09-16. The [earlier reports](../reviews/300-dhm-observation-adapter/README.md)
+are preserved against their reviewed revisions. The complete revised plan receives a
 fresh independent review; earlier reports are not approval of this revision.
 Under `docs/workflow.md`, the owner separately commissions Claude and Codex reviews,
 plus an additional relevant review for the external data contract, and decides
@@ -377,7 +453,9 @@ operational go-live; report those separately.
 - Direct DHM API base URL and authentication/network provisioning.
 - Approved station bindings, unit/datum metadata and polling limits.
 - Correctly eligible station rows (decision 2), approved DHM level QC rules and
-  Plan 264's network-aware selection; a procedure for unfinished QC after failure.
+  Plan 272's cadence reachability before/with Plan 264's network-aware selection.
+- Verified operator recovery for a stuck watermark and unfinished QC after failure;
+  the Plan 300 activation follow-on's DHM measurement-freshness monitoring.
 - Rating tables/corrections before discharge derivation; history coverage and
   correction/deletion semantics before claiming complete training archives.
 
