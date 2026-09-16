@@ -50,7 +50,10 @@ Do not add a separate acceptance-map table or persistent run-state file.
   conversion and rating curves remain separate. First-round corrections are
   committed; the owner requested the ten findings from the
   [second-round reviews](../reviews/300-dhm-observation-adapter/round-2/README.md)
-  be folded in. The revised DRAFT awaits a fresh complete review and owner READY.
+  be folded in, committed as `ed2da78a`. The
+  [third-round reviews](../reviews/300-dhm-observation-adapter/round-3/README.md)
+  returned clean Codex and contract verdicts; four Claude scope/ownership findings
+  await owner disposition. Owner READY remains outstanding.
 
 ## Archived by the 2026-08-28 stale-status audit
 

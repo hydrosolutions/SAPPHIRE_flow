@@ -30,4 +30,7 @@ remain in `docs/requirements/dhm-api-examples/` with their capture manifest.
 The owner-requested corrections were committed in `78a2b9ff`. A fresh complete
 [second review round](round-2/README.md) reviewed that revision: Codex and the
 additional contract review returned CLEAN; Claude returned ten findings awaiting
-owner disposition. These historical first-round reports remain unchanged.
+owner disposition at that round's close. The owner then requested their fold-in,
+committed as `ed2da78a`, and a [third review round](round-3/README.md): Codex and
+the contract reviewer returned CLEAN; Claude returned four scope/ownership
+findings. These historical first-round reports remain unchanged.
