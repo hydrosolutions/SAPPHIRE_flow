@@ -34,3 +34,17 @@ outlet, not a verified location of the real gauge. See the [asset source notes](
 Keep the illustrative banner, simulated-history label, spread disclaimer and
 outturn disclaimer visible in the animation. Thresholds and comparator are null.
 Swiss defaults, data and operational forecasting are unaffected by this command.
+
+## Current handoff
+
+Generated bundle: `/private/tmp/nepal-demo-rabuwa-v1/` (temporary local delivery).
+A durable reproducible example is committed under `tests/fixtures/nepal_demo/`.
+Backend branch: `feat/nepal-demo-export`; worktree: `/private/tmp/sapphire-nepal-demo`.
+The original planning checkout has the current handoff link; implementation lives
+in this isolated worktree.
+
+The final bundle was checked against the current frontend JSON Schema. Its
+series fields (history, forecast, verification and empty superseded cycles)
+conform. Remaining failures are the old coordinate constants and basin
+Polygon/properties schema; these are the consumer changes listed in the contract.
+This check does not establish successful browser rendering.

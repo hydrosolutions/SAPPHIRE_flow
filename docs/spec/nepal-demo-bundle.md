@@ -17,7 +17,7 @@ Preserve the existing consumer names: `generated_at`, `generator_seed: 20260916`
 `source_mode: illustrative`, `banner_text`, `provenance`, `uncertainty_meaning`,
 `spread_label`, `station`, `units`, `timezone`, `forecast`, `thresholds`,
 `threshold_basis`, `comparator`, `date_basis`, `date_label`, `verification_label`,
-`verification_note`.
+`verification_note`, `supersession`.
 
 Banner: **Illustrative scenario — synthetic data, not an operational forecast**.
 Spread: **Illustrative spread — not calibrated uncertainty**.
@@ -44,7 +44,13 @@ Thresholds/comparator are null; threshold basis is `none_available`.
 
 ## Series
 
-`series.json` has `region`, `observations`, `forecast`, `verification`.
+`series.json` has `region`, `observations`, `forecast`, `verification`, `superseded`.
+The concurrently updated consumer requires supersession metadata. This one-issue
+scenario supplies `superseded: []` and manifest `supersession` with
+`cycle_hours: 6` (consumer playback configuration only),
+`label: Single-issue illustrative scenario`, and
+`note: No earlier forecast cycles are supplied in this demonstration.`
+No prior forecast cycles or operational schedule are implied.
 All three blocks have `source_mode: illustrative`, `unit: m3/s`, ordered
 `valid_times` and `gaps` (objects with `start`/`end`). History and verification
 carry `values`; forecast carries `series` with exactly keys `0.25`, `0.5`, `0.75`.
@@ -102,7 +108,7 @@ properties. Update those schema constants/types to the Rabuwa Point/MultiPolygon
 and properties above. Import these four documents instead of regenerating its
 old scenario. The importer currently reads a combined object; assemble it using
 the key-to-filename mapping above. Pin one shared schema revision. The generated Pydantic schema uses `$ref`,
-`$defs`, `anyOf` and tuple/array constraints: the current consumer custom validators
+`$defs`, `anyOf` and array constraints: the current consumer custom validators
 do not support all of these. Use a complete JSON Schema validator (or extend the
 consumer validator) and test rejection of malformed nullable values and geometry;
 copying the schema alone is insufficient. The Python

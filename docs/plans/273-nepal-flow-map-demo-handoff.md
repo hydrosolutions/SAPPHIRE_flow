@@ -48,6 +48,8 @@ producer, not a forecast model registered with the operational pipeline.
   half-open windows and `synthetic_eligible` playback state. Its hard-coded old
   Nepal location and Polygon metadata require a small consumer update for Rabuwa.
   Record that pending integration explicitly, without waiting on the UI or editing it.
+  A later consumer addition requires supersession fields: provide its metadata
+  with an explicitly empty older-cycle list, preserving the approved single-issue scope.
 - Forecast Lab v2 is explicitly BAFU-only and remains unchanged. Generic APIs
   can support later real data; this export requires no server or token.
 - Aquacast `configs/basins/dudh_koshi.txt` names `nepal_20010`; the original
@@ -61,7 +63,7 @@ producer, not a forecast model registered with the operational pipeline.
   Existing CLI conventions use module invocation and structlog.
   `cli/export_forecast_lab.py` demonstrates validation-before-write.
 
-## Proposed shared contract
+## Shared contract
 
 Use the frontend's proposed four-file layout and identifier. Pin exact fields
 in T1 and maintain one authoritative schema/example here; the consumer pins
@@ -115,7 +117,7 @@ values in `types/nepal_demo.py`, and boundary models/validation in `cli/nepal_de
 A committed generated JSON Schema and a synthetic example are the shared
 references. No production forecast schema or FI change is involved.
 
-Proposed command (not implemented):
+Export command:
 
 ```bash
 uv run python -m sapphire_flow.cli.export_nepal_demo \
@@ -212,9 +214,30 @@ Implementation starts on the isolated clean named branch at freshly fetched main
 Run focused tests, lint/format/type checks and update affected docs. Code commits
 include the patch version bump. The full suite is required before merge.
 
-Earlier generic station/forecast API checks passed **28 tests**. They do not test
-this proposed producer. No producer code, complete sample bundle or endpoint
-exists yet. The separately requested geometry extraction is complete and verified.
+Implementation evidence (2026-09-16):
+- T1: contract aligned to inspected frontend field layout; geometry and schema-validator
+  changes remain explicitly assigned to frontend integration.
+- T2/T3 RED: newly added behavior tests failed collection for the absent producer/exporter.
+  GREEN: 33 producer/export/schema tests pass; fixture passes the generated schema.
+  Tests cover deterministic bytes, preserved geometry, invalid contracts, zeros/nulls,
+  CLI time shifting, write failures, existing destinations and the publication race.
+- T4: documented CLI exported four files to `/private/tmp/nepal-demo-rabuwa-v1`;
+  committed example is `tests/fixtures/nepal_demo/`.
+- Existing station/forecast API regression checks: 28 pass (61 combined).
+  Repository-wide ruff lint/format pass; changed-module pyright: zero errors.
+- Independent Codex repository review and focused contract/safety review completed
+  with no findings, including the final empty superseded-cycle fields. Claude
+  Sonnet reviewed the complete final base-branch diff (schema, fixtures, geometry,
+  version files and docs included) with no correctness findings. Its earlier
+  TypeAdapter style suggestion was declined: explicit `[str]` is needed to avoid
+  unknown-type inference, as verified by pyright. A final type-only annotation
+  made the empty list's boundary dictionary type explicit; pyright remains clean.
+- Fresh isolated uv environment also passes the 61 checks and the module CLI.
+  Publication primitives were exercised natively on macOS; Linux awaits CI.
+- Full-suite/CI and frontend rendering remain unverified; they are required before
+  merge / animation acceptance respectively. No operational endpoint was added.
+  Backend implementation is complete on the feature branch; READY is retained
+  until owner integration/merge disposition.
 
 ## Later real forecasts
 

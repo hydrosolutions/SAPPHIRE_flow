@@ -4,6 +4,9 @@ This replaces the earlier producer/consumer proposal. The authoritative backend
 worktree is `/private/tmp/sapphire-nepal-demo`, branch `feat/nepal-demo-export`.
 Read `docs/spec/nepal-demo-bundle.md` and Plan 273 there.
 
+Ready-to-import export: `/private/tmp/nepal-demo-rabuwa-v1/`.
+Durable example: `tests/fixtures/nepal_demo/` in that backend worktree.
+
 Use the backend’s four-file export, mapping region.json -> manifest,
 series.json -> series, station.geojson -> station, basin.geojson -> basin.
 The backend adopts your existing series field layout, half-open windows,
@@ -16,13 +19,14 @@ fine-tune station nepal_20010. Basin properties are basin_id, name and source;
 feature ID is NP_1_00092. See the backend spec for exact fields.
 
 The backend’s generated schema uses standard JSON Schema ($ref/$defs/anyOf,
-tuple and array constraints). Your current custom validators do not implement
+array constraints). Your current custom validators do not implement
 that vocabulary fully; use a complete validator or add support with negative
 tests, including invalid nullable values. Keep geometry types MultiPolygon-capable.
 
 Default: demonstration issue date 2025-08-12T00:00:00Z; 168 hourly history samples,
 72 forecast steps at +1..+72h, matching synthetic verification (starts_at_issue_time
-false), explicit null gaps. Values are invented and never operational. Thresholds
+false), explicit null gaps. Superseded cycles are explicitly empty, with the
+required supersession metadata labelled as a single-issue demonstration. Values are invented and never operational. Thresholds
 and comparator stay null. No checksums. Do not regenerate a different scenario.
 
 Retain Swiss defaults and region isolation. Frontend rendering, startup selection,
