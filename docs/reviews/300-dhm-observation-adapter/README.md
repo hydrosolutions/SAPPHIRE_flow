@@ -34,3 +34,9 @@ owner disposition at that round's close. The owner then requested their fold-in,
 committed as `ed2da78a`, and a [third review round](round-3/README.md): Codex and
 the contract reviewer returned CLEAN; Claude returned four scope/ownership
 findings. These historical first-round reports remain unchanged.
+
+The owner subsequently delegated disposition of the four remaining findings to
+an independent Codex agent and directed implementation after their fold-in.
+[Disposition](round-3/codex-disposition.md): all four accepted as bounded
+clarifications, with adjustments to client-lifecycle and station-promotion scope.
+READY records the owner's explicit implementation instruction.

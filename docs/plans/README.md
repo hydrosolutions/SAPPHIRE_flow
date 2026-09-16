@@ -43,7 +43,7 @@ Do not add a separate acceptance-map table or persistent run-state file.
 ## Nepal observation integration
 
 - **300** — [DHM water-level observation adapter](300-dhm-observation-adapter.md) —
-  `DRAFT` — owner-relayed BIPAD confirmation establishes the request/response
+  `READY` — owner-relayed BIPAD confirmation establishes the request/response
   contract for direct DHM adapter development. Captured examples support offline
   parsing, history/pagination and Flow 2 integration; real DHM connection settings
   remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit
@@ -52,8 +52,9 @@ Do not add a separate acceptance-map table or persistent run-state file.
   [second-round reviews](../reviews/300-dhm-observation-adapter/round-2/README.md)
   be folded in, committed as `ed2da78a`. The
   [third-round reviews](../reviews/300-dhm-observation-adapter/round-3/README.md)
-  returned clean Codex and contract verdicts; four Claude scope/ownership findings
-  await owner disposition. Owner READY remains outstanding.
+  returned clean Codex and contract verdicts; the owner delegated the four Claude
+  scope/ownership findings to an independent Codex agent, accepted their fold-in
+  through that delegation, and directed implementation on 2026-09-16.
 
 ## Archived by the 2026-08-28 stale-status audit
 

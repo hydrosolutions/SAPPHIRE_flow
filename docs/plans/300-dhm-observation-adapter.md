@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-16
 plan: 300
 title: DHM water-level observation adapter from the confirmed API contract
@@ -241,8 +241,10 @@ Use the API prefix exactly (preserve `/api/v1/` when joining `river/`). Require
 HTTPS without embedded credentials, TLS verification and disabled redirects.
 Respect `SAPPHIRE_CONFIG_OVERLAY`; an explicitly selected invalid DHM config must
 not fall back to LINDAS. When no source type is configured, retain BAFU defaults.
-Flow-owned HTTP clients must close on success and failure; injected clients remain
-owned by their caller. No arbitrary token-refresh/auth framework is proposed.
+HTTP clients constructed for the new DHM path must close on success and failure,
+including adapter-construction failure and any intervening early exit. Injected
+clients and adapters remain caller-owned. Existing BAFU-client and database
+connection lifecycles are outside this slice. No token-refresh framework is proposed.
 
 The normal flow's first-run lookback remains its existing default (one hour).
 The adapter can process an explicitly supplied older watermark in bounded windows;
@@ -345,9 +347,14 @@ continues to build BAFU. Injected adapters still work.
 cursor helper/map and `since` loop, `_run_qc_task` interval parameters and its
 per-station call sites; `tools/record_fixtures.py` source guard and
 `tests/unit/tools/test_record_fixtures.py`; existing config/ingest tests; a source-selector
-test module if useful, and affected configuration/protocol docs. An example
+test module if useful; `docs/conventions.md`, `docs/spec/types-and-protocols.md`,
+`docs/spec/config-reference.toml`, `docs/touchpoint-maps.md`,
+`docs/design/v0-flow2-observation-pipeline.md`, and
+`docs/requirements/dhm-api-examples/README.md`. An example
 configuration uses explicit placeholder deployment values. No live activation,
 schedule changes, rating-table import or model training.
+Include bounded exception-safe ownership of the flow-created DHM HTTP client,
+from its construction through completion of fetch.
 QC rule definitions, thresholds and scientific algorithms remain unchanged;
 only the interval supplied to the existing checker expands for fetched DHM history.
 The BAFU fixture recorder must reject any explicitly selected type other than
@@ -384,7 +391,10 @@ Run `uv run pytest tests/unit/tools/test_record_fixtures.py -q`, including a
 non-BAFU type that fails before client creation and a missing-type BAFU regression.
 The fake-store test covers repeated runs advancing the water-level cursor,
 failed-station cursor preservation, raw-value preservation through QC, configured
-datum rejection and HTTP-client ownership. For the six-hour outage, assert older
+datum rejection and HTTP-client ownership. Verify DHM-client closure after success
+and construction/fetch failure; cover intervening failure or early-return paths
+if a client has already been allocated, and verify injected clients remain open.
+For the six-hour outage, assert older
 recovered rows receive QC, preceding context affects the expected rule result,
 previously finalised rows and stored measurement values remain unchanged, and a
 QC exception is reported as a station failure. Include a store fake honouring
@@ -423,6 +433,10 @@ When the 600 s rules do match, omitting a datum only skips `range_check` and
 thresholds. [Plan 264](264-qc-rules-select-on-network.md) owns network-aware QC
 selection and zero-match failure policy; [Plan 272](272-qc-rules-unreachable-on-inferred-cadence.md)
 owns cadence reachability and must precede or land with 264's relevant activation.
+T3's DHM history-window extension touches `_run_qc_task`, also a candidate
+implementation site for Plan 272 T2/D1(b). It does not select or pre-empt Plan 272's
+cadence-reachability solution; whichever implementation lands second must reconcile
+that shared site and preserve both plans' regression cases.
 [Plan 268](268-dhm-barkhk-runoff-delivery.md) owns the separate DHM historical
 discharge-import/QC work; it does not establish suitable live water-level thresholds.
 Approved DHM level rules, cadence reachability and network-aware selection are
@@ -432,10 +446,13 @@ plan does not silently adopt Swiss thresholds or repurpose discharge limits.
 
 ## Review and exit gates
 
-This plan is DRAFT. The owner requested the second-round findings to be folded
-on 2026-09-16. The [earlier reports](../reviews/300-dhm-observation-adapter/README.md)
-are preserved against their reviewed revisions. The complete revised plan receives a
-fresh independent review; earlier reports are not approval of this revision.
+The owner authorised implementation on 2026-09-16 after delegating disposition of
+the four third-round Claude findings to an independent Codex agent. That agent
+accepted all four as scope/ownership clarifications, with bounded adjustments;
+these are folded in without changing parsing, pagination or QC policy. This READY
+status records the owner's instruction to proceed, not autonomous reviewer approval.
+The [review reports and disposition](../reviews/300-dhm-observation-adapter/README.md)
+are preserved against their reviewed revisions.
 Under `docs/workflow.md`, the owner separately commissions Claude and Codex reviews,
 plus an additional relevant review for the external data contract, and decides
 readiness. Implementation starts only from leading YAML `status: READY`, on a
@@ -456,6 +473,11 @@ operational go-live; report those separately.
   Plan 272's cadence reachability before/with Plan 264's network-aware selection.
 - Verified operator recovery for a stuck watermark and unfinished QC after failure;
   the Plan 300 activation follow-on's DHM measurement-freshness monitoring.
+- Plan 268's six discharge-only gauges remain `onboarding`; promoting those
+  unchanged rows under DHM selection would produce `CONFIGURATION_ERROR` outcomes.
+  The Plan 300 activation follow-on owns resolving their live-ingest eligibility
+  before any promotion, coordinated with Plan 143 station onboarding; this slice
+  neither promotes them nor weakens the missing-`water_level` failure policy.
 - Rating tables/corrections before discharge derivation; history coverage and
   correction/deletion semantics before claiming complete training archives.
 
