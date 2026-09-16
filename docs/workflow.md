@@ -107,6 +107,11 @@ context packet, persistent run file, or evidence schema. Reviewers and implement
 read the current plan and repository directly. They account for every task in
 short prose and cite `file:line` when reporting a defect.
 
+Keep planning and implementation review reports, transcripts and round-by-round
+history local and out of commits unless the owner explicitly requests otherwise.
+The PR description records concise review outcomes and unresolved findings;
+plans retain the resulting decisions rather than the review-round history.
+
 ### Plan review
 
 The ordinary review is one Claude design/proportionality pass and one independent

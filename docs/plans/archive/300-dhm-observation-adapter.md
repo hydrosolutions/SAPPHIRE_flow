@@ -471,15 +471,14 @@ plan does not silently adopt Swiss thresholds or repurpose discharge limits.
 ## Review and exit gates
 
 Implementation T1–T3 is complete and this plan is archived. The owner authorised
-implementation on 2026-09-16 after delegating disposition of
-the four third-round Claude findings to an independent Codex agent. That agent
-accepted all four as scope/ownership clarifications, with bounded adjustments;
-these were folded in without changing parsing, pagination or QC policy. READY was
+implementation on 2026-09-16 after independent review and incorporation of the
+accepted scope/ownership clarifications. READY was
 recorded before implementation from the owner's instruction to proceed, not
 autonomous reviewer approval. COMPLETE records the bounded offline implementation,
 not patch-review approval, merge or operational activation.
-The [review reports and disposition](../../reviews/300-dhm-observation-adapter/README.md)
-are preserved against their reviewed revisions.
+Review outcomes and unresolved findings are summarised in
+[PR #278](https://github.com/hydrosolutions/SAPPHIRE_flow/pull/278); full reports
+remain local.
 Under `docs/workflow.md`, the owner separately commissions Claude and Codex reviews,
 plus an additional relevant review for the external data contract, and decides
 readiness. Implementation starts only from leading YAML `status: READY`, on a

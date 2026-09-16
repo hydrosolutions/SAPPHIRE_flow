@@ -46,22 +46,16 @@ Do not add a separate acceptance-map table or persistent run-state file.
 
 - **300** — [DHM water-level observation adapter](archive/300-dhm-observation-adapter.md) —
   `COMPLETE` — offline implementation and 308 focused checks passed; archived.
-  [Independent patch reviews](../reviews/300-dhm-observation-adapter/implementation/README.md)
-  completed with five distinct low-severity findings awaiting disposition; no
+  Independent patch reviews completed with five distinct low-severity findings
+  recorded in PR #278; no
   blocking implementation defect was found. The full default suite passed after
   merging current main: 6,408 passed, 53 skipped, 15 deselected (2026-09-16).
   Owner-relayed BIPAD confirmation establishes the request/response
   contract for direct DHM adapter development. Captured examples support offline
   parsing, history/pagination and Flow 2 integration; real DHM connection settings
   remain deployment inputs. First adapter slice of Plan 106 D5-2; generic unit
-  conversion and rating curves remain separate. First-round corrections are
-  committed; the owner requested the ten findings from the
-  [second-round reviews](../reviews/300-dhm-observation-adapter/round-2/README.md)
-  be folded in, committed as `ed2da78a`. The
-  [third-round reviews](../reviews/300-dhm-observation-adapter/round-3/README.md)
-  returned clean Codex and contract verdicts; the owner delegated the four Claude
-  scope/ownership findings to an independent Codex agent, accepted their fold-in
-  through that delegation, and directed implementation on 2026-09-16.
+  conversion and rating curves remain separate. The owner approved implementation
+  on 2026-09-16 after independent review and incorporation of the accepted findings.
 
 ## Archived by the 2026-08-28 stale-status audit
 
