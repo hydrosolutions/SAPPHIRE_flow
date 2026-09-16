@@ -1,0 +1,120 @@
+{
+  "inspection_date": "2026-09-16",
+  "requests": [
+    {
+      "file": "stations.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river-stations/?limit=2",
+      "authentication": "none supplied",
+      "sha256": "8ac9442e1c1585c55b7a1ad0347c6b0628db7574566270ff4f80c779796394b2",
+      "returned_rows": 2,
+      "response_headers_excerpt": [
+        "HTTP/1.1 200 OK",
+        "Date: Wed, 16 Sep 2026 09:13:42 GMT",
+        "Content-Type: application/json"
+      ],
+      "stored_sha256": "e6671307c852dda1a5498e6c33d33e3ea3f40d0b30fe31d378355ad76f2a23d6",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "river.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river/?limit=2",
+      "authentication": "none supplied",
+      "sha256": "04cb4202aa553954a9bbff9f76887e38f72316b32f613cbfa8f5eb6e47d711a3",
+      "returned_rows": 2,
+      "response_headers_excerpt": [
+        "HTTP/1.1 200 OK",
+        "Date: Wed, 16 Sep 2026 09:13:45 GMT",
+        "Content-Type: application/json"
+      ],
+      "stored_sha256": "c6aec31a45413ec34150c9036c966e3fec36e6d9965684e71524d9743543ef6d",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "streamflow.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/streamflow/?limit=1",
+      "authentication": "none supplied",
+      "sha256": "0595424161ea863805d9b92c0e52d7aa1e3c46ec58cd8f0d6933759006a5fb74",
+      "returned_rows": 0,
+      "response_headers_excerpt": [
+        "HTTP/1.1 200 OK",
+        "Date: Wed, 16 Sep 2026 09:13:45 GMT",
+        "Content-Type: application/json"
+      ],
+      "stored_sha256": "5daa6c0e6bf3bc70a6e97c075138c884334f380670a0088bc2b8b4774d6685b3",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "history.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river/?station=168&water_level_on__gt=2026-05-05T00%3A00%3A00%2B05%3A45&water_level_on__lt=2026-05-06T00%3A00%3A00%2B05%3A45&ordering=water_level_on&limit=5",
+      "authentication": "none supplied",
+      "sha256": "cd2de0640308693b1475b1a5854bb820c0918381b7d0ab6e382488a2a1425908",
+      "returned_rows": 5,
+      "response_headers_excerpt": [
+        "HTTP/1.1 200 OK",
+        "Date: Wed, 16 Sep 2026 09:15:12 GMT",
+        "Content-Type: application/json"
+      ],
+      "stored_sha256": "0ebb4d65fae19cdc797213a85fb816b66e8660cfcd17ccfe4941cb407b830ecc",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "station-filter.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river-stations/?station_series_id=21379&limit=5",
+      "authentication": "none supplied",
+      "sha256": "1c0e2fa4e2ae8de3912369223551b2f9ac31cb741c9fb9b90403356f8858624a",
+      "returned_rows": 1,
+      "stored_sha256": "190fb20003273ae66e42e95fa5aeaa2942d3050a55aab621382f3125bb895b9c",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "day.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river/?station=168&historical=true&water_level_on__gt=2026-05-05T00%3A00%3A00%2B05%3A45&water_level_on__lt=2026-05-06T00%3A00%3A00%2B05%3A45&ordering=water_level_on&limit=500",
+      "authentication": "none supplied",
+      "sha256": "aa07cfb30b2c73573548eb567f77e95dcf78f57951491d532bc55a3688824e3d",
+      "returned_rows": 118,
+      "response_headers_excerpt": [
+        "HTTP/1.1 200 OK",
+        "Date: Wed, 16 Sep 2026 09:16:35 GMT",
+        "Content-Type: application/json"
+      ],
+      "stored_sha256": "6a55d2db259b130d3807d1dc7193f0da0e82ed623a6698ad5aa7900544e58203",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "page2.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river/?limit=5&offset=5&ordering=water_level_on&station=168&water_level_on__gt=2026-05-05T00%3A00%3A00%2B05%3A45&water_level_on__lt=2026-05-06T00%3A00%3A00%2B05%3A45",
+      "authentication": "none supplied",
+      "sha256": "31151aebdd31479d8f07694bc685c5b8b2b67f89dc4f94d742ccd69580dff738",
+      "returned_rows": 5,
+      "stored_sha256": "31d90105097b4d1b2f39fbedf394968f5db0fa4adfece26fd1601d843fb8ed31",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "empty-page.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river-stations/?station_series_id=21379&limit=5&offset=5",
+      "authentication": "none supplied",
+      "sha256": "a1ab263f54dc532f74597d912fd2c945ef46e9369aef61b340d8597f40460776",
+      "returned_rows": 0,
+      "stored_sha256": "8c6d60144f01f67a5bb74dd12e822609d0be1c65d62a6e48e92dcdbe511fc82f",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    },
+    {
+      "file": "latest.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/river-stations/?latest=true&station_series_id=21379&limit=2",
+      "authentication": "none supplied",
+      "sha256": "c6b701f59e8c04b5acd337c175b294b1d4f0f81dbf761dd95da705a67a9fb29b",
+      "returned_rows": 1,
+      "stored_sha256": "f573d99927e2d6ce721880b4e59893d1b99531134d1f8130261f5e159d8c1b87",
+      "storage_note": "Repository text file adds one terminal LF; original bytes are in original-responses.zip."
+    }
+  ]
+}

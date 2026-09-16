@@ -1,0 +1,5 @@
+{
+  "url": "https://bipadportal.gov.np/api/?format=openapi",
+  "full_download_sha256": "c74aeae1cb74625e8c09124cd709be64417ed218acddbad744bd723606bda0ad",
+  "note": "Only river and streamflow paths and definitions are included in the excerpt."
+}
