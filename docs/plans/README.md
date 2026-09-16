@@ -3,6 +3,8 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
+- **273** — [Nepal flow-map demonstration](273-nepal-flow-map-demo-handoff.md) —
+
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
 YAML `status:` frontmatter is the only machine-readable status source for active
