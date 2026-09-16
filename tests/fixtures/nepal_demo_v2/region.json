@@ -1,0 +1,68 @@
+{
+  "banner_text": "Illustrative scenario — synthetic data, not an operational forecast",
+  "comparator": null,
+  "date_basis": "demonstration_date",
+  "date_label": "Demonstration date — synthetic values, not a record of conditions on this date",
+  "forecast_cycle": {
+    "cadence_seconds": 10800,
+    "cycle_hours": 6,
+    "horizon_steps": 24,
+    "issue_count": 8,
+    "quantile_levels": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "representation": "quantiles",
+    "starts_at_issue_time": false
+  },
+  "generated_at": "2025-08-12T00:00:00Z",
+  "generator_seed": 20260916,
+  "provenance": {
+    "basemap": {
+      "attribution": "Basemap attribution is displayed from the region configuration.",
+      "kind": "third_party_raster"
+    },
+    "basin": {
+      "attribution": "BARHKH NepalCaravanified/nepal_watersheds_merged_dedup.gpkg; basin outlines by Nicolas",
+      "kind": "real_geometry"
+    },
+    "forecast": {
+      "attribution": "Independent invented issue curves, seed 20260917; no trained model or observation input.",
+      "kind": "synthetic"
+    },
+    "observations": {
+      "attribution": "Simulated discharge history, seed 20260916; no measurements.",
+      "kind": "synthetic"
+    },
+    "station": {
+      "attribution": "Fictional demonstration point at the Rabuwa GIS outlet; not a verified measurement site.",
+      "kind": "synthetic"
+    }
+  },
+  "region": "nepal",
+  "schema_version": "flow-map-region-bundle/v2",
+  "source_mode": "illustrative",
+  "spread_label": "Illustrative spread — not calibrated uncertainty",
+  "station": {
+    "backend_uuid": null,
+    "code": "DEMO-NP-001",
+    "display_name": "Illustrative demo gauge",
+    "latitude": 27.269326,
+    "longitude": 86.668726,
+    "network": "demo"
+  },
+  "supersession": {
+    "cycle_hours": 6,
+    "label": "Eight illustrative forecast issues",
+    "note": "At each issue, earlier issues retain their full quantile bands as superseded forecasts. Hide future issues and observations after the active issue time."
+  },
+  "threshold_basis": "none_available",
+  "thresholds": null,
+  "timezone": "Asia/Kathmandu",
+  "uncertainty_meaning": "illustrative_spread",
+  "units": {
+    "discharge": "m3/s"
+  },
+  "verification_note": "Observations after each issue are synthetic verification outturn only; they are not inputs to any forecast. Agreement or disagreement is arbitrary, with no designed convergence and no evidence of forecast skill. No score is computed."
+}
