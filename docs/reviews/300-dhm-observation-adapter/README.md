@@ -26,3 +26,8 @@ normalization of readable capture files and the Codex report). The plan remains
 was no implementation, full test run, push, PR, merge or deployment.
 Each report records its own verification limitations. Original API payloads
 remain in `docs/requirements/dhm-api-examples/` with their capture manifest.
+
+The owner-requested corrections were committed in `78a2b9ff`. A fresh complete
+[second review round](round-2/README.md) reviewed that revision: Codex and the
+additional contract review returned CLEAN; Claude returned ten findings awaiting
+owner disposition. These historical first-round reports remain unchanged.
