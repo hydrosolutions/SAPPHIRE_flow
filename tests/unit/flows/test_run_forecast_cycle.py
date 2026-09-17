@@ -8823,7 +8823,7 @@ def _run_cycle_with_stores(
 
 
 # Plan 151 T8b golden -- the CANONICAL PERSISTED-OUTPUT SNAPSHOT (plan
-# `docs/plans/151-forecast-redesign-phase3-track-resolution-assembly.md`
+# `docs/plans/archive/151-forecast-redesign-phase3-track-resolution-assembly.md`
 # ~line 982). Frozen from the pre-T8 tree (main `351bac3`, before any T8b
 # dispatch code exists) by running this exact station/model/forcing scenario
 # through the (then-only) legacy route -- committed as data, never

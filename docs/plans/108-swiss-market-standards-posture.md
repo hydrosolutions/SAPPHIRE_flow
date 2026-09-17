@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 108 — Swiss market standards posture
 
 **Status:** DRAFT

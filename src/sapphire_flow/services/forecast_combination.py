@@ -66,7 +66,7 @@ def combine_ensembles_pooled(
 
     Two model families can sit on different `valid_time` grids (the NWP
     pair's UTC-midnight buckets vs. `linear_regression_daily`'s wall-clock
-    offsets, `docs/plans/222-pooled-grid-alignment.md`). Concatenating
+    offsets, `docs/plans/archive/222-pooled-grid-alignment.md`). Concatenating
     across the union of those grids — the pre-Plan-222 behaviour — makes
     `_ensemble_points()` summarise each timestamp over whichever rows
     happen to carry it, so the member count (and therefore the median)

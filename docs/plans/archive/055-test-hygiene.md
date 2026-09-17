@@ -49,7 +49,7 @@
 (f) **T2 ordering contract made explicit**: new accessors return `list(self._foo.values())` — insertion order preserved. Several existing tests depend on dict iteration order (`test_observation_alert_checker.py:65` takes the last inserted id); a sorted accessor would silently change semantics.
 
 **Rev 3 fixes (2026-04-18)**:
-(a) **T1 reframed**: re-recording the BAFU fixture today is infeasible because LINDAS is real-time only — `hydro_scraper.py:173-192` binds a *single* current-reading subject URI with no time filter, so the adapter cannot retrieve historical windows. T1 becomes a README clarification (explain WHY the fixture is synthetic) plus a follow-up archive-collection plan stub (`docs/plans/058-bafu-lindas-archive-collection.md`, DRAFT). The synthetic fixture stays in place by design until ≥6 months of real readings accumulate (per `docs/v0-scope.md` §E1).
+(a) **T1 reframed**: re-recording the BAFU fixture today is infeasible because LINDAS is real-time only — `hydro_scraper.py:173-192` binds a *single* current-reading subject URI with no time filter, so the adapter cannot retrieve historical windows. T1 becomes a README clarification (explain WHY the fixture is synthetic) plus a follow-up archive-collection plan stub (`docs/plans/archive/058-bafu-lindas-archive-collection.md`, DRAFT). The synthetic fixture stays in place by design until ≥6 months of real readings accumulate (per `docs/v0-scope.md` §E1).
 (b) **T5 dropped**: `tests/unit/services/test_forecast_combination.py` already exists (456 lines) and covers POOLED / BMA / PRIMARY strategies — happy path, single-model, empty input, BMA weight math, PRIMARY no-op, error cases. CONSENSUS is intentionally absent (not implemented in v0b per `docs/v0-scope.md` §A8e). No genuine gap. T6 renumbered to T5.
 (c) **T3 rewritten**: preserves SPARQL-injection coverage by driving an invalid `station_config.code` through `adapter.fetch_observations(...)` and asserting the observable behaviour (warning log + empty list) rather than `ValueError` propagation — per `hydro_scraper.py:106-111` the exception is caught internally. T3 reuses the existing `tests/fixtures/lindas_sample_response.json` fixture instead of creating a new one.
 (d) **D4 rationale corrected**: `forecast_combination.py` is already tested; the defer-routes decision now stands on its own (open design questions about HTML assertion style).
@@ -159,7 +159,7 @@ deliberate stand-in, not a bug.
      (a) BAFU LINDAS is real-time only — the adapter fetches the current
      reading, not a time window;
      (b) until a scheduled collection pipeline (see
-     `docs/plans/058-bafu-lindas-archive-collection.md`) builds an operational
+     `docs/plans/archive/058-bafu-lindas-archive-collection.md`) builds an operational
      archive of ≥6 months of real readings, the fixture stays synthetic on
      purpose;
      (c) when the archive is ready, re-record per `docs/v0-scope.md` §E1.

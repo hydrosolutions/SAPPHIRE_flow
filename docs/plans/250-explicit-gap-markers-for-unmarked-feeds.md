@@ -51,7 +51,7 @@ or ages, and distinct from the `OBSERVATION_FRESHNESS` check it was mistaken for
 Management System flags a bad value `Erroneous` and then withholds it from the API, so what arrives is
 an absence with no marker, indistinguishable from a telemetry outage or from a station that never
 reported that parameter. That is the consumer the marker exists for. Full reasoning, including why
-this is the low-risk option, is in `docs/plans/253-close-the-store-boundary-seam.md` § Decision — it is
+this is the low-risk option, is in `docs/plans/archive/253-close-the-store-boundary-seam.md` § Decision — it is
 not repeated here.
 
 ## ⛔ What this must not be mistaken for

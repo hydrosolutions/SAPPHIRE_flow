@@ -1,3 +1,7 @@
+---
+status: PARTIAL
+---
+
 # Plan 102 — dashboard: make water_level & water_temperature observations visible
 
 **A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL / needs an owner look. A per-parameter

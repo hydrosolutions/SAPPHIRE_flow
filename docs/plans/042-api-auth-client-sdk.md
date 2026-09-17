@@ -1,3 +1,7 @@
+---
+status: DEFERRED
+---
+
 # Plan 042 — API Key Auth + Client SDK
 
 **Status**: DEFERRED (post-v0 deployment, target v0b)

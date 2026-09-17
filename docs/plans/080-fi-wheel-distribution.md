@@ -1,4 +1,5 @@
 ---
+status: DEFERRED
 Status: DRAFT
 Priority: LOW (deferred — no trigger met yet)
 Created: 2026-06-24

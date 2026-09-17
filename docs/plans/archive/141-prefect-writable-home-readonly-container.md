@@ -15,7 +15,7 @@ superseded_by: 103
 ## Status
 
 **SUPERSEDED by Plan 103 (owner decision 2026-07-22).** This plan was drafted without noticing that
-**Plan 103** (`docs/plans/103-prefect-worker-observability-and-home.md`, DRAFT, high-priority, "Supersedes
+**Plan 103** (`docs/plans/archive/103-prefect-worker-observability-and-home.md`, DRAFT, high-priority, "Supersedes
 062") **already owns this fix**: its **D1** is the identical `PREFECT_HOME=/tmp/prefect` change, and Plan 103
 *also* fixes the higher-value companion defect — **flow-run logs are not persisted to Prefect** (`prefect
 flow-run logs <id>` returns empty, which is what made the 2026-07-03 incident and the 2026-07-22 NWP-outage

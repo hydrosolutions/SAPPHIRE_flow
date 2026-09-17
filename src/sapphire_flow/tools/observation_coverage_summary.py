@@ -4,7 +4,8 @@ Queries the observations table for a trailing window and reports
 interval coverage (actual / expected polls) per (station, parameter).
 
 This is a Flow 4 precursor — a band-aid for the 6-month LINDAS archive-
-accumulation phase documented in docs/plans/058-bafu-lindas-archive-collection.md.
+accumulation phase documented in
+docs/plans/archive/058-bafu-lindas-archive-collection.md.
 Once Flow 4 (pipeline monitoring) is implemented, this tool's scope is tracked as
 a "precursor" in the Flow 4 design notes.
 

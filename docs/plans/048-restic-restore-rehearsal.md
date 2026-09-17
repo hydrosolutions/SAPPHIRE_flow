@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 048 — restic + encrypted backup + monthly restore rehearsal (v1 prep)
 
 **Status**: DRAFT (stub)

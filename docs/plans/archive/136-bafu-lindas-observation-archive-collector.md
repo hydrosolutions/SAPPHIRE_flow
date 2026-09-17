@@ -160,7 +160,7 @@ returned:
 
 ## Supersedes Plan 058 (BLOCKER-1 resolution)
 
-Plan 058 (`docs/plans/058-bafu-lindas-archive-collection.md`, still `DRAFT`, listed active at
+Plan 058 (`docs/plans/archive/058-bafu-lindas-archive-collection.md`, still `DRAFT`, listed active at
 `docs/plans/README.md:45`) proposes the **opposite** architecture: *"Use the Mac Mini v0 deployment as
 the LINDAS archive … There is **no separate archive-collection pipeline**"* (`058:28-31`) — i.e. onboard
 the full roster as real stations and let the `observations` **table** accumulate via Flow 2, then export a
