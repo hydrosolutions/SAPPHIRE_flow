@@ -55,6 +55,7 @@ before assuming the deploy broke something — the alert may simply be working f
 
     # 2. Deploy — BOTH overlays, RECAP token exported, --build because code changed
     export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+    export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
     docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d --build
 
 ## Acceptance — in this order

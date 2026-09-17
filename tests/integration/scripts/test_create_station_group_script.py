@@ -307,7 +307,11 @@ class TestCliAuthorizationAgainstPostgres:
         committed_cli_seed: tuple[str, str, str, TenantId],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        from sapphire_flow.db.metadata import audit_log, station_group_members
+        from sapphire_flow.db.metadata import (
+            audit_log,
+            station_group_members,
+            station_groups,
+        )
         from scripts.create_station_group import main
 
         name, code, foreign_code, foreign_id = committed_cli_seed
@@ -324,8 +328,14 @@ class TestCliAuthorizationAgainstPostgres:
         )
         with db_engine.connect() as conn:
             original_station = PgStationStore(conn).fetch_station_by_code(code, "bafu")
+            group_ids = sa.select(station_groups.c.id).where(
+                station_groups.c.name == name,
+                station_groups.c.tenant_id == DEFAULT_TENANT_ID,
+            )
             memberships_before = conn.scalar(
-                sa.select(sa.func.count()).select_from(station_group_members)
+                sa.select(sa.func.count())
+                .select_from(station_group_members)
+                .where(station_group_members.c.group_id.in_(group_ids))
             )
 
         args = ["--name", name, "--station-code", code, "--operator", "cli-operator"]
@@ -359,7 +369,9 @@ class TestCliAuthorizationAgainstPostgres:
                 assert group is None
                 assert (
                     conn.scalar(
-                        sa.select(sa.func.count()).select_from(station_group_members)
+                        sa.select(sa.func.count())
+                        .select_from(station_group_members)
+                        .where(station_group_members.c.group_id.in_(group_ids))
                     )
                     == memberships_before
                 )
