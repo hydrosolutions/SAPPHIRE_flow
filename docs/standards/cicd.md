@@ -173,7 +173,7 @@ Responsibilities are split across two stages:
 
 ### Upgrade procedure
 
-0. Export the private-clone build tokens so `--build` steps can fetch `recap-dg-client` — and, for the forecast worker's image, `aquacast`: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` and `export AQUACAST_TOKEN=$(cat secrets/aquacast_token)` (Plan 262 T2; the Dockerfile mounts the aquacast secret with `required=false`, so the four default-image services build without it) (or supply it from the CI/host secret store). The base `docker-compose.yml` declares this as an env-sourced build secret (`recap_dg_client_token`) and passes it into the four building services (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain `docker compose ... up -d --build` now clones the private dependency — the manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` pre-build is no longer required (it remains a valid fallback). The token must still be provided by the host/CI; compose only plumbs it through.
+0. Export the private-clone build tokens: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` and `export AQUACAST_TOKEN=$(cat secrets/aquacast_token)` (or supply them from the CI/host secret store). Compose passes the env-sourced `recap_dg_client_token` BuildKit secret to all five building services (`prefect-worker`, `prefect-worker-ingest`, `prefect-worker-backup`, `api`, `init`). Only `prefect-worker` receives `aquacast_token` and builds with `WITH_AQUACAST=1`; the other four retain the default torch-free image and need only the recap token when built separately. Never pass tokens as build arguments or commit their values.
 1. Pull external images: `docker compose pull --ignore-buildable` (local-build-only — the `sapphire-flow` app image is built in step 3, not pulled; `--ignore-buildable` pulls only the external `postgres`/`prefect`/`caddy` images and skips the buildable app services, which have no registry)
 2. Stop workers (graceful): `docker compose stop prefect-worker prefect-worker-ingest` (v0 both workers; v1: `prefect-worker-ops prefect-worker-training`)
 3. Build **BOTH** images + run init:
@@ -878,12 +878,12 @@ starting. This note applies equally to the upgrade procedure in § Upgrade proce
 above — step 4 (`docker compose up -d`) should be `docker compose up -d --build`
 after any host-level image prune.
 
-Because the builder clones the private `recap-dg-client`, any `--build` invocation
-needs `RECAP_DG_CLIENT_TOKEN` exported first — e.g.
-`export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)`. The base compose
-file declares the `recap_dg_client_token` env-sourced build secret and passes it into
-the building services, so no manual `docker build --secret ...` is needed; that raw
-build remains a fallback.
+Because the builders clone private dependencies, a whole-stack `--build`
+invocation needs both `RECAP_DG_CLIENT_TOKEN` and `AQUACAST_TOKEN` exported
+first, as in § Upgrade procedure step 0. Compose supplies env-sourced
+BuildKit secrets: recap to all five building services, aquacast only to
+`prefect-worker`. Rebuild both tags before migrations; no manual
+`docker build --secret ...` is needed.
 
 ### Registration
 

@@ -41,6 +41,7 @@ Usage:
 
 Environment:
     DATABASE_URL   PostgreSQL connection string (required)
+    SAPPHIRE_CONFIG   TOML deployment identity (required, overlays respected)
     SAPPHIRE_ENV   Set to "dev" for human-readable console log output
 
 Exit codes: 0 on success (including a no-op re-run), 1 on any unresolved
@@ -60,6 +61,8 @@ from uuid import uuid4
 
 import structlog
 
+from sapphire_flow.services.write_principal import enforce_tenant_isolation
+from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType
 from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
@@ -69,7 +72,9 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from sapphire_flow.protocols.stores import AuditLogStore
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -172,13 +177,24 @@ def apply_station_group(
     *,
     group_store: _GroupStore,
     clock: Callable[[], UtcDatetime],
+    principal: WritePrincipal,
+    audit_log_store: AuditLogStore,
     description: str | None = None,
-    audit_log_store: object | None = None,
-    operator: str | None = None,
 ) -> None:
     """Create the group if absent, then add the missing members. Never touches
     station status, and never removes a member.
     """
+    # The CLI audits rejection durably before opening the write transaction.
+    enforce_tenant_isolation(
+        principal=principal,
+        target_tenant_id=plan.tenant_id,
+        audit_log_store=None,
+        event_type=AuditEventType.STATION_GROUP_CREATED,
+        target_type="station_group",
+        target_id=str(plan.group_id),
+        detail={"name": plan.name},
+        now=clock(),
+    )
     if plan.blocking_codes:
         raise ValueError(
             "refusing to write: unusable station codes "
@@ -200,24 +216,22 @@ def apply_station_group(
     for _code, station_id in plan.members_to_add:
         group_store.add_station_to_group(plan.group_id, station_id)
 
-    if audit_log_store is not None:
-        from sapphire_flow.types.auth import AuditEntry
-
-        audit_log_store.append_entry(  # type: ignore[attr-defined]
-            AuditEntry.system(
-                event_type=AuditEventType.STATION_GROUP_CREATED,
-                target_type="station_group",
-                target_id=str(plan.group_id),
-                detail={
-                    "name": plan.name,
-                    "created": not plan.group_exists,
-                    "members_added": [code for code, _ in plan.members_to_add],
-                    "operator": operator,
-                },
-                ip_address=None,
-                created_at=clock(),
-            )
+    audit_log_store.append_entry(
+        AuditEntry.system(  # pyright: ignore[reportUnknownMemberType] — shared detail type is unparameterized
+            event_type=AuditEventType.STATION_GROUP_CREATED,
+            target_type="station_group",
+            target_id=str(plan.group_id),
+            detail={
+                "name": plan.name,
+                "created": not plan.group_exists,
+                "members_added": [code for code, _ in plan.members_to_add],
+                "operator": principal.id,
+                "tenant_id": str(plan.tenant_id),
+            },
+            ip_address=None,
+            created_at=clock(),
         )
+    )
 
 
 def _render(plan: GroupPlan, *, applied: bool) -> str:
@@ -277,18 +291,42 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: DATABASE_URL environment variable is not set.", file=sys.stderr)
         return 1
 
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if not config_path:
+        print(
+            "ERROR: SAPPHIRE_CONFIG environment variable is not set.", file=sys.stderr
+        )
+        return 1
+
     import sqlalchemy as sa
 
+    from sapphire_flow.config.deployment_identity import load_deployment_identity_config
+    from sapphire_flow.services.write_principal import resolve_run_principal
     from sapphire_flow.store.audit_log_store import PgAuditLogStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
+    from sapphire_flow.store.tenant_store import PgTenantStore
 
     clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
     engine = sa.create_engine(database_url, pool_pre_ping=True)
 
     try:
+        identity_config = load_deployment_identity_config(config_path)
         with engine.connect() as conn:
             read_conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+            principal = resolve_run_principal(
+                PgTenantStore(read_conn), identity_config, operator=args.operator
+            )
+            enforce_tenant_isolation(
+                principal=principal,
+                target_tenant_id=DEFAULT_TENANT_ID,
+                audit_log_store=PgAuditLogStore(read_conn) if args.apply else None,
+                event_type=AuditEventType.STATION_GROUP_CREATED,
+                target_type="station_group",
+                target_id=args.name,
+                detail={"name": args.name},
+                now=clock(),
+            )
             plan = plan_station_group(
                 name=args.name,
                 station_codes=args.station_codes,
@@ -327,9 +365,9 @@ def main(argv: list[str] | None = None) -> int:
                         transaction_factory=lambda: nullcontext(write_conn),
                     ),
                     clock=clock,
+                    principal=principal,
                     description=args.description,
                     audit_log_store=PgAuditLogStore(write_conn),
-                    operator=args.operator,
                 )
     except Exception as exc:  # noqa: BLE001 - operator CLI reports, never traces
         print(f"ERROR: {exc}", file=sys.stderr)
