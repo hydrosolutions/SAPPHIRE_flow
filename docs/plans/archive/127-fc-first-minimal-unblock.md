@@ -1,7 +1,7 @@
 ---
 id: 127
 title: fc-first minimal unblock — tolerant pf fetch + SINGLE-model bare columns
-status: DRAFT
+status: COMPLETE
 depends_on: [082]
 owner: unassigned
 created: 2026-07-18

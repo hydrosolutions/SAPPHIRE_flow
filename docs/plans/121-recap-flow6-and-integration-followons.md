@@ -1,7 +1,7 @@
 ---
 id: 121
 title: Recap Gateway — Flow-6 reanalysis + deferred integration follow-ons
-status: DRAFT (stub)
+status: DRAFT
 depends_on: [082]
 owner: unassigned
 created: 2026-07-16

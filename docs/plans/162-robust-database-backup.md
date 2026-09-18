@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-14
 plan: 162
 title: Robust database backup — complete, verified restorable, loud on failure, and safe to move off the machine
@@ -216,20 +216,33 @@ this environment); squash before merge if the team wants every individual commit
 
 ## Status
 
-> **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
-> in this repo (DRAFT → READY → COMPLETE) and caused `/implement`'s preflight to refuse the plan. What is
-> done versus open is stated in prose below; the status line stays READY while any task remains buildable.
-**PARTIAL — Phase A merged 2026-08-16 as PR #161 (`a9239b6a`). NOT yet deployed.**
+> **Status vocabulary note (2026-08-18, superseded 2026-09-11):** this briefly read `PARTIAL`, which was
+> **not** a recognised status in this repo at the time (DRAFT → READY → COMPLETE) and caused `/implement`'s
+> preflight to refuse the plan. What is done versus open is stated in prose below; the status line stays
+> READY while any task remains buildable.
+>
+> **Update (2026-09-11):** `PARTIAL` IS now a canonical active status, so the note above is retired as a
+> rule while preserved as the record of why the status oscillated. The YAML status is `PARTIAL`.
+
+**PARTIAL — Phase A merged 2026-08-16 as PR #161 (`a9239b6a`); T5 restore tooling also landed,
+but the current-script live acceptance and customer-release Phase B remain open.**
+
+> **Superseded provenance (was the READY block, retained verbatim — it records history a future reader
+> needs, and its warning about T5 is still the reason T5 must not be read as un-started):**
+>
+> **READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
+> NOW"). Phase B/C specs are retained below as specs, mostly **not yet started, with one exception: T5** (the
+> restore rehearsal) **is under active build/fix right now**, five fixer rounds deep on branch
+> `fix/plan-162-t5-restore-path` — see the "VERIFIED RESTORE PROCEDURE" section above. A reader who jumps
+> straight to this Status block should not conclude T5 is merely a retained, un-started spec:
+> `scripts/restore-rehearsal.sh` exists, is under test, and is gated on one outstanding item — the live
+> acceptance run of the current script revision against the real mac-mini artifact — before that branch merges.
+>
+> That branch has since landed (#180/#186/#189); the live acceptance run of the current script revision
+> remains the open item.
+
 ⛔ **Phase B is a hard gate before any customer release**: dumps still sit on the same device as the database,
 unencrypted (FileVault off), containing `access_tokens` and `tenant_id`.
-
-**READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
-NOW"). Phase B/C specs are retained below as specs, mostly **not yet started, with one exception: T5** (the
-restore rehearsal) **is under active build/fix right now**, five fixer rounds deep on branch
-`fix/plan-162-t5-restore-path` — see the "VERIFIED RESTORE PROCEDURE" section above. A reader who jumps
-straight to this Status block should not conclude T5 is merely a retained, un-started spec:
-`scripts/restore-rehearsal.sh` exists, is under test, and is gated on one outstanding item — the live
-acceptance run of the current script revision against the real mac-mini artifact — before that branch merges.
 Reviewed three times: two full rounds on the whole plan plus a focused pass on the narrowed Phase A scope; the
 last round's blockers were coherence, not design. Operational reliability (category **A**). **Backups are
 live-broken**: the last successful

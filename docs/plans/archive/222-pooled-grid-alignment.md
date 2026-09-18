@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 222
 title: Pool only where every contributor is present
@@ -13,7 +13,7 @@ source: 2026-08-31 — SAPPHIRE-flow-map reported an alternating `_pooled` media
 
 ## Status
 
-**READY** — owner confirmed 2026-08-31. Cleared for `/implement`.
+**COMPLETE — merged in PR #237 and archived 2026-09-11.**
 
 Five independent Codex rounds. Rounds 1-4 found real defects and
 grew the plan from five tasks to eight; **round 5 was a proportionality review and returned TOO BIG

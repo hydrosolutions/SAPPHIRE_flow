@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: BLOCKED
 created: 2026-09-01
 plan: 229
 title: Let a model run on a shorter weather record when it says it can
@@ -37,7 +37,7 @@ misdirects one.
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**BLOCKED.** Not for implementation until the two contradictions above are resolved by the owner.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 

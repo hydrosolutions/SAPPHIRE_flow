@@ -1,6 +1,6 @@
 # Plan 107 — Operational-inputs / time-series-preprocessing touchpoint map
 
-**Status:** READY
+**Status:** COMPLETE (implemented; archived 2026-09-11)
 **Type:** Docs-only (edits `docs/workflow.md` only — no code)
 **Owner:** Bea (marti@hydrosolutions.ch)
 **Created:** 2026-07-08

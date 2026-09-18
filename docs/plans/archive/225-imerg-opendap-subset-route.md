@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 225
 title: M-A5d — retrieve IMERG through the OPeNDAP subset route, 847 GB → 2.7 GB
@@ -13,7 +13,7 @@ source: measured subset probe 2026-08-31; docs/plans/224-imerg-prerequisites-and
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-31, after two independent review rounds (the second a
+**COMPLETE — merged in PR #238 and archived 2026-09-11.** Two independent review rounds ran (the second a
 citation audit that corrected D3).
 
 ## ⛔ PER-RUN SCOPE (binding)

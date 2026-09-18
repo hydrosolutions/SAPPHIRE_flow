@@ -13,7 +13,7 @@ source: 2026-08-31 live outage — forecasts stopped after 2026-08-30 18:00; nwp
 
 ## Status
 
-**READY.** Owner chose **2000** on 2026-08-31. Codex-reviewed (1 major, 1 minor, both folded).
+**COMPLETE — merged in PR #235 and archived 2026-09-11.** Owner chose **2000** on 2026-08-31. Codex-reviewed (1 major, 1 minor, both folded).
 **This is a live outage**, not a latent risk — see § Impact.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review

@@ -13,7 +13,7 @@ source: 2026-09-03 — independent design check of Plan 228's proposed recompute
 
 ## Status
 
-**READY — owner confirmed 2026-09-04.** Cleared for `/implement`.
+**COMPLETE — merged in PR #261 and archived 2026-09-11.**
 
 Two independent reviews plus a design check. Every finding folded; all forks settled — D2c (marking
 uses the append-only path, no UPDATE grant) and D2d (a losing recompute is written and ignored).

@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 066 — Train-models retrain strategy (configurable)
 
 **Status**: DRAFT

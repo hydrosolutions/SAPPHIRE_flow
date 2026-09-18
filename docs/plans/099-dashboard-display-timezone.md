@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: PARTIAL
 created: 2026-07-03
 plan: 099
 title: The API reinterprets a local date range as UTC — and the dashboard toggle that would expose it
@@ -13,7 +13,7 @@ source: 2026-07-03 — an unlabeled UTC axis caused a real UTC-vs-CEST misread d
 
 ## Status
 
-**DRAFT — and its problem statement was STALE. Re-measured 2026-09-09.**
+**PARTIAL — P1 shipped; the re-scoped P2 remains open. Re-measured 2026-09-09.**
 
 ⚠️ **P1 HAS SHIPPED** (`docs/plans/README.md:491`, PR #59). Every claim in the original problem
 statement about unlabeled axes is now refuted:

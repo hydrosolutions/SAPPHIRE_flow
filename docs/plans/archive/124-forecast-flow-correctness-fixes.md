@@ -1,7 +1,7 @@
 ---
 id: 124
 title: Station active-assignment consistency (forecasting + alert-priority)
-status: DRAFT
+status: COMPLETE
 depends_on: []
 owner: unassigned
 created: 2026-07-17

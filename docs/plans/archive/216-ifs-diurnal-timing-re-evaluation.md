@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-29
 plan: 216
 title: M-A11 — re-evaluate the diurnal timing error against the ECMWF IFS forecast, not ERA5-Land
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-phase2-recommendation.md § 2 (Use 1)
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-29, after two independent review rounds (over-engineering + slim).
+**COMPLETE — merged in PR #231 and archived 2026-09-11.** Two independent review rounds ran.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 

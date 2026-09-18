@@ -19,7 +19,7 @@ stored 0 forecasts — is still recorded as PARTIAL by this plan's own body, and
 
 ## Status
 
-**DRAFT.** Grounded in a 3-agent investigation (2026-07-22) of the model framework, feature delivery,
+**PARTIAL.** Grounded in a 3-agent investigation (2026-07-22) of the model framework, feature delivery,
 and live mac-mini state. Went through a `/plan` adversarial round (2026-07-22) that escalated with real
 model-assignment-mechanics corrections; this revision folds them:
 - **Dropped the suppress/reactivate deploy dance** — it was both broken (`create_station_assignment` skips

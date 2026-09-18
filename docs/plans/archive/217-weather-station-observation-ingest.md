@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-30
 plan: 217
 title: M-G1 — weather-station observation ingest (station selection, eligibility, cursor)
@@ -12,7 +12,7 @@ source: docs/design/dhm-precipitation-milestones.md § M-G1, authorised by M-DEC
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-31, after an independent review returned WRONG-SHAPE and the scope
+**COMPLETE — merged in PR #232 and archived 2026-09-11.** An independent review returned WRONG-SHAPE and the scope
 was corrected subtractively (the QC rule set went back to M-I4).
 
 ## ⛔ PROPORTIONALITY IS BINDING

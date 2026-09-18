@@ -1,5 +1,5 @@
 ---
-status: BLOCKED
+status: SUPERSEDED
 created: 2026-09-01
 plan: 227
 title: Bump ForecastInterface and aquacast together, and honour the new horizon semantics
@@ -13,8 +13,8 @@ source: 2026-09-01 local test run — re-pinning aquacast alone fails to resolve
 
 ## Status
 
-**BLOCKED — awaiting a fresh owner decision. The previous block was on a dependency that cannot
-deliver it, and that is my error, not the owner's.**
+**SUPERSEDED by Plan 241**, which delivered the coordinated pin bump, propagated the declared
+horizon semantics through the FI adapter, and persisted the cadence. Archived 2026-09-11.
 
 On 2026-09-01 this plan was marked "blocked on Plan 151 (Phase 3) landing a two-horizon carrier".
 **Plan 151 will never deliver that, and has already landed anyway:**
@@ -30,11 +30,18 @@ On 2026-09-01 this plan was marked "blocked on Plan 151 (Phase 3) landing a two-
   (PR #192), T8b on 2026-08-28 (PR #227); the design marks Phase 3 **LANDED**
   (`docs/design/forecast-cycle-redesign.md:305`).
 
-**So the dependency runs the OTHER way.** 151 waits for the FI bump; this plan was set to wait for
-151. Left as written it would sit dormant forever. **The owner chose option (b) on my incorrect
-framing and must be asked again**, with the real choice being: land the bump (which satisfies half
-of D34's revisit trigger, and leaves `AT_MOST` unhonoured exactly as 151 already accepts), or open
-a separate plan for the carrier work 151 deliberately excluded and marked settled.
+**So the dependency ran the OTHER way.** 151 waited for the FI bump; this plan was set to wait for
+151, and left as written it would have sat dormant forever. That left a genuine open owner question
+on 2026-09-01 — the owner had chosen option (b) on an incorrect framing — whose real fork was: land
+the bump (which satisfies half of D34's revisit trigger, and leaves `AT_MOST` unhonoured exactly as
+151 already accepts), or open a separate plan for the carrier work 151 deliberately excluded and
+marked settled.
+
+**That question was overtaken, not answered here.** Plan 241 took the first branch and landed the
+coordinated bump (#258/#259), so nothing in this plan awaits the owner and the question is closed
+for 227's purposes. The second branch was never taken: no plan exists for the carrier work 151
+excluded. If that work is still wanted it needs its own plan number and its own review — it is
+deliberately NOT carried as a live item in this archived plan.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 

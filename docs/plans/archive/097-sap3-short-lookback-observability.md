@@ -1,6 +1,6 @@
 # Plan 097 — SAP3 observability: warn when the delivered lookback is short
 
-**Status**: READY (2026-07-13 — WF1 plan-review converged [3 rounds, 0 blockers/
+**Status**: COMPLETE (implemented in PR #76; archived 2026-09-11). Plan review converged [3 rounds, 0 blockers/
 majors] + independent adversarial Codex review both recommend READY; all
 citations verified against HEAD)
 **Priority**: low — observability/upstream complement to Plan 093; the model
