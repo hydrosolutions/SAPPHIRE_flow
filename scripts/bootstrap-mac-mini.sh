@@ -162,6 +162,35 @@ SAPPHIRE_LAUNCHD_LABELS=(
     ch.hydrosolutions.sapphire-nepal-forcing
 )
 
+_print_result_is_absent() {
+    # Decides whether a NON-ZERO `launchctl print` means "this job is not
+    # registered" or "the query itself failed". They are different facts and
+    # must not be conflated: reading every non-zero exit as absence turns an
+    # operational error (no such domain, EPERM, a launchd that did not answer)
+    # into a clean bill of health — the same silent-success shape this whole
+    # change exists to remove.
+    #
+    # launchctl reports a genuine miss as "Could not find service ... in
+    # domain for ..." (documented exit 113). "Could not find domain" is NOT a
+    # miss: it means we asked a launchd domain that does not exist, so we
+    # learned nothing about the job. Matching on the message as well as the
+    # status because neither alone is stable across macOS releases.
+    local rc="$1" out="$2"
+    if [ "${rc}" -eq 0 ]; then
+        return 1
+    fi
+    case "${out}" in
+        *"Could not find domain"*)
+            return 1 ;;
+        *"Could not find service"*|*"No such process"*|*"Could not find specified service"*)
+            return 0 ;;
+    esac
+    if [ "${rc}" -eq 113 ]; then
+        return 0
+    fi
+    return 1
+}
+
 bootout_label() {
     # Unloads one launchd label and VERIFIES it is gone. Same rule as the
     # container check below: a non-zero `bootout` is not conclusive on its own
@@ -172,10 +201,11 @@ bootout_label() {
     # not. A job whose plist was already removed (exactly what the uninstall
     # summary tells operators to do) is still loaded and must still be
     # reported — the old "(skipping)" branch counted it as torn down.
-    # Returns 0 only when the label is confirmed absent.
+    # Returns 0 only when the label is confirmed absent — a verification that
+    # could not be carried out returns 1 (UNKNOWN), never 0.
     local label="$1" domain="$2"
     local plist="${HOME}/Library/LaunchAgents/${label}.plist"
-    local bootout_err=""
+    local bootout_err="" print_out="" print_rc=0
     if [ "${DRY_RUN}" -eq 1 ]; then
         printf '%s[bootstrap] would run:%s launchctl bootout %s/%s\n' \
             "${C_YELLOW}" "${C_RESET}" "${domain}" "${label}"
@@ -187,7 +217,8 @@ bootout_label() {
     else
         log "no plist at ${plist} (not booting out; still verifying ${label})"
     fi
-    if launchctl print "${domain}/${label}" >/dev/null 2>&1; then
+    print_out="$(launchctl print "${domain}/${label}" 2>&1)" || print_rc=$?
+    if [ "${print_rc}" -eq 0 ]; then
         fail "launchd job still registered after bootout: ${label}"
         if [ -n "${bootout_err}" ]; then
             fail "  launchctl bootout said: ${bootout_err}"
@@ -198,25 +229,55 @@ bootout_label() {
         fi
         return 1
     fi
+    if ! _print_result_is_absent "${print_rc}" "${print_out}"; then
+        fail "could not verify launchd job was unloaded: ${label}"
+        fail "  ('launchctl print ${domain}/${label}' exited ${print_rc})"
+        fail "  NOT assuming this means the job is gone."
+        if [ -n "${print_out}" ]; then
+            fail "  launchctl said: ${print_out}"
+        fi
+        return 1
+    fi
     return 0
 }
 
 launchd_residual_check() {
     # Post-condition sweep. The per-label loop only knows the labels this repo
     # knows about; this asks launchd itself whether ANY hydrosolutions job is
-    # still registered. Mirrors the enumeration the install summary prints.
+    # still registered.
+    #
+    # It enumerates the SAME domain `bootout_label` addressed. `launchctl
+    # list` was the obvious call, but it answers for the CALLING session's
+    # domain — over SSH with no console login that is not `gui/<uid>`, so the
+    # two halves of this teardown would be talking about different launchds,
+    # and a sweep that reports "clean" about a domain we never unloaded
+    # anything from is precisely the false success this change exists to
+    # remove.
+    #
+    # The grep is deliberately broad: any `ch.hydrosolutions.` token anywhere
+    # in the domain dump (including its "disabled services" list) fails the
+    # teardown. That biases towards reporting INCOMPLETE on something that is
+    # merely named, never towards reporting clean on something still loaded.
+    #
+    # Plan 195 D1 chose `launchctl list` over `print` for the WATCHDOG probe
+    # because it parses per-label exit statuses out of the output and Apple
+    # disclaims `print`'s format. That reasoning does not carry here: this
+    # greps for a label token and parses nothing, so a format change costs us
+    # nothing, while the domain the watchdog reads is not a teardown
+    # post-condition and the domain we unloaded from is.
     # Returns 0 only when launchd was successfully enumerated AND is clean.
+    local domain="$1"
     local listing="" list_rc=0 residual=""
-    listing="$(launchctl list 2>&1)" || list_rc=$?
+    listing="$(launchctl print "${domain}" 2>&1)" || list_rc=$?
     if [ "${list_rc}" -ne 0 ]; then
-        fail "could not enumerate launchd jobs ('launchctl list' exited ${list_rc})"
+        fail "could not enumerate launchd jobs ('launchctl print ${domain}' exited ${list_rc})"
         fail "  NOT assuming this means no jobs are loaded."
         if [ -n "${listing}" ]; then
             fail "  launchctl said: ${listing}"
         fi
         return 1
     fi
-    residual="$(printf '%s\n' "${listing}" | grep hydrosolutions || true)"
+    residual="$(printf '%s\n' "${listing}" | grep -E 'ch\.hydrosolutions\.' || true)"
     if [ -n "${residual}" ]; then
         fail "hydrosolutions launchd jobs STILL registered after teardown:"
         printf '%s\n' "${residual}" >&2
@@ -240,27 +301,51 @@ teardown_stack() {
     #      reintroduced here.
     # The same two rules apply to launchd: every ch.hydrosolutions.* label is
     # booted out, each is verified with `launchctl print`, and a final
-    # `launchctl list` sweep catches labels this script does not know about.
+    # `launchctl print gui/<uid>` sweep of the SAME domain catches labels this
+    # script does not know about.
     # Returns 0 only when the stack is verifiably down.
     local incomplete=0
-    local uid_val
-    uid_val="$(id -u)"
+    local uid_val=""
+    uid_val="$(id -u)" || uid_val=""
+    if [ -z "${uid_val}" ]; then
+        # Without a uid there is no launchd domain to address: `gui/` would be
+        # malformed, every bootout and every print would fail, and reading
+        # those failures as "nothing loaded" is the bug this file is about.
+        fail "could not determine the current uid ('id -u' returned nothing)"
+        fail "  NOT assuming this means no launchd jobs are loaded."
+        return 1
+    fi
+    local domain="gui/${uid_val}"
 
     # Start from the labels this repo ships, then add anything else already
     # installed under the ch.hydrosolutions.* namespace — the uninstall summary
     # tells operators to delete that whole glob, so teardown must cover it.
+    #
+    # ASSUMPTION: the label equals the plist BASENAME. Every plist this repo
+    # installs is written that way (scripts/launchd/install-launchd.sh and the
+    # two runbooks), and it is the convention launchd itself expects. A plist
+    # whose internal <Label> differs from its filename would be booted out
+    # under the wrong name here — that is what `launchd_residual_check` below
+    # is for: the real label stays loaded, the domain sweep sees it, and the
+    # uninstall reports INCOMPLETE rather than success. Locked by
+    # tests/unit/scripts/test_bootstrap_teardown.py.
     local labels=("${SAPPHIRE_LAUNCHD_LABELS[@]}")
     local plist label
     for plist in "${HOME}/Library/LaunchAgents"/ch.hydrosolutions.*.plist; do
         [ -e "${plist}" ] || continue
         label="$(basename "${plist}" .plist)"
-        if ! printf '%s\n' "${labels[@]}" | grep -qxF "${label}"; then
-            labels+=("${label}")
-        fi
+        # Membership without a pipe: `... | grep -q` can exit 141 (SIGPIPE)
+        # under `pipefail` when grep short-circuits on an early match, which
+        # would read as "not present" and queue a duplicate bootout. Labels
+        # contain no whitespace, so a padded substring test is exact.
+        case " ${labels[*]} " in
+            *" ${label} "*) ;;
+            *) labels+=("${label}") ;;
+        esac
     done
 
     for label in "${labels[@]}"; do
-        bootout_label "${label}" "gui/${uid_val}" || incomplete=1
+        bootout_label "${label}" "${domain}" || incomplete=1
     done
 
     local compose_args=(-f "${REPO_ROOT}/docker-compose.yml")
@@ -295,7 +380,7 @@ teardown_stack() {
         fi
         rm -f "${ps_err}"
 
-        launchd_residual_check || incomplete=1
+        launchd_residual_check "${domain}" || incomplete=1
     fi
 
     return "${incomplete}"
@@ -349,8 +434,22 @@ if [ "${UNINSTALL}" -eq 1 ]; then
         success "dry-run complete; no changes made."
         exit 0
     fi
-    success "uninstall complete — all ch.hydrosolutions.* launchd jobs and the"
-    success "compose stack are verified gone. Safe now to remove"
+    success "uninstall complete — every ch.hydrosolutions.* launchd job is"
+    success "verified unloaded and every container of the compose project is"
+    success "verified gone."
+    # Scope, stated honestly: the checks above cover launchd registrations and
+    # the compose project. They do NOT cover a one-shot container a LaunchAgent
+    # had already started — scripts/launchd/run-nepal-forcing.sh runs its work
+    # as `docker run --rm -i`, outside the compose project and without a name,
+    # so `docker compose ps` cannot see it. Tearing down mid-cycle leaves that
+    # container running. It is unnamed and short-lived, so there is nothing
+    # this script can reliably match on; the honest move is to say so rather
+    # than to widen the claim.
+    warn "NOT covered by those checks: a one-shot container a LaunchAgent had"
+    warn "already started. run-nepal-forcing.sh uses 'docker run --rm', which"
+    warn "is outside the compose project, so 'docker compose ps' cannot see"
+    warn "it. If you tore down mid-cycle, check 'docker ps' before wiping."
+    success "Safe now to remove"
     success "  ${HOME}/Library/LaunchAgents/ch.hydrosolutions.*.plist"
     success "  ${REPO_ROOT}/secrets/"
     success "manually if you want a full wipe."

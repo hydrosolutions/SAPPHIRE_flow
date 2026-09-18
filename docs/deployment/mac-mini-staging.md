@@ -850,8 +850,29 @@ five run on this host:
 | `ch.hydrosolutions.sapphire-nepal-forcing` | `docs/operations/nepal-forcing-runbook.md` |
 
 Any other `~/Library/LaunchAgents/ch.hydrosolutions.*.plist` found on the
-host is booted out too, and a final `launchctl list` sweep catches labels
-the script does not know about.
+host is booted out too — under the label its **filename** carries, which is
+the convention every plist this repo installs follows — and a final
+`launchctl print gui/$(id -u)` sweep of the same domain the bootouts
+addressed catches labels the script does not know about, including one whose
+internal `<Label>` differs from its filename.
+
+> The sweep enumerates `gui/$(id -u)`, not the calling session's domain,
+> because that is the domain the bootouts addressed. `launchctl list` answers
+> for whatever domain the shell is in — over SSH with no console login that
+> is a *different* launchd — so a `list` sweep could report "clean" about a
+> domain nothing was ever unloaded from. (Plan 195's watchdog probe keeps
+> using `launchctl list`: it parses per-label exit statuses, which `print`'s
+> undocumented format cannot be trusted for. This sweep greps for a label
+> token and parses nothing.)
+
+**What the verification does not cover.** The checks are launchd
+registrations and the compose project. `scripts/launchd/run-nepal-forcing.sh`
+does its work in a `docker run --rm` one-shot, which is **outside** the
+compose project and unnamed, so `docker compose ps` cannot see it. Tearing
+down mid-cycle can leave that container running while `--uninstall` exits 0;
+the completion banner says so, and `docker ps` is the check. There is nothing
+stable for the script to match on, so the scope is stated rather than
+widened.
 
 > ⚠️ **`--uninstall` halts Nepal data collection.** The last two labels are
 > not part of the Swiss stack: `sapphire-nepal-forcing` drives the
@@ -887,8 +908,10 @@ whenever any of these could not be *positively verified*:
 | `docker compose down failed` | `down` returned non-zero | read the docker error above it; **most commonly Docker Desktop is not running** |
 | `containers still running after 'docker compose down'` | `docker compose ps -q -a` still lists containers (running **or** stopped-but-not-removed) | `docker compose ... down --remove-orphans`, then re-run `--uninstall` |
 | `could not verify containers were stopped` | `docker compose ps` itself failed — the state is **UNKNOWN**, not clean | start Docker Desktop and re-run; the docker error is printed |
-| `hydrosolutions launchd jobs STILL registered after teardown` | the `launchctl list` sweep found a job the per-label loop missed | boot it out by label, then re-run |
-| `could not enumerate launchd jobs` | `launchctl list` failed — **UNKNOWN**, not clean | re-run from a logged-in GUI session (`gui/$(id -u)` needs one) |
+| `hydrosolutions launchd jobs STILL registered after teardown` | the `launchctl print gui/$(id -u)` sweep found a job the per-label loop missed | boot it out by label, then re-run |
+| `could not verify launchd job was unloaded: <label>` | `launchctl print` exited non-zero for a reason that is **not** "no such service" — the query failed, so the job's state is **UNKNOWN**, not gone | run `launchctl print gui/$(id -u)/<label>` by hand and read the error; then re-run |
+| `could not enumerate launchd jobs` | `launchctl print gui/$(id -u)` failed — **UNKNOWN**, not clean | run it by hand. `Could not find domain` means this session has no `gui/<uid>` domain to enumerate (typically SSH with nobody logged in at the console): log in at the console, or run under a session that resolves it, and re-run |
+| `could not determine the current uid` | `id -u` returned nothing, so there is no `gui/<uid>` domain to address at all | fix the environment (a broken `PATH` or a shadowed `id` will do it) and re-run; nothing was verified |
 
 **If Docker Desktop is already stopped, `docker compose down` fails and the
 teardown correctly reports INCOMPLETE.** That is not a false alarm: with the
