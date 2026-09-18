@@ -13,10 +13,15 @@ Paired plan: `docs/plans/046-mac-mini-staging-deployment.md`
 ```bash
 cd ~ && git clone https://github.com/hydrosolutions/SAPPHIRE_flow.git
 cd SAPPHIRE_flow
+# Provision the two read-scoped token files first (see Build-time secrets below).
+export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
 ./scripts/bootstrap-mac-mini.sh
 ```
 
-The bootstrap script handles everything except the three things
+Supply the [build-time secrets](#build-time-secrets) before running bootstrap;
+it does not provision private-repository credentials. The bootstrap script
+also cannot perform the three things
 macOS / the hardware won't let a script do:
 
 1. Install **Docker Desktop** from
@@ -121,6 +126,8 @@ du -sh ~/camels-ch               # ~1.5 GB
 
 ```bash
 cd /Users/sapphire/SAPPHIRE_flow
+export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
 ./scripts/bootstrap-mac-mini.sh
 ```
 
@@ -166,29 +173,39 @@ passwords into URLs without encoding.
 is needed. Rotating it later requires re-running `init` **and recreating `prefect-worker-backup`** — file-backed
 Compose secrets do not hot-reload.
 
-### Build-time secret — `RECAP_DG_CLIENT_TOKEN`
+### Build-time secrets
 
 Any image build (a first `up -d --build`, or a rebuild after an image
 prune) clones the private `hydrosolutions/recap-dg-client` dependency
 during `uv sync`, which needs a read-scoped GitHub token. Export it
-before building:
+before building. The forecast worker additionally clones private `aquacast`
+and needs `AQUACAST_TOKEN`. Provision both read-scoped tokens in the
+git-ignored `secrets/` directory (files chmod 600), or supply them from the
+host/CI secret store. Export both before bootstrap, upgrades, or rebuilding
+after an image prune:
 
 ```bash
 export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
 docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d --build
 ```
 
 The base `docker-compose.yml` declares `recap_dg_client_token` as an
-env-sourced build secret and passes it into the four building services
-(`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain
-`docker compose ... up -d --build` now clones the private dependency —
-the old manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .`
-pre-build is no longer required (it stays a valid fallback). The token
-is never stored in a repo file; the host must supply it (keep it in
-`secrets/recap_dg_client_token`, which is git-ignored, or the CI secret
-store). The launchd `up -d` wrapper reuses the already-built
-`sapphire-flow:${VERSION}` image and does not build, so it needs no
-token at boot.
+env-sourced build secret and passes it into all five building services.
+`aquacast_token` is also env-sourced, but only the forecast worker receives it:
+
+- `prefect-worker`: `sapphire-flow-aquacast:${VERSION}`, built with
+  `WITH_AQUACAST=1` and both secrets; includes aquacast/torch.
+- `prefect-worker-ingest`, `prefect-worker-backup`, `api`, `init`:
+  `sapphire-flow:${VERSION}`, the shared default image without torch;
+  needs only `RECAP_DG_CLIENT_TOKEN` when built separately.
+
+Compose supplies these as BuildKit secrets, not Docker build arguments or
+runtime credentials. Never commit token files or values. Both image tags
+must be built before migrations during an upgrade; follow
+[`cicd.md` § Upgrade procedure](../standards/cicd.md#upgrade-procedure).
+The launchd `up -d` wrapper reuses both already-built tags and does not
+build, so it needs no build token at boot.
 
 ## What the bootstrap does
 
@@ -757,7 +774,7 @@ excluded and why; this is not all of `scripts/`).
 **`docker compose exec` bypasses this image's `ENTRYPOINT`**
 (`docker/entrypoint.sh`), which is where `DATABASE_URL` gets assembled from
 `DATABASE_URL_TEMPLATE` + the DB password secret, and where the process
-drops from root to the `app` user via `gosu`. All five scripts require
+drops from root to the `app` user via `gosu`. All six scripts require
 `DATABASE_URL` and exit before doing anything real without it — `--help`
 looks fine because argparse exits inside `parse_args()`, before that check
 ever runs, which silently masks the gap. Always invoke through the
@@ -779,11 +796,24 @@ bind-mounted into a one-off container — see
 `docs/plans/188-caravan-statics-operational-import.md` §T4 for that
 recipe (it is not satisfied by this plan alone).
 
+`create_station_group.py` also requires `SAPPHIRE_CONFIG`, respecting
+`SAPPHIRE_CONFIG_OVERLAY`. Its fixed pilot target remains the default tenant;
+the merged `[deployment]` must authorize that tenant (a sole
+`writable_tenants = ["sapphire"]`) or declare `global_admin = true`.
+A foreign-only or ambiguous tenant configuration cannot create the group,
+even when all supplied stations belong to the default tenant. `--operator`
+overrides only the audit label, never authority. Missing/invalid configuration
+fails closed. Dry runs write nothing, including no audit rows; a tenant-mismatch
+rejection under `--apply` records a durable event before any group/member
+write. Successful group/member changes and their audit entry commit together.
+
 ## Upgrade procedure
 
 ```bash
 cd /Users/sapphire/SAPPHIRE_flow
 git pull
+export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
 ./scripts/bootstrap-mac-mini.sh
 ```
 

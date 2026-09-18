@@ -44,6 +44,11 @@ Do not add a separate acceptance-map table or persistent run-state file.
 
 ## Nepal observation integration
 
+- **301** — [DHM precipitation observation adapter](301-dhm-precipitation-adapter.md) —
+  `DRAFT` — extends Plan 300 to weather-station rainfall using captured BIPAD
+  examples. Rainfall-window and timestamp semantics remain owner-confirmed open
+  questions; resolve these before canonical precipitation writes or READY.
+
 - **300** — [DHM water-level observation adapter](archive/300-dhm-observation-adapter.md) —
   `COMPLETE` — offline implementation and 308 focused checks passed; archived.
   Independent patch reviews completed with five distinct low-severity findings

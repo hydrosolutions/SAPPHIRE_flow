@@ -1,0 +1,70 @@
+{
+  "source": "Public BIPAD API; reference evidence, not direct-DHM connection validation",
+  "normalization": "Stored response bodies have one terminal LF; values and JSON text otherwise unchanged.",
+  "captures": [
+    {
+      "file": "latest.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain-stations/?latest=true&limit=2",
+      "retrieved_at_utc": "2026-09-16T17:03:20.082000+00:00",
+      "rows": 2,
+      "response_sha256": "2935692518e0950d0c417c0be8e357e8036bbfd4da767a3e5d48fce4a5590e39",
+      "stored_sha256": "739d75e54581780544b113db153099474bb9456488bda06f2ce3e22afc3d8fc0"
+    },
+    {
+      "file": "sample.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain/?limit=2",
+      "retrieved_at_utc": "2026-09-16T17:03:20.067496+00:00",
+      "rows": 2,
+      "response_sha256": "bf90a1619794b6aab6d94360121ec21341d48de5d0470c80ccacc8ab28ee67d6",
+      "stored_sha256": "a4b857c04b7fa57debe33f0a0b7009b75c2f2956dd21baab9202226f979bd784"
+    },
+    {
+      "file": "history.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain/?title=Arghakhanchi&is_hourly=true&measured_on__gt=2026-09-15T00%3A00%3A00%2B05%3A45&measured_on__lt=2026-09-16T00%3A00%3A00%2B05%3A45&ordering=measured_on&limit=5",
+      "retrieved_at_utc": "2026-09-16T17:06:18.302596+00:00",
+      "rows": 5,
+      "response_sha256": "22c717f2b96830bedfc71bc907285913e0b3ff1de18c6a960894b09be98830b6",
+      "stored_sha256": "c4f6a51a15c78d859f732345dd9fd937690df8124d7d55a8d025672a6c0815af"
+    },
+    {
+      "file": "day.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain/?station=358&is_hourly=true&measured_on__gt=2026-09-15T00%3A00%3A00%2B05%3A45&measured_on__lt=2026-09-16T00%3A00%3A00%2B05%3A45&ordering=measured_on&limit=100",
+      "retrieved_at_utc": "2026-09-16T17:19:20.990952+00:00",
+      "rows": 24,
+      "response_sha256": "1708f7370e94332d56e81d75a3297eaf868f5aa9e26a41154e9ac713cabfe0e9",
+      "stored_sha256": "970243ff1969915906fe78c18f52ab489fd31d975a9303ec3b0e6cb1cbc8c538"
+    },
+    {
+      "file": "unfiltered.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain/?station=358&measured_on__gt=2026-09-15T00%3A00%3A00%2B05%3A45&measured_on__lt=2026-09-16T00%3A00%3A00%2B05%3A45&ordering=measured_on&limit=5",
+      "retrieved_at_utc": "2026-09-16T17:19:21.368576+00:00",
+      "rows": 5,
+      "response_sha256": "7ddcb6194e43243feb0705f035425519ef10fe25cbca155de3902c533d2b471f",
+      "stored_sha256": "11d82a6a19d4e14e0dbe4ff655a24d5278bd00ddd90f41ecc92e7fd83726650c"
+    },
+    {
+      "file": "empty.json",
+      "method": "GET",
+      "url": "https://bipadportal.gov.np/api/v1/rain/?station=358&is_hourly=true&measured_on__gt=2026-09-15T00%3A00%3A00%2B05%3A45&measured_on__lt=2026-09-16T00%3A00%3A00%2B05%3A45&ordering=measured_on&limit=100&offset=100",
+      "retrieved_at_utc": "2026-09-16T17:20:48.201242+00:00",
+      "rows": 0,
+      "response_sha256": "f5ad298b6571e4d7e5a57aea9574bd734edd6c18db6f8bb78e52db0a954323bd",
+      "stored_sha256": "adf5aeac98e5090d294d225233f0124b1020fc20e5dcc00708e11b1655455236"
+    }
+  ],
+  "schema": {
+    "url": "https://bipadportal.gov.np/api/?format=openapi",
+    "response_sha256": "c74aeae1cb74625e8c09124cd709be64417ed218acddbad744bd723606bda0ad",
+    "excerpt": "schema-excerpt.json"
+  },
+  "frontend": {
+    "url": "https://bipadportal.gov.np/assets/index-CgvJBcU7.js",
+    "response_sha256": "be569c83f412f070fbcd05c9fec39829181425a03af11f5f5eb440cb28467567",
+    "note": "Read-only request declaration and UI labels inspected; bundle not vendored."
+  }
+}
