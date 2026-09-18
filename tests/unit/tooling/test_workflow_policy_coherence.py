@@ -60,10 +60,11 @@ class TestPlanReadinessPolicy:
             assert _READY_POLICY in _normalized(path)
 
     def test_superseded_ready_wording_is_absent(self) -> None:
-        normalized_workflow = _normalized(_WORKFLOW)
+        for path in (*_AGENT_GUIDES, _WORKFLOW):
+            normalized_text = _normalized(path)
 
-        for stale_policy in _SUPERSEDED_READY_POLICIES:
-            assert stale_policy not in normalized_workflow
+            for stale_policy in _SUPERSEDED_READY_POLICIES:
+                assert stale_policy not in normalized_text
 
 
 class TestActiveStatusPolicy:
