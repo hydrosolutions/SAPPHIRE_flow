@@ -853,6 +853,16 @@ Any other `~/Library/LaunchAgents/ch.hydrosolutions.*.plist` found on the
 host is booted out too, and a final `launchctl list` sweep catches labels
 the script does not know about.
 
+> ⚠️ **`--uninstall` halts Nepal data collection.** The last two labels are
+> not part of the Swiss stack: `sapphire-nepal-forcing` drives the
+> operational forcing feed for HRU 12300 and `sapphire-recap-probe` polls
+> the recap gateway. Booting them out stops ingest, and **the days missed
+> while the host is down are not backfilled** — the gateway serves a
+> rolling window, so a long enough outage loses those days permanently.
+> If you only mean to rebuild the Swiss stack, do not use `--uninstall`:
+> boot out the three `install-launchd.sh` labels yourself and leave these
+> two running.
+
 ### ⛔ `uninstall INCOMPLETE` (exit 1)
 
 **This is a behaviour change.** `--uninstall` used to print `uninstall
