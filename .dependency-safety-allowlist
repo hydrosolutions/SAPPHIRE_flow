@@ -2,7 +2,7 @@
 # (tools/dependency_safety.py). Mirrors the .trivyignore precedent: an
 # override is a committed, code-reviewed entry with a dated justification,
 # never an ephemeral PR label (a label applied after PR creation would not
-# re-run the dependency-safety job — see docs/plans/119-dependency-bump-
+# re-run the dependency-safety job — see docs/plans/archive/119-dependency-bump-
 # safety-gate.md §2).
 #
 # One finding key per line. A finding's key is printed in its BLOCK message

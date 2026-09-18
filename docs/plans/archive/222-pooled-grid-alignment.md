@@ -340,7 +340,7 @@ hole on T7's production query. All resolved:
 - **Blocker: version/branch divergence** — the branch had drifted 14 commits behind `main` (which
   had independently advanced past `v0.1.850`/`v0.1.852`) and carried a stale duplicate of
   `docs/plans/224-daily-model-grid-anchoring.md` (main already has it, correctly renumbered to
-  Plan 226 — `docs/plans/archive/226-daily-model-grid-anchoring.md`). Resolved by rebasing: the three code commits (`e2689c89`, `0be3148c`, `316abdab`) were
+  Plan 226). Resolved by rebasing: the three code commits (`e2689c89`, `0be3148c`, `316abdab`) were
   cherry-picked onto current `main`, dropping the now-redundant plan-doc commits (main already has
   the same T7-marker-revision and 224→226-renumber content byte-for-byte) and the version/`uv.lock`
   files were taken from `main` rather than replayed, so the patch bump below is the only version
