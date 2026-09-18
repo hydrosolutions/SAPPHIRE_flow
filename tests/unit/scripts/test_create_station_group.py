@@ -10,21 +10,37 @@ station status is never touched.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
 
+from sapphire_flow.exceptions import TenantIsolationError
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.ids import StationGroupId, StationId
+from sapphire_flow.types.ids import PrincipalId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import StationGroup
-from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID, Tenant
+from sapphire_flow.types.write_principal import WritePrincipal
 from scripts.create_station_group import (
     GroupPlan,
     apply_station_group,
     plan_station_group,
 )
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 _NOW = ensure_utc(datetime(2026, 9, 11, 12, tzinfo=UTC))
+_PRINCIPAL = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+
+@pytest.fixture(autouse=True)
+def deployment_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text('[deployment]\nglobal_admin = true\noperator = "configured"\n')
+    monkeypatch.setenv("SAPPHIRE_CONFIG", str(path))
+    monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+    return path
 
 
 def _clock():  # noqa: ANN202
@@ -221,7 +237,13 @@ class TestApplying:
             group_store=store,
         )
 
-        apply_station_group(plan, group_store=store, clock=_clock)
+        apply_station_group(
+            plan,
+            group_store=store,
+            clock=_clock,
+            principal=_PRINCIPAL,
+            audit_log_store=_FakeAuditLog(),
+        )
 
         assert [g.name for g in store.stored] == ["swiss-cmal-small-pilot"]
         assert store.stored[0].created_at == _NOW
@@ -246,7 +268,13 @@ class TestApplying:
             group_store=store,
         )
 
-        apply_station_group(plan, group_store=store, clock=_clock)
+        apply_station_group(
+            plan,
+            group_store=store,
+            clock=_clock,
+            principal=_PRINCIPAL,
+            audit_log_store=_FakeAuditLog(),
+        )
 
         assert store.stored == [], "must not re-store an existing group"
         assert [sid for _, sid in store.added] == [b]
@@ -263,7 +291,13 @@ class TestApplying:
         )
 
         with pytest.raises(ValueError, match="9999"):
-            apply_station_group(plan, group_store=store, clock=_clock)
+            apply_station_group(
+                plan,
+                group_store=store,
+                clock=_clock,
+                principal=_PRINCIPAL,
+                audit_log_store=_FakeAuditLog(),
+            )
 
         assert store.stored == []
         assert store.added == []
@@ -282,7 +316,11 @@ class TestApplying:
         )
 
         apply_station_group(
-            plan, group_store=store, clock=_clock, audit_log_store=audit
+            plan,
+            group_store=store,
+            clock=_clock,
+            principal=_PRINCIPAL,
+            audit_log_store=audit,
         )
 
         assert len(audit.entries) == 1
@@ -309,7 +347,13 @@ class TestApplying:
             group_store=store,
         )
 
-        apply_station_group(plan, group_store=store, clock=_clock)
+        apply_station_group(
+            plan,
+            group_store=store,
+            clock=_clock,
+            principal=_PRINCIPAL,
+            audit_log_store=_FakeAuditLog(),
+        )
 
         assert lookup.status_writes == 0
 
@@ -341,7 +385,13 @@ class TestTenantSafety:
         assert "8888" in plan.blocking_codes
 
         with pytest.raises(ValueError, match="8888"):
-            apply_station_group(plan, group_store=store, clock=_clock)
+            apply_station_group(
+                plan,
+                group_store=store,
+                clock=_clock,
+                principal=_PRINCIPAL,
+                audit_log_store=_FakeAuditLog(),
+            )
 
         assert store.stored == []
         assert store.added == []
@@ -397,3 +447,157 @@ class TestTheDryRunGuard:
 
         assert exit_code == 0
         assert len(applied) == 1
+
+
+_FOREIGN_TENANT_ID = TenantId(uuid4())
+
+
+class _FakeTenantStore:
+    def __init__(self, conn: object) -> None:
+        del conn
+
+    def fetch_tenant_by_code(self, code: str) -> Tenant | None:
+        tenant_id = {"sapphire": DEFAULT_TENANT_ID, "foreign": _FOREIGN_TENANT_ID}.get(
+            code
+        )
+        if tenant_id is None:
+            return None
+        return Tenant(id=tenant_id, code=code, name=code, created_at=_NOW)
+
+
+@pytest.fixture
+def cli_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup]:
+    groups, audit = _FakeGroupStore(), _FakeAuditLog()
+    stations = _FakeStationLookup({"2009": StationId(uuid4())})
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **k: _FakeEngine())
+    monkeypatch.setattr(
+        "sapphire_flow.store.tenant_store.PgTenantStore", _FakeTenantStore
+    )
+    monkeypatch.setattr(
+        "sapphire_flow.store.station_store.PgStationStore", lambda conn: stations
+    )
+    monkeypatch.setattr(
+        "sapphire_flow.store.station_group_store.PgStationGroupStore",
+        lambda *a, **k: groups,
+    )
+    monkeypatch.setattr(
+        "sapphire_flow.store.audit_log_store.PgAuditLogStore", lambda conn: audit
+    )
+    return groups, audit, stations
+
+
+class TestCliWriteAuthorization:
+    @pytest.mark.parametrize(
+        "identity", ['writable_tenants = ["sapphire"]', "global_admin = true"]
+    )
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_configured_authority_controls_real_apply(
+        self,
+        identity: str,
+        apply: bool,
+        deployment_config: Path,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+    ) -> None:
+        from scripts.create_station_group import main
+
+        deployment_config.write_text(
+            f'[deployment]\n{identity}\noperator = "configured"\n'
+        )
+        groups, audit, stations = cli_stores
+        args = ["--name", "g", "--station-code", "2009"]
+        assert main(args + (["--apply"] if apply else [])) == 0
+        assert len(groups.stored) == int(apply)
+        assert len(groups.added) == int(apply)
+        assert len(audit.entries) == int(apply)
+        assert stations.status_writes == 0
+        if apply:
+            assert audit.entries[0].detail["operator"] == "configured"
+            assert audit.entries[0].detail["tenant_id"] == str(DEFAULT_TENANT_ID)
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_foreign_principal_cannot_write_default_tenant(
+        self,
+        apply: bool,
+        deployment_config: Path,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from scripts.create_station_group import main
+
+        deployment_config.write_text('[deployment]\nwritable_tenants = ["foreign"]\n')
+        groups, audit, stations = cli_stores
+        args = ["--name", "g", "--station-code", "2009", "--operator", "override"]
+        assert main(args + (["--apply"] if apply else [])) == 1
+        assert "not authorized" in capsys.readouterr().err
+        assert groups.stored == groups.added == []
+        assert stations.status_writes == 0
+        assert len(audit.entries) == int(apply)
+        if apply:
+            assert audit.entries[0].detail["outcome"] == "rejected_tenant_mismatch"
+            assert audit.entries[0].detail["operator"] == "override"
+            assert audit.entries[0].detail["principal_tenant_id"] == str(
+                _FOREIGN_TENANT_ID
+            )
+
+    @pytest.mark.parametrize(
+        ("identity", "message"),
+        [
+            ("", "must declare either"),
+            ('writable_tenants = ["sapphire", "foreign"]', "explicit tenant code"),
+            ('writable_tenants = ["unknown"]', "unknown"),
+            (
+                'writable_tenants = ["sapphire"]\nglobal_admin = true',
+                "mutually exclusive",
+            ),
+        ],
+    )
+    def test_invalid_config_fails_without_any_write(
+        self,
+        identity: str,
+        message: str,
+        deployment_config: Path,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from scripts.create_station_group import main
+
+        deployment_config.write_text(f"[deployment]\n{identity}\n")
+        groups, audit, stations = cli_stores
+        assert main(["--name", "g", "--station-code", "2009", "--apply"]) == 1
+        assert message in capsys.readouterr().err
+        assert groups.stored == groups.added == audit.entries == []
+        assert stations.status_writes == 0
+
+    def test_missing_config_does_not_connect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from scripts.create_station_group import main
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+
+        def unexpected_connection(*args: object, **kwargs: object) -> None:
+            pytest.fail("missing authority must fail before connecting")
+
+        monkeypatch.setattr("sqlalchemy.create_engine", unexpected_connection)
+        assert main(["--name", "g", "--station-code", "2009", "--apply"]) == 1
+        assert "SAPPHIRE_CONFIG" in capsys.readouterr().err
+
+    def test_apply_defensively_rejects_a_foreign_principal(self) -> None:
+        groups, audit = _FakeGroupStore(), _FakeAuditLog()
+        with pytest.raises(TenantIsolationError, match="not authorized"):
+            apply_station_group(
+                _PLAN,
+                group_store=groups,
+                clock=_clock,
+                principal=WritePrincipal(
+                    id=PrincipalId("foreign"), tenant_id=_FOREIGN_TENANT_ID
+                ),
+                audit_log_store=audit,
+            )
+        assert groups.stored == groups.added == audit.entries == []
