@@ -9,6 +9,8 @@ module resolves a ``WritePrincipal`` from the ``[deployment]`` config block
 (``services/training.py::promote_artifact``,
 ``services/model_onboarding.py::create_station_assignment`` /
 ``create_group_assignment``, ``services/onboarding.py::onboard_from_camelsch``,
+``scripts/create_station_group.py::apply_station_group`` and its CLI
+pre-check,
 and the scheduled ``flows/train_models.py::train_models_flow`` unit filter).
 """
 

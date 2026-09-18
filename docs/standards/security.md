@@ -83,7 +83,7 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
 
 ### Tenant write-isolation (v1.0, Plan 147 Slice E)
 
-Write authority on the flow/CLI write paths (onboarding, group/model assignment, model promotion) is
+Write authority on the flow/CLI write paths (onboarding, group creation and group/model assignment, model promotion) is
 **config-declared, never derived from the target row and never from a read-only access token** (G3/G6).
 A third principal kind — distinct from the two HTTP read roles above.
 
@@ -109,7 +109,8 @@ A third principal kind — distinct from the two HTTP read roles above.
 - **Enforcement** (`services/write_principal.py::enforce_tenant_isolation`, called at every write
   chokepoint — `services/training.py::promote_artifact`/`store_and_promote_artifact`,
   `services/model_onboarding.py::create_station_assignment`/`create_group_assignment`,
-  `services/onboarding.py::onboard_from_camelsch`): a target whose `tenant_id` differs from the
+  `services/onboarding.py::onboard_from_camelsch`, and
+  `scripts/create_station_group.py::apply_station_group` plus its CLI pre-check): a target whose `tenant_id` differs from the
   principal's raises `TenantIsolationError` **before** any domain-state write, and persists a
   `system`-actor `audit_log` rejection row (operator handle + both tenant ids in `detail` — `actor_id`
   stays `NULL`, a config operator is not a `UserId`/`AccessTokenId`). An unscoped (`global_admin`)
