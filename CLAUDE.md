@@ -40,7 +40,7 @@ Stay focused on the current task until completion. Do not change direction mid-s
 
 Plans start as `status: DRAFT`. Planning and independent review may refine the
 DRAFT, but implementation may not begin. Material changes may receive another
-complete review; there is no confirmation mode. The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); no other agent may.
+complete review; there is no confirmation mode. The ORCHESTRATOR sets `status: READY` after at least one independent review is complete (delegated by the owner 2026-09-17); no other agent may.
 
 ## Orchestration authority (delegated 2026-09-17)
 

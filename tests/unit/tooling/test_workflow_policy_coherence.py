@@ -21,9 +21,14 @@ _DRAFT_POLICY = (
     "Planning and independent-review agents may read a DRAFT plan, but "
     "implementation agents may not execute it."
 )
-_OWNER_POLICY = (
-    "The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); "
-    "no other agent may."
+_READY_POLICY = (
+    "The ORCHESTRATOR sets `status: READY` after at least one independent review "
+    "is complete (delegated by the owner 2026-09-17); no other agent may."
+)
+_SUPERSEDED_READY_POLICIES = (
+    "Only the human owner sets READY",
+    "owner-confirmed and available for implementation",
+    "awaiting owner confirmation",
 )
 _TAGGING_POLICY = (
     "Every code commit includes a patch version bump. "
@@ -50,9 +55,15 @@ class TestPlanReadinessPolicy:
         for path in (*_AGENT_GUIDES, _WORKFLOW):
             assert _DRAFT_POLICY in _normalized(path)
 
-    def test_only_owner_sets_ready(self) -> None:
+    def test_orchestrator_sets_ready_after_independent_review(self) -> None:
         for path in (*_AGENT_GUIDES, _WORKFLOW):
-            assert _OWNER_POLICY in _normalized(path)
+            assert _READY_POLICY in _normalized(path)
+
+    def test_superseded_ready_wording_is_absent(self) -> None:
+        normalized_workflow = _normalized(_WORKFLOW)
+
+        for stale_policy in _SUPERSEDED_READY_POLICIES:
+            assert stale_policy not in normalized_workflow
 
 
 class TestActiveStatusPolicy:
