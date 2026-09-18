@@ -21,7 +21,10 @@ _DRAFT_POLICY = (
     "Planning and independent-review agents may read a DRAFT plan, but "
     "implementation agents may not execute it."
 )
-_OWNER_POLICY = "Only the owner may set its YAML `status: READY`."
+_OWNER_POLICY = (
+    "The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); "
+    "no other agent may."
+)
 _TAGGING_POLICY = (
     "Every code commit includes a patch version bump. "
     "Never create a tag on a feature branch.\n"

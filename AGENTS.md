@@ -25,8 +25,8 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **One agent owns each planning or implementation pass** — do not split the work or launch reviewers unless the owner asks
 - **Plans are phase-based** with JSON dependency graphs for parallel/sequential execution
 - **Every code change updates affected docs** — no exceptions
-- **Planning and independent-review agents may read a DRAFT plan, but implementation agents may not execute it.** Only the owner may set its YAML `status: READY`.
-- **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). The owner deliberately starts one independent Claude and one independent Codex pass; no model approves its own output. High-risk work receives one additional owner-commissioned review. Human owners decide findings, READY, PR creation, and merge. See `docs/workflow.md` § Multi-Model Review.
+- **Planning and independent-review agents may read a DRAFT plan, but implementation agents may not execute it.** ⚖️ The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); no other agent may.
+- **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). The owner deliberately starts one independent Claude and one independent Codex pass; no model approves its own output. High-risk work receives one additional owner-commissioned review. The human owner decides findings, PR approval and merge; the orchestrator sets READY. See `docs/workflow.md` § Multi-Model Review.
 - **Keep review reports out of commits.** Store planning and implementation review rounds locally; put only concise outcomes and unresolved findings in the PR description. Commit full reports only when the owner explicitly requests them.
 - **Use the plain prompt skills:** `/plan` reviews or refines a plan, `/implement` builds one READY plan, and `/review` performs one independent read-only review. They do not launch each other, retry, fix findings, or manage state. See `docs/workflow.md` § Prompt Guides.
 - **Before merge:** the full test suite must pass after the final code change, either locally or in CI.
@@ -40,8 +40,23 @@ Stay focused on the current task until completion. Do not change direction mid-s
 
 Plans start as `status: DRAFT`. Planning and independent review may refine the
 DRAFT, but implementation may not begin. Material changes may receive another
-complete review; there is no confirmation mode. Only the owner may set its YAML
-`status: READY`.
+complete review; there is no confirmation mode. The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); no other agent may.
+
+## Orchestration authority (delegated 2026-09-17)
+
+The owner delegated day-to-day sequencing to a single **orchestrator session**, accountable for
+reaching v1: daily Nepal forecasts on the staging host, on the six real DHM stations.
+
+| the orchestrator MAY | the owner KEEPS |
+|---|---|
+| set a plan `status: READY` | approving and merging every PR |
+| dispatch sub-orchestrators and agents | any deployment to production |
+| deploy to the **staging** host | the decisions escalated to them |
+| create worktrees/branches, clean them up | |
+
+⛔ No agent other than the orchestrator sets READY — if you believe a plan is ready, say so and
+escalate. ⛔ The orchestrator never merges, so nothing reaches the project without the owner.
+Escalation runs agent → sub-orchestrator → orchestrator → owner.
 
 ## Ask Questions
 

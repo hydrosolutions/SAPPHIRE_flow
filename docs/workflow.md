@@ -4,7 +4,7 @@
 
 1. One agent owns each planning or implementation pass end to end.
 2. Use `/plan` to review or refine a plan with the owner.
-3. Only the owner decides whether the plan becomes READY.
+3. The orchestrator decides whether the plan becomes READY; the owner approves and merges the work.
 4. Use `/implement` to build one READY plan and run its focused checks.
 5. When the owner requests review, use the review prompt in independent Claude and
    Codex sessions separately.
@@ -69,7 +69,7 @@ extremely good reason.** The architecture and flow designs represent deliberate 
 - The owner decides how review findings are handled.
 - If those decisions materially change the plan, review the complete current plan
   again; there is no separate confirmation mode.
-- Only the owner may set its YAML `status: READY`.
+- The ORCHESTRATOR sets `status: READY` (delegated by the owner 2026-09-17); no other agent may.
 
 Reviewer reports are advisory. A prompt never changes plan status or declares a
 plan READY.
