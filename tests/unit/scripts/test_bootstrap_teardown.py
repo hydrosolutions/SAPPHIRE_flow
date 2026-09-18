@@ -237,6 +237,9 @@ case "${sub}" in
         loaded_labels | while IFS= read -r l; do
           printf '\\t\\t       0     78 \\t%s\\n' "${l}"
         done
+        if [ "${DOMAIN_PRINT_TRUNCATED:-0}" -eq 1 ]; then
+          exit 0
+        fi
         printf '\\t}\\n\\n'
       fi
       printf '\\tunmanaged processes = {\\n'
@@ -456,6 +459,18 @@ class TestTeardownStackReportsFailure:
         r = _run_teardown(
             tmp_path, DOWN_RC="0", PS_OUT="", DOMAIN_PRINT_NO_SERVICES="1"
         )
+        assert "RC=1" in r.stdout, r.stdout + r.stderr
+        assert "could not read the 'services' block" in r.stderr, r.stderr
+        assert "NOT assuming" in r.stderr, r.stderr
+
+    def test_a_dump_whose_services_block_never_closes_is_unknown_not_clean(
+        self, tmp_path: Path
+    ) -> None:
+        """A truncated dump is not a clean domain. If the `services` block
+        opens and never closes, every row past the damage is invisible, so a
+        partial extract read as clean is a false success — the same defect in
+        the opposite direction to sweeping the whole dump."""
+        r = _run_teardown(tmp_path, DOWN_RC="0", PS_OUT="", DOMAIN_PRINT_TRUNCATED="1")
         assert "RC=1" in r.stdout, r.stdout + r.stderr
         assert "could not read the 'services' block" in r.stderr, r.stderr
         assert "NOT assuming" in r.stderr, r.stderr
@@ -1000,7 +1015,7 @@ class TestTheNepalForcingStoreIsTornDownToo:
         operator-requested step in the runbook."""
         log = tmp_path / "docker.log"
         self._uninstall(tmp_path, DOWN_RC="0", PS_OUT="", DOCKER_LOG=str(log))
-        down_calls = [c for c in log.read_text().splitlines() if c.endswith("down")]
+        down_calls = [c for c in log.read_text().splitlines() if "down" in c.split()]
         assert down_calls, log.read_text()
         for call in down_calls:
             assert " -v" not in call, call

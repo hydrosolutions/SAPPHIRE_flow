@@ -296,8 +296,11 @@ _launchd_services_block() {
     #     cannot match, whatever the indentation;
     #   * the block ends by BRACE DEPTH, not at the next `}`, so a nested
     #     block inside `services` would not truncate the extract;
-    #   * a dump with NO such block exits non-zero. A dump we cannot parse is
-    #     UNKNOWN, never clean — the same rule as every other check here.
+    #   * a dump with no such block — or one whose block never CLOSES,
+    #     i.e. a truncated dump — exits non-zero. Either way we cannot see
+    #     the rows past the damage, and a partial extract read as a clean
+    #     domain is a false success. A dump we cannot parse is UNKNOWN,
+    #     never clean — the same rule as every other check here.
     awk '
         !in_block && /^[[:space:]]*services[[:space:]]*=[[:space:]]*\{/ {
             found = 1
@@ -310,7 +313,7 @@ _launchd_services_block() {
             if (depth <= 0) { in_block = 0; next }
             print
         }
-        END { exit(found ? 0 : 1) }
+        END { exit((found && !in_block) ? 0 : 1) }
     '
 }
 
