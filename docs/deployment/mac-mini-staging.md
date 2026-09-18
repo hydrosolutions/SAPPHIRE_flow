@@ -140,10 +140,12 @@ Flags:
 - `--dry-run` — print each intended command with `would run:`; make
   no changes. Useful for verifying the plan on a dev machine.
 - `--uninstall` — boot out **every** `ch.hydrosolutions.*` LaunchAgent
-  and `docker compose down` the stack, then **verify both**. Leaves
-  `secrets/` and LaunchAgent plist files in place so re-install is
-  fast. **Exits 1 and prints `uninstall INCOMPLETE` if any part of the
-  teardown could not be verified** — see § Uninstall below.
+  and `docker compose down` **both** compose projects on this host (the
+  SAPPHIRE stack and the Nepal forcing store `sapphire-nepal`), then
+  **verify all of it**. Leaves `secrets/`, LaunchAgent plist files and
+  every data volume in place so re-install is fast. **Exits 1 and prints
+  `uninstall INCOMPLETE` if any part of the teardown could not be
+  verified** — see § Uninstall below.
 - `--help` — show usage.
 
 ### ⛔ BREAKING DEPLOY PREREQUISITE (Plan 162 Phase A) — `secrets/sapphire_backup_db_password`
@@ -834,8 +836,42 @@ VERSION=v0.1.410 ./scripts/bootstrap-mac-mini.sh
 ```
 
 Boots out **every** `ch.hydrosolutions.*` LaunchAgent, runs `docker
-compose down`, and then **verifies** that each of those things actually
-happened. Leaves secrets and LaunchAgent plist files in place.
+compose down` on **both** compose projects on this host, and then
+**verifies** that each of those things actually happened. Leaves
+secrets, LaunchAgent plist files and all data volumes in place.
+
+### The two compose projects
+
+| Project | Brought down with | What it is |
+|---|---|---|
+| `sapphire_flow` (default) | `-f docker-compose.yml -f docker-compose.macmini.yml down` | the Swiss stack |
+| `sapphire-nepal` | `-p sapphire-nepal down` | the standing Postgres for the Nepal 12300 gateway-forcing feed (`docs/operations/nepal-forcing-runbook.md`) |
+
+`--uninstall` boots out `ch.hydrosolutions.sapphire-nepal-forcing`, so it
+already reaches into that subsystem. Stopping the timer while its database
+keeps running leaves exactly the half-true "torn down" state this check
+exists to remove — the banner would say every container is verified gone
+while `sapphire-nepal-postgres-1` is still up, and the full-wipe steps below
+would run against a live Postgres. So the store is torn down too, and
+verified the same way.
+
+**Neither project is brought down with `-v`.** The Nepal data lives in the
+named volume `sapphire-nepal_nepal_pgdata`, which survives; one
+
+```bash
+docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml up -d
+```
+
+from `/Users/sapphire/SAPPHIRE_flow` brings the store back. Dropping the
+volume stays an explicit, destructive step in the feed's own runbook
+(`docs/operations/nepal-forcing-runbook.md` § Uninstall).
+
+The Nepal project is addressed by **project name with no `-f`**: Compose v2
+rebuilds a project from its container labels, so the teardown needs neither
+the compose file's `secrets: file: ./secrets/nepal_db_password` declaration
+nor the runbook's working-directory rule.
+
+### The LaunchAgents covered
 
 The labels covered are the three `scripts/launchd/install-launchd.sh`
 installs plus the two installed by hand from their own runbooks — all
@@ -862,13 +898,30 @@ internal `<Label>` differs from its filename.
 > is a *different* launchd — so a `list` sweep could report "clean" about a
 > domain nothing was ever unloaded from. (Plan 195's watchdog probe keeps
 > using `launchctl list`: it parses per-label exit statuses, which `print`'s
-> undocumented format cannot be trusted for. This sweep greps for a label
-> token and parses nothing.)
+> undocumented format cannot be trusted for. This sweep locates one named
+> block and greps that; an unparsable dump is reported as UNKNOWN rather than
+> guessed at, so a format change costs a re-run, never a wrong verdict.)
+
+> 🔎 **The sweep reads the `services` block only — deliberately.** A
+> `launchctl print gui/<uid>` dump also carries a `disabled services = { … }`
+> table: the persisted per-user override database at
+> `/var/db/com.apple.xpc.launchd/disabled.<uid>.plist`. `install-launchd.sh`
+> writes an entry there for every label it installs (`launchctl enable
+> gui/<uid>/<label>`) and **`launchctl bootout` never removes it** — it
+> outlives the job being unloaded, the plist being deleted, and a reboot.
+> Measured 2026-09-18: `ch.hydrosolutions.sapphire-watchdog` was unloaded,
+> absent from `launchctl list` and had no plist, yet was still listed there.
+> A sweep over the whole dump would therefore report `uninstall INCOMPLETE`
+> after every *successful* teardown. If you want to clear those override
+> entries by hand, `launchctl disable gui/$(id -u)/<label>` flips one and
+> `sudo rm /var/db/com.apple.xpc.launchd/disabled.$(id -u).plist` (then
+> reboot) clears the table — neither is needed for a clean uninstall.
 
 **What the verification does not cover.** The checks are launchd
-registrations and the compose project. `scripts/launchd/run-nepal-forcing.sh`
-does its work in a `docker run --rm` one-shot, which is **outside** the
-compose project and unnamed, so `docker compose ps` cannot see it. Tearing
+registrations and the two compose projects. But
+`scripts/launchd/run-nepal-forcing.sh` does its work in a `docker run --rm`
+one-shot, which is **outside** either compose project and unnamed, so
+`docker compose ps` cannot see it. Tearing
 down mid-cycle can leave that container running while `--uninstall` exits 0;
 the completion banner says so, and `docker ps` is the check. There is nothing
 stable for the script to match on, so the scope is stated rather than
@@ -884,9 +937,14 @@ widened.
 > failed hours earlier (see `docs/operations/nepal-forcing-runbook.md`
 > § the 2026-08-20 observations). Re-run the feed and check coverage rather
 > than assuming either that the gap healed or that it is permanent.
+>
+> It also brings the forcing feed's **database** down (`docker compose -p
+> sapphire-nepal down`, no `-v`, so the data is kept), so nothing is left
+> half-running behind a stopped timer.
+>
 > If you only mean to rebuild the Swiss stack, do not use `--uninstall`:
-> boot out the three `install-launchd.sh` labels yourself and leave these
-> two running.
+> boot out the three `install-launchd.sh` labels yourself, leave these two
+> running, and leave the `sapphire-nepal` project alone.
 
 ### ⛔ `uninstall INCOMPLETE` (exit 1)
 
@@ -905,10 +963,12 @@ whenever any of these could not be *positively verified*:
 |---|---|---|
 | `launchd job still registered after bootout: <label>` | the job is still loaded | re-run `launchctl bootout gui/$(id -u)/<label>`; the reason `launchctl` gave is printed on the next line |
 | `and its plist is already gone` | the plist was deleted while the job was still loaded — it cannot be booted out via its file any more | boot it out **by label**: `launchctl bootout gui/$(id -u)/<label>` |
-| `docker compose down failed` | `down` returned non-zero | read the docker error above it; **most commonly Docker Desktop is not running** |
+| `docker compose down failed (<project>)` | `down` returned non-zero for that project | read the docker error above it; **most commonly Docker Desktop is not running** |
 | `containers still running after 'docker compose down'` | `docker compose ps -q -a` still lists containers (running **or** stopped-but-not-removed) | `docker compose ... down --remove-orphans`, then re-run `--uninstall` |
 | `could not verify containers were stopped` | `docker compose ps` itself failed — the state is **UNKNOWN**, not clean | start Docker Desktop and re-run; the docker error is printed |
-| `hydrosolutions launchd jobs STILL registered after teardown` | the `launchctl print gui/$(id -u)` sweep found a job the per-label loop missed | boot it out by label, then re-run |
+| `hydrosolutions launchd jobs STILL registered after teardown` | the `launchctl print gui/$(id -u)` sweep found a job **in the domain's `services` table** that the per-label loop missed | boot it out by label, then re-run |
+| `could not read the 'services' block out of 'launchctl print …'` | the dump parsed, but had no `services` table — **UNKNOWN**, not clean; most likely `launchctl print`'s undocumented format changed | run `launchctl print gui/$(id -u)` by hand and read it; file the format change |
+| `could not search the launchd services list (grep exited N)` | `grep` failed the *search* (exit > 1), which is not the same as finding nothing — **UNKNOWN**, not clean | re-run; if it persists, check the `grep` on `PATH` |
 | `could not verify launchd job was unloaded: <label>` | `launchctl print` exited non-zero for a reason that is **not** "no such service" — the query failed, so the job's state is **UNKNOWN**, not gone | run `launchctl print gui/$(id -u)/<label>` by hand and read the error; then re-run |
 | `could not enumerate launchd jobs` | `launchctl print gui/$(id -u)` failed — **UNKNOWN**, not clean | run it by hand. `Could not find domain` means this session has no `gui/<uid>` domain to enumerate (typically SSH with nobody logged in at the console): log in at the console, or run under a session that resolves it, and re-run |
 | `could not determine the current uid` | `id -u` returned nothing, so there is no `gui/<uid>` domain to address at all | fix the environment (a broken `PATH` or a shadowed `id` will do it) and re-run; nothing was verified |
@@ -929,6 +989,10 @@ For a full wipe, **after a clean (exit 0) uninstall**:
 rm -f ~/Library/LaunchAgents/ch.hydrosolutions.*.plist
 rm -rf ~/SAPPHIRE_flow/secrets
 ```
+
+`--uninstall` never deletes a data volume. To drop the Nepal forcing data as
+well — **irreversible** — follow
+`docs/operations/nepal-forcing-runbook.md` § Uninstall.
 
 ## Cross-references
 

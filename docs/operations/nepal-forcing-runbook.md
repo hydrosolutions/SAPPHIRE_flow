@@ -325,8 +325,15 @@ rm ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-nepal-forcing.plist
 docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml down -v   # -v drops the data
 ```
 
-> `./scripts/bootstrap-mac-mini.sh --uninstall` also boots out this label (it covers every
-> `ch.hydrosolutions.*` LaunchAgent on the host, not just the three it installs) and fails the
-> uninstall if the job survives. Run `bootout` by hand here only when you want to remove **just**
-> this job. Either way, boot out **before** deleting the plist — a loaded job with no plist keeps
+> ⚠️ **`./scripts/bootstrap-mac-mini.sh --uninstall` already tears this feed down — both halves.**
+> It boots out `ch.hydrosolutions.sapphire-nepal-forcing` (it covers every `ch.hydrosolutions.*`
+> LaunchAgent on the host, not just the three it installs) **and** runs
+> `docker compose -p sapphire-nepal down`, verifying each and failing the uninstall if either
+> survives. It runs the `down` **without `-v`**, so the named volume `sapphire-nepal_nepal_pgdata`
+> and every forcing record in it are left intact; bring the store back with the `up -d` in
+> § Install, from `/Users/sapphire/SAPPHIRE_flow` per the working-directory warning there.
+>
+> The `-v` in the block above is the **only** step that destroys the data, and nothing runs it for
+> you. Use the by-hand sequence when you want to remove **just** this feed, or when you want the
+> data gone. Either way, boot out **before** deleting the plist — a loaded job with no plist keeps
 > firing and can no longer be unloaded from its file.
