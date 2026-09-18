@@ -197,6 +197,12 @@ launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire-recap-probe
 rm ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-recap-probe.plist
 ```
 
+> `./scripts/bootstrap-mac-mini.sh --uninstall` also boots out this label (it covers every
+> `ch.hydrosolutions.*` LaunchAgent on the host, not just the three it installs) and fails the
+> uninstall if the job survives. Run `bootout` by hand here only when you want to remove **just**
+> this job. Either way, boot out **before** deleting the plist — a loaded job with no plist keeps
+> firing and can no longer be unloaded from its file.
+
 Delete the log files to fully remove. Nothing else to unwind — the probe touches no DB, no volume, no
 forecast state.
 

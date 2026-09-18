@@ -132,9 +132,11 @@ Flags:
 
 - `--dry-run` — print each intended command with `would run:`; make
   no changes. Useful for verifying the plan on a dev machine.
-- `--uninstall` — bootout the two LaunchAgents and `docker compose
-  down` the stack. Leaves `secrets/` and LaunchAgent plist files in
-  place so re-install is fast.
+- `--uninstall` — boot out **every** `ch.hydrosolutions.*` LaunchAgent
+  and `docker compose down` the stack, then **verify both**. Leaves
+  `secrets/` and LaunchAgent plist files in place so re-install is
+  fast. **Exits 1 and prints `uninstall INCOMPLETE` if any part of the
+  teardown could not be verified** — see § Uninstall below.
 - `--help` — show usage.
 
 ### ⛔ BREAKING DEPLOY PREREQUISITE (Plan 162 Phase A) — `secrets/sapphire_backup_db_password`
@@ -801,11 +803,63 @@ VERSION=v0.1.410 ./scripts/bootstrap-mac-mini.sh
 ./scripts/bootstrap-mac-mini.sh --uninstall
 ```
 
-Boots out both LaunchAgents and runs `docker compose down`. Leaves
-secrets and LaunchAgent plist files in place. For a full wipe:
+Boots out **every** `ch.hydrosolutions.*` LaunchAgent, runs `docker
+compose down`, and then **verifies** that each of those things actually
+happened. Leaves secrets and LaunchAgent plist files in place.
+
+The labels covered are the three `scripts/launchd/install-launchd.sh`
+installs plus the two installed by hand from their own runbooks — all
+five run on this host:
+
+| Label | Installed by |
+|---|---|
+| `ch.hydrosolutions.sapphire` | `install-launchd.sh` |
+| `ch.hydrosolutions.sapphire-watchdog` | `install-launchd.sh` |
+| `ch.hydrosolutions.sapphire-docker-prune` | `install-launchd.sh` |
+| `ch.hydrosolutions.sapphire-recap-probe` | `docs/operations/recap-probe-runbook.md` |
+| `ch.hydrosolutions.sapphire-nepal-forcing` | `docs/operations/nepal-forcing-runbook.md` |
+
+Any other `~/Library/LaunchAgents/ch.hydrosolutions.*.plist` found on the
+host is booted out too, and a final `launchctl list` sweep catches labels
+the script does not know about.
+
+### ⛔ `uninstall INCOMPLETE` (exit 1)
+
+**This is a behaviour change.** `--uninstall` used to print `uninstall
+complete` and exit 0 no matter what happened. It now exits **1** and
+prints
+
+```
+[bootstrap] FAIL uninstall INCOMPLETE — the stack did not verifiably stop (see above).
+[bootstrap] FAIL Do NOT treat this host as torn down.
+```
+
+whenever any of these could not be *positively verified*:
+
+| Symptom in the output | What it means | What to do |
+|---|---|---|
+| `launchd job still registered after bootout: <label>` | the job is still loaded | re-run `launchctl bootout gui/$(id -u)/<label>`; the reason `launchctl` gave is printed on the next line |
+| `and its plist is already gone` | the plist was deleted while the job was still loaded — it cannot be booted out via its file any more | boot it out **by label**: `launchctl bootout gui/$(id -u)/<label>` |
+| `docker compose down failed` | `down` returned non-zero | read the docker error above it; **most commonly Docker Desktop is not running** |
+| `containers still running after 'docker compose down'` | `docker compose ps -q -a` still lists containers (running **or** stopped-but-not-removed) | `docker compose ... down --remove-orphans`, then re-run `--uninstall` |
+| `could not verify containers were stopped` | `docker compose ps` itself failed — the state is **UNKNOWN**, not clean | start Docker Desktop and re-run; the docker error is printed |
+| `hydrosolutions launchd jobs STILL registered after teardown` | the `launchctl list` sweep found a job the per-label loop missed | boot it out by label, then re-run |
+| `could not enumerate launchd jobs` | `launchctl list` failed — **UNKNOWN**, not clean | re-run from a logged-in GUI session (`gui/$(id -u)` needs one) |
+
+**If Docker Desktop is already stopped, `docker compose down` fails and the
+teardown correctly reports INCOMPLETE.** That is not a false alarm: with the
+daemon down the script cannot prove the containers are gone. Start Docker
+Desktop and re-run `--uninstall`, or accept the launchd half only and verify
+the containers by hand once the daemon is back.
+
+Do **not** run the full-wipe commands below until `--uninstall` exits 0 —
+deleting the plist of a still-loaded job leaves it firing with no file to
+boot it out from, which is the exact failure this check exists to prevent.
+
+For a full wipe, **after a clean (exit 0) uninstall**:
 
 ```bash
-rm -f ~/Library/LaunchAgents/ch.hydrosolutions.sapphire*.plist
+rm -f ~/Library/LaunchAgents/ch.hydrosolutions.*.plist
 rm -rf ~/SAPPHIRE_flow/secrets
 ```
 
