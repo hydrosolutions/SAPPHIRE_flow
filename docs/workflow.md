@@ -4,7 +4,7 @@
 
 1. One agent owns each planning or implementation pass end to end.
 2. Use `/plan` to review or refine a plan with the owner.
-3. Only the owner decides whether the plan becomes READY.
+3. The orchestrator decides whether the plan becomes READY after at least one independent review is complete; the owner approves and merges the work.
 4. Use `/implement` to build one READY plan and run its focused checks.
 5. When the owner requests review, use the review prompt in independent Claude and
    Codex sessions separately.
@@ -69,7 +69,7 @@ extremely good reason.** The architecture and flow designs represent deliberate 
 - The owner decides how review findings are handled.
 - If those decisions materially change the plan, review the complete current plan
   again; there is no separate confirmation mode.
-- Only the owner may set its YAML `status: READY`.
+- The ORCHESTRATOR sets `status: READY` after at least one independent review is complete (delegated by the owner 2026-09-17); no other agent may.
 
 Reviewer reports are advisory. A prompt never changes plan status or declares a
 plan READY.
@@ -80,8 +80,8 @@ YAML `status:` frontmatter is the only machine-readable status source for active
 plans in `docs/plans/`. The canonical active statuses are `DRAFT`, `READY`,
 `BLOCKED`, `DEFERRED`, `PARTIAL`, `SUPERSEDED`, and `COMPLETE`:
 
-- **DRAFT** — being written or awaiting owner confirmation.
-- **READY** — owner-confirmed and available for implementation.
+- **DRAFT** — being written or awaiting the required independent review.
+- **READY** — at least one independent review is complete and the orchestrator has made the plan available for implementation.
 - **BLOCKED** — cannot proceed until a named blocker changes.
 - **DEFERRED** — intentionally postponed to a later version.
 - **PARTIAL** — some work landed; remaining work needs renewed owner approval.
@@ -148,7 +148,7 @@ risk, external-facing contracts or APIs, live-database impact, Prefect schedulin
 Docker entrypoints, ForecastInterface boundaries, user-visible behavior, scientific
 behavior with material operational consequences, and anything the owner flags are
 high risk. In addition to the ordinary pair, the owner commissions one relevant
-independent review before setting a plan READY and again before opening its
+independent review before the orchestrator sets a plan READY and again before opening its
 implementation PR. The prompts do not build or manage a panel.
 
 ### Hard boundaries
@@ -173,7 +173,7 @@ implementation PR. The prompts do not build or manage a panel.
 
 ### Human authority
 
-Only the human owner sets READY, accepts review findings or risk, authorizes PR
+Only the human owner accepts review findings or risk, authorizes PR
 creation, and merges. A review report is evidence for that decision, not the
 decision itself.
 
