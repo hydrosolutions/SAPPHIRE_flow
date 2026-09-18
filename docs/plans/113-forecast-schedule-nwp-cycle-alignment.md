@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 113 — Align the forecast schedule with NWP cycle delivery
 
 **Status:** DRAFT

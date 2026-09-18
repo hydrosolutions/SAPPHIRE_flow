@@ -1,7 +1,3 @@
----
-status: PARTIAL
----
-
 # Plan 111 — Benchmarking SAPPHIRE forecasts against BAFU's operational forecasts
 
 **Status:** READY — plan-reviewed 2026-07-10 (3 rounds). **In implementation: the route-C

@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 068 — `onboard-stations` parallelization + decouple historical hindcast
 
 **Status**: DRAFT

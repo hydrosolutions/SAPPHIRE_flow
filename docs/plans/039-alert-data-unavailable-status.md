@@ -1,7 +1,3 @@
----
-status: DEFERRED
----
-
 # Plan 039 — Sensor/Model Failure Visibility for Operators
 
 **Status**: DEFERRED

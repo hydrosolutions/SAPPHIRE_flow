@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 110 — Alerting gaps: delivery, hysteresis, first_detected_at
 
 **Status:** DRAFT

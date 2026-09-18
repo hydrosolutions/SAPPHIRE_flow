@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 109 — Restore prefect-server backend-only network + standards-doc drift cleanup
 
 **Status:** DRAFT

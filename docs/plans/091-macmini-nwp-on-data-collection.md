@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 091 — Mac-mini NWP-on data-collection runbook
 
 **Status**: DRAFT

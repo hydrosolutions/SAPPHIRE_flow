@@ -1,7 +1,3 @@
----
-status: PARTIAL
----
-
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
 **Status**: IN_PROGRESS

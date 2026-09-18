@@ -1,7 +1,3 @@
----
-status: PARTIAL
----
-
 # Plan 064 — Supply-chain hardening
 
 **Status**: PARTIAL — ~90% shipped, NOT outstanding as this header implied until 2026-08-28.

@@ -1,7 +1,3 @@
----
-status: PARTIAL
----
-
 # Plan 035 — Rating Curve Provenance for Skill Score Integrity
 
 **A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — **and the header above was stale.**

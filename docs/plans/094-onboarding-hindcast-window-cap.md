@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 094 — cap onboarding/hindcast window to the actual data range
 
 **Status**: DRAFT

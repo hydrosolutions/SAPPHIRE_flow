@@ -1,7 +1,3 @@
----
-status: DRAFT
----
-
 # Plan 135 — EQRN Offline Model-Onboarding Benchmark
 
 **Status**: DRAFT
