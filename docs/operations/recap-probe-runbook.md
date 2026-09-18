@@ -9,7 +9,7 @@ not `/usr/local/bin/uv`).
 **Related:** [Plan 132](../plans/archive/132-recap-probe-deployment-reconciliation.md) (this reconciliation);
 [Plan 121](../plans/121-recap-flow6-and-integration-followons.md) §Live probe (the findings this
 longitudinal run extends); [[project_recap_era5_probe_and_115_stac]];
-[Plan 111b](../plans/111b-bafu-collector-macmini-deployment.md) (the collector-on-mac-mini precedent).
+[Plan 111b](../plans/archive/111b-bafu-collector-macmini-deployment.md) (the collector-on-mac-mini precedent).
 
 > A lightweight, launchd-scheduled probe that records **what the Gateway actually serves and when**
 > — the ERA5-Land latency edge, IFS forecast availability/cadence, and whether the operational /

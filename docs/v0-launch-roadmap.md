@@ -33,7 +33,7 @@ and then cleanly extend it. Not a plan document (plans live in
   passing live MeteoSwiss STAC. Plan 046 §A3 is now ready for the
   Stream C glue work. Report: `docs/deployment/dress-rehearsal-2026-04-21.md`.
 - **Plan 067** (MeteoSwiss STAC adapter investigation) — DONE +
-  archived at `docs/plans/archive/067-...md` (2026-05-11, commit
+  archived at `docs/plans/archive/067-meteoswiss-stac-adapter-investigation.md` (2026-05-11, commit
   `0a4819e`).
 - **Plan 046** (Mac Mini deploy) — IN_PROGRESS; Streams A (dress
   rehearsal) green; Stream C (Mac Mini glue) delivered by `514ff36`
