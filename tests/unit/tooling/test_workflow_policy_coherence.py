@@ -5,8 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_AGENT_GUIDES = (_REPO_ROOT / "AGENTS.md", _REPO_ROOT / "CLAUDE.md")
-_WORKFLOW = _REPO_ROOT / "docs/workflow.md"
+_POLICY_DOCS = (
+    _REPO_ROOT / "AGENTS.md",
+    _REPO_ROOT / "CLAUDE.md",
+    _REPO_ROOT / "docs/workflow.md",
+)
+_WORKFLOW = _POLICY_DOCS[-1]
 _PLAN_INDEX = _REPO_ROOT / "docs/plans/README.md"
 _CANONICAL_STATUSES = (
     "DRAFT",
@@ -52,15 +56,15 @@ def _section(text: str, start: str, end: str) -> str:
 
 class TestPlanReadinessPolicy:
     def test_draft_is_reviewable_but_not_implementable(self) -> None:
-        for path in (*_AGENT_GUIDES, _WORKFLOW):
+        for path in _POLICY_DOCS:
             assert _DRAFT_POLICY in _normalized(path)
 
     def test_orchestrator_sets_ready_after_independent_review(self) -> None:
-        for path in (*_AGENT_GUIDES, _WORKFLOW):
+        for path in _POLICY_DOCS:
             assert _READY_POLICY in _normalized(path)
 
     def test_superseded_ready_wording_is_absent(self) -> None:
-        for path in (*_AGENT_GUIDES, _WORKFLOW):
+        for path in _POLICY_DOCS:
             normalized_text = _normalized(path)
 
             for stale_policy in _SUPERSEDED_READY_POLICIES:
@@ -88,5 +92,5 @@ class TestActiveStatusPolicy:
 
 class TestTaggingPolicy:
     def test_policy_documents_delegate_tagging_to_main_workflow(self) -> None:
-        for path in (*_AGENT_GUIDES, _WORKFLOW):
+        for path in _POLICY_DOCS:
             assert " ".join(_TAGGING_POLICY.split()) in _normalized(path)
