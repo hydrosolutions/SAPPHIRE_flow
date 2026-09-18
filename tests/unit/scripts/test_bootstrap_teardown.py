@@ -461,6 +461,7 @@ class TestTeardownStackReportsFailure:
         )
         assert "RC=1" in r.stdout, r.stdout + r.stderr
         assert "could not read the 'services' block" in r.stderr, r.stderr
+        assert "the services-block extractor exited 1." in r.stderr, r.stderr
         assert "NOT assuming" in r.stderr, r.stderr
 
     def test_a_dump_whose_services_block_never_closes_is_unknown_not_clean(
@@ -473,6 +474,7 @@ class TestTeardownStackReportsFailure:
         r = _run_teardown(tmp_path, DOWN_RC="0", PS_OUT="", DOMAIN_PRINT_TRUNCATED="1")
         assert "RC=1" in r.stdout, r.stdout + r.stderr
         assert "could not read the 'services' block" in r.stderr, r.stderr
+        assert "the services-block extractor exited 1." in r.stderr, r.stderr
         assert "NOT assuming" in r.stderr, r.stderr
 
     def test_a_residual_hydrosolutions_job_fails_the_teardown(

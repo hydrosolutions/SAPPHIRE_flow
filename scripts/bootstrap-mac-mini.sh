@@ -353,6 +353,7 @@ launchd_residual_check() {
     services="$(printf '%s\n' "${listing}" | _launchd_services_block)" || services_rc=$?
     if [ "${services_rc}" -ne 0 ]; then
         fail "could not read the 'services' block out of 'launchctl print ${domain}'"
+        fail "  the services-block extractor exited ${services_rc}."
         fail "  NOT assuming this means no jobs are loaded."
         return 1
     fi
