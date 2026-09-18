@@ -856,9 +856,13 @@ the script does not know about.
 > ⚠️ **`--uninstall` halts Nepal data collection.** The last two labels are
 > not part of the Swiss stack: `sapphire-nepal-forcing` drives the
 > operational forcing feed for HRU 12300 and `sapphire-recap-probe` polls
-> the recap gateway. Booting them out stops ingest, and **the days missed
-> while the host is down are not backfilled** — the gateway serves a
-> rolling window, so a long enough outage loses those days permanently.
+> the recap gateway. Booting them out **stops ingest for as long as the host
+> is down**. Whether the missed days can be recovered afterwards is *not*
+> guaranteed: Gateway retention is intermittent and explicitly **not** a
+> simple sliding window — it has been observed backfilling cycles that hard-
+> failed hours earlier (see `docs/operations/nepal-forcing-runbook.md`
+> § the 2026-08-20 observations). Re-run the feed and check coverage rather
+> than assuming either that the gap healed or that it is permanent.
 > If you only mean to rebuild the Swiss stack, do not use `--uninstall`:
 > boot out the three `install-launchd.sh` labels yourself and leave these
 > two running.
