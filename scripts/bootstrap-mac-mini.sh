@@ -13,13 +13,22 @@
 #   4. Checks the pre-staged CAMELS-CH dataset under ~/camels-ch.
 #   5. Brings up the compose stack (macmini overlay).
 #   6. Waits for /api/v1/health to return status=ok (up to 300s).
-#   7. Installs the two LaunchAgents (main stack + watchdog).
+#   7. Installs the bootstrap LaunchAgents (main stack, watchdog,
+#      docker-prune) via scripts/launchd/install-launchd.sh.
 #   8. Prints a final summary + any remaining manual steps.
 #
 # Flags:
 #   --dry-run    Print every intended command but do nothing.
-#   --uninstall  Bootout LaunchAgents and compose down (leaves
-#                secrets + plists in place for manual cleanup).
+#   --uninstall  Boots out EVERY ch.hydrosolutions.* LaunchAgent (the
+#                three installed here plus the recap-probe and
+#                nepal-forcing jobs installed from their runbooks), runs
+#                `docker compose down` on BOTH compose projects on this
+#                host — the SAPPHIRE stack and the Nepal forcing store
+#                `sapphire-nepal` (never `-v`, so its named volume and
+#                data survive) — then VERIFIES all of it. Leaves secrets
+#                + plists in place for manual cleanup. Exits 1 and prints
+#                "uninstall INCOMPLETE" if any step could not be
+#                verified — do not treat the host as torn down.
 #   --help       Show usage.
 #
 # Spec: docs/plans/046-mac-mini-staging-deployment.md §Stream C;
@@ -131,6 +140,373 @@ backup_target_verified() {
     mount | grep -q " on ${mount_root} "
 }
 
+run() {
+    # Runs a command, or prints "would run" under --dry-run.
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        printf '%s[bootstrap] would run:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"
+        return 0
+    fi
+    "$@"
+}
+
+# Every SAPPHIRE LaunchAgent label this repo ships a plist for. The bootstrap
+# installer (scripts/launchd/install-launchd.sh) installs the first three; the
+# recap probe and the Nepal forcing job are installed by hand from their
+# runbooks (docs/operations/recap-probe-runbook.md,
+# docs/operations/nepal-forcing-runbook.md) — but they run on the SAME host, so
+# an uninstall that ignores them leaves live jobs behind while telling the
+# operator to `rm ~/Library/LaunchAgents/ch.hydrosolutions.*.plist`, which
+# strands them loaded with no plist to boot them out from.
+SAPPHIRE_LAUNCHD_LABELS=(
+    ch.hydrosolutions.sapphire
+    ch.hydrosolutions.sapphire-watchdog
+    ch.hydrosolutions.sapphire-docker-prune
+    ch.hydrosolutions.sapphire-recap-probe
+    ch.hydrosolutions.sapphire-nepal-forcing
+)
+
+# The Nepal forcing feed keeps a SECOND, standing compose project on this same
+# host: `sapphire-nepal` (docker-compose.nepal-forcing.yml, Postgres only —
+# docs/operations/nepal-forcing-runbook.md). `--uninstall` tears it down too.
+#
+# WHY tear it down rather than just disclose it. This script already boots out
+# `ch.hydrosolutions.sapphire-nepal-forcing`, i.e. teardown already reaches
+# into that subsystem. Stopping the timer while its database keeps running
+# leaves exactly the half-true "torn down" state this change exists to remove:
+# the operator reads "uninstall complete" and then runs the full-wipe steps in
+# docs/deployment/mac-mini-staging.md with a Postgres still up and writing.
+#
+# WHY this is safe. `down` WITHOUT `-v`: the feed's data lives in the named
+# volume `sapphire-nepal_nepal_pgdata`, which survives, and one
+# `docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml up -d`
+# from the repo checkout restores the store. Dropping the volume stays a
+# separate, explicitly destructive step in the runbook's own § Uninstall.
+#
+# WHY by project name and no `-f`. Compose v2 reconstructs a project from the
+# `com.docker.compose.project` container labels, so `-p <name>` alone is
+# enough for `down` and `ps` (verified against Compose 29.5.3: exit 0, and a
+# warning when the project is absent). Passing the compose file instead would
+# drag in its `secrets: file: ./secrets/nepal_db_password` declaration and the
+# runbook's working-directory trap for a teardown that needs neither.
+NEPAL_COMPOSE_PROJECT="sapphire-nepal"
+
+_print_result_is_absent() {
+    # Decides whether a NON-ZERO `launchctl print` means "this job is not
+    # registered" or "the query itself failed". They are different facts and
+    # must not be conflated: reading every non-zero exit as absence turns an
+    # operational error (no such domain, EPERM, a launchd that did not answer)
+    # into a clean bill of health — the same silent-success shape this whole
+    # change exists to remove.
+    #
+    # launchctl reports a genuine miss as "Could not find service ... in
+    # domain for ..." (documented exit 113). "Could not find domain" is NOT a
+    # miss: it means we asked a launchd domain that does not exist, so we
+    # learned nothing about the job. Matching on the message as well as the
+    # status because neither alone is stable across macOS releases.
+    local rc="$1" out="$2"
+    if [ "${rc}" -eq 0 ]; then
+        return 1
+    fi
+    case "${out}" in
+        *"Could not find domain"*)
+            return 1 ;;
+        *"Could not find service"*|*"No such process"*|*"Could not find specified service"*)
+            return 0 ;;
+    esac
+    if [ "${rc}" -eq 113 ]; then
+        return 0
+    fi
+    return 1
+}
+
+bootout_label() {
+    # Unloads one launchd label and VERIFIES it is gone. Same rule as the
+    # container check below: a non-zero `bootout` is not conclusive on its own
+    # (it also returns non-zero when the job was never loaded), so the verdict
+    # comes from a positive check that the label no longer resolves.
+    #
+    # The `bootout` call is gated on the plist existing; the VERIFICATION is
+    # not. A job whose plist was already removed (exactly what the uninstall
+    # summary tells operators to do) is still loaded and must still be
+    # reported — the old "(skipping)" branch counted it as torn down.
+    # Returns 0 only when the label is confirmed absent — a verification that
+    # could not be carried out returns 1 (UNKNOWN), never 0.
+    local label="$1" domain="$2"
+    local plist="${HOME}/Library/LaunchAgents/${label}.plist"
+    local bootout_err="" print_out="" print_rc=0
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        printf '%s[bootstrap] would run:%s launchctl bootout %s/%s\n' \
+            "${C_YELLOW}" "${C_RESET}" "${domain}" "${label}"
+        return 0
+    fi
+    if [ -f "${plist}" ]; then
+        log "bootout ${label}"
+        bootout_err="$(launchctl bootout "${domain}/${label}" 2>&1)" || true
+    else
+        log "no plist at ${plist} (not booting out; still verifying ${label})"
+    fi
+    print_out="$(launchctl print "${domain}/${label}" 2>&1)" || print_rc=$?
+    if [ "${print_rc}" -eq 0 ]; then
+        fail "launchd job still registered after bootout: ${label}"
+        if [ -n "${bootout_err}" ]; then
+            fail "  launchctl bootout said: ${bootout_err}"
+        fi
+        if [ ! -f "${plist}" ]; then
+            fail "  and its plist is already gone (${plist}) — boot it out by"
+            fail "  label: launchctl bootout ${domain}/${label}"
+        fi
+        return 1
+    fi
+    if ! _print_result_is_absent "${print_rc}" "${print_out}"; then
+        fail "could not verify launchd job was unloaded: ${label}"
+        fail "  ('launchctl print ${domain}/${label}' exited ${print_rc})"
+        fail "  NOT assuming this means the job is gone."
+        if [ -n "${print_out}" ]; then
+            fail "  launchctl said: ${print_out}"
+        fi
+        return 1
+    fi
+    return 0
+}
+
+_launchd_services_block() {
+    # Reads a `launchctl print <domain>` dump on stdin and prints the BODY of
+    # its top-level `services = { ... }` block — the list of what is actually
+    # REGISTERED in that domain.
+    #
+    # Why not grep the whole dump: it also carries a `disabled services = {
+    # ... }` table, the persisted per-user override database
+    # (/var/db/com.apple.xpc.launchd/disabled.<uid>.plist). A label lands
+    # there permanently the moment `launchctl enable` runs
+    # (scripts/launchd/install-launchd.sh:66), and `launchctl bootout` does
+    # NOT remove it. Measured 2026-09-18:
+    # `ch.hydrosolutions.sapphire-watchdog` was not loaded, absent from
+    # `launchctl list` and had no plist at all, yet still appeared under
+    # `disabled services` in `launchctl print gui/501`. Sweeping the whole
+    # dump therefore reports INCOMPLETE after every SUCCESSFUL teardown —
+    # trading a guaranteed false success for a guaranteed false failure, with
+    # `success "uninstall complete"` unreachable on any real host and
+    # docs/deployment/mac-mini-staging.md's "do not wipe until it exits 0"
+    # precondition impossible to satisfy.
+    #
+    # Robustness against `launchctl print` format drift (Apple documents none
+    # of it):
+    #   * the key is anchored at the start of the line, so `disabled
+    #     services` — or any other `<word> services = {` key Apple adds —
+    #     cannot match, whatever the indentation;
+    #   * the block ends by BRACE DEPTH, not at the next `}`, so a nested
+    #     block inside `services` would not truncate the extract;
+    #   * a dump with no such block — or one whose block never CLOSES,
+    #     i.e. a truncated dump — exits non-zero. Either way we cannot see
+    #     the rows past the damage, and a partial extract read as a clean
+    #     domain is a false success. A dump we cannot parse is UNKNOWN,
+    #     never clean — the same rule as every other check here.
+    awk '
+        !in_block && /^[[:space:]]*services[[:space:]]*=[[:space:]]*\{/ {
+            found = 1
+            depth = gsub(/\{/, "&") - gsub(/\}/, "&")
+            in_block = (depth > 0)
+            next
+        }
+        in_block {
+            depth += gsub(/\{/, "&") - gsub(/\}/, "&")
+            if (depth <= 0) { in_block = 0; next }
+            print
+        }
+        END { exit((found && !in_block) ? 0 : 1) }
+    '
+}
+
+launchd_residual_check() {
+    # Post-condition sweep. The per-label loop only knows the labels this repo
+    # knows about; this asks launchd itself whether ANY hydrosolutions job is
+    # still registered.
+    #
+    # It enumerates the SAME domain `bootout_label` addressed. `launchctl
+    # list` was the obvious call, but it answers for the CALLING session's
+    # domain — over SSH with no console login that is not `gui/<uid>`, so the
+    # two halves of this teardown would be talking about different launchds,
+    # and a sweep that reports "clean" about a domain we never unloaded
+    # anything from is precisely the false success this change exists to
+    # remove.
+    #
+    # Plan 195 D1 chose `launchctl list` over `print` for the WATCHDOG probe
+    # because it parses per-label exit statuses out of the output and Apple
+    # disclaims `print`'s format. That reasoning does not carry here: this
+    # locates one named block and greps it for a label token, and an
+    # unparsable dump is reported as UNKNOWN rather than guessed at, so a
+    # format change costs us a re-run, never a wrong verdict. The domain the
+    # watchdog reads is not a teardown post-condition; the domain we unloaded
+    # from is.
+    # Returns 0 only when launchd was successfully enumerated AND is clean.
+    local domain="$1"
+    local listing="" list_rc=0 services="" services_rc=0 residual="" grep_rc=0
+    listing="$(launchctl print "${domain}" 2>&1)" || list_rc=$?
+    if [ "${list_rc}" -ne 0 ]; then
+        fail "could not enumerate launchd jobs ('launchctl print ${domain}' exited ${list_rc})"
+        fail "  NOT assuming this means no jobs are loaded."
+        if [ -n "${listing}" ]; then
+            fail "  launchctl said: ${listing}"
+        fi
+        return 1
+    fi
+    services="$(printf '%s\n' "${listing}" | _launchd_services_block)" || services_rc=$?
+    if [ "${services_rc}" -ne 0 ]; then
+        fail "could not read the 'services' block out of 'launchctl print ${domain}'"
+        fail "  the services-block extractor exited ${services_rc}."
+        fail "  NOT assuming this means no jobs are loaded."
+        return 1
+    fi
+    # `grep` exits 1 for "no match" but >1 for a SEARCH FAILURE. The old
+    # `|| true` collapsed both to success, so a broken grep read as a clean
+    # domain — the same silent-success shape as a failed `docker compose ps`
+    # read as "no containers".
+    residual="$(printf '%s\n' "${services}" | grep -E 'ch\.hydrosolutions\.')" || grep_rc=$?
+    if [ "${grep_rc}" -gt 1 ]; then
+        fail "could not search the launchd services list (grep exited ${grep_rc})"
+        fail "  NOT assuming this means no jobs are loaded."
+        return 1
+    fi
+    if [ -n "${residual}" ]; then
+        fail "hydrosolutions launchd jobs STILL registered after teardown:"
+        printf '%s\n' "${residual}" >&2
+        return 1
+    fi
+    return 0
+}
+
+compose_project_teardown() {
+    # Brings ONE compose project down and verifies it actually went away.
+    # `$1` is a human name used in the messages; everything after it is the
+    # compose SELECTOR that goes before the subcommand — the `-f` overlay
+    # pair for the SAPPHIRE stack, or `-p <project>` for the Nepal store.
+    #
+    # Same two rules as everywhere else in this teardown: a non-zero `down`
+    # is a failure, and an exit-0 `down` is not by itself proof — verify
+    # positively with `ps -q -a` and treat a FAILED verification as UNKNOWN.
+    # Returns 0 only when the project is verifiably gone.
+    local what="$1"
+    shift
+    local selector=("$@")
+    local rc=0
+
+    log "docker compose down (${what})"
+    if ! run docker compose "${selector[@]}" down; then
+        fail "docker compose down failed (${what})"
+        rc=1
+    fi
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        return "${rc}"
+    fi
+
+    # `-a` includes stopped-but-present containers: `down` is supposed to
+    # REMOVE them, so a container that merely exited is still evidence the
+    # teardown did not finish. `ps -q` alone would call that clean.
+    local remaining ps_rc=0 ps_err
+    ps_err="$(mktemp)"
+    remaining="$(docker compose "${selector[@]}" ps -q -a 2>"${ps_err}")" || ps_rc=$?
+    if [ "${ps_rc}" -ne 0 ]; then
+        fail "could not verify containers were stopped (${what}: 'docker compose ps' exited ${ps_rc})"
+        fail "  NOT assuming this means no containers are running."
+        if [ -s "${ps_err}" ]; then
+            fail "  docker said: $(cat "${ps_err}")"
+        fi
+        rc=1
+    elif [ -n "${remaining}" ]; then
+        fail "containers still running after 'docker compose down' (${what})"
+        printf '%s\n' "${remaining}" >&2
+        rc=1
+    fi
+    rm -f "${ps_err}"
+    return "${rc}"
+}
+
+teardown_stack() {
+    # Stops the stack and reports whether it ACTUALLY stopped.
+    #
+    # Previously this swallowed every failure with `|| true` and then printed
+    # "uninstall complete" unconditionally, so a teardown that left containers
+    # running reported success. Two rules fix that:
+    #   1. a non-zero `docker compose down` is a failure, not a shrug;
+    #   2. exit 0 from `down` is not by itself proof the containers are gone —
+    #      verify positively with `ps -q -a`, and treat a FAILED verification as
+    #      UNKNOWN, never as "nothing running". That second rule is the
+    #      silent-success bug already fixed once in prune-docker.sh
+    #      (tests/unit/ops/test_launchd_prune_docker.py); it must not be
+    #      reintroduced here.
+    # Both rules are applied to BOTH compose projects that live on this host
+    # (see NEPAL_COMPOSE_PROJECT above) — the Nepal store is a separate
+    # project, so the SAPPHIRE project's `down` does not touch it.
+    # The same two rules apply to launchd: every ch.hydrosolutions.* label is
+    # booted out, each is verified with `launchctl print`, and a final
+    # `launchctl print gui/<uid>` sweep of the SAME domain catches labels this
+    # script does not know about.
+    # Returns 0 only when the stack is verifiably down.
+    local incomplete=0
+    local uid_val=""
+    uid_val="$(id -u)" || uid_val=""
+    if [ -z "${uid_val}" ]; then
+        # Without a uid there is no launchd domain to address: `gui/` would be
+        # malformed, every bootout and every print would fail, and reading
+        # those failures as "nothing loaded" is the bug this file is about.
+        fail "could not determine the current uid ('id -u' returned nothing)"
+        fail "  NOT assuming this means no launchd jobs are loaded."
+        return 1
+    fi
+    local domain="gui/${uid_val}"
+
+    # Start from the labels this repo ships, then add anything else already
+    # installed under the ch.hydrosolutions.* namespace — the uninstall summary
+    # tells operators to delete that whole glob, so teardown must cover it.
+    #
+    # ASSUMPTION: the label equals the plist BASENAME. Every plist this repo
+    # installs is written that way (scripts/launchd/install-launchd.sh and the
+    # two runbooks), and it is the convention launchd itself expects. A plist
+    # whose internal <Label> differs from its filename would be booted out
+    # under the wrong name here — that is what `launchd_residual_check` below
+    # is for: the real label stays loaded, the domain sweep sees it, and the
+    # uninstall reports INCOMPLETE rather than success. Locked by
+    # tests/unit/scripts/test_bootstrap_teardown.py.
+    local labels=("${SAPPHIRE_LAUNCHD_LABELS[@]}")
+    local plist label
+    for plist in "${HOME}/Library/LaunchAgents"/ch.hydrosolutions.*.plist; do
+        [ -e "${plist}" ] || continue
+        label="$(basename "${plist}" .plist)"
+        # Membership without a pipe: `... | grep -q` can exit 141 (SIGPIPE)
+        # under `pipefail` when grep short-circuits on an early match, which
+        # would read as "not present" and queue a duplicate bootout. Labels
+        # contain no whitespace, so a padded substring test is exact.
+        #
+        # `${label}` comes from `basename`, so a plist filename could carry
+        # `*`, `?` or `[...]`. It is safe HERE because the expansion sits
+        # inside double quotes, and bash treats a quoted portion of a `case`
+        # pattern as literal text, not as a glob — keep the quotes.
+        case " ${labels[*]} " in
+            *" ${label} "*) ;;
+            *) labels+=("${label}") ;;
+        esac
+    done
+
+    for label in "${labels[@]}"; do
+        bootout_label "${label}" "${domain}" || incomplete=1
+    done
+
+    local compose_args=(-f "${REPO_ROOT}/docker-compose.yml")
+    if [ -f "${REPO_ROOT}/docker-compose.macmini.yml" ]; then
+        compose_args+=(-f "${REPO_ROOT}/docker-compose.macmini.yml")
+    fi
+    compose_project_teardown "the SAPPHIRE stack" "${compose_args[@]}" || incomplete=1
+    compose_project_teardown "${NEPAL_COMPOSE_PROJECT}" \
+        -p "${NEPAL_COMPOSE_PROJECT}" || incomplete=1
+
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        launchd_residual_check "${domain}" || incomplete=1
+    fi
+
+    return "${incomplete}"
+}
+
 # Allow tests to `source` this script and call `backup_target_verified`
 # directly without running the interactive bootstrap flow (Plan 194).
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
@@ -142,7 +518,10 @@ usage() {
 Usage: ./scripts/bootstrap-mac-mini.sh [--dry-run] [--uninstall] [--help]
 
   --dry-run    Print each intended command with "would run:"; does nothing.
-  --uninstall  Bootout LaunchAgents and compose down.
+  --uninstall  Boot out every ch.hydrosolutions.* LaunchAgent and compose
+               down both projects (the SAPPHIRE stack and the Nepal
+               forcing store), then verify. Data volumes are kept.
+               Exits 1 on an unverified teardown.
   --help       Show this message.
 
 See docs/deployment/mac-mini-staging.md for the full runbook.
@@ -164,41 +543,45 @@ on_err() {
 }
 trap on_err ERR
 
-run() {
-    # Runs a command, or prints "would run" under --dry-run.
-    if [ "${DRY_RUN}" -eq 1 ]; then
-        printf '%s[bootstrap] would run:%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"
-        return 0
-    fi
-    "$@"
-}
-
 # ============================================================================
 # UNINSTALL
 # ============================================================================
 if [ "${UNINSTALL}" -eq 1 ]; then
     hdr "Uninstalling SAPPHIRE Mac-mini stack"
-    UID_VAL="$(id -u)"
-    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog; do
-        plist="${HOME}/Library/LaunchAgents/${label}.plist"
-        if [ -f "${plist}" ]; then
-            log "bootout ${label}"
-            run launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
-        else
-            log "no plist at ${plist} (skipping)"
-        fi
-    done
-    log "docker compose down"
-    if [ -f "${REPO_ROOT}/docker-compose.macmini.yml" ]; then
-        run docker compose \
-            -f "${REPO_ROOT}/docker-compose.yml" \
-            -f "${REPO_ROOT}/docker-compose.macmini.yml" \
-            down || true
-    else
-        run docker compose -f "${REPO_ROOT}/docker-compose.yml" down || true
+    if ! teardown_stack; then
+        fail "uninstall INCOMPLETE — the stack did not verifiably stop (see above)."
+        fail "Do NOT treat this host as torn down."
+        exit 1
     fi
-    success "uninstall complete. Remove ~/Library/LaunchAgents/ch.hydrosolutions.*.plist"
-    success "and ${REPO_ROOT}/secrets/ manually if you want a full wipe."
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        success "dry-run complete; no changes made."
+        exit 0
+    fi
+    success "uninstall complete — every ch.hydrosolutions.* launchd job is"
+    success "verified unloaded, and every container of BOTH compose projects"
+    success "on this host — the SAPPHIRE stack and the Nepal forcing store"
+    success "'${NEPAL_COMPOSE_PROJECT}' — is verified gone."
+    success "The Nepal store came down WITHOUT '-v', so its named volume"
+    success "${NEPAL_COMPOSE_PROJECT}_nepal_pgdata — and every forcing record"
+    success "in it — is intact. docs/operations/nepal-forcing-runbook.md has"
+    success "the one command that brings the store back up."
+    # Scope, stated honestly: the checks above cover launchd registrations and
+    # both compose projects. They do NOT cover a one-shot container a LaunchAgent
+    # had already started — scripts/launchd/run-nepal-forcing.sh runs its work
+    # as `docker run --rm -i`, outside the compose project and without a name,
+    # so `docker compose ps` cannot see it. Tearing down mid-cycle leaves that
+    # container running. It is unnamed and short-lived, so there is nothing
+    # this script can reliably match on; the honest move is to say so rather
+    # than to widen the claim.
+    warn "NOT covered by those checks: a one-shot container a LaunchAgent had"
+    warn "already started. run-nepal-forcing.sh uses 'docker run --rm', which"
+    warn "is outside the compose project, so 'docker compose ps' cannot see"
+    warn "it. If you tore down mid-cycle, check 'docker ps' before wiping."
+    success "Safe now to remove"
+    success "  ${HOME}/Library/LaunchAgents/ch.hydrosolutions.*.plist"
+    success "  ${REPO_ROOT}/secrets/"
+    success "manually if you want a full wipe."
+
     exit 0
 fi
 
@@ -419,7 +802,7 @@ printf '  %sPrefect:%s http://localhost:4200 (via SSH tunnel from team laptops)\
     "${C_BOLD}" "${C_RESET}"
 printf '\n'
 if [ "${DRY_RUN}" -eq 0 ]; then
-    log "LaunchAgents (expect both listed):"
+    log "LaunchAgents (expect all three listed):"
     launchctl list 2>/dev/null | grep hydrosolutions || warn "(none found)"
 fi
 printf '\n'
