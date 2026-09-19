@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-04
 plan: 242
 title: Replace automated workflows with plain prompt skills

@@ -13,7 +13,7 @@ source: 2026-08-31 — ~50 identical CRITICAL Slack alerts over two days never c
 
 ## Status
 
-**READY.** All six decisions confirmed by the owner 2026-08-31, D6 resolved as option (2).
+**COMPLETE — merged in PR #233 and archived 2026-09-11.** All six decisions were confirmed by the owner 2026-08-31, D6 resolved as option (2).
 Two independent Codex rounds folded (1 blocker each round).
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review

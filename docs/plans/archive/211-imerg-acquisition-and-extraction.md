@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-28
 plan: 211
 title: M-A5b — IMERG Early acquisition and point extraction
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-milestones.md § M-A5b
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-28, after two independent review rounds. A confirming review
+**COMPLETE — merged in PR #229 and archived 2026-09-11.** Two independent review rounds and a confirming review
 (2026-08-29) closed the last five items — the publish/discovery predicate now RESOLVES the
 permanent acquisition record and recomputes the bundle's two digests from it, D1's read contract
 is validated semantically, `sensitivity_params` and D6's datum/cell agreement are pinned again,

@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 049 — Cloudflare Public URL for SAPPHIRE Staging
 
 **Status**: DRAFT

@@ -1,8 +1,11 @@
+---
+status: PARTIAL
+---
+
 # Plan 111 — Benchmarking SAPPHIRE forecasts against BAFU's operational forecasts
 
-**Status:** READY — plan-reviewed 2026-07-10 (3 rounds). **In implementation: the route-C
-collector only** (see the Override below). The scoring half (G2 pre-registration + G3
-scorer) stays **BLOCKED on external gate G1**: no benchmark can be computed or published
+**Status:** PARTIAL — the route-C collector shipped. The scoring half (G2 pre-registration + G3
+scorer) remains **BLOCKED on external gate G1**: no benchmark can be computed or published
 until the BAFU request (archive, licence over `/plots/*.json`, publication rights) returns.
 **Two owner amendments now sit on this plan:** the 2026-07-10 collector override (below) and
 the **2026-08-21 Export extension** (see § Non-goals) permitting internal LAN-only read-back

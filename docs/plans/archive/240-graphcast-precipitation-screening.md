@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-04
 plan: 240
 title: M-A12 — screen GraphCast precipitation against the DHM gauges, JJAS 2022-2025 (v1 2022-2024, v3 2025)
@@ -12,7 +12,7 @@ source: AIWP Model Reforecasts (AWS Open Data, noaa-oar-mlwp-data); Codex plan r
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-04, after an independent Codex review returned NEEDS-CHANGES
+**COMPLETE — merged in PR #253 and archived 2026-09-11.** An independent Codex review returned NEEDS-CHANGES
 (acquisition cut ~50 %, four correctness items) and a slim confirming pass returned READY-TO-BUILD
 with all ten folds verified.
 ⚠️ Renumbered 239 → 240: another session took 239 (`239-forcing-cadence-and-skill-sample-gates.md`).

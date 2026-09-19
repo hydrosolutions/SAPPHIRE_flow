@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 047 — Nepal v1 data sources (ECMWF IFS, DHM, ERA5-Land, elevation bands)
 
 **Status**: DRAFT (stub)

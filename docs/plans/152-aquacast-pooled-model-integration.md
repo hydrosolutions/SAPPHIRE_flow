@@ -1191,7 +1191,8 @@ predict at all.
 ## References
 
 - `docs/design/forecast-cycle-redesign.md` — why GROUP stays on the legacy path in Phase 3.
-- `docs/plans/151-...md` (DRAFT, `sapphire-plan151` worktree) — concurrent; see collision map and its
+- `docs/plans/151-...md` (COMPLETE as of 2026-09-11; was DRAFT and concurrent in the `sapphire-plan151` worktree when this
+  plan was written) — see collision map and its
   round-0 blocker B0-1.
 - `docs/plans/135-eqrn-offline-model-onboarding-benchmark.md` — DRAFT; decisions 3, 4, 7, 8 reused.
   **Note:** its "use onboarding as the benchmark harness, not a standalone notebook" premise was cheap

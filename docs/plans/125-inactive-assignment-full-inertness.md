@@ -1,7 +1,7 @@
 ---
 id: 125
 title: Inactive assignments fully inert (supersede Plan 100's all-status drift contract)
-status: DRAFT (stub)
+status: DRAFT
 depends_on: [124]
 owner: unassigned
 created: 2026-07-18

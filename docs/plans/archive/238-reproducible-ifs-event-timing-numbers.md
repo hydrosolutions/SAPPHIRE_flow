@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-04
 plan: 238
 title: M-A11d — make every number in § M-A11c reproducible from tracked code
@@ -12,7 +12,7 @@ source: docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md § M-A11c; Co
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-04, after an independent Codex review returned NEEDS-CHANGES
+**COMPLETE — merged in PR #250 and archived 2026-09-11.** An independent Codex review returned NEEDS-CHANGES
 and its seven findings were folded (D1 weakened, D4 replaced, D7 added, one false claim removed).
 
 ## ⛔ PROPORTIONALITY IS BINDING

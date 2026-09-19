@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 220
 title: M-A11b — the remaining overlapping JJAS seasons, per-year and pooled
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md — independe
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-31, after two independent review rounds and five owner decisions.
+**COMPLETE — merged in PR #234 and archived 2026-09-11.** Two independent review rounds and five owner decisions preceded implementation.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 

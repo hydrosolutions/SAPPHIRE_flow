@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 224
 title: M-A5c — close IMERG's two prerequisites, then measure the volume and stop
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-phase2-recommendation.md § 7.3; PR #229
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-31.
+**COMPLETE — merged in PR #236 and archived 2026-09-11.**
 
 ## ⛔ PROPORTIONALITY IS BINDING
 

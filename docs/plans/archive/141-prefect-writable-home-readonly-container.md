@@ -23,6 +23,9 @@ diagnosis rely on raw container stdout). Pursuing three overlapping drafts (062/
 the work in Plan 103** (grill-me on its D2 log-persistence mechanism → `/plan` → `/implement`); the EROFS
 warning fix rides along as 103's D1. Kept for provenance only; not to be implemented.
 
+**Status update (2026-09-11):** Plan 103 has since been completed (PR #125) and
+archived. It was DRAFT and high-priority when the paragraph above was written.
+
 *(Original DRAFT text below is retained for reference — the design in it is correct but is a subset of Plan
 103's D1.)*
 

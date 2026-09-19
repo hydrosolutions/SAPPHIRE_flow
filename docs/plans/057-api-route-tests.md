@@ -1,3 +1,7 @@
+---
+status: DRAFT
+---
+
 # Plan 057 — API route-module tests (stub)
 
 **Status**: DRAFT (stub)

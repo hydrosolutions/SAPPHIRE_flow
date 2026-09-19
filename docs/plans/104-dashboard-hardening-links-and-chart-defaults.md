@@ -1,3 +1,7 @@
+---
+status: PARTIAL
+---
+
 # Plan 104 — dashboard hardening: links, chart defaults, and skill-chart consistency
 
 **A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — issue 1 of 4 is fixed, issue 2 is

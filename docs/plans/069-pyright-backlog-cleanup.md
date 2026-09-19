@@ -1,3 +1,7 @@
+---
+status: PARTIAL
+---
+
 # Plan 069 — Pyright backlog cleanup: ratchet + drain
 
 **A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — Phase 1 shipped, Phase 2 never

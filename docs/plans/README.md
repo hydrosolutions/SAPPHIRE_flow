@@ -18,7 +18,10 @@ When a plan reaches `COMPLETE`, `git mv` it into [archive/](archive/) **and** gr
 for references first — a plan path is cited from other plans and, in at least one
 case, from a workflow comment; archiving Plan 174 once broke a test that read the
 doc from disk. `ARCHIVED` is a location, not an active status. Historical files
-already in `archive/` retain their legacy labels.
+already in `archive/` keep their legacy `**Status**:` labels, EXCEPT where a legacy label
+contradicts the archived outcome: the 2026-09-18 stale-status audit rewrote eight such labels that
+still read `READY` (097, 103, 107, 111b, 221, 223, 235, 253) because an archived plan reading READY
+is authoritative twice over and reads to an agent as a live order.
 
 **Why this is written down.** An audit on 2026-08-28 scanned for stale statuses and found the
 scan itself could not work: statuses were recorded in three different ways — frontmatter
@@ -79,7 +82,7 @@ exit criteria — Plan 212 owns that deeper screening.
 
 **Held back deliberately, with reasons:**
 - **138** (BAFU precip+temp+runoff regression) — its own body says "**T1 is PARTIAL, not done**". Archiving it would hide outstanding work.
-- **035** (rating-curve provenance) — contradictory: the header says implementation begins at v1, yet `tests/unit/services/test_rating_conversion.py` and a `0035` migration downgrade test already exist. Needs a decision, not a status flip.
+- **035** (rating-curve provenance) — contradictory: the header says implementation begins at v1, yet `tests/unit/services/test_rating_conversion.py` and a `0035` migration downgrade test already exist. The 2026-09-18 audit recorded frontmatter `PARTIAL` from that same evidence, which makes the file machine-readable but does NOT resolve the contradiction — whether the remaining scope is v1 work or already shipped still needs an owner decision before it is archived.
 - **162** (robust database backup) — the work looks shipped, but `tests/unit/ops/test_restore_rehearsal.py:10` cites its path in a docstring. Moving it dangles that reference, and editing a test file is a code change belonging in a PR.
 
 ## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
@@ -336,7 +339,7 @@ exit criteria — Plan 212 owns that deeper screening.
   previously only unit-tested in isolation), and an accurate total-loss re-raise
   message that preserves the original Gateway diagnostic as `__cause__`. See the
   plan doc's "Fixer round" section.
-- **103** — Writable `PREFECT_HOME` under the read-only container — `READY, implemented (hold-at-PR)` — set
+- **103** — Writable `PREFECT_HOME` under the read-only container — `COMPLETE` (#125; archived 2026-09-11) — set
   `PREFECT_HOME=/tmp/prefect` on the 3 client services (worker, worker-ingest, init). **Supersedes 062 and
   141.** Trivial/env-only. The flow-run-**log-persistence** half was **split to
   Plan 142** (2026-07-23) — it needed a load-bearing deployment-entrypoint change.
@@ -345,12 +348,12 @@ exit criteria — Plan 212 owns that deeper screening.
   Load-bearing; depends on 103; needs its own /plan → /implement.
 - **141** — Prefect writable home under read-only container — `SUPERSEDED by 103` — a redundant re-draft of
   103's D1 (`PREFECT_HOME=/tmp/prefect`); folded into 103 (owner 2026-07-22).
-- **097** — Short-lookback observability — `READY` (WF1 plan-review + independent
-  Codex review both converged clean, 2026-07-13) — warn when the delivered lookback
-  is shorter than requested. **Next = WF2 (hold-at-PR).**
+- **097** — Short-lookback observability — `COMPLETE` (#76; archived 2026-09-11) — warn
+  when the delivered lookback is shorter than requested.
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
   **HARD prod prerequisite.** Depends on 046.
-- **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
+- **046** — Mac Mini staging deployment + edge-case suite — `PARTIAL` (was shown here as
+  `IN_PROGRESS`, which the vocabulary above forbids).
 - **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136` (archived).
 - **136 / 175 / 176 / 186 / 189** — **BAFU LINDAS observation archiving — COMPLETE, ARCHIVED
   (2026-08-21).** The whole family is merged and running on the mac-mini in image `0.1.775`:
@@ -369,9 +372,9 @@ exit criteria — Plan 212 owns that deeper screening.
 - **075** — Mac Mini Stream C: glue + one-command bootstrap — `READY`.
 - **084** — Dev-machine deployment validation (2-station runoff-only) — `READY`
   (validated 2026-06-28; reusable harness not fully built).
-- **064** — Supply-chain hardening — `READY` (largely shipped; residuals remain).
-- **069** — Pyright backlog cleanup: ratchet + drain — `READY` (P1 shipped; drain
-  remaining).
+- **064** — Supply-chain hardening — `PARTIAL` (~90% shipped; remaining scope = the e2e tier).
+- **069** — Pyright backlog cleanup: ratchet + drain — `PARTIAL` (Phase 1 ratchet
+  shipped; the `flows/` drain remains).
 - **062** — Prefect state persistence (`PREFECT_HOME` ↔ volume) — `SUPERSEDED by 103` (reconciled
   2026-07-22; also carried a stale SQLite-server premise — prefect-server is Postgres-backed).
 
@@ -410,7 +413,8 @@ exit criteria — Plan 212 owns that deeper screening.
     🔴 **The persisted DB tier is now UNOWNED, deferred to v1**; when it lands the schema model
     is `station_thresholds`, **not** `forecast_qc_overrides` (no PK, no timestamps).
 
-- **106** — v1 (Nepal DHM) critical-path roadmap — `READY` (locked 2026-07-08) — **the
+- **106** — v1 (Nepal DHM) critical-path roadmap — `DRAFT` (was `READY (locked)` until the
+  2026-09-18 audit; waves 0-3 contain completed work, so it must not be implemented as a plan) — **the
   sequencing plan. Read this first for v1 planning.** Locks the wave order (0 stabilize →
   1 forcing → 2 obs/rating → 3 auth/deploy → 4 DHM go-live → 5 v1.x), classifies every
   remaining piece designable-now vs blocked-on-external-knowledge, and lists the
@@ -418,7 +422,7 @@ exit criteria — Plan 212 owns that deeper screening.
   bulletin/Bikram Sambat → v1.x). Reviewed via 2× WF1 plan-review + 2× Codex independent
   review (all fixes applied); the gateway-dispatch fix + multi-year backfill window are
   owned in Plan 082 Tasks 2C/3B.
-- **080** — FI wheel distribution — `DRAFT` (low-pri) — publish `forecastinterface`
+- **080** — FI wheel distribution — `DEFERRED` (low-pri) — publish `forecastinterface`
   as a versioned wheel, migrate off the git-pin, drop the temporary CI wheel-guard
   (Plan 079). **Blocked externally** on FI hitting the private index. Packaging
   prerequisite for a Nepal handover.
@@ -485,8 +489,8 @@ exit criteria — Plan 212 owns that deeper screening.
   now the only protection for the live control-only route — migrates `recap_gateway`-served, non-group stations
   only (D6/D12/D30); MeteoSwiss and group CONTROL stay on the legacy superset path. See
   [151-forecast-redesign-phase3-track-resolution-assembly.md](archive/151-forecast-redesign-phase3-track-resolution-assembly.md).
-- **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
-  directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
+- **124** — Station active-assignment consistency — `COMPLETE` (#95), archived. It was
+  scope-locked and cleared to implement directly on 2026-07-18, and then was: NARROW — INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
   **all-status** (Plan 100 untouched). Fix = a separate active-filtered view for forecasting/alerts,
   raw dict kept for drift. (`plan` workflow escalated 3× by over-scoping a tiny fix — implementing
@@ -528,7 +532,7 @@ exit criteria — Plan 212 owns that deeper screening.
   (never target-derived, never a read-token) enforced pre-write on every flow/CLI write path, with success-path
   mutation+audit atomicity; hardened through 3 independent Codex rounds. Unblocks Flow-0 Nepal onboarding. See
   [archive/147-auth-rbac-tenant-isolation.md](archive/147-auth-rbac-tenant-isolation.md).
-- **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
+- **035** — Rating-curve provenance for skill integrity — `PARTIAL` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,
   #112 Flow 2 step-2.5 derivation, #113 TOML onboarding), 2026-07-21.** Move to archive/ once
@@ -559,8 +563,10 @@ exit criteria — Plan 212 owns that deeper screening.
   prerequisite, not a companion. And **Plan 194's device predicate does not port**: meaningless on S3,
   and on EBS it passes trivially while the volume still shares an AZ with the database — a green light
   for separation that does not exist. Four decisions open.
-- **102** — Dashboard multi-parameter observation visibility — `READY`.
-- **104** — Dashboard hardening (links, chart defaults, skill-chart) — `READY`.
+- **102** — Dashboard multi-parameter observation visibility — `PARTIAL` (per-parameter
+  selector shipped; the ratified multi-panel layout did not).
+- **104** — Dashboard hardening (links, chart defaults, skill-chart) — `PARTIAL` (issue 1
+  of 4 fixed; issue 2 open, 3-4 unassessed).
 - **099** — Dashboard display timezone — **P1 shipped** (UTC axis labels, #59); **P2
   pending** (UTC↔Europe/Zurich toggle).
 - **090** — NWP incomplete-cycle selection + horizon-coverage — **P1 shipped**
@@ -587,7 +593,8 @@ exit criteria — Plan 212 owns that deeper screening.
   not members, ~5-day horizon) to a quarantined parquet store; evaluation-only,
   forward-only. Dev collection validated 2026-07-10. G3 scorer + any published
   comparison stay gated on the (unsent) BAFU licence request.
-- **111b** — Mac-mini deployment runbook for the collector — `READY (runbook)` —
+- **111b** — Mac-mini deployment runbook for the collector — `COMPLETE` (runbook; #73,
+  archived 2026-09-11) —
   deploy wiring in PR #73; hourly schedule + quarantined volume + overlay switch.
   See [111b-bafu-collector-macmini-deployment.md](archive/111b-bafu-collector-macmini-deployment.md).
 - **071** — v0b weather-history: MeteoSwiss daily reanalysis adapter — `DRAFT`.
@@ -602,8 +609,8 @@ exit criteria — Plan 212 owns that deeper screening.
 - **231 / 232 / 233** — `SUPERSEDED` by 242 after PR #247 dogfood showed their
   manifests, fingerprints, evidence schemas, and confirmation mechanics made the
   workflows slower and less reliable.
-- **242** — Plain workflow prompts — `READY` — remove automated plan and
-  implementation engines; keep three small prompts and owner-run review passes.
+- **242** — Plain workflow prompts — `COMPLETE` — removed the automated plan and
+  implementation engines; kept three small prompts and owner-run review passes.
 - **241** — Adopt the declared horizon semantics — `READY` — the FI adapter
   dropped a model's `AT_MOST`/`min_future_steps` declaration, so the resolver
   could never see it; T4 then persists a forecast's cadence, which T2/T3 make
@@ -633,8 +640,8 @@ exit criteria — Plan 212 owns that deeper screening.
 
 - **039** — Sensor/Model failure visibility — `DEFERRED` → Flow 4 (pipeline
   monitoring).
-- **042** — API Key Auth + Client SDK — `DEFERRED` → post-v0 (but see the multi-tenant
-  gap below — a Nepal handover needs auth/RBAC).
+- **042** — API Key Auth + Client SDK — `PARTIAL` — auth/RBAC/audit and tenant isolation
+  shipped via archived Plan 147; the client-SDK half stays deferred to post-v0.
 
 ## v1 gaps — work with NO plan yet (draft before the waves that need them)
 
@@ -658,8 +665,10 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
    tracked in Plan 117.
 6. **Rating-curve h→Q ingestion + reprocessing** (Flow 12 Branch A) — 035 covers
    provenance only.
-7. **Auth / RBAC / audit** for the multi-tenant handover (Plan 042 deferral is
-   insufficient).
+7. ~~**Auth / RBAC / audit** for the multi-tenant handover~~ — **no longer a gap**:
+   shipped by archived Plan 147 (`status: COMPLETE`, 2026-08-10), which folded in
+   the deferred Plan 042. Only 042's client-SDK half remains, deferred to post-v0
+   rather than unplanned.
 8. **Flow 4 pipeline monitoring** full build (v0 is basic-only; 039 folds in).
 9. **Bikram Sambat calendar + bulletin generation** (Nepal official reporting).
 

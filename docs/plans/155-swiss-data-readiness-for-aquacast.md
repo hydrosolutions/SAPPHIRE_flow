@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-12
 plan: 155
 title: Swiss data readiness for aquacast — HydroATLAS basin package, static aliasing, gap-free forcing depth
@@ -13,7 +13,7 @@ supersedes: []
 
 ## Status
 
-**READY — PARTIALLY MERGED. T1 + T1b + T2 are on `main`; T0b and T3 are not built.**
+**PARTIAL. T1 + T1b + T2 are on `main`; T0b and T3 are not built.**
 *(Bookkeeping corrected 2026-08-27: this block previously read a bare `READY` plus "Committed on
 `feat/plan-155-caravan-statics` (hold-at-PR)", which had been true and then stopped being true. The
 branch merged and the header was never updated, so the plan read as unstarted while half of it was

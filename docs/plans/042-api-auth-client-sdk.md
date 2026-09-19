@@ -1,6 +1,11 @@
+---
+status: PARTIAL
+---
+
 # Plan 042 — API Key Auth + Client SDK
 
-**Status**: DEFERRED (post-v0 deployment, target v0b)
+**Status**: PARTIAL — auth/RBAC/audit and tenant isolation were implemented by archived Plan 147;
+the client SDK portion remains deferred.
 **Phase**: 9b (API auth + consumer interface)
 **Depends on**: Plan 041 (REST API endpoints, deployed and stable)
 

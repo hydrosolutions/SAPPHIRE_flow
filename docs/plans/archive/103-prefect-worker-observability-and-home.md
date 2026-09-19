@@ -1,6 +1,6 @@
 # Plan 103 — Writable `PREFECT_HOME` under the read-only container
 
-**Status**: READY
+**Status**: COMPLETE (implemented in PR #125; archived 2026-09-11)
 **Priority**: high — the worker logs a `Failed to create the Prefect home
 directory` warning on every start, and the in-container Prefect CLI (e.g.
 `prefect flow-run logs <id>`) fails until you manually pass `-e

@@ -1,6 +1,11 @@
+---
+status: DRAFT
+---
+
 # Plan 106 — v1 (Nepal DHM) Critical-Path Roadmap
 
-**Status:** READY (locked 2026-07-08)
+**Status:** DRAFT — stale roadmap. Waves 0–3 contain substantial completed work and this document
+must be refreshed or replaced before it can govern sequencing again. Do not implement it as a plan.
 **Type:** Roadmap / sequencing plan (no code — sequences other plans, identifies knowledge gaps)
 **Owner:** Bea (marti@hydrosolutions.ch)
 **Created:** 2026-07-08

@@ -58,8 +58,8 @@ The single-vs-ensemble distinction is **already modelled and wired**; reuse it (
 - Assignment status is now **active-filtered** for operational consumers — the active-only
   view `active_model_assignments` is already built in the flow
   (`run_forecast_cycle.py:1468`, `_active_only(...)`) and consumed by forecasting, input
-  assembly, and alert priority (Plan 124; its plan doc is still `status: DRAFT`, but the
-  filter is in the code). Membership aggregation **must use that same ACTIVE set**.
+  assembly, and alert priority (implemented by archived Plan 124). Membership aggregation
+  **must use that same ACTIVE set**.
 - **Storage has no run-level membership boundary.** `weather_forecasts` is keyed by
   `(station_id, nwp_source, cycle_time, valid_time, parameter, spatial_type, band_id, member_id)`
   (`db/metadata.py:400-410`, `member_id` in the unique key), and inserts are

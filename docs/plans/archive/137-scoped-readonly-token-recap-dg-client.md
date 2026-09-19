@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-21
 plan: 137
 title: Scoped read-only credential for recap-dg-client — replace the broad personal token with a repo-scoped read-only credential (fine-grained PAT or GitHub App install token — grill-me), use it in Actions + Dependabot + build hosts, revoke the broad token
@@ -269,6 +269,8 @@ opted for a scoped read-only credential rather than exposing the broad token to 
 workflows. `/plan`-reviewed (2026-07-21): root-cause corrected to the two-fresh-clone-jobs picture,
 live token audit + GitHub App alternative folded, over-engineered renewal automation trimmed.
 **Credential grill-me RESOLVED (owner, 2026-07-21): fine-grained PAT.** Interim hardening ahead of the
-private-index-wheel endgame. **READY** — owner runs the 🔑 steps (mint the fine-grained PAT); I run the
-secret + host-file updates + verification once it exists. Relates to Plan 064 (supply-chain hardening),
+private-index-wheel endgame. **COMPLETE** — the fine-grained PAT rotation plus secret/host-file
+updates and verification are recorded in commit `c998f7e0`. (That commit is a one-line documentation
+edit whose own subject reads "Plan 135 executed" — a renumbering artifact. It RECORDS the rotation;
+the rotation itself was an owner runbook action with no code, which is why COMPLETE is correct here.) Relates to Plan 064 (supply-chain hardening),
 Plan 079/080 (FI/recap distribution), Plan 121 (secret-wiring inventory), and `security.md:395`.

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-31
 plan: 218
 title: Ship the operator scripts in the runtime image so a deployment can be reproduced
@@ -13,7 +13,8 @@ source: 2026-08-31 — scripts/import_caravan_attributes.py, merged by Plan 188 
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-31 after two independent Codex rounds and a direct verification of the curated list (D3a).
+**PARTIAL.** The curated image changes landed, but the image-level verification gates listed below
+have not run.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -183,7 +184,7 @@ delta, and **no check that `resolve_required_static_names()` returns non-empty**
 the *only* real proof, because `--help` exits before that resolution runs. These need docker plus
 both build secrets and were not runnable where the implementation happened.
 
-**Therefore this plan stays READY, not COMPLETE.** Run the image gates when host access returns and
+**Therefore this plan stays PARTIAL, not COMPLETE.** Run the image gates when host access returns and
 record the results here, as D3a's verification was recorded.
 
 ## Exit gates

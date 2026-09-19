@@ -11,7 +11,10 @@ depends_on:
 
 # Plan 147 — Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless)
 
-**Status**: READY — owner-flipped 2026-07-23 (converged after /plan escalation + 2 Codex rounds; R4-read + R6-RLS accepted as v1.x deferrals). Build slice-by-slice, hold-at-PR.
+**Status**: COMPLETE — all five slices merged 2026-08-10 (#130 tenant model, #131 audit-log substrate,
+#132 access-token auth + enforcement, #134 least-privilege DB roles, #140 tenant write-isolation);
+archived. Previously READY — owner-flipped 2026-07-23 (converged after /plan escalation + 2 Codex
+rounds; R4-read + R6-RLS accepted as v1.x deferrals), built slice-by-slice, hold-at-PR.
 **Phase**: v1
 **Owner**: Bea (marti@hydrosolutions.ch)
 **Created**: 2026-07-23

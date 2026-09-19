@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-10
 plan: 151
 title: Forecast-cycle redesign Phase 3 — ForcingTrackKey projection + per-track resolution + per-assignment assembly (one atomic phase)
@@ -42,7 +42,7 @@ should be inert there — but this is the first behaviour-changing task in the p
 first forecast cycle after the mini is next deployed** rather than assuming.
 
 ## Status
-**READY — Phase 3 of the forecast-cycle redesign** (owner-ratified 2026-08-11: D26 freshness cost accepted, D31 spec
+**COMPLETE — Phase 3 of the forecast-cycle redesign; archived 2026-09-11.** (Owner-ratified 2026-08-11: D26 freshness cost accepted, D31 spec
 edit approved, D21 global sweep confirmed — **no open forks remained**).
 **Staleness-corrected 2026-08-18** against `main` `c81041e` after 142 commits of drift: every `file:line` re-anchored
 and every claim re-verified. **Three** corrections change a ratified decision's observable consequence and are filed

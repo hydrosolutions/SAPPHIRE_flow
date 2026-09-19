@@ -1,6 +1,10 @@
+---
+status: PARTIAL
+---
+
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
-**Status**: IN_PROGRESS
+**Status**: PARTIAL — Streams A–C are delivered; Stream D operational validation remains open.
 **Revision**: 13 — Stream C glue and one-command bootstrap were delivered at commit `514ff36` / tag `v0.1.403` and closed out by Plan 075 (audit + docs + rot gate): launchd plists/wrappers, Mac Mini overlay, watchdog, runbook, bootstrap dry-run, shellcheck CI/pre-commit coverage, and self-guarded local `plutil` plist lint are green. caddy TLS is not part of Stream C; staging remains LAN-only/plain HTTP, with public HTTPS deferred to Plan 049. Stream D operational validation remains open. (2026-06-01)
 **Revision**: 12 — Plan 067 DONE (commit `<pending>`). Findings F4 and F5 from the 2026-04-21 dress rehearsal are resolved: F4 (availability probe "no cycle available within 3 fallback steps") — H-B confirmed; the prefix-based probe was ordering-fragile and is replaced by T2a's property-based `forecast:reference_datetime` check. F5 (`STAC pagination exceeded 100 pages`) — H-C + H-D confirmed; the `datetime=<cycle>/<cycle+120h>` filter over-fetches ≈4 cycles, and even one cycle exceeds the cap, so T2b adds a client-side `forecast:reference_datetime` filter and T4a raises `_MAX_PAGINATION_PAGES` to 800 (552-page full-window walk × 1.5 safety). Bonus latent bug caught and fixed via T3.d: `_CYCLE_HOURS` was 3-hourly but MeteoSwiss publishes ICON-CH2-EPS at 6 h cadence per the collection description — corrected to `(0, 6, 12, 18)` with the fallback-step count derived as `ceil(nwp_max_fallback_age_hours / 6.0)` (Plan 067 D2). §A3 step 8 is reinstated and uses the canonical direct-invoke template already documented under Rev 11 (now updated by T3.c to pass the derived `max_fallback_steps` kwarg). (2026-04-22)
 

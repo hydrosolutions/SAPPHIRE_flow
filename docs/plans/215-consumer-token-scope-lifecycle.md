@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-29
 plan: 215
 title: Consumer token scope has no lifecycle — widening it requires raw SQL, and every station created from now on repeats it
@@ -13,9 +13,8 @@ source: 2026-08-29 — granting station 2011 to the map token required a hand-wr
 
 ## Status
 
-**READY** — owner confirmed 2026-08-29. D1, T3 and D2.2's unfiltered-tenant question are all
-resolved; the review round's four findings were verified against source and are folded. Cleared for
-`/implement`, with **T9 excluded**: it is an operator step against production and stays the owner's.
+**PARTIAL** — the code merged in PR #230. **T9 remains excluded from implementation**: it is an
+operator cutover against production and stays the owner's.
 
 Two residuals remain open and are deliberately **not** blocking — neither affects the code being
 built:

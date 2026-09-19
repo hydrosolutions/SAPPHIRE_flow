@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DRAFT
 created: 2026-07-17
 plan: 122
 title: Operational one-shot ops → in-image surface (backfill deployment + validate CLI); retire the duplicate onboard.py script
@@ -13,6 +13,12 @@ no action. `scripts/onboard.py` and `src/sapphire_flow/services/reanalysis_backf
 in-image surface this plan is about does not: `[project.scripts]` in `pyproject.toml:59-60` exposes
 only `check`, and there is no packaged entrypoint for the weather-history backfill or the
 forcing-reference validation.
+
+**Housekeeping verdict (2026-09-11) — supersedes the A1 verdict above, which stands as the record of
+what was true on 2026-08-28.** DRAFT — Plan 218 subsequently shipped a curated in-image script
+surface using a mechanism this plan rejected, so its original READY scope is no longer safe to
+execute. The remaining backfill-flow, validation-entrypoint and duplicate-script retirement work
+needs a fresh owner scope decision and another complete review.
 
 # Plan 122 — Operational one-shot ops → in-image surface (backfill deployment + validate CLI); retire onboard.py
 
