@@ -11,7 +11,7 @@ blocks: []
 
 # Plan 114 — `StationWeatherSource` forecast/reanalysis role field
 
-> ## ⛔ SUPERSEDED by [Plan 115](115-weather-source-identity-model.md) (2026-07-14)
+> ## ⛔ SUPERSEDED by [Plan 115](../115-weather-source-identity-model.md) (2026-07-14)
 >
 > **Do not implement from this document.** Its reviewed content is carried forward into
 > Plan 115 — the role enum, the `0030`/`0032` migration split, the per-station containment

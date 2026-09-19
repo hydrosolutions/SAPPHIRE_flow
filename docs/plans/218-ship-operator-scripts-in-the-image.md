@@ -55,7 +55,7 @@ silently — the tool merges green, and the gap only appears when someone tries 
 **⚠️ This does NOT block Plan 188 T4, and an earlier draft of this plan wrongly said it did.**
 T4 already carries a reviewed recipe that works *without* any image change: it bind-mounts both
 the CLI and the parquet into a one-off `prefect-worker`-based container
-(`docs/plans/188-caravan-statics-operational-import.md` § T4). That recipe additionally requires
+(`docs/plans/archive/188-caravan-statics-operational-import.md` § T4). That recipe additionally requires
 **both** private-repo secrets at build time, preserving `/entrypoint.sh` (where `DATABASE_URL` is
 assembled, `docker/entrypoint.sh:10-23`), and **explicitly resolving the one-off
 `WITH_AQUACAST=1` tag** — because `docker-compose.yml:80-83` pins `image: sapphire-flow:${VERSION}`

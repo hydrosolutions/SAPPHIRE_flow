@@ -3,7 +3,7 @@
 **Date**: 2026-09-04
 **Status**: Implemented on `feat/plan-235-skill-generations`, held at PR.
 **Owners**: Bea (orchestrator)
-**Cross-reference**: `docs/plans/235-skill-score-generations.md` (source plan),
+**Cross-reference**: `docs/plans/archive/235-skill-score-generations.md` (source plan),
 `docs/decisions/plan-228-hindcast-skill-resampling.md` (D3 — the recompute this
 plan unblocks), `alembic/versions/0054_skill_score_generations.py`.
 

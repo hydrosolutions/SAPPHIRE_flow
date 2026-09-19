@@ -590,7 +590,7 @@ def product_version_for_comparison(value: str) -> str:
 #:
 #: ⛔ It is NOT applied to the archive route. Plan 225's hazard section is
 #: explicit — "Do NOT relax, parameterise or share the existing contract"
-#: (`docs/plans/225-imerg-opendap-subset-route.md`) — and D1 keeps
+#: (`docs/plans/archive/225-imerg-opendap-subset-route.md`) — and D1 keeps
 #: `assert_contract_consistent` exactly as strict as it has always been. The
 #: MEASURED failure is on the subset route; the archive route has ONE banked
 #: granule (2020-07), so extending the tolerance there would be REASONED, not

@@ -17,9 +17,9 @@ children: [115a, 115b, 115c]
 **DRAFT — umbrella.** No code lands from *this* document; it holds the shared analysis and
 the locked decisions so the three child plans need not repeat them.
 
-- **[115a — identity, accessors, consumers](115a-weather-source-identity-schema.md)** — schema +
+- **[115a — identity, accessors, consumers](archive/115a-weather-source-identity-schema.md)** — schema +
   routing. No behaviour flip. **This is what unblocks 081/082.**
-- **[115b — Flow 6 reachability + hybrid default](115b-weather-flow6-reachability.md)** — the
+- **[115b — Flow 6 reachability + hybrid default](archive/115b-weather-flow6-reachability.md)** — the
   risky one. Deserves to fail alone.
 - **[115c — cleanup](115c-weather-identity-cleanup.md)** — `0032` NOT NULL, API/dashboard, docs.
 
@@ -80,7 +80,7 @@ incoherent. Corrected after review.)*
 
 ### D2 — `hybrid` becomes the production default for reanalysis reads
 
-> ## ⚠️ D2 IS SUPERSEDED by [115b §0](115b-weather-flow6-reachability.md) (owner, 2026-07-14)
+> ## ⚠️ D2 IS SUPERSEDED by [115b §0](archive/115b-weather-flow6-reachability.md) (owner, 2026-07-14)
 >
 > **What survives:** `hybrid` still becomes the production default. It is the only reader that resolves
 > across provenance tags, and we need exactly that.

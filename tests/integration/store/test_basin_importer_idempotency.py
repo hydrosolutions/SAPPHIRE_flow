@@ -1,7 +1,7 @@
 """Plan 120 Phase 2 (Task 2C) — incremental upsert + versioned corrections +
 idempotency + the correction→affected-artifact set.
 
-Red-first acceptance tests locked from ``docs/plans/120-basin-static-
+Red-first acceptance tests locked from ``docs/plans/archive/120-basin-static-
 importer.md`` Task 2C. The re-run and correction cases MUST FAIL against the
 insert-only ``PgBasinStore.store_basin`` path alone (`basin_store.py:43`) —
 they exercise ``store/basin_importer.py``'s idempotency/correction branch

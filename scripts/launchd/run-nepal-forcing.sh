@@ -14,7 +14,7 @@
 # unmonitored (the host watchdog knows nothing about it). Feature-off by
 # default: no URL file, no ping, no error.
 #
-# Spec: docs/plans/192-recap-second-stack-12300-operational-test.md
+# Spec: docs/plans/archive/192-recap-second-stack-12300-operational-test.md
 # Runbook: docs/operations/nepal-forcing-runbook.md
 
 # Deliberately NOT `-e`: this script must read the run's exit code and branch

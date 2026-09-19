@@ -1143,7 +1143,7 @@ matched-resolution ladder/Pyramid peak from the SAME paired population — never
 `scripts/dhm_precip/coloc_run.py` (the runner: both pairs, both windows, full profile tables, the exact
 two-station synthesis, and a Markdown report writer).
 
-**What the fixer round corrected** (`docs/plans/182-co-located-gauge-adjudication.md` review, 4
+**What the fixer round corrected** (`docs/plans/archive/182-co-located-gauge-adjudication.md` review, 4
 blockers + 5 majors): (1) the declared UTC->NPT offset was dead configuration — DHM (UTC) and Pyramid
 (NPT) hours were compared raw; (2) the D5 disjoint-period stationarity split at year 2020 was
 structurally broken (the real DHM source record only starts 2020-01-01 — `pre` was always empty and

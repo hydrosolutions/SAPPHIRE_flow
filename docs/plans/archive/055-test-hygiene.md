@@ -159,7 +159,7 @@ deliberate stand-in, not a bug.
      (a) BAFU LINDAS is real-time only — the adapter fetches the current
      reading, not a time window;
      (b) until a scheduled collection pipeline (see
-     `docs/plans/058-bafu-lindas-archive-collection.md`) builds an operational
+     `docs/plans/archive/058-bafu-lindas-archive-collection.md`) builds an operational
      archive of ≥6 months of real readings, the fixture stays synthetic on
      purpose;
      (c) when the archive is ready, re-record per `docs/v0-scope.md` §E1.
