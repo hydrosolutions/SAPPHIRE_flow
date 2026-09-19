@@ -370,10 +370,24 @@ Every curve keeps the `valid_to` DHM gave it. `fetch_active_curve()` consequentl
 `None` for all six stations, and that is the correct answer: no station has a currently
 valid table.
 
-**D4 — Transcribed station metadata. CLOSED: owner will confirm, and transcription is
-permitted.** DHM has confirmed we may transcribe the scanned station list (D8). The
-coordinates, elevations and drainage areas in § The six stations still need the owner's
-spot-check before they become station rows.
+**D4 — Transcribed station metadata. CLOSED: owner-confirmed 2026-09-19.** DHM has
+confirmed we may transcribe the scanned station list (D8).
+
+- **Station codes: CONFIRMED by the owner, 2026-09-19.** 447, 450, 604.5, 647, 670, 684
+  may become station rows.
+- **Coordinates: CONFIRMED by the owner, 2026-09-18**, by inspecting all three sources on
+  topographic and satellite imagery. The **published station list is the source of truth**.
+  The river-watch/BIPAD portal is a water-level source, NOT a position source: station 670
+  is plotted ~1.3 km away on a hillside, and 450 is ~1.7 km out. The reviewed GIS layer
+  (`nepal_gauge_outlets.csv`) is not a fallback either — it places 647 1.9 km from a
+  position DHM's own two channels agree on to 38 m, and contains no Turkeghat at all.
+- **Elevations and drainage areas: still unconfirmed.** They were not part of either
+  spot-check. The published drainage areas are, however, usable as a CHECK on basin
+  delineation rather than as an input to it.
+
+⚠️ A pour point that is wrong by ~1 km on a hillside still delineates a watershed — just
+the wrong one, silently, with nothing raised. Basin extraction must snap to the drainage
+network and compare the delineated area against the published area before accepting it.
 
 **D5 — Import target. CLOSED: side dataset first, and the data may not be published.**
 See § Data handling — the publication constraint is the load-bearing half of this answer
