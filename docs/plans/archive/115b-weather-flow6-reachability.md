@@ -11,7 +11,7 @@ blocks: [115c]
 
 # Plan 115b — The forcing pipeline
 
-> Shared context and D1/D3 live in the umbrella: [Plan 115](115-weather-source-identity-model.md).
+> Shared context and D1/D3 live in the umbrella: [Plan 115](../115-weather-source-identity-model.md).
 > **D2 is superseded by §0 below.**
 
 ## Status

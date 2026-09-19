@@ -227,7 +227,7 @@ non-empty. There is no `GZipMiddleware`. See D11.
 
 `pyproject.toml:59-60` declares exactly one script (`check`). Every operational CLI is invoked as
 `python -m sapphire_flow.cli.<module>` (`docs/conventions.md:76`,
-`docs/plans/071-weather-history-meteoswiss-reanalysis.md:349`). `cli/bafu_observation_audit.py` is the existing archive-reading CLI and
+`docs/plans/archive/071-weather-history-meteoswiss-reanalysis.md:349`). `cli/bafu_observation_audit.py` is the existing archive-reading CLI and
 is the pattern to mirror.
 
 ---

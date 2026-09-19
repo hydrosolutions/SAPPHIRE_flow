@@ -12,7 +12,7 @@ blocks: [082, 115b, 115c]
 # Plan 115a — Identity: role field, store accessors, consumer rewiring
 
 > Shared context, root cause and locked decisions D1–D3 live in the umbrella:
-> [Plan 115](115-weather-source-identity-model.md). Read it first.
+> [Plan 115](../115-weather-source-identity-model.md). Read it first.
 
 ## Status
 

@@ -1684,7 +1684,7 @@ def _fetch_obs_timestamps_task(
 # Plan 151 T8a — forcing-resolution policy carrier + DORMANT helpers
 # (D11, D28, D30). NONE of these have a production call site from the cycle
 # body in this run — see "Build scope for THIS run" in
-# docs/plans/151-forecast-redesign-phase3-track-resolution-assembly.md. T8b
+# docs/plans/archive/151-forecast-redesign-phase3-track-resolution-assembly.md. T8b
 # installs them. Named WITHOUT a leading underscore, unlike this module's
 # wired-in helpers (`_fetch_nwp_task`, `_build_recap_forecast_adapter`) —
 # mirroring T5-T7's public dormant services-layer track-resolution entry

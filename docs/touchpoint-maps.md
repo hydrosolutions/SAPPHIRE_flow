@@ -1102,7 +1102,7 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   cursor-correct but unserved until M-G2, and no QC rule matches
   `"precipitation"` yet (M-I4). See
   `docs/design/dhm-precipitation-milestones.md` § M-G1 and
-  `docs/plans/217-weather-station-observation-ingest.md`.
+  `docs/plans/archive/217-weather-station-observation-ingest.md`.
 - the two cron defaults, each living in TWO places (compose init env + the Python
   fallback) — see the Prefect/Docker/deployment map for the general pattern
 - Plan 176 D2/D3: `collect_bafu_observations_flow`'s `cycle_at` is now DATA-derived

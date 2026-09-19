@@ -6,7 +6,7 @@ title: M-A5d — retrieve IMERG through the OPeNDAP subset route, 847 GB → 2.7
 scope: Add a second, separately-frozen read contract for GES DISC's OPeNDAP subset response and retrieve the full 2020-2025 IMERG Early window through it. NOT a replacement for the archive route, NOT a gauge comparison, NOT any skill claim.
 depends_on: [211, 224]
 blocks: [any IMERG comparison]
-source: measured subset probe 2026-08-31; docs/plans/224-imerg-prerequisites-and-projection.md
+source: measured subset probe 2026-08-31; docs/plans/archive/224-imerg-prerequisites-and-projection.md
 ---
 
 # Plan 225 — M-A5d the IMERG OPeNDAP subset route

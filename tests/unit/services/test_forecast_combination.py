@@ -604,7 +604,7 @@ class TestCombineEnsemblesPooledGridAlignment:
     disjoint or partially-overlapping grids used to concatenate into a
     union ensemble whose member count (and therefore the median)
     alternated timestamp to timestamp
-    (`docs/plans/222-pooled-grid-alignment.md`)."""
+    (`docs/plans/archive/222-pooled-grid-alignment.md`)."""
 
     def test_disjoint_grids_drop_the_parameter(self) -> None:
         """Today: a union ensemble with an alternating member count — the
@@ -962,7 +962,7 @@ class TestBuildCombinedForecastsUniformSpacing:
     that a count-only floor still persists. `store/forecast_store.py`
     derives `native_step_seconds` from the first two rows on readback, so
     an irregular grid publishes one misleading step — the original defect
-    in a new costume (`docs/plans/222-pooled-grid-alignment.md` D6)."""
+    in a new costume (`docs/plans/archive/222-pooled-grid-alignment.md` D6)."""
 
     def test_interior_incomplete_timestamp_yields_ragged_grid_not_persisted(
         self,

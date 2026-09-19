@@ -51,7 +51,7 @@ moment of the request.
 Building a fixture that represents real BAFU data therefore requires
 *collecting the current reading repeatedly over time* — not issuing a
 one-off recording command. Until a scheduled collection pipeline
-(see `docs/plans/058-bafu-lindas-archive-collection.md`) accumulates ≥6
+(see `docs/plans/archive/058-bafu-lindas-archive-collection.md`) accumulates ≥6
 months of real readings (the gate defined in `docs/v0-scope.md` §E1), the
 synthetic fixture is the right stand-in.
 
@@ -228,7 +228,7 @@ Two band-aid mechanisms are active during the accumulation phase:
   percentages to structlog. If any station falls below 90% coverage for two consecutive
   days, an ops check is due.
 
-Both are described in `docs/plans/058-bafu-lindas-archive-collection.md` (T5 and T6).
+Both are described in `docs/plans/archive/058-bafu-lindas-archive-collection.md` (T5 and T6).
 
 ## Known limitations
 

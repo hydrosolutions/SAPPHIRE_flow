@@ -1,6 +1,7 @@
 """Plan 217 (M-G1) — weather-station observation ingest: station selection,
 eligibility and cursor. Does NOT test precipitation QC rules (M-I4) or a
-real DHM adapter (M-G2); see docs/plans/217-weather-station-observation-ingest.md.
+real DHM adapter (M-G2); see
+docs/plans/archive/217-weather-station-observation-ingest.md.
 """
 
 from __future__ import annotations

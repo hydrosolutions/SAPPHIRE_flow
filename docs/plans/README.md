@@ -488,7 +488,7 @@ exit criteria — Plan 212 owns that deeper screening.
   **T8b** (this run) wires the `isinstance` dispatch, re-scopes Phase A, and adds the flow-level goldens that are
   now the only protection for the live control-only route — migrates `recap_gateway`-served, non-group stations
   only (D6/D12/D30); MeteoSwiss and group CONTROL stay on the legacy superset path. See
-  [151-forecast-redesign-phase3-track-resolution-assembly.md](151-forecast-redesign-phase3-track-resolution-assembly.md).
+  [151-forecast-redesign-phase3-track-resolution-assembly.md](archive/151-forecast-redesign-phase3-track-resolution-assembly.md).
 - **124** — Station active-assignment consistency — `COMPLETE` (#95), archived. It was
   scope-locked and cleared to implement directly on 2026-07-18, and then was: NARROW — INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
@@ -596,7 +596,7 @@ exit criteria — Plan 212 owns that deeper screening.
 - **111b** — Mac-mini deployment runbook for the collector — `COMPLETE` (runbook; #73,
   archived 2026-09-11) —
   deploy wiring in PR #73; hourly schedule + quarantined volume + overlay switch.
-  See [111b-bafu-collector-macmini-deployment.md](111b-bafu-collector-macmini-deployment.md).
+  See [111b-bafu-collector-macmini-deployment.md](archive/111b-bafu-collector-macmini-deployment.md).
 - **071** — v0b weather-history: MeteoSwiss daily reanalysis adapter — `DRAFT`.
 - **072** — v0b weather-history: hybrid forcing resolver — `DRAFT`.
 - **066** — Configurable retrain data-window — `DRAFT`.

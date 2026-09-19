@@ -1,6 +1,6 @@
 """Plan 120 Task 3A — importer orchestration + acceptance report.
 
-Red-first acceptance tests locked from ``docs/plans/120-basin-static-
+Red-first acceptance tests locked from ``docs/plans/archive/120-basin-static-
 importer.md`` Task 3A, exercised against the real, contract-compliant
 fixture at ``tests/fixtures/basin_static/nepal-dhm-basins/`` (loaded via the
 Phase-1 loader), wrapped by ``services/basin_importer.py`` (Task 3A) around
