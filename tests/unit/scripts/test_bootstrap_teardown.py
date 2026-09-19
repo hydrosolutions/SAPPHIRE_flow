@@ -321,6 +321,26 @@ exit 2
 """
 
 
+# A pass-through `awk` unless FAKE_AWK_RC is set.
+#
+# `_launchd_services_block`'s own logic returns only 0 or 1, so a test that
+# asserts the reported code can be satisfied by hardcoding "1". The extractor
+# can still exit 127 (no awk on PATH), 126, or an awk-internal status, and the
+# operator's remedy differs per code -- so the script must interpolate the real
+# value, not a literal. Forcing a distinctive code here is the only way to
+# prove it does.
+_FAKE_AWK = """#!/bin/bash
+if [ -n "${FAKE_AWK_RC:-}" ]; then
+  exit "${FAKE_AWK_RC}"
+fi
+for real in /usr/bin/awk /bin/awk; do
+  [ -x "${real}" ] && exec "${real}" "$@"
+done
+echo "fake awk: no real awk on this host" >&2
+exit 127
+"""
+
+
 def _fake_bin(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -462,6 +482,25 @@ class TestTeardownStackReportsFailure:
         assert "RC=1" in r.stdout, r.stdout + r.stderr
         assert "could not read the 'services' block" in r.stderr, r.stderr
         assert "the services-block extractor exited 1." in r.stderr, r.stderr
+        assert "NOT assuming" in r.stderr, r.stderr
+
+    def test_the_reported_extractor_code_is_the_real_one_not_a_literal(
+        self, tmp_path: Path
+    ) -> None:
+        """The extractor's own logic yields only 0 or 1, so an assertion on
+        "exited 1" is satisfied by a hardcoded literal. It can still exit 127
+        (no `awk`), 126, or an awk-internal status, and the operator's remedy
+        differs per code. Force a distinctive one and require it back."""
+        # Shim `awk` for this test only -- `_fake_bin` leaves a pre-existing
+        # file alone, and wrapping awk for the whole module doubled its runtime.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        awk = bin_dir / "awk"
+        awk.write_text(_FAKE_AWK)
+        awk.chmod(0o755)
+        r = _run_teardown(tmp_path, DOWN_RC="0", PS_OUT="", FAKE_AWK_RC="42")
+        assert "RC=1" in r.stdout, r.stdout + r.stderr
+        assert "the services-block extractor exited 42." in r.stderr, r.stderr
         assert "NOT assuming" in r.stderr, r.stderr
 
     def test_a_dump_whose_services_block_never_closes_is_unknown_not_clean(
