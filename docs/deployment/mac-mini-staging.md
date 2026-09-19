@@ -795,7 +795,7 @@ form skips.
 
 `import_caravan_attributes.py` additionally needs its input parquet
 bind-mounted into a one-off container — see
-`docs/plans/188-caravan-statics-operational-import.md` §T4 for that
+`docs/plans/archive/188-caravan-statics-operational-import.md` §T4 for that
 recipe (it is not satisfied by this plan alone).
 
 `create_station_group.py` also requires `SAPPHIRE_CONFIG`, respecting

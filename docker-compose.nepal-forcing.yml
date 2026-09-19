@@ -14,7 +14,7 @@
 # `sapphire-nepal_` and cannot collide with the Swiss `sapphire_flow_*` stack.
 # No host ports are published — the runner reaches it on the project network.
 #
-# Spec: docs/plans/192-recap-second-stack-12300-operational-test.md
+# Spec: docs/plans/archive/192-recap-second-stack-12300-operational-test.md
 # Runbook: docs/operations/nepal-forcing-runbook.md
 services:
   postgres:

@@ -231,7 +231,7 @@ The measured gateway behaviour this plan depends on is in the **appendix**, not 
     (`services/track_projection.py:29-33`), so a station with **no model assignment** (A2) yields zero
     tracks and therefore zero forcing; and Plan 151 T8b re-scopes legacy Phase A so it no longer
     fetches/persists for per-track-served stations
-    (`docs/plans/151-forecast-redesign-phase3-track-resolution-assembly.md:910-925`). Choosing (c) means
+    (`docs/plans/archive/151-forecast-redesign-phase3-track-resolution-assembly.md:910-925`). Choosing (c) means
     first creating a real active forcing-requiring assignment — i.e. Plan 139's model work — which changes
     this plan's scope. Recorded here so nobody re-proposes it as a cheap wait.
 

@@ -2,8 +2,8 @@
 
 **Status:** READY (runbook) — dev collection validated 2026-07-10; deploy wiring in PR #73.
 **Owner:** Bea (marti@hydrosolutions.ch)
-**Companion to:** [Plan 111](111-bafu-forecast-benchmarking.md) (the route-C collector, merged #72).
-**Related:** [Plan 091](091-macmini-nwp-on-data-collection.md) (mac-mini NWP-on runbook, same deploy shape); [[project_plan111_bafu_collector]].
+**Companion to:** [Plan 111](../111-bafu-forecast-benchmarking.md) (the route-C collector, merged #72).
+**Related:** [Plan 091](../091-macmini-nwp-on-data-collection.md) (mac-mini NWP-on runbook, same deploy shape); [[project_plan111_bafu_collector]].
 
 > Operational steps to run the route-C BAFU forecast collector **hourly on the
 > mac-mini**. Collection was validated end-to-end on the dev machine first (53

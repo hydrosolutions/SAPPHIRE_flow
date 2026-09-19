@@ -8,8 +8,8 @@ BAFU stations, produced by exactly one code path
 (`services/forecast_lab/snapshot.py::build_snapshot()`) whether it is served
 over the REST route or written by the CLI export. See the plan docs
 (`docs/plans/archive/198-forecast-lab-snapshot-export.md`,
-`docs/plans/204-forecast-lab-quantile-models-and-pooled.md`,
-`docs/plans/222-pooled-grid-alignment.md`) for the full design rationale —
+`docs/plans/archive/204-forecast-lab-quantile-models-and-pooled.md`,
+`docs/plans/archive/222-pooled-grid-alignment.md`) for the full design rationale —
 this page is the consumer/operator-facing reference.
 
 **Plan 222 (2026-08-31):** fixed a `_pooled` sawtooth caused by pooling

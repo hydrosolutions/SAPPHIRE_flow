@@ -14,7 +14,7 @@ blocks: [115b2]
 > **Design source of truth: [Plan 115b](115b-weather-flow6-reachability.md)** — read §0 (the self-derived
 > series decision), §0a (two-product precip disambiguation), §1 (adapter/archive) and the SrelD contract.
 > This child carries **phase 1 only**, extracted so it can be built and reviewed on its own.
-> Umbrella context/decisions D1–D3: [Plan 115](115-weather-source-identity-model.md).
+> Umbrella context/decisions D1–D3: [Plan 115](../115-weather-source-identity-model.md).
 
 ## Status
 

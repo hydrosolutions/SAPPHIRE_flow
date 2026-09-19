@@ -59,3 +59,7 @@ htmlcov/
 
 # Per-checkout Prefect home (tests/conftest.py) — never shared, never committed
 .prefect/
+
+# Scratch prompt/note files from agent sessions (e.g. scratch_codex_prompt_217.txt,
+# committed by accident). Never a checked-in artifact.
+/scratch_*

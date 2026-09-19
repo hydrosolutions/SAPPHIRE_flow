@@ -82,7 +82,7 @@ def _build_specs() -> list[DeploymentSpec]:
     # 120s total retry deadline under sustained upstream failure; accepted
     # because a healthy run takes ~0.1s, concurrency_limit=1 serialises
     # rather than overlaps runs, and a feed failing that long trips the D4
-    # freshness alert regardless (see docs/plans/189-audit-window-edge-and-
+    # freshness alert regardless (see docs/plans/archive/189-audit-window-edge-and-
     # poll-bound.md § T2).
     cron_bafu_observation = os.environ.get(
         "SCHEDULE_COLLECT_BAFU_OBSERVATIONS",
