@@ -130,7 +130,7 @@ attached.
   full standing.
 - **A feed for 447** — or confirmation that none exists — settles whether v1 is five gauges
   or six.
-- **Nepali QC threshold values**, owned by someone, remove risk 4.
+- **Plan 305 landing** removes risk 4 — it is granted and gated, but not yet written.
 - **Widening `Alert` to carry provenance** unblocks alerting.
 
 ---
