@@ -4,9 +4,28 @@ created: 2026-09-16
 plan: 301
 title: DHM precipitation observations from the BIPAD rainfall reference
 depends_on: [300]
+related: [272, 303]
 ---
 
 # Plan 301 — DHM precipitation observation adapter
+
+## 🔴 Gating prerequisite — added 2026-09-20 by Plan 272 D4
+
+**Plan 303 must land before this plan's precipitation feed goes live.**
+
+`config.toml` declares QC rules for `precipitation` at **86400 s only**. The scheduled
+ingest path infers a series' cadence from a short window and matches it against a rule's
+declared step, so a sub-daily precipitation feed resolves **zero rules**. Under Plan 272
+D5 such rows are stored `QC_UNCHECKED`, and Plan 272's consumer policy then excludes them
+from **alerting, skill scoring, model training, hindcast and the partner export**.
+
+⇒ **If this plan ships first, precipitation is ingested and then used by essentially
+nothing.** Plan 303 adds the rule rows at the cadence this feed actually delivers.
+
+This note exists because Plan 272 granted the number 303 in its own prose and nowhere
+else — by 272's own standard, *"a vague promise is not a deferral"*, a number recorded
+only in the deferring document is a promise wearing a number. Recorded here, in the plan
+that is actually gated.
 
 ## Problem and outcome
 
