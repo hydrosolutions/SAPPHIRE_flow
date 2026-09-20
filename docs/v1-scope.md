@@ -22,6 +22,11 @@ each traceable to a decision that was made deliberately and for good reasons.
 
 ## The six gauges, as they actually stand
 
+⛔ **This table describes INTENT, not running capability. None of the conversion path is
+built.** Plans 302, 272 and 264 are all `DRAFT` and unmerged; `RATING_CURVE_DERIVED` exists
+as an enum member and is called from nowhere in ingest. Read every ✅ below as “designed and
+expected to work”, not “observed working”.
+
 | gauge | live level feed | converts to discharge | trainable model | discharge in its danger band |
 |---|---|---|---|---|
 | 447 Trisuli / Betrawati | ⛔ **absent** | — | — | — |
@@ -42,8 +47,11 @@ the day a feed appears.
 its live level converts through its own rating table to a discharge above its entire 24-year
 record maximum while the portal reports it below warning level; its published danger level
 lies above the top of its own rating table; and its delineated catchment is ~9% larger than
-DHM's published area, where the other five agree within 3.7%. It is onboarded, converted and
-forecast — on DHM's own historical discharge, not on our conversion — and every value it
+DHM's published area, where the other five agree within 3.7% — **measured from the
+`area_diff_pct` column of `gauge_coordinates.csv` in the 2026-09-20 basin/static handover
+package, which lives outside this repository.** ⚠️ **None of the three is verifiable from
+this repository**: the first two rest on a point-in-time read of the public portal on
+2026-09-20, the third on that package. It is onboarded, converted and forecast — on DHM's own historical discharge, not on our conversion — and every value it
 produces is marked. DHM has been asked to confirm its location, area and current rating.
 
 ---
@@ -61,8 +69,12 @@ field. **Whoever opens the alert path must widen `Alert` to carry the derivation
 first.** That is named follow-on work with no plan number yet.
 
 At 684 specifically, the conversion ceiling sits below the gauge's own published danger
-level, so its entire danger band produces no discharge figure at all. Accepted knowingly;
-recorded here so an operator does not file it as an outage.
+level. ⚠️ **That does NOT mean "no figure" — it means a figure computed from the wrong
+hours.** Under Plan 302's X2 resolution the day is still published, averaged over whatever
+readings survived, with a marker recording how thin it was. So on a flood day at 684 the
+daily discharge is computed **only from readings below the ceiling** and will look ordinary
+unless the marker is read. *(An earlier revision said "no discharge figure at all"; that was
+superseded by X2 and is corrected here.)*
 
 ### No partner-facing visibility
 
@@ -84,12 +96,16 @@ still needs an owner.
 ### No current rating tables
 
 DHM has stated it cannot supply current rating curves; this is blocked at source, not by us.
-Every v1 discharge value therefore rests on a rating table between roughly 0.7 and 6.2 years
-past its stated validity, carried under a deliberate 2,557-day (7-year) tolerance.
+Every v1 discharge value therefore rests on a rating table past its stated validity, carried
+under a deliberate 2,557-day (7-year) tolerance. **For the five gauges that actually produce
+values the range is 2.0 to 6.2 years.** *(An earlier revision said "0.7 to 6.2"; the 0.7
+figure belongs to 447, which has no feed and produces nothing — it flattered the number.)*
 
-🔴 **That tolerance is the production configuration, not a development affordance** — and two
-of the six gauges cross it in **July 2027**, roughly nine months after the v1 date. Nothing
-currently plans for that date.
+🔴 **That tolerance is the production configuration, not a development affordance** — and
+**four** of the six gauges cross it inside an eleven-day window in **July 2027**: 604.5 and
+647 on the 11th, 670 and 684 on the 21st. That is **four of the five gauges that have a
+feed** — 80% of the operational fleet — roughly nine months after the v1 date. Nothing
+currently plans for it. *(An earlier revision said "two"; corrected 2026-09-20.)*
 
 Worse, the staleness figure measures the wrong clock: it counts days since the table was last
 *in force*, not days since the rating was *established*. The 112 delivered tables are only 65
@@ -108,18 +124,32 @@ attached.
    derived value is stamped provisional at the row level.
 2. **Extrapolation past the rating tables is bounded but real.** Validated against the
    delivered data at 362 points, agreeing with DHM's own table construction to within a few
-   percent out to one metre above the table. The literature puts the *true* uncertainty at an
-   extrapolated high flow between 25% and a factor of two.
+   percent out to one metre above the table. ⚠️ **That is agreement with DHM's own table
+   construction — numerical consistency, not physical accuracy.** Published figures for
+   extrapolated high flows at real sites range from **41% to 200%**; the often-quoted 25%
+   belongs to a different quantity (twice the highest *gauged* flow) and should not be used
+   here.
 3. **Observation QC on these gauges is not yet trustworthy.** Plans 272 and 264 are
    prerequisites for *operational activation*, not for building. Until they land, a DHM level
    reading can be recorded as having passed quality control with zero rules having run.
-4. **Nepali QC threshold values — now owned by Plan 305 (granted 2026-09-20).** The deployed
-   water-level thresholds are Swiss-calibrated: `max_rate = 0.5 m` between readings, against
-   observed one-day stage rises of **1.72–4.76 m** at these six rivers. Applied unchanged they
-   would mark every legitimate monsoon rise as suspect, and suspect readings are filtered out
-   of every model read — removing the series during exactly the events the system exists for.
-   🔴 **Plan 305 must land before Plan 272 activates**, and carries per-station values because
-   the six span a tenfold range.
+4. **Nepali QC threshold values are unresolved — owned by Plan 268 D14, which is OPEN.** The
+   deployed water-level thresholds are Swiss-calibrated and nobody has calibrated Nepali ones.
+
+   ⛔ **An earlier revision claimed they were "three to nine times too tight" and would "mark
+   every legitimate monsoon rise as suspect". That was an arithmetic error and is
+   withdrawn.** It compared a *per-day* stage rise against a *per-reading* threshold. Spread
+   over a day of ~10-minute readings the observed rises are 0.012–0.033 m per reading against
+   a 0.5 m limit — the Swiss value is **15 to 42 times too LOOSE**, not too tight. The
+   direction was reversed.
+
+   **The real exposure, restated honestly:** the rate rule compares consecutive readings
+   **without dividing by elapsed time**, so it is insensitive at a dense cadence and
+   over-sensitive across a gap. A sharp rise observed either side of a feed gap can trip it;
+   an ordinary rise at full cadence will not. **How often is unmeasured** — it needs sub-daily
+   data we do not have.
+
+   🔴 **The defect nobody owns is the missing time normalisation in the rate rule itself**,
+   not the threshold values.
 
 ---
 
@@ -130,7 +160,8 @@ attached.
   full standing.
 - **A feed for 447** — or confirmation that none exists — settles whether v1 is five gauges
   or six.
-- **Plan 305 landing** removes risk 4 — it is granted and gated, but not yet written.
+- **Answering Plan 268 D14** settles the Nepali thresholds, and **naming an owner for the
+  rate rule's missing time normalisation** removes the underlying defect.
 - **Widening `Alert` to carry provenance** unblocks alerting.
 
 ---
