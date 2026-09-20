@@ -333,25 +333,49 @@ configuration *did* — which rules ran, which fired, on what, and which groups 
 rules at all. **You cannot tune what you cannot observe.** It connects directly to Plan 272's
 zero-rule observability and to the per-station threshold work.
 
-### 🔴 Nepal day is the output — and that is an AGGREGATION boundary, not a label
+### Nepal day — ⚠️ ALREADY OWNED; this is not a new finding
 
-⚖️ **Owner: the Nepal day is the output.** Nepal is **UTC+05:45**.
+⚖️ **Owner: the Nepal day is the output, and the dashboard displays Nepali time. Internally
+the forecast tool can stay in UTC.** Nepal is **UTC+05:45**.
 
-**Measured: nothing in this system computes a Nepal day.** `resample_to_time_step` calls
-`group_by_dynamic("timestamp", every=...)` with **no offset** (`services/training_data.py`),
-so every daily mean is a **UTC** day. The one Nepal-aware exporter
-(`cli/export_nepal_demo.py`) declares `timezone: "Asia/Kathmandu"` as *metadata* over
-synthetic data — a labelling precedent, not a day-boundary implementation.
+⛔ **An earlier revision of this section presented the day boundary as an undiscovered
+problem. It is not.** The owner raised NPT on **2026-09-04** while reviewing Plan 253, and a
+plan family already exists for it:
 
-⛔ **Relabelling a UTC-day mean as a Nepal day is wrong by 5h45m of data.** The boundary has
-to move in the aggregation.
+| plan | status | what it owns |
+|---|---|---|
+| **252** — *a time grid is a step AND a phase* | `DRAFT` | `TimeGrid(step, phase)`; **declaring the operational day boundary per deployment**, with a per-station override |
+| **254** — *phase-aware execution* | `DRAFT` | **the resampler call sites**, fetch-bound helpers, daily-model anchoring, Forecast Lab bounds, the Swiss retrain |
+| **258** — *point or interval* | `DRAFT` | temporal support |
+| **234** — *honour declared aggregation* | — | threading aggregation end to end |
+| **099** — *dashboard display timezone* | `PARTIAL` | axis labelling (P1 shipped) and the display toggle (P2 open) |
 
-🔴 **And there may already be a silent training mismatch.** DHM's published daily discharge —
-what v1 models train on — is presumably computed on the **Nepal** day. Our derived daily means
-are computed on the **UTC** day. If both are true, training targets and serving inputs are
-misaligned by 5h45m, invisibly, and it would surface as degraded skill that looks like model
-error. ⚠️ **Plan 268 measured that DHM's daily aggregation rule is not determinable from the
-delivered files**, so this is unconfirmed — **and it is a cheap question to put to DHM.**
+**The observation that the resampler has no phase offset is correct and is precisely what
+Plan 254 exists to fix.** Nothing further is needed here beyond honouring it.
+
+**🔑 And the training-mismatch worry raised earlier is MOOT today.** Plan 254 states it
+directly: *"Out: Nepal, which has no artifacts to retrain and no cutover."* There are no
+Nepal models yet, so there is nothing mis-trained. The owner's expectation is that the
+modeller converted Nepali data to UTC and trained in UTC, which is consistent with the
+UTC-internal design. **It becomes a live question when Nepal artifacts are first built** — at
+which point 252's declared day boundary governs, not an ad-hoc choice.
+
+**⚠️ Two things this delivery route DOES add, which the existing plans may not cover:**
+
+1. **Plan 099 is about THIS repository's dashboard** (`api/templates/`), and its recorded
+   owner direction is *"default to the viewer's own browser locale"* (2026-09-09). The DHM
+   route uses **`sapphire-flow-map`**, a different dashboard in a different repository, and
+   today's direction for it is **Nepali time specifically**. In practice a DHM evaluator's
+   browser locale *is* Nepal time, so they usually coincide — **but they are not the same
+   rule**, and a viewer abroad or with a misconfigured browser would see a different day.
+   Worth stating which rule the DHM-facing dashboard follows.
+2. **The CSV export is a new consumer of the day-boundary decision.** 254 covers the resampler
+   and the Forecast Lab bounds; a Nepal-day CSV for DHM is an additional surface that must
+   take its boundary from 252's declaration rather than choosing one.
+
+✅ **One piece of good news for the route:** `sapphire-flow-map` is **already an authenticated
+consumer of this API** — Plan 215 records its consumer token holding 37 station grants as of
+2026-08-29. The delivery route is extending an existing integration, not building one.
 
 ### Open questions for DHM, arising from this route
 
