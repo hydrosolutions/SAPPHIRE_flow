@@ -285,6 +285,95 @@ attached.
 
 ---
 
+## The delivery route — how DHM actually evaluates this
+
+*Owner, 2026-09-20, answering the gap the review found under § Purpose.*
+
+**Three surfaces, in order of how DHM will use them:**
+
+1. **A small dashboard, deliberately kept at MVP**, for visual inspection of forecasts.
+   ⛔ **Built in a separate repository (`sapphire-flow-map`) — NOT in this one.** Nothing in
+   this repo implements it. What this repo owes is the data contract behind it.
+2. **CSV download** of forecasts *and* forecast skill metrics, for DHM's own internal
+   processing. 🔴 **No CSV export exists today** — nothing in `api/routes/` produces one. This
+   is new work, not wiring.
+3. **API access**, so they can experiment with retrieval. ✅ **Close to ready**: token-based
+   auth already exists with a station-scoped `consumer` role and an `admin` role, so issuing
+   DHM a scoped token is configuration rather than a build.
+
+**⛔ Their own dashboard is the destination, ours is a courtesy.** DHM plan to integrate our
+forecasts into their existing forecast dashboard. Ours is available to them if they want it,
+but **it is not a deliverable** and should not be built as though it were.
+
+### Every value carries its flags — and this is where the whole marker effort lands
+
+⚖️ **Owner: all data is provided with flags.** That is the delivery-side obligation of
+everything this project has built — the curve age, the range flag, the datum confidence, the
+thin-day coverage marker and the input-quality signal.
+
+🔴 **It matters twice over, because of surface 3.** Once DHM pull our forecasts into their own
+dashboard, the data has left our sight. **A caveat that is not in the payload cannot be added
+back.** If a provisional or extrapolated value arrives in their system unmarked, it is
+indistinguishable from a confident one, permanently.
+
+**Measured state today:** the forecast schema carries `input_quality` and
+`input_quality_flags` (`api/schemas.py:104-105`). ⚠️ **The observation schema carries only
+`source`** — none of the derivation markers. So a CSV of derived discharge would currently
+say nothing about which values are extrapolated, provisional, or from a contradicted gauge.
+**Closing that is a v1 delivery requirement, not a refinement.**
+
+### QC output is a deliverable, not diagnostics
+
+⚖️ **Owner: QC results must be an output somewhere, because there will be a lot of QC
+fine-tuning.**
+
+🔑 **This is success criterion 2 with a surface attached.** "Allow fine-tuning of
+configuration for Nepal cases" is unachievable if nobody can see what the current
+configuration *did* — which rules ran, which fired, on what, and which groups resolved no
+rules at all. **You cannot tune what you cannot observe.** It connects directly to Plan 272's
+zero-rule observability and to the per-station threshold work.
+
+### 🔴 Nepal day is the output — and that is an AGGREGATION boundary, not a label
+
+⚖️ **Owner: the Nepal day is the output.** Nepal is **UTC+05:45**.
+
+**Measured: nothing in this system computes a Nepal day.** `resample_to_time_step` calls
+`group_by_dynamic("timestamp", every=...)` with **no offset** (`services/training_data.py`),
+so every daily mean is a **UTC** day. The one Nepal-aware exporter
+(`cli/export_nepal_demo.py`) declares `timezone: "Asia/Kathmandu"` as *metadata* over
+synthetic data — a labelling precedent, not a day-boundary implementation.
+
+⛔ **Relabelling a UTC-day mean as a Nepal day is wrong by 5h45m of data.** The boundary has
+to move in the aggregation.
+
+🔴 **And there may already be a silent training mismatch.** DHM's published daily discharge —
+what v1 models train on — is presumably computed on the **Nepal** day. Our derived daily means
+are computed on the **UTC** day. If both are true, training targets and serving inputs are
+misaligned by 5h45m, invisibly, and it would surface as degraded skill that looks like model
+error. ⚠️ **Plan 268 measured that DHM's daily aggregation rule is not determinable from the
+delivered files**, so this is unconfirmed — **and it is a cheap question to put to DHM.**
+
+### Open questions for DHM, arising from this route
+
+1. 🔴 **Do you want level or discharge?** Your portal, your thresholds and your operational
+   practice are all in **level**; v1 delivers **discharge**. Integrating our forecast into your
+   dashboard means either displaying a quantity you do not normally use, or converting it back
+   through the same rating tables — which is circular. *If the answer is level, the inversion
+   work moves up the priority list considerably.*
+2. **What day convention is your published daily discharge on?** See above.
+3. **What do you want the skill metrics to mean?** They are operationally unvalidated (§ risks);
+   the caveat must travel **inside** the CSV, as a column or header, not in a covering email.
+
+### Two smaller things the route needs
+
+- **Deliberate gaps must be distinguishable from failures.** There are now several reasons a
+  value legitimately does not exist — a refused reading above a conversion ceiling, a cadence
+  gap, unchecked data. On a dashboard these render identically to a fault. **If DHM file them
+  as defects, the evaluation measures the wrong thing.**
+- **Reproducibility.** A download today and a download after a retrain or a rule change will
+  differ. The rule-version stamps this system already keeps internally belong in the export,
+  or a comparison between two downloads means nothing.
+
 ## The material risks, stated once
 
 ⚠️ **Read these as EVALUATION risks, not safety risks.** Nobody acts on v1 output, so none of
