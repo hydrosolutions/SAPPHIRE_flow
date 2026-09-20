@@ -113,11 +113,13 @@ attached.
 3. **Observation QC on these gauges is not yet trustworthy.** Plans 272 and 264 are
    prerequisites for *operational activation*, not for building. Until they land, a DHM level
    reading can be recorded as having passed quality control with zero rules having run.
-4. **Nobody owns Nepali QC threshold values.** The deployed water-level thresholds are
-   Swiss-calibrated. Applied to a monsoon river they will mark legitimate flood rises as
-   suspect, and suspect readings are filtered out of every model read — removing the series
-   during exactly the events the system exists for. This gap is unowned across all current
-   plans.
+4. **Nepali QC threshold values — now owned by Plan 305 (granted 2026-09-20).** The deployed
+   water-level thresholds are Swiss-calibrated: `max_rate = 0.5 m` between readings, against
+   observed one-day stage rises of **1.72–4.76 m** at these six rivers. Applied unchanged they
+   would mark every legitimate monsoon rise as suspect, and suspect readings are filtered out
+   of every model read — removing the series during exactly the events the system exists for.
+   🔴 **Plan 305 must land before Plan 272 activates**, and carries per-station values because
+   the six span a tenfold range.
 
 ---
 
