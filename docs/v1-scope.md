@@ -69,35 +69,65 @@ level. Waiting for DHM's level archive is not realistic either. ⇒ **We invert:
 historical DISCHARGE back through the rating tables to reconstruct historical LEVEL, and train
 on that.**
 
-**Three properties of that inversion make it better than it sounds:**
+**What it produces, stated precisely.** ⛔ *An earlier revision of this section called it
+"recovery, not estimation" and claimed three favourable properties. An independent technical
+review found all three overstated. Corrected:*
 
-1. ⭐ **It is largely UNDOING a transformation, not modelling one.** DHM computed that
-   discharge *from* level using the curve in force at the time. Inverting through the
-   **contemporaneous** curve recovers approximately the original level. Plan 268 measured that
-   **94,617 of 99,246 daily values have a contemporaneous curve**, so this is recovery for
-   ~95% of the record, not estimation.
-2. ⭐ **The rating curve is steep, so inversion COMPRESSES error.** Measured at each station's
-   median flow: a **10% discharge error becomes 6–11 cm of level; 20% becomes 11–22 cm.** The
-   forward direction amplifies; the inverse direction damps.
-3. ⭐ **It removes the datum question from the forecast itself.** A model trained on level and
-   serving on level is invariant to a constant datum offset — and the portal publishes each
-   station's warning and danger levels **in the same reference as its readings** (verified
-   across all 193 stations). So a level forecast can be compared against that station's own
-   danger level self-consistently *even if the absolute datum is never established*.
+**It produces rating-derived EQUIVALENT STAGES for approximately 95% of daily discharge
+values, subject to methodological uncertainty.** Not "the original level".
 
-**Two caveats that must travel with it:**
+- ⚠️ **"Recovery" would require DHM to have computed one daily level statistic and converted
+  it once.** If they instead converted each reading and averaged the *discharges* — at least
+  as likely — then inverting yields the stage *equivalent to the mean discharge*, which is a
+  different quantity from the mean stage. 🔴 **Plan 268 measured that the daily aggregation
+  rule is not determinable from the delivered files**, so the assumption the claim rests on
+  cannot be checked.
+- ⚠️ **95.34% is temporal CURVE COVERAGE, not recovery accuracy.** It establishes that a
+  candidate curve exists for those dates — not that it was the curve used, nor that the
+  discharge range is covered.
 
-- ⚠️ **A daily-mean discharge does not invert to a daily-mean level.** The curve is convex, so
-  the level that produces the mean discharge is **higher** than the mean level. Inverted
-  levels are biased upward by an unquantified amount — the exact mirror of the convert-then-
-  mean decision on the forward path.
-- 🔴 **Train/serve datum consistency still matters, and 684 Tamor still fails it.** The
-  inverted history sits on the *rating table's* datum; the live feed sits on whatever datum it
-  uses. For the four gauges whose live readings convert to seasonally plausible discharge
-  those agree. For 684 they demonstrably do not — so it remains the problem gauge under this
-  approach too. *(An earlier note in this session suggested level forecasting would make 684
-  fine. That was wrong: it removes the conversion from the serving path, not the datum
-  mismatch between training and serving.)*
+**What does hold, with its limits:**
+
+- **Inversion damps error rather than amplifying it.** At each station's *median* flow a 10%
+  discharge error maps to 6–11 cm of level, 20% to 11–22 cm. ⚠️ Measured at the median only,
+  in one direction; the response is not symmetric, and it bounds none of the datum,
+  curve-selection or aggregation error.
+- **The threshold comparison is genuinely datum-free.** The portal publishes each station's
+  warning and danger levels in the same reference as its readings, so a level forecast can be
+  compared against that station's own danger level even if the absolute datum is never
+  established. 🔴 **But a level-to-level model is NOT automatically offset-safe** — that
+  requires *translation equivariance* (shifting every input by `c` shifts the output by `c`),
+  which ordinary regressions, trees and neural networks do not guarantee. It is a property to
+  **require of the model**, not one the approach confers.
+- **The convexity bias is real, and conditional.** The stage equivalent to a mean discharge is
+  **at least as high as** the mean stage — strictly higher only where the day's variation
+  spans a genuinely non-linear part of the curve, and **absent entirely if DHM averaged stages
+  before converting.** 🔴 **It cannot be corrected from what we hold**: the missing quantity is
+  *within-day* variance, and variance across daily means does not supply it.
+
+**🔴 The two objections that matter most, neither of which the approach answers:**
+
+1. **Level forecasting does NOT escape the rating-curve problem — it RELOCATES it.** Curves go
+   stale because channels change: scour, deposition, control shifts, backwater, gauge
+   relocation. A model trained on reconstructed historical level absorbs those *same*
+   historical hydraulic relationships, and does so invisibly — with no validity window and no
+   expiry date. A stale rating table at least announces itself.
+2. **Daily targets cannot teach within-day peak timing or threshold crossings.** An equivalent
+   stage can sit well above the daily mean and still far below the flood peak. Feeding the
+   model 10-minute live input does not restore information that was never in the training
+   targets. ⚠️ **This bears directly on the eventual alerting destination**, which is about
+   exactly those crossings.
+
+**And one that carries over unchanged:** 🔴 **train/serve datum consistency, where 684 Tamor
+still fails.** The reconstructed history sits on the *rating table's* datum, the live feed on
+its own. For the four gauges whose live readings convert plausibly those agree; for 684 they
+demonstrably do not. *(An earlier note in this session said level forecasting would make 684
+fine. Wrong — it removes the conversion from the serving path, not the mismatch between
+training and serving.)*
+
+⇒ **Net: defensible as a source of historical proxy targets. It does not establish that those
+targets are interchangeable with present-day observed levels, and it needs its own validation
+rather than inheriting the discharge path's.**
 
 **What this means for the conversion work now under way:** it is a **bridge, not the
 destination**. v1 serves discharge models from live level, because discharge models are what
@@ -131,12 +161,18 @@ expected to work”, not “observed working”.
 | 670 Dudh Koshi / Rabuwa | ✅ | ✅ | ✅ | ✅ |
 | 684 Tamor / Majhitar | ✅ | ✅ (marked contradicted) | ✅ on DHM's own history | ⛔ **no** |
 
-**⇒ Five of six gauges forecast. One has no input at all.**
+**⇒ As designed, five of six gauges would forecast; one has no live input.**
+⚠️ **"Would", not "does".** No part of this is running: see the caveat above.
 
-**447 Trisuli has no operational level feed.** Measured 2026-09-20 against the public portal:
-193 stations enumerated across both pages, no Trisuli/Betrawati station present. Nothing in
-the pipeline is broken — there is simply no data. It stays configured so it starts working
-the day a feed appears.
+**447 Trisuli has no operational level feed** — measured 2026-09-20 against the public portal
+(193 stations across both pages, no Trisuli/Betrawati present; ⚠️ a point-in-time read, not a
+standing fact). Nothing is broken; there is simply no live input.
+
+⚠️ **Two distinctions an earlier revision blurred.** It **is trainable** — Plan 268 records
+1977–2019 of published discharge for it, so absent *live* input is not absent *training* data.
+And it will **not** "start working the day a feed appears": `adapters/dhm.py` requires an
+explicit station-to-API binding, so a new feed needs configuration, validation and activation
+before anything flows.
 
 **684 Tamor is anomalous on three independent measurements**, from three unrelated datasets:
 its live level converts through its own rating table to a discharge above its entire 24-year
@@ -146,7 +182,7 @@ DHM's published area, where the other five agree within 3.7% — **measured from
 `area_diff_pct` column of `gauge_coordinates.csv` in the 2026-09-20 basin/static handover
 package, which lives outside this repository.** ⚠️ **None of the three is verifiable from
 this repository**: the first two rest on a point-in-time read of the public portal on
-2026-09-20, the third on that package. It is onboarded, converted and forecast — on DHM's own historical discharge, not on our conversion — and every value it
+2026-09-20, the third on that package. It is **to be** onboarded, converted and forecast — on DHM's own historical discharge, not on our conversion — and every value it
 produces is marked. DHM has been asked to confirm its location, area and current rating.
 
 ---
@@ -161,11 +197,16 @@ written down as a scope reduction until now.
 ⚖️ **The owner's sequence is: demonstrate, evaluate, fine-tune, improve QC, and connect
 alerting last.** So this is the intended v1 state and should not be read as a shortfall.
 
-The mechanism that keeps it shut is worth knowing for when it opens: a marked value would
-otherwise reach an alert **without its mark**, because `types/alert.py::Alert` carries no
-provenance field (verified). **Whoever opens the alert path must widen `Alert` to carry the
-derivation markers first**, or every caveat this project has built is discarded at the last
-step. Named follow-on work, no plan number yet.
+⚠️ **What actually keeps it shut is configuration** — `enable_forecast_alerts = false` and
+`enable_observation_alerts = false` in `config.toml` (verified). *An earlier revision said the
+missing provenance field disabled it; that is wrong — the field's absence is a reason not to
+re-enable it, not the mechanism.*
+
+**Three things must happen before alerting opens, not one:** `types/alert.py::Alert` gains
+provenance fields (verified absent today), **the markers are actually propagated into them**,
+and the path is explicitly activated and validated. Widening the type alone changes nothing —
+it just stops the caveats being discarded at the last step. Named follow-on work, no plan
+number yet.
 
 At 684 specifically, the conversion ceiling sits below the gauge's own published danger
 level, so readings above it are refused.
@@ -180,11 +221,21 @@ level, so readings above it are refused.
 ⇒ **On a flood day at 684 there is no daily discharge figure**, which is the original
 acceptance. *(Two earlier revisions each stated one half of this and contradicted the other.)*
 
-### No partner-facing visibility
+### 🔴 No named route by which DHM actually evaluates this
 
-The Forecast Lab export filters observations to `source = MEASURED`. Every v1 discharge
-value is `RATING_CURVE_DERIVED`, so **none of the six appears in the partner snapshot**, and
-the export schema carries no input-quality fields to describe them if they did.
+**This is the gap that most directly threatens the purpose**, and it was not previously
+listed as one. v1 exists for DHM to test and evaluate — and nothing states *how they see
+anything*.
+
+The Forecast Lab export excludes these gauges twice over: station eligibility requires
+`network == "bafu"`, and observations are filtered to `source = MEASURED` while every v1
+discharge value would be `RATING_CURVE_DERIVED`. Removing one filter would not admit them.
+The export schema also carries no input-quality fields, so it could not show the provenance
+markers this project spent its effort building.
+
+The REST API exists and can serve the data. **But no one has named the interface, the access
+route, or how a provisional marker is presented to a DHM evaluator.** Until that is decided,
+"DHM can test and evaluate" is an intention without a mechanism.
 
 ### No believable accuracy score, yet
 
@@ -203,10 +254,13 @@ conversion used to build the reference series. And the owner's actual direction 
 accumulate operational discharge but to **reconstruct historical level by inverting the
 discharge record** (§ Where this is going), which needs no waiting at all.
 
-**What would actually resolve it**, stated separately because they are separate: historical
-hindcast skill against DHM's own record is meaningful *within its stated domain* today;
-operational transfer validity needs the level-based successor; and discharge-truth uncertainty
-needs rating curves nobody expects.
+**What would actually resolve it**, stated separately because they are separate:
+**historical hindcast skill against DHM's own record is meaningful today**, within its stated
+domain — the limitation is specifically **operational** transfer, not evaluation as such;
+operational transfer validity is **unvalidated** and could be investigated directly rather than
+only via the level successor (which is the chosen development direction, and needs its own
+validation — it does not inherit this one's); and discharge-truth uncertainty needs rating
+curves nobody expects.
 
 ### No current rating tables
 
@@ -216,7 +270,8 @@ under a deliberate 2,557-day (7-year) tolerance. **For the five gauges that actu
 values the range is 2.0 to 6.2 years.** *(An earlier revision said "0.7 to 6.2"; the 0.7
 figure belongs to 447, which has no feed and produces nothing — it flattered the number.)*
 
-🔴 **That tolerance is the production configuration, not a development affordance** — and
+🔴 **That tolerance is the INTENDED deployment setting, not a development affordance** (it
+is not configured anywhere yet) — and
 **four** of the six gauges cross it inside an eleven-day window in **July 2027**: 604.5 and
 647 on the 11th, 670 and 684 on the 21st. That is **four of the five gauges that have a
 feed** — 80% of the operational fleet — roughly nine months after the v1 date. Nothing
@@ -232,6 +287,11 @@ attached.
 
 ## The material risks, stated once
 
+⚠️ **Read these as EVALUATION risks, not safety risks.** Nobody acts on v1 output, so none of
+them endangers anyone. They matter because each one can make the demonstration **impossible
+for DHM to judge fairly** — a wrong number they spot, or a caveat they cannot see, costs the
+evaluation either way.
+
 1. **The level feed's datum is unconfirmed.** Measured: the public feed mixes two conventions
    — 162 of 193 stations report a gauge reading, 31 report height above sea level — and
    nothing in the response declares which. Four of our five live gauges convert to seasonally
@@ -241,7 +301,8 @@ attached.
    delivered data at 362 points, agreeing with DHM's own table construction to within a few
    percent out to one metre above the table. ⚠️ **That is agreement with DHM's own table
    construction — numerical consistency, not physical accuracy.** Published figures for
-   extrapolated high flows at real sites range from **41% to 200%**; the often-quoted 25% is a
+   extrapolated high flows at **one published site** range from **41% to 200%** (full-width 95%
+   intervals across methods); the often-quoted 25% is a
    different quantity (~26%, at twice the highest *gauged* flow) and should not be used here.
    ⚠️ The 41–200% figures are full-width uncertainty intervals from a **single published site
    study**, not a Nepal-specific estimate — **uncertainty at these six gauges is
@@ -280,8 +341,8 @@ attached.
 ## What would change this picture
 
 - **DHM confirming gauge zero and units** lifts "provisional" from every derived value.
-- **DHM explaining 684**, or supplying a current rating for it, restores a sixth gauge to
-  full standing.
+- **DHM explaining 684**, or supplying a current rating for it, restores **the fifth live
+  gauge** to full standing — not a sixth, while 447 has no feed.
 - **A feed for 447** — or confirmation that none exists — settles whether v1 is five gauges
   or six.
 - **Answering Plan 268 D14** settles the Nepali thresholds, and **naming an owner for the
@@ -289,6 +350,34 @@ attached.
 - **Widening `Alert` to carry provenance** unblocks alerting.
 
 ---
+
+## Provenance of the figures in this document
+
+*Added 2026-09-20 after an independent review asked which claims are checkable.*
+
+**Independently reproduced from this repository**: the 0.066 m largest consecutive-reading
+change on the captured station-day; that `Alert` carries no provenance field; that alerting is
+disabled by configuration; the Forecast Lab's two exclusion filters; that `assemble_station_
+training_data` returns nothing on an empty observation set; the 2.0–6.2 year staleness range;
+the four-gauge July 2027 grouping and arithmetic.
+
+**Reproduced from Plan 268's own measurements, not re-derived** (the delivered DHM files sit
+outside this repository by deliberate constraint): 1,125 of 1,126 range-check flags at station
+450; 94,617 of 99,246 daily values with a contemporaneous curve; the 112 tables.
+
+**⚠️ NOT independently verified — treat as reported, not established**: the 193-station portal
+enumeration and the 162/31 datum split (a point-in-time read on 2026-09-20); 684's three
+anomalies; the catchment-area comparison (from a handover package outside this repository);
+the 362-point extrapolation comparison; the 6–11 / 11–22 cm inversion sensitivities; the 65
+distinct tables and 7–40-year establishment ages; the largest one-day stage rises.
+
+🔴 **Exact refusal dates in July 2027 are unverified** — Plan 268 converts end dates to a
+next-day exclusive `valid_to`, and the comparison's boundary semantics could shift them by a
+day.
+
+⛔ **Repeated point sets establish that tables were REUSED. They do not establish when a rating
+was last independently checked.** The 7–40-year figures should be read as "days since this
+point set was first put in force", nothing stronger.
 
 ## How to use this document
 
