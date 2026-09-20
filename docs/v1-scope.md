@@ -69,12 +69,17 @@ field. **Whoever opens the alert path must widen `Alert` to carry the derivation
 first.** That is named follow-on work with no plan number yet.
 
 At 684 specifically, the conversion ceiling sits below the gauge's own published danger
-level. ⚠️ **That does NOT mean "no figure" — it means a figure computed from the wrong
-hours.** Under Plan 302's X2 resolution the day is still published, averaged over whatever
-readings survived, with a marker recording how thin it was. So on a flood day at 684 the
-daily discharge is computed **only from readings below the ceiling** and will look ordinary
-unless the marker is read. *(An earlier revision said "no discharge figure at all"; that was
-superseded by X2 and is corrected here.)*
+level, so readings above it are refused.
+
+**⚖️ Owner decision, 2026-09-20 — the rule turns on WHY readings are missing:**
+- **Lost at random** (a dropout, a brief outage) ⇒ the day is **published with a coverage
+  marker**. The average is noisier but not systematically wrong.
+- **Lost to an envelope refusal** (above the ceiling, or below the floor) ⇒ **no daily figure
+  at all.** Those losses remove the *highest* — or lowest — values by construction, so the
+  surviving average is wrong in a predictable direction and would look entirely ordinary.
+
+⇒ **On a flood day at 684 there is no daily discharge figure**, which is the original
+acceptance. *(Two earlier revisions each stated one half of this and contradicted the other.)*
 
 ### No partner-facing visibility
 
@@ -126,30 +131,39 @@ attached.
    delivered data at 362 points, agreeing with DHM's own table construction to within a few
    percent out to one metre above the table. ⚠️ **That is agreement with DHM's own table
    construction — numerical consistency, not physical accuracy.** Published figures for
-   extrapolated high flows at real sites range from **41% to 200%**; the often-quoted 25%
-   belongs to a different quantity (twice the highest *gauged* flow) and should not be used
-   here.
+   extrapolated high flows at real sites range from **41% to 200%**; the often-quoted 25% is a
+   different quantity (~26%, at twice the highest *gauged* flow) and should not be used here.
+   ⚠️ The 41–200% figures are full-width uncertainty intervals from a **single published site
+   study**, not a Nepal-specific estimate — **uncertainty at these six gauges is
+   unquantified.**
 3. **Observation QC on these gauges is not yet trustworthy.** Plans 272 and 264 are
    prerequisites for *operational activation*, not for building. Until they land, a DHM level
    reading can be recorded as having passed quality control with zero rules having run.
 4. **Nepali QC threshold values are unresolved — owned by Plan 268 D14, which is OPEN.** The
    deployed water-level thresholds are Swiss-calibrated and nobody has calibrated Nepali ones.
 
-   ⛔ **An earlier revision claimed they were "three to nine times too tight" and would "mark
-   every legitimate monsoon rise as suspect". That was an arithmetic error and is
-   withdrawn.** It compared a *per-day* stage rise against a *per-reading* threshold. Spread
-   over a day of ~10-minute readings the observed rises are 0.012–0.033 m per reading against
-   a 0.5 m limit — the Swiss value is **15 to 42 times too LOOSE**, not too tight. The
-   direction was reversed.
+   ⛔ **An earlier revision claimed the rate rule was "three to nine times too tight" and
+   would "mark every legitimate monsoon rise as suspect". That was an arithmetic error —
+   it compared a *per-day* stage rise against a *per-reading* threshold — and is withdrawn.**
+   Tested against a real captured station-day, the largest change between consecutive readings
+   was **0.066 m** against a 0.5 m limit: the rule did not fire. ⚠️ **But the margin is
+   unquantified.** Dividing a daily rise by the number of readings gives a *uniform-spread
+   average*, and a monsoon rise is not uniform — concentrated into a few hours, the same rise
+   approaches the threshold. **The peak rate is unmeasured, and the cadence was measured at a
+   different station in a different basin.**
 
-   **The real exposure, restated honestly:** the rate rule compares consecutive readings
-   **without dividing by elapsed time**, so it is insensitive at a dense cadence and
-   over-sensitive across a gap. A sharp rise observed either side of a feed gap can trip it;
-   an ordinary rise at full cadence will not. **How often is unmeasured** — it needs sub-daily
-   data we do not have.
+   🔴 **There are TWO exposures, and an earlier revision deleted the measured one along with
+   the wrong one.** Restoring it:
 
-   🔴 **The defect nobody owns is the missing time normalisation in the rate rule itself**,
-   not the threshold values.
+   - **The range check — measured, and the serious one.** Plan 268 ran the Swiss rule over the
+     delivered record: **1,125 of 1,126 flags fall on station 450**, whose genuine monsoon
+     peaks exceed the Swiss ceiling by nearly threefold. It would mark the single most
+     important part of the record — the floods — as out of range. In 268's own words, *"not
+     QC; a calibration error wearing QC's clothes."* ⚠️ This is the rule that marks a reading
+     **failed**, not merely suspect. **Plan 268 D14 owns the calibration.**
+   - **The rate rule — direction known, magnitude not.** It never divides by elapsed time, so
+     it is insensitive at a dense cadence and over-sensitive across a gap. **Nobody owns that
+     defect.**
 
 ---
 
