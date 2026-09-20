@@ -10,13 +10,108 @@ went unnoticed.
 
 ---
 
-## The one-line version
+## Purpose — v1 is a DEMONSTRATION
 
-> **v1 is daily discharge forecasts for real Nepali DHM river gauges, running on the staging
-> host, in October 2026.**
+*Owner, 2026-09-20. Recorded here because its absence is what let the tactical decisions below
+collide: there was nothing above them to arbitrate.*
 
-That sentence is what the project has been repeating. It is optimistic in four specific ways,
-each traceable to a decision that was made deliberately and for good reasons.
+> **v1 is something DHM can test and evaluate.** We propose it, they assess it, and from there
+> we fine-tune, improve QC, and eventually connect alerting. **Nobody is going to act on the
+> output any time soon.**
+
+⇒ This settles a class of question that kept re-opening. Alerting being closed is **correct,
+not a gap**. An accuracy score that cannot yet be believed is **acceptable**. A provisional,
+marked value is **fine** — the system is not load-bearing for anyone's safety in v1.
+
+⚠️ **But one thing gets HARDER, not easier, under a demonstration framing.** The audience is
+DHM — the people who know these rivers. A number that is visibly wrong to a domain expert
+discredits the demonstration far more than a gap does. *That* is why, for example, a flood-day
+figure computed only from the hours below a conversion ceiling is unacceptable: not because
+someone would act on it, but because the evaluator would spot it.
+
+### Success criteria — what "v1 worked" means
+
+Owner's, verbatim in substance, and all four are testable:
+
+1. **Produce a forecast every day.**
+2. **Allow fine-tuning of configuration for Nepal cases.**
+3. **Allow onboarding of further stations.**
+4. **Allow re-training of models.**
+
+🔑 **Note what is NOT on that list: forecast accuracy.** v1 demonstrates that the machinery
+runs, is configurable, and can absorb more stations — not that its numbers are good. Accuracy
+is what the fine-tuning *after* evaluation is for.
+
+⭐ **Criterion 2 re-prioritises existing work.** "Fine-tuning of configuration for Nepal cases"
+is, almost verbatim, Plan 269 — per-station QC thresholds declared in configuration. It has
+been treated as blocked and off the critical path. **On these criteria it is ON the critical
+path**, which makes the 272 → 269 dependency loop a blocker against a success criterion rather
+than a scheduling nuisance.
+
+### Who DHM are
+
+**A project partner and beneficiary. They hold all the data, and they will be the users of
+this system.** Not a supplier we design around — the eventual operators. Where a gap of theirs
+forces a workaround on our side, the workaround is a bridge to something built *with* them,
+not a permanent accommodation.
+
+---
+
+## Where this is going — level forecasting, and why
+
+*Owner, 2026-09-20.* **The destination is to forecast water LEVEL rather than discharge.**
+DHM is realistically not going to produce good rating curves for all these stations, so a
+system whose every output depends on a current rating curve has no stable future.
+
+**The obstacle, and the owner's answer to it:** level forecasting needs a history of levels to
+train on, and we have none — Plan 268's delivery contained discharge and rating tables, no
+level. Waiting for DHM's level archive is not realistic either. ⇒ **We invert: convert the
+historical DISCHARGE back through the rating tables to reconstruct historical LEVEL, and train
+on that.**
+
+**Three properties of that inversion make it better than it sounds:**
+
+1. ⭐ **It is largely UNDOING a transformation, not modelling one.** DHM computed that
+   discharge *from* level using the curve in force at the time. Inverting through the
+   **contemporaneous** curve recovers approximately the original level. Plan 268 measured that
+   **94,617 of 99,246 daily values have a contemporaneous curve**, so this is recovery for
+   ~95% of the record, not estimation.
+2. ⭐ **The rating curve is steep, so inversion COMPRESSES error.** Measured at each station's
+   median flow: a **10% discharge error becomes 6–11 cm of level; 20% becomes 11–22 cm.** The
+   forward direction amplifies; the inverse direction damps.
+3. ⭐ **It removes the datum question from the forecast itself.** A model trained on level and
+   serving on level is invariant to a constant datum offset — and the portal publishes each
+   station's warning and danger levels **in the same reference as its readings** (verified
+   across all 193 stations). So a level forecast can be compared against that station's own
+   danger level self-consistently *even if the absolute datum is never established*.
+
+**Two caveats that must travel with it:**
+
+- ⚠️ **A daily-mean discharge does not invert to a daily-mean level.** The curve is convex, so
+  the level that produces the mean discharge is **higher** than the mean level. Inverted
+  levels are biased upward by an unquantified amount — the exact mirror of the convert-then-
+  mean decision on the forward path.
+- 🔴 **Train/serve datum consistency still matters, and 684 Tamor still fails it.** The
+  inverted history sits on the *rating table's* datum; the live feed sits on whatever datum it
+  uses. For the four gauges whose live readings convert to seasonally plausible discharge
+  those agree. For 684 they demonstrably do not — so it remains the problem gauge under this
+  approach too. *(An earlier note in this session suggested level forecasting would make 684
+  fine. That was wrong: it removes the conversion from the serving path, not the datum
+  mismatch between training and serving.)*
+
+**What this means for the conversion work now under way:** it is a **bridge, not the
+destination**. v1 serves discharge models from live level, because discharge models are what
+we have. The inversion above is what enables the successor. Both use the same rating-table
+machinery, in opposite directions.
+
+---
+
+## The v1 headline, restated honestly
+
+> **v1 is a daily-running, configurable, extensible forecasting demonstration on real Nepali
+> DHM gauges, for DHM to evaluate.**
+
+It is optimistic in four specific ways, each traceable to a decision made deliberately.
 
 ---
 
@@ -61,12 +156,16 @@ produces is marked. DHM has been asked to confirm its location, area and current
 These are consequences of decisions taken deliberately. None is an accident; none was
 written down as a scope reduction until now.
 
-### No flood alerting on these gauges
+### No flood alerting on these gauges — ✅ correct by design, not a gap
 
-The alert path is held closed for DHM stations on purpose, because a marked value would
-otherwise reach an alert without its mark — `types/alert.py::Alert` carries no provenance
-field. **Whoever opens the alert path must widen `Alert` to carry the derivation markers
-first.** That is named follow-on work with no plan number yet.
+⚖️ **The owner's sequence is: demonstrate, evaluate, fine-tune, improve QC, and connect
+alerting last.** So this is the intended v1 state and should not be read as a shortfall.
+
+The mechanism that keeps it shut is worth knowing for when it opens: a marked value would
+otherwise reach an alert **without its mark**, because `types/alert.py::Alert` carries no
+provenance field (verified). **Whoever opens the alert path must widen `Alert` to carry the
+derivation markers first**, or every caveat this project has built is discarded at the last
+step. Named follow-on work, no plan number yet.
 
 At 684 specifically, the conversion ceiling sits below the gauge's own published danger
 level, so readings above it are refused.
@@ -94,9 +193,20 @@ Whether a model trained on the first may legitimately serve on the second is an 
 scientific question (Plan 302 D4), accepted rather than solved. It does not block building
 the pipeline; it does block trusting a skill number.
 
-**This resolves itself** once enough operational discharge has accumulated to retrain on —
-a documented temporary state with a defined end, not a permanent caveat. The retrain trigger
-still needs an owner.
+⚖️ **Acceptable for v1** — accuracy is not a success criterion, and the fine-tuning that
+follows DHM's evaluation is where it gets addressed.
+
+⛔ **An earlier revision said this "resolves itself once enough operational discharge has
+accumulated to retrain on". Withdrawn — twice wrong.** Retraining reduces a train/serve
+*distribution* mismatch; it does not validate a stale rating, an unconfirmed datum, or the
+conversion used to build the reference series. And the owner's actual direction is **not** to
+accumulate operational discharge but to **reconstruct historical level by inverting the
+discharge record** (§ Where this is going), which needs no waiting at all.
+
+**What would actually resolve it**, stated separately because they are separate: historical
+hindcast skill against DHM's own record is meaningful *within its stated domain* today;
+operational transfer validity needs the level-based successor; and discharge-truth uncertainty
+needs rating curves nobody expects.
 
 ### No current rating tables
 
