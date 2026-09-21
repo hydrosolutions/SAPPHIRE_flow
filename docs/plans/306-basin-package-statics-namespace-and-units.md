@@ -254,6 +254,11 @@ from each other:**
 
 1. **Unknown `package_id` + version → refuse.** Nothing has described it, so there is nothing to
    compare against, and assuming compatibility is the failure this task exists to prevent.
+   ⚠️ **This rule BLOCKS the namespace-repair republish T2's watch item prescribes**, which is by
+   definition a new, unregistered id. *(Independent verification 2026-09-21 found the conflict;
+   the two were written without being checked against each other.)* **T3 must either ship with a
+   registered entry for any repair package, or be sequenced after the repairs.** Do not discover
+   this when a repair is refused.
 2. **Known version, checksums differ → refuse.** The contents changed without the version
    changing, which is exactly the drift that would otherwise make our recorded description
    silently false.
@@ -466,6 +471,30 @@ T1–T3.
 
 ## Watch items, not tasks
 
+- 🔑 **T2 changes the stored key shape for package-imported basins, and that is safe only
+  because no NATIVE model reads statics.** Measured 2026-09-21 while implementing: every
+  discoverable model declaring `StaticNaming.NATIVE` declares **zero** static features, so none
+  can be affected. ⚠️ **That is a fact about today's model set, not a guarantee** — a NATIVE model
+  that declared statics and read a package-imported basin would resolve nothing after this change,
+  exactly as CARAVAN models did before it. The plan did not anticipate this direction; it is
+  recorded here rather than left for someone to rediscover.
+- 🔴 **The extraction DID change the Swiss path's behaviour for two input shapes — deliberately,
+  and the owner may reverse it.** *Confirming review 2026-09-21 flagged that "extracted unchanged"
+  was not accurate.* The inline operation was an unconditional prefix; the shared one is
+  idempotent and refuses a mixed source. So:
+  - an already-`caravan:`-prefixed column used to become `caravan:caravan:…` and now passes
+    through unchanged;
+  - a source carrying **both** spellings of one concept used to keep both as distinct keys and is
+    now **refused**.
+  ⚖️ **For the real Caravan attributes parquet — bare HydroATLAS codes — behaviour is identical,
+  and that is the shape the 148 Swiss basins were imported from.** The two deltas apply only to
+  inputs the loader permits but has not produced. Both changes are improvements (the old
+  double-prefix was unresolvable), but they ARE changes to a live path this plan's watch items say
+  not to disturb.
+  ⚖️ **CLOSED, owner 2026-09-21: KEEP IT SHARED.** One implementation serves both imports; the
+  alternative was two copies that drift, and two imports answering differently on odd input. The
+  stricter behaviour stands as a **deliberate, recorded** change to the Swiss path rather than an
+  unnoticed side effect — which is the distinction that mattered, not the strictness itself.
 - **The Swiss path is not broken and must not be disturbed.** The 148 Swiss basins resolve today
   through the `caravan:` prefix written by the Plan 155/188 import.
 - **`cmal_small` is `GROUP`-scoped**, so Nepal basins would be assigned as a group, not per
@@ -478,11 +507,54 @@ T1–T3.
   never explains how a host directory reaches that container; the base compose gives
   `prefect-worker` no operator bind. ⚖️ Recorded as `related: [307]`; **whether it becomes a formal
   dependency is the orchestrator's call.**
-- 🔴 **D1 chose option 4, so already-imported basins keep their bare keys.** Nothing here says
-  whether a re-import or backfill is needed. For the Swiss 148 the question is masked — their keys
-  come from the Caravan path and are already prefixed — so **T2's verification would not surface
-  the omission.** Any option that changes the written key shape must state what happens to rows
-  written before it.
+- 🔴 **D1 chose option 4, so basins imported BEFORE this change keep their bare keys, and
+  re-running the same package will NOT repair them.** *Independent review 2026-09-21 required this
+  disposition, which an earlier revision demanded and then did not supply.*
+  `store/basin_importer.py::_basin_needs_import` treats a basin whose current projection already
+  carries this `package_id` as already imported and skips it — by design, for idempotency. So a
+  re-run of an unchanged package is a no-op and the bare keys survive.
+  🔴 **The remediation an earlier revision gave was WRONG.** *Confirming review 2026-09-21.* It
+  claimed D2a's version bump suffices, "because a new version is a different `package_id`". It is
+  not: `basin_importer` takes `PackageId(loaded.manifest.package_id)` **directly**, and the
+  manifest carries `package_id` and `extractor.version` as **separate fields** (measured —
+  `nepal-dhm-basins` at extractor `0.1.2`). Bumping the version leaves `package_id` unchanged, the
+  basin is still skipped, and the bare keys survive **silently**. That instruction would have
+  failed in exactly the way it was written to prevent.
+  ⇒ **Actual remediation: republish under a NEW `package_id`** — deliberately, including for an
+  unchanged payload whose only purpose is namespace repair. The mechanism works: an existing basin
+  whose stored `package_id` differs takes the **correction** branch and its `attributes` are
+  **wholly replaced** with the namespaced shape (no merge, so no half-repaired basin carrying both
+  spellings). Nothing dedupes an identical payload under a new id — `package_id` is itself part of
+  the canonical fingerprint. Verified independently 2026-09-21, and already exercised end to end by
+  `tests/integration/store/test_basin_importer_persistence.py` re-importing as
+  `nepal-dhm-basins-v2`.
+
+  🔴 **But "just republish" is NOT the whole instruction, and one of the gaps is created by THIS
+  PLAN.** *Independent verification 2026-09-21.*
+
+  1. ⛔ **T3 would REFUSE the repair.** T3 specifies "unknown `package_id` + version → refuse". A
+     namespace-repair republish is BY DEFINITION a new, unregistered `package_id`. Once T3 ships,
+     the repair is blocked until someone adds a repo-side entry — a code change, review and
+     release. **Either sequence any repair BEFORE T3, or register the new id as part of doing it.**
+     T3 is unimplemented today, so the conflict is plan-internal and not yet live.
+  2. **Who mints the new `package_id` is unarranged.** D2a puts version bumps on the extractor for
+     *content* changes; an unchanged payload needing a new id for namespace repair is not covered
+     by that obligation and needs an explicit ask.
+  3. **A repair is a CORRECTION, not a quiet rewrite.** Every repaired basin gets a new
+     `basin_versions` row, supersedes the prior one, and reports `material_change=True` with
+     `affected_artifact_ids` — every model artifact trained on the superseded version. Nothing
+     auto-invalidates them; the CLI only logs it. **The operator must act on that list.** And ALL
+     basins in the republished package are corrected, not only those needing repair.
+  4. **A narrower primitive exists:** `store/basin_store.py::merge_namespaced_attributes` is
+     additive with no version bump and no `material_change` — at the cost of leaving the bare keys
+     in place beside the namespaced ones, and needing a one-off script, since no CLI exposes it for
+     the package path.
+
+  **No schema migration is needed** in any of these, and a re-import will not happen as a side
+  effect of D2a's versioning rule.
+  ⚠️ **Whether any such rows exist is deployment-specific and not determinable from this repo.**
+  Measured 2026-09-21: the staging database holds **148 BAFU basins and no package-imported
+  basin at all**, so on that host the question is moot today.
 
 ## Exit gates
 
@@ -577,3 +649,11 @@ that one error, including the caveat written to prevent it.
 
 **D2a closed by the owner 2026-09-21** with a rule better than the one this plan proposed — bind
 the description to a *versioned artifact* rather than vouching for a *producer*.
+
+**The Swiss call site stays SHARED — owner, 2026-09-21.** T2 extracted the prefixing operation
+*from* the Swiss import path, and the extraction is not byte-for-byte behaviour-preserving on two
+inputs the Swiss loader permits but has never produced (an already-prefixed column, and a mixed
+bare/prefixed source). The owner chose one shared implementation over two copies that drift. The
+stricter behaviour on those two inputs is therefore a **deliberate, recorded** change to a live
+path, pinned by `TestWhatTheSwissExtractionPreservedAndWhatItChanged` — not an unnoticed side
+effect. That distinction was the question; the strictness itself was never in doubt.

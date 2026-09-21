@@ -98,6 +98,46 @@ CARAVAN_ALIAS: Final[dict[str, str]] = {
 }
 
 
+def namespace_static_columns(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Plan 306 T2 (D1 option 4) — put raw static columns into the
+    ``caravan:`` namespace, so a model declaring `StaticNaming.CARAVAN` can
+    resolve them.
+
+    Extracted from `store/caravan_import.py`, which has always done this for
+    the Swiss path, so the basin-package path can reuse the operation rather
+    than grow a second one that drifts from it.
+
+    Two properties the plan makes non-optional, both from review:
+
+    * **An already-prefixed key is left alone.** A contract-compliant package
+      may arrive already namespaced; prefixing again yields
+      ``caravan:caravan:…``, which the resolver cannot resolve.
+    * **Collisions are detected on the RAW column set, BEFORE the output dict
+      exists, and REFUSED.** Idempotent prefixing alone is not enough: it maps
+      ``for_pc_sse`` and ``caravan:for_pc_sse`` onto one key, so one value
+      silently overwrites the other and *column order* decides which survives.
+      A source carrying two shapes for one concept is one we do not
+      understand, and guessing is worse than stopping.
+    """
+    collisions = sorted(
+        bare
+        for bare in raw
+        if not bare.startswith(CARAVAN_PREFIX) and f"{CARAVAN_PREFIX}{bare}" in raw
+    )
+    if collisions:
+        raise ConfigurationError(
+            "namespace_static_columns: the source carries BOTH the bare and "
+            f"the {CARAVAN_PREFIX!r}-namespaced spelling of {collisions!r}. "
+            "Refusing to guess which is authoritative — one would silently "
+            "overwrite the other, and which one survives would depend on "
+            "column order."
+        )
+    return {
+        (key if key.startswith(CARAVAN_PREFIX) else f"{CARAVAN_PREFIX}{key}"): value
+        for key, value in raw.items()
+    }
+
+
 def resolve_caravan_static_key(name: str) -> str:
     """D15's resolution rule for ONE declared static name -- the PRIMARY key
     a caller looks up for it; there is no bare-name fallback. For an

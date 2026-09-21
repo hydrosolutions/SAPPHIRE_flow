@@ -32,20 +32,28 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from sapphire_flow.db.metadata import basin_static_packages
+from sapphire_flow.db.metadata import basin_static_packages, basins
 from sapphire_flow.services.basin_importer import (
     build_assigned_model_features_resolver,
     import_basin_package_from_directory,
     import_loaded_basin_package,
 )
 from sapphire_flow.services.basin_package_loader import load_basin_package
+from sapphire_flow.services.caravan_statics import (
+    CARAVAN_ALIAS,
+    resolve_shared_static_frame,
+)
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.model_store import PgModelStore
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import ArtifactScope, ModelAssignmentStatus
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    ModelAssignmentStatus,
+    StaticNaming,
+)
 from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
 from sapphire_flow.types.model import ModelRecord
 from sapphire_flow.types.station import (
@@ -719,3 +727,124 @@ class TestCliEntrypointRealTransaction:
                     assert provenance_count == 1
             finally:
                 engine.dispose()
+
+
+class TestPackageImportedBasinResolvesDeclaredStatics:
+    """Plan 306 T1/T2 — the end-state proof, where a REAL import runs.
+
+    The discriminating evidence is RESOLUTION AFTER A REAL IMPORT, not error
+    text: no code emits a ``caravan:``-prefixed key on a miss, so a test keyed
+    on the message would assert something the code never says.
+
+    ⚠️ **This class runs ONE path — the package importer.** The Swiss control
+    lives in the unit suite, against attributes in the shape that path writes.
+    Calling the pair a "two-path comparison" overstated it, since the Swiss
+    importer never runs here; confirming review 2026-09-21.
+
+    ⛔ Asserts the END STATE — every declared name resolves. Before T2 none
+    did. A test asserting *zero* resolution would have passed then and failed
+    after the fix, which is a characterization test pointing backwards.
+
+    """
+
+    @staticmethod
+    def _caravan_model(declared: frozenset[str]) -> FakeStationForecastModel:
+        """A model in the CARAVAN naming regime — the one every aquacast
+        model declares, and the only one that reaches prefixed keys.
+
+        ⚠️ The shared `_fake_model` helper leaves `static_naming` at its
+        default (NATIVE), which resolves BARE names. Measured 2026-09-21:
+        every discoverable NATIVE model declares ZERO static features, so T2's
+        change of stored key shape breaks none of them — but that is a fact
+        about today's model set, not a guarantee.
+        """
+        model = _fake_model(declared)
+        model.static_naming = StaticNaming.CARAVAN  # type: ignore[attr-defined]
+        return model
+
+    @staticmethod
+    def _declared() -> frozenset[str]:
+        """The REAL 78 names `cmal_small` declares, read from its vendored
+        config.
+
+        ⚠️ Independent review 2026-09-21: an earlier version used the 23
+        alias-table names plus `area` and called it the plan's 78-feature
+        claim, on the grounds that `cmal_small` needs the optional aquacast
+        extra. The MODEL does; its CONFIG is checked into this repository and
+        needs nothing. Reading it makes the test assert what the plan says
+        rather than a convenient subset — and it covers the direct
+        (unaliased) names too, which is the other half of D15's rule."""
+        import yaml
+
+        config = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[3]
+                / "src"
+                / "sapphire_flow"
+                / "models"
+                / "aquacast"
+                / "configs"
+                / "cmal_small.yaml"
+            ).read_text()
+        )
+        declared = frozenset(config["static_features"])
+        assert len(declared) == 78, f"expected cmal_small's 78, got {len(declared)}"
+        return declared
+
+    def test_a_package_imported_basin_resolves_every_declared_static(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        import_loaded_basin_package(
+            db_connection,
+            loaded,
+            resolve_station=_resolver(station_id),
+            clock=_clock,
+        )
+
+        stored = db_connection.execute(
+            sa.select(basins.c.attributes).where(basins.c.code == "123")
+        ).scalar_one()
+        declared = self._declared()
+
+        frame = resolve_shared_static_frame(stored, [self._caravan_model(declared)])
+
+        unresolved = sorted(name for name in declared if frame.get(name) is None)
+        assert unresolved == [], (
+            f"{len(unresolved)} of {len(declared)} declared statics did not "
+            f"resolve from a package-imported basin: {unresolved[:5]}"
+        )
+
+    def test_the_resolved_values_are_the_ones_the_package_delivered(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Resolution alone is not enough — a mapping that resolved to the
+        wrong column would satisfy the test above. Values are compared against
+        the package's own parquet, and nothing is rescaled on the way in."""
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        delivered = loaded.static_attributes[loaded.basins[0].gauge_id]
+        import_loaded_basin_package(
+            db_connection,
+            loaded,
+            resolve_station=_resolver(station_id),
+            clock=_clock,
+        )
+
+        stored = db_connection.execute(
+            sa.select(basins.c.attributes).where(basins.c.code == "123")
+        ).scalar_one()
+        declared = self._declared()
+
+        frame = resolve_shared_static_frame(stored, [self._caravan_model(declared)])
+
+        resolved = {n: frame.get(n) for n in declared if frame.get(n) is not None}
+        assert len(resolved) == len(declared), "value check would be vacuous"
+
+        wrong = {
+            name: (value, delivered[CARAVAN_ALIAS.get(name, name)])
+            for name, value in resolved.items()
+            if value != delivered[CARAVAN_ALIAS.get(name, name)]
+        }
+        assert wrong == {}, f"resolved to the wrong value: {wrong}"

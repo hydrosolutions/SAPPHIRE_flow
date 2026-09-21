@@ -57,6 +57,7 @@ from sapphire_flow.db.metadata import (
     stations,
 )
 from sapphire_flow.exceptions import BasinPackageRejectedError
+from sapphire_flow.services.caravan_statics import namespace_static_columns
 from sapphire_flow.store._helpers import require_real_transaction
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
@@ -625,7 +626,14 @@ def _import_one_basin(
     imported_at: UtcDatetime,
     clock: Callable[[], UtcDatetime],
 ) -> ImportedBasin:
-    attributes = dict(_require_static_attributes(static_attributes, basin))
+    # Plan 306 T2 (D1 option 4): the package delivers BARE columns, and
+    # every aquacast model resolves `caravan:`-prefixed keys with no bare
+    # fallback — so without this the basin imports cleanly and then
+    # resolves ZERO of its declared statics. Reuses the Swiss path's
+    # operation rather than a second copy that could drift from it.
+    attributes = namespace_static_columns(
+        _require_static_attributes(static_attributes, basin)
+    )
     band_geometries = _band_geometries_for_basin(bands, basin)
     geometry = _ensure_multipolygon(_require_geometry(basin))
 
