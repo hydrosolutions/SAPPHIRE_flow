@@ -980,22 +980,33 @@ requirement is met. *(Checked because it looked like a failure; it is not.)*
 day (142 here, 144 on a complete day, fewer on a gappy one), so the distortion varies with data
 completeness.
 
-### Root cause — the model's own declaration, not a SAP3 defect
+### Root cause — 🔴 **OUR shim, not the model.** *(Corrected 2026-09-21 — the first attribution was wrong.)*
+
+The chain, read rather than assumed:
 
 | | |
 |---|---|
-| SAP3 v0 fallback (`services/training_data.py:44`) | `discharge: MEAN` — **correct** |
-| `cmal_small` declares | `declared_aggregations = {'temperature': MEAN, 'discharge': SUM, 'precipitation': SUM}` |
-| Plan 228's rule | **declared wins** over the name-keyed fallback |
+| **aquacast declares** `discharge` in **`mm/day`** with **`aggregation = SUM`** | ✅ **internally correct.** mm/day is a *depth flux*; summing sub-daily depths into a daily total is the right operation for it (`_units.py:69`: *"aquacast's declared discharge unit"*). |
+| **`_shim.py` relabels the unit to `m³/s`** | a genuine physical conversion, via basin area (`mm_per_day_to_m3_per_s`, `_units.py:68-70`). |
+| **the shim carries `aggregation` through UNCHANGED** | `_translate_declared_group` does `variable.model_copy(update={"unit": ...})` — it rewrites **names and units only** (`_shim.py:158-176`). |
+| SAP3 then resamples live sub-daily **m³/s** with **SUM** | 🔴 **142× inflation.** Summing 142 instantaneous rates is not a quantity. |
 
-⟹ the model asks for its target to be summed, and SAP3 complies. Summing a rate is not a physically
-meaningful quantity, and whatever `cmal_small` was trained on, it was not this: the artifact was
-trained **externally** on daily CAMELS-CH data, where discharge is already one daily value, so a
-declared SUM is a **no-op at training time** and a **142× inflation at serve time**. That is a
-train/serve skew created by the declaration itself.
+⟹ **The shim converts the unit from a flux to a rate and leaves behind the aggregation that
+belonged to the flux.** The model's declaration is self-consistent; ours is not after translation.
 
-⚖️ **Per the FI-adherence rule this is case 1** — our model does not comply and the model is what
-should change. It is not an FI expressiveness gap: the contract can express `MEAN` perfectly well.
+⚖️ **This is a SAP3 defect and the fix is ours** — nothing to raise with the modeller, and **not**
+an FI-adherence case. *(The first version of this section blamed `cmal_small` for "declaring
+discharge: SUM". That statement is withdrawn: the declaration is correct **for the unit it
+accompanies**, and it was our translation that broke the pairing. The owner challenged the
+attribution and was right to.)*
+
+🔑 **The rule the fix must encode:** a unit translation that changes the *kind* of quantity —
+flux ⟶ rate — must translate the aggregation with it. Here `MM_PER_DAY`+`SUM` ⟹ `M3_PER_S`+`MEAN`.
+
+✅ **Why precipitation and temperature were fine.** Precipitation is also declared `mm/day`+`SUM`,
+but the shim relabels it to `mm` at a daily step — still a depth, so `SUM` stays correct. Only
+`discharge` changes kind. That is also why the gate saw sane precip (0–28 mm) and temp (6–21 °C)
+alongside nonsense discharge.
 
 ### Also observed, and NOT yet explained
 
