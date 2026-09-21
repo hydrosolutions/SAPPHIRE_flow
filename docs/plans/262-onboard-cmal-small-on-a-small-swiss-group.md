@@ -48,6 +48,74 @@ Owner decision, 2026-09-09: the pilot declares **`ModelTier.SKILL` +
 `AlertEligibility.NO_EVENT_INFORMATION`** — ranked with the real forecasting models, but
 barred from raising alerts until it has been seen to work on Swiss rivers.
 
+## Execution record — 2026-09-21
+
+What was actually run on the mac-mini staging host, with its results. Recorded here because
+this plan asks for observed outcomes to be written back into it.
+
+| task | state | evidence |
+|---|---|---|
+| T1 | ✅ **complete; last exit gate closed** | `src/sapphire_flow/models/aquacast/configs/cmal_small.yaml` is **byte-identical** to `config.yaml` in the owner's model tree, both `94ebec0f…e45`. The plan recorded this as not verifiable from the repo; it is now verified from the tree. |
+| T2 | ✅ **built, deployed, accepted** | see below |
+| T3a | ✅ **complete, including the on-host run** | see below |
+| T3b | ⬜ not started — gated on T4 | |
+| T4 | 🔴 **BLOCKED in execution** — see below | |
+| T5 | ⬜ not started — gated on T3b | |
+
+### T2 — deployed 2026-09-21, 0.1.901 → 0.1.927
+
+Followed `docs/standards/cicd.md` § Upgrade procedure with both overlays. **No migrations**
+between the host's prior commit (`75cf80cf`) and `main` (`9dc07915`), so this was code-only and
+crossed no schema boundary. Rollback anchor `sapphire-flow:rollback-backup` → 0.1.901 tagged first.
+
+| check | result |
+|---|---|
+| `compose config` image tags | **1× `sapphire-flow-aquacast:0.1.927`** (prefect-worker), **4× `sapphire-flow:0.1.927`** |
+| aquacast image | **3.64 GB, 88 s** (2026-09-11 probe measured 3.58 GB — consistent) |
+| version read from **inside** the worker | `0.1.927` |
+| `init` exit code | `0` |
+| ML stack in the worker | **aquacast 0.1.356** (the pinned revision) + **torch 2.9.1+cpu** |
+| `api` | `torch present: False` |
+
+⚠️ The macmini overlay's `prefect-worker` block sets only `mem_limit: 24g` and carries no `image:`
+key, so it does **not** clobber T2's separate tag — checked before building, not after.
+
+### T3a — group created 2026-09-21
+
+Dry run first, then `--apply`. `swiss-cmal-small-pilot` (`13f2f0b0-722d-4bf0-92ee-21b3c51c8006`)
+under the default tenant, holding **2009 Porte_du_Scex** and **2091 Rheinfelden-Messstation**,
+with an audit row `station_group_created` at 08:12:27Z. `station_groups` was **0** before this —
+the script had shipped in PR #277 but had never been run against the live host.
+
+### 🔴 T4 — blocked at the Prefect parameter boundary; Plan 307 owns the fix
+
+This task's own "Risk to record" came true. The import was refused at flow-run creation:
+
+```
+422  Flow run parameters must be less than 524,288 bytes when serialized
+     (got 2,420,511 bytes)
+```
+
+`best.pt` is 1,814,653 bytes → 2,419,540 base64 chars → **2,420,511 bytes of parameters, 4.6× the
+server limit**. ✅ **Nothing was written** — `model_artifacts` stayed at 902 rows and
+`model_artifacts WHERE group_id IS NOT NULL` at 0. The artifact itself is staged on the host and
+sha256-verified identical to the source (`84f1a4ef…8a26`), and round-trips correctly through
+base64 inside the container, so the artifact is not in question — only the transport.
+
+⚖️ **Owner, 2026-09-21: model onboarding must be replicable on Nepali servers.** That ruled out
+both an in-process call and raising the Prefect limit, and selected a staged-path import.
+**Plan 307 owns it**, and its T4 carries this task's provenance table forward.
+
+⚠️ **This plan's T4 "In" still says "through the existing `import-model-artifact` deployment — no
+new import machinery", and that sentence is now incomplete.** Amending it — and adding a
+dependency on 307 — is a **material change to a READY plan and needs its own review**. It is
+flagged here and deliberately not applied.
+
+🔑 **The `trained_at` prerequisite is CLEARED.** The owner confirmed 2026-09-21 that the training
+machine's clock was Europe/Zurich, so `logs/train.log:632`'s `13:41:55` on 31 August is CEST =
+**`2026-08-31T11:41:55Z`**. Flagged gap 2 is closed; gap 1 (`source_commit`) remains open and is
+carried as designed.
+
 ### Owner reframe, 2026-09-09 — what it changed
 
 The owner read the draft and identified that it "gets hung up on the past data": it
@@ -704,11 +772,14 @@ carries the reciprocal reference naming plan 262.
 1. **The artifact's training source commit.** The bundle records aquacast package version
    `0.1.346`, not a commit hash, so the exact training revision cannot be recovered from
    the artifact. `source_commit` stays null until the modeller supplies it.
-2. 🔴 **The timezone of `trained_at` — BLOCKING for T4, not merely flagged.**
-   `logs/train.log` timestamps carry no offset. The value must be confirmed as UTC or local
-   before it is written, since `import_external_artifact` takes a required, non-defaulted
-   `UtcDatetime` (`services/model_import.py:296`). ⚠️ Unlike gap 1, this one **cannot be
-   carried into execution**: T4 has no honest output without it. See T4's prerequisite.
+2. ✅ **CLOSED 2026-09-21 — the timezone of `trained_at`.** Was blocking for T4.
+   `logs/train.log` timestamps carry no offset, and the value could not be inferred. The owner
+   confirmed the training machine's clock was **Europe/Zurich**, so `13:41:55` on 31 August is
+   **CEST** and `trained_at` = **`2026-08-31T11:41:55+00:00`**. ⚠️ The modeller's statement that
+   "the logs are agnostic to timestamps, they use the same as the input data" is about timestamps
+   *in the data* — it does not answer this, because a logger's line prefix is the training
+   machine's wall clock regardless of what the inputs say. The two were kept separate
+   deliberately; conflating them would have put a two-hour error into an immutable record.
 
 Related and worth the modeller's eye: we would run a **`0.1.346` bundle under a
 `0.1.356` runtime**. `ModelLoader.model_from_bundle` rebuilds from `bundle.config` and
