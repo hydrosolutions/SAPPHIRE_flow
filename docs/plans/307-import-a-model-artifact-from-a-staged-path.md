@@ -6,7 +6,7 @@ title: A model artifact cannot be imported through its own deployment — give i
 scope: Add an `artifact_path` parameter to the existing `import-model-artifact` deployment, reading from a read-only staging mount that every deployment declares, with a traversal guard and a content checksum. Explicitly NOT a new importer (`services/model_import.py` is unchanged), NOT the artifact store, NOT retraining or model discovery, NOT the basin-package import route (`cli/import_basin_package.py`, which already reads a path), NOT removing the existing `artifact_base64` parameter.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2, D3]
+open_decisions: []
 source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.1.927 was refused by the Prefect API. The refusal, its byte counts and the mount topology below were all measured that day; the owner then set the requirement that model onboarding must be replicable on Nepali servers, which is what selects this shape over the two alternatives.
 ---
 
@@ -92,8 +92,9 @@ Two consequences the implementation must respect:
 
 ### T1 — a staging mount every deployment declares
 
-**Outcome.** A read-only staging directory exists in the worker on any deployment that follows
-the compose files, and its location is resolved from configuration rather than hardcoded.
+**Outcome.** A read-only staging directory — **`/data/incoming`** (D1) — exists in the worker on
+any deployment that follows the compose files, and its location is resolved from configuration
+rather than hardcoded.
 
 **In.** `docker-compose.yml` (the mount on `prefect-worker`, which is where
 `import-model-artifact` lands — it declares no pool and so runs on `default`,
@@ -111,25 +112,38 @@ worker; a write from inside the container fails.
 **Pre-change.** The mount does not exist — `docker inspect` of the running worker lists the five
 mounts in the table above and no staging one.
 
-### T2 — `artifact_path`, with a traversal guard and a checksum
+### T2 — `artifact_path`, with a traversal guard and a required checksum
 
 **Outcome.** `import_model_artifact_flow` accepts an artifact either as `artifact_base64` (today's
-route, still valid below the limit) **or** as `artifact_path` resolved inside the staging root —
-exactly one, never both, never neither.
+route, still valid below the limit) **or** as `artifact_path` resolved inside `/data/incoming` —
+exactly one, never both, never neither. A path import additionally requires
+**`expected_artifact_sha256`** (D3) and refuses on mismatch before the bytes are used.
 
-**In.** `flows/import_model_artifact.py` only. The guard: resolve the candidate path, and require
-the resolved result to be inside the resolved staging root — so a symlink or a `../` escape is
-refused **before the file is opened**, not after. `services/model_import.py` is untouched: it
-still receives `artifact_bytes`, and every guarantee it holds (the strict `expected_config_hash`
-gate, the audited writer, the all-or-nothing transaction) is unchanged.
+**In.** `flows/import_model_artifact.py` only. Two guards, in this order:
 
-**Out.** Removing `artifact_base64`. Any change to `import_external_artifact`. Accepting a URL, an
-object-store URI, or any path outside the staging root. Reading a file the flow has not
-checksummed (D3).
+1. **Traversal** — resolve the candidate path and require the resolved result to be inside the
+   resolved staging root, so a symlink or a `../` escape is refused **before the file is opened**.
+2. **Content** — digest the file and compare to `expected_artifact_sha256`, refusing before the
+   bytes reach `import_external_artifact`.
+
+`services/model_import.py` is untouched: it still receives `artifact_bytes`, and every guarantee
+it holds (the strict `expected_config_hash` gate, the audited writer, the all-or-nothing
+transaction) is unchanged.
+
+⚠️ **`expected_artifact_sha256` and `expected_config_hash` are different things and must never be
+conflated** — one is the digest of the checkpoint bytes, the other of the model's `config.yaml`.
+Both are required on a path import, and a reviewer should check that neither is ever defaulted
+from the other.
+
+**Out.** Removing `artifact_base64`. Requiring `expected_artifact_sha256` on the base64 route
+(the bytes are already in the parameter — there is nothing between the caller and the flow for it
+to protect against). Any change to `import_external_artifact`. Accepting a URL, an object-store
+URI, or any path outside the staging root.
 
 **Verification.** Unit tests covering: both parameters given → refused; neither given → refused; a
-path outside the staging root → refused, naming the root, with no file opened; a symlink whose
-target escapes the root → refused; a valid staged file → imported, with the bytes reaching
+path outside the staging root → refused, naming the root, **with no file opened**; a symlink whose
+target escapes the root → refused; a staged file whose digest does not match → refused, **with
+nothing written**; a valid staged file with a matching digest → imported, with the bytes reaching
 `import_external_artifact` identical to the file on disk. Plus `uv run pytest tests/unit` and
 `tests/integration` clean.
 
@@ -185,22 +199,26 @@ the three timestamps are stored un-conflated; a deliberate second run with a wro
 
 ## Owner decisions
 
-**D1 — where does the staging mount point?** A dedicated read-only bind (e.g. `/data/incoming`,
-bound on the mini to a host directory of its own) or a reuse of `/data/raw`. ⭐ Recommend
-dedicated: `/data/raw` is bound to `/Users/sapphire/camels-ch` on this host, which is
-Swiss-dataset-specific, and a Nepali server would have to bind an unrelated directory under a name
-that means something else.
+**All three are closed. None is open.**
 
-**D2 — does `artifact_base64` survive?** Recommend yes: it is valid below the limit, it is what
-the tests use, and removing it is a breaking change to a registered deployment for no benefit.
-The operator route becomes the path; the parameter stays.
+**D1 — ✅ CLOSED, owner 2026-09-21: a DEDICATED read-only mount, `/data/incoming`.** Not a reuse
+of `/data/raw`, which is bound to `/Users/sapphire/camels-ch` on this host — Swiss-dataset-specific,
+so a Nepali server would have had to bind an unrelated directory under a name meaning something
+else. The mount gets its own host directory per deployment.
 
-**D3 — should the flow require an expected artifact checksum?** ⭐ Recommend yes. The staging
-directory is writable by anyone with host shell access, and the import writes an immutable
-provenance record. An `expected_artifact_sha256` parameter, checked before the bytes are used,
-binds the import to the exact file the operator intended rather than to whatever is at that path
-at that moment. It also gives the runbook a step that catches a truncated copy — the transfer in
-this session was verified that way, by hand.
+**D2 — ✅ RESOLVED BY SCOPE, not by a decision: `artifact_base64` survives.** This plan's Out
+already forbids removing it. It is valid below the limit, it is what the tests use, and removing
+it would be a breaking change to a registered deployment for no benefit. The operator route
+becomes the path; the parameter stays. ⚠️ Recorded here so a reviewer does not re-open it as an
+unanswered question.
+
+**D3 — ✅ CLOSED, owner 2026-09-21: YES, the flow requires `expected_artifact_sha256`.** The
+staging directory is writable by anyone with host shell access and the import writes an immutable
+provenance record, so the import binds to the exact file the operator intended rather than to
+whatever is at that path at that moment. It is checked **before the bytes are used**, and it gives
+the runbook a step that catches a truncated copy — the transfer in this session was verified that
+way, by hand. T2 owns the parameter and its refusal test; T3's procedure must produce the digest
+before the import, not after.
 
 ## Interaction with Plan 262 — flagged, not assumed
 
