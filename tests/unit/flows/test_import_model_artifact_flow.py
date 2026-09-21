@@ -303,18 +303,30 @@ class TestStagedArtifactPath:
     def test_refuses_a_symlinked_staging_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Independent review 2026-09-21 (major): the root was opened without
-        O_NOFOLLOW, so a symlinked root silently redirected every import."""
+        """🔴 Confirming review 2026-09-21 (major), proven by execution: the
+        first fix added O_NOFOLLOW to the root open while the resolver still
+        called .resolve(), so the open received the symlink's TARGET and the
+        flag could never fire — a root of `incoming -> /elsewhere` served
+        /elsewhere/best.pt with a matching checksum.
+
+        This drives the REAL resolver through the environment. An earlier
+        version stubbed the resolver via `_staging`, which bypassed the very
+        code path the defect lived in, so it passed against the broken
+        implementation. The checksum here MATCHES the outside file, so the
+        only thing that can make this test pass is the refusal itself."""
         real = tmp_path / "elsewhere"
         real.mkdir()
-        (real / "best.pt").write_bytes(b"do not read me")
+        (real / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
         root = tmp_path / "incoming"
         root.symlink_to(real, target_is_directory=True)
-        self._staging(monkeypatch, root)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
         with pytest.raises(
             ConfigurationError, match="not available as a real directory"
         ):
-            _read_staged_artifact("best.pt", "0" * 64)
+            _read_staged_artifact(
+                "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
 
     def test_refuses_a_staged_fifo_without_blocking(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -344,18 +356,27 @@ class TestStagedArtifactPath:
         (root / "best.pt").symlink_to(outside)
         self._staging(monkeypatch, root)
 
-        opened: list[str] = []
+        outside_id = (outside.stat().st_dev, outside.stat().st_ino)
+        opened_ids: list[tuple[int, int]] = []
         real_open = os.open
 
         def recording_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
-            opened.append(str(path))
-            return real_open(path, *args, **kwargs)
+            fd = real_open(path, *args, **kwargs)
+            info = os.fstat(fd)
+            opened_ids.append((info.st_dev, info.st_ino))
+            return fd
 
         monkeypatch.setattr(os, "open", recording_open)
         with pytest.raises(ConfigurationError):
             _read_staged_artifact("best.pt", "0" * 64)
 
-        assert not any("secret.bin" in entry for entry in opened), opened
+        # 🔴 Confirming review 2026-09-21 (major): an earlier version of this
+        # test recorded the NAMES passed to os.open. The artifact is opened as
+        # "best.pt" relative to a directory descriptor, so the outside path
+        # never appears by name — the test passed even with the guard removed,
+        # because the checksum then supplied the expected error. Identity is
+        # the only evidence that answers "was it opened".
+        assert outside_id not in opened_ids, (outside_id, opened_ids)
 
     def test_refuses_when_the_digest_does_not_match(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

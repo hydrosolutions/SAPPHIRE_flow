@@ -72,5 +72,14 @@ def resolve_incoming_dir(config_data_dir: str | None = None) -> Path:
     """
     env_val = os.environ.get("SAPPHIRE_INCOMING_DIR")
     if env_val:
-        return Path(env_val).expanduser().resolve()
+        # 🔴 Deliberately NOT `.resolve()`. Confirming review 2026-09-21
+        # (major), proven by execution: resolving here returns the symlink's
+        # TARGET, so the `O_NOFOLLOW` guard on the root open receives a real
+        # directory and can never fire — a configured root of `incoming ->
+        # /elsewhere` silently served `/elsewhere/best.pt`. The final
+        # component must survive to the open for that guard to mean anything.
+        # An earlier fix added the flag without checking it could trigger.
+        return Path(env_val).expanduser()
+    # The derived branch appends the final component AFTER resolution, so it
+    # is preserved for the same reason.
     return resolve_data_dir(config_data_dir) / _INCOMING_SUBDIR

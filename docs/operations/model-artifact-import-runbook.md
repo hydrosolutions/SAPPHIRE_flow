@@ -117,10 +117,14 @@ another.
 ## Known limits, stated rather than implied
 
 - **A hardlink inside the staging root to a file outside it will be read.** `O_NOFOLLOW` cannot
-  distinguish a hardlink from an ordinary file; only a filesystem boundary could. The required
-  checksum is what keeps such a read from becoming an import.
-- **The staging root path is trusted configuration.** Anyone who can change the deployment's
-  environment, or write to the root's parent directory, controls the deployment already.
+  distinguish a hardlink from an ordinary file. The required checksum establishes **byte
+  identity, not provenance** — it prevents importing content you did not intend, not content that
+  originated outside. Rejecting multiply-linked files would reduce exposure and is not
+  implemented; the durable answer is to give the staging root its own filesystem.
+- **The staging root, its ancestors and the mount topology beneath them are trusted
+  configuration.** That is a deployment assumption this procedure relies on, not something the
+  import can verify. A deployment where an untrusted party can write to an ancestor of the
+  staging root does not satisfy it.
 
 ⚠️ **Parameter size.** The older `artifact_base64` route still works, but Prefect refuses flow-run
 parameters above **524,288 bytes** serialized — about 390 KB of artifact. Anything larger must go

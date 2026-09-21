@@ -138,12 +138,22 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
       blocks forever, and neither symlink protection nor a checksum prevents
       it — the block happens in the open.
 
-    ⚠️ Two residual limits, stated rather than papered over. A **hardlink**
-    inside the root to an outside file is indistinguishable from an ordinary
-    file and will be read; only a filesystem boundary could prevent that, and
-    the checksum is what makes it a non-import. And the **root path itself is
-    trusted configuration** — an attacker who controls the deployment's env
-    or the root's parent directory controls the deployment.
+    ⚠️ Two residual limits, stated rather than papered over — wording
+    tightened after confirming review 2026-09-21, which found the first
+    version overstated both.
+
+    * **Hardlinks.** A hardlink inside the root to an outside file is
+      indistinguishable from an ordinary file and WILL be read. The checksum
+      establishes byte identity, not provenance — so it does not categorically
+      prevent such content being imported, it only prevents importing content
+      the operator did not intend. Rejecting multiply-linked files
+      (``st_nlink > 1``) would reduce exposure; it is not implemented here and
+      is not a race-proof substitute for filesystem isolation.
+    * **The root path and its ANCESTORS are trusted configuration**, as is the
+      mount topology beneath them. This is a deployment assumption, not a
+      guarantee this function makes: write access to an ancestor is not the
+      same as owning the deployment, and a deployment that cannot uphold it
+      needs the staging root on its own filesystem.
     """
     import hashlib
     import os
@@ -207,7 +217,15 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
         except BaseException:
             os.close(fd)
             raise
-        with os.fdopen(fd, "rb") as handle:
+        try:
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            # Confirming review 2026-09-21 (minor): ownership transfers only
+            # once fdopen succeeds; a failure here would otherwise leak the
+            # artifact descriptor.
+            os.close(fd)
+            raise
+        with handle:
             artifact_bytes = handle.read()
     finally:
         os.close(dir_fd)
