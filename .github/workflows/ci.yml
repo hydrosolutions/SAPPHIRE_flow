@@ -536,7 +536,7 @@ jobs:
             exit 1
           fi
           for script in $expected; do
-            docker run --rm --entrypoint sh "sapphire-flow:PLAN309-VERIFICATION-NO-SUCH-TAG" \
+            docker run --rm --entrypoint sh "sapphire-flow:ci-${{ github.sha }}" \
               -c "python /app/scripts/$script --help" >/dev/null
           done
       # B3 — Trivy image scan, restructured (Plan 180) into scan-once/derive-many so a
@@ -725,8 +725,8 @@ jobs:
           # not `docker:`-prefixed. `-o <format>=<path>` writes the file directly
           # instead of via stdout, which the parent also keeps out of the log.
           "${{ steps.syft-cmd.outputs.cmd }}" scan \
-            "sapphire-flow:PLAN309-VERIFICATION-NO-SUCH-TAG" \
-            -o cyclonedx-json="sbom.cdx.json"
+            "sapphire-flow:ci-${{ github.sha }}" \
+            -o cyclonedx-json="PLAN309-VERIFICATION-elsewhere.json"
       # ENFORCE — the only step here without `continue-on-error`. It keys on the
       # ARTIFACT, not on any step's outcome, and it reports the stage that actually
       # failed rather than a fixed cause: "could not obtain the tool" is false when
