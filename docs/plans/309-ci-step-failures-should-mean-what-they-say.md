@@ -573,3 +573,41 @@ again — recorded because the next plan will face the same choice.
 | `security.md` and `cicd.md:518` unchanged | ✅ verified — the diff touches `cicd.md:620` and `:732` only |
 | **stalled** download / **stalled** execute → per-step timeout fires, job not cancelled | ⚠️ **NOT ATTEMPTED.** The `timeout-minutes` are declared and the mechanism is standard, but no run forced a stall |
 | **reduced starting headroom** → admission skips later attempts | ⚠️ **NOT IMPLEMENTED.** The plan called for checking remaining job time before each wait; the shipped version uses the fixed (b) schedule. Worst case is ~19 min against ~26, so it fits **provided the pre-SBOM steps stay near 2m49s**. A materially slower image build could push the last attempt past the job timeout — and a job timeout **cancels**, skipping the message. **Carried as a known gap, not silently dropped.** |
+
+### The gate I missed, and what caught it
+
+🔴 **`tests/unit/tooling/test_trivy_gate_observability.py` encodes this workflow's contract, and I
+never looked for it.** Plan 207 built it to hold exactly the property run E proved — the SBOM steps
+must not inherit the implicit `success()` that follows a gate failure — by *evaluating* the `if:`
+expressions against representative scenarios rather than pattern-matching them. My restructure broke
+**six** of its assertions. **CI caught it; I did not.**
+
+⭐ **I swept the workflow and the standards and stopped there.** The repo's own rule is to sweep by
+value *and by role*, and a test that encodes a contract is one of those roles. `grep -rl` for the
+step ids I was renaming would have found it in seconds.
+
+**What the tests now hold**, after being rewritten rather than patched around:
+
+- the evaluator understands `steps.<id>.outputs.<name>` — Plan 309's chain gates the scan on it —
+  and resolves an output of a step that never ran to the empty string, as real Actions does;
+- `TestSbomSurvivesAGateFailure` walks the **whole seven-step chain in order**, each condition
+  evaluated against the outcomes accumulated so far, so a *skipped* step's outcome feeds the next
+  condition the way the runner does. Plan 207's property is preserved **and widened**: the retries
+  and the enforcement step must survive a red job too, not just the first attempt;
+- `TestSbomRetryChain` holds Plan 309's own properties, including the run-D defect.
+
+**Mutation-tested — 6 mutants, 6 killed**, each by exactly one test with the other 33 still passing:
+
+| mutant | killed by |
+|---|---|
+| drop the guards from a retry wait step | `test_gate_failed_the_retries_still_run_too` |
+| remove `continue-on-error` from attempt 2 | `test_enforcement_is_the_only_step_that_can_fail_the_job` |
+| add `continue-on-error` to the enforcement step | same |
+| remove the scan's `timeout-minutes` | `test_every_attempt_and_the_scan_are_individually_bounded` |
+| gate the upload on the scan again (the run-D defect) | `test_upload_is_gated_on_enforcement_not_on_the_scan` |
+| re-enable the syft update check | `test_the_scan_keeps_the_parent_actions_update_check_disabled` |
+
+⚠️ **The first attempt at this mutation run was worthless and looked fine.** Three of the six
+"mutants" never applied — a shell-quoting slip left a literal `\$` in the search string — and the
+suite passed, which reads identically to a surviving mutant. The patches are now applied by a script
+that **asserts its anchor matched**. See `feedback_red_first_must_prove_the_fault`.
