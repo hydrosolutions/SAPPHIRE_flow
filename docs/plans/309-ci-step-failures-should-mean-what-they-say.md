@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-21
 revised: 2026-09-21
 plan: 309
@@ -7,7 +7,7 @@ title: A transient tool download reds a PR the security gate passed — retry it
 scope: Retry the SBOM step's tool install inside `build-image-and-scan`, and when the retries are exhausted, fail with a message that says what actually happened. The SBOM stays mandatory on every run, so no control is relaxed and no standard changes. Plus a read-only survey of the same exposure elsewhere. Explicitly NOT touching any security gate (Trivy's scan, gate table, SARIF derivation, code-scanning upload), NOT a blanket `continue-on-error`, NOT changing what an SBOM contains, NOT the image build, NOT the model/forecast pipeline.
 depends_on: []
 blocks: []
-open_decisions: [D1]
+open_decisions: []
 source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224865, jobs 106377308103 / 106382760290 / 106384504421) between 14:38 and 14:57 UTC and recovered on the fourth (106387452121, 15:05). The run census in §1 is reproducible by the method stated there; every line anchor was verified by printing the line it names, against `main` at `672c8df5`.
 ---
 
@@ -15,8 +15,14 @@ source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224
 
 ## Status
 
-**DRAFT. Four independent passes, the most recent NEEDS CHANGES (4 major, 2 minor) — folded, and
-not yet re-reviewed.** ⛔ **D1 is open**, and it now covers both *what* to retry and *how often*.
+**READY — set by the orchestrator 2026-09-21, after four independent passes and the owner's
+decision on D1.** ✅ **D1 is CLOSED: option (b)** — three download attempts, with **4-minute and
+6-minute waits after a failure**. No decision is open; T1 and T2 are both implementable.
+
+⚠️ **The fourth pass's findings are folded but that fold is itself unreviewed** — passes 3 and 4
+each found the previous fold introduced defects. The owner's judgement, taken deliberately, is that
+the remaining uncertainty is in **workflow mechanics a real CI run settles faster than a fifth
+reader**. T1's verification is therefore the gate, not more prose review.
 
 | pass | outcome | what it changed |
 |---|---|---|
@@ -337,7 +343,7 @@ step's meaning rather than waved through on this plan's argument.
 
 ## Owner decision
 
-### D1 — how many attempts, and how long between them?
+### D1 — ✅ CLOSED, owner 2026-09-21: option (b), three attempts with 4- and 6-minute waits
 
 ⚠️ **Read the D1 discussion in § The reconciliation first** — *what* to retry is settled (the
 pinned `download-syft` sub-action). This is only *how often*.
@@ -382,10 +388,14 @@ took **1 s, 11 s and 0 s** (`106377308103`, `106382760290`, `106384504421`) — 
 fails fast. So in the realistic case the attempt offsets are the cumulative waits, and the
 per-attempt bound below binds only on a **stall**.
 
-Recommendation: **(b)**, as a **policy choice with no evidence behind it** — three attempts across
-~10 minutes absorbs a short blip at a wall-clock cost a developer will tolerate, fits the budget
-even if every attempt stalls, and leaves real reserve. ⛔ **Neither this outage nor any other tells
-us whether (b) or (c) would have helped**, and the plan no longer pretends otherwise.
+⚖️ **CLOSED as (b), owner 2026-09-21.** Three attempts, waits of **4 and 6 minutes** after a
+failed attempt, per-attempt `timeout-minutes: 3`. Taken as a **policy choice with no evidence behind
+it** — three attempts across ~10 minutes absorbs a short blip at a wall-clock cost a developer will
+tolerate, fits the budget even if every attempt stalls (~19 min worst case against ~26), and leaves
+real reserve. ⛔ **Neither this outage nor any other tells us whether (b) or (c) would have helped**;
+the plan does not pretend otherwise, and (c) was rejected because it overruns on stalls, not because
+it was shown to be worse.
+
 
 ⚠️ **The alternative nobody has costed: raise `timeout-minutes`.** It buys coverage for a longer
 outage at the price of slower feedback on a genuinely broken build. ⛔ It is *not* established as
@@ -416,8 +426,9 @@ upstream publish cycle; nothing analogous exists here.
 
 ## Exit gates
 
-- **D1** is closed, with the chosen schedule recorded **as absolute offsets** and the per-attempt
-  `timeout-minutes` stated, and with the raise-the-job-timeout alternative explicitly rejected.
+- ✅ **D1 closed (b)** — three attempts, waits 4 and 6 min, per-attempt `timeout-minutes: 3`. The
+  raise-the-job-timeout alternative is rejected deliberately: it trades feedback latency on a
+  genuinely broken build for coverage of an outage length we never measured.
 - T1's retry is proven by an **attempt-specific** injected fault — not a bogus version, not a green
   run.
 - T1's failure cases each have a recorded job conclusion: transient-then-recovered, persistent,
@@ -436,7 +447,7 @@ upstream publish cycle; nothing analogous exists here.
 ```json
 {
   "phases": [
-    { "id": "P1", "tasks": ["T1"], "decision": "D1",
+    { "id": "P1", "tasks": ["T1"], "decision": "D1 CLOSED 2026-09-21 — (b): 3 attempts, waits 4+6 min, per-attempt timeout 3 min",
       "note": "retry the pinned download-syft sub-action, execute syft separately, then enforce on the ARTIFACT; guards !cancelled() + build-image success on every step, per-attempt timeout-minutes; guarantees only that no run completes SUCCESSFULLY without an SBOM" },
     { "id": "P2", "tasks": ["T2"], "parallel_with": ["P1"],
       "note": "survey only; produces tasks, changes nothing" }
