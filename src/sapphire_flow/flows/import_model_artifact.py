@@ -142,18 +142,31 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
     tightened after confirming review 2026-09-21, which found the first
     version overstated both.
 
-    * **Hardlinks.** A hardlink inside the root to an outside file is
-      indistinguishable from an ordinary file and WILL be read. The checksum
-      establishes byte identity, not provenance — so it does not categorically
-      prevent such content being imported, it only prevents importing content
-      the operator did not intend. Rejecting multiply-linked files
-      (``st_nlink > 1``) would reduce exposure; it is not implemented here and
-      is not a race-proof substitute for filesystem isolation.
+    * **Hardlinks — read, but NOT importable.** ⚖️ Owner decision 2026-09-21,
+      after a clean-room review raised it. A hardlink inside the root to an
+      outside file is indistinguishable from an ordinary file and WILL be
+      read. It is **not an import vector**: importing it would require the
+      staged bytes to match a digest the operator computed from the source
+      artifact off-host, i.e. a SHA-256 preimage. What remains is a **hash
+      oracle**, and that is why the computed digest is no longer reported on
+      mismatch.
+      🔑 **The trigger that would change this answer:** a deployment where the
+      staging directory is writable by someone LESS privileged than the
+      operator. On a host where the same account owns the compose files, the
+      secrets and the deploy, a hardlink grants nothing that account lacks.
+      Such a deployment needs the staging root on its OWN FILESYSTEM before
+      it accepts artifacts from that party — see the runbook.
     * **The root path and its ANCESTORS are trusted configuration**, as is the
       mount topology beneath them. This is a deployment assumption, not a
-      guarantee this function makes: write access to an ancestor is not the
-      same as owning the deployment, and a deployment that cannot uphold it
-      needs the staging root on its own filesystem.
+      guarantee this function makes: ``O_NOFOLLOW`` on the root open protects
+      the root's FINAL component, not the directories above it, so an
+      attacker who can substitute an ancestor redirects the whole staging
+      root.
+      ⛔ **A dedicated filesystem does NOT fix this** — clean-room review
+      2026-09-21 found the two remedies conflated here. That remedy addresses
+      cross-filesystem HARDLINKS and nothing else. Untrusted ancestors are an
+      independent requirement with no mitigation in this function: a
+      deployment that cannot uphold it must fix the path, not the filesystem.
     """
     import contextlib
     import hashlib
@@ -257,9 +270,11 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
     if actual.lower() != expected_artifact_sha256.strip().lower():
         raise ConfigurationError(
             "import_model_artifact_flow: artifact_path content does not "
-            "match expected_artifact_sha256 — expected "
-            f"{expected_artifact_sha256!r}, read {actual!r}. Refusing to "
-            "import."
+            f"match expected_artifact_sha256 {expected_artifact_sha256!r} — "
+            "refusing to import. 🔑 The digest actually read is deliberately "
+            "NOT reported: echoing it would turn a hardlink into a hash "
+            "oracle over any file the worker can read (owner decision, "
+            "2026-09-21). Recompute it from the staged file if you need it."
         )
     return artifact_bytes
 

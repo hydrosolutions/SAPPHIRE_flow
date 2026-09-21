@@ -448,8 +448,16 @@ uv run pyright src
 - Every T2 refusal case in the verification table has a test, **including the omitted-checksum
   case and the swap-between-check-and-open race**, and each refusal lands at the right boundary:
   - parameter-validation refusals happen **before the file is opened**, and containment is
-    enforced **by the open itself** so that no file outside the staging root is ever opened — not
-    even transiently, and not even when the checksum would later reject its contents;
+    enforced **by the open itself** so that no file reachable only by a PATH leading outside the
+    staging root is ever opened — not even transiently, and not even when the checksum would
+    later reject its contents.
+    ⚖️ **Scoped by owner decision 2026-09-21, after a clean-room review found the unconditional
+    wording false:** a **hardlink** inside the root to an outside file is indistinguishable from
+    an ordinary file and IS read. It is not an import vector — that would require a SHA-256
+    preimage against a digest the operator computed off-host — and the residual hash oracle is
+    closed by no longer reporting the computed digest on mismatch. 🔑 **The trigger for revisiting
+    this:** a deployment where the staging directory is writable by someone less privileged than
+    the operator must put the staging root on its own filesystem first;
   - the checksum refusal happens **before the bytes reach `import_external_artifact` and before
     anything is written**.
   ⚠️ *Independent review 2026-09-21 (major): the previous gate demanded that EVERY refusal happen

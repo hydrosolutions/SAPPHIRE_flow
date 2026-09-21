@@ -16,8 +16,11 @@ _SUBDIRS = ("raw", "artifacts", "cache")
 # deployment's compose overlay, never a directory this process creates. A
 # `mkdir` here would silently manufacture an empty staging root on a host
 # whose overlay forgot the bind, turning a misconfiguration into a
-# file-not-found much later. `resolve_incoming_dir` therefore resolves the
-# path and does not touch the filesystem.
+# file-not-found much later. `resolve_incoming_dir` therefore never creates
+# THE INCOMING DIRECTORY. ⚠️ Its fallback branch still creates the OTHER data
+# subdirectories, because it goes through `resolve_data_dir`, which always
+# has — clean-room review 2026-09-21 (minor) caught the stronger claim that
+# it touches the filesystem at all.
 _INCOMING_SUBDIR = "incoming"
 
 

@@ -184,9 +184,11 @@ a new deployment is set up from.
 
 - **Read-only, and on `prefect-worker` only.** That is where `import-model-artifact` runs: the
   deployment declares no pool, so it lands on `default` (`cli/register_deployments.py`).
-- **The directory is never created by the application.** `config/paths.py::resolve_incoming_dir`
-  resolves it and does not touch the filesystem, so a missing bind fails loudly at import time
-  instead of being silently manufactured as an empty directory.
+- **The staging directory is never created by the application.** `resolve_incoming_dir` resolves
+  it without creating it, so a missing bind fails loudly at import time instead of being silently
+  manufactured as an empty directory. *(Its fallback branch does create the other data
+  subdirectories, as `resolve_data_dir` always has — the guarantee is about the staging directory
+  specifically, not about the function being free of side effects.)*
 - **Verify with BOTH files composed** — `docker compose -f docker-compose.yml -f
   docker-compose.macmini.yml config`. Checking the base alone asserts the absence of the very
   thing the overlay adds.

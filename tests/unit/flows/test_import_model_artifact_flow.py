@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
+import stat
 from typing import TYPE_CHECKING
 
 import pytest
@@ -378,6 +380,94 @@ class TestStagedArtifactPath:
         # the only evidence that answers "was it opened".
         assert outside_id not in opened_ids, (outside_id, opened_ids)
 
+    def test_refuses_a_swap_performed_between_the_root_open_and_the_artifact_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The race itself, deterministically — a required T2 exit-gate row
+        that the static-symlink tests do NOT cover.
+
+        Clean-room review 2026-09-21 (major): every other symlink test plants
+        its symlink before the call, so all of them would also pass against a
+        vulnerable resolve/check/open implementation that merely rejects
+        static symlinks. This one swaps a real staged file for an escaping
+        symlink in the window between the root open and the artifact open,
+        which is the only window the current design has."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        staged = root / "best.pt"
+        staged.write_bytes(_RAW_ARTIFACT_BYTES)
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        outside_id = (outside.stat().st_dev, outside.stat().st_ino)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        opened_ids: list[tuple[int, int]] = []
+        real_open = os.open
+        swapped = {"done": False}
+
+        def swapping_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            fd = real_open(path, *args, **kwargs)
+            info = os.fstat(fd)
+            opened_ids.append((info.st_dev, info.st_ino))
+            if not swapped["done"] and stat.S_ISDIR(info.st_mode):
+                # The root is now pinned. Swap the artifact underneath it,
+                # exactly as a host writer could between the two opens.
+                swapped["done"] = True
+                staged.unlink()
+                staged.symlink_to(outside)
+            return fd
+
+        monkeypatch.setattr(os, "open", swapping_open)
+        with pytest.raises(ConfigurationError, match="without following a symlink"):
+            _read_staged_artifact(
+                "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
+        assert swapped["done"], "the swap never happened — the test proves nothing"
+        assert outside_id not in opened_ids, (outside_id, opened_ids)
+
+    def test_the_returned_buffer_is_the_one_that_was_hashed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clean-room review 2026-09-21 (major): nothing protected the
+        read-once property. An implementation that hashed one read and
+        returned a SECOND read would pass every other test here, including
+        the mismatch test, because the unchanged fixture makes both reads
+        identical. The file is mutated after the first read, so a second read
+        would return different bytes — and the function must still return the
+        bytes it verified."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        staged = root / "best.pt"
+        staged.write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        real_fdopen = os.fdopen
+        reads: list[int] = []
+
+        def counting_fdopen(fd, *args, **kwargs):  # type: ignore[no-untyped-def]
+            handle = real_fdopen(fd, *args, **kwargs)
+            real_read = handle.read
+
+            def read(*a, **k):  # type: ignore[no-untyped-def]
+                data = real_read(*a, **k)
+                reads.append(len(data))
+                # Any SUBSEQUENT read must see different bytes.
+                staged.write_bytes(b"swapped after verification")
+                return data
+
+            handle.read = read  # type: ignore[method-assign]
+            return handle
+
+        monkeypatch.setattr(os, "fdopen", counting_fdopen)
+
+        result = _read_staged_artifact(
+            "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        )
+
+        assert result == _RAW_ARTIFACT_BYTES
+        assert len(reads) == 1, f"file was read {len(reads)} times; must be read once"
+
     def test_refuses_when_the_digest_does_not_match(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -387,6 +477,45 @@ class TestStagedArtifactPath:
         self._staging(monkeypatch, root)
         with pytest.raises(ConfigurationError, match="does not match"):
             _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_a_mismatch_does_not_leak_the_digest_it_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """⚖️ Owner decision 2026-09-21. A hardlink inside the staging root to
+        an outside file is readable and cannot be prevented without filesystem
+        isolation — but it is not an import vector, because importing would
+        need a SHA-256 preimage against the operator's digest. What remained
+        was a HASH ORACLE: echo the computed digest on mismatch and anyone who
+        can write the staging directory learns the hash of any file the worker
+        can read. The message must name the EXPECTED digest and never the one
+        it read."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        secret = b"content whose hash must not be disclosed"
+        (root / "best.pt").write_bytes(secret)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        expected = "ab" * 32
+        leaked = hashlib.sha256(secret).hexdigest()
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(ConfigurationError) as excinfo,
+        ):
+            _read_staged_artifact("best.pt", expected)
+
+        message = str(excinfo.value)
+        assert expected in message, "the expected digest should still be named"
+        assert leaked not in message, message
+        # Clean-room review 2026-09-21: checking only the exception string
+        # would leave a log line carrying the computed digest undetected, and
+        # a log is exactly as readable as an error message to whoever can
+        # trigger this.
+        assert leaked not in caplog.text, caplog.text
+        assert leaked not in repr(excinfo.value.__cause__ or ""), "leaked via the cause"
 
     def test_reads_a_valid_staged_file_byte_for_byte(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -503,23 +632,38 @@ class TestStagedPathParameterSchema:
         assert validated["artifact_path"] == "best.pt"
         assert validated.get("artifact_base64") is None
 
-    def test_validate_parameters_still_refuses_a_missing_provenance_field(self) -> None:
+    @pytest.mark.parametrize(
+        "omitted",
+        [
+            "trained_at",
+            "training_period_start",
+            "training_period_end",
+            "expected_config_hash",
+        ],
+    )
+    def test_validate_parameters_refuses_any_missing_provenance_field(
+        self, omitted: str
+    ) -> None:
         """Keyword-only parameters stay REQUIRED even though the artifact
-        inputs above them now carry defaults — that is the whole reason this
-        signature shape was chosen."""
-        with pytest.raises(
-            Exception, match="(?i)expected_config_hash|missing|required"
-        ):
-            import_model_artifact_flow.validate_parameters(
-                {
-                    "model_id": "some_model",
-                    "artifact_path": "best.pt",
-                    "expected_artifact_sha256": "ab" * 32,
-                    "trained_at": "2025-01-01T00:00:00+00:00",
-                    "training_period_start": "2024-06-01T00:00:00+00:00",
-                    "training_period_end": "2024-12-01T00:00:00+00:00",
-                }
-            )
+        inputs above them carry defaults — that is the whole reason this
+        signature shape was chosen.
+
+        Clean-room review 2026-09-21 (minor): an earlier version omitted only
+        expected_config_hash, so accidentally defaulting any of the other
+        three would have left it passing."""
+        params = {
+            "model_id": "some_model",
+            "artifact_path": "best.pt",
+            "expected_artifact_sha256": "ab" * 32,
+            "trained_at": "2025-01-01T00:00:00+00:00",
+            "training_period_start": "2024-06-01T00:00:00+00:00",
+            "training_period_end": "2024-12-01T00:00:00+00:00",
+            "expected_config_hash": "some-config-hash",
+        }
+        del params[omitted]
+
+        with pytest.raises(Exception, match=f"(?i){omitted}|missing|required"):
+            import_model_artifact_flow.validate_parameters(params)
 
     def test_refuses_a_checksum_on_the_base64_route(self) -> None:
         """Independent review 2026-09-21: it was silently IGNORED, so a caller

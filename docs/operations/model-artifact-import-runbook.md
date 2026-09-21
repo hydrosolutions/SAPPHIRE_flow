@@ -74,9 +74,15 @@ fr = run_deployment(
     },
     timeout=600,
 )
-print(fr.id, fr.state.type if fr.state else None)
+print("flow run:", fr.id, "state:", fr.state.type if fr.state else None)
 PY
 ```
+
+🔴 **That prints the FLOW RUN id, not the artifact id.** `run_deployment` returns a `FlowRun`; the
+artifact id is the flow's *return value*. The call also returns when the timeout expires, which is
+not the same as the run having completed — **require a completed state before verifying anything**,
+because a timed-out run may still be writing. *(Clean-room review 2026-09-21: step 4 previously
+told you to paste this value into a query against the artifact table, where it matches nothing.)*
 
 ⚠️ **The `-i` is required.** `docker exec` does not attach stdin by default, so without it the
 heredoc never reaches Python, nothing is submitted, and the command exits silently as though it
@@ -89,15 +95,33 @@ directory that a host writer can move mid-import.
 
 ### 4. Verify what was written
 
+Identify the row by the provenance **you supplied**. Those values uniquely identify what you just
+created, need no Prefect result API, and cannot silently show you a colleague's concurrent import.
+⛔ Not "the most recent row", and not the flow-run id.
+
 ```sql
-SELECT a.id, m.id AS model, a.group_id, a.status, a.trained_at, a.imported_at
-FROM model_artifacts a JOIN models m ON m.id = a.model_id
-WHERE m.id = '<model>' ORDER BY a.imported_at DESC LIMIT 1;
+SELECT a.id, a.model_id, a.station_id, a.group_id, a.status,
+       a.trained_at, a.training_period_start, a.training_period_end, a.imported_at
+FROM model_artifacts a
+WHERE a.model_id = '<model>'
+  AND a.group_id = '<group uuid>'          -- or a.station_id for a station import
+  AND a.trained_at = '<the trained_at you supplied>';
 ```
 
-Check that the three timestamps — `trained_at`, the training period, and `imported_at` — are
-**distinct and un-conflated**. They describe three different events and none is derived from
-another.
+Check that:
+
+- exactly **one row** comes back — more than one means your provenance does not identify this
+  import, and you should stop and find out why;
+- the **scope** is the station or group you intended, and the other is null;
+- `trained_at` and both **training-period bounds** equal what you supplied, to the second — a date
+  that was silently reinterpreted shows up right here;
+- `imported_at` is the time of this run.
+
+⚠️ **Do not check that the four timestamps differ from each other.** They record different events,
+but nothing stops two of them coinciding — a training run finishing on the last day of its own
+training period is ordinary. Compare each against what you supplied. *(Clean-room review
+2026-09-21: an earlier version demanded they be "distinct", which would send an operator chasing a
+non-problem.)*
 
 ## Why an import is refused
 
@@ -107,8 +131,8 @@ another.
 | `one of artifact_base64 or artifact_path is required` | neither was given |
 | `expected_artifact_sha256 is required when artifact_path is used` | the staging directory is host-writable; an unverified read is not an import we can vouch for |
 | `outside the staging root` / `plain path inside the staging root` | the path escapes the mount |
-| `without following a symlink` | a component of the path is a symlink. Containment is enforced by the open itself, so this fires **before the file is read** |
-| `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written** |
+| `could not be opened ... without following a symlink` | the guarded open failed. A symlink is what it exists to stop, but the same message also covers **a missing file, a permissions failure, or a file replaced mid-import**. Check the staged file exists and is readable before assuming an attack. *(Clean-room review 2026-09-21: this row previously diagnosed every such failure as a symlink.)* |
+| `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written.** The digest read is deliberately not reported — see Known limits |
 | `must name a file directly inside the staging root` | the path has a directory component, or escapes with `..` |
 | `is not a regular file` | the staged path is a FIFO, device or directory. A FIFO would otherwise block the import forever |
 | `staging root ... is not available as a real directory` | this deployment's overlay does not bind it, or it is a symlink — see cicd.md § Required mounts |
@@ -116,11 +140,18 @@ another.
 
 ## Known limits, stated rather than implied
 
-- **A hardlink inside the staging root to a file outside it will be read.** `O_NOFOLLOW` cannot
-  distinguish a hardlink from an ordinary file. The required checksum establishes **byte
-  identity, not provenance** — it prevents importing content you did not intend, not content that
-  originated outside. Rejecting multiply-linked files would reduce exposure and is not
-  implemented; the durable answer is to give the staging root its own filesystem.
+- **A hardlink inside the staging root to a file outside it will be read — but cannot be
+  imported.** `O_NOFOLLOW` cannot distinguish a hardlink from an ordinary file. Importing such
+  content would require it to match the digest **you** computed from the source artifact off-host,
+  i.e. a SHA-256 preimage. The residual was a **hash oracle**; the import therefore no longer
+  reports the digest it read on a mismatch. Recompute it from the staged file if you need it for
+  debugging.
+  🔑 **This answer depends on who can write to the staging directory.** Where that is the same
+  account that owns the compose files, the secrets and the deploy — as on the mac mini — a
+  hardlink grants nothing that account does not already have. **A deployment that lets a LESS
+  privileged party stage artifacts must first give the staging root its own filesystem**, so that
+  a hardlink to anything outside it is impossible. Decide that before accepting the first
+  artifact from such a party, not after.
 - **The staging root, its ancestors and the mount topology beneath them are trusted
   configuration.** That is a deployment assumption this procedure relies on, not something the
   import can verify. A deployment where an untrusted party can write to an ancestor of the
