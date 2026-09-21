@@ -55,7 +55,7 @@ tree moved or this repo's vendored copy no longer matches it, and both are findi
 ### 3. Run the import
 
 ```bash
-docker exec <worker> /entrypoint.sh python - <<'PY'
+docker exec -i <worker> /entrypoint.sh python - <<'PY'
 from prefect.deployments import run_deployment
 fr = run_deployment(
     name="import-model-artifact/import-model-artifact",
@@ -78,8 +78,14 @@ print(fr.id, fr.state.type if fr.state else None)
 PY
 ```
 
+⚠️ **The `-i` is required.** `docker exec` does not attach stdin by default, so without it the
+heredoc never reaches Python, nothing is submitted, and the command exits silently as though it
+had worked.
+
 `artifact_path` may be given relative to the staging root (`<name>.pt`) or absolute
-(`/data/incoming/<name>.pt`). Anything outside the root is refused.
+(`/data/incoming/<name>.pt`). ⛔ **It must name a file directly in the staging root** —
+subdirectories are refused, because containment cannot be guaranteed across an intermediate
+directory that a host writer can move mid-import.
 
 ### 4. Verify what was written
 
@@ -103,8 +109,18 @@ another.
 | `outside the staging root` / `plain path inside the staging root` | the path escapes the mount |
 | `without following a symlink` | a component of the path is a symlink. Containment is enforced by the open itself, so this fires **before the file is read** |
 | `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written** |
-| `staging root ... is not available` | this deployment's overlay does not bind it — see cicd.md § Required mounts |
+| `must name a file directly inside the staging root` | the path has a directory component, or escapes with `..` |
+| `is not a regular file` | the staged path is a FIFO, device or directory. A FIFO would otherwise block the import forever |
+| `staging root ... is not available as a real directory` | this deployment's overlay does not bind it, or it is a symlink — see cicd.md § Required mounts |
 | `config/artifact mismatch` | `expected_config_hash` disagrees with the model's declared hash. Refused **before any write** |
+
+## Known limits, stated rather than implied
+
+- **A hardlink inside the staging root to a file outside it will be read.** `O_NOFOLLOW` cannot
+  distinguish a hardlink from an ordinary file; only a filesystem boundary could. The required
+  checksum is what keeps such a read from becoming an import.
+- **The staging root path is trusted configuration.** Anyone who can change the deployment's
+  environment, or write to the root's parent directory, controls the deployment already.
 
 ⚠️ **Parameter size.** The older `artifact_base64` route still works, but Prefect refuses flow-run
 parameters above **524,288 bytes** serialized — about 390 KB of artifact. Anything larger must go

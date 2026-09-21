@@ -63,6 +63,12 @@ def resolve_incoming_dir(config_data_dir: str | None = None) -> Path:
     staging root anywhere without also moving its data dir; the compose files
     set it explicitly rather than relying on the derived default, and this
     function is what makes that declaration live rather than decorative.
+
+    ⚠️ **The INCOMING directory is never created. The fallback branch does
+    create the other data subdirectories**, because it goes through
+    `resolve_data_dir`, which has always done so. Independent review
+    2026-09-21: an earlier docstring claimed this function does not touch the
+    filesystem at all, which was true only of the environment branch.
     """
     env_val = os.environ.get("SAPPHIRE_INCOMING_DIR")
     if env_val:

@@ -120,15 +120,35 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
 
     The staging directory is writable by anyone with host shell access, so a
     resolve-then-open sequence is a TOCTOU: a checked component can be
-    replaced with a symlink pointing outside the root between the check and
-    the open, and by the time a checksum could object, the forbidden read has
-    already happened. Every component is therefore opened relative to a
-    pinned descriptor with ``O_NOFOLLOW``, so a symlink anywhere on the path
-    fails the open itself rather than a preceding name check.
+    replaced with a symlink between the check and the open, and by the time a
+    checksum could object the forbidden read has already happened.
+
+    Three properties close that, and each exists for a reason:
+
+    * **One path component only.** The artifact must be a direct child of the
+      staging root. Independent review 2026-09-21 (major): walking
+      intermediate directories and pinning a descriptor per level does NOT
+      give containment, because a host writer can MOVE an intermediate
+      directory out of the root between two opens and the pinned descriptor
+      happily follows it. No subdirectories, no walk, no window.
+    * **``O_NOFOLLOW`` on both opens**, including the root, so a symlinked
+      root or a symlinked artifact fails the open itself.
+    * **``O_NONBLOCK`` plus a regular-file check.** Independent review
+      2026-09-21 (minor), confirmed by execution: opening a staged FIFO
+      blocks forever, and neither symlink protection nor a checksum prevents
+      it — the block happens in the open.
+
+    ⚠️ Two residual limits, stated rather than papered over. A **hardlink**
+    inside the root to an outside file is indistinguishable from an ordinary
+    file and will be read; only a filesystem boundary could prevent that, and
+    the checksum is what makes it a non-import. And the **root path itself is
+    trusted configuration** — an attacker who controls the deployment's env
+    or the root's parent directory controls the deployment.
     """
     import hashlib
     import os
-    from pathlib import Path, PurePosixPath
+    import stat
+    from pathlib import PurePosixPath
 
     from sapphire_flow.config.paths import resolve_incoming_dir
 
@@ -144,38 +164,31 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
                 f"{str(root)!r} — refusing to import"
             ) from None
     parts = candidate.parts
-    if not parts or any(part in ("", ".", "..") for part in parts):
+    if len(parts) != 1 or parts[0] in ("", ".", ".."):
         raise ConfigurationError(
             f"import_model_artifact_flow: artifact_path {artifact_path!r} must "
-            f"be a plain path inside the staging root {str(root)!r} — refusing "
-            "to import"
+            f"name a file directly inside the staging root {str(root)!r} — "
+            "subdirectories are not supported, because containment cannot be "
+            "guaranteed across an intermediate directory that a host writer "
+            "can move. Refusing to import."
         )
 
     try:
-        dir_fd = os.open(str(Path(root)), os.O_RDONLY | os.O_DIRECTORY)
+        dir_fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:
         raise ConfigurationError(
             f"import_model_artifact_flow: staging root {str(root)!r} is not "
-            "available — the deployment's compose overlay must bind it "
-            "read-only; refusing to import"
+            "available as a real directory — the deployment's compose overlay "
+            "must bind it read-only, and it must not be a symlink; refusing "
+            "to import"
         ) from exc
     try:
-        for part in parts[:-1]:
-            try:
-                nxt = os.open(
-                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
-                )
-            except OSError as exc:
-                raise ConfigurationError(
-                    "import_model_artifact_flow: artifact_path "
-                    f"{artifact_path!r} does not resolve inside the staging "
-                    f"root {str(root)!r} without following a symlink — "
-                    "refusing to import"
-                ) from exc
-            os.close(dir_fd)
-            dir_fd = nxt
         try:
-            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            fd = os.open(
+                parts[0],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=dir_fd,
+            )
         except OSError as exc:
             raise ConfigurationError(
                 "import_model_artifact_flow: artifact_path "
@@ -183,6 +196,17 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
                 f"root {str(root)!r} without following a symlink — refusing "
                 "to import"
             ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ConfigurationError(
+                    "import_model_artifact_flow: artifact_path "
+                    f"{artifact_path!r} is not a regular file — refusing to "
+                    "import"
+                )
+            os.set_blocking(fd, True)
+        except BaseException:
+            os.close(fd)
+            raise
         with os.fdopen(fd, "rb") as handle:
             artifact_bytes = handle.read()
     finally:
@@ -230,7 +254,14 @@ def _resolve_artifact_bytes(
                 "unverified read is not an import we can vouch for. Refusing."
             )
         return _read_staged_artifact(artifact_path, expected_artifact_sha256)
-    assert artifact_base64 is not None
+    if expected_artifact_sha256 is not None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: expected_artifact_sha256 applies to "
+            "artifact_path only — the base64 route carries the bytes in the "
+            "parameter itself, so a digest there protects nothing. Refusing "
+            "rather than ignoring it, so a caller who believes they asked "
+            "for verification is not quietly told otherwise."
+        )
     return _decode_artifact_base64(artifact_base64)
 
 
