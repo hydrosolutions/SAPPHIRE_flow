@@ -8,7 +8,7 @@ scope: Make the statics delivered by a `basin-static-artifact/v1` package reacha
 depends_on: []
 blocks: []
 related: [307]
-open_decisions: [D2a, D3, D4]
+open_decisions: [D3, D4]
 source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-mini staging database at v0.1.927, the `nepal-dhm-basins` package delivered 2026-09-20, and the owner's `cmal_small` model tree. Every number below was measured on that date, and each says how.
 ---
 
@@ -16,9 +16,8 @@ source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-min
 
 ## Status
 
-**READY — set by the owner on 2026-09-21.** ⚠️ **T3 is gated on D2a** (below); T1 and T2 are not.
-READY here means the plan may be implemented as far as that gate, exactly as Plan 262 was READY
-with prerequisites outstanding.
+**READY — set by the owner on 2026-09-21.** **D1, D2 and D2a are all closed; no open decision
+gates any task.** D3 and D4 are carried and gate nothing.
 
 Consolidating rewrite 2026-09-21 — see the Changelog. Six independent review rounds
 (one Claude, five Codex) were folded in place, which left the document carrying its own
@@ -34,8 +33,7 @@ reusing the operation the repo already ships for the Swiss path; keep the encodi
 **in our own code for now**, and ask the extractor to correct and populate the package's own field
 so it can take over later.
 
-**T1 and T2 are implementable now. T3 is not** — it waits on **D2a**, a specification this plan
-inferred from D2's answer rather than one the owner gave. D3 and D4 remain carried.
+**All three tasks are implementable.** D3 and D4 remain carried and block nothing.
 
 ## Why this exists
 
@@ -220,32 +218,43 @@ independent of column order). `uv run pytest` clean.
 
 ### T3 — declare each encoding, and enforce it
 
-**Outcome.** Each static's encoding is **declared per feature**, and an import whose declared
-encoding disagrees with what the model expects is **rejected**, not warned about.
+**Outcome.** Each static's encoding is **declared per feature against a versioned package**, and
+an import is **rejected** — not warned about — when its encoding disagrees with what the model
+expects, when its package version is unknown, or when its contents have changed without its
+version changing.
 
 **In.** ⚖️ **D2 CLOSED — a repo-side table, for now.** The expected encoding per feature lives in
 this repository, beside `CARAVAN_ALIAS` where the name mapping already lives, and the comparison
 happens at the import boundary. An import whose delivered encoding disagrees is **refused**, the
 refusal naming the feature and both encodings.
 
-🔴 **Both sides of the comparison must live in that table, because the package supplies neither.**
-*Confirming review 2026-09-21: an earlier wording located only the EXPECTED encoding and left the
-DELIVERED side unstated, so the rejection test below had nothing to compare.* With the package's
-own field ruled out, the table records two things per feature: **the encoding the model expects**,
-and **the encoding each known package source and contract version is vouched to deliver**.
+⚖️ **D2a CLOSED — the table is keyed to a VERSIONED package, and any content change without a
+version change is refused (owner, 2026-09-21).** A recorded description of a file is only true of
+*that* file, so the entry binds to an identity the package already carries.
 
-⇒ **A package from a source or contract version with no entry is REFUSED**, not assumed
-compatible. That is what makes the check real: it fails closed on an unrecognised producer instead
-of silently trusting whatever arrives. ⚠️ **This is the specification D2's answer implies rather than something the owner stated.** It is
-recorded as **D2a** and **gates this task**: T1 and T2 proceed without it, T3 does not begin until
-it is confirmed or replaced. *(Confirming review 2026-09-21: an earlier wording flagged it "for
-confirmation" in this paragraph alone while the phase graph, the exit gates and the status line all
-authorised T3 unconditionally — the same describe-versus-operate split this plan's review history
-keeps catching.)*
+**What the table records, per `package_id` + extractor version:** the encoding each feature is
+delivered in, **and the per-file SHA-256 checksums**. Both are already in the package's own
+manifest — `package_id`, `extractor.version` (`0.1.2` for the current delivery) and a `checksums`
+block covering every file — so **no change is needed at the extractor to make this enforceable
+today**.
+
+**Two refusals, and they are different:**
+
+1. **Unknown `package_id` + version → refuse.** Nothing has described it, so there is nothing to
+   compare against, and assuming compatibility is the failure this task exists to prevent.
+2. **Known version, checksums differ → refuse.** The contents changed without the version
+   changing, which is exactly the drift that would otherwise make our recorded description
+   silently false.
+
+🔑 **This places one obligation OUTSIDE this repo, accepted by the owner 2026-09-21: the extractor
+must bump the package version on ANY content change — including a plain re-run over updated basin
+data.** Re-extracting the same basins and keeping the version would be refused by rule 2. That
+discipline is what makes the check work, and it must be communicated to the extractor rather than
+discovered at the first re-delivery.
 
 ⚠️ **Not the package's own `unit` field — yet.** It is the natural long-term home, and once the
-extractor corrects and populates it the delivered side becomes self-declared and the vouching
-table shrinks to the expected side alone. But measured today it is **wrong for `slp_dg_sav` and
+extractor corrects and populates it the delivered side becomes self-declared and the table keeps
+only the expected side plus the version pin. But measured today it is **wrong for `slp_dg_sav` and
 blank for `ari_ix_sav`** (see D2), so adopting it now would import a false statement wearing the
 appearance of a declared one. **Ask the extractor to
 correct and populate it; switch when it is trustworthy.** That switch is a follow-on, not part of
@@ -264,9 +273,13 @@ makes the convention checkable; it does not change it.
 
 1. **Value preservation** — a known value survives *both* import paths and reaches the model
    bit-for-bit as delivered.
-2. **Encoding rejection** — a package whose vouched delivered encoding disagrees with what the
-   model expects is refused, the refusal naming the feature and both encodings; **and a package
-   from a source or contract version with no recorded entry is refused** for that reason, named.
+2. **Encoding rejection** — a package whose recorded delivered encoding disagrees with what the
+   model expects is refused, naming the feature and both encodings.
+3. **Unknown version rejection** — a package whose `package_id` + extractor version has no entry
+   is refused, naming the version.
+4. **Silent-drift rejection** — a package whose version matches an entry but whose file checksums
+   do not is refused, naming the files that differ. *This is the case the whole mechanism exists
+   for; a test suite without it proves nothing about drift.*
 
 ⛔ Neither may decide an encoding from the magnitude of the numbers.
 
@@ -362,25 +375,34 @@ than today's comment, which at least does not claim authority. **The repo-side t
 must be verified against these two features specifically** — they are the ones where a plausible
 declaration is wrong.
 
-### D2a — ⬜ OPEN: is "refuse a package from an unrecorded source" the right delivered-side rule?
+### D2a — ✅ CLOSED, owner 2026-09-21: version the package, and refuse any content change without a version change
 
-**Raised by this plan, not by the owner.** D2 put the encoding declaration in our own code and
-ruled out the package's own field for now. That settles where the **expected** encoding lives but
-not where the **delivered** side comes from — and without a delivered side there is nothing to
-compare, so T3's rejection test would have no subject.
+**The question.** D2 put the encoding declaration in our own code and ruled out the package's own
+field for now. That settles where the **expected** encoding lives but not what we compare it
+*against* — and a description we hold of a file is only true of *that* file. When the extractor
+changes how a value is computed, our recorded description silently becomes false, the model
+receives numbers in a form it was not trained on, nothing errors, and the forecasts simply shift.
 
-**This plan's inference, which T3 currently specifies:** our table also records what each known
-package **source and contract version** is vouched to deliver, and **a package from a source or
-version with no entry is refused** rather than assumed compatible.
+⚖️ **The owner's rule: assign the package a version, and reject any change to its contents that
+does not come with a version change.** *(This supersedes the looser "vouch for known sources"
+sketch this plan proposed; the owner's framing is the same idea stated more simply, and it is
+enforceable with what the package already carries.)*
 
-⚖️ **The owner's call, and the alternative is reasonable:** that rule fails closed on an
-unfamiliar producer, which is the safer behaviour but also means a new extractor version is
-refused until someone adds a row. The looser alternative is to trust any conforming package until
-the extractor's own field becomes reliable, accepting that a producer could change encoding
-silently in the meantime.
+**Why it works with today's delivery, unchanged.** The manifest already declares `package_id`,
+`extractor.version` and a `checksums` block with a SHA-256 per file. Keying our table to
+`package_id` + version, and pinning the checksums alongside, makes both halves of the rule
+checkable at import: an unrecognised version has no description, and a recognised version whose
+files have changed has a description that no longer matches.
 
-⚠️ **Gates T3 only.** T1 and T2 are unaffected, and D2's chosen table location is settled either
-way.
+🔑 **The obligation this places outside the repo, accepted by the owner:** the extractor must bump
+the version on **any** content change, **including a plain re-run over updated basin data**. A
+re-extraction that keeps its version will be refused. That is the discipline that makes the check
+mean anything, and it must be communicated to the extractor rather than discovered at the first
+re-delivery.
+
+⭐ **This is strictly better than what this plan proposed.** The earlier sketch would have accepted
+a changed package under a known version, because it vouched for a *producer* rather than for a
+*specific artifact*. The owner's rule closes that hole.
 
 ### D3 — are the >100 `lka_pc_sse` values a misread scale or a defect?
 
@@ -468,11 +490,10 @@ this plan describes in full.
   any error message.
 - The 148 Swiss basins' static resolution is unchanged — demonstrated, not assumed.
 - No stored attribute value was rescaled by this plan.
-- **D2a is confirmed or replaced before T3 begins**, and T3 implements whichever form the owner
-  settles on.
-- T3's two tests both exist, and neither infers an encoding from a value's magnitude.
+- T3's four tests all exist — value preservation, encoding mismatch, unknown version, and
+  checksum drift on a matching version — and none infers an encoding from a value's magnitude.
 - All three T2 fixtures pass, including mixed-with-conflict.
-- D2a, D3 and D4 are each answered or explicitly carried, with the carrier named.
+- D3 and D4 are each answered or explicitly carried, with the carrier named.
 
 ```json
 {
@@ -481,9 +502,9 @@ this plan describes in full.
       "note": "prove the namespace gap; if this comes up green the plan is withdrawn" },
     { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1 CLOSED 2026-09-21",
       "note": "close the namespace gap: translate at import, reusing the existing operation" },
-    { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "decision": "D2 CLOSED 2026-09-21",
-      "requires_decision": "D2a",
-      "note": "declare and enforce the encoding from a repo-side table; blocked until D2a is confirmed or replaced" },
+    { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"],
+      "decision": "D2 and D2a both CLOSED 2026-09-21",
+      "note": "declare and enforce the encoding from a repo-side table keyed to package_id + extractor version, with checksum pinning" },
     { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"],
       "produces_decision": "D3",
       "deferred_outcome": "if the extractor has not answered when P1-P3 complete, T4 closes as CARRIED with the >100 values recorded as an open data question and this plan named as its carrier",
@@ -521,3 +542,23 @@ argument for this rewrite: a plan patched six times is harder to review than one
 
 **Numbers granted by the owner 2026-09-21: 306 and 307.** (An earlier revision claimed 306 was
 "the first unreferenced number"; that was false — 274–299 are unreferenced repo-wide.)
+
+**After the rewrite, 2026-09-21.** The rewrite was reviewed on its own terms — the earlier APPROVE
+covered the superseded text — and returned **APPROVE**, with an explicit round-by-round audit
+finding **nothing lost in the rewrite**. Three further confirming passes followed as decisions were
+closed, each finding the same defect one level deeper:
+
+| pass | found |
+|---|---|
+| rewrite review | APPROVE; no finding survived only as a changelog line |
+| D1/D2 closure | 4 majors/minors — the decision *summaries* were updated while the task Ins, Outs, Verifications and exit gates that ACT on them kept the open wording; plus an option-1 fallback the author invented that no task carried |
+| operative sweep | 1 defect — the author's own "flagged for confirmation" caveat on D2a was itself prose-only, while the phase graph, exit gates and status line authorised T3 unconditionally |
+| D2a closure | **APPROVE** — D2a operative at all five sites, no execution path bypassing it |
+
+⭐ **The lesson in its final form: sweep by VALUE and by ROLE.** A decision, correction or caveat
+is not applied until the task Ins, Outs, Verifications, exit gates and phase graph that act on it
+say the same thing as the prose that reports it. Every post-rewrite finding was an instance of
+that one error, including the caveat written to prevent it.
+
+**D2a closed by the owner 2026-09-21** with a rule better than the one this plan proposed — bind
+the description to a *versioned artifact* rather than vouching for a *producer*.
