@@ -6,7 +6,7 @@ plan: 309
 title: A transient tool download reds a PR the security gate passed — retry it, and say so when it still fails
 scope: Retry the SBOM step's tool install inside `build-image-and-scan`, and when the retries are exhausted, fail with a message that says what actually happened. The SBOM stays mandatory on every run, so no control is relaxed and no standard changes. Plus a read-only survey of the same exposure elsewhere. Explicitly NOT touching any security gate (Trivy's scan, gate table, SARIF derivation, code-scanning upload), NOT a blanket `continue-on-error`, NOT changing what an SBOM contains, NOT the image build, NOT the model/forecast pipeline.
 depends_on: []
-blocks: []
+blocks: [310]
 open_decisions: []
 source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224865, jobs 106377308103 / 106382760290 / 106384504421) between 14:38 and 14:57 UTC and recovered on the fourth (106387452121, 15:05). The run census in §1 is reproducible by the method stated there; every line anchor was verified by printing the line it names, against `main` at `672c8df5`.
 ---
@@ -572,7 +572,7 @@ again — recorded because the next plan will face the same choice.
 | message reports the **stage that actually failed**, never a fixed cause | ✅ B, C and D each produced a different, correct message |
 | `security.md` and `cicd.md:518` unchanged | ✅ verified — the diff touches `cicd.md:620` and `:732` only |
 | **stalled** download / **stalled** execute → per-step timeout fires, job not cancelled | ⚠️ **NOT ATTEMPTED.** The `timeout-minutes` are declared and the mechanism is standard, but no run forced a stall |
-| **reduced starting headroom** → admission skips later attempts | ⚠️ **NOT IMPLEMENTED.** The plan called for checking remaining job time before each wait; the shipped version uses the fixed (b) schedule. Worst case is ~19 min against ~26, so it fits **provided the pre-SBOM steps stay near 2m49s**. A materially slower image build could push the last attempt past the job timeout — and a job timeout **cancels**, skipping the message. **Carried as a known gap, not silently dropped.** |
+| **reduced starting headroom** → admission skips later attempts | ➡️ **CARRIED TO [Plan 310](310-sbom-retry-admission-check.md)** (filed 2026-09-21). ⚠️ **NOT IMPLEMENTED here.** The plan called for checking remaining job time before each wait; the shipped version uses the fixed (b) schedule. Worst case is ~19 min against ~26, so it fits **provided the pre-SBOM steps stay near 2m49s**. A materially slower image build could push the last attempt past the job timeout — and a job timeout **cancels**, skipping the message. **Carried as a known gap, not silently dropped.** |
 
 ### The gate I missed, and what caught it
 
