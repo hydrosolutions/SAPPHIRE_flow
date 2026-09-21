@@ -254,6 +254,11 @@ from each other:**
 
 1. **Unknown `package_id` + version → refuse.** Nothing has described it, so there is nothing to
    compare against, and assuming compatibility is the failure this task exists to prevent.
+   ⚠️ **This rule BLOCKS the namespace-repair republish T2's watch item prescribes**, which is by
+   definition a new, unregistered id. *(Independent verification 2026-09-21 found the conflict;
+   the two were written without being checked against each other.)* **T3 must either ship with a
+   registered entry for any repair package, or be sequenced after the repairs.** Do not discover
+   this when a repair is refused.
 2. **Known version, checksums differ → refuse.** The contents changed without the version
    changing, which is exactly the drift that would otherwise make our recorded description
    silently false.
@@ -513,8 +518,37 @@ T1–T3.
   basin is still skipped, and the bare keys survive **silently**. That instruction would have
   failed in exactly the way it was written to prevent.
   ⇒ **Actual remediation: republish under a NEW `package_id`** — deliberately, including for an
-  unchanged payload whose only purpose is namespace repair. **No schema migration is needed**, but
-  a re-import is not automatic and will not happen as a side effect of D2a's versioning rule.
+  unchanged payload whose only purpose is namespace repair. The mechanism works: an existing basin
+  whose stored `package_id` differs takes the **correction** branch and its `attributes` are
+  **wholly replaced** with the namespaced shape (no merge, so no half-repaired basin carrying both
+  spellings). Nothing dedupes an identical payload under a new id — `package_id` is itself part of
+  the canonical fingerprint. Verified independently 2026-09-21, and already exercised end to end by
+  `tests/integration/store/test_basin_importer_persistence.py` re-importing as
+  `nepal-dhm-basins-v2`.
+
+  🔴 **But "just republish" is NOT the whole instruction, and one of the gaps is created by THIS
+  PLAN.** *Independent verification 2026-09-21.*
+
+  1. ⛔ **T3 would REFUSE the repair.** T3 specifies "unknown `package_id` + version → refuse". A
+     namespace-repair republish is BY DEFINITION a new, unregistered `package_id`. Once T3 ships,
+     the repair is blocked until someone adds a repo-side entry — a code change, review and
+     release. **Either sequence any repair BEFORE T3, or register the new id as part of doing it.**
+     T3 is unimplemented today, so the conflict is plan-internal and not yet live.
+  2. **Who mints the new `package_id` is unarranged.** D2a puts version bumps on the extractor for
+     *content* changes; an unchanged payload needing a new id for namespace repair is not covered
+     by that obligation and needs an explicit ask.
+  3. **A repair is a CORRECTION, not a quiet rewrite.** Every repaired basin gets a new
+     `basin_versions` row, supersedes the prior one, and reports `material_change=True` with
+     `affected_artifact_ids` — every model artifact trained on the superseded version. Nothing
+     auto-invalidates them; the CLI only logs it. **The operator must act on that list.** And ALL
+     basins in the republished package are corrected, not only those needing repair.
+  4. **A narrower primitive exists:** `store/basin_store.py::merge_namespaced_attributes` is
+     additive with no version bump and no `material_change` — at the cost of leaving the bare keys
+     in place beside the namespaced ones, and needing a one-off script, since no CLI exposes it for
+     the package path.
+
+  **No schema migration is needed** in any of these, and a re-import will not happen as a side
+  effect of D2a's versioning rule.
   ⚠️ **Whether any such rows exist is deployment-specific and not determinable from this repo.**
   Measured 2026-09-21: the staging database holds **148 BAFU basins and no package-imported
   basin at all**, so on that host the question is moot today.
