@@ -54,8 +54,16 @@ class TestNamespaceStaticColumns:
             )
 
     def test_the_refusal_does_not_depend_on_column_order(self) -> None:
-        """If the guard ran while building the output instead of on the raw
-        column set, the answer would depend on which spelling came first."""
+        """Refusal must be order-independent — the same source, described in
+        either order, answers the same way.
+
+        ⚠️ This proves order-independence; it does NOT prove the check happens
+        before the output dict is built. *(Confirming review 2026-09-21: an
+        earlier docstring claimed an incremental guard would necessarily be
+        order-dependent. It would not — a correct incremental implementation
+        can normalize each key and reject an already-present one in either
+        order.)* The pre-construction ordering is a property of the code, not
+        something this test can observe."""
         forward = {"for_pc_sse": 45.5, f"{CARAVAN_PREFIX}for_pc_sse": 11.0}
         reverse = dict(reversed(list(forward.items())))
 
@@ -90,22 +98,21 @@ class TestNamespaceStaticColumns:
         assert namespace_static_columns({}) == {}
 
 
-class TestTheSwissPathsBehaviourIsPreserved:
+class TestWhatTheSwissExtractionPreservedAndWhatItChanged:
     """Plan 306 T2 extracted this operation FROM the Swiss import path, which
     the plan forbids disturbing. These pin what changed and what did not.
 
     ⚠️ Independent review 2026-09-21: the extraction is **not** byte-for-byte
     behaviour-preserving across every input the Swiss loader accepts. It was
     an unconditional comprehension; it is now idempotent-plus-refuse. Ordinary
-    bare columns — the only shape a Caravan attributes parquet has ever
-    produced — are unaffected. The two shapes that differ are recorded here
+    bare columns are unaffected. The two shapes that differ are recorded here
     rather than left implicit, because "we extracted it unchanged" was not
     quite true.
     """
 
     def test_ordinary_bare_columns_are_unchanged_by_the_extraction(self) -> None:
-        """The real Swiss shape: HydroATLAS codes, none prefixed. This is what
-        the extraction had to preserve, and does."""
+        """Bare HydroATLAS codes — the shape the Caravan attributes parquet
+        delivers. This is what the extraction had to preserve, and does."""
         raw = {"for_pc_sse": 45.5, "cly_pc_sav": 12.0, "area": 3716.26}
 
         assert namespace_static_columns(raw) == {

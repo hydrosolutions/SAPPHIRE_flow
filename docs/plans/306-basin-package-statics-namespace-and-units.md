@@ -473,6 +473,20 @@ T1–T3.
   that declared statics and read a package-imported basin would resolve nothing after this change,
   exactly as CARAVAN models did before it. The plan did not anticipate this direction; it is
   recorded here rather than left for someone to rediscover.
+- 🔴 **The extraction DID change the Swiss path's behaviour for two input shapes — deliberately,
+  and the owner may reverse it.** *Confirming review 2026-09-21 flagged that "extracted unchanged"
+  was not accurate.* The inline operation was an unconditional prefix; the shared one is
+  idempotent and refuses a mixed source. So:
+  - an already-`caravan:`-prefixed column used to become `caravan:caravan:…` and now passes
+    through unchanged;
+  - a source carrying **both** spellings of one concept used to keep both as distinct keys and is
+    now **refused**.
+  ⚖️ **For the real Caravan attributes parquet — bare HydroATLAS codes — behaviour is identical,
+  and that is the shape the 148 Swiss basins were imported from.** The two deltas apply only to
+  inputs the loader permits but has not produced. Both changes are improvements (the old
+  double-prefix was unresolvable), but they ARE changes to a live path this plan's watch items say
+  not to disturb. **If you would rather the Swiss call site keep its original line, say so — it is
+  a one-line revert** and the package path keeps the shared helper.
 - **The Swiss path is not broken and must not be disturbed.** The 148 Swiss basins resolve today
   through the `caravan:` prefix written by the Plan 155/188 import.
 - **`cmal_small` is `GROUP`-scoped**, so Nepal basins would be assigned as a group, not per
@@ -491,11 +505,16 @@ T1–T3.
   `store/basin_importer.py::_basin_needs_import` treats a basin whose current projection already
   carries this `package_id` as already imported and skips it — by design, for idempotency. So a
   re-run of an unchanged package is a no-op and the bare keys survive.
-  ⇒ **Remediation, and it is already the rule:** D2a requires the extractor to bump the package
-  version on *any* content change. A new version is a different `package_id`, so the basin is
-  re-imported and re-namespaced through the normal path. **No migration is needed and none should
-  be written** — but a deployment that has already imported a package and does not expect a new
-  version must re-import deliberately, because those basins will otherwise resolve nothing.
+  🔴 **The remediation an earlier revision gave was WRONG.** *Confirming review 2026-09-21.* It
+  claimed D2a's version bump suffices, "because a new version is a different `package_id`". It is
+  not: `basin_importer` takes `PackageId(loaded.manifest.package_id)` **directly**, and the
+  manifest carries `package_id` and `extractor.version` as **separate fields** (measured —
+  `nepal-dhm-basins` at extractor `0.1.2`). Bumping the version leaves `package_id` unchanged, the
+  basin is still skipped, and the bare keys survive **silently**. That instruction would have
+  failed in exactly the way it was written to prevent.
+  ⇒ **Actual remediation: republish under a NEW `package_id`** — deliberately, including for an
+  unchanged payload whose only purpose is namespace repair. **No schema migration is needed**, but
+  a re-import is not automatic and will not happen as a side effect of D2a's versioning rule.
   ⚠️ **Whether any such rows exist is deployment-specific and not determinable from this repo.**
   Measured 2026-09-21: the staging database holds **148 BAFU basins and no package-imported
   basin at all**, so on that host the question is moot today.

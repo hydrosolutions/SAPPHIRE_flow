@@ -732,20 +732,19 @@ class TestCliEntrypointRealTransaction:
 class TestPackageImportedBasinResolvesDeclaredStatics:
     """Plan 306 T1/T2 — the end-state proof, where a REAL import runs.
 
-    The discriminating evidence is a TWO-PATH COMPARISON, not error text: no
-    code emits a ``caravan:``-prefixed key on a miss, so a test keyed on the
-    message would assert something the code never says. The same declared
-    names are resolved against attributes that arrived by each import path.
+    The discriminating evidence is RESOLUTION AFTER A REAL IMPORT, not error
+    text: no code emits a ``caravan:``-prefixed key on a miss, so a test keyed
+    on the message would assert something the code never says.
+
+    ⚠️ **This class runs ONE path — the package importer.** The Swiss control
+    lives in the unit suite, against attributes in the shape that path writes.
+    Calling the pair a "two-path comparison" overstated it, since the Swiss
+    importer never runs here; confirming review 2026-09-21.
 
     ⛔ Asserts the END STATE — every declared name resolves. Before T2 none
     did. A test asserting *zero* resolution would have passed then and failed
     after the fix, which is a characterization test pointing backwards.
 
-    ⚠️ The CONTROL half of the comparison lives in the unit suite
-    (`tests/unit/store/test_basin_importer_static_namespace.py`), against
-    attributes in the shape the Swiss path writes. This class does not run the
-    Swiss importer, so it does not by itself constitute a two-path comparison
-    — independent review 2026-09-21 corrected that overstatement.
     """
 
     @staticmethod
