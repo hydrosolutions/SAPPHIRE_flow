@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-21
 plan: 307
 title: A model artifact cannot be imported through its own deployment — give it a staged path, not a base64 parameter
@@ -14,11 +14,10 @@ source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.
 
 ## Status
 
-**DRAFT — reviewed, approved, awaiting READY.** Written after Plan 262 T4 was blocked in
-execution. Owner chose this shape (option (a)) over an in-process call and over raising the
+**READY — set by the owner on 2026-09-21**, after six independent review passes (see below).
+Written after Plan 262 T4 was blocked in execution. Owner chose this shape (option (a)) over an in-process call and over raising the
 Prefect server limit, on the ground that **model onboarding must be replicable on Nepali
-servers**. ⚖️ **Only the orchestrator sets `status: READY`** — this plan does not set it on its
-own approval.
+servers**.
 
 Plan number **307 granted by the owner, 2026-09-21**. *(An earlier revision claimed it was "the
 first unreferenced number after 306"; that was false — 274–299 are unreferenced repo-wide.)*

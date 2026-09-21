@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-21
 revised: 2026-09-21
 plan: 306
@@ -16,7 +16,11 @@ source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-min
 
 ## Status
 
-**DRAFT.** Consolidating rewrite 2026-09-21 — see the Changelog. Six independent review rounds
+**READY — set by the owner on 2026-09-21.** ⚠️ **T3 is gated on D2a** (below); T1 and T2 are not.
+READY here means the plan may be implemented as far as that gate, exactly as Plan 262 was READY
+with prerequisites outstanding.
+
+Consolidating rewrite 2026-09-21 — see the Changelog. Six independent review rounds
 (one Claude, five Codex) were folded in place, which left the document carrying its own
 archaeology; the corpus already records that layered corrections are how Plan 252 failed three
 rounds on its text rather than its reasoning. This is the rewrite. **Every finding is preserved;
