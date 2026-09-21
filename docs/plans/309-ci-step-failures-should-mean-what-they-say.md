@@ -1,48 +1,43 @@
 ---
 status: DRAFT
 created: 2026-09-21
+revised: 2026-09-21
 plan: 309
-title: A transient tool download fails a PR the security gate passed — CI step failures should mean what they say
-scope: Make `build-image-and-scan`'s SBOM step distinguish "the tool could not be installed" from "the tool ran and produced nothing", retry the first before deciding anything, and give a genuinely missing SBOM a durable home other than a blocked PR. Explicitly NOT loosening any security gate (Trivy's scan, gate table, SARIF derivation and code-scanning upload are untouched), NOT a blanket `continue-on-error` anywhere, NOT changing what an SBOM contains or the image build, NOT touching the model/forecast pipeline.
+title: A transient tool download reds a PR the security gate passed — CI step failures should mean what they say
+scope: Make `build-image-and-scan`'s SBOM step distinguish "the tool could not be installed" from "the tool ran and produced nothing", retry the first, and give a genuinely missing SBOM a durable home before anything is relaxed. Includes the `security.md` / `cicd.md` amendments the relaxation requires. Explicitly NOT loosening any security gate (Trivy's scan, gate table, SARIF derivation and code-scanning upload are untouched), NOT a blanket `continue-on-error`, NOT changing what an SBOM contains, NOT the image build, NOT the model/forecast pipeline.
 depends_on: []
 blocks: []
 open_decisions: [D1, D2, D3]
-source: 2026-09-21 — the syft step failed on PR #286 (run 35613224865, job 106377308103) with a GitHub 504; every count below was measured that day against the last 100 completed `ci.yml` runs via the Actions API, and the workflow/standards citations are line-anchored to the repo at `052327d6`.
+source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224865, jobs 106377308103 / 106382760290 / 106384504421) between 14:38 and 14:57 UTC. The run census in §1 is reproducible from the script quoted there; every line anchor was verified by printing the line it names, against `main` at `e943f515`.
 ---
 
 # Plan 309 — CI step failures should mean what they say
 
 ## Status
 
-**DRAFT.** Written after a GitHub outage blocked a PR whose security gate had passed.
-⚖️ **Plan number 309 is claimed, not granted** — 302–305 and 309+ are unused in `docs/plans/`
-and `docs/plans/archive/`, and nothing in `docs/` refers to a "Plan 309". The owner grants numbers;
-if 309 is wanted elsewhere this document renumbers.
+**DRAFT — reviewed once (Codex, 2026-09-21: NEEDS CHANGES, 1 blocker + 6 major + 2 minor), fully
+rewritten in response.** Not re-reviewed. ⛔ Not implementable: **D1, D2 and D3 are all open**, and
+D2 gates the only task that keeps the rest safe.
 
-**Three decisions are open (D1, D2, D3) and D2 gates the only task that could recreate a
-silent-failure class.** Nothing here is implementable until at least D1 and D2 are closed.
+⚖️ **Plan number 309 is claimed, not granted.** 302–305 and 309+ are unused across `docs/plans/`
+and `docs/plans/archive/`, and nothing in `docs/` refers to a "Plan 309". The owner grants numbers.
 
 ## Why this exists
 
-PR #286's `build-image-and-scan` job failed here:
+PR #286's `build-image-and-scan` job failed here, and then twice more on manual re-run:
 
 ```
-[command]/usr/bin/sh …_syft v1.51.1
 [debug] http_download(url=https://github.com/anchore/syft/releases/v1.51.1)
 [error] received HTTP status=504 for url='https://github.com/anchore/syft/releases/v1.51.1'
-[error] unable to find tag=''
-##[error]The Syft installer failed to install v1.51.1; see the log above for details
+##[error]The Syft installer failed to install v1.51.1
 ```
 
-**syft was never installed, so it never ran.** The `unable to find tag=''` line is the installer
-misreporting a gateway error as a missing version — the tag is fine (`GET
-github.com/anchore/syft/releases/tag/v1.51.1` → **200**, re-checked the same hour). The PR touches
-`src/sapphire_flow/services/caravan_statics.py`, two store modules and four test modules. It
-touches no Dockerfile, no image, no workflow.
+**syft was never installed, so it never ran.** The `unable to find tag=''` line that follows in the
+log is the installer misreporting a gateway error as a missing version. The PR touches one service
+module, two store modules and four test modules. It touches no Dockerfile, no image, no workflow.
 
-Every other check on that run passed, **including the security gate**: `lint`, `dependency-safety`,
-`wheel-only-guard`, `Trivy`, `unit` (13m30s) and `integration` (5m10s). The one red mark was an
-inventory artifact that could not download its own binary.
+Every other check passed, **including the security gate**: `lint`, `dependency-safety`,
+`wheel-only-guard`, `Trivy`, `unit` (13m30s) and `integration` (5m10s).
 
 🔑 **The protection for exactly this was written — one step too low.** `ci.yml:649-650` explains why
 the *upload* is keyed on `sbom-generate` rather than on `build-image`:
@@ -50,70 +45,99 @@ the *upload* is keyed on `sbom-generate` rather than on `build-image`:
 > Keyed on sbom-generate, not build-image: a transient sbom-action fault must skip the upload, not
 > fail it confusingly via `if-no-files-found: error`.
 
-The upload is protected from a transient SBOM fault. `sbom-generate` itself is not, so the
-transient fault fails the whole job and the upload never becomes relevant.
+The upload is protected from a transient SBOM fault. `sbom-generate` itself is not, so the fault
+fails the whole job and the upload never becomes relevant.
 
 ## What is measured
 
-### 1. How often this fires — and the honest number
+### 1. The run census — method first, because the first attempt at this was wrong
 
-Last **100 completed `ci.yml` runs** (Actions API, 2026-09-21). **15 failed.** By failing step:
+⚠️ **`gh api .../runs?per_page=100&status=completed` returned two different samples minutes apart**
+(one windowed 07-15→08-27, one 09-08→09-21). It is not a stable "last 100 runs". The census below
+uses `gh run list --workflow=ci.yml --limit 100`, sorted by `createdAt`, each run counted **once**,
+classified by the failing step of its failing job:
 
-| failing step | runs | what it is |
+**Window 2026-09-08 → 2026-09-21. 100 runs: 69 success, 15 failure, 14 cancelled, 2 blank.**
+
+| classification | runs | run ids |
 |---|---|---|
-| `Render vulnerability table (gate)` and/or `lint/Trivy filesystem scan` | 7 | the CVE gate **working** — real findings |
-| `unit` pytest | 2 | real test failures |
-| `Install system deps for cfgrib / rioxarray / exactextract` | 2 | an **apt fetch** — the same transient class |
-| `Generate SBOM with syft` | **1** | today — and see §1b |
-| no failed job recorded (cancelled / startup failure) | 4 | — |
+| Trivy CVE gate — **real findings, the gate working** | 5 | `35443833160` `35442246061` `35442193346` `35442146136` `34956159161` |
+| no failed step recorded (cancelled / startup failure) | 5 | `35327473488` `35327404938` `35327361632` `35327309605` `35098330581` |
+| `pytest` — real test failures | 2 | `35323564071` `35263408377` |
+| **apt fetch** — `Install system deps for cfgrib / rioxarray / exactextract` | 2 | `34579391806` `34572420036` |
+| **syft install** — this incident | 1 | `35613224865` |
+| | **15** | reconciles with the 15 above |
 
-⚠️ **State this plainly rather than inflate it: the syft step had failed once in 100 runs when
-this plan was opened.** What *is* observed over that window is the **class** — a CI step failing
-because a third-party artifact could not be fetched — at **3 of 15 failures**, across two different
-jobs and two different fetch mechanisms. The plan's case rests on the class, not on syft.
+*(A first pass at this table said 7 and 4 in the first two rows and did not sum to 15. Independent
+review caught the arithmetic; the numbers above are re-derived, deduplicated by run, and carry
+their ids so anyone can check them.)*
 
-### 1b. The same outage reproduced on re-run — which is the decisive number
+**The two honest framings, which pull opposite ways:**
 
-| attempt | job | time (UTC) | result |
+- **Rate:** the syft step has failed in **1 of 100** runs. Low.
+- **Class:** "a CI step failed because a third-party artifact could not be fetched" is **3 of 15**
+  failures — two jobs, two fetch mechanisms, and the apt one has bitten **twice as often** as syft.
+- ⛔ **3 of 15 is not "this change prevents 20% of failures."** It is the share of *failures*, not
+  of runs, and this plan addresses only the syft member of the class directly.
+
+### 1b. The outage outlived a retry — which is the decisive observation
+
+| attempt | job | time (UTC) | failed on |
 |---|---|---|---|
-| original | `106377308103` | 14:38:56 | `504` on `github.com/anchore/syft/releases/v1.51.1` |
-| re-run 1 | `106382760290` | 14:52:57 | **the identical `504`, 16 minutes later** |
+| original | `106377308103` | 14:38:56 | `504` on `…/releases/v1.51.1` |
+| re-run 1 | `106382760290` | 14:52:57 | the identical `504`, 16 min later |
+| re-run 2 | `106384504421` | 14:57:35 | `504` on `…/download/v1.51.1/syft_1.51.1_checksums.txt` |
 
-From a developer machine at 14:55 the same hour, `releases/tag/v1.51.1`, the installer's own
-`releases/v1.51.1`, and the `syft_1.51.1_linux_amd64.tar.gz` asset all returned **200**, and
-githubstatus.com reported **All Systems Operational**. So the fault is not a missing release and is
-not a declared GitHub incident — it is reachable from here and not from the runner, which points at
-runner egress or an edge rather than at the artifact.
+From a developer machine at 14:55 the same hour, the tag page, the installer's own
+`releases/v1.51.1`, and the `syft_1.51.1_linux_amd64.tar.gz` asset **all returned 200**, and
+githubstatus.com reported **All Systems Operational**.
 
-🔑 **This is what makes the plan more than a retry.** A fault that survives a 16-minute gap is not
-something an in-job retry can absorb, and a developer probe returning 200 is exactly the evidence
-that would have talked us out of the problem.
+🔑 **Three failures across 19 minutes, with the artifact reachable from here throughout.** That is
+why this is a plan and not a retry: an in-job retry on a seconds-to-minutes timescale would not
+have absorbed it, and the developer-side 200s are exactly the evidence that would otherwise have
+talked us out of the problem.
 
-### 2. What an SBOM is for, per our own standard
+### 2. What the standards actually say — including the part against this plan
 
-`docs/standards/security.md:783`:
+`security.md:783`: syft "emits a CycloneDX JSON SBOM … uploaded as a workflow artifact **on every
+run**", for recoverability — "when a future CVE lands, the artifact answers 'which historical image
+contains the affected library?'". `:785`: release attachment and registry attestation are "future
+controls — deliberately deferred … The SBOM artifact **on every CI run** is the v0 baseline."
 
-> `syft` runs after the CI image build and emits a CycloneDX JSON SBOM … uploaded as a workflow
-> artifact on every run. SBOM gives the repo immediate recoverability value: when a future CVE
-> lands, the artifact answers "which historical image contains the affected library?".
+🔴 **And `cicd.md:518` lists "SBOM generation" inside the CI *gate* tier**, alongside integration
+tests, image builds and Trivy.
 
-and `:785` — "Release attachment and registry attestation are **future controls** — deliberately
-deferred until an image-publish workflow exists."
+⚠️ **So this plan proposes a real narrowing of a stated control, not merely a correction of an
+over-strict implementation.** *(Independent review, major: an earlier revision argued "no document
+makes it a gate", which `cicd.md:518` contradicts, and inferred permission from the absence of a
+named merge rule.)* "Every run" is the written baseline. **T5 exists because changing behaviour
+without changing that text would leave the repo's own standard describing something untrue.**
 
-**The SBOM is an inventory trail, not a merge control.** No document in `docs/standards/` makes it
-a gate. Today's behaviour is therefore stricter than the policy it implements.
+### 3. What a PR run's SBOM describes
 
-### 3. The image a PR run scans is thrown away
+`cicd.md:504`: the CI tag is "purely local to the CI runner … discarded when the runner terminates;
+it is never pushed, tagged for release, or attached to a registry."
 
-`docs/standards/cicd.md:504`: the CI tag `sapphire-flow:ci-${{ github.sha }}` is "purely local to
-the CI runner … **discarded when the runner terminates; it is never pushed, tagged for release, or
-attached to a registry**." CI runs on `push: [main]` **and** `pull_request` (`ci.yml:3-6`), so the
-merge commit produces its own SBOM on `main`.
+⚠️ **This applies to `main` runs too.** No CI image is ever deployed; the mini builds its own via
+`docker compose --build`. So the `main` SBOM is **not** an inventory of a shipped artifact either —
+it is a per-commit reconstruction from the same Dockerfile. *(Review, major: an earlier revision
+leaned on a deployed-image equivalence it never demonstrated.)* The `main` lineage is still the
+better one to protect, because it is per-commit, contiguous and survives the branch — but the
+argument is continuity, not provenance of a deployed image, and D3 should be decided on that.
 
-🔑 **The lineage recoverability actually depends on is the `main` lineage.** A PR run's SBOM
-describes an image that no longer exists and was never deployed.
+### 4. Nothing is actually blocked — measured, and it cuts both ways
 
-### 4. The reasoning any fix must not undo
+`GET /repos/hydrosolutions/SAPPHIRE_flow/branches/main/protection` → **404 "Branch not protected"**,
+and `/rulesets` is empty. **There are no required status checks.** A red `build-image-and-scan` does
+not prevent a merge; the owner merges by hand.
+
+⚠️ **So "a GitHub outage blocks a PR" is false, and this plan does not claim it.** The real cost is
+smaller and still worth fixing: a red check that means nothing erodes the signal the owner merges
+on, and the repo's rule that the suite must pass before merge becomes a judgement call about which
+red is the real one. *(Review, minor: the earlier revision asserted the merge-blocking effect
+without checking.)*
+
+### 5. The reasoning any fix must not undo
 
 `ci.yml:616-621`, on the SARIF upload, from Plan 180:
 
@@ -121,17 +145,20 @@ describes an image that no longer exists and was never deployed.
 > typo, licensing lapse) must fail the job loudly — the same silent-failure class this plan exists
 > to close, moved one level down.
 
-⛔ **"Just add `continue-on-error`" is therefore ruled out before this plan starts.** Plan 180's
-incident had two root causes and the second was an artifact that **nothing read**. A green run that
-quietly produced no SBOM is that failure wearing a different hat.
+⛔ **"Just add `continue-on-error`" is ruled out before this plan starts.** Plan 180's incident had
+two root causes and the second was an artifact that **nothing read** (`ci.yml:617-618`).
 
-### 5. The repo already has a retry precedent
+🔑 **The distinction this plan relies on:** a **scoped** `continue-on-error` on one attempt of a
+retry, *followed by a mandatory enforcement step that decides the job's fate*, is not blanket
+forgiveness — the decision still happens, once, explicitly. A `continue-on-error` with **no**
+enforcement behind it is precisely what Plan 180 forbids. T1 and T2 are only safe together.
+
+### 6. The repo's retry precedent
 
 `live-lindas-weekly-autoretry.yml` retries a transient external failure with a **cap** (12/day), a
 **wait matched to the upstream's cadence** (5 min ≈ BAFU's publish cycle), a **scope restriction**
 (scheduled runs only — "a manual rerun that fails is an explicit signal, not a transient") and a
-**costed rationale** (~$1.42 per incident). Its *shape* is wrong here — it re-dispatches a whole
-workflow via `workflow_run` — but its **discipline** is the standard this plan should meet.
+**costed rationale**. Its shape is wrong here; its discipline is the standard to meet.
 
 ## The actual tension
 
@@ -139,164 +166,198 @@ Two failures wear one name, and today's arrangement cannot tell them apart:
 
 | what happened | what it says about the image | what it should do |
 |---|---|---|
-| syft could not be **installed** — the network never delivered the binary | **nothing.** No measurement was attempted | retry; if it still fails, do not block an unrelated PR |
-| syft **ran** and emitted no SBOM, or an invalid one | something real — the image or the tool is wrong | fail loudly |
-
-Neither "always fail" nor "never fail" is correct, which is why this is a plan and not a one-line
-patch.
+| syft could not be **installed** | **nothing.** No measurement was attempted | retry; if it persists, do not red an unrelated PR — but leave a durable trace |
+| syft **ran** and emitted no SBOM, or an invalid one | something real about the image or the tool | fail loudly, on any event |
+| anything else (unknown) | unknown | ⛔ **fail loudly.** Unknown is not transient |
 
 ## Tasks
 
-### T1 — retry the install before deciding anything
+### T1 — retry the install, with a design that actually works
 
-**Outcome.** A single transient fetch failure no longer reaches the job's conclusion.
+**Outcome.** A momentary fetch failure does not reach the job's conclusion, and the retry's
+mechanics are specified rather than assumed.
 
-🔴 **A retry alone is NOT sufficient, and this was measured, not guessed.** A manual re-run of the
-same job **16 minutes later hit the identical 504** (job `106382760290`). An in-job retry on a
-seconds-to-minutes timescale would very likely have hit it too. T1 is worth doing — it is cheap and
-it removes the genuinely momentary case — but **the plan does not rest on it**, and T2/T3 are what
-make the job survive an outage of this duration. *(An earlier revision of this task claimed the
-retry "alone removes the failure mode"; the very next data point falsified that.)*
+🔴 **The obvious shape does not work, and review proved it before implementation.** A second step
+gated on `if: steps.sbom-generate.outcome == 'failure'` **never runs**: a step `if` without a status
+function carries an implicit `success()`, and the job is already in a failure state. Adding
+`!cancelled()` lets it run but does **not** erase the first step's failure — the job still fails.
 
-⚠️ **The retry's wait must be chosen against the observed outage length, not a default.** The
-`live-lindas-weekly-autoretry` precedent picked 5 minutes because that matched BAFU's publish
-cadence. Nothing yet establishes a comparable number here — two samples 16 minutes apart is a lower
-bound on the outage, not a recovery time.
+**The working shape:**
 
-**In.** `.github/workflows/ci.yml`, the `Generate SBOM with syft` step only.
+| | |
+|---|---|
+| attempt 1 | `continue-on-error: true` — so its `conclusion` is `success` and the job continues, while its `outcome` records `failure` |
+| attempt 2 | `if: steps.sbom-1.outcome == 'failure'`, same pinned action and inputs, also `continue-on-error: true` |
+| **enforcement** | a normal step, **no** `continue-on-error`, that applies T2's classification and fails the job when it should. **This is what keeps §5's property.** |
+| upload | `if:` must select **whichever attempt produced the file** — today's condition requires the *first* to have succeeded, so a successful retry would still skip the upload |
 
-**Out.** ⛔ No change to `trivy-scan`, `trivy-gate-table`, `trivy-sarif`, the SARIF uploads, the
-image build or the scripts smoke-check. ⛔ No `continue-on-error` in this task — T1 retries, it
-does not forgive.
+**In.** `.github/workflows/ci.yml`, the SBOM steps only.
 
-**How** depends on **D1**, because `anchore/sbom-action` is a `uses:` step and a `uses:` step
-cannot be wrapped in a shell retry loop:
+**Out.** ⛔ No change to `trivy-scan`, `trivy-gate-table`, `trivy-sarif`, either SARIF upload, the
+image build or the scripts smoke-check. ⛔ `continue-on-error` appears **only** on retry attempts
+that an enforcement step adjudicates — never on the enforcement step, never on a step with nothing
+behind it.
 
-| option | shape | cost |
+**Verification.** ⚠️ **A bogus pinned version fails deterministically on both attempts and proves
+nothing** — it tests the wrong fault. Inject an **attempt-specific** fault (e.g. a first attempt
+pointed at an unreachable mirror, the second at the real one) and show: both attempts appear in the
+log, the job concludes success, and the SBOM uploaded is the second attempt's.
+⚠️ **Effectiveness in production stays unmeasured until observed.** §1b shows this outage would
+have survived a short retry; T1 is cheap insurance for the momentary case, not the fix.
+
+**Open:** the retry's wait. Nothing yet establishes a recovery time — 19 minutes is a lower bound on
+this outage, not a cadence. Do not copy the LINDAS 5 minutes; its number came from a measured
+upstream cycle.
+
+### T2 — classify the residual failure by what actually happened
+
+**Outcome.** After T1's attempts, the enforcement step decides on **evidence of stage**, not on an
+exit status.
+
+🔴 **Exit status cannot tell install from execution.** *(Review, major.)* syft can install and then
+die before writing anything; an install can fail for a bad version, a permissions problem or a
+failed integrity check — none of them transient. The step must record, explicitly, **whether syft
+was installed** and **whether it ran**, and the enforcement step reads that.
+
+**The cases, and all five must be covered:**
+
+| | `pull_request` | `push: main` |
 |---|---|---|
-| **(a)** keep the action | a second `uses:` step, identical inputs, `if: steps.sbom-generate.outcome == 'failure'` | duplicated step; the pinned SHA now appears twice and must be bumped in two places |
-| **(b)** move to the CLI | the equivalent already recorded at `ci.yml:634` and `cicd.md:620` — `syft sapphire-flow:ci-<sha> -o cyclonedx-json > sbom.cdx.json` — inside a bounded retry loop | we own the install step; loses whatever the action does beyond the CLI, which must be checked, not assumed |
+| installed, ran, valid SBOM | pass | pass |
+| **never installed** (fetch failed both attempts) | annotate + continue, **and** emit T3's signal | **fail** (subject to D3) |
+| **ran, produced no file** | ⛔ **fail** | ⛔ **fail** |
+| **ran, produced an empty or invalid file** | ⛔ **fail** | ⛔ **fail** |
+| anything else / unclassifiable | ⛔ **fail** | ⛔ **fail** |
 
-**Verification.** ⚠️ **A retry cannot be verified by watching CI be green** — it is green either
-way. Prove it by forcing the first attempt to fail (an unreachable installer URL, or a deliberately
-bogus pinned version on a scratch branch) and showing the job completes with an SBOM produced by
-the second attempt, and that the run log contains **both** attempts.
+**"Invalid" must be defined in the task, not left to the reader** — at minimum: parses as JSON, is
+CycloneDX, and has a non-empty component list. An unparseable or zero-component SBOM is a finding,
+not an inventory.
 
-### T2 — make the residual failure mean what it is
+**Out.** ⛔ A version that keys on `outcome` alone has not done this task. ⛔ Unknown failures are
+never forgiven.
 
-**Outcome.** After T1's retries are exhausted, a run that produced an image but no SBOM is
-classified rather than uniformly fatal.
+**Verification.** Force each of the five rows on both event types and record the job conclusion for
+each. Ten forced cases, none reasoned about.
 
-**Proposed shape, subject to D3.** A `push: main` run **fails** — that is the lineage recoverability
-depends on (§3). A `pull_request` run **annotates and continues** — its image is discarded and the
-merge commit will produce the real SBOM.
+### T3 — a durable signal, covering the failures that are actually forgiven
 
-**In.** `ci.yml`, the SBOM steps.
+**Outcome.** Every run that T2 lets pass without an SBOM produces a trace that outlives the run and
+reaches a named person.
 
-**Out.** ⛔ The classification must key on **what was produced**, not on the step's exit status
-alone: "syft ran and emitted an empty or invalid `sbom.cdx.json`" must stay fatal on both event
-types. Distinguishing those two is the whole point of the task; a version that only reads
-`outcome` has not done it.
+🔴 **Gated on D2, and it must cover PR runs.** *(Review, major: the previous draft forgave PR
+failures but proposed a monitor that checked only `main`, so the exact runs being forgiven were the
+ones nothing watched.)* Two requirements, both testable:
 
-**Verification.** Four cases, each forced, not reasoned about: {`main`, PR} × {install failed,
-produced an invalid SBOM}. Record the job conclusion for each.
+1. **Coverage** — the signal fires for a forgiven **PR** run, not only for a failing `main` run.
+2. **A consumer** — a red scheduled workflow is not delivery unless someone is named who reads it.
+   ⛔ "Another red run in the Actions tab" does not satisfy this.
 
-### T3 — a missing SBOM needs a durable home, not an annotation
+**Out.** ⛔ Not another workflow artifact nobody reads — the incident's second root cause
+(`ci.yml:617-618`). ⛔ Not a job-summary annotation as the only signal.
 
-**Outcome.** A run that legitimately produced no SBOM is visible somewhere a person will later
-look, so that T2's relaxation does not recreate the Plan 180 class.
-
-🔴 **This is the task that makes T2 safe, and it is gated on D2.** An annotation on an otherwise
-green run is read by nobody; if that is all T2 leaves behind, the plan has converted a loud
-false alarm into a silent real one. ⛔ **T2 must not merge ahead of T3.**
-
-**In.** Depends entirely on D2.
-
-**Out.** ⛔ Not another workflow artifact nobody reads — that was the incident's second root cause
-(`ci.yml:617-618`).
-
-**Verification.** Force a persistent SBOM failure on `main` and show the signal arrives at its
-destination and survives the run — i.e. is still findable a week later without knowing the run id.
+**Verification.** Force a forgiven PR run and a persistent `main` failure; show the signal arrives
+at its destination in both cases and is still findable a week later without knowing the run id.
 
 ### T4 — survey the same exposure elsewhere, and fix nothing blind
 
-**Outcome.** A list of every CI step whose failure would block a PR for a reason unrelated to the
-PR, with each classified as gate or infrastructure. **A survey, not a refactor.**
+**Outcome.** A list of every CI step whose failure would red a PR for a reason unrelated to the PR,
+each classified gate or infrastructure. **A survey, not a refactor.**
 
-**Starting evidence.** `Install system deps for cfgrib / rioxarray / exactextract` failed **2** of
-the last 100 runs (§1) — the same class, a different mechanism, and it has bitten **twice as often
-as syft**.
+**Starting evidence.** `Install system deps for cfgrib / rioxarray / exactextract` — 2 of 15
+failures (§1), the same class by a different mechanism, and more frequent than syft.
 
-**Out.** ⛔ No step changes under T4. Anything it finds becomes its own task or its own plan, so
-that each change is reviewed against its own step's meaning rather than waved through on this
-plan's argument.
+**Out.** ⛔ No step changes under T4. Each finding becomes its own task or plan, reviewed against
+its own step's meaning.
+
+### T5 — amend the standards the relaxation contradicts
+
+**Outcome.** `security.md` and `cicd.md` describe the behaviour that actually ships.
+
+**In.** `security.md:783`/`:785` — "on every run" becomes the *intent* plus the stated exception and
+its compensating control. `cicd.md:518` — "SBOM generation" is qualified where it sits in the gate
+list. `cicd.md:732` — the step description follows T1's shape.
+
+**Out.** ⛔ T5 does not merge before T2/T3; a standard describing a control that does not exist yet
+is the mirror of the defect this plan is fixing.
+
+**Verification.** A reader of `security.md` alone can state correctly when a CI run may complete
+without an SBOM and what catches it.
 
 ## Owner decisions
 
 ### D1 — keep `anchore/sbom-action`, or move to the pinned syft CLI?
 
-Recommendation: **(a), keep the action.** It is SHA-pinned per `security.md`'s supply-chain policy;
-switching to a CLI we install ourselves trades one transient failure for a new pinning obligation.
-The duplicated SHA is a real cost — mitigate it with a comment at both sites naming the other.
+Recommendation: **keep the action.** It is SHA-pinned per `security.md`'s supply-chain policy;
+installing a CLI ourselves trades one transient failure for a new pinning obligation. Cost: the
+pinned SHA then appears at two sites and must be bumped in both — mitigate with a comment at each
+naming the other.
+⚠️ If (b) is chosen instead, `ci.yml:634` records the real equivalent
+(`syft sapphire-flow:ci-<sha> …`). `cicd.md:620`'s `sapphire-flow:local` is the **local** equivalent
+column and is correct as it stands — *(review, minor: an earlier draft called this a
+contradiction; it is not)*.
 
-### D2 — where does a genuinely missing SBOM show up?
-
-The options, honestly costed:
+### D2 — where does a genuinely missing SBOM show up, and who reads it?
 
 | option | strength | weakness |
 |---|---|---|
-| open/update a GitHub issue | durable, assignable, survives the run | needs `issues: write`; can generate noise |
-| a scheduled job that checks recent `main` runs have `sbom-cyclonedx` artifacts and fails if not | reads the thing we actually care about, catches slow decay | a second moving part; artifacts expire (retention) |
-| job-summary annotation only | free | ⛔ **nobody reads it** — this is the Plan 180 class |
+| open/update a GitHub issue | durable, assignable, has an addressee by construction | needs `issues: write`; can generate noise |
+| a scheduled job checking recent runs produced `sbom-cyclonedx` | reads the artifact rather than a step's self-report; catches slow decay | a second moving part; artifact **retention** bounds the lookback; needs a named reader |
+| annotation only | free | ⛔ **the Plan 180 class** |
 
-Recommendation: **the scheduled check.** It verifies the artifact *exists* rather than that a step
-*reported success*, which is the distinction Plan 180 was about. ⚠️ Artifact retention bounds how
-far back it can look — establish that number before adopting it.
+Recommendation: **the scheduled check, extended to PR runs, with a named reader.** It verifies the
+artifact *exists* rather than that a step *reported success* — the distinction Plan 180 was about.
+⚠️ Establish the artifact retention period before adopting it; it sets the maximum lookback.
 
-### D3 — is the PR/main split right?
+### D3 — does a missing SBOM fail `main`?
 
-Alternative: never let the SBOM block **either**, with T3 as the sole signal. Simpler, and defensible
-if the scheduled check in D2 is adopted. Recommendation: keep `main` fatal — it costs nothing when
-the tool works and keeps a hard failure on the lineage that matters.
+§3 weakened the original argument: `main`'s CI image is discarded too, so this is about **continuity
+of a per-commit record**, not about a deployed artifact. Two defensible answers — keep `main` fatal
+(costs nothing while the tool works), or forgive both and rely wholly on D2's monitor (simpler, one
+mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it on continuity.
 
 ## Watch items, not tasks
 
-- ⛔ **Nothing in this plan may weaken a security gate.** Trivy's scan, gate table, SARIF
-  derivation and code-scanning upload are out of scope in every task.
-- 🪤 **A retry that always fails twice, then continues, looks exactly like success.** T3 is what
-  makes that distinguishable. This is the plan's own most likely failure.
-- 🪤 **`syft` failed once in 100 runs, then again on the very next re-run.** Two framings, both
-  true, and they pull opposite ways: the *rate* is low, the *duration* is long. Quote both or
-  neither. Do not let either number drift in retelling.
-- **`ci.yml:634` and `cicd.md:620` both record the equivalent CLI — and they disagree.** `ci.yml`
-  names `sapphire-flow:ci-${{ github.sha }}`, the `cicd.md:620` table names `sapphire-flow:local`. If D1
-  picks (b), the real command has to be established rather than copied from either, and both must be
-  updated, and `cicd.md:732` and `security.md:783` both describe the step "via `anchore/sbom-action`"
-  — four sites, not one.
-- **No job depends on `build-image-and-scan`** (`cicd.md:733`: the `e2e` job Plan 064 specified
-  was never built). So this job's status blocks a PR only through the branch protection rules —
-  worth confirming which checks are actually required before assuming T2 changes anything.
+- ⛔ **Nothing here may weaken a security gate.** Trivy's scan, gate table, SARIF derivation and
+  code-scanning upload are out of scope in every task.
+- 🪤 **A retry that always fails twice and then continues looks exactly like success.** T3 is what
+  makes that distinguishable — this is the plan's own most likely failure mode.
+- 🪤 **Two true numbers that pull opposite ways** (§1): rate 1/100, class 3/15. Quote both or
+  neither, and never as "prevents 20% of failures."
+- 🪤 **`gh api ...runs?status=completed` is not a stable sample** (§1). Any future census uses
+  `gh run list` and reports its window.
+- **`main` has no branch protection** (§4). If required checks are ever added, T2's PR/main split
+  changes meaning and this plan must be re-read.
+- **No job depends on `build-image-and-scan`** — `cicd.md:733` records that Plan 064's `e2e` job was
+  never built.
 
 ## Exit gates
 
-- D1, D2 and D3 are each closed or explicitly carried, with the carrier named.
-- T1's retry is proven by a **forced** first-attempt failure, not by a green run.
-- T2's four cases are each forced and their conclusions recorded.
-- T3 is merged **no later than** T2, and its signal is shown to survive the run.
+- **D1 and D3** are closed or explicitly carried, with the carrier named.
+- 🔴 **D2 is CLOSED — not carried.** T2 may not merge while D2 is open; carrying D2 defers T2.
+  *(Review, major: the previous "closed or explicitly carried" wording let the safeguard decision
+  stay open while the relaxation shipped.)*
+- T1's retry is proven by an **attempt-specific** injected fault, not a bogus version and not a
+  green run.
+- T2's **ten** forced cases (five classifications × two event types) each have a recorded conclusion.
+- T3 is **merged and demonstrated operational** — signal delivered for a forgiven PR run and for a
+  persistent `main` failure, with its reader named — **before** T2's relaxation is enabled.
+- T5 has landed, so no standard describes behaviour that does not ship.
 - T4 produces a classified list; every change it implies is filed separately.
-- Plan 180's reasoning at `ci.yml:616-621` is quoted in the PR description with an explicit
-  statement of why this change does not undo it.
+- Plan 180's reasoning at `ci.yml:616-621` is quoted in the PR description, with an explicit
+  statement of why scoped-retry-plus-enforcement does not undo it (§5).
 
 ```json
 {
   "phases": [
     { "id": "P1", "tasks": ["T1"], "decision": "D1",
-      "note": "retry the install — cheap, but MEASURED INSUFFICIENT on its own: the same 504 recurred 16 min later" },
-    { "id": "P2", "tasks": ["T3"], "depends_on": ["P1"], "decision": "D2",
-      "note": "the durable signal must EXIST before the relaxation that relies on it" },
+      "note": "retry the install — cheap, and MEASURED INSUFFICIENT alone: the same 504 recurred over 19 min" },
+    { "id": "P2", "tasks": ["T3"], "depends_on": ["P1"], "decision": "D2 must be CLOSED",
+      "note": "the durable signal must exist AND be demonstrated before the relaxation that relies on it" },
     { "id": "P3", "tasks": ["T2"], "depends_on": ["P2"], "decision": "D3",
-      "note": "classify the residual failure; sequenced AFTER T3 deliberately" },
-    { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"],
+      "note": "classify by stage evidence; sequenced after T3 deliberately" },
+    { "id": "P4", "tasks": ["T5"], "depends_on": ["P3"],
+      "note": "amend the standards last, so they describe what shipped" },
+    { "id": "P5", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3", "P4"],
       "note": "survey only; produces tasks, changes nothing" }
   ]
 }
@@ -304,19 +365,33 @@ the tool works and keeps a hard failure on the lineage that matters.
 
 ## Changelog
 
-**2026-09-21 — created.** Written the same day the failure occurred, from the run log, the Actions
-API over the last 100 runs, and the standards text. **Not yet independently reviewed.**
+**2026-09-21 — created**, the same day the failure occurred.
 
-**2026-09-21 — four line anchors corrected.** The first commit cited `cicd.md` at 461/577/689/690.
-Those numbers came from a working tree that had not yet pulled the Plan 307 merge, which added
-lines to that file; against the real `main` they are 504/620/732/733 and land on unrelated text.
-⭐ Re-measured at the moment of writing, but against the wrong tree — `git fetch` updates the refs,
-not the checkout. Every anchor in this document has since been verified by printing the line it
-names. See `feedback_measure_at_the_moment_of_acting`.
+**2026-09-21 — four line anchors corrected.** The first commit cited `cicd.md` at 461/577/689/690 —
+numbering from a checkout that had not pulled the Plan 307 merge. ⭐ `git fetch` updates the refs,
+not the working tree. Every anchor is now verified by printing the line it names.
 
-**2026-09-21 — T1's premise corrected by the next data point.** The plan was opened saying a retry
-"alone removes the failure mode" on the strength of a single occurrence. A manual re-run 16 minutes
-later hit the identical 504, so that sentence was false within the hour. Corrected in T1, in §1b,
-in the watch items and in the phase graph — five sites, because the claim had been restated in each.
-⭐ The lesson is not "retries are useless"; it is that **one observation did not license a claim
-about the failure's duration**, and the plan asserted one anyway.
+**2026-09-21 — T1's premise falsified within the hour.** The plan opened saying a retry "alone
+removes the failure mode" on one observation; a re-run 16 minutes later hit the identical 504, and a
+third 5 minutes after that. ⭐ One observation did not license a claim about the failure's
+*duration*, and the plan made one anyway.
+
+**2026-09-21 — rewritten after independent review** (Codex: NEEDS CHANGES — 1 blocker, 6 major,
+2 minor). Rewritten rather than patched, per the house rule that layered corrections are how Plan
+252 failed three rounds on its text. What review changed:
+
+| finding | what it was | what it changed |
+|---|---|---|
+| **blocker** | the recommended retry **cannot work** — `if: outcome == 'failure'` carries an implicit `success()` and never runs; and T1 forbade the scoped `continue-on-error` its own design needs | T1 now specifies the working shape, including the upload condition, and §5 states why scoped-retry-plus-enforcement is not blanket forgiveness |
+| major | exit status cannot distinguish install from execution failure; "invalid SBOM" undefined; "ran but produced no file" missing | T2 rewritten around **stage evidence**, five cases, unknown ⟹ fatal |
+| major | the compensating control excluded the very failures being forgiven (PR runs), and named no consumer | T3 now requires PR coverage **and** a named reader, both verified |
+| major | the plan understated the policy change — `cicd.md:518` **does** list SBOM generation in the gate tier, and `main` CI images are discarded too | §2 and §3 corrected; **T5 added** to amend the standards |
+| major | the census rows summed to 16 against 15 failures, with no dedup rule | §1 re-derived by run with ids and method; the unstable-API trap recorded |
+| major | retry effectiveness asserted, not measured; a bogus version fails deterministically on both attempts | T1's verification requires an **attempt-specific** fault; effectiveness declared unmeasured |
+| major | exit gates let D2 stay "carried" while the relaxation shipped | D2 must be **CLOSED**; T3 must be **demonstrated operational** before T2 |
+| minor | two citation claims were wrong — `cicd.md:620`'s `:local` is the local-equivalent column, and `security.md:783` does not mention the action | both removed |
+| minor | "blocked PR" unverified | §4: `main` has **no branch protection**; the claim is withdrawn and the real, smaller cost stated |
+
+⭐ **Five of the nine findings were the same error: asserting where I could have measured.** The
+branch protection, the run census, the retry semantics, the `:local` tag and the standards text were
+each checkable in seconds, and four of the five came out against the plan.
