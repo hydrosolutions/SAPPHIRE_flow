@@ -5,7 +5,7 @@ revised: 2026-09-11
 plan: 262
 title: Onboard cmal_small on a two-station Swiss group — the first deep-learning model in the pipeline
 scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour. The operational forcing series itself is Plan 261's subject and is now a PREREQUISITE, not an accepted shortfall.
-depends_on: [261]
+depends_on: [261, 307]
 blocks: []
 source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the aquacast revision pinned in `pyproject.toml`, and the live mac-mini staging database at v0.1.889. Re-measured 2026-09-11 against v0.1.901 after Plan 261 merged and deployed; every dated claim below was re-checked on that date and the results are recorded in place.
 ---
@@ -59,8 +59,11 @@ this plan asks for observed outcomes to be written back into it.
 | T2 | ✅ **built, deployed, accepted** | see below |
 | T3a | ✅ **complete, including the on-host run** | see below |
 | T3b | ⬜ not started — gated on T4 | |
-| T4 | 🔴 **BLOCKED in execution** — see below | |
+| T4 | 🔴 **blocked in execution; now routed through Plan 307** — see below | |
 | T5 | ⬜ not started — gated on T3b | |
+
+⚠️ **The sequence is now T4 → T3b → T5, behind Plan 307's T3b (deploy + mount + schema
+re-registration).** Nothing in this plan runs again until 307 lands.
 
 ### T2 — deployed 2026-09-21, 0.1.901 → 0.1.927
 
@@ -106,10 +109,11 @@ base64 inside the container, so the artifact is not in question — only the tra
 both an in-process call and raising the Prefect limit, and selected a staged-path import.
 **Plan 307 owns it**, and its T4 carries this task's provenance table forward.
 
-⚠️ **This plan's T4 "In" still says "through the existing `import-model-artifact` deployment — no
-new import machinery", and that sentence is now incomplete.** Amending it — and adding a
-dependency on 307 — is a **material change to a READY plan and needs its own review**. It is
-flagged here and deliberately not applied.
+✅ **AMENDED 2026-09-21, owner-directed.** T4's In now records that the original route is
+impossible and that execution goes through Plan 307's staged path; `depends_on` gained **307**.
+⚠️ **This is a material change to a READY plan**, made on the owner's explicit instruction, and it
+carries its own independent review — recorded in the review table above, not inherited from the
+2026-09-11 rounds, which covered a different text.
 
 🔑 **The `trained_at` prerequisite is CLEARED.** The owner confirmed 2026-09-21 that the training
 machine's clock was Europe/Zurich, so `logs/train.log:632`'s `13:41:55` on 31 August is CEST =
@@ -609,12 +613,39 @@ exists, fails because the lookup returns nothing — not because a symbol is mis
 
 **Outcome.** `cmal_small` has an ACTIVE `model_artifacts` row against the pilot group,
 with **honest** provenance, imported through the existing `import-model-artifact`
-deployment — no new import machinery.
+deployment.
+
+🔴 **AMENDED 2026-09-21 (owner-directed). This task is blocked by Plan 307 and executes
+through it.** The original In said *"imported through the existing `import-model-artifact`
+deployment — no new import machinery"*. **Execution proved that route impossible**, exactly as
+this task's own "Risk to record" predicted: the artifact's base64 parameters are
+**2,420,511 bytes against a 524,288-byte Prefect server limit** (4.6×), and the flow run is
+refused at creation. See the Execution record above for the verbatim 422; **nothing was written**.
+
+**The "no new import machinery" constraint stands in substance and is superseded in letter.**
+Plan 307 adds an `artifact_path` parameter to that same deployment, reading from a read-only
+staging mount, with a traversal guard and a required content checksum. `services/model_import.py`
+is **unchanged** — no new importer exists, and the flow run is preserved. The owner's deciding
+requirement was that **model onboarding must be replicable on Nepali servers**, which an
+in-process call could not satisfy and raising the server limit could not travel with.
+
+⚠️ **T4 therefore runs after Plan 307's T3b** (deploy + worker recreation for the mount +
+re-registration of the parameter schema), not before. 307 T4 carries this task's provenance table
+forward, and **this plan remains AUTHORITATIVE for the provenance values themselves.**
 
 **In.** A runbook section in this plan and the provenance values themselves. The
 artifact bytes are `checkpoints/best.pt` (1,814,653 bytes) — already exactly the
 `ModelBundle` that `deserialize_artifact` expects (`aquacast/operational/artifact.py`,
 `aquacast/serialization.py`), so no conversion step exists or is needed.
+
+🔴 **The training bounds must be timezone-aware.** `1985-01-01` and `2020-12-31` as written below
+are date-only and **cannot be passed**: the flow applies `ensure_utc(datetime.fromisoformat(...))`
+and `types/datetime.py` rejects a naive value — verified by execution,
+`ValueError: Naive datetime not allowed`. The values to pass are
+**`1985-01-01T00:00:00+00:00`** and **`2020-12-31T00:00:00+00:00`**, under the convention that the
+end bound names the **last day included**, stamped at that day's start. ⚠️ That convention is
+Plan 307's choice, recorded visibly there; it touches Plan 267 (end-period stamping) and Plan 258
+(point vs interval).
 
 **The provenance, corrected.** The first revision of this plan proposed three values that
 are false. `import_external_artifact` requires these to describe the *real* external

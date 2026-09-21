@@ -18,10 +18,14 @@ source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.
 shape (option (a)) over an in-process call and over raising the Prefect server limit, on the
 ground that **model onboarding must be replicable on Nepali servers**.
 
-⚠️ **Plan number 307 needs the owner's confirmation — the owner grants plan IDs.** 🔴 *The stated
-rationale was false and is withdrawn.* It claimed 307 was "the first unreferenced number after
-306", inheriting that reasoning from Plan 306. Measured (independent review 2026-09-21):
-**274–299 are unreferenced repo-wide.** 307 is merely *a* free number.
+Plan number **307 granted by the owner, 2026-09-21**. *(An earlier revision claimed it was "the
+first unreferenced number after 306"; that was false — 274–299 are unreferenced repo-wide.)*
+
+**Review: six passes, APPROVED.** Codex rounds 1–4 returned findings (4+2, 2+2, 1+2, 1); round 5
+returned `VERDICT: APPROVE` with no findings at any severity, confirming that keyword-only
+parameters preserve required provenance, that registration refresh precedes the live import, and
+that checksum validation uses the same buffer passed to the unchanged importer. An independent
+Claude pass in round 1 contributed 4 majors and 5 minors. **No model approved its own output.**
 
 ## The failure, measured
 
