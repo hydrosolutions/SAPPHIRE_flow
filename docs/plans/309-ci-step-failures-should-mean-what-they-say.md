@@ -64,13 +64,30 @@ Last **100 completed `ci.yml` runs** (Actions API, 2026-09-21). **15 failed.** B
 | `Render vulnerability table (gate)` and/or `lint/Trivy filesystem scan` | 7 | the CVE gate **working** — real findings |
 | `unit` pytest | 2 | real test failures |
 | `Install system deps for cfgrib / rioxarray / exactextract` | 2 | an **apt fetch** — the same transient class |
-| `Generate SBOM with syft` | **1** | today |
+| `Generate SBOM with syft` | **1** | today — and see §1b |
 | no failed job recorded (cancelled / startup failure) | 4 | — |
 
-⚠️ **State this plainly rather than inflate it: the syft step has failed once in 100 runs.** "It
-will bite us again" is a forecast, not an observation. What *is* observed is the **class** —
-a CI step failing because a third-party artifact could not be fetched — at **3 of 15 failures**,
-across two different jobs and two different fetch mechanisms. The plan's case rests on the class.
+⚠️ **State this plainly rather than inflate it: the syft step had failed once in 100 runs when
+this plan was opened.** What *is* observed over that window is the **class** — a CI step failing
+because a third-party artifact could not be fetched — at **3 of 15 failures**, across two different
+jobs and two different fetch mechanisms. The plan's case rests on the class, not on syft.
+
+### 1b. The same outage reproduced on re-run — which is the decisive number
+
+| attempt | job | time (UTC) | result |
+|---|---|---|---|
+| original | `106377308103` | 14:38:56 | `504` on `github.com/anchore/syft/releases/v1.51.1` |
+| re-run 1 | `106382760290` | 14:52:57 | **the identical `504`, 16 minutes later** |
+
+From a developer machine at 14:55 the same hour, `releases/tag/v1.51.1`, the installer's own
+`releases/v1.51.1`, and the `syft_1.51.1_linux_amd64.tar.gz` asset all returned **200**, and
+githubstatus.com reported **All Systems Operational**. So the fault is not a missing release and is
+not a declared GitHub incident — it is reachable from here and not from the runner, which points at
+runner egress or an edge rather than at the artifact.
+
+🔑 **This is what makes the plan more than a retry.** A fault that survives a 16-minute gap is not
+something an in-job retry can absorb, and a developer probe returning 200 is exactly the evidence
+that would have talked us out of the problem.
 
 ### 2. What an SBOM is for, per our own standard
 
@@ -132,9 +149,19 @@ patch.
 
 ### T1 — retry the install before deciding anything
 
-**Outcome.** A single transient fetch failure no longer reaches the job's conclusion. On the
-observed evidence this alone removes the failure mode; the rest of the plan exists for what is
-left when a retry does not help.
+**Outcome.** A single transient fetch failure no longer reaches the job's conclusion.
+
+🔴 **A retry alone is NOT sufficient, and this was measured, not guessed.** A manual re-run of the
+same job **16 minutes later hit the identical 504** (job `106382760290`). An in-job retry on a
+seconds-to-minutes timescale would very likely have hit it too. T1 is worth doing — it is cheap and
+it removes the genuinely momentary case — but **the plan does not rest on it**, and T2/T3 are what
+make the job survive an outage of this duration. *(An earlier revision of this task claimed the
+retry "alone removes the failure mode"; the very next data point falsified that.)*
+
+⚠️ **The retry's wait must be chosen against the observed outage length, not a default.** The
+`live-lindas-weekly-autoretry` precedent picked 5 minutes because that matched BAFU's publish
+cadence. Nothing yet establishes a comparable number here — two samples 16 minutes apart is a lower
+bound on the outage, not a recovery time.
 
 **In.** `.github/workflows/ci.yml`, the `Generate SBOM with syft` step only.
 
@@ -238,8 +265,9 @@ the tool works and keeps a hard failure on the lineage that matters.
   derivation and code-scanning upload are out of scope in every task.
 - 🪤 **A retry that always fails twice, then continues, looks exactly like success.** T3 is what
   makes that distinguishable. This is the plan's own most likely failure.
-- 🪤 **`syft` failed once in 100 runs.** If review wants the stronger case, it is the class (3 of
-  15 failures), not this step. Do not let the number drift upward in retelling.
+- 🪤 **`syft` failed once in 100 runs, then again on the very next re-run.** Two framings, both
+  true, and they pull opposite ways: the *rate* is low, the *duration* is long. Quote both or
+  neither. Do not let either number drift in retelling.
 - **`ci.yml:634` and `cicd.md:620` both record the equivalent CLI — and they disagree.** `ci.yml`
   names `sapphire-flow:ci-${{ github.sha }}`, the `cicd.md:620` table names `sapphire-flow:local`. If D1
   picks (b), the real command has to be established rather than copied from either, and both must be
@@ -263,7 +291,7 @@ the tool works and keeps a hard failure on the lineage that matters.
 {
   "phases": [
     { "id": "P1", "tasks": ["T1"], "decision": "D1",
-      "note": "retry the install; on the measured evidence this alone removes the observed failure" },
+      "note": "retry the install — cheap, but MEASURED INSUFFICIENT on its own: the same 504 recurred 16 min later" },
     { "id": "P2", "tasks": ["T3"], "depends_on": ["P1"], "decision": "D2",
       "note": "the durable signal must EXIST before the relaxation that relies on it" },
     { "id": "P3", "tasks": ["T2"], "depends_on": ["P2"], "decision": "D3",
@@ -285,3 +313,10 @@ lines to that file; against the real `main` they are 504/620/732/733 and land on
 ⭐ Re-measured at the moment of writing, but against the wrong tree — `git fetch` updates the refs,
 not the checkout. Every anchor in this document has since been verified by printing the line it
 names. See `feedback_measure_at_the_moment_of_acting`.
+
+**2026-09-21 — T1's premise corrected by the next data point.** The plan was opened saying a retry
+"alone removes the failure mode" on the strength of a single occurrence. A manual re-run 16 minutes
+later hit the identical 504, so that sentence was false within the hour. Corrected in T1, in §1b,
+in the watch items and in the phase graph — five sites, because the claim had been restated in each.
+⭐ The lesson is not "retries are useless"; it is that **one observation did not license a claim
+about the failure's duration**, and the plan asserted one anyway.
