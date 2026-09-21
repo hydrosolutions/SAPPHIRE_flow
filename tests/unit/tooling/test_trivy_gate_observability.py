@@ -307,7 +307,11 @@ class TestFailurePathReallyPublishes:
     def test_gate_failed_not_cancelled_conversion_and_upload_both_run(self) -> None:
         """The failure path that matters: a real CVE tripped the gate."""
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "success", "trivy-gate-table": "failure"}
+        outcomes = {
+            "trivy-scan": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "failure",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
         assert sarif_runs, "SARIF conversion must still run when the gate step failed"
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -318,7 +322,14 @@ class TestFailurePathReallyPublishes:
         """An operational scan failure (not a finding) must not fabricate a
         report from a JSON file that was never written."""
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "failure"}
+        # Both attempts failed, so the enforcement step failed and no report
+        # exists. Plan 309 T2 (ii) added the retry between them; the property is
+        # unchanged — nothing downstream may run off a report nobody wrote.
+        outcomes = {
+            "trivy-scan": "failure",
+            "trivy-scan-2": "failure",
+            "trivy-report": "failure",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
         assert not sarif_runs, (
             "conversion must not run off a report the scan never wrote"
@@ -327,9 +338,50 @@ class TestFailurePathReallyPublishes:
         upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
         assert not upload_runs, "upload must not run without a SARIF file to upload"
 
+    def test_a_recovered_scan_still_converts_and_uploads(self) -> None:
+        """Plan 309 T2 (ii): attempt 1 failed to fetch trivy, attempt 2 worked.
+        The report exists, so everything downstream must run exactly as on a
+        first-attempt success — gating on attempt 1 alone would silently drop
+        the SARIF after a recovery."""
+        sarif_if, upload_if = self._conditions()
+        outcomes = {
+            "trivy-scan": "failure",
+            "trivy-scan-2": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "success",
+        }
+        sarif_runs = _eval_gha_if(sarif_if, job_status="success", outcomes=outcomes)
+        assert sarif_runs, "a recovered scan must still produce SARIF"
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        assert _eval_gha_if(upload_if, job_status="success", outcomes=outcomes), (
+            "a recovered scan must still reach code scanning"
+        )
+
+    def test_the_gating_scan_is_not_retried(self) -> None:
+        """🔴 The distinction the retry turns on. `lint`'s filesystem scan
+        carries `exit-code: "1"` — it IS the gate — so retrying it would re-run
+        a real CVE finding. Only the image scan, which is explicitly
+        non-gating (`exit-code: "0"`), may be retried."""
+        lint_steps = yaml.safe_load(_ci_yml_text())["jobs"]["lint"]["steps"]
+        fs_scan = next(
+            s
+            for s in lint_steps
+            if str(s.get("uses", "")).startswith("aquasecurity/trivy-action@")
+        )
+        assert fs_scan["with"]["exit-code"] == "1", "precondition: it gates"
+        assert "continue-on-error" not in fs_scan, (
+            "the GATING filesystem scan must never be continue-on-error — a "
+            "retry there re-runs a genuine CVE finding"
+        )
+        image_scan = _step_by_id(_build_image_and_scan_job(), "trivy-scan")
+        assert image_scan["with"]["exit-code"] == "0", (
+            "only a scan that cannot fail on findings may be retried"
+        )
+        assert image_scan["continue-on-error"] is True
+
     def test_cancelled_run_neither_conversion_nor_upload_run(self) -> None:
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "cancelled"}
+        outcomes = {"trivy-scan": "cancelled", "trivy-report": "cancelled"}
         sarif_runs = _eval_gha_if(sarif_if, job_status="cancelled", outcomes=outcomes)
         assert not sarif_runs, "a cancelled run must not still convert/upload"
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -338,7 +390,11 @@ class TestFailurePathReallyPublishes:
 
     def test_normal_success_conversion_and_upload_both_run(self) -> None:
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "success", "trivy-gate-table": "success"}
+        outcomes = {
+            "trivy-scan": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "success",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="success", outcomes=outcomes)
         assert sarif_runs
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -683,4 +739,96 @@ class TestTheHelperModelsImplicitSuccess:
             "${{ !cancelled() && steps.trivy-scan.outcome == 'success' }}",
             job_status="failure",
             outcomes={"trivy-scan": "success"},
+        )
+
+
+class TestEveryNetworkStepIsBounded:
+    """Plan 309 T2 (iii) — the convention, encoded so it cannot quietly erode.
+
+    A **job**-level timeout CANCELS the job, which skips every `!cancelled()`
+    step: no enforcement, no failure message, no upload. So a step that reaches
+    the network needs its OWN bound, or one hung fetch turns a red check that
+    explains itself into a bare cancellation.
+
+    Measured on the healthy run 35625551801: every network fetch completed in
+    ≤ 40 s except `Build app image` at 124 s. The bounds are 5 or 10 minutes —
+    between 7x and 30x headroom — so this asserts the bound EXISTS, not that it
+    is tight.
+
+    ⚠️ Deliberately NOT applied to the pytest steps: they are the work, not a
+    fetch, and the job timeout is their correct bound.
+    """
+
+    _NETWORK_USES = (
+        "actions/checkout@",
+        "astral-sh/setup-uv@",
+        "docker/setup-buildx-action@",
+        "docker/build-push-action@",
+        "actions/upload-artifact@",
+        "github/codeql-action/upload-sarif@",
+        "aquasecurity/trivy-action@",
+        "anchore/sbom-action",
+    )
+    _NETWORK_RUN = ("apt-get", "uv sync", "pip install")
+
+    def _network_steps(self) -> list[tuple[str, str, dict[str, Any]]]:
+        workflow = yaml.safe_load(_ci_yml_text())
+        found = []
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps") or []:
+                uses = str(step.get("uses", ""))
+                run = str(step.get("run", ""))
+                if "pytest" in run:
+                    continue
+                hit = any(uses.startswith(u) for u in self._NETWORK_USES) or any(
+                    token in run for token in self._NETWORK_RUN
+                )
+                if hit:
+                    label = step.get("name") or uses.split("@")[0] or run.strip()[:40]
+                    found.append((job_name, label, step))
+        return found
+
+    def test_the_survey_still_finds_network_steps(self) -> None:
+        """Guards the test itself: if the selectors stopped matching, every
+        assertion below would pass vacuously."""
+        steps = self._network_steps()
+
+        assert len(steps) >= 15, f"expected the whole fetch surface, found {len(steps)}"
+
+    def test_every_network_step_declares_its_own_timeout(self) -> None:
+        unbounded = [
+            f"{job} / {label}"
+            for job, label, step in self._network_steps()
+            if step.get("timeout-minutes") is None
+        ]
+
+        assert unbounded == [], (
+            "these steps reach the network with no step-level timeout, so a hung "
+            f"fetch runs until the JOB timeout — which cancels: {unbounded}"
+        )
+
+    def test_no_network_timeout_is_absurdly_large(self) -> None:
+        """A bound larger than its own job's timeout is not a bound."""
+        workflow = yaml.safe_load(_ci_yml_text())
+        over = []
+        for job_name, job in workflow["jobs"].items():
+            job_timeout = job.get("timeout-minutes")
+            if job_timeout is None:
+                continue
+            for step in job.get("steps") or []:
+                st = step.get("timeout-minutes")
+                if st is not None and st >= job_timeout:
+                    over.append(f"{job_name} / {step.get('name') or step.get('uses')}")
+
+        assert over == [], f"step timeout >= its job's own timeout: {over}"
+
+    def test_the_trivy_report_gate_is_not_forgiving(self) -> None:
+        """Mirrors the SBOM enforcement rule. `Require a Trivy report` is the one
+        step in that chain that decides, so it must not be continue-on-error —
+        otherwise both attempts can fail and the job still goes green."""
+        step = _step_by_id(_build_image_and_scan_job(), "trivy-report")
+
+        assert "continue-on-error" not in step, (
+            "the Trivy enforcement step must NOT be continue-on-error — it is "
+            "the single explicit decision that keeps a missing report loud"
         )
