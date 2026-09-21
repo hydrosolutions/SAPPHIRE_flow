@@ -627,6 +627,10 @@ jobs:
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
+      - name: TEMP PLAN309 VERIFICATION E — simulate a failed CVE gate
+        run: |
+          echo "Simulating Trivy gate failure: the job is red BEFORE the SBOM chain."
+          exit 1
       # B4 — SBOM generation (Plan 309). `syft` emits CycloneDX JSON for the built
       # image, uploaded as an artifact on every run so a future CVE landing has a
       # recoverable "which image contains library X?" trail.
@@ -726,12 +730,13 @@ jobs:
           # instead of via stdout, which the parent also keeps out of the log.
           "${{ steps.syft-cmd.outputs.cmd }}" scan \
             "sapphire-flow:ci-${{ github.sha }}" \
-            -o cyclonedx-json="PLAN309-VERIFICATION-elsewhere.json"
+            -o cyclonedx-json="sbom.cdx.json"
       # ENFORCE — the only step here without `continue-on-error`. It keys on the
       # ARTIFACT, not on any step's outcome, and it reports the stage that actually
       # failed rather than a fixed cause: "could not obtain the tool" is false when
       # syft ran and wrote nothing.
       - name: Require a valid SBOM
+        id: sbom-require
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
         run: |
           set -euo pipefail
@@ -769,11 +774,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::error title=SBOM generation failed::$stage $advice"
           exit 1
-      # Gated on EXECUTION, not on any download attempt: a download yields a command
-      # path, never an SBOM.
+      # Gated on the ENFORCEMENT step, not on execution and not on any download
+      # attempt. A download yields a command path, never an SBOM; and syft can exit
+      # 0 having written nothing, in which case `sbom-generate.outcome == 'success'`
+      # while there is no file — the upload then fails on `if-no-files-found: error`,
+      # adding a confusing second error beside the real one. (Measured: Plan 309
+      # verification run D, 35622426919.) `!cancelled()` is retained deliberately so
+      # the SBOM still uploads when the CVE gate has already failed the job — the
+      # Plan 207 property.
       - name: Upload SBOM artifact
         id: sbom-upload
-        if: ${{ !cancelled() && steps.sbom-generate.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.sbom-require.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sbom-cyclonedx
