@@ -8,7 +8,7 @@ scope: Make the statics delivered by a `basin-static-artifact/v1` package reacha
 depends_on: []
 blocks: []
 related: [307]
-open_decisions: [D3, D4]
+open_decisions: [D2a, D3, D4]
 source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-mini staging database at v0.1.927, the `nepal-dhm-basins` package delivered 2026-09-20, and the owner's `cmal_small` model tree. Every number below was measured on that date, and each says how.
 ---
 
@@ -25,10 +25,13 @@ Changelog.
 
 Plan number **306 granted by the owner, 2026-09-21**.
 
-⚖️ **D1 and D2 were closed by the owner on 2026-09-21, so this plan is implementable.** Translate
-the names **on the way in**, reusing the operation the repo already ships for the Swiss path; keep
-the encoding declaration **in our own code for now**, and ask the extractor to correct and populate
-the package's own field so it can take over later. D3 and D4 remain carried.
+⚖️ **D1 and D2 were closed by the owner on 2026-09-21.** Translate the names **on the way in**,
+reusing the operation the repo already ships for the Swiss path; keep the encoding declaration
+**in our own code for now**, and ask the extractor to correct and populate the package's own field
+so it can take over later.
+
+**T1 and T2 are implementable now. T3 is not** — it waits on **D2a**, a specification this plan
+inferred from D2's answer rather than one the owner gave. D3 and D4 remain carried.
 
 ## Why this exists
 
@@ -229,9 +232,12 @@ and **the encoding each known package source and contract version is vouched to 
 
 ⇒ **A package from a source or contract version with no entry is REFUSED**, not assumed
 compatible. That is what makes the check real: it fails closed on an unrecognised producer instead
-of silently trusting whatever arrives. ⚠️ **This is the specification D2's answer implies rather
-than something the owner stated — flagged for confirmation, not treated as settled.** It does not
-gate T1 or T2.
+of silently trusting whatever arrives. ⚠️ **This is the specification D2's answer implies rather than something the owner stated.** It is
+recorded as **D2a** and **gates this task**: T1 and T2 proceed without it, T3 does not begin until
+it is confirmed or replaced. *(Confirming review 2026-09-21: an earlier wording flagged it "for
+confirmation" in this paragraph alone while the phase graph, the exit gates and the status line all
+authorised T3 unconditionally — the same describe-versus-operate split this plan's review history
+keeps catching.)*
 
 ⚠️ **Not the package's own `unit` field — yet.** It is the natural long-term home, and once the
 extractor corrects and populates it the delivered side becomes self-declared and the vouching
@@ -352,6 +358,26 @@ than today's comment, which at least does not claim authority. **The repo-side t
 must be verified against these two features specifically** — they are the ones where a plausible
 declaration is wrong.
 
+### D2a — ⬜ OPEN: is "refuse a package from an unrecorded source" the right delivered-side rule?
+
+**Raised by this plan, not by the owner.** D2 put the encoding declaration in our own code and
+ruled out the package's own field for now. That settles where the **expected** encoding lives but
+not where the **delivered** side comes from — and without a delivered side there is nothing to
+compare, so T3's rejection test would have no subject.
+
+**This plan's inference, which T3 currently specifies:** our table also records what each known
+package **source and contract version** is vouched to deliver, and **a package from a source or
+version with no entry is refused** rather than assumed compatible.
+
+⚖️ **The owner's call, and the alternative is reasonable:** that rule fails closed on an
+unfamiliar producer, which is the safer behaviour but also means a new extractor version is
+refused until someone adds a row. The looser alternative is to trust any conforming package until
+the extractor's own field becomes reliable, accepting that a producer could change encoding
+silently in the meantime.
+
+⚠️ **Gates T3 only.** T1 and T2 are unaffected, and D2's chosen table location is settled either
+way.
+
 ### D3 — are the >100 `lka_pc_sse` values a misread scale or a defect?
 
 Not answerable from this repo. Needs the extractor or the modeller. **T4 obtains it.**
@@ -438,9 +464,11 @@ this plan describes in full.
   any error message.
 - The 148 Swiss basins' static resolution is unchanged — demonstrated, not assumed.
 - No stored attribute value was rescaled by this plan.
+- **D2a is confirmed or replaced before T3 begins**, and T3 implements whichever form the owner
+  settles on.
 - T3's two tests both exist, and neither infers an encoding from a value's magnitude.
 - All three T2 fixtures pass, including mixed-with-conflict.
-- D3 and D4 are each answered or explicitly carried, with the carrier named.
+- D2a, D3 and D4 are each answered or explicitly carried, with the carrier named.
 
 ```json
 {
@@ -450,7 +478,8 @@ this plan describes in full.
     { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1 CLOSED 2026-09-21",
       "note": "close the namespace gap: translate at import, reusing the existing operation" },
     { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "decision": "D2 CLOSED 2026-09-21",
-      "note": "declare and enforce the encoding from a repo-side table" },
+      "requires_decision": "D2a",
+      "note": "declare and enforce the encoding from a repo-side table; blocked until D2a is confirmed or replaced" },
     { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"],
       "produces_decision": "D3",
       "deferred_outcome": "if the extractor has not answered when P1-P3 complete, T4 closes as CARRIED with the >100 values recorded as an open data question and this plan named as its carrier",
