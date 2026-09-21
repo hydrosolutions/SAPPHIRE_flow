@@ -449,7 +449,16 @@ class TestStagedArtifactPath:
     def test_an_absolute_path_outside_the_root_is_still_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The permissive comparison must not widen the boundary."""
+        """Ordinary outside-path rejection, which is all this test shows.
+
+        ⚠️ Final review 2026-09-21: an earlier docstring claimed this proves
+        "the permissive comparison must not widen the boundary". It does not.
+        It exercises a path rejected BEFORE the guarded open, not an
+        adversarial path the comparison accepts. The real guarantee is
+        structural and lives in the code, not here: whatever the comparison
+        accepts, only `parts[0]` is ever opened, relative to the O_NOFOLLOW
+        root descriptor. Claiming a test proves more than it does is how a
+        suite starts looking stronger than it is."""
         root = tmp_path / "incoming"
         root.mkdir()
         outside = tmp_path / "secret.bin"
