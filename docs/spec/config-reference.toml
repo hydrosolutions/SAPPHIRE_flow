@@ -139,6 +139,16 @@ climatology_fallback = 100              # last-resort fallback
 
 [paths]
 data_dir = "/tmp/sapphire-test-data"
+# Plan 307 T1 — the READ-ONLY artifact staging root is configured by the
+# SAPPHIRE_INCOMING_DIR ENVIRONMENT VARIABLE, not by a TOML key: it is a
+# deployment/mount concern, set in compose alongside the bind that backs it.
+# With the variable unset it derives as <data_dir>/incoming.
+#
+# ⚠️ An earlier revision advertised an `incoming_dir` key here. `load_config`
+# reads only `paths.data_dir` from this section, so that key did NOTHING —
+# dead config that looks authoritative. Removed rather than wired: the
+# environment interface is what the compose files use and what is tested.
+# See docs/standards/cicd.md § Required mounts.
 
 # --- Danger levels (array of tables) ---
 # Each entry defines one danger level for threshold-based alerting.

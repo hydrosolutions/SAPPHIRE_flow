@@ -171,6 +171,49 @@ Responsibilities are split across two stages:
   - **Station and threshold config**: upsert semantics — new entries are added, existing entries are updated if the config has changed, entries present in the database but absent from `config.toml` are left untouched (never deleted).
 - **Model entry-point scanning**: populates `models` table from `pyproject.toml` entry points at worker startup.
 
+### Required mounts — artifact staging (Plan 307 T1)
+
+🔴 **A deployment whose compose overlay does not bind a read-only artifact staging directory
+CANNOT import a model artifact by path.** That is the portability contract, and it is the sentence
+a new deployment is set up from.
+
+| file | responsibility |
+|---|---|
+| `docker-compose.yml` (base) | declares the **name only** — `SAPPHIRE_INCOMING_DIR: /data/incoming` on `prefect-worker`. **No volume entry**: the base has no portable host path, exactly as with `/data/raw` since Plan 060. |
+| each deployment's overlay | declares the **bind** — `<host dir>:/data/incoming:ro` on `prefect-worker`. The mac mini's is `/Users/sapphire/sapphire-incoming`; a Nepali deployment supplies its own. |
+
+- **Read-only, and on `prefect-worker` only.** That is where `import-model-artifact` runs: the
+  deployment declares no pool, so it lands on `default` (`cli/register_deployments.py`).
+- **The staging directory is never created by the application.** `resolve_incoming_dir` resolves
+  it without creating it, so a missing bind fails loudly at import time instead of being silently
+  manufactured as an empty directory. *(Its fallback branch does create the other data
+  subdirectories, as `resolve_data_dir` always has — the guarantee is about the staging directory
+  specifically, not about the function being free of side effects.)*
+- **Verify with BOTH files composed** — `docker compose -f docker-compose.yml -f
+  docker-compose.macmini.yml config`. Checking the base alone asserts the absence of the very
+  thing the overlay adds.
+- The host directory is writable by anyone with a shell on the host, which is why an import by
+  path also requires `expected_artifact_sha256`.
+
+🔴 **Two deployment assumptions this mount carries. They are independent — neither remedy helps
+the other — and a new deployment must satisfy both.** *(Added after a confirming review
+2026-09-21 found them recorded in the plan and the code but missing here, where a deployment is
+actually set up.)*
+
+1. **Who may write to the staging directory.** Where that is the same account that owns the
+   compose files, the secrets and the deploy — as on the mac mini — a hardlink into staging grants
+   nothing that account lacks. ⚠️ **A deployment that lets a LESS privileged party stage artifacts
+   must first put the staging root on its own filesystem**, because a hardlink to a file outside
+   the root is otherwise readable. Decide before accepting that party's first artifact.
+2. **The root's ancestors and mount topology are trusted.** `O_NOFOLLOW` protects the staging
+   root's final component, not the directories above it. ⛔ A dedicated filesystem does **not**
+   address this — an attacker who can substitute an ancestor redirects the whole staging root, and
+   there is no mitigation in the import. Fix the path.
+
+**Setting up a new deployment:** create the host directory, add the `:ro` bind to that
+deployment's overlay, redeploy, and confirm the composed config shows the mount on
+`prefect-worker` and on no other service.
+
 ### Upgrade procedure
 
 0. Export the private-clone build tokens: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` and `export AQUACAST_TOKEN=$(cat secrets/aquacast_token)` (or supply them from the CI/host secret store). Compose passes the env-sourced `recap_dg_client_token` BuildKit secret to all five building services (`prefect-worker`, `prefect-worker-ingest`, `prefect-worker-backup`, `api`, `init`). Only `prefect-worker` receives `aquacast_token` and builds with `WITH_AQUACAST=1`; the other four retain the default torch-free image and need only the recap token when built separately. Never pass tokens as build arguments or commit their values.

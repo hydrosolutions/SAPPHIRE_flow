@@ -113,10 +113,246 @@ def _decode_artifact_base64(artifact_base64: str) -> bytes:
         ) from exc
 
 
+def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> bytes:
+    """Plan 307 T2 — read an artifact staged in the read-only `incoming`
+    mount, with containment enforced BY THE OPEN and the digest taken of the
+    exact buffer that is returned.
+
+    The staging directory is writable by anyone with host shell access, so a
+    resolve-then-open sequence is a TOCTOU: a checked component can be
+    replaced with a symlink between the check and the open, and by the time a
+    checksum could object the forbidden read has already happened.
+
+    Three properties close that, and each exists for a reason:
+
+    * **One path component only.** The artifact must be a direct child of the
+      staging root. Independent review 2026-09-21 (major): walking
+      intermediate directories and pinning a descriptor per level does NOT
+      give containment, because a host writer can MOVE an intermediate
+      directory out of the root between two opens and the pinned descriptor
+      happily follows it. No subdirectories, no walk, no window.
+    * **``O_NOFOLLOW`` on both opens**, including the root, so a symlinked
+      root or a symlinked artifact fails the open itself.
+    * **``O_NONBLOCK`` plus a regular-file check.** Independent review
+      2026-09-21 (minor), confirmed by execution: opening a staged FIFO
+      blocks forever, and neither symlink protection nor a checksum prevents
+      it — the block happens in the open.
+
+    ⚠️ Two residual limits, stated rather than papered over — wording
+    tightened after confirming review 2026-09-21, which found the first
+    version overstated both.
+
+    * **Hardlinks — readable, and the digest bounds what that is worth.**
+      ⚖️ Owner decision 2026-09-21, after a clean-room review raised it. A
+      hardlink inside the root to an outside file is indistinguishable from
+      an ordinary file and WILL be read.
+
+      ⚠️ **What the digest does and does not give you.** It prevents
+      SUBSTITUTING DIFFERENT BYTES against a digest the operator supplied
+      independently, computed from the source artifact off-host. It does NOT
+      make hardlinks "not importable" — a hardlink whose content IS the
+      intended artifact imports perfectly normally, and harmlessly. *A
+      confirming review 2026-09-21 caught this docstring claiming the
+      stronger property; the mechanism checks bytes, not link provenance.*
+
+      What remains is a **hash oracle** — the read happens either way — and
+      that is why the computed digest is no longer reported on mismatch.
+      🔑 **The trigger that would change this answer:** a deployment where the
+      staging directory is writable by someone LESS privileged than the
+      operator. On a host where the same account owns the compose files, the
+      secrets and the deploy, a hardlink grants nothing that account lacks.
+      Such a deployment needs the staging root on its OWN FILESYSTEM before
+      it accepts artifacts from that party — see the runbook.
+    * **The root path and its ANCESTORS are trusted configuration**, as is the
+      mount topology beneath them. This is a deployment assumption, not a
+      guarantee this function makes: ``O_NOFOLLOW`` on the root open protects
+      the root's FINAL component, not the directories above it, so an
+      attacker who can substitute an ancestor redirects the whole staging
+      root.
+      ⛔ **A dedicated filesystem does NOT fix this** — clean-room review
+      2026-09-21 found the two remedies conflated here. That remedy addresses
+      cross-filesystem HARDLINKS and nothing else. Untrusted ancestors are an
+      independent requirement with no mitigation in this function: a
+      deployment that cannot uphold it must fix the path, not the filesystem.
+    """
+    import contextlib
+    import hashlib
+    import os
+    import stat
+    from pathlib import Path, PurePosixPath
+
+    from sapphire_flow.config.paths import resolve_incoming_dir
+
+    root = resolve_incoming_dir()
+    candidate = PurePosixPath(artifact_path)
+
+    # Refuse `..` in the SUPPLIED path, before any normalisation, so the rule
+    # the runbook states holds for both forms. Final review 2026-09-21 (minor):
+    # the absolute branch below resolves the parent first, which collapses
+    # `/data/incoming/sub/../best.pt` to a direct child and accepted it, while
+    # the relative `sub/../best.pt` was refused — the same input described two
+    # ways, answered two ways. Containment was never at risk (only `parts[0]`
+    # is ever opened, against the pinned descriptor), but a documented
+    # restriction that holds for one spelling and not the other is a trap.
+    if any(part == ".." for part in candidate.parts):
+        raise ConfigurationError(
+            f"import_model_artifact_flow: artifact_path {artifact_path!r} "
+            "contains '..' — the artifact must be named directly, without "
+            "traversal, in either relative or absolute form. Refusing to "
+            "import."
+        )
+
+    if candidate.is_absolute():
+        # Compare with ANCESTORS canonicalised on both sides, while the root's
+        # FINAL component stays unresolved for the guarded open below.
+        #
+        # Confirming review 2026-09-21 (minor): dropping `.resolve()` from the
+        # resolver fixed the security hole but regressed two legitimate cases
+        # — an operator naming the file through a canonical ancestor
+        # (`/real/incoming/x` against a configured `/alias/incoming`), and any
+        # absolute path at all when the configured root is relative. Both
+        # worked before, and the runbook documents absolute paths.
+        #
+        # 🔑 This comparison cannot widen the security boundary: whatever it
+        # accepts, the only thing ever opened is `parts[0]` relative to the
+        # O_NOFOLLOW-pinned root descriptor. It decides "did you mean a file
+        # in the staging root", not "may this be read".
+        root_cmp = Path(root).absolute()
+        with contextlib.suppress(OSError):  # unreadable ancestor
+            root_cmp = root_cmp.parent.resolve() / root_cmp.name
+        supplied = Path(artifact_path)
+        with contextlib.suppress(OSError):  # unreadable ancestor
+            supplied = supplied.parent.resolve() / supplied.name
+        try:
+            candidate = PurePosixPath(str(supplied)).relative_to(
+                PurePosixPath(str(root_cmp))
+            )
+        except ValueError:
+            raise ConfigurationError(
+                "import_model_artifact_flow: artifact_path "
+                f"{artifact_path!r} is outside the staging root "
+                f"{str(root)!r} — refusing to import"
+            ) from None
+    parts = candidate.parts
+    if len(parts) != 1 or parts[0] in ("", ".", ".."):
+        raise ConfigurationError(
+            f"import_model_artifact_flow: artifact_path {artifact_path!r} must "
+            f"name a file directly inside the staging root {str(root)!r} — "
+            "subdirectories are not supported, because containment cannot be "
+            "guaranteed across an intermediate directory that a host writer "
+            "can move. Refusing to import."
+        )
+
+    try:
+        dir_fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise ConfigurationError(
+            f"import_model_artifact_flow: staging root {str(root)!r} is not "
+            "available as a real directory — the deployment's compose overlay "
+            "must bind it read-only, and it must not be a symlink; refusing "
+            "to import"
+        ) from exc
+    try:
+        try:
+            fd = os.open(
+                parts[0],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            raise ConfigurationError(
+                "import_model_artifact_flow: artifact_path "
+                f"{artifact_path!r} could not be opened inside the staging "
+                f"root {str(root)!r} without following a symlink — refusing "
+                "to import"
+            ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ConfigurationError(
+                    "import_model_artifact_flow: artifact_path "
+                    f"{artifact_path!r} is not a regular file — refusing to "
+                    "import"
+                )
+            os.set_blocking(fd, True)
+        except BaseException:
+            os.close(fd)
+            raise
+        try:
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            # Confirming review 2026-09-21 (minor): ownership transfers only
+            # once fdopen succeeds; a failure here would otherwise leak the
+            # artifact descriptor.
+            os.close(fd)
+            raise
+        with handle:
+            artifact_bytes = handle.read()
+    finally:
+        os.close(dir_fd)
+
+    actual = hashlib.sha256(artifact_bytes).hexdigest()
+    if actual.lower() != expected_artifact_sha256.strip().lower():
+        raise ConfigurationError(
+            "import_model_artifact_flow: artifact_path content does not "
+            f"match expected_artifact_sha256 {expected_artifact_sha256!r} — "
+            "refusing to import. 🔑 The digest actually read is deliberately "
+            "NOT reported: echoing it would turn a hardlink into a hash "
+            "oracle over any file the worker can read (owner decision, "
+            "2026-09-21). Recompute it from the staged file if you need it."
+        )
+    return artifact_bytes
+
+
+def _resolve_artifact_bytes(
+    *,
+    artifact_base64: str | None,
+    artifact_path: str | None,
+    expected_artifact_sha256: str | None,
+) -> bytes:
+    """Exactly one source, never both, never neither (Plan 307 T2).
+
+    ``expected_artifact_sha256`` is REQUIRED on the path route and is
+    deliberately NOT accepted on the base64 route: there the bytes are
+    already in the parameter, so there is nothing between caller and flow for
+    a digest to protect against.
+    """
+    if artifact_base64 is not None and artifact_path is not None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: give artifact_base64 OR artifact_path, "
+            "not both — refusing to import"
+        )
+    if artifact_base64 is None and artifact_path is None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: one of artifact_base64 or artifact_path is "
+            "required — refusing to import"
+        )
+    if artifact_path is not None:
+        if not expected_artifact_sha256:
+            raise ConfigurationError(
+                "import_model_artifact_flow: expected_artifact_sha256 is required when "
+                "artifact_path is used — the staging directory is host-writable, so an "
+                "unverified read is not an import we can vouch for. Refusing."
+            )
+        return _read_staged_artifact(artifact_path, expected_artifact_sha256)
+    if expected_artifact_sha256 is not None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: expected_artifact_sha256 applies to "
+            "artifact_path only — the base64 route carries the bytes in the "
+            "parameter itself, so a digest there protects nothing. Refusing "
+            "rather than ignoring it, so a caller who believes they asked "
+            "for verification is not quietly told otherwise."
+        )
+    assert artifact_base64 is not None  # narrowed by the checks above
+    return _decode_artifact_base64(artifact_base64)
+
+
 @flow(name="import-model-artifact", log_prints=False)
 def import_model_artifact_flow(  # noqa: PLR0913
     model_id: str,
-    artifact_base64: str,
+    *,
+    artifact_base64: str | None = None,
+    artifact_path: str | None = None,
+    expected_artifact_sha256: str | None = None,
     trained_at: str,
     training_period_start: str,
     training_period_end: str,
@@ -164,7 +400,11 @@ def import_model_artifact_flow(  # noqa: PLR0913
         return ensure_utc(datetime.now(UTC))
 
     model = _resolve_model_task(model_id)
-    artifact_bytes = _decode_artifact_base64(artifact_base64)
+    artifact_bytes = _resolve_artifact_bytes(
+        artifact_base64=artifact_base64,
+        artifact_path=artifact_path,
+        expected_artifact_sha256=expected_artifact_sha256,
+    )
 
     new_id = _import_task(
         model,

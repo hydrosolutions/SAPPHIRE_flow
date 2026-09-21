@@ -38,6 +38,11 @@ services:
       SAPPHIRE_REQUIRE_NWP: "1"
     volumes:
       - /Users/sapphire/camels-ch:/data/raw:ro
+      # Plan 307 T1: this host's artifact staging root, READ-ONLY. The base
+      # compose names /data/incoming but cannot bind it (no portable host
+      # path); every deployment supplies its own. Without this line the
+      # worker cannot import an artifact by path.
+      - /Users/sapphire/sapphire-incoming:/data/incoming:ro
       - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
 
   prefect-worker-ingest:

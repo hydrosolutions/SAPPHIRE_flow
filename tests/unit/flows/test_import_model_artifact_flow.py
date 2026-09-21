@@ -12,14 +12,24 @@ decode helper in isolation.
 from __future__ import annotations
 
 import base64
+import hashlib
+import logging
+import os
+import stat
+from typing import TYPE_CHECKING
 
 import pytest
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.import_model_artifact import (
     _decode_artifact_base64,
+    _read_staged_artifact,
+    _resolve_artifact_bytes,
     import_model_artifact_flow,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Deliberately non-UTF-8 — a real checkpoint is arbitrary binary, and a
 # base64 round trip that only survives ASCII/UTF-8 text is not proof of
@@ -196,3 +206,607 @@ class TestFullFlowInvocationEndToEnd:
         assert registered.artifact_scope == ArtifactScope.GROUP
 
         assert model.train_calls == 0
+
+
+class TestStagedArtifactPath:
+    """Plan 307 T2 — the staged-path route: exactly one source, a required
+    checksum, and containment enforced by the open rather than by a name
+    check that precedes it."""
+
+    @staticmethod
+    def _staging(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_incoming_dir", lambda *a, **k: root
+        )
+
+    def test_refuses_when_both_sources_are_given(self) -> None:
+        with pytest.raises(ConfigurationError, match="not both"):
+            _resolve_artifact_bytes(
+                artifact_base64=base64.b64encode(_RAW_ARTIFACT_BYTES).decode(),
+                artifact_path="best.pt",
+                expected_artifact_sha256="x",
+            )
+
+    def test_refuses_when_neither_source_is_given(self) -> None:
+        with pytest.raises(ConfigurationError, match="one of artifact_base64"):
+            _resolve_artifact_bytes(
+                artifact_base64=None, artifact_path=None, expected_artifact_sha256=None
+            )
+
+    def test_refuses_a_path_without_a_checksum(self) -> None:
+        """Load-bearing: an implementation that skipped verification when the
+        checksum was absent would pass every OTHER case in this class. A
+        required parameter only tested when supplied is not required."""
+        with pytest.raises(
+            ConfigurationError, match="expected_artifact_sha256 is required"
+        ):
+            _resolve_artifact_bytes(
+                artifact_base64=None,
+                artifact_path="best.pt",
+                expected_artifact_sha256=None,
+            )
+
+    def test_refuses_an_absolute_path_outside_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="outside the staging root"):
+            _read_staged_artifact(str(outside), "0" * 64)
+
+    def test_refuses_a_parent_traversal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refused by the ``..`` check, which now runs before any
+        normalisation so that both spellings answer alike — see
+        ``test_refuses_traversal_in_an_absolute_path_too``."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (tmp_path / "secret.bin").write_bytes(b"do not read me")
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="contains"):
+            _read_staged_artifact("../secret.bin", "0" * 64)
+
+    def test_refuses_a_symlink_whose_target_escapes_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        (root / "best.pt").symlink_to(outside)
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="without following a symlink"):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_refuses_any_subdirectory_component(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Independent review 2026-09-21 (major): pinning a descriptor per
+        directory level does NOT give containment — a host writer can MOVE an
+        intermediate directory out of the root between two opens and the
+        pinned descriptor follows it. Subdirectories are refused outright, so
+        that window cannot exist. The refusal must fire on the PATH SHAPE,
+        before any open, which is why the subdirectory here is real and
+        readable rather than a symlink."""
+        root = tmp_path / "incoming"
+        (root / "sub").mkdir(parents=True)
+        (root / "sub" / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        self._staging(monkeypatch, root)
+
+        # Confirming review 2026-09-21: the docstring above claims the refusal
+        # fires "before any open" and nothing asserted it. The subdirectory
+        # here is a real, readable directory, so an implementation that walked
+        # it would succeed in opening — which is exactly what this must catch.
+        opened: list[object] = []
+        real_open = os.open
+
+        def recording_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", recording_open)
+        with pytest.raises(
+            ConfigurationError, match="directly inside the staging root"
+        ):
+            _read_staged_artifact(
+                "sub/best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
+        assert opened == [], f"refused only AFTER opening {opened}"
+
+    def test_refuses_traversal_in_an_absolute_path_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Final review 2026-09-21 (minor): the absolute branch resolved the
+        parent BEFORE checking components, so an absolute path containing
+        "sub/.." collapsed to a direct child and was accepted, while the same
+        input written relatively was refused. Containment was never at risk —
+        only the basename is ever opened against the pinned descriptor — but a
+        documented restriction that holds for one spelling and not the other
+        is a trap. Both spellings must be refused."""
+        root = tmp_path / "incoming"
+        (root / "sub").mkdir(parents=True)
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+
+        with pytest.raises(ConfigurationError, match="contains"):
+            _read_staged_artifact(str(root / "sub" / ".." / "best.pt"), digest)
+        with pytest.raises(ConfigurationError, match="contains"):
+            _read_staged_artifact("sub/../best.pt", digest)
+
+    def test_refuses_a_symlinked_staging_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """🔴 Confirming review 2026-09-21 (major), proven by execution: the
+        first fix added O_NOFOLLOW to the root open while the resolver still
+        called .resolve(), so the open received the symlink's TARGET and the
+        flag could never fire — a root of `incoming -> /elsewhere` served
+        /elsewhere/best.pt with a matching checksum.
+
+        This drives the REAL resolver through the environment. An earlier
+        version stubbed the resolver via `_staging`, which bypassed the very
+        code path the defect lived in, so it passed against the broken
+        implementation. The checksum here MATCHES the outside file, so the
+        only thing that can make this test pass is the refusal itself."""
+        real = tmp_path / "elsewhere"
+        real.mkdir()
+        (real / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        root = tmp_path / "incoming"
+        root.symlink_to(real, target_is_directory=True)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        with pytest.raises(
+            ConfigurationError, match="not available as a real directory"
+        ):
+            _read_staged_artifact(
+                "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
+    def test_refuses_a_staged_fifo_without_blocking(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Independent review 2026-09-21 (minor), confirmed by execution:
+        opening a FIFO blocks forever. Neither symlink protection nor the
+        checksum helps — the block happens in the open, so the guard must be
+        O_NONBLOCK plus a regular-file check. If this test hangs, it has
+        failed."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        os.mkfifo(root / "best.pt")
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="not a regular file"):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_an_outside_file_is_never_opened(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guarantee is "never OPENED", not "never imported" — a checksum
+        cannot undo a read. This records every os.open and asserts the outside
+        file is absent from it."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        (root / "best.pt").symlink_to(outside)
+        self._staging(monkeypatch, root)
+
+        outside_id = (outside.stat().st_dev, outside.stat().st_ino)
+        opened_ids: list[tuple[int, int]] = []
+        real_open = os.open
+
+        def recording_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            fd = real_open(path, *args, **kwargs)
+            info = os.fstat(fd)
+            opened_ids.append((info.st_dev, info.st_ino))
+            return fd
+
+        monkeypatch.setattr(os, "open", recording_open)
+        with pytest.raises(ConfigurationError):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+        # 🔴 Confirming review 2026-09-21 (major): an earlier version of this
+        # test recorded the NAMES passed to os.open. The artifact is opened as
+        # "best.pt" relative to a directory descriptor, so the outside path
+        # never appears by name — the test passed even with the guard removed,
+        # because the checksum then supplied the expected error. Identity is
+        # the only evidence that answers "was it opened".
+        assert outside_id not in opened_ids, (outside_id, opened_ids)
+
+    def test_refuses_a_swap_performed_between_the_root_open_and_the_artifact_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The race itself, deterministically — a required T2 exit-gate row
+        that the static-symlink tests do NOT cover.
+
+        Clean-room review 2026-09-21 (major): every other symlink test plants
+        its symlink before the call, so all of them would also pass against a
+        vulnerable resolve/check/open implementation that merely rejects
+        static symlinks. This one swaps a real staged file for an escaping
+        symlink in the window between the root open and the artifact open,
+        which is the only window the current design has."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        staged = root / "best.pt"
+        staged.write_bytes(_RAW_ARTIFACT_BYTES)
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        outside_id = (outside.stat().st_dev, outside.stat().st_ino)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        opened_ids: list[tuple[int, int]] = []
+        real_open = os.open
+        swapped = {"done": False}
+
+        def swapping_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            fd = real_open(path, *args, **kwargs)
+            info = os.fstat(fd)
+            opened_ids.append((info.st_dev, info.st_ino))
+            if not swapped["done"] and stat.S_ISDIR(info.st_mode):
+                # The root is now pinned. Swap the artifact underneath it,
+                # exactly as a host writer could between the two opens.
+                swapped["done"] = True
+                staged.unlink()
+                staged.symlink_to(outside)
+            return fd
+
+        monkeypatch.setattr(os, "open", swapping_open)
+        with pytest.raises(ConfigurationError, match="without following a symlink"):
+            _read_staged_artifact(
+                "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
+        assert swapped["done"], "the swap never happened — the test proves nothing"
+        assert outside_id not in opened_ids, (outside_id, opened_ids)
+
+    def test_the_returned_buffer_is_the_one_that_was_hashed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clean-room review 2026-09-21 (major): nothing protected the
+        read-once property. An implementation that hashed one read and
+        returned a SECOND read would pass every other test here, including
+        the mismatch test, because the unchanged fixture makes both reads
+        identical. The file is mutated after the first read, so a second read
+        would return different bytes — and the function must still return the
+        bytes it verified."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        staged = root / "best.pt"
+        staged.write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        real_fdopen = os.fdopen
+        reads: list[int] = []
+
+        def counting_fdopen(fd, *args, **kwargs):  # type: ignore[no-untyped-def]
+            handle = real_fdopen(fd, *args, **kwargs)
+            real_read = handle.read
+
+            def read(*a, **k):  # type: ignore[no-untyped-def]
+                data = real_read(*a, **k)
+                reads.append(len(data))
+                # Any SUBSEQUENT read must see different bytes.
+                staged.write_bytes(b"swapped after verification")
+                return data
+
+            handle.read = read  # type: ignore[method-assign]
+            return handle
+
+        monkeypatch.setattr(os, "fdopen", counting_fdopen)
+
+        result = _read_staged_artifact(
+            "best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        )
+
+        assert result == _RAW_ARTIFACT_BYTES
+        assert len(reads) == 1, f"file was read {len(reads)} times; must be read once"
+
+    def test_refuses_when_the_digest_does_not_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="does not match"):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_a_mismatch_does_not_leak_the_digest_it_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """⚖️ Owner decision 2026-09-21. A hardlink inside the staging root to
+        an outside file is readable and cannot be prevented without filesystem
+        isolation. The digest prevents **different bytes** being substituted
+        for the ones the operator verified — it does not make such content
+        unimportable. *(Final review 2026-09-21: the retracted "not an import
+        vector / SHA-256 preimage" reasoning survived HERE after being
+        corrected in the code, the runbook and the plan — the same
+        fix-one-site failure this branch keeps producing.)*
+
+        What the read leaves behind is a HASH ORACLE: echo the computed digest
+        on mismatch and anyone who can write the staging directory learns the
+        hash of any file the worker can read. The message must name the
+        EXPECTED digest and never the one it read."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        secret = b"content whose hash must not be disclosed"
+        (root / "best.pt").write_bytes(secret)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        expected = "ab" * 32
+        leaked = hashlib.sha256(secret).hexdigest()
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(ConfigurationError) as excinfo,
+        ):
+            _read_staged_artifact("best.pt", expected)
+
+        message = str(excinfo.value)
+        assert expected in message, "the expected digest should still be named"
+        assert leaked not in message, message
+        # Clean-room review 2026-09-21: checking only the exception string
+        # would leave a log line carrying the computed digest undetected, and
+        # a log is exactly as readable as an error message to whoever can
+        # trigger this.
+        assert leaked not in caplog.text, caplog.text
+        assert leaked not in repr(excinfo.value.__cause__ or ""), "leaked via the cause"
+
+    def test_reads_a_valid_staged_file_byte_for_byte(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        self._staging(monkeypatch, root)
+
+        assert _read_staged_artifact("best.pt", digest) == _RAW_ARTIFACT_BYTES
+        # ...and through the selector, absolute form, with the root prefix.
+        assert (
+            _resolve_artifact_bytes(
+                artifact_base64=None,
+                artifact_path=str(root / "best.pt"),
+                expected_artifact_sha256=digest.upper(),
+            )
+            == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_accepts_an_absolute_path_through_a_canonical_ancestor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming review 2026-09-21 (minor): removing .resolve() from the
+        resolver fixed the security hole and regressed this — an operator
+        naming the file through the ancestor's real path, against a root
+        configured through an alias, was refused although both name the same
+        directory. Real resolver, real alias."""
+        real = tmp_path / "real"
+        (real / "incoming").mkdir(parents=True)
+        (real / "incoming" / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(alias / "incoming"))
+
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        assert (
+            _read_staged_artifact(str(real / "incoming" / "best.pt"), digest)
+            == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_accepts_an_absolute_path_when_the_root_is_configured_relative(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same regression, second shape: with a RELATIVE configured root every
+        absolute candidate failed the comparison, because one side was
+        relative and the other absolute."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", "incoming")
+
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        assert (
+            _read_staged_artifact(str(root / "best.pt"), digest) == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_an_absolute_path_outside_the_root_is_still_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordinary outside-path rejection, which is all this test shows.
+
+        ⚠️ Final review 2026-09-21: an earlier docstring claimed this proves
+        "the permissive comparison must not widen the boundary". It does not.
+        It exercises a path rejected BEFORE the guarded open, not an
+        adversarial path the comparison accepts. The real guarantee is
+        structural and lives in the code, not here: whatever the comparison
+        accepts, only `parts[0]` is ever opened, relative to the O_NOFOLLOW
+        root descriptor. Claiming a test proves more than it does is how a
+        suite starts looking stronger than it is."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        with pytest.raises(ConfigurationError, match="outside the staging root"):
+            _read_staged_artifact(
+                str(outside), hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
+    def test_base64_route_still_works_and_needs_no_checksum(self) -> None:
+        """T2's Out: the digest is deliberately NOT required here — the bytes
+        are already in the parameter."""
+        encoded = base64.b64encode(_RAW_ARTIFACT_BYTES).decode()
+        assert (
+            _resolve_artifact_bytes(
+                artifact_base64=encoded,
+                artifact_path=None,
+                expected_artifact_sha256=None,
+            )
+            == _RAW_ARTIFACT_BYTES
+        )
+
+
+class TestStagedPathParameterSchema:
+    """The registered deployment schema must accept a path-only request and
+    must still refuse a missing provenance field (Plan 307 T2/T3b)."""
+
+    def test_validate_parameters_accepts_a_path_only_request(self) -> None:
+        validated = import_model_artifact_flow.validate_parameters(
+            {
+                "model_id": "some_model",
+                "artifact_path": "best.pt",
+                "expected_artifact_sha256": "ab" * 32,
+                "trained_at": "2025-01-01T00:00:00+00:00",
+                "training_period_start": "2024-06-01T00:00:00+00:00",
+                "training_period_end": "2024-12-01T00:00:00+00:00",
+                "expected_config_hash": "some-config-hash",
+            }
+        )
+        assert validated["artifact_path"] == "best.pt"
+        assert validated.get("artifact_base64") is None
+
+    @pytest.mark.parametrize(
+        "omitted",
+        [
+            "trained_at",
+            "training_period_start",
+            "training_period_end",
+            "expected_config_hash",
+        ],
+    )
+    def test_validate_parameters_refuses_any_missing_provenance_field(
+        self, omitted: str
+    ) -> None:
+        """Keyword-only parameters stay REQUIRED even though the artifact
+        inputs above them carry defaults — that is the whole reason this
+        signature shape was chosen.
+
+        Clean-room review 2026-09-21 (minor): an earlier version omitted only
+        expected_config_hash, so accidentally defaulting any of the other
+        three would have left it passing."""
+        params = {
+            "model_id": "some_model",
+            "artifact_path": "best.pt",
+            "expected_artifact_sha256": "ab" * 32,
+            "trained_at": "2025-01-01T00:00:00+00:00",
+            "training_period_start": "2024-06-01T00:00:00+00:00",
+            "training_period_end": "2024-12-01T00:00:00+00:00",
+            "expected_config_hash": "some-config-hash",
+        }
+        del params[omitted]
+
+        with pytest.raises(Exception, match=f"(?i){omitted}|missing|required"):
+            import_model_artifact_flow.validate_parameters(params)
+
+    def test_refuses_a_checksum_on_the_base64_route(self) -> None:
+        """Independent review 2026-09-21: it was silently IGNORED, so a caller
+        who believed they had asked for verification was quietly told
+        otherwise. The plan forbids REQUIRING it here; it does not require
+        accepting it."""
+        with pytest.raises(ConfigurationError, match="applies to artifact_path only"):
+            _resolve_artifact_bytes(
+                artifact_base64=base64.b64encode(_RAW_ARTIFACT_BYTES).decode(),
+                artifact_path=None,
+                expected_artifact_sha256="ab" * 32,
+            )
+
+
+class TestPathRouteReachesTheImporter:
+    """Independent review 2026-09-21 (major): the helper tests stop short of
+    the importer, so nothing recorded WHICH bytes it receives, or that it is
+    not reached at all when the digest disagrees."""
+
+    @staticmethod
+    def _stub_everything_before_the_importer(
+        monkeypatch: pytest.MonkeyPatch, calls: list[bytes]
+    ) -> None:
+        monkeypatch.setenv("DATABASE_URL", "postgresql://stub/stub")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores",
+            lambda _url: (
+                object(),
+                {
+                    "artifact_store": object(),
+                    "station_store": object(),
+                    "group_store": object(),
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.store.audited_writer.make_audited_writer",
+            lambda _conn: object(),
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.services.write_principal.resolve_flow_run_principal",
+            lambda **_kw: object(),
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.flows.import_model_artifact._resolve_model_task",
+            lambda _model_id: object(),
+        )
+
+        def _record(_model, _model_id, artifact_bytes, *args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(artifact_bytes)
+            return "00000000-0000-0000-0000-000000000000"
+
+        monkeypatch.setattr(
+            "sapphire_flow.flows.import_model_artifact._import_task", _record
+        )
+
+    def test_the_file_bytes_reach_the_importer_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_incoming_dir", lambda *a, **k: root
+        )
+        calls: list[bytes] = []
+        self._stub_everything_before_the_importer(monkeypatch, calls)
+
+        import_model_artifact_flow.fn(
+            "some_model",
+            artifact_path="best.pt",
+            expected_artifact_sha256=hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest(),
+            trained_at="2025-01-01T00:00:00+00:00",
+            training_period_start="2024-06-01T00:00:00+00:00",
+            training_period_end="2024-12-01T00:00:00+00:00",
+            expected_config_hash="some-config-hash",
+        )
+
+        assert calls == [_RAW_ARTIFACT_BYTES]
+
+    def test_the_importer_is_never_reached_on_a_digest_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_incoming_dir", lambda *a, **k: root
+        )
+        calls: list[bytes] = []
+        self._stub_everything_before_the_importer(monkeypatch, calls)
+
+        with pytest.raises(ConfigurationError, match="does not match"):
+            import_model_artifact_flow.fn(
+                "some_model",
+                artifact_path="best.pt",
+                expected_artifact_sha256="0" * 64,
+                trained_at="2025-01-01T00:00:00+00:00",
+                training_period_start="2024-06-01T00:00:00+00:00",
+                training_period_end="2024-12-01T00:00:00+00:00",
+                expected_config_hash="some-config-hash",
+            )
+
+        assert calls == []
