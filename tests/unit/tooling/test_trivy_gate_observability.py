@@ -74,14 +74,25 @@ def _step_by_uses_prefix(job: dict[str, Any], prefix: str) -> dict[str, Any]:
     )
 
 
-def _eval_gha_if(expr: str, *, job_status: str, outcomes: dict[str, str]) -> bool:
+def _eval_gha_if(
+    expr: str,
+    *,
+    job_status: str,
+    outcomes: dict[str, str],
+    outputs: dict[str, dict[str, str]] | None = None,
+) -> bool:
     """Evaluate the small subset of GitHub Actions `if:` syntax this workflow uses.
 
     ``job_status`` is what ``cancelled()``/``success()``/``failure()`` (called
     with no arguments) resolve against — GitHub Actions defines those as the
     status of the job *as of this point*, not any single prior step.
     ``outcomes`` maps step id -> 'success' | 'failure' | 'skipped', used for
-    ``steps.<id>.outcome`` references.
+    ``steps.<id>.outcome`` references. ``outputs`` maps step id -> {name: value}
+    for ``steps.<id>.outputs.<name>`` references (Plan 309's chain gates the scan
+    on whether any download attempt produced a syft binary). A step that did not
+    run has no outputs, and GitHub resolves such a reference to the empty string
+    rather than erroring — modelled here, because a condition that reads an
+    output of a skipped step is a real and easy mistake.
     """
     body = expr.strip()
     if body.startswith("${{") and body.endswith("}}"):
@@ -96,6 +107,13 @@ def _eval_gha_if(expr: str, *, job_status: str, outcomes: dict[str, str]) -> boo
     has_status_fn = re.search(r"\b(success|failure|cancelled|always)\s*\(", body)
     if not has_status_fn and job_status != "success":
         return False
+    # OUTPUTS first: `steps.x.outputs.y` would otherwise be half-rewritten by the
+    # `.outcome` rule below and then parsed as attribute access on a dict.
+    body = re.sub(
+        r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)",
+        r"step_outputs['\1']['\2']",
+        body,
+    )
     body = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"steps['\1']", body)
     body = body.replace("!=", "__NE__").replace("!", " not ").replace("__NE__", "!=")
     body = body.replace("&&", " and ").replace("||", " or ")
@@ -105,8 +123,36 @@ def _eval_gha_if(expr: str, *, job_status: str, outcomes: dict[str, str]) -> boo
         "failure": lambda: job_status == "failure",
         "always": lambda: True,
         "steps": outcomes,
+        "step_outputs": _StepOutputs(outputs or {}),
     }
     return bool(eval(body, {"__builtins__": {}}, namespace))  # noqa: S307 - fixed test-only grammar
+
+
+class _StepOutputs(dict[str, Any]):
+    """``steps.<id>.outputs.<name>`` for a step that never ran resolves to the
+    empty string in real Actions, not to an error. Both levels default, because
+    reading an output of a *skipped* step is an easy and realistic mistake and a
+    KeyError here would look like a test bug rather than a workflow one."""
+
+    def __missing__(self, key: str) -> Any:
+        return _StepOutputs({})
+
+    def __getitem__(self, key: str) -> Any:
+        value = super().get(key, _MISSING)
+        if value is _MISSING:
+            return _StepOutputs({})
+        return _StepOutputs(value) if isinstance(value, dict) else value
+
+    def __eq__(self, other: object) -> bool:
+        # An absent output compares equal to "" and to nothing else.
+        if isinstance(other, str):
+            return not self and other == ""
+        return super().__eq__(other)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+_MISSING = object()
 
 
 class TestScanOnceDeriveMany:
@@ -300,162 +346,260 @@ class TestFailurePathReallyPublishes:
         assert upload_runs
 
 
+_DOWNLOAD_IDS = ("syft-dl-1", "syft-dl-2", "syft-dl-3")
+_WAIT_NAMES = (
+    "Wait 4 minutes before retrying the syft download",
+    "Wait 6 minutes before the final syft download attempt",
+)
+
+
+def _step_by_name(job: dict[str, Any], name: str) -> dict[str, Any]:
+    for step in job["steps"]:
+        if step.get("name") == name:
+            return step
+    raise AssertionError(f"no step named {name!r} in job {_JOB_NAME!r}")
+
+
+def _simulate_sbom_chain(
+    *,
+    job_status: str,
+    build_outcome: str,
+    downloads: tuple[str, str, str] = ("success", "success", "success"),
+    scan: str = "success",
+    artifact_valid: bool = True,
+) -> dict[str, str]:
+    """Walk Plan 309's download -> execute -> enforce chain the way the runner
+    does: in order, each step's `if:` evaluated against the outcomes and outputs
+    accumulated so far.
+
+    Returns step id (and wait-step name) -> 'success' | 'failure' | 'skipped'.
+    Testing the conditions in isolation would miss the thing that actually
+    matters — that a *skipped* step's outcome feeds the next condition.
+    """
+    job = _build_image_and_scan_job()
+    outcomes: dict[str, str] = {"build-image": build_outcome}
+    outputs: dict[str, dict[str, str]] = {}
+    result: dict[str, str] = {}
+
+    def run(step: dict[str, Any], key: str, would_be: str) -> bool:
+        expr = step.get("if", "success()")
+        ran = _eval_gha_if(
+            expr, job_status=job_status, outcomes=outcomes, outputs=outputs
+        )
+        result[key] = would_be if ran else "skipped"
+        if step.get("id"):
+            outcomes[step["id"]] = result[key]
+        return ran
+
+    for i, step_id in enumerate(_DOWNLOAD_IDS):
+        if i:
+            wait = _step_by_name(job, _WAIT_NAMES[i - 1])
+            run(wait, _WAIT_NAMES[i - 1], "success")
+        run(_step_by_id(job, step_id), step_id, downloads[i])
+
+    resolve = _step_by_id(job, "syft-cmd")
+    if run(resolve, "syft-cmd", "success"):
+        installed = any(result.get(sid) == "success" for sid in _DOWNLOAD_IDS)
+        outputs["syft-cmd"] = {"installed": "true" if installed else "false"}
+
+    run(_step_by_id(job, "sbom-generate"), "sbom-generate", scan)
+    run(
+        _step_by_id(job, "sbom-require"),
+        "sbom-require",
+        "success"
+        if (result["sbom-generate"] == "success" and artifact_valid)
+        else "failure",
+    )
+    run(_step_by_id(job, "sbom-upload"), "sbom-upload", "success")
+    return result
+
+
 class TestSbomSurvivesAGateFailure:
-    """T2 (Plan 207) — the SBOM steps must not inherit the implicit
-    `success()` that follows a gate failure. `Upload SBOM artifact` shares a
-    byte-identical `uses:` pin with `Upload Trivy SARIF artifact`, so this
-    class selects by `id:` (`sbom-generate` / `sbom-upload`), never by
-    `_step_by_uses_prefix`, which would silently return the SARIF upload
-    instead.
+    """Plan 207 T2, re-expressed over Plan 309's three-part chain.
+
+    The property is unchanged and must stay unchanged: the SBOM steps must not
+    inherit the implicit ``success()`` that follows a gate failure. Plan 309
+    widened the surface from two steps to seven, so every one of them now has to
+    carry ``!cancelled() && steps.build-image.outcome == 'success'`` — and a
+    condition that drops those would skip the retries *and* the enforcement step
+    underneath an already-red CVE gate, which is the same invisible-failure class
+    one level further down.
+
+    Steps are selected by ``id`` (never by ``uses:`` prefix — ``Upload SBOM
+    artifact`` shares a byte-identical pin with ``Upload Trivy SARIF artifact``).
     """
 
-    def _conditions(self) -> tuple[str, str]:
+    def test_normal_success_whole_chain_runs(self) -> None:
+        r = _simulate_sbom_chain(job_status="success", build_outcome="success")
+        assert r["syft-dl-1"] == "success"
+        assert r["syft-dl-2"] == "skipped", "attempt 2 must not run after a success"
+        assert r["sbom-generate"] == "success"
+        assert r["sbom-require"] == "success"
+        assert r["sbom-upload"] == "success"
+
+    def test_gate_failed_whole_chain_still_runs_and_uploads(self) -> None:
+        """🔑 Plan 207's reason for existing, and Plan 309's biggest risk of
+        undoing it. Verified against real CI as well — run 35623093354."""
+        r = _simulate_sbom_chain(job_status="failure", build_outcome="success")
+        assert r["syft-dl-1"] == "success", (
+            "the syft download must still run when the vulnerability gate has "
+            "failed the job — this is the run where the inventory matters most"
+        )
+        assert r["syft-cmd"] == "success"
+        assert r["sbom-generate"] == "success"
+        assert r["sbom-require"] == "success", (
+            "the enforcement step must still run under a red gate, or an SBOM "
+            "failure disappears behind an unrelated red check"
+        )
+        assert r["sbom-upload"] == "success", (
+            "the SBOM must still be uploaded when the gate fails"
+        )
+
+    def test_gate_failed_the_retries_still_run_too(self) -> None:
+        """The widened surface: it is not enough for the first attempt to
+        survive a red job — the retry chain has to as well."""
+        r = _simulate_sbom_chain(
+            job_status="failure",
+            build_outcome="success",
+            downloads=("failure", "success", "success"),
+        )
+        assert r[_WAIT_NAMES[0]] == "success", "the wait must run under a red job"
+        assert r["syft-dl-2"] == "success", (
+            "attempt 2 must run under a red job — dropping the !cancelled() "
+            "guard here silently disables retrying exactly when a CVE is present"
+        )
+        assert r["sbom-upload"] == "success"
+
+    def test_scan_failed_operationally_chain_still_runs(self) -> None:
+        """Deliberate divergence from the SARIF steps: the SBOM reads the built
+        image, not trivy-image.json, so an operational Trivy failure must not
+        take the inventory down with it."""
         job = _build_image_and_scan_job()
-        generate_step = _step_by_id(job, "sbom-generate")
-        upload_step = _step_by_id(job, "sbom-upload")
-        # A future selector regression to the SARIF upload must fail loudly
-        # here, not silently pass the scenarios below against the wrong step.
-        assert upload_step["name"] == "Upload SBOM artifact"
-        # A missing `if:` key resolves to the implicit `success()` GitHub
-        # applies — that default IS the defect, so it must not raise or skip.
-        generate_if = generate_step.get("if", "success()")
-        upload_if = upload_step.get("if", "success()")
-        return generate_if, upload_if
+        for step_id in (*_DOWNLOAD_IDS, "syft-cmd", "sbom-generate", "sbom-require"):
+            cond = _step_by_id(job, step_id).get("if", "success()")
+            assert "trivy" not in cond, (
+                f"{step_id} must not depend on any trivy step — the SBOM does "
+                "not read trivy-image.json"
+            )
+        r = _simulate_sbom_chain(job_status="failure", build_outcome="success")
+        assert r["sbom-upload"] == "success"
 
-    def test_normal_success_generate_and_upload_both_run(self) -> None:
-        """Row 1."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {
-            "build-image": "success",
-            "trivy-scan": "success",
-            "trivy-gate-table": "success",
-        }
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="success", outcomes=outcomes
-        )
-        assert generate_runs, "the SBOM must be generated on a normal green run"
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="success", outcomes=outcomes)
-        assert upload_runs, "the SBOM must be uploaded on a normal green run"
-
-    def test_gate_failed_generate_and_upload_both_still_run(self) -> None:
-        """Row 2 — the defect this plan exists to fix."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {
-            "build-image": "success",
-            "trivy-scan": "success",
-            "trivy-gate-table": "failure",
-        }
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="failure", outcomes=outcomes
-        )
-        assert generate_runs, (
-            "the SBOM must still be generated when the vulnerability gate "
-            "fails — this is the run where the dependency inventory matters most"
-        )
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
-        assert upload_runs, "the SBOM must still be uploaded when the gate fails"
-
-    def test_scan_failed_operationally_generate_and_upload_both_still_run(
-        self,
-    ) -> None:
-        """Row 3 — deliberate divergence from the SARIF steps: the SBOM reads
-        the built image, not trivy-image.json, so an operational Trivy
-        failure must not take the inventory down with it."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "success", "trivy-scan": "failure"}
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="failure", outcomes=outcomes
-        )
-        assert generate_runs, (
-            "an operational trivy-scan failure must not skip SBOM generation "
-            "— the SBOM does not depend on trivy-image.json"
-        )
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
-        assert upload_runs, (
-            "the SBOM upload must not be taken down by an operational scan failure"
+    def test_build_failed_whole_chain_skipped(self) -> None:
+        r = _simulate_sbom_chain(job_status="failure", build_outcome="failure")
+        assert all(v == "skipped" for v in r.values()), (
+            f"nothing may run against an image that failed to build: {r}"
         )
 
-    def test_build_failed_generate_and_upload_both_skipped(self) -> None:
-        """Row 4."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "failure"}
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="failure", outcomes=outcomes
-        )
-        assert not generate_runs, (
-            "syft must not run against an image that failed to build"
-        )
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
-        assert not upload_runs
-
-    def test_build_skipped_generate_and_upload_both_skipped(self) -> None:
-        """Row 5 (round-2 addition) — kills
-        `!cancelled() && steps.build-image.outcome != 'failure'`: a `skipped`
-        build outcome is `!= 'failure'`, so that wrong condition would run
-        syft against an image that was never built at all."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "skipped"}
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="failure", outcomes=outcomes
-        )
-        assert not generate_runs, (
-            "a skipped build (e.g. checkout/setup failed earlier) must not "
-            "let syft run — kills `outcome != 'failure'` as a stand-in for "
-            "`outcome == 'success'`"
-        )
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
-        assert not upload_runs
-
-    def test_sbom_generation_failed_upload_skipped(self) -> None:
-        """Row 6 — sbom-generate's outcome is supplied explicitly, not
-        chained from this scenario's own generate evaluation, so the upload
-        assertion is not passing for the wrong reason."""
-        _generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "success", "sbom-generate": "failure"}
-        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
-        assert not upload_runs, (
-            "a failed syft run must not be uploaded via a confusing "
-            "if-no-files-found: error failure"
+    def test_build_skipped_whole_chain_skipped(self) -> None:
+        """Kills `!cancelled() && steps.build-image.outcome != 'failure'`: a
+        `skipped` build outcome is `!= 'failure'`, so that wrong condition would
+        run syft against an image that was never built at all."""
+        r = _simulate_sbom_chain(job_status="failure", build_outcome="skipped")
+        assert all(v == "skipped" for v in r.values()), (
+            f"nothing may run against an image that was never built: {r}"
         )
 
-    def test_cancelled_after_a_successful_build_generate_and_upload_skipped(
-        self,
-    ) -> None:
-        """Row 7 (round-2 addition) — kills
-        `always() && steps.build-image.outcome == 'success'`: `always()` is a
-        status function to the evaluator and is unconditionally True, and it
-        is a live nearby pattern in this job (`Upload Trivy SARIF artifact`).
-        Giving the producer `success` here means only `!cancelled()` can
-        reject — a cancelled run must not still generate or upload the SBOM."""
-        generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "success"}
-        generate_runs = _eval_gha_if(
-            generate_if, job_status="cancelled", outcomes=outcomes
-        )
-        assert not generate_runs, (
-            "a cancelled run must not generate the SBOM even though the "
-            "build already succeeded — kills `always()` in place of `!cancelled()`"
-        )
-        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
-        upload_runs = _eval_gha_if(upload_if, job_status="cancelled", outcomes=outcomes)
-        assert not upload_runs
 
-    def test_cancelled_after_a_successful_generate_upload_skipped(self) -> None:
-        """Row 8 (round-2 addition) — same `always()` mutant, but on the
-        upload's own producer (sbom-generate), supplied explicitly as
-        `success` rather than chained."""
-        _generate_if, upload_if = self._conditions()
-        outcomes = {"build-image": "success", "sbom-generate": "success"}
-        upload_runs = _eval_gha_if(upload_if, job_status="cancelled", outcomes=outcomes)
-        assert not upload_runs, (
-            "a cancelled run must not upload the SBOM even though generation "
-            "already succeeded — kills `always()` in place of `!cancelled()`"
+class TestSbomRetryChain:
+    """Plan 309 — the retry, and the two mechanics that make it real rather
+    than decorative. Every scenario below was also forced against real CI; the
+    run ids are named so a future reader can check the simulation against it."""
+
+    def test_a_failed_attempt_triggers_the_next_one(self) -> None:
+        """Real-CI counterpart: run 35620778764 (attempt 1 pinned to a bogus
+        version, attempt 2 real)."""
+        r = _simulate_sbom_chain(
+            job_status="success",
+            build_outcome="success",
+            downloads=("failure", "success", "success"),
         )
+        assert r[_WAIT_NAMES[0]] == "success"
+        assert r["syft-dl-2"] == "success"
+        assert r[_WAIT_NAMES[1]] == "skipped", "no wait after a successful retry"
+        assert r["syft-dl-3"] == "skipped"
+        assert r["sbom-upload"] == "success", (
+            "a recovered download must still produce an uploaded SBOM"
+        )
+
+    def test_all_attempts_failing_still_reaches_enforcement(self) -> None:
+        """🔑 The failure that must stay loud. Real-CI counterpart: run
+        35621394667 — job red, with an annotation naming the download stage."""
+        r = _simulate_sbom_chain(
+            job_status="success",
+            build_outcome="success",
+            downloads=("failure", "failure", "failure"),
+        )
+        assert r["syft-dl-3"] == "failure"
+        assert r["sbom-generate"] == "skipped", (
+            "the scan must not run without a syft binary"
+        )
+        assert r["sbom-require"] == "success" or r["sbom-require"] == "failure", (
+            "the enforcement step must RUN — if it is skipped, a missing SBOM "
+            "passes silently, which is the whole defect"
+        )
+        assert r["sbom-require"] != "skipped"
+        assert r["sbom-upload"] == "skipped"
+
+    def test_upload_is_gated_on_enforcement_not_on_the_scan(self) -> None:
+        """🔴 Found by forced-fault run 35622426919, not by review. syft can
+        exit 0 having written nothing: `sbom-generate.outcome == 'success'`
+        while no file exists. Gating the upload on the scan made it run and fail
+        on `if-no-files-found: error`, adding a confusing second error beside the
+        real one — the exact thing ci.yml's own comment warns against."""
+        job = _build_image_and_scan_job()
+        cond = _step_by_id(job, "sbom-upload")["if"]
+        assert "sbom-require" in cond, (
+            "the upload must be gated on the enforcement step, not the scan"
+        )
+        r = _simulate_sbom_chain(
+            job_status="success", build_outcome="success", artifact_valid=False
+        )
+        assert r["sbom-generate"] == "success", "the scan itself succeeded"
+        assert r["sbom-require"] == "failure"
+        assert r["sbom-upload"] == "skipped", (
+            "no artifact, no upload — and no second confusing error"
+        )
+
+    def test_enforcement_is_the_only_step_that_can_fail_the_job(self) -> None:
+        job = _build_image_and_scan_job()
+        for step_id in (*_DOWNLOAD_IDS, "sbom-generate"):
+            assert _step_by_id(job, step_id).get("continue-on-error") is True, (
+                f"{step_id} must be continue-on-error, or the job dies before "
+                "the enforcement step can classify and report the failure"
+            )
+        require = _step_by_id(job, "sbom-require")
+        assert "continue-on-error" not in require, (
+            "the enforcement step must NOT be continue-on-error — it is the "
+            "single explicit decision that keeps Plan 180's property"
+        )
+
+    def test_every_attempt_and_the_scan_are_individually_bounded(self) -> None:
+        """A job-level timeout CANCELS, which skips every `!cancelled()` step —
+        no enforcement, no message, no upload. So the bound cannot live only at
+        the job level."""
+        job = _build_image_and_scan_job()
+        for step_id in (*_DOWNLOAD_IDS, "sbom-generate"):
+            step = _step_by_id(job, step_id)
+            assert isinstance(step.get("timeout-minutes"), int), (
+                f"{step_id} needs its own timeout-minutes — one stalled step "
+                "otherwise consumes the job budget and the job is cancelled"
+            )
+
+    def test_the_scan_keeps_the_parent_actions_update_check_disabled(self) -> None:
+        """`anchore/sbom-action` sets SYFT_CHECK_FOR_APP_UPDATE=false itself
+        (src/github/SyftGithubAction.ts:127); the download-syft sub-action does
+        not. Omitting it adds an outbound update check to the step whose entire
+        problem is outbound network calls."""
+        env = _step_by_id(_build_image_and_scan_job(), "sbom-generate").get("env", {})
+        assert env.get("SYFT_CHECK_FOR_APP_UPDATE") == "false"
+
+    def test_all_three_attempts_share_one_pinned_action(self) -> None:
+        job = _build_image_and_scan_job()
+        pins = {_step_by_id(job, sid)["uses"] for sid in _DOWNLOAD_IDS}
+        assert len(pins) == 1, f"the attempts must share one pin, found: {pins}"
+        assert re.fullmatch(
+            r"anchore/sbom-action/download-syft@[0-9a-f]{40}", pins.pop()
+        ), "the download action must be pinned to a full commit SHA"
 
 
 class TestTrivyignorePolicyIsInternallyConsistent:
