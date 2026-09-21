@@ -73,6 +73,19 @@ Two facts, both read from the repo at `9dc07915`:
 has not been imported anywhere, so nothing has run end-to-end. **T1 exists to prove it red before
 anything is changed.** If T1 comes up green, the rest of this plan is wrong and should be withdrawn.
 
+✅ **Independently confirmed 2026-09-21** by a reviewer who traced the whole path rather than the
+two endpoints: the loader preserves the parquet column names, `basin_importer.py:628` copies them
+unchanged, the basin store persists them unchanged, the collision-aware resolver accepts the
+primary and secondary **prefixed** keys only, and projection explicitly drops unresolved bare
+declared names. That is a stronger confirmation than the two facts above, and it is still not a
+substitute for T1.
+
+🔑 **Scope correction from the same review: this is a property of THIS package's key shape, not of
+the contract.** A `basin-static-artifact/v1` package that already carried `caravan:`-prefixed keys
+would resolve fine. The defect is that the contract does not say which shape it emits and the
+resolver accepts only one — so "the package is contract-compliant" and "the package is usable by
+our models" are independent facts today. D1 should be read with that in mind.
+
 Confirming context, measured on the live staging DB 2026-09-21: the 148 Swiss basins carry **516**
 attribute keys each, and their statics are stored `caravan:`-prefixed (`caravan:for_pc_sse` etc.) by
 the Plan 155/188 Caravan path. A query for the bare canonical names (`forest_fraction`,
@@ -81,12 +94,19 @@ one column.
 
 ### 3. The units: the name says fraction, the value is a percent — and sometimes not even that
 
-`CARAVAN_ALIAS` already carries the warning, in a comment added 2026-09-04:
+`CARAVAN_ALIAS` already carries a warning, in a comment added 2026-09-04:
 
 > NOTE the values are PERCENT (0-100), not 0-1 — aquacast's `*_fraction` naming is misleading, and
 > nothing in this pipeline rescales them.
 
-That is correct and it is the whole of the enforcement. Measured ranges confirm both sides agree
+⚠️ **That comment is accurate but narrower than it looks, and an earlier revision of this plan
+overstated it.** *Independent review 2026-09-21 (minor).* It sits on the two entries added for
+`cmal_small` and speaks of "both" — `forest_fraction` and `permafrost_fraction`. It does **not**
+claim that slope or aridity are percentages, and it is not a general statement about the alias
+table. **The real gap is that there is no per-feature encoding declaration anywhere** — which is
+what makes the two features below surprising rather than obvious.
+
+Whatever its scope, it is the whole of the enforcement. Measured ranges confirm both sides agree
 today — Swiss from `basins.attributes` on staging, Nepal from the package parquet:
 
 | feature | Swiss (148 basins) | Nepal (6 basins) |
@@ -125,9 +145,17 @@ fail at predict time.
 
 ### T1 — prove the namespace gap red, before changing anything
 
-**Outcome.** A failing test that imports a `basin-static-artifact/v1` package and shows a
-`StaticNaming.CARAVAN` model resolving **zero** of its declared statics against the resulting
-`basins.attributes` — failing for that reason and not another.
+**Outcome.** A test that imports a `basin-static-artifact/v1` package and asserts that a
+`StaticNaming.CARAVAN` model **resolves all of its declared statics, with the expected values**,
+against the resulting `basins.attributes`. Today it fails because zero resolve; after T2 it
+passes. Zero-resolved is the **pre-change diagnostic**, recorded in the failure message — it is
+**not** what the test asserts.
+
+🔴 **The obvious wording is inverted and must not be used.** *Independent review 2026-09-21
+(minor).* A test that *asserts* zero resolution passes today and **fails after T2 fixes it** — a
+characterization test pointing the wrong way. This is the same defect, in the same form, that was
+caught twice in Plan 262's T1; see `feedback_red_first_must_prove_the_fault`. Assert the
+end state, let the current failure be the red.
 
 **In.** One test under `tests/unit/` (or `tests/integration/` if a real import is needed), using
 the existing reference package fixture if one covers the contract, otherwise a minimal package
@@ -160,20 +188,33 @@ clean.
 
 ### T3 — make the unit contract explicit and checked
 
-**Outcome.** The unit/encoding of each static is *declared* somewhere a reader and a test can both
-see, and a violation fails loudly rather than reaching a model.
+**Outcome.** Each static's encoding is *declared* per feature, and an import whose declared
+encoding disagrees with what the model expects is **rejected**, not warned about.
 
-**In.** D2's answer. At minimum, the misleading `*_fraction` naming is documented at the seam
-rather than in one module's comment, and the `CARAVAN_ALIAS` note is corrected to say "raw
-HydroATLAS encoding, per-attribute" rather than "percent (0-100)", which §3 shows is not true of
-every aliased feature.
+**In.** D2's answer, which must name three things: **where the declaration lives**, **which
+boundary enforces it**, and **what rejection looks like** (refuse the import, or hold the basin).
+
+🔴 **Documentation alone does not satisfy this task's Outcome.** *Independent review 2026-09-21
+(major): the previous wording promised that violations "fail loudly" while permitting a comment as
+the minimum deliverable — a task that cannot deliver what it claims.*
+
+⛔ **And a numeric range guard cannot do this job.** A `[0, 100]` check accepts a wrongly-rescaled
+`0.456` exactly as readily as a legitimate `0.456%`. **Encoding must be declared and compared,
+never inferred from the values** — which is also why the agreement measured in §3 is evidence that
+the two paths happen to match today, not a mechanism that keeps them matching.
 
 **Out.** Rescaling anything. ⛔ **The model was trained on the raw encoding; converting to 0–1
 would be a 100× error on the percent-valued features and a wrong answer on the scaled ones.** This
 task makes the convention checkable, it does not change it.
 
-**Verification.** A test that would fail if an import path wrote 0–1 fractions where the model
-expects the raw encoding.
+**Verification.** Two tests, which are not the same test:
+
+1. **Value preservation** — a known value survives *both* import paths (Caravan and package) and
+   arrives at the model bit-for-bit as it was delivered.
+2. **Encoding rejection** — a package declaring an encoding the model does not expect is refused,
+   with the refusal naming the feature and both encodings.
+
+⛔ Neither test may decide the encoding by looking at the magnitude of the numbers.
 
 ### T4 — dispose of the >100 lake percentages
 
@@ -208,9 +249,27 @@ each feature carries a `unit` field, and the package populates it (`area` is `km
 **D3 — are the >100 `lka_pc_sse` values a misread scale or a defect?** Not answerable from this
 repo. Needs the extractor or the modeller.
 
-**D4 — should `required_by_models` be mandatory in the contract?** It exists and is empty. If it
-were populated, the loader could reject a package that does not satisfy a model this deployment
-actually runs, turning §1's coverage from a measurement into a gate.
+**D4 — how should a coverage gate actually be built?** `required_by_models` exists on all 92
+features and is empty, so the obvious answer is "populate it and let the loader check it".
+
+🔴 **That does not work, and the reason is worth keeping.** *Independent review 2026-09-21
+(major).* `services/basin_package_loader.py::_evaluate_required_static` derives `catalog_required`
+from the catalog itself, so it iterates only over features **still present**. A feature dropped
+from *both* `feature_catalog.json` and `static_attributes.parquet` disappears from the check
+entirely — the one case a coverage gate exists to catch. A self-describing manifest cannot gate
+its own completeness.
+
+⚙️ **The hook for a working gate already exists.** That same function takes an optional
+`assigned_model_features: Callable[[BasinRecord], frozenset[str]] | None`. A real gate bases
+coverage on the **model's** declared requirement set — independent of the package — translates
+canonical names to package names (the T2 mapping), and holds or rejects per assignment. Without
+it, missing or null catalog-required features produce warnings, not holds.
+
+⚖️ **So D4 is a choice between two things, not one:** populate `required_by_models` as
+*documentation* (cheap, no gate), or build the assignment-aware gate through
+`assigned_model_features` (a real task, with tests for the drop-from-both case). If the gate is
+wanted, this plan gains a task; if not, the weaker outcome is recorded deliberately rather than
+assumed.
 
 ## Watch items, not tasks
 
@@ -230,8 +289,35 @@ uv run ruff check src tests && uv run ruff format --check src tests
 uv run pyright src
 ```
 
-- T1's test was red before T2 and green after, and the recorded failure reason is the namespace,
-  not an incidental error.
+🔴 **D1 and D2 must be ANSWERED before implementation starts — they are not carryable.**
+*Independent review 2026-09-21 (major): the previous gate let any of D1–D4 be "explicitly
+carried", while T2 is entirely determined by D1 and T3 by D2. A plan whose gate permits its own
+deciding questions to stay open cannot be implemented.* D3 and D4 **are** carryable: D3 is a
+question for the extractor, and D4 chooses between a documentation outcome and an extra task.
+
+- D1 and D2 are answered, and the task each determines names the chosen option.
+- T1's test asserts the **end state** (all declared statics resolve, with expected values), was
+  failing before T2 and passing after, and its pre-change failure names the missing
+  `caravan:`-prefixed keys rather than an incidental error.
 - The 148 Swiss basins' static resolution is unchanged — demonstrated, not assumed.
 - No stored attribute value was rescaled by this plan.
-- D1–D4 are each answered here or explicitly carried, with the carrier named.
+- T3's two tests both exist, and neither infers an encoding from the magnitude of a value.
+- D3 and D4 are each answered or explicitly carried, with the carrier named.
+
+```json
+{
+  "phases": [
+    { "id": "P1", "tasks": ["T1"],
+      "note": "prove the namespace gap; if this comes up green the plan is withdrawn" },
+    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "requires_decision": "D1",
+      "note": "close the namespace gap" },
+    { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "requires_decision": "D2",
+      "note": "declare and enforce the encoding" },
+    { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"], "requires_decision": "D3",
+      "note": "a question to the extractor; blocks nothing in this plan" }
+  ]
+}
+```
+
+⚠️ *Independent review 2026-09-21 (minor): `docs/workflow.md:32` requires a closing JSON
+dependency graph and this plan had none.*

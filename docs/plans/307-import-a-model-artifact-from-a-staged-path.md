@@ -119,12 +119,23 @@ route, still valid below the limit) **or** as `artifact_path` resolved inside `/
 exactly one, never both, never neither. A path import additionally requires
 **`expected_artifact_sha256`** (D3) and refuses on mismatch before the bytes are used.
 
-**In.** `flows/import_model_artifact.py` only. Two guards, in this order:
+**In.** `flows/import_model_artifact.py` **and its tests** (`tests/unit/flows/test_import_model_artifact.py`
+or the file that currently covers this flow). ⚠️ *Independent review 2026-09-21 (minor): the
+previous wording said this file "only" while the verification below mandates new tests — an In
+that forbids what its own verification requires.*
+
+Two guards, in this order:
 
 1. **Traversal** — resolve the candidate path and require the resolved result to be inside the
    resolved staging root, so a symlink or a `../` escape is refused **before the file is opened**.
-2. **Content** — digest the file and compare to `expected_artifact_sha256`, refusing before the
-   bytes reach `import_external_artifact`.
+2. **Content** — digest the bytes and compare to `expected_artifact_sha256`, refusing **before
+   those bytes reach `import_external_artifact` and before anything is written**.
+
+🔴 **The digest must be taken of the exact buffer that is passed to the importer — never by
+re-reading the file.** *Independent review 2026-09-21 (major).* The staging directory is writable
+by anyone with host shell access, so a read-hash-then-read-again sequence leaves a window in which
+the verified bytes and the imported bytes are different files. Read once, hash that buffer, pass
+that buffer on.
 
 `services/model_import.py` is untouched: it still receives `artifact_bytes`, and every guarantee
 it holds (the strict `expected_config_hash` gate, the audited writer, the all-or-nothing
@@ -140,12 +151,23 @@ from the other.
 to protect against). Any change to `import_external_artifact`. Accepting a URL, an object-store
 URI, or any path outside the staging root.
 
-**Verification.** Unit tests covering: both parameters given → refused; neither given → refused; a
-path outside the staging root → refused, naming the root, **with no file opened**; a symlink whose
-target escapes the root → refused; a staged file whose digest does not match → refused, **with
-nothing written**; a valid staged file with a matching digest → imported, with the bytes reaching
-`import_external_artifact` identical to the file on disk. Plus `uv run pytest tests/unit` and
-`tests/integration` clean.
+**Verification.** Unit tests covering:
+
+| case | expected |
+|---|---|
+| both `artifact_path` and `artifact_base64` given | refused |
+| neither given | refused |
+| `artifact_path` given, `expected_artifact_sha256` **omitted** | **refused** |
+| path outside the staging root | refused, naming the root, **with no file opened** |
+| symlink whose target escapes the root | refused, **with no file opened** |
+| staged file whose digest does not match | refused, **nothing written** |
+| valid staged file, matching digest | imported; the bytes reaching `import_external_artifact` are identical to the file on disk |
+
+🔴 **The third row is load-bearing and was missing.** *Independent review 2026-09-21 (major): an
+implementation that simply skips verification when the checksum is absent would have passed every
+other case in this list.* A required parameter that is only tested when supplied is not required.
+
+Plus `uv run pytest tests/unit` and `tests/integration` clean.
 
 **Pre-change.** The §"The failure, measured" 422 is this task's pre-change evidence: the route
 does not exist and the existing one is refused at 4.6× the limit. ⛔ **A test asserting that
@@ -170,20 +192,56 @@ documents all three.
 **Verification.** The procedure is followed verbatim in T4 and the steps are corrected where they
 did not match reality — not afterwards, from memory.
 
+### T3b — roll the change onto the host and refresh the registered parameter schema
+
+🔴 *Added by independent review 2026-09-21 (major): no task owned this, and T4 consumes the live
+deployment.*
+
+**Outcome.** The staging host runs the new image with the new mount, and the registered
+`import-model-artifact` deployment accepts a path-only request.
+
+**In.** A deploy of the built images following `docs/standards/cicd.md` § Upgrade procedure with
+both overlays, a recreation of `prefect-worker` so the new mount is attached (a mount change
+requires recreation, not a restart), and a re-run of deployment registration.
+
+⚠️ **The registered parameter schema comes from the flow signature.**
+`cli/register_deployments.py:195-199` registers this deployment from `import_model_artifact_flow`
+via `flow.deploy()`, and compose runs registration inside `init`. Until registration re-runs, the
+live schema is the old one — which still requires `artifact_base64` — and **T4 would be refused
+by a stale schema for a reason that looks nothing like the real one.**
+
+**Out.** Any code change. Any migration. Running the import itself.
+
+**Verification.** `docker inspect` shows the staging mount on `prefect-worker` and on no other
+service; the registered deployment's parameter schema lists `artifact_path` and
+`expected_artifact_sha256`; a deliberately malformed path-only request is refused by the **flow's**
+guard (naming the staging root) rather than by schema validation — which distinguishes "registered
+and reachable" from "registered but never invoked".
+
+**Pre-change.** Today the worker has five mounts and none is a staging root (`docker inspect`,
+2026-09-21), and the registered schema has no `artifact_path`.
+
 ### T4 — import `cmal_small` through the new route
 
 **Outcome.** Plan 262 T4 completes: one ACTIVE `model_artifacts` row for `cmal_small` scoped to
 `swiss-cmal-small-pilot`, with the provenance already established.
 
-**In.** The provenance values, all verified 2026-09-21 and recorded here so they are not re-derived:
+**Depends on T3b** — the new route must be deployed and re-registered first.
+
+**In.** The provenance values, all verified 2026-09-21 and recorded here **in full** so they are
+not re-derived. ⚠️ *Independent review 2026-09-21 (major): an earlier revision abbreviated both
+digests with an ellipsis while forbidding re-derivation — an instruction that could not be
+followed. `services/model_import.py` compares `declared_config_hash != expected_config_hash` for
+exact equality, so a truncated value is not merely inconvenient, it is unusable.*
 
 | field | value | source |
 |---|---|---|
 | `trained_at` | `2026-08-31T11:41:55+00:00` | `logs/train.log:632` (`aquacast.pipeline:168`, "Trained: best val_loss=-17.94623 @ epoch 5"), 13:41:55 on a Europe/Zurich machine in CEST — owner-confirmed |
 | `training_period_start`/`_end` | `1985-01-01` → `2020-12-31` | the config's global split is a fallback; 18 regions override and two train through 2020 |
-| `expected_config_hash` | `94ebec0f…e45` | computed from `config.yaml` in the owner's tree; **byte-identical to the vendored repo copy**, verified 2026-09-21 |
+| `expected_config_hash` | `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` | computed from `config.yaml` in the owner's tree; **byte-identical to the vendored repo copy**, verified 2026-09-21 |
 | `source_commit` | null | the bundle records aquacast `0.1.346`; the runtime pin is `0.1.356` |
-| artifact | `checkpoints/best.pt`, 1,814,653 bytes, sha256 `84f1a4ef…8a26` | |
+| artifact | `checkpoints/best.pt`, 1,814,653 bytes | |
+| `expected_artifact_sha256` | `84f1a4ef5099b2a9b76783413d250e9016be4d0adea99e14277b61ae2f788a26` | measured on the source file and re-verified after transfer to the host, 2026-09-21 |
 | `notes` | the local-time training cut, and that we do not serve it | see below |
 
 The `notes` field records what Plan 262 could not: this artifact was trained on daily data cut on
@@ -238,11 +296,45 @@ uv run ruff check src tests && uv run ruff format --check src tests
 uv run pyright src
 ```
 
-- Every T2 refusal case has a test, and each refusal happens **before** the file is opened.
+- Every T2 refusal case in the verification table has a test, **including the omitted-checksum
+  case**, and each refusal lands at the right boundary:
+  - parameter-validation and traversal refusals happen **before the file is opened**;
+  - the checksum refusal happens **before the bytes reach `import_external_artifact` and before
+    anything is written**.
+  ⚠️ *Independent review 2026-09-21 (major): the previous gate demanded that EVERY refusal happen
+  before the file is opened, which a checksum can never satisfy — digesting requires reading. The
+  two boundaries are now stated separately because they genuinely differ.*
 - `services/model_import.py` is unchanged — shown by diff, not asserted.
 - `docker compose config` shows the staging mount read-only on `prefect-worker` and absent from
   the other four services.
+- T3b was completed before T4 ran, and the registered schema was confirmed to carry the new
+  parameters — not assumed from a successful deploy.
 - T3's procedure was followed verbatim to produce T4's rows, and was corrected in place wherever
   it did not match what actually happened.
 - The `cmal_small` row records the local-time training cut in `notes`.
-- No provenance value was re-derived; each came from the table in T4.
+- No provenance value was re-derived; each came from the table in T4, in full.
+
+```json
+{
+  "phases": [
+    { "id": "P1", "tasks": ["T1", "T2"], "parallel": true,
+      "note": "T1 is compose/config/docs; T2 is the flow and its tests. No shared file." },
+    { "id": "P2", "tasks": ["T3"], "depends_on": ["P1"],
+      "note": "the runbook describes what T1 and T2 actually produced" },
+    { "id": "P3", "tasks": ["T3b"], "depends_on": ["P2"],
+      "note": "deploy + recreate the worker for the new mount + re-register the schema" },
+    { "id": "P4", "tasks": ["T4"], "depends_on": ["P3"],
+      "note": "the import itself; also gated on the Plan 262 T4 amendment review below" }
+  ],
+  "external_gates": [
+    { "gate": "plan-262-t4-amendment-review",
+      "blocks": ["T4"],
+      "why": "262 is READY and its T4 In says 'no new import machinery'; amending it is a material change needing its own review" }
+  ]
+}
+```
+
+⚠️ *Independent review 2026-09-21 (minor): `docs/workflow.md:32` requires a closing JSON
+dependency graph and this plan had none. The 262 amendment is recorded as an external gate on T4
+rather than as prose, because the prose version stated the requirement without making it block
+anything.*
