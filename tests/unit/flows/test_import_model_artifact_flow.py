@@ -295,12 +295,27 @@ class TestStagedArtifactPath:
         (root / "sub").mkdir(parents=True)
         (root / "sub" / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
         self._staging(monkeypatch, root)
+
+        # Confirming review 2026-09-21: the docstring above claims the refusal
+        # fires "before any open" and nothing asserted it. The subdirectory
+        # here is a real, readable directory, so an implementation that walked
+        # it would succeed in opening — which is exactly what this must catch.
+        opened: list[object] = []
+        real_open = os.open
+
+        def recording_open(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", recording_open)
         with pytest.raises(
             ConfigurationError, match="directly inside the staging root"
         ):
             _read_staged_artifact(
                 "sub/best.pt", hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
             )
+
+        assert opened == [], f"refused only AFTER opening {opened}"
 
     def test_refuses_a_symlinked_staging_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

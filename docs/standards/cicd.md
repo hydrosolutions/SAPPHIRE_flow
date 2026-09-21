@@ -195,6 +195,21 @@ a new deployment is set up from.
 - The host directory is writable by anyone with a shell on the host, which is why an import by
   path also requires `expected_artifact_sha256`.
 
+🔴 **Two deployment assumptions this mount carries. They are independent — neither remedy helps
+the other — and a new deployment must satisfy both.** *(Added after a confirming review
+2026-09-21 found them recorded in the plan and the code but missing here, where a deployment is
+actually set up.)*
+
+1. **Who may write to the staging directory.** Where that is the same account that owns the
+   compose files, the secrets and the deploy — as on the mac mini — a hardlink into staging grants
+   nothing that account lacks. ⚠️ **A deployment that lets a LESS privileged party stage artifacts
+   must first put the staging root on its own filesystem**, because a hardlink to a file outside
+   the root is otherwise readable. Decide before accepting that party's first artifact.
+2. **The root's ancestors and mount topology are trusted.** `O_NOFOLLOW` protects the staging
+   root's final component, not the directories above it. ⛔ A dedicated filesystem does **not**
+   address this — an attacker who can substitute an ancestor redirects the whole staging root, and
+   there is no mitigation in the import. Fix the path.
+
 **Setting up a new deployment:** create the host directory, add the `:ro` bind to that
 deployment's overlay, redeploy, and confirm the composed config shows the mount on
 `prefect-worker` and on no other service.

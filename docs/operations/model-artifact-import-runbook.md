@@ -95,9 +95,13 @@ directory that a host writer can move mid-import.
 
 ### 4. Verify what was written
 
-Identify the row by the provenance **you supplied**. Those values uniquely identify what you just
-created, need no Prefect result API, and cannot silently show you a colleague's concurrent import.
-⛔ Not "the most recent row", and not the flow-run id.
+Look the row up by the provenance **you supplied**. ⛔ Not "the most recent row", and not the
+flow-run id.
+
+⚠️ **This is a candidate lookup, not a unique key.** *(Confirming review 2026-09-21 corrected an
+earlier claim that it "uniquely identifies" the import.)* These values describe the **training**,
+not a particular import execution — re-importing the same artifact creates a **new** row with a
+fresh id and identical provenance. So the row count is itself part of the check.
 
 ```sql
 SELECT a.id, a.model_id, a.station_id, a.group_id, a.status,
@@ -110,8 +114,10 @@ WHERE a.model_id = '<model>'
 
 Check that:
 
-- exactly **one row** comes back — more than one means your provenance does not identify this
-  import, and you should stop and find out why;
+- **how many rows come back.** One, and `imported_at` matches this run — that is your artifact.
+  More than one means this artifact has been imported before, so check `imported_at` and `status`
+  to tell yours from the earlier ones, and satisfy yourself the older rows are meant to be there.
+  None means the import did not write, whatever the flow run appeared to do;
 - the **scope** is the station or group you intended, and the other is null;
 - `trained_at` and both **training-period bounds** equal what you supplied, to the second — a date
   that was silently reinterpreted shows up right here;
@@ -135,17 +141,20 @@ non-problem.)*
 | `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written.** The digest read is deliberately not reported — see Known limits |
 | `must name a file directly inside the staging root` | the path has a directory component, or escapes with `..` |
 | `is not a regular file` | the staged path is a FIFO, device or directory. A FIFO would otherwise block the import forever |
-| `staging root ... is not available as a real directory` | this deployment's overlay does not bind it, or it is a symlink — see cicd.md § Required mounts |
+| `staging root ... is not available as a real directory` | the root open failed. Usually this deployment's overlay does not bind it, or it is a symlink — but the same handler also catches **permissions failures and any other `OSError`**. Check the mount before assuming either. *(Confirming review 2026-09-21: the twin of the artifact-open row above, corrected one row and not the other.)* |
 | `config/artifact mismatch` | `expected_config_hash` disagrees with the model's declared hash. Refused **before any write** |
 
 ## Known limits, stated rather than implied
 
-- **A hardlink inside the staging root to a file outside it will be read — but cannot be
-  imported.** `O_NOFOLLOW` cannot distinguish a hardlink from an ordinary file. Importing such
-  content would require it to match the digest **you** computed from the source artifact off-host,
-  i.e. a SHA-256 preimage. The residual was a **hash oracle**; the import therefore no longer
-  reports the digest it read on a mismatch. Recompute it from the staged file if you need it for
-  debugging.
+- **A hardlink inside the staging root to a file outside it will be read.** `O_NOFOLLOW` cannot
+  distinguish a hardlink from an ordinary file.
+  ⚠️ **What the checksum does:** it stops **different bytes** being substituted for the ones you
+  verified, because the digest comes from you, computed from the source artifact off-host. It does
+  **not** mean a hardlink "cannot be imported" — a hardlink whose content *is* the intended
+  artifact imports normally, and harmlessly. *(Confirming review 2026-09-21 caught this section
+  claiming the stronger property.)* The residual is a **hash oracle**, which is why the import no
+  longer reports the digest it read on a mismatch. Recompute it from the staged file if you need
+  it for debugging.
   🔑 **This answer depends on who can write to the staging directory.** Where that is the same
   account that owns the compose files, the secrets and the deploy — as on the mac mini — a
   hardlink grants nothing that account does not already have. **A deployment that lets a LESS

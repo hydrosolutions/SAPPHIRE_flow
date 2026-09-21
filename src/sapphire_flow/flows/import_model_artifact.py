@@ -142,14 +142,21 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
     tightened after confirming review 2026-09-21, which found the first
     version overstated both.
 
-    * **Hardlinks — read, but NOT importable.** ⚖️ Owner decision 2026-09-21,
-      after a clean-room review raised it. A hardlink inside the root to an
-      outside file is indistinguishable from an ordinary file and WILL be
-      read. It is **not an import vector**: importing it would require the
-      staged bytes to match a digest the operator computed from the source
-      artifact off-host, i.e. a SHA-256 preimage. What remains is a **hash
-      oracle**, and that is why the computed digest is no longer reported on
-      mismatch.
+    * **Hardlinks — readable, and the digest bounds what that is worth.**
+      ⚖️ Owner decision 2026-09-21, after a clean-room review raised it. A
+      hardlink inside the root to an outside file is indistinguishable from
+      an ordinary file and WILL be read.
+
+      ⚠️ **What the digest does and does not give you.** It prevents
+      SUBSTITUTING DIFFERENT BYTES against a digest the operator supplied
+      independently, computed from the source artifact off-host. It does NOT
+      make hardlinks "not importable" — a hardlink whose content IS the
+      intended artifact imports perfectly normally, and harmlessly. *A
+      confirming review 2026-09-21 caught this docstring claiming the
+      stronger property; the mechanism checks bytes, not link provenance.*
+
+      What remains is a **hash oracle** — the read happens either way — and
+      that is why the computed digest is no longer reported on mismatch.
       🔑 **The trigger that would change this answer:** a deployment where the
       staging directory is writable by someone LESS privileged than the
       operator. On a host where the same account owns the compose files, the

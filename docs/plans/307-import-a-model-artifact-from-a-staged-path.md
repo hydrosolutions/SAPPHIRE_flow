@@ -228,10 +228,14 @@ Two guards, in this order:
    the traversal guard exists to prevent. The static-symlink test named below does not exercise
    this race at all.
 
-   ⇒ **Open relative to a pinned staging-directory descriptor** (open the root once, then resolve
-   each component under it without following symlinks out — `dir_fd` plus `O_NOFOLLOW`, or an
-   equivalent containment-preserving mechanism), so containment is enforced by the open itself
-   rather than by a name check that precedes it.
+   ⇒ **Open relative to a pinned staging-directory descriptor** — `dir_fd` plus `O_NOFOLLOW` — so
+   containment is enforced by the open itself rather than by a name check that precedes it.
+
+   ⛔ **Walking each component under a pinned descriptor is NOT containment-preserving**, and an
+   earlier revision of this paragraph said it was. *(Confirming review 2026-09-21: it contradicted
+   the very reason the implementation refuses subdirectories.)* A host writer can **move an
+   intermediate directory out of the root** between two opens, and the pinned descriptor follows
+   it. ⇒ **One path component only** — no intermediate directory, no window.
 2. **Content** — digest the bytes and compare to `expected_artifact_sha256`, refusing **before
    those bytes reach `import_external_artifact` and before anything is written**.
 
@@ -426,6 +430,13 @@ before the import, not after.
   than decided.
 - **`/data/incoming` is host-writable by anyone with shell access on the host.** That is why D3
   requires the checksum, and why T2 hashes the buffer it passes on rather than re-reading.
+- ⚠️ **A stale claim in `services/model_import.py`, deliberately NOT fixed here.** Its docstring
+  calls `trained_at`, the training period and `imported_at` "three deliberately distinct values".
+  They are independently **supplied** fields, and nothing stops two of them holding the same
+  value — a training run finishing on the last day of its own training period is ordinary. The
+  runbook was corrected; this docstring was not, **because this plan's Out forbids touching that
+  file and every review has verified it is unchanged.** *(Confirming review 2026-09-21 raised it.)*
+  ⇒ **Owner, 2026-09-21: split out as Plan 308**, rather than folded here.
 
 ## Interaction with Plan 262 — flagged, not assumed
 
@@ -452,12 +463,18 @@ uv run pyright src
     staging root is ever opened — not even transiently, and not even when the checksum would
     later reject its contents.
     ⚖️ **Scoped by owner decision 2026-09-21, after a clean-room review found the unconditional
-    wording false:** a **hardlink** inside the root to an outside file is indistinguishable from
-    an ordinary file and IS read. It is not an import vector — that would require a SHA-256
-    preimage against a digest the operator computed off-host — and the residual hash oracle is
-    closed by no longer reporting the computed digest on mismatch. 🔑 **The trigger for revisiting
-    this:** a deployment where the staging directory is writable by someone less privileged than
-    the operator must put the staging root on its own filesystem first;
+    wording false.** Two limits sit outside the guarantee, and they are **independent of each
+    other** — a remedy for one does nothing for the other:
+    - **Hardlinks.** A hardlink inside the root to an outside file is indistinguishable from an
+      ordinary file and IS read. The digest prevents **different bytes** being substituted for the
+      ones the operator verified; it does **not** make such content unimportable, and a confirming
+      review corrected an earlier claim that it did. The residual hash oracle is closed by no
+      longer reporting the computed digest on mismatch. 🔑 **Trigger for revisiting:** a deployment
+      where the staging directory is writable by someone less privileged than the operator must put
+      the staging root on its **own filesystem** first.
+    - **Trusted ancestors.** `O_NOFOLLOW` on the root open protects the root's FINAL component,
+      not the directories above it, so the root path, its ancestors and the mount topology beneath
+      them are a **deployment assumption**. ⛔ A dedicated filesystem does **not** address this;
   - the checksum refusal happens **before the bytes reach `import_external_artifact` and before
     anything is written**.
   ⚠️ *Independent review 2026-09-21 (major): the previous gate demanded that EVERY refusal happen
