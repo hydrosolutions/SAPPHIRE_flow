@@ -14,9 +14,11 @@ source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.
 
 ## Status
 
-**DRAFT — not reviewed.** Written after Plan 262 T4 was blocked in execution. Owner chose this
-shape (option (a)) over an in-process call and over raising the Prefect server limit, on the
-ground that **model onboarding must be replicable on Nepali servers**.
+**DRAFT — reviewed, approved, awaiting READY.** Written after Plan 262 T4 was blocked in
+execution. Owner chose this shape (option (a)) over an in-process call and over raising the
+Prefect server limit, on the ground that **model onboarding must be replicable on Nepali
+servers**. ⚖️ **Only the orchestrator sets `status: READY`** — this plan does not set it on its
+own approval.
 
 Plan number **307 granted by the owner, 2026-09-21**. *(An earlier revision claimed it was "the
 first unreferenced number after 306"; that was false — 274–299 are unreferenced repo-wide.)*
@@ -369,7 +371,7 @@ agree today, and duplicating them creates two copies to keep in sync.* If the tw
 | `trained_at` | `2026-08-31T11:41:55+00:00` | `logs/train.log:632` (`aquacast.pipeline:168`, "Trained: best val_loss=-17.94623 @ epoch 5"), 13:41:55 on a Europe/Zurich machine in CEST — owner-confirmed |
 | `training_period_start` | **`1985-01-01T00:00:00+00:00`** | see the date convention below |
 | `training_period_end` | **`2020-12-31T00:00:00+00:00`** | the config's global split is a fallback; 18 regions override and two train through 2020 |
-| `expected_config_hash` | `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` | computed from `config.yaml` in the owner's tree; **byte-identical to the vendored repo copy**, verified 2026-09-21 |
+| `expected_config_hash` | **recompute from `config.yaml` in the owner's tree at import time**; expected to equal `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` | 🔴 *Amendment review 2026-09-21 (major): listing the digest while forbidding re-derivation conflicted with Plan 262's instruction to compute it at import time from the owner's tree — the whole point being that the repo constant would compare the repo file against itself.* **262's procedure governs: compute, then compare to the value here. A mismatch stops the import.** Byte-identity with the vendored copy was verified 2026-09-21. |
 | `source_commit` | null | the bundle records aquacast `0.1.346`; the runtime pin is `0.1.356` |
 | artifact | `checkpoints/best.pt`, 1,814,653 bytes | |
 | `expected_artifact_sha256` | `84f1a4ef5099b2a9b76783413d250e9016be4d0adea99e14277b61ae2f788a26` | measured on the source file and re-verified after transfer to the host, 2026-09-21 |

@@ -1,7 +1,7 @@
 ---
 status: READY
 created: 2026-09-09
-revised: 2026-09-11
+revised: 2026-09-21
 plan: 262
 title: Onboard cmal_small on a two-station Swiss group — the first deep-learning model in the pipeline
 scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour. The operational forcing series itself is Plan 261's subject and is now a PREREQUISITE, not an accepted shortfall.
@@ -22,6 +22,7 @@ and T3b's live-activation prerequisite still apply. Review coverage is recorded 
 | 1 | 2026-09-09 | the **pre-rewrite** plan (Claude + Codex) | findings folded — then the plan was REWRITTEN the same day, so this round does not cover the current text |
 | 2 | 2026-09-11 | the **pre-fold** text of this revision (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors |
 | 3 | 2026-09-11 | **the fold of round 2** (Codex, confirming) | 6 of 9 FIXED, no blocker remaining; 1 major + 3 minors MOVED or STILL PRESENT — folded in turn, and this table is one of them |
+| 4 | 2026-09-21 | **the 2026-09-21 amendment ONLY** (Codex, on the diff) — the staged-path reroute, `depends_on: [261, 307]`, the timezone-aware bounds | NEEDS CHANGES — 2 majors, 3 minors, no blocker. Verdict on the framing: *"substantively honest, but incomplete"* — Plan 307 preserves the importer's safeguards and the flow run, but the mount, reader, guards and schema change **are** new machinery, which the untouched text did not acknowledge. All five folded; this row is one of them. ⚠️ **Covers the amendment, NOT the rest of the plan.** |
 
 A complete Codex pass over `ba1c807a` on 2026-09-11 found one remaining major:
 T3b would activate the pilot before T5's complete-window check. The owner accepted that
@@ -101,19 +102,31 @@ This task's own "Risk to record" came true. The import was refused at flow-run c
 
 `best.pt` is 1,814,653 bytes → 2,419,540 base64 chars → **2,420,511 bytes of parameters, 4.6× the
 server limit**. ✅ **Nothing was written** — `model_artifacts` stayed at 902 rows and
-`model_artifacts WHERE group_id IS NOT NULL` at 0. The artifact itself is staged on the host and
-sha256-verified identical to the source (`84f1a4ef…8a26`), and round-trips correctly through
-base64 inside the container, so the artifact is not in question — only the transport.
+`model_artifacts WHERE group_id IS NOT NULL` at 0.
 
-⚖️ **Owner, 2026-09-21: model onboarding must be replicable on Nepali servers.** That ruled out
-both an in-process call and raising the Prefect limit, and selected a staged-path import.
-**Plan 307 owns it**, and its T4 carries this task's provenance table forward.
+⚠️ **What this does and does NOT establish.** The artifact is staged on the host, sha256-verified
+identical to the source (`84f1a4ef…8a26`), and round-trips through base64 inside the container —
+so its **byte integrity is verified**. ⛔ **Its runtime compatibility is not.**
+`services/model_import.py:401-410` runs `model.deserialize_artifact(artifact_bytes)` as a separate
+gate before any write, and the refused run never reached it. Running a **0.1.346 bundle under a
+0.1.356 runtime** is precisely what this plan's Flagged-gaps section records as never having been
+exercised. "The artifact is not in question" would overstate the evidence; only the bytes are.
+
+⚖️ **Owner, 2026-09-21: model onboarding must be replicable on Nepali servers.** On that ground
+the owner **chose** a staged-path import over an in-process call and over raising the Prefect
+limit. ⚠️ That is an owner decision, not a demonstration: raising the limit was rejected as
+non-portable and unbounded, **not** proven impossible. **Plan 307 owns the route**, and its T4
+carries a working copy of this task's provenance table.
 
 ✅ **AMENDED 2026-09-21, owner-directed.** T4's In now records that the original route is
-impossible and that execution goes through Plan 307's staged path; `depends_on` gained **307**.
-⚠️ **This is a material change to a READY plan**, made on the owner's explicit instruction, and it
-carries its own independent review — recorded in the review table above, not inherited from the
-2026-09-11 rounds, which covered a different text.
+**refused under the current Prefect parameter limit** and that execution goes through Plan 307's
+staged path; `depends_on` gained **307**.
+
+⚠️ **This is a material change to a READY plan.** The 2026-09-11 rounds covered a different text
+and do **not** cover it. Its own review is the 2026-09-21 row in the table above. 🔴 *An earlier
+wording of this bullet claimed that review was already "recorded in the review table" while the
+table held only the September 9–11 rounds — a claim of coverage that did not exist, which is the
+error this plan's own review history exists to prevent.*
 
 🔑 **The `trained_at` prerequisite is CLEARED.** The owner confirmed 2026-09-21 that the training
 machine's clock was Europe/Zurich, so `logs/train.log:632`'s `13:41:55` on 31 August is CEST =
@@ -297,10 +310,13 @@ delayed by it.
 
 ⚠️ **The dependency was previously stated three ways** — `depends_on: [261]` (plan-wide) in the
 frontmatter, "parallel except T5" in this paragraph, and **no 261 edge at all** in the phase
-graph. Independent review 2026-09-11 (major). It is now encoded **once**: the frontmatter keeps
-`depends_on: [261]` as the prerequisite of record, and **phase-4 carries a
-`requires_deployed: [261]` annotation** so the constraint is visible where an executor reads the
-graph. The prose here describes it, it does not define it.
+graph. Independent review 2026-09-11 (major). It is now encoded **once**: the frontmatter holds
+**`depends_on: [261, 307]`** as the prerequisite list of record, and the phase graph carries
+`requires_deployed` annotations so each constraint is visible where an executor reads the graph —
+**phase-4 for 261**, **phase-2 for Plan 307's T3b**. The prose here describes it, it does not
+define it. 🔴 *Amendment review 2026-09-21 (minor): this paragraph still said `[261]` after 307
+was added, and phase-2 had no counterpart to phase-4's annotation — the same fix-one-site failure
+this plan's review history keeps recording.*
 
 ⚠️ **`requires_deployed` is a MANUALLY CHECKED note, not an enforced gate — confirming review
 2026-09-11 (minor).** Nothing in this repo consumes that key; the phase graph records ordering
@@ -656,7 +672,7 @@ record:
 |---|---|---|
 | `training_period_start` / `_end` | **1985-01-01 → 2020-12-31** | `1985-01-01 → 2016-12-31` is only the config's *global* split. 18 regions carry overrides and two of them (`camelsh`, `caravan_camels_cz`) train through 2020-12-31. The artifact was trained on the pooled union, so the covering range is what describes it. |
 | `trained_at` | **the training-completion time, 2026-08-31 13:41:55** (`logs/train.log:632`) | **Not** `BundleMeta.created_at`: the bundle is stamped whenever a checkpoint snapshot is built, and the best checkpoint is from **epoch 5**, so its stamp long predates completion. **Not** the file's 14:05 mtime either. Three different numbers; only one is the training completion. |
-| `expected_config_hash` | computed **at import time from `config.yaml` in the owner's model tree** | Copying the constant T1 pins into the repo would compare the repo file against itself — a check that can never fail. The owner's tree is the only independent source; the bundle carries no config digest. |
+| `expected_config_hash` | computed **at import time from `config.yaml` in the owner's model tree**, and expected to equal `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` | Copying the constant T1 pins into the repo would compare the repo file against itself — a check that can never fail. The owner's tree is the only independent source; the bundle carries no config digest. 🔴 **The computation is REQUIRED; the recorded digest is a CROSS-CHECK, not a substitute** — *amendment review 2026-09-21 (major): Plan 307's T4 lists this digest as a value to pass while forbidding re-derivation, which read as licence to paste it.* Recompute from the tree at import time; if the result differs from the digest above, **stop** — either the tree moved or T1's vendored copy no longer matches it, and both are findings, not nuisances. |
 | `source_commit` | **left null** unless the training checkout revision is recovered | The artifact records aquacast **`0.1.346`**; the pinned revision is **`0.1.356`**, four days later. The pin cannot be the training source. |
 
 🔴 **PREREQUISITE — T4 cannot start until the `trained_at` timezone is confirmed.**
@@ -679,13 +695,18 @@ provenance row records the three distinct timestamps un-conflated. A deliberate 
 run with a wrong `expected_config_hash` is refused **before any write** — the invariant
 `services/model_import.py` is built to hold.
 
-**Pre-change.** N/A — this task runs existing, tested code against real data. Its
-evidence is the resulting rows.
+**Pre-change.** The base64 route was attempted on 2026-09-21 and **refused at flow-run
+creation** (see the Execution record). This task now runs against Plan 307's staged path, whose
+implementation, tests and deployment are 307's to deliver — so "this task runs existing, tested
+code" is **no longer true of the transport**. It remains true of the importer:
+`import_external_artifact` is unchanged and already tested.
 
-**Risk to record.** `import_model_artifact_flow` takes the artifact as a base64 `str`
-parameter (`flows/import_model_artifact.py:116-129`); 1.8 MB encodes to ~2.42 MB
-crossing the Prefect parameter boundary. "No new import machinery" is true, but this is
-by far the largest artifact to cross it.
+**Risk realised, not merely recorded.** `import_model_artifact_flow` took the artifact as a
+base64 `str` parameter (`flows/import_model_artifact.py:116-129`); 1.8 MB encodes to ~2.42 MB and
+the Prefect server refuses anything above 524,288 bytes. 🔴 *The original wording — "'No new
+import machinery' is true, but this is by far the largest artifact to cross it" — predicted the
+failure and then stood unchanged after it happened.* T4's exclusion of a **new importer** remains
+valid and is what that constraint was protecting; the transport is new, implemented by 307.
 
 ### T5 — the first forecast, after Plan 261 is deployed
 
@@ -895,7 +916,9 @@ uv run pyright src
     {
       "id": "phase-2",
       "tasks": ["T4"],
-      "depends_on": ["phase-1"]
+      "depends_on": ["phase-1"],
+      "requires_deployed": ["307-T3b"],
+      "note": "307 T3b = the staged-path mount, the worker recreation that attaches it, and the re-registered parameter schema. 262 T4 and 307 T4 are the SAME import execution; one set of evidence satisfies both."
     },
     {
       "id": "phase-3",
