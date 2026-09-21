@@ -1041,8 +1041,10 @@ The aquacast package is not installed in a plain dev environment, so this was **
 here. ⚠️ **Do not repeat the "3 of 4 cycles are wrong" half of this without the "impact unverified"
 half.**
 
+➡️ **CARRIED TO [Plan 311](311-forecast-seam-continuity-at-non-midnight-cycles.md)** (filed 2026-09-21).
+
 **Cheap mitigation if it does matter:** the 00:00Z cycle is already continuous, so a pilot
-restricted to that cycle sidesteps the question entirely while it is answered properly.
+restricted to that cycle sidesteps the question entirely while it is answered properly — that is 311's D1 option (a).
 
 ### Consequence
 
