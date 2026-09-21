@@ -15,7 +15,7 @@ source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224
 
 ## Status
 
-**DRAFT. Three independent passes, the most recent NEEDS CHANGES (4 major, 1 minor) — folded, and
+**DRAFT. Four independent passes, the most recent NEEDS CHANGES (4 major, 2 minor) — folded, and
 not yet re-reviewed.** ⛔ **D1 is open**, and it now covers both *what* to retry and *how often*.
 
 | pass | outcome | what it changed |
@@ -23,6 +23,7 @@ not yet re-reviewed.** ⛔ **D1 is open**, and it now covers both *what* to retr
 | 1 — review | NEEDS CHANGES (1 blocker, 6 major, 2 minor) | the recommended retry **could not work**; four claims asserted where measurement was possible, **all four wrong** |
 | 2 — recommendations | disagreed on **2 of 3** decisions | found the load-bearing error (a retry's wait is not paid on healthy runs), and argued the plan was **too big for its evidence** |
 | 3 — review of the reconciliation | NEEDS CHANGES (4 major, 1 minor) | **two of the four majors were defects in the descope itself**, including a retry that would skip entirely underneath a red Trivy gate; supplied the D1 answer neither party had |
+| 4 — review of that fold | NEEDS CHANGES (4 major, 2 minor) | **all four majors created by the fold**: the `download-syft` split never propagated to the artifact contract, the new execute step was left unbounded, a schedule option was physically impossible, and two counterfactuals were written directly beneath the disclaimer saying they could not be |
 
 ⚖️ **The plan is about a third of its original size.** Pass 2's strongest point was not any single
 finding — it was that the plan was too big for its evidence. Reconciling on the measured facts
@@ -30,7 +31,9 @@ removed three of five tasks, two of four decisions, and the standards amendment 
 What is left is a retry and an honest error message.
 
 ⭐ **Making a plan smaller is a change like any other**, and pass 3 proved it earns its own review
-rather than inheriting the previous approval.
+rather than inheriting the previous approval. ⭐ **Pass 4 then proved the same of the fold.** The
+substance has been stable since the descope; what keeps failing is the editing — which is the
+argument for reviewing this document once more before it is built, and for keeping it small.
 
 ⚖️ **Plan number 309 is claimed, not granted.** 302–305 and 309+ are unused across `docs/plans/`
 and `docs/plans/archive/`; nothing in `docs/` refers to a "Plan 309". The owner grants numbers.
@@ -94,7 +97,7 @@ caught the arithmetic; the above is re-derived per run and carries ids.)*
 | attempt | job | time (UTC) | result |
 |---|---|---|---|
 | original | `106377308103` | 14:38:56 | `504` on `…/releases/v1.51.1` |
-| re-run 1 | `106382760290` | 14:52:57 | identical `504`, 16 min later |
+| re-run 1 | `106382760290` | 14:52:57 | identical `504`, **14 min 01 s** later |
 | re-run 2 | `106384504421` | 14:57:35 | `504` on `…/download/…/syft_1.51.1_checksums.txt` |
 | re-run 3 | `106387452121` | 15:02→15:05 | **succeeded** |
 
@@ -103,9 +106,10 @@ Throughout, from a developer machine: the tag page, the installer's `releases/v1
 probe would have argued this problem out of existence.
 
 ⚠️ **These four points bound the outage; they do not describe it.** The last observed failure was at
-14:57:35 and the SBOM step succeeded at 15:05:19–15:05:39, so recovery happened somewhere in a
-**~8-minute window we never sampled**. Measured from the first attempt, that is **between +18.6 and
-+26.6 minutes**. *(Third review pass, major: an earlier revision treated this as a continuous
+14:57:35 and the SBOM step ran 15:05:19–15:05:39, so recovery happened somewhere in a **~8-minute
+window we never sampled**. Measured from the first attempt (14:38:56), that is **after +18.65 min
+and no later than +26.72 min** — the upper bound is the *end* of the successful step, the last
+instant by which the download must have worked, so it is the conservative one. *(Third review pass, major: an earlier revision treated this as a continuous
 27-minute outage and drew conclusions from it.)* Nothing here establishes that the fault was
 continuous, and no retry schedule below can be judged against a duration we did not measure.
 
@@ -222,8 +226,10 @@ sharper: we retry the *download*, which is the thing that failed, not the scan.
 - 🔑 **"A detector is not a destination."** Verification answers *whether*; an assignee answers *who
   acts*. Recorded here for the next time a compensating control is proposed — see the watch items.
 - 🔑 **A red run is not continuity unless someone owns recovery.** Under this design recovery is a
-  re-run, and §2 shows that works — but the principle is why the larger design needed an owner and
-  this one does not.
+  re-run — §2 shows that works — but ⚠️ **a mechanism is not an owner**, and the exit gates require
+  one. *(Fourth review pass, minor: this bullet previously said the design "does not" need an owner
+  while the exit gate demanded one — a contradiction in the operational contract.)* What the small
+  design avoids is a **notifier**, not the responsibility.
 
 ## Tasks
 
@@ -249,17 +255,32 @@ SBOM failure would vanish behind an unrelated red check with no retry and no mes
 ⟹ **Every attempt, every wait, the enforcement step and the upload must carry
 `!cancelled() && steps.build-image.outcome == 'success'`** in addition to their own gate.
 
-**The working shape** (with D1's `download-syft` split):
+**The working shape** (with D1's `download-syft` split). 🔴 **The split changes what each step
+produces, and that has to propagate** — *(fourth review pass, major: the previous table still said
+"upload whichever attempt produced the file", which describes the old design. A **download** attempt
+produces a command path, not an SBOM.)*
 
 | | |
 |---|---|
-| install attempts | `uses: …/download-syft@<pinned>`, each `continue-on-error: true` so `conclusion` is `success` and the job continues while `outcome` records `failure`; attempt *n+1* gated on `!cancelled() && steps.build-image.outcome == 'success' && steps.dl-<n>.outcome == 'failure'` |
-| per-attempt bound | 🔴 **`timeout-minutes` on each attempt.** Without it one stalled download consumes the whole budget and the job is **cancelled**, skipping enforcement, message and upload (§3). A healthy install+scan takes **20 s**, so a 3-minute per-attempt bound is ~9× headroom |
-| waits | between attempts, from D1's schedule. Free on healthy runs; free in runner minutes |
-| execute | `run: ${{ steps.dl-<n>.outputs.cmd }} …` — a **separate** step, so "ran and failed" is a distinct outcome from "never installed" |
-| **enforcement** | a normal step — **no** `continue-on-error`, but **with** the two guards above — that keys on the **artifact**: if there is no valid `sbom.cdx.json`, **fail the job** and emit the message. This is what preserves §5 |
-| upload | the `if:` must select **whichever attempt produced the file**. Today's condition requires the *first* to have succeeded, so a successful retry would skip the upload |
-| reserve | the schedule must leave ~1 minute for enforcement + upload + post-steps inside the ~26 usable minutes (§3) |
+| download attempts | `uses: …/download-syft@<pinned>`, each `continue-on-error: true` so `conclusion` is `success` and the job continues while `outcome` records `failure`; attempt *n+1* gated on `!cancelled() && steps.build-image.outcome == 'success' && steps.dl-<n>.outcome == 'failure'` |
+| per-attempt bound | 🔴 `timeout-minutes` on **each** attempt. Without it one stalled download consumes the budget and the job is **cancelled**, skipping enforcement, message and upload (§3). A rejected download fails in ~0–11 s and a healthy one plus the scan took 20 s, so a 3-minute bound is generous |
+| admission | ⚠️ before each wait, check the **remaining job time** rather than trusting D1's offsets — §3's 2m49s pre-SBOM figure is one measurement, not a floor, and a slower image build shrinks the budget |
+| waits | after a failed attempt, per D1. Free on healthy runs; free in runner minutes |
+| **execute — once** | `run: ${{ steps.dl-<k>.outputs.cmd }} scan …`, where *k* is the **first attempt that succeeded**. Install success is not artifact readiness, so this is a separate step with its **own `timeout-minutes`** — 🔴 *(fourth pass, major: the previous shape bounded the downloads and left the new execute step unbounded, recreating the cancellation path it had just closed)* |
+| **enforcement** | a normal step — **no** `continue-on-error`, but **with** the `!cancelled() && build-image success` guards — keyed on the **artifact**: if there is no valid `sbom.cdx.json`, **fail the job** and emit the message. This is what preserves §5 |
+| upload | gated on the **execute** step plus artifact validation — not on any download attempt |
+| reserve | the schedule must leave time for execute + enforcement + upload + post-steps inside the budget (§3) |
+
+⛔ **Must be preserved when bypassing the parent action** — all verified in its source at the pinned
+SHA (`src/github/SyftGithubAction.ts`):
+
+| | |
+|---|---|
+| `SYFT_CHECK_FOR_APP_UPDATE: "false"` | the parent sets it (line 127); `download-syft` does **not**. Omitting it adds an **outbound update check** to the very step whose problem is outbound network calls |
+| image reference | `sapphire-flow:ci-${{ github.sha }}` |
+| format and output | `-o cyclonedx-json`, written to `sbom.cdx.json` |
+| artifact name | `sbom-cyclonedx` |
+
 
 **The failure message is a deliverable, not a nicety**, and ⛔ **it must not name a cause it has not
 established.** *(Third review pass, major: the previous wording prescribed "could not obtain its
@@ -272,7 +293,7 @@ file is still absent or invalid, it says *that*, rather than guessing.
 ⚠️ **This is the only thing standing between a red check and a wrong conclusion**, now that the
 classifier and the notifier are gone. It is the plan's main deliverable, not a trimming.
 
-**In.** `.github/workflows/ci.yml` (the SBOM steps only); `docs/standards/cicd.md:732` (one line).
+**In.** `.github/workflows/ci.yml` (the SBOM steps only); `docs/standards/cicd.md:732` (the step description) **and `:620`** (the workflow table row, which still names the parent action and its local equivalent — the split changes both). *(Fourth review pass, minor: limiting the edit to one line left the table describing a design that no longer ships.)*
 
 **Out.** ⛔ No change to `trivy-scan`, `trivy-gate-table`, `trivy-sarif`, either SARIF upload, the
 image build or the scripts smoke-check. ⛔ `continue-on-error` appears **only** on retry attempts an
@@ -293,8 +314,13 @@ enforcement step adjudicates. ⛔ No event-dependent behaviour — PR and `main`
   the enforcement step **still run**, the message still appears, and a recovered SBOM still uploads
   — while the job stays red for the CVE. This is the condition trap above, and nothing else
   catches it.
-- Force a **stalled** attempt and show the per-attempt `timeout-minutes` fires, the remaining
-  attempts and the enforcement step still run, and the job is **not** cancelled.
+- Force a **stalled download** and a **stalled execute** — two cases, not one — and show the
+  per-step `timeout-minutes` fires in each, the enforcement step still runs, and the job is **not**
+  cancelled.
+- Force a run with **reduced starting headroom** (a slower image build) and show the admission check
+  skips the later attempts rather than overrunning into cancellation.
+- Show the produced SBOM is **byte-equivalent in shape** to the parent action's — same components,
+  same format — and that `SYFT_CHECK_FOR_APP_UPDATE=false` is set on the execute step.
 - ⚠️ **Effectiveness in production is unmeasured until observed**, and §2 says why it cannot be
   computed: the outage's recovery point was never sampled.
 
@@ -316,36 +342,56 @@ step's meaning rather than waved through on this plan's argument.
 ⚠️ **Read the D1 discussion in § The reconciliation first** — *what* to retry is settled (the
 pinned `download-syft` sub-action). This is only *how often*.
 
-**The budget, from §3:** ~26 minutes usable, per-attempt bound 3 minutes, ~1 minute reserved.
-**Offsets below are ABSOLUTE, measured from the first attempt's start** — not successive waits.
-*(Third review pass, major: the previous table mixed the two notations, so (b) read as either 12 or
-17 minutes of coverage and (c), read as successive waits, started its last attempt at +39 — past
-the job timeout.)*
+**The budget, from §3:** ~26 minutes usable from the first download attempt. ⚠️ **That figure is
+one measurement, not a floor** — it assumes the pre-SBOM steps take 2m49s, and a slower image build
+shrinks it. *(Fourth review pass, major.)* So the schedule is expressed as **waits after a failed
+attempt**, and T1 requires admission to check the **remaining** job time before each wait rather
+than trusting these offsets.
 
-| option | attempt starts (absolute) | last attempt ends by | coverage | reserve left |
-|---|---|---|---|---|
-| **(a)** 2 attempts | 0, +2 | +5 | ~2 min | ~21 min |
-| **(b)** 3 attempts | 0, +4, +10 | +13 | ~10 min | ~13 min |
-| **(c)** 4 attempts | 0, +5, +12, +20 | +23 | ~20 min | ~3 min |
+**Notation.** Each row gives the wait inserted *after* a failed attempt. A rejected download fails
+in ~0–11 s (§2), so in the realistic case the cumulative wait *is* the elapsed offset; a **stalled**
+attempt instead consumes up to its 3-minute bound, which is why ⛔ **absolute offsets alone are not
+a schedule** — an earlier table gave option (a) attempts at 0 and +2 with a 3-minute bound, which is
+impossible, since steps run sequentially and attempt 1 may still be running at +2.
 
-🔴 **What the evidence does and does not say.** §2 bounds this outage's recovery to **+18.6 to
-+26.6 minutes** from the first attempt — an 8-minute window we never sampled.
+| option | waits after a failure | elapsed when the last attempt starts (fast-failure case) | worst case, all attempts stalling |
+|---|---|---|---|
+| **(a)** 2 attempts | 2 min | ~2 min | ~8 min |
+| **(b)** 3 attempts | 4, 6 min | ~10 min | ~19 min |
+| **(c)** 4 attempts | 5, 7, 8 min | ~20 min | ~32 min — ⛔ **exceeds the budget** |
 
-- **(b) would not have covered it.** Its last attempt ends at +13, and +18.6 was still failing.
-- **(c) is genuinely undetermined.** Its last attempt runs at +20; recovery was after +18.6 and
-  before +26.6. It succeeds if recovery fell in that 1.4-minute sliver, and fails otherwise.
-- ⛔ **No option is shown to cover it**, and ⛔ **"covers the common case" has no measured support** —
-  this is one sample of one outage.
+🔴 **(c) does not fit once stalls are counted.** It fits only on the assumption that failures stay
+fast, which is exactly the assumption a per-attempt bound exists to reject. Either drop it, or pair
+it with the admission check so its later attempts are skipped when the remaining time is gone.
 
-Recommendation: **(b)**, as a **policy choice, not an evidence-backed one** — it absorbs a short
-blip at a wall-clock cost a developer will tolerate, and leaves real reserve. (c) buys ~10 more
-minutes of coverage for ~10 more minutes of waiting on a broken run and cuts the reserve to ~3
-minutes; that is defensible if the owner weights coverage over feedback latency, and the honest
-statement is that this single sample does not decide between them.
 
-⚠️ **The alternative nobody has costed: raise `timeout-minutes`.** It is the only way to cover an
-outage of §2's length, and its price is slower feedback on a genuinely broken build. Not
-recommended, but it should be rejected deliberately rather than by omission.
+🔴 **What the evidence does and does not say — and the answer is "almost nothing".** §2 bounds
+recovery to **after +18.65 and no later than +26.72 minutes**, an ~8-minute window nobody sampled.
+
+⛔ **No schedule's historical outcome can be computed from that**, and an earlier revision of this
+section computed two anyway, immediately beneath the disclaimer saying it could not. *(Fourth review
+pass, major.)* Specifically:
+
+- **"(b) would not have covered it" is unsupported.** A failure at +18.65 does not mean the service
+  was down at +10; it may have worked between observations.
+- **"(c) succeeds only if recovery precedes +20" is unsupported.** Its attempt *runs* until its
+  bound, and a download makes requests throughout, so it can succeed on a recovery after its start.
+
+**What the failure timings do establish** is the schedule's *notation*. The three failing SBOM steps
+took **1 s, 11 s and 0 s** (`106377308103`, `106382760290`, `106384504421`) — a rejected download
+fails fast. So in the realistic case the attempt offsets are the cumulative waits, and the
+per-attempt bound below binds only on a **stall**.
+
+Recommendation: **(b)**, as a **policy choice with no evidence behind it** — three attempts across
+~10 minutes absorbs a short blip at a wall-clock cost a developer will tolerate, fits the budget
+even if every attempt stalls, and leaves real reserve. ⛔ **Neither this outage nor any other tells
+us whether (b) or (c) would have helped**, and the plan no longer pretends otherwise.
+
+⚠️ **The alternative nobody has costed: raise `timeout-minutes`.** It buys coverage for a longer
+outage at the price of slower feedback on a genuinely broken build. ⛔ It is *not* established as
+"the only way to cover an outage of §2's length" — that claim rested on the continuity assumption
+this section just retired. Reject it deliberately rather than by omission.
+
 
 ⛔ **Do not copy the LINDAS 5 minutes as if it were derived.** Its number came from a *measured*
 upstream publish cycle; nothing analogous exists here.
@@ -453,3 +499,27 @@ Making a plan smaller is a change like any other, and it earns its own review ra
 the previous one's approval. ⭐ And the D1 finding is the sharper lesson: I reconciled *toward my own
 original answer* and built a contingency argument to justify it. The reviewer, whose position I was
 characterising, said the characterisation was convenient — and was right.
+
+**2026-09-21 — fourth pass on the fold: NEEDS CHANGES (4 major, 2 minor), all four majors created by
+the fold itself.**
+
+| finding | what it was |
+|---|---|
+| **major** | the `download-syft` split **did not propagate through the artifact contract** — a *download* attempt yields a command path, not an SBOM, so "upload whichever attempt produced the file" described the deleted design. Also: bypassing the parent loses `SYFT_CHECK_FOR_APP_UPDATE=false` (set at `SyftGithubAction.ts:127`), adding an **outbound update check** to the step whose problem is outbound calls |
+| **major** | the timeout fix bounded the downloads and **left the new execute step unbounded** — a stalled scan still reaches job cancellation and skips the message. And 2m49s is one measurement, not a floor: a slower image build shrinks the budget, so admission must check **remaining** time |
+| **major** | D1's option (a) — attempts at 0 and +2 under a 3-minute bound — is **impossible**; steps are sequential. The table now gives **waits after a failure**, and on that basis **(c) overruns** when attempts stall |
+| **major** | 🔴 **the continuity assumption survived directly beneath its own disclaimer.** The section said these observations bound rather than describe the outage, then computed two counterfactuals from them. Both are withdrawn; **no schedule's historical outcome is knowable** |
+| minor | `14:38:56 → 14:52:57` is **14m01s**, not 16 minutes |
+| minor | the doc scope missed `cicd.md:620`, and the reconciliation said the design needs no recovery owner while the exit gate required one |
+
+**Confirmed sound by that pass:** the guards now reach T1's requirements, verification, exit gates
+and phase graph; the narrower success guarantee is present; `cmd` is an executable path usable in
+`run:`; both action paths pin the same syft version; the parent's own artifact upload is already
+disabled. And explicitly: *"the reduced implementation scope is appropriate — these fixes do not
+require restoring the classifier, notifier or exception policy."*
+
+⭐ **Four passes, and the third and fourth each found that the previous FOLD introduced new defects.**
+The plan's substance has been stable since the descope; what keeps failing is the editing. The
+fourth pass's sharpest finding is the clearest case: a disclaimer was written saying the evidence
+could not support counterfactuals, and two counterfactuals were written underneath it. **Stating a
+limit is not the same as observing it.**
