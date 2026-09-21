@@ -611,3 +611,80 @@ step ids I was renaming would have found it in seconds.
 "mutants" never applied — a shell-quoting slip left a literal `\$` in the search string — and the
 suite passed, which reads identically to a surviving mutant. The patches are now applied by a script
 that **asserts its anchor matched**. See `feedback_red_first_must_prove_the_fault`.
+
+
+## T2 — the survey, run 2026-09-21
+
+Scope as stated: **every CI step whose failure would red a PR for a reason unrelated to the PR**,
+classified gate or infrastructure. ⛔ **No step was changed.** Everything below becomes its own task
+or plan.
+
+### The method, and why the obvious method is wrong
+
+🔴 **A run-level census systematically undercounts exactly this class.** A successful re-run
+*rewrites the run's conclusion*, so a transient failure that someone re-ran away disappears from
+`gh run list`. Today's syft outage — three failures in 19 minutes — is **absent** from the
+run-level view of the very window it happened in.
+
+⟹ counted at **attempt** level (`runs/{id}/attempts/{n}/jobs`), not run level.
+
+⚠️ **And that census must exclude this plan's own verification branch.** The five forced-fault runs
+on `feat/plan-309-sbom-retry` injected failures deliberately; counting them would have inflated the
+SBOM row fourfold and made the case for this very plan out of its own test data.
+
+**Organic window 2026-09-11 → 2026-09-21, 92 runs** (8 verification runs excluded):
+
+| failed step | attempts | classification |
+|---|---|---|
+| `build-image-and-scan` / Render vulnerability table (gate) | 5 | ✅ **GATE** — real CVE findings |
+| `lint` / Trivy filesystem scan | 4 | ✅ **GATE** — real findings, all four on 2026-09-19, `CVE-2026-63374` anyio CRITICAL (checked, not assumed) |
+| `unit` / pytest | 2 | ✅ **GATE** — real test failures |
+| `build-image-and-scan` / Generate SBOM with syft | 3 | 🔴 **INFRA** — today's 504. **Fixed by T1.** |
+| `build-image-and-scan` / Smoke-check operator scripts | 1 | ⚠️ unclassified — appears only in a re-run attempt |
+
+⚠️ **The two apt failures cited in §1 have aged out of this window** (they were 2026-09-11, at its
+edge). The §1 figure stands for its own window; this is a different one. ⛔ Do not merge the two
+tables into a single count.
+
+### The structural finding — it is not about any one step
+
+Every step in every PR-gating job was classified by **who owns the thing being fetched**:
+
+| dependency | steps | retried? | own timeout? |
+|---|---|---|---|
+| **GitHub's own** — `actions/checkout`, `actions/cache`, `setup-uv`, `upload-artifact`, `codeql-action` | ~14 across 5 jobs | no | no |
+| **Debian/Ubuntu mirrors** — `Install system deps for cfgrib / rioxarray / exactextract` | 2 (`unit`, `integration`) | no | ✅ **8 min** |
+| **PyPI + 2 private git repos** — `uv sync` variants | 5 jobs | no | no |
+| **Docker Hub + PyPI** — `Build app image` (base images, and `uv sync` runs *inside* it) | 1 | no | no |
+| **trivy binary + vulnerability DB** — `aquasecurity/trivy-action` | 2 (`lint`, `build-image-and-scan`) | no | no |
+| **syft release** — `download-syft` | 3 attempts | ✅ **T1** | ✅ **T1** |
+
+🔑 **Three findings, in the order I would act on them:**
+
+1. 🔴 **`Build app image` is the largest unretried surface and it has already failed — off CI.**
+   During today's mac-mini deploy the equivalent build failed fetching the private
+   `forecastinterface`/aquacast dependency, and **succeeded on a clean retry with no change**. It
+   pulls base images from Docker Hub *and* runs `uv sync` inside, so it carries both third-party
+   surfaces at once. ⚠️ It has not been observed failing **in CI** — the observation is from the
+   deploy path, which this plan's §1 census does not cover.
+2. 🔴 **`trivy-action` is syft's exact shape, unfixed.** It downloads a binary *and* a vulnerability
+   DB (`INFO [vulndb] Downloading vulnerability DB...`, seen in the 09-19 logs), in two jobs,
+   unretried. It has not bitten. Today's syft outage had not bitten either, the day before.
+3. ⚠️ **Almost nothing has a step-level `timeout-minutes`.** Only the two apt steps (8 min) and
+   T1's new SBOM steps do. A hung fetch anywhere else runs until the **job** timeout — which
+   **cancels**, skipping every `!cancelled()` step, producing a bare cancellation with no
+   explanation. That is T1's own finding, present across the whole file.
+
+### What this produces
+
+⛔ **No changes here.** Proposed follow-ons, each to be reviewed against its own step's meaning:
+
+| | |
+|---|---|
+| **(i)** retry + explain `Build app image`, reusing T1's download/execute/enforce shape | the largest surface, with an observed (off-CI) failure |
+| **(ii)** the same for `trivy-action`'s DB fetch — ⚠️ **without touching the gate**, which must stay loud (`ci.yml:616-621`) | pre-emptive; the argument is the class, not an incident |
+| **(iii)** a step-level `timeout-minutes` convention for every network step, so the job timeout stops being the backstop | cheapest, and it protects the failure *message* everywhere |
+
+⭐ **Recommendation: (iii) first.** It is mechanical, it needs no per-step judgement, and it is the
+one that preserves the explanation on every other step — which is the property this whole plan
+exists to buy. (i) and (ii) are retries; (iii) is what makes any of them able to report.
