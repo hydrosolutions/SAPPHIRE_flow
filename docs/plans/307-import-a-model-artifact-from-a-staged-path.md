@@ -212,8 +212,21 @@ the tests pass parameters by name.
 
 Two guards, in this order:
 
-1. **Traversal** — resolve the candidate path and require the resolved result to be inside the
-   resolved staging root, so a symlink or a `../` escape is refused **before the file is opened**.
+1. **Traversal** — the opened file must be **provably inside the staging root at the moment it is
+   opened**, not merely at the moment its name was checked.
+
+   🔴 **Resolve-then-open is not sufficient, and an earlier revision specified exactly that.**
+   *Round 4 (major).* This plan states that the staging directory is writable by anyone with host
+   shell access — so between resolving the name and opening it, a checked component can be replaced
+   with a symlink pointing outside the root. The checksum guard below does not help: it prevents an
+   unintended **import**, but the forbidden **read** has already happened, and a read is the thing
+   the traversal guard exists to prevent. The static-symlink test named below does not exercise
+   this race at all.
+
+   ⇒ **Open relative to a pinned staging-directory descriptor** (open the root once, then resolve
+   each component under it without following symlinks out — `dir_fd` plus `O_NOFOLLOW`, or an
+   equivalent containment-preserving mechanism), so containment is enforced by the open itself
+   rather than by a name check that precedes it.
 2. **Content** — digest the bytes and compare to `expected_artifact_sha256`, refusing **before
    those bytes reach `import_external_artifact` and before anything is written**.
 
@@ -246,6 +259,7 @@ URI, or any path outside the staging root.
 | `artifact_path` given, `expected_artifact_sha256` **omitted** | **refused** |
 | path outside the staging root | refused, naming the root, **with no file opened** |
 | symlink whose target escapes the root | refused, **with no file opened** |
+| **a checked path component is replaced with an escaping symlink between the check and the open** | refused; **the outside file is never opened** (*Round 4 (major): the static-symlink row above does not exercise this race*) |
 | staged file whose digest does not match | refused, **nothing written** |
 | valid staged file, matching digest | imported; the bytes reaching `import_external_artifact` are identical to the file on disk |
 
@@ -422,8 +436,10 @@ uv run pyright src
 ```
 
 - Every T2 refusal case in the verification table has a test, **including the omitted-checksum
-  case**, and each refusal lands at the right boundary:
-  - parameter-validation and traversal refusals happen **before the file is opened**;
+  case and the swap-between-check-and-open race**, and each refusal lands at the right boundary:
+  - parameter-validation refusals happen **before the file is opened**, and containment is
+    enforced **by the open itself** so that no file outside the staging root is ever opened — not
+    even transiently, and not even when the checksum would later reject its contents;
   - the checksum refusal happens **before the bytes reach `import_external_artifact` and before
     anything is written**.
   ⚠️ *Independent review 2026-09-21 (major): the previous gate demanded that EVERY refusal happen

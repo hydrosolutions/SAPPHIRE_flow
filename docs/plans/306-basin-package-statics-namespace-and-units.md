@@ -227,9 +227,11 @@ lands on relaxing it, that is a deliberate supersession with its own reasoning, 
 
 **Verification.** T1's test goes green for the right reason; the 148 Swiss basins' existing
 resolution is unchanged (re-run whatever currently covers the Caravan path); **and, for any
-option that prefixes on import, an already-`caravan:`-prefixed package imports without
-double-prefixing** — *Round 3 (major): neither T1's bare-key package nor the Swiss Caravan-path
-check would catch `caravan:caravan:for_pc_sse`.* `uv run pytest` clean.
+option that prefixes on import, all three fixtures pass** — bare-key, already-prefixed (no
+`caravan:caravan:` double-prefix), and mixed-with-conflict (the collision is detected before the
+normalized dict is built, and the outcome does not depend on column order). *Round 3 (major):
+neither T1's bare-key package nor the Swiss Caravan-path check would catch double-prefixing.
+Round 4 (major): nor would either catch a silent overwrite.* `uv run pytest` clean.
 
 ### T3 — make the unit contract explicit and checked
 
@@ -317,9 +319,26 @@ resolver cannot resolve. ⚠️ **T1 uses a bare-key package and the Swiss regre
 Caravan path, so neither would catch it.**
 
 ⇒ **Any import-prefixing option must:** leave an already-prefixed key untouched, define what
-happens when a package carries **both** shapes for one concept (the `_collision_keys` case already
-contemplates exactly that pair), and be verified against **two** package fixtures — one bare-key,
-one already-prefixed.
+happens when a package carries **both** shapes for one concept, and be verified against package
+fixtures that include the mixed case.
+
+🔴 **And the obvious "just make the prefixing idempotent" fix is not sufficient.** *Round 4
+(major).* An idempotent comprehension — prefix `col` unless it already starts with the prefix —
+maps **`for_pc_sse` and `caravan:for_pc_sse` onto the same dictionary key**, so one value silently
+overwrites the other during dict construction, before the resolver ever runs, with **input order
+deciding which survives**. ⇒ **Collision detection must happen BEFORE the normalized dictionary is
+built**, on the raw column set, and the chosen policy (refuse, or a stated precedence) must be
+verified **independently of column order**.
+
+⛔ *Round 4 also corrected a citation this plan got wrong:* an earlier revision said
+`_collision_keys` "contemplates exactly that pair". It does not — its pair is
+**`caravan:for_pc_sse` and `caravan:forest_fraction`** (both prefixed: the raw code and Caravan's
+own canonical name), which is a *different* collision. The bare-versus-prefixed collision this
+option would introduce has **no existing guard at all**.
+
+⇒ **Fixtures required: three, not two** — bare-key, already-prefixed, and **mixed with conflicting
+values for one concept**. Separate bare-only and prefixed-only fixtures both pass against a
+silently-overwriting implementation, which is precisely why the third is the one that matters.
 
 ⚠️ **The scope line's "(Plan 155/188, which works)" reads as "irrelevant" and should not.** That
 path is the one mechanism in the repo that already produces the key shape this plan needs. It is
