@@ -408,6 +408,59 @@ class TestStagedArtifactPath:
             == _RAW_ARTIFACT_BYTES
         )
 
+    def test_accepts_an_absolute_path_through_a_canonical_ancestor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming review 2026-09-21 (minor): removing .resolve() from the
+        resolver fixed the security hole and regressed this — an operator
+        naming the file through the ancestor's real path, against a root
+        configured through an alias, was refused although both name the same
+        directory. Real resolver, real alias."""
+        real = tmp_path / "real"
+        (real / "incoming").mkdir(parents=True)
+        (real / "incoming" / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(alias / "incoming"))
+
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        assert (
+            _read_staged_artifact(str(real / "incoming" / "best.pt"), digest)
+            == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_accepts_an_absolute_path_when_the_root_is_configured_relative(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same regression, second shape: with a RELATIVE configured root every
+        absolute candidate failed the comparison, because one side was
+        relative and the other absolute."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", "incoming")
+
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        assert (
+            _read_staged_artifact(str(root / "best.pt"), digest) == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_an_absolute_path_outside_the_root_is_still_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The permissive comparison must not widen the boundary."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+
+        with pytest.raises(ConfigurationError, match="outside the staging root"):
+            _read_staged_artifact(
+                str(outside), hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+            )
+
     def test_base64_route_still_works_and_needs_no_checksum(self) -> None:
         """T2's Out: the digest is deliberately NOT required here — the bytes
         are already in the parameter."""

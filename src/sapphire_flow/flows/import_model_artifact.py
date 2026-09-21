@@ -155,18 +155,41 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
       same as owning the deployment, and a deployment that cannot uphold it
       needs the staging root on its own filesystem.
     """
+    import contextlib
     import hashlib
     import os
     import stat
-    from pathlib import PurePosixPath
+    from pathlib import Path, PurePosixPath
 
     from sapphire_flow.config.paths import resolve_incoming_dir
 
     root = resolve_incoming_dir()
     candidate = PurePosixPath(artifact_path)
     if candidate.is_absolute():
+        # Compare with ANCESTORS canonicalised on both sides, while the root's
+        # FINAL component stays unresolved for the guarded open below.
+        #
+        # Confirming review 2026-09-21 (minor): dropping `.resolve()` from the
+        # resolver fixed the security hole but regressed two legitimate cases
+        # — an operator naming the file through a canonical ancestor
+        # (`/real/incoming/x` against a configured `/alias/incoming`), and any
+        # absolute path at all when the configured root is relative. Both
+        # worked before, and the runbook documents absolute paths.
+        #
+        # 🔑 This comparison cannot widen the security boundary: whatever it
+        # accepts, the only thing ever opened is `parts[0]` relative to the
+        # O_NOFOLLOW-pinned root descriptor. It decides "did you mean a file
+        # in the staging root", not "may this be read".
+        root_cmp = Path(root).absolute()
+        with contextlib.suppress(OSError):  # unreadable ancestor
+            root_cmp = root_cmp.parent.resolve() / root_cmp.name
+        supplied = Path(artifact_path)
+        with contextlib.suppress(OSError):  # unreadable ancestor
+            supplied = supplied.parent.resolve() / supplied.name
         try:
-            candidate = candidate.relative_to(PurePosixPath(str(root)))
+            candidate = PurePosixPath(str(supplied)).relative_to(
+                PurePosixPath(str(root_cmp))
+            )
         except ValueError:
             raise ConfigurationError(
                 "import_model_artifact_flow: artifact_path "
@@ -280,6 +303,7 @@ def _resolve_artifact_bytes(
             "rather than ignoring it, so a caller who believes they asked "
             "for verification is not quietly told otherwise."
         )
+    assert artifact_base64 is not None  # narrowed by the checks above
     return _decode_artifact_base64(artifact_base64)
 
 
