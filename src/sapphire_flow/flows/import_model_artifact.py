@@ -113,10 +113,134 @@ def _decode_artifact_base64(artifact_base64: str) -> bytes:
         ) from exc
 
 
+def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> bytes:
+    """Plan 307 T2 — read an artifact staged in the read-only `incoming`
+    mount, with containment enforced BY THE OPEN and the digest taken of the
+    exact buffer that is returned.
+
+    The staging directory is writable by anyone with host shell access, so a
+    resolve-then-open sequence is a TOCTOU: a checked component can be
+    replaced with a symlink pointing outside the root between the check and
+    the open, and by the time a checksum could object, the forbidden read has
+    already happened. Every component is therefore opened relative to a
+    pinned descriptor with ``O_NOFOLLOW``, so a symlink anywhere on the path
+    fails the open itself rather than a preceding name check.
+    """
+    import hashlib
+    import os
+    from pathlib import Path, PurePosixPath
+
+    from sapphire_flow.config.paths import resolve_incoming_dir
+
+    root = resolve_incoming_dir()
+    candidate = PurePosixPath(artifact_path)
+    if candidate.is_absolute():
+        try:
+            candidate = candidate.relative_to(PurePosixPath(str(root)))
+        except ValueError:
+            raise ConfigurationError(
+                "import_model_artifact_flow: artifact_path "
+                f"{artifact_path!r} is outside the staging root "
+                f"{str(root)!r} — refusing to import"
+            ) from None
+    parts = candidate.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise ConfigurationError(
+            f"import_model_artifact_flow: artifact_path {artifact_path!r} must "
+            f"be a plain path inside the staging root {str(root)!r} — refusing "
+            "to import"
+        )
+
+    try:
+        dir_fd = os.open(str(Path(root)), os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ConfigurationError(
+            f"import_model_artifact_flow: staging root {str(root)!r} is not "
+            "available — the deployment's compose overlay must bind it "
+            "read-only; refusing to import"
+        ) from exc
+    try:
+        for part in parts[:-1]:
+            try:
+                nxt = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                )
+            except OSError as exc:
+                raise ConfigurationError(
+                    "import_model_artifact_flow: artifact_path "
+                    f"{artifact_path!r} does not resolve inside the staging "
+                    f"root {str(root)!r} without following a symlink — "
+                    "refusing to import"
+                ) from exc
+            os.close(dir_fd)
+            dir_fd = nxt
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError as exc:
+            raise ConfigurationError(
+                "import_model_artifact_flow: artifact_path "
+                f"{artifact_path!r} could not be opened inside the staging "
+                f"root {str(root)!r} without following a symlink — refusing "
+                "to import"
+            ) from exc
+        with os.fdopen(fd, "rb") as handle:
+            artifact_bytes = handle.read()
+    finally:
+        os.close(dir_fd)
+
+    actual = hashlib.sha256(artifact_bytes).hexdigest()
+    if actual.lower() != expected_artifact_sha256.strip().lower():
+        raise ConfigurationError(
+            "import_model_artifact_flow: artifact_path content does not "
+            "match expected_artifact_sha256 — expected "
+            f"{expected_artifact_sha256!r}, read {actual!r}. Refusing to "
+            "import."
+        )
+    return artifact_bytes
+
+
+def _resolve_artifact_bytes(
+    *,
+    artifact_base64: str | None,
+    artifact_path: str | None,
+    expected_artifact_sha256: str | None,
+) -> bytes:
+    """Exactly one source, never both, never neither (Plan 307 T2).
+
+    ``expected_artifact_sha256`` is REQUIRED on the path route and is
+    deliberately NOT accepted on the base64 route: there the bytes are
+    already in the parameter, so there is nothing between caller and flow for
+    a digest to protect against.
+    """
+    if artifact_base64 is not None and artifact_path is not None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: give artifact_base64 OR artifact_path, "
+            "not both — refusing to import"
+        )
+    if artifact_base64 is None and artifact_path is None:
+        raise ConfigurationError(
+            "import_model_artifact_flow: one of artifact_base64 or artifact_path is "
+            "required — refusing to import"
+        )
+    if artifact_path is not None:
+        if not expected_artifact_sha256:
+            raise ConfigurationError(
+                "import_model_artifact_flow: expected_artifact_sha256 is required when "
+                "artifact_path is used — the staging directory is host-writable, so an "
+                "unverified read is not an import we can vouch for. Refusing."
+            )
+        return _read_staged_artifact(artifact_path, expected_artifact_sha256)
+    assert artifact_base64 is not None
+    return _decode_artifact_base64(artifact_base64)
+
+
 @flow(name="import-model-artifact", log_prints=False)
 def import_model_artifact_flow(  # noqa: PLR0913
     model_id: str,
-    artifact_base64: str,
+    *,
+    artifact_base64: str | None = None,
+    artifact_path: str | None = None,
+    expected_artifact_sha256: str | None = None,
     trained_at: str,
     training_period_start: str,
     training_period_end: str,
@@ -164,7 +288,11 @@ def import_model_artifact_flow(  # noqa: PLR0913
         return ensure_utc(datetime.now(UTC))
 
     model = _resolve_model_task(model_id)
-    artifact_bytes = _decode_artifact_base64(artifact_base64)
+    artifact_bytes = _resolve_artifact_bytes(
+        artifact_base64=artifact_base64,
+        artifact_path=artifact_path,
+        expected_artifact_sha256=expected_artifact_sha256,
+    )
 
     new_id = _import_task(
         model,

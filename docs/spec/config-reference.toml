@@ -139,6 +139,15 @@ climatology_fallback = 100              # last-resort fallback
 
 [paths]
 data_dir = "/tmp/sapphire-test-data"
+# Plan 307 T1 — the READ-ONLY staging root an operator drops a model artifact
+# into before importing it by path. Overridden by the SAPPHIRE_INCOMING_DIR
+# environment variable, which the compose files set; when neither is given it
+# derives as <data_dir>/incoming.
+#
+# It is never created by this application: it must be a MOUNT supplied by the
+# deployment's compose overlay. A deployment without that bind cannot import
+# an artifact by path — see docs/standards/cicd.md § Required mounts.
+incoming_dir = "/tmp/sapphire-test-data/incoming"
 
 # --- Danger levels (array of tables) ---
 # Each entry defines one danger level for threshold-based alerting.

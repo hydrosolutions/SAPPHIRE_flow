@@ -6,7 +6,11 @@ from typing import Any
 
 import pytest
 
-from sapphire_flow.config.paths import resolve_artifact_dir, resolve_data_dir
+from sapphire_flow.config.paths import (
+    resolve_artifact_dir,
+    resolve_data_dir,
+    resolve_incoming_dir,
+)
 
 
 class TestTierPrecedence:
@@ -206,3 +210,39 @@ class TestResolveArtifactDir:
         result = resolve_artifact_dir()
 
         assert result == data_root.resolve() / "artifacts"
+
+
+class TestResolveIncomingDir:
+    """Plan 307 T1 — the operator staging root for artifact imports."""
+
+    def test_defaults_to_incoming_under_the_data_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("SAPPHIRE_INCOMING_DIR", raising=False)
+
+        assert resolve_incoming_dir() == tmp_path.resolve() / "incoming"
+
+    def test_env_var_wins_so_the_compose_declaration_is_live(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The compose files set SAPPHIRE_INCOMING_DIR explicitly. If this
+        resolver ignored it the declaration would be dead config — a setting
+        that looks authoritative and changes nothing."""
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(tmp_path / "elsewhere"))
+
+        assert resolve_incoming_dir() == (tmp_path / "elsewhere").resolve()
+
+    def test_never_creates_the_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T1's Out forbids creating it from inside the container: it must be
+        a mount. A resolver that mkdir'd would manufacture an empty staging
+        root on a host whose overlay forgot the bind."""
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("SAPPHIRE_INCOMING_DIR", raising=False)
+
+        resolved = resolve_incoming_dir()
+
+        assert not resolved.exists()

@@ -12,14 +12,21 @@ decode helper in isolation.
 from __future__ import annotations
 
 import base64
+import hashlib
+from typing import TYPE_CHECKING
 
 import pytest
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.import_model_artifact import (
     _decode_artifact_base64,
+    _read_staged_artifact,
+    _resolve_artifact_bytes,
     import_model_artifact_flow,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Deliberately non-UTF-8 — a real checkpoint is arbitrary binary, and a
 # base64 round trip that only survives ASCII/UTF-8 text is not proof of
@@ -196,3 +203,174 @@ class TestFullFlowInvocationEndToEnd:
         assert registered.artifact_scope == ArtifactScope.GROUP
 
         assert model.train_calls == 0
+
+
+class TestStagedArtifactPath:
+    """Plan 307 T2 — the staged-path route: exactly one source, a required
+    checksum, and containment enforced by the open rather than by a name
+    check that precedes it."""
+
+    @staticmethod
+    def _staging(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_incoming_dir", lambda *a, **k: root
+        )
+
+    def test_refuses_when_both_sources_are_given(self) -> None:
+        with pytest.raises(ConfigurationError, match="not both"):
+            _resolve_artifact_bytes(
+                artifact_base64=base64.b64encode(_RAW_ARTIFACT_BYTES).decode(),
+                artifact_path="best.pt",
+                expected_artifact_sha256="x",
+            )
+
+    def test_refuses_when_neither_source_is_given(self) -> None:
+        with pytest.raises(ConfigurationError, match="one of artifact_base64"):
+            _resolve_artifact_bytes(
+                artifact_base64=None, artifact_path=None, expected_artifact_sha256=None
+            )
+
+    def test_refuses_a_path_without_a_checksum(self) -> None:
+        """Load-bearing: an implementation that skipped verification when the
+        checksum was absent would pass every OTHER case in this class. A
+        required parameter only tested when supplied is not required."""
+        with pytest.raises(
+            ConfigurationError, match="expected_artifact_sha256 is required"
+        ):
+            _resolve_artifact_bytes(
+                artifact_base64=None,
+                artifact_path="best.pt",
+                expected_artifact_sha256=None,
+            )
+
+    def test_refuses_an_absolute_path_outside_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="outside the staging root"):
+            _read_staged_artifact(str(outside), "0" * 64)
+
+    def test_refuses_a_parent_traversal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (tmp_path / "secret.bin").write_bytes(b"do not read me")
+        self._staging(monkeypatch, root)
+        with pytest.raises(
+            ConfigurationError, match="plain path inside the staging root"
+        ):
+            _read_staged_artifact("../secret.bin", "0" * 64)
+
+    def test_refuses_a_symlink_whose_target_escapes_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"do not read me")
+        (root / "best.pt").symlink_to(outside)
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="without following a symlink"):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_refuses_a_symlinked_directory_component(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The TOCTOU case the static-symlink test does not exercise: the
+        escape is planted on an INTERMEDIATE component, which a resolve-then-
+        open implementation would have followed."""
+        root = tmp_path / "incoming"
+        root.mkdir()
+        outside_dir = tmp_path / "elsewhere"
+        outside_dir.mkdir()
+        (outside_dir / "best.pt").write_bytes(b"do not read me")
+        (root / "sub").symlink_to(outside_dir, target_is_directory=True)
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="without following a symlink"):
+            _read_staged_artifact("sub/best.pt", "0" * 64)
+
+    def test_refuses_when_the_digest_does_not_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        self._staging(monkeypatch, root)
+        with pytest.raises(ConfigurationError, match="does not match"):
+            _read_staged_artifact("best.pt", "0" * 64)
+
+    def test_reads_a_valid_staged_file_byte_for_byte(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "incoming"
+        root.mkdir()
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+        self._staging(monkeypatch, root)
+
+        assert _read_staged_artifact("best.pt", digest) == _RAW_ARTIFACT_BYTES
+        # ...and through the selector, absolute form, with the root prefix.
+        assert (
+            _resolve_artifact_bytes(
+                artifact_base64=None,
+                artifact_path=str(root / "best.pt"),
+                expected_artifact_sha256=digest.upper(),
+            )
+            == _RAW_ARTIFACT_BYTES
+        )
+
+    def test_base64_route_still_works_and_needs_no_checksum(self) -> None:
+        """T2's Out: the digest is deliberately NOT required here — the bytes
+        are already in the parameter."""
+        encoded = base64.b64encode(_RAW_ARTIFACT_BYTES).decode()
+        assert (
+            _resolve_artifact_bytes(
+                artifact_base64=encoded,
+                artifact_path=None,
+                expected_artifact_sha256=None,
+            )
+            == _RAW_ARTIFACT_BYTES
+        )
+
+
+class TestStagedPathParameterSchema:
+    """The registered deployment schema must accept a path-only request and
+    must still refuse a missing provenance field (Plan 307 T2/T3b)."""
+
+    def test_validate_parameters_accepts_a_path_only_request(self) -> None:
+        validated = import_model_artifact_flow.validate_parameters(
+            {
+                "model_id": "some_model",
+                "artifact_path": "best.pt",
+                "expected_artifact_sha256": "ab" * 32,
+                "trained_at": "2025-01-01T00:00:00+00:00",
+                "training_period_start": "2024-06-01T00:00:00+00:00",
+                "training_period_end": "2024-12-01T00:00:00+00:00",
+                "expected_config_hash": "some-config-hash",
+            }
+        )
+        assert validated["artifact_path"] == "best.pt"
+        assert validated.get("artifact_base64") is None
+
+    def test_validate_parameters_still_refuses_a_missing_provenance_field(self) -> None:
+        """Keyword-only parameters stay REQUIRED even though the artifact
+        inputs above them now carry defaults — that is the whole reason this
+        signature shape was chosen."""
+        with pytest.raises(
+            Exception, match="(?i)expected_config_hash|missing|required"
+        ):
+            import_model_artifact_flow.validate_parameters(
+                {
+                    "model_id": "some_model",
+                    "artifact_path": "best.pt",
+                    "expected_artifact_sha256": "ab" * 32,
+                    "trained_at": "2025-01-01T00:00:00+00:00",
+                    "training_period_start": "2024-06-01T00:00:00+00:00",
+                    "training_period_end": "2024-12-01T00:00:00+00:00",
+                }
+            )

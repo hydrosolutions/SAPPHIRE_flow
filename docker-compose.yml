@@ -109,6 +109,12 @@ services:
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
+      # Plan 307 T1: the operator staging root for artifact imports. The BASE
+      # declares only the NAME; the BIND is supplied by each deployment's
+      # overlay, because the base has no portable host path — exactly as with
+      # /data/raw since Plan 060. A deployment whose overlay omits that bind
+      # CANNOT import an artifact by path; see docs/standards/cicd.md.
+      SAPPHIRE_INCOMING_DIR: /data/incoming
       # Plan 147 Slice D: least-privilege — workers connect as the scoped
       # `sapphire_worker` role (never the owner/migration superuser); its
       # password lives in a DEDICATED secret distinct from the API's and the
