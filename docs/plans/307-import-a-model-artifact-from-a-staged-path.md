@@ -1,0 +1,230 @@
+---
+status: DRAFT
+created: 2026-09-21
+plan: 307
+title: A model artifact cannot be imported through its own deployment — give it a staged path, not a base64 parameter
+scope: Add an `artifact_path` parameter to the existing `import-model-artifact` deployment, reading from a read-only staging mount that every deployment declares, with a traversal guard and a content checksum. Explicitly NOT a new importer (`services/model_import.py` is unchanged), NOT the artifact store, NOT retraining or model discovery, NOT the basin-package import route (`cli/import_basin_package.py`, which already reads a path), NOT removing the existing `artifact_base64` parameter.
+depends_on: []
+blocks: [262]
+open_decisions: [D1, D2, D3]
+source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.1.927 was refused by the Prefect API. The refusal, its byte counts and the mount topology below were all measured that day; the owner then set the requirement that model onboarding must be replicable on Nepali servers, which is what selects this shape over the two alternatives.
+---
+
+# Plan 307 — import a model artifact from a staged path
+
+## Status
+
+**DRAFT — not reviewed.** Written after Plan 262 T4 was blocked in execution. Owner chose this
+shape (option (a)) over an in-process call and over raising the Prefect server limit, on the
+ground that **model onboarding must be replicable on Nepali servers**.
+
+⚠️ Plan number 307 was the first unreferenced number after 306. The owner grants plan IDs —
+confirm or reassign before it is cited.
+
+## The failure, measured
+
+Plan 262 T4 recorded the risk in advance: *"`import_model_artifact_flow` takes the artifact as a
+base64 `str` parameter (`flows/import_model_artifact.py:116-129`); 1.8 MB encodes to ~2.42 MB
+crossing the Prefect parameter boundary. 'No new import machinery' is true, but this is by far the
+largest artifact to cross it."*
+
+Attempted on the mini, 2026-09-21, against the live `import-model-artifact` deployment:
+
+```
+422 Unprocessable Entity  POST /api/deployments/{id}/create_flow_run
+Flow run parameters must be less than 524,288 bytes when serialized
+(got 2,420,511 bytes)
+```
+
+| | |
+|---|---|
+| `checkpoints/best.pt` | 1,814,653 bytes (sha256 `84f1a4ef…8a26`, verified identical on host and inside the container) |
+| base64 encoding | 2,419,540 chars |
+| serialized parameters | **2,420,511 bytes** |
+| Prefect server limit | **524,288 bytes** — 4.6× smaller |
+
+**Nothing was written.** The refusal happens at flow-run creation, before any flow executes:
+`model_artifacts` stayed at 902 rows and `model_artifacts WHERE group_id IS NOT NULL` at 0. The
+failure is clean, which is why this plan can be written calmly rather than as a recovery.
+
+⛔ **This is not a `cmal_small` problem.** `cmal_pool_pt` is the larger artifact, and any future
+model is likelier to be bigger than smaller. The ceiling is structural.
+
+## Why a staged path, and not the other two options
+
+The owner's requirement — *replicable on Nepali servers* — decides it:
+
+| option | why it fails the requirement |
+|---|---|
+| Call the flow in-process on the host | Not a procedure. No flow run, no recorded parameters, no operator route; each repeat is an ad-hoc snippet typed by whoever is at the keyboard. Cannot be written into a runbook. |
+| Raise the Prefect parameter limit | A per-server setting someone must remember to replicate on every deployment, pushing megabytes through the Prefect database on every import, and needing to be raised again for a larger artifact. |
+| **A staged path (this plan)** | The file lands on a mounted directory and the importer reads it. Identical procedure in Zurich and Kathmandu, because it is the same compose topology. |
+
+🔑 **The repo already established this idiom.** `cli/import_basin_package.py` takes
+`--package-dir <dir>` and states in its own docstring that no Prefect flow wraps it. Reading a
+large input from a mounted path is how this codebase already imports bulk data; this plan brings
+model artifacts onto the same footing **while keeping the flow run**, which the CLI route would
+lose.
+
+## The mount topology, measured 2026-09-21
+
+Read from `docker-compose.yml`, the mac-mini overlay, and `docker inspect` of the running worker:
+
+| mount | kind | in the worker | purpose today |
+|---|---|---|---|
+| `/data/artifacts` | named volume `model_artifacts` | **rw** (worker), ro (api) | the artifact store's own persistence — **not** an operator drop point |
+| `/data/raw` | host bind | **ro** | where an operator stages input data; on the mini it is `/Users/sapphire/camels-ch` |
+| `/data/cache`, `/tmp` | tmpfs | rw | scratch |
+| container rootfs | — | **read-only** | hardened; `docker cp` into it is refused outright |
+
+Two consequences the implementation must respect:
+
+- **`/data/artifacts` is the wrong place to stage.** It is the store's volume, not an inbox, and
+  it is a named volume rather than a host bind — an operator cannot simply drop a file into it.
+- **The rootfs is read-only.** The staging mount must be a real bind (or volume), not a directory
+  the container creates. `config/paths.py::_ensure_subdir` already handles `EROFS` by skipping,
+  which means a staging root that only exists as a `mkdir` would silently not exist.
+
+`SAPPHIRE_DATA_DIR=/data` is set on all four app services, and `config/paths.py` already resolves
+`raw`, `artifacts` and `cache` beneath it — so a staging subdirectory fits the existing shape.
+
+## Tasks
+
+### T1 — a staging mount every deployment declares
+
+**Outcome.** A read-only staging directory exists in the worker on any deployment that follows
+the compose files, and its location is resolved from configuration rather than hardcoded.
+
+**In.** `docker-compose.yml` (the mount on `prefect-worker`, which is where
+`import-model-artifact` lands — it declares no pool and so runs on `default`,
+`cli/register_deployments.py:193-198`), `docker-compose.macmini.yml` (the host path for this
+box), `config/paths.py` (a resolver beside `resolve_artifact_dir`), `docs/spec/config-reference.toml`
+if a config field is added, and `docs/standards/cicd.md` § the deployment's required mounts.
+
+**Out.** Making it writable. Staging into `/data/artifacts`. Any change to the four other
+services. Creating the directory from inside the container.
+
+**Verification.** `docker compose config` shows the mount read-only on `prefect-worker` and on no
+other service; a file placed in the host directory is visible at the expected path inside the
+worker; a write from inside the container fails.
+
+**Pre-change.** The mount does not exist — `docker inspect` of the running worker lists the five
+mounts in the table above and no staging one.
+
+### T2 — `artifact_path`, with a traversal guard and a checksum
+
+**Outcome.** `import_model_artifact_flow` accepts an artifact either as `artifact_base64` (today's
+route, still valid below the limit) **or** as `artifact_path` resolved inside the staging root —
+exactly one, never both, never neither.
+
+**In.** `flows/import_model_artifact.py` only. The guard: resolve the candidate path, and require
+the resolved result to be inside the resolved staging root — so a symlink or a `../` escape is
+refused **before the file is opened**, not after. `services/model_import.py` is untouched: it
+still receives `artifact_bytes`, and every guarantee it holds (the strict `expected_config_hash`
+gate, the audited writer, the all-or-nothing transaction) is unchanged.
+
+**Out.** Removing `artifact_base64`. Any change to `import_external_artifact`. Accepting a URL, an
+object-store URI, or any path outside the staging root. Reading a file the flow has not
+checksummed (D3).
+
+**Verification.** Unit tests covering: both parameters given → refused; neither given → refused; a
+path outside the staging root → refused, naming the root, with no file opened; a symlink whose
+target escapes the root → refused; a valid staged file → imported, with the bytes reaching
+`import_external_artifact` identical to the file on disk. Plus `uv run pytest tests/unit` and
+`tests/integration` clean.
+
+**Pre-change.** The §"The failure, measured" 422 is this task's pre-change evidence: the route
+does not exist and the existing one is refused at 4.6× the limit. ⛔ **A test asserting that
+`artifact_path` raises `TypeError` today is NOT red evidence** — a signature error is not proof of
+the fault, and this repo has already been caught by that once (Plan 262 T1; see
+`feedback_red_first_must_prove_the_fault`). The new tests are acceptance tests for the new route,
+and this plan says so rather than dressing them up.
+
+### T3 — the operator procedure, written down
+
+**Outcome.** A runbook section an operator can follow on any host — including one in Nepal —
+without reading this plan.
+
+**In.** `docs/operations/` (the model-artifact onboarding procedure: stage the file, checksum it,
+run the deployment with `artifact_path`, verify the resulting rows) and the deployment
+requirement in `docs/standards/cicd.md`. It names the provenance fields the operator must have in
+hand and where each comes from, because three of them are easy to get wrong — Plan 262 T4
+documents all three.
+
+**Out.** A general model-onboarding guide. Anything about training.
+
+**Verification.** The procedure is followed verbatim in T4 and the steps are corrected where they
+did not match reality — not afterwards, from memory.
+
+### T4 — import `cmal_small` through the new route
+
+**Outcome.** Plan 262 T4 completes: one ACTIVE `model_artifacts` row for `cmal_small` scoped to
+`swiss-cmal-small-pilot`, with the provenance already established.
+
+**In.** The provenance values, all verified 2026-09-21 and recorded here so they are not re-derived:
+
+| field | value | source |
+|---|---|---|
+| `trained_at` | `2026-08-31T11:41:55+00:00` | `logs/train.log:632` (`aquacast.pipeline:168`, "Trained: best val_loss=-17.94623 @ epoch 5"), 13:41:55 on a Europe/Zurich machine in CEST — owner-confirmed |
+| `training_period_start`/`_end` | `1985-01-01` → `2020-12-31` | the config's global split is a fallback; 18 regions override and two train through 2020 |
+| `expected_config_hash` | `94ebec0f…e45` | computed from `config.yaml` in the owner's tree; **byte-identical to the vendored repo copy**, verified 2026-09-21 |
+| `source_commit` | null | the bundle records aquacast `0.1.346`; the runtime pin is `0.1.356` |
+| artifact | `checkpoints/best.pt`, 1,814,653 bytes, sha256 `84f1a4ef…8a26` | |
+| `notes` | the local-time training cut, and that we do not serve it | see below |
+
+The `notes` field records what Plan 262 could not: this artifact was trained on daily data cut on
+**local time per basin** (Swiss basins fixed CET year-round, modeller-confirmed 2026-09-21), while
+SAP3 serves UTC-day aggregates today and the declared Swiss target is 06:00Z (Plan 252 OD-15).
+**It is deliberately not served on the cut it was trained on**, and the record should say so.
+
+**Out.** Changing anything to make the import pass. Re-deriving any provenance value.
+
+**Verification.** `model_artifacts` holds one ACTIVE row for `cmal_small` against the pilot group;
+the three timestamps are stored un-conflated; a deliberate second run with a wrong
+`expected_config_hash` is refused **before any write**.
+
+## Owner decisions
+
+**D1 — where does the staging mount point?** A dedicated read-only bind (e.g. `/data/incoming`,
+bound on the mini to a host directory of its own) or a reuse of `/data/raw`. ⭐ Recommend
+dedicated: `/data/raw` is bound to `/Users/sapphire/camels-ch` on this host, which is
+Swiss-dataset-specific, and a Nepali server would have to bind an unrelated directory under a name
+that means something else.
+
+**D2 — does `artifact_base64` survive?** Recommend yes: it is valid below the limit, it is what
+the tests use, and removing it is a breaking change to a registered deployment for no benefit.
+The operator route becomes the path; the parameter stays.
+
+**D3 — should the flow require an expected artifact checksum?** ⭐ Recommend yes. The staging
+directory is writable by anyone with host shell access, and the import writes an immutable
+provenance record. An `expected_artifact_sha256` parameter, checked before the bytes are used,
+binds the import to the exact file the operator intended rather than to whatever is at that path
+at that moment. It also gives the runbook a step that catches a truncated copy — the transfer in
+this session was verified that way, by hand.
+
+## Interaction with Plan 262 — flagged, not assumed
+
+Plan 262 is `READY` and its T4 **In** says the import runs *"through the existing
+`import-model-artifact` deployment — no new import machinery"*. This plan adds a parameter to that
+deployment. Whether 262's T4 is amended to name the new route, or 262 simply consumes it, is a
+**material change to a READY plan and needs its own review** — it is not something this plan may
+decide on 262's behalf. ⛔ Nobody but the orchestrator sets READY, and nobody sets it on another
+plan by implication.
+
+## Exit gates
+
+```bash
+uv run pytest tests/unit
+uv run pytest tests/integration
+uv run ruff check src tests && uv run ruff format --check src tests
+uv run pyright src
+```
+
+- Every T2 refusal case has a test, and each refusal happens **before** the file is opened.
+- `services/model_import.py` is unchanged — shown by diff, not asserted.
+- `docker compose config` shows the staging mount read-only on `prefect-worker` and absent from
+  the other four services.
+- T3's procedure was followed verbatim to produce T4's rows, and was corrected in place wherever
+  it did not match what actually happened.
+- The `cmal_small` row records the local-time training cut in `notes`.
+- No provenance value was re-derived; each came from the table in T4.
