@@ -146,10 +146,13 @@ non-problem.)*
 | `give artifact_base64 OR artifact_path, not both` | pick one source |
 | `one of artifact_base64 or artifact_path is required` | neither was given |
 | `expected_artifact_sha256 is required when artifact_path is used` | the staging directory is host-writable; an unverified read is not an import we can vouch for |
+| `expected_artifact_sha256 applies to artifact_path only` | you passed a digest with the **base64** route, where the bytes are already in the parameter and a digest protects nothing. It is refused rather than ignored, so you are not quietly told you asked for verification when you did not |
+| `artifact_base64 is not valid base64` | the base64 route received something that is not valid base64. Decoding is strict — invalid characters are rejected, never silently discarded |
 | `outside the staging root` / `plain path inside the staging root` | the path escapes the mount |
 | `could not be opened ... without following a symlink` | the guarded open failed. A symlink is what it exists to stop, but the same message also covers **a missing file, a permissions failure, or a file replaced mid-import**. Check the staged file exists and is readable before assuming an attack. *(Clean-room review 2026-09-21: this row previously diagnosed every such failure as a symlink.)* |
 | `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written.** The digest read is deliberately not reported — see Known limits |
-| `must name a file directly inside the staging root` | the path has a directory component, or escapes with `..` |
+| `must name a file directly inside the staging root` | the path has a **directory component**. Subdirectories are not supported — containment cannot be guaranteed across an intermediate directory a host writer can move |
+| `contains '..'` | the path uses **traversal**, in either the relative or the absolute form. Checked before any normalisation, so both spellings of the same path answer alike *(confirming review 2026-09-21: the row above previously claimed this case, which now fails earlier with a different message)* |
 | `is not a regular file` | the staged path is a FIFO, device or directory. A FIFO would otherwise block the import forever |
 | `staging root ... is not available as a real directory` | the root open failed. Usually this deployment's overlay does not bind it, or it is a symlink — but the same handler also catches **permissions failures and any other `OSError`**. Check the mount before assuming either. *(Confirming review 2026-09-21: the twin of the artifact-open row above, corrected one row and not the other.)* |
 | `config/artifact mismatch` | `expected_config_hash` disagrees with the model's declared hash. Refused **before any write** |
