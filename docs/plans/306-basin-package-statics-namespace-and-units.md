@@ -151,6 +151,11 @@ than by contract.
 assertion — so a future package that silently drops a feature would be accepted by the loader and
 fail at predict time.
 
+⚠️ **That field is live, not decorative — it feeds the loader's hold/warn evaluation** (see D4(a)).
+So "the package declares no model requirements" describes today's *state*, and populating the
+field is **not** a documentation-only act. Nothing in this section proposes populating it; D4
+owns that choice and records what it would actually do.
+
 ## Tasks
 
 ### T1 — prove the namespace gap red, before changing anything
@@ -409,10 +414,31 @@ files is never visited — alias-aware or not. The gate must:
 can never catch, and therefore the only one that proves the gate is real.
 
 ⚖️ **So D4 is a choice between two things, not one:** populate `required_by_models` as
-*documentation* (cheap, no gate), or build the assignment-aware gate through
-`assigned_model_features` (a real task, with tests for the drop-from-both case). If the gate is
-wanted, this plan gains a task; if not, the weaker outcome is recorded deliberately rather than
-assumed.
+*documentation*, or build the assignment-aware gate through `assigned_model_features` (a real
+task, with tests for the drop-from-both case). If the gate is wanted, this plan gains a task; if
+not, the weaker outcome is recorded deliberately rather than assumed.
+
+🔴 **Two corrections to that framing, both from Round 5 (majors). D4 remains CARRIED — but
+whoever picks it up must not start from the false premises below.**
+
+**(a) The "documentation" option is not inert.** It was described as "cheap, no gate"; it is not.
+`required_by_models` is **consumed by the evaluator**: `catalog_required` is built from exactly
+the entries that declare it (`basin_package_loader.py:1237-1239`) and the hold/warn loop iterates
+that set (`:1372-1378`). So populating the field **changes import acceptance today** — for a
+**direct (unaliased)** name such as `area`, the catalog name and the model's canonical name are
+the same string, so `name in assigned` is true and a missing value becomes a **HOLD**. (Aliased
+features still only warn, per the namespace mismatch above — so populating it produces
+*inconsistent* enforcement, holding on direct names and warning on aliased ones.) ⇒ Either put
+documentation-only requirements somewhere the evaluator does not read, or treat this as the
+acceptance change it is and task and test it.
+
+**(b) The gate needs the naming regime, which the current resolver discards.**
+`build_assigned_model_features_resolver` returns `frozenset[str]` — a flat union of names that
+**drops model identity and each model's `StaticNaming`**. But resolution depends on that regime:
+a `NATIVE` model and a `CARAVAN` model can declare the **same name** and require **different
+stored values** for it, and canonical-name translation alone cannot recover which is which. ⇒ If
+D4 selects the gate, each requirement must carry its naming regime through the resolver, with
+tests for a NATIVE assignment, a CARAVAN assignment, and the shared-name case.
 
 ## Watch items, not tasks
 
