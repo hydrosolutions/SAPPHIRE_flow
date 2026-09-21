@@ -536,7 +536,7 @@ jobs:
             exit 1
           fi
           for script in $expected; do
-            docker run --rm --entrypoint sh "sapphire-flow:ci-${{ github.sha }}" \
+            docker run --rm --entrypoint sh "sapphire-flow:PLAN309-VERIFICATION-NO-SUCH-TAG" \
               -c "python /app/scripts/$script --help" >/dev/null
           done
       # B3 — Trivy image scan, restructured (Plan 180) into scan-once/derive-many so a
@@ -667,34 +667,28 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
-        with:
-          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       - name: Wait 4 minutes before retrying the syft download
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
         run: |
           echo "::warning title=syft download failed::Attempt 1 could not obtain syft. Retrying in 4 minutes."
-          sleep 10
+          sleep 240
       - name: Download syft (attempt 2)
         id: syft-dl-2
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
-        with:
-          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       - name: Wait 6 minutes before the final syft download attempt
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
         run: |
           echo "::warning title=syft download failed::Attempt 2 could not obtain syft. Retrying in 6 minutes."
-          sleep 10
+          sleep 360
       - name: Download syft (attempt 3)
         id: syft-dl-3
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
-        with:
-          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       # Select the first attempt that produced a syft binary. A DOWNLOAD produces a
       # command path, not an SBOM — install success is not artifact readiness, which
       # is why execution below is a separate step with its own outcome.
@@ -731,7 +725,7 @@ jobs:
           # not `docker:`-prefixed. `-o <format>=<path>` writes the file directly
           # instead of via stdout, which the parent also keeps out of the log.
           "${{ steps.syft-cmd.outputs.cmd }}" scan \
-            "sapphire-flow:ci-${{ github.sha }}" \
+            "sapphire-flow:PLAN309-VERIFICATION-NO-SUCH-TAG" \
             -o cyclonedx-json="sbom.cdx.json"
       # ENFORCE — the only step here without `continue-on-error`. It keys on the
       # ARTIFACT, not on any step's outcome, and it reports the stage that actually
