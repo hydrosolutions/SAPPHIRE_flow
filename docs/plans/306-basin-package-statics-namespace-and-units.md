@@ -226,8 +226,10 @@ That rule exists because inference from the alias table cannot distinguish a Car
 lands on relaxing it, that is a deliberate supersession with its own reasoning, not a convenience.
 
 **Verification.** T1's test goes green for the right reason; the 148 Swiss basins' existing
-resolution is unchanged (re-run whatever currently covers the Caravan path); `uv run pytest`
-clean.
+resolution is unchanged (re-run whatever currently covers the Caravan path); **and, for any
+option that prefixes on import, an already-`caravan:`-prefixed package imports without
+double-prefixing** — *Round 3 (major): neither T1's bare-key package nor the Swiss Caravan-path
+check would catch `caravan:caravan:for_pc_sse`.* `uv run pytest` clean.
 
 ### T3 — make the unit contract explicit and checked
 
@@ -305,6 +307,19 @@ touches** — an implementer cannot start from "whichever option the owner takes
      `store/basin_importer.py` (call it), their tests. If instead a second import step is wanted,
      that is a different option and must carry identity parsing, network handling, sequencing and
      its own verification.
+
+🔴 **Options 1 and 4 both prefix unconditionally, and that is a defect once §2's correction is
+taken seriously.** *Round 3 (major).* `caravan_import.py:164` builds
+`{f"{CARAVAN_PREFIX}{col}": val …}` with no check on `col`. §2 now says explicitly that a
+contract-compliant package **may already carry `caravan:`-prefixed keys** — and feeding such a
+package through an unconditional prefixer yields **`caravan:caravan:for_pc_sse`**, which the
+resolver cannot resolve. ⚠️ **T1 uses a bare-key package and the Swiss regression check uses the
+Caravan path, so neither would catch it.**
+
+⇒ **Any import-prefixing option must:** leave an already-prefixed key untouched, define what
+happens when a package carries **both** shapes for one concept (the `_collision_keys` case already
+contemplates exactly that pair), and be verified against **two** package fixtures — one bare-key,
+one already-prefixed.
 
 ⚠️ **The scope line's "(Plan 155/188, which works)" reads as "irrelevant" and should not.** That
 path is the one mechanism in the repo that already produces the key shape this plan needs. It is

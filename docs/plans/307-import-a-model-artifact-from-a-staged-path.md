@@ -150,8 +150,11 @@ while the text required overlay composition.* That composed config shows the mou
 `prefect-worker` and on no other service; a file placed in the host directory is visible at the expected path inside the
 worker; a write from inside the container fails.
 
-**Pre-change.** The mount does not exist — `docker inspect` of the running worker lists the five
-mounts in the table above and no staging one.
+**Pre-change.** The mount does not exist — `docker inspect` of the running worker on 2026-09-21
+showed **no staging mount**. 🔴 *Round 3 (minor): this bullet previously said the inspection "lists
+the five mounts in the table above", a total T3b's own Round-2 correction had already withdrawn.
+Fixing one site and leaving its twin is the third instance of that failure in this plan's review
+history — sweep by VALUE, never by site.*
 
 ### T2 — `artifact_path`, with a traversal guard and a required checksum
 
@@ -321,6 +324,21 @@ digests with an ellipsis while forbidding re-derivation — an instruction that 
 followed. `services/model_import.py` compares `declared_config_hash != expected_config_hash` for
 exact equality, so a truncated value is not merely inconvenient, it is unusable.*
 
+🔴 **The training bounds MUST be timezone-aware, and bare dates cannot be passed.** *Round 3
+(major), verified by execution:* the flow applies `ensure_utc(datetime.fromisoformat(...))` and
+`types/datetime.py` rejects a naive value —
+`ValueError: Naive datetime not allowed: datetime.datetime(1985, 1, 1, 0, 0)`. An earlier revision
+listed the bounds as `1985-01-01` and `2020-12-31` while forbidding re-derivation, so an operator
+following it verbatim would have been forced either to fail or to invent an offset at execution
+time. Both are now written in full, timezone-aware.
+
+⚖️ **The date→timestamp convention, stated so it is not invented later: midnight UTC on the named
+date, with `training_period_end` naming the LAST DAY INCLUDED and stamped at that day's start.**
+This is a convention *this plan is choosing*, recorded visibly for review rather than settled — it
+interacts with the end-period stamping convention (Plan 267) and with point-vs-interval (Plan 258).
+⚠️ **Plan 262 carries the same bare dates and therefore the same defect**; correcting it is a
+change to a READY plan and is flagged in the interaction section, not applied here.
+
 ⚖️ **Plan 262 is AUTHORITATIVE for these values; the table below is a working copy.**
 *Independent review 2026-09-21 (minor): 262 already records the same provenance — the
 byte-identical config hash, the 1,814,653 → 2,419,540 → 2,420,511 byte chain, the
@@ -331,7 +349,8 @@ agree today, and duplicating them creates two copies to keep in sync.* If the tw
 | field | value | source |
 |---|---|---|
 | `trained_at` | `2026-08-31T11:41:55+00:00` | `logs/train.log:632` (`aquacast.pipeline:168`, "Trained: best val_loss=-17.94623 @ epoch 5"), 13:41:55 on a Europe/Zurich machine in CEST — owner-confirmed |
-| `training_period_start`/`_end` | `1985-01-01` → `2020-12-31` | the config's global split is a fallback; 18 regions override and two train through 2020 |
+| `training_period_start` | **`1985-01-01T00:00:00+00:00`** | see the date convention below |
+| `training_period_end` | **`2020-12-31T00:00:00+00:00`** | the config's global split is a fallback; 18 regions override and two train through 2020 |
 | `expected_config_hash` | `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45` | computed from `config.yaml` in the owner's tree; **byte-identical to the vendored repo copy**, verified 2026-09-21 |
 | `source_commit` | null | the bundle records aquacast `0.1.346`; the runtime pin is `0.1.356` |
 | artifact | `checkpoints/best.pt`, 1,814,653 bytes | |
@@ -418,7 +437,10 @@ uv run pyright src
 - T3's procedure was followed verbatim to produce T4's rows, and was corrected in place wherever
   it did not match what actually happened.
 - The `cmal_small` row records the local-time training cut in `notes`.
-- No provenance value was re-derived; each came from the table in T4, in full.
+- T4's table was **reconciled against Plan 262 before execution** — 262 is authoritative, so any
+  disagreement is resolved in 262's favour first — and the reconciled, timezone-aware values are
+  what was passed. 🔴 *Round 3 (minor): this gate previously required every value to come "from the
+  table in T4, in full", which contradicted T4's own statement that 262 wins on a disagreement.*
 
 ```json
 {
