@@ -232,13 +232,22 @@ refusal naming the feature and both encodings.
 version change is refused (owner, 2026-09-21).** A recorded description of a file is only true of
 *that* file, so the entry binds to an identity the package already carries.
 
-**What the table records, per `package_id` + extractor version:** the encoding each feature is
-delivered in, **and the per-file SHA-256 checksums**. Both are already in the package's own
-manifest — `package_id`, `extractor.version` (`0.1.2` for the current delivery) and a `checksums`
-block covering every file — so **no change is needed at the extractor to make this enforceable
-today**.
+**What the table records, per `package_id` + extractor version:** the **verified delivered
+encoding per feature** — established by us, because the package's own `unit` field is not
+trustworthy (see D2) — **and the per-file SHA-256 checksums**, which are copied from the manifest
+and serve only to detect drift.
 
-**Two refusals, and they are different:**
+⚠️ *Confirming review 2026-09-21: an earlier wording said "both are already in the package's own
+manifest", which contradicted D2 outright — the checksums are, the encodings are not, and their
+absence is the whole reason this table exists.*
+
+**What the manifest supplies** is the package's identity and integrity, not its semantics:
+`package_id`, `extractor.version` (`0.1.2` for the current delivery) and a `checksums` block
+covering every file. That is enough to key and pin the table, so **no change is needed at the
+extractor to make the version rule enforceable today**.
+
+**Two ADDITIONAL refusals beyond the encoding mismatch above, and they are different from it and
+from each other:**
 
 1. **Unknown `package_id` + version → refuse.** Nothing has described it, so there is nothing to
    compare against, and assuming compatibility is the failure this task exists to prevent.
@@ -269,7 +278,7 @@ also why §3's agreement between the two paths is evidence they happen to match,
 be a 100× error on the percent-valued features and a wrong answer on the scaled ones. This task
 makes the convention checkable; it does not change it.
 
-**Verification.** Two tests, which are not the same test:
+**Verification.** Four tests, each catching a different failure:
 
 1. **Value preservation** — a known value survives *both* import paths and reaches the model
    bit-for-bit as delivered.
@@ -281,7 +290,7 @@ makes the convention checkable; it does not change it.
    do not is refused, naming the files that differ. *This is the case the whole mechanism exists
    for; a test suite without it proves nothing about drift.*
 
-⛔ Neither may decide an encoding from the magnitude of the numbers.
+⛔ None of them may decide an encoding from the magnitude of the numbers.
 
 ### T4 — dispose of the >100 lake percentages
 
