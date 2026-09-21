@@ -617,7 +617,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format sarif` (`run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format sarif --scanners vuln,secret --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json` | No (but requires trivy installed) |
 | 4 | `build-image-and-scan` | `github/codeql-action/upload-sarif` (`uses:`; Plan 180 T2) | Convert report to SARIF | n/a | Yes — writes to the GitHub code-scanning API, needs `security-events: write` on the job token |
-| 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | — | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
+| 4 | `build-image-and-scan` | `anchore/sbom-action/download-syft` (`uses:`, ×3 with retries) then `syft scan` (`run:`), then a mandatory SBOM-validity gate (Plan 309) | — | `syft sapphire-flow:local -o cyclonedx-json=sbom.cdx.json` | No (but requires syft installed) |
 | 5 | `e2e` | _(no such job exists — never built. The only surviving trace is a comment at `ci.yml:475`. Full-pipeline coverage today is the `@pytest.mark.slow` `test_full_pipeline` (`tests/integration/test_e2e_pipeline.py`), run nightly.)_ | _(n/a — if built, Plan 064 gates it on `build-image-and-scan` only)_ | n/a | n/a |
 | **dependency-safety.yml** (Plan 119) | | | | | |
 | Unconditional (`pull_request`, every PR) | `dependency-safety` | `uv sync --frozen` | — | `uv sync` | No |
@@ -729,7 +729,14 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
   Deriving every output from one report (rather than re-scanning on the failure path) is what makes the
   printed table and the uploaded SARIF provably the same data as what failed the gate. Policy rationale
   (severity thresholds, `.trivyignore` discipline) lives in `security.md` § CVE scanning layers.
-- Runs `syft` (via `anchore/sbom-action`) to produce a CycloneDX JSON SBOM, uploaded as the `sbom-cyclonedx` workflow artifact on every run.
+- Runs `syft` to produce a CycloneDX JSON SBOM, uploaded as the `sbom-cyclonedx` workflow artifact on every run. **Plan 309** splits this into three parts, because a GitHub 504 on the syft release URL failed this job three times in 19 minutes on 2026-09-21 while every other check, including the CVE gate, passed:
+  1. **download** — `anchore/sbom-action/download-syft`, up to **3 attempts** with 4- and 6-minute waits, each `continue-on-error` and bounded by its own `timeout-minutes: 3`;
+  2. **execute** — one `syft scan` step, separately bounded, with `SYFT_CHECK_FOR_APP_UPDATE=false` (the parent action sets this; the download sub-action does not, and omitting it would add an outbound update check to the step whose problem is outbound calls);
+  3. **enforce** — the only step here with no `continue-on-error`. It keys on the **artifact** (present, CycloneDX, non-empty components), fails the job when it is absent or invalid, and reports **which stage actually failed** — a download fault is not a finding about the image, and saying so is the point.
+
+  ⚠️ Every step in the chain carries `!cancelled() && steps.build-image.outcome == 'success'`. A step `if:` without a status function has an implicit `success()`, so without those guards an SBOM failure underneath an already-red CVE gate would skip every retry *and* the enforcement step. ⚠️ The per-step `timeout-minutes` are not decorative either: the **job**-level timeout cancels, which skips every `!cancelled()` step — no enforcement, no message, no upload.
+
+  🔑 **A missing SBOM is nobody's silent problem: re-running the job is the recovery, and the person merging the PR owns invoking it.** Nothing else watches for it.
 - **There is no `e2e` job.** Plan 064 specified one gated on this job — the image build/scan path — succeeding (`064:245`, `064:286`), and `ci.yml:475` still carries the comment saying so, but the job was never built. Nothing in `ci.yml` depends on `build-image-and-scan`, so a failing CVE scan blocks the PR only through its own job status, not by starving a downstream suite.
 
 All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.

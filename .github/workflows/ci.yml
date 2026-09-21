@@ -627,30 +627,160 @@ jobs:
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
-      # B4 — SBOM generation. anchore/sbom-action wraps syft; emits
-      # CycloneDX JSON for the built image. Uploaded as an artifact on every
-      # run so a future CVE landing has a recoverable "which image contains
-      # library X?" trail.
-      # Equivalent CLI: syft sapphire-flow:ci-${{ github.sha }} -o cyclonedx-json > sbom.cdx.json
+      # B4 — SBOM generation (Plan 309). `syft` emits CycloneDX JSON for the built
+      # image, uploaded as an artifact on every run so a future CVE landing has a
+      # recoverable "which image contains library X?" trail.
+      #
       # Plan 207: conditioned on the IMAGE BUILD, not trivy-scan — the SBOM reads
       # the image, not trivy-image.json, so a gate failure (or an operational Trivy
       # failure) must not delete the inventory. `!cancelled()`, not the implicit
       # `success()`: the failure-path run is the one where "what else ships this
       # component?" matters (cicd.md:627, "every run").
+      #
+      # Plan 309 splits this into DOWNLOAD (retried) + EXECUTE (once) + ENFORCE.
+      # Three things make that split necessary rather than decorative:
+      #
+      #  1. A GitHub 504 on the syft release URL failed this job three times in
+      #     19 minutes on 2026-09-21 (PR #286) while every other check, including
+      #     the CVE gate, passed. syft never installed, so it never ran — nothing
+      #     was learned about the image, and the red mark said otherwise.
+      #  2. `continue-on-error` on an attempt fixes that step's CONCLUSION; every
+      #     later step still needs `!cancelled() && steps.build-image.outcome ==
+      #     'success'`, because a step `if:` without a status function carries an
+      #     implicit success() and the job may already be red from the CVE gate.
+      #     Without those guards an SBOM failure under a red Trivy gate would skip
+      #     every retry AND the enforcement step.
+      #  3. Each step carries its own `timeout-minutes`. The JOB-level timeout
+      #     CANCELS, which skips every `!cancelled()` step — no enforcement, no
+      #     message, no upload.
+      #
+      # D1 (owner, 2026-09-21): three attempts, waits of 4 and 6 minutes.
+      # Measured: a rejected download fails in 0-11s; a healthy install+scan takes
+      # 20s; this step starts ~2m49s into a 30-minute job. Worst case here (every
+      # attempt stalling to its 3-minute bound) is ~19 minutes, inside that budget.
+      # Nothing establishes that 4+6 would have covered the 2026-09-21 outage —
+      # the recovery point was never sampled. It is a policy choice, not a
+      # derived one.
+      - name: Download syft (attempt 1)
+        id: syft-dl-1
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      - name: Wait 4 minutes before retrying the syft download
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
+        run: |
+          echo "::warning title=syft download failed::Attempt 1 could not obtain syft. Retrying in 4 minutes."
+          sleep 240
+      - name: Download syft (attempt 2)
+        id: syft-dl-2
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      - name: Wait 6 minutes before the final syft download attempt
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
+        run: |
+          echo "::warning title=syft download failed::Attempt 2 could not obtain syft. Retrying in 6 minutes."
+          sleep 360
+      - name: Download syft (attempt 3)
+        id: syft-dl-3
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+      # Select the first attempt that produced a syft binary. A DOWNLOAD produces a
+      # command path, not an SBOM — install success is not artifact readiness, which
+      # is why execution below is a separate step with its own outcome.
+      - name: Resolve the syft command
+        id: syft-cmd
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
+        run: |
+          cmd="${{ steps.syft-dl-1.outputs.cmd }}"
+          [ -z "$cmd" ] && cmd="${{ steps.syft-dl-2.outputs.cmd }}"
+          [ -z "$cmd" ] && cmd="${{ steps.syft-dl-3.outputs.cmd }}"
+          if [ -z "$cmd" ]; then
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "No syft binary from any of the 3 download attempts."
+          else
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+            echo "cmd=$cmd" >> "$GITHUB_OUTPUT"
+            echo "Using syft at: $cmd"
+          fi
+      # EXECUTE — once, bounded, and with the parent action's own environment.
+      # SYFT_CHECK_FOR_APP_UPDATE=false is set by anchore/sbom-action itself
+      # (src/github/SyftGithubAction.ts:127) and NOT by the download sub-action.
+      # Omitting it would add an outbound update check to the step whose entire
+      # problem is outbound network calls.
       - name: Generate SBOM with syft
         id: sbom-generate
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-cmd.outputs.installed == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: "false"
+        run: |
+          # Image reference passed BARE, exactly as anchore/sbom-action does when
+          # no registry credentials are configured (SyftGithubAction.ts:151-157) —
+          # not `docker:`-prefixed. `-o <format>=<path>` writes the file directly
+          # instead of via stdout, which the parent also keeps out of the log.
+          "${{ steps.syft-cmd.outputs.cmd }}" scan \
+            "sapphire-flow:ci-${{ github.sha }}" \
+            -o cyclonedx-json="sbom.cdx.json"
+      # ENFORCE — the only step here without `continue-on-error`. It keys on the
+      # ARTIFACT, not on any step's outcome, and it reports the stage that actually
+      # failed rather than a fixed cause: "could not obtain the tool" is false when
+      # syft ran and wrote nothing.
+      - name: Require a valid SBOM
+        id: sbom-require
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
-        with:
-          image: sapphire-flow:ci-${{ github.sha }}
-          format: cyclonedx-json
-          output-file: sbom.cdx.json
-          upload-artifact: false
-      # Keyed on sbom-generate, not build-image: a transient sbom-action fault must
-      # skip the upload, not fail it confusingly via `if-no-files-found: error`.
+        run: |
+          set -euo pipefail
+          installed="${{ steps.syft-cmd.outputs.installed }}"
+          ran="${{ steps.sbom-generate.outcome }}"
+
+          valid=false
+          if [ -s sbom.cdx.json ] \
+             && jq -e '.bomFormat == "CycloneDX" and (.components | length) > 0' sbom.cdx.json >/dev/null 2>&1; then
+            valid=true
+          fi
+
+          if [ "$valid" = "true" ]; then
+            echo "SBOM present and valid ($(jq '.components | length' sbom.cdx.json) components)."
+            exit 0
+          fi
+
+          if [ "$installed" != "true" ]; then
+            stage="syft could not be DOWNLOADED after 3 attempts over ~10 minutes."
+            advice="This is a fault on the download path (the syft release URL), NOT a finding about the image. A re-run is the first response."
+          elif [ "$ran" = "failure" ]; then
+            stage="syft was downloaded and RAN, but the scan failed. See the step log above."
+            advice="This is about the image or the scan, not the download. Do not assume a re-run fixes it."
+          else
+            stage="syft downloaded and the scan reported success, but sbom.cdx.json is missing, empty or not valid CycloneDX."
+            advice="Neither stage reported a failure, so this needs a human look rather than a re-run."
+          fi
+
+          {
+            echo "### SBOM generation failed"
+            echo ""
+            echo "$stage"
+            echo ""
+            echo "$advice"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=SBOM generation failed::$stage $advice"
+          exit 1
+      # Gated on the ENFORCEMENT step, not on execution and not on any download
+      # attempt. A download yields a command path, never an SBOM; and syft can exit
+      # 0 having written nothing, in which case `sbom-generate.outcome == 'success'`
+      # while there is no file — the upload then fails on `if-no-files-found: error`,
+      # adding a confusing second error beside the real one. (Measured: Plan 309
+      # verification run D, 35622426919.) `!cancelled()` is retained deliberately so
+      # the SBOM still uploads when the CVE gate has already failed the job — the
+      # Plan 207 property.
       - name: Upload SBOM artifact
         id: sbom-upload
-        if: ${{ !cancelled() && steps.sbom-generate.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.sbom-require.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sbom-cyclonedx
