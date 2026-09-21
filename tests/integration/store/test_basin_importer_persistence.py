@@ -33,6 +33,7 @@ from sapphire_flow.services.basin_package_loader import (
     evaluate_basin_acceptance,
     load_basin_package,
 )
+from sapphire_flow.services.caravan_statics import CARAVAN_PREFIX
 from sapphire_flow.store.basin_importer import import_basin_package
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.model_artifact_lineage import record_artifact_basin_lineage
@@ -117,9 +118,13 @@ class TestDissolveIntoBasins:
         assert basin_row["package_id"] == "nepal-dhm-basins"
         assert basin_row["geometry"] is not None
         assert basin_row["attributes"]
-        assert set(basin_row["attributes"]) == set(
-            loaded.static_attributes["nepal_123"]
-        )
+        # Plan 306 T2: the same columns the package delivered, namespaced on
+        # the way in so a CARAVAN-naming model can resolve them. The property
+        # under test — every delivered column reaches storage, none added or
+        # lost — is unchanged.
+        assert set(basin_row["attributes"]) == {
+            f"{CARAVAN_PREFIX}{col}" for col in loaded.static_attributes["nepal_123"]
+        }
 
         version_rows = (
             db_connection.execute(
@@ -171,8 +176,12 @@ class TestDissolveIntoBasins:
         attributes = db_connection.execute(
             sa.select(basins.c.attributes).where(basins.c.code == "123")
         ).scalar_one()
-        assert attr_name in attributes
-        assert attributes[attr_name] is None
+        # Plan 306 T2: the importer now namespaces static columns, so the
+        # stored key is prefixed. The property under test is unchanged — a
+        # JSON null must survive the round trip rather than becoming absent.
+        stored_key = f"{CARAVAN_PREFIX}{attr_name}"
+        assert stored_key in attributes, sorted(attributes)[:5]
+        assert attributes[stored_key] is None
 
 
 class TestFKOrderNegative:
@@ -704,7 +713,10 @@ class TestStationBasinBinding:
         basin = PgBasinStore(db_connection).fetch_basin(station.basin_id)
         assert basin is not None
         assert basin.attributes
-        assert set(basin.attributes) == set(loaded.static_attributes["nepal_123"])
+        # Plan 306 T2: same columns, now namespaced on the way in.
+        assert set(basin.attributes) == {
+            f"{CARAVAN_PREFIX}{col}" for col in loaded.static_attributes["nepal_123"]
+        }
 
         model_id = _seed_model(db_connection)
         artifact_id, _ = PgModelArtifactStore(db_connection, tmp_path).store_artifact(

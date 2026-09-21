@@ -740,6 +740,12 @@ class TestPackageImportedBasinResolvesDeclaredStatics:
     ⛔ Asserts the END STATE — every declared name resolves. Before T2 none
     did. A test asserting *zero* resolution would have passed then and failed
     after the fix, which is a characterization test pointing backwards.
+
+    ⚠️ The CONTROL half of the comparison lives in the unit suite
+    (`tests/unit/store/test_basin_importer_static_namespace.py`), against
+    attributes in the shape the Swiss path writes. This class does not run the
+    Swiss importer, so it does not by itself constitute a two-path comparison
+    — independent review 2026-09-21 corrected that overstatement.
     """
 
     @staticmethod
@@ -759,11 +765,32 @@ class TestPackageImportedBasinResolvesDeclaredStatics:
 
     @staticmethod
     def _declared() -> frozenset[str]:
-        # Drawn from the REAL alias table, so every one of the 23 aliased
-        # names is exercised, plus a direct (unaliased) name — the other half
-        # of D15's rule. `cmal_small` itself lives behind the optional
-        # aquacast extra and is not discoverable here.
-        return frozenset({*CARAVAN_ALIAS, "area"})
+        """The REAL 78 names `cmal_small` declares, read from its vendored
+        config.
+
+        ⚠️ Independent review 2026-09-21: an earlier version used the 23
+        alias-table names plus `area` and called it the plan's 78-feature
+        claim, on the grounds that `cmal_small` needs the optional aquacast
+        extra. The MODEL does; its CONFIG is checked into this repository and
+        needs nothing. Reading it makes the test assert what the plan says
+        rather than a convenient subset — and it covers the direct
+        (unaliased) names too, which is the other half of D15's rule."""
+        import yaml
+
+        config = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[3]
+                / "src"
+                / "sapphire_flow"
+                / "models"
+                / "aquacast"
+                / "configs"
+                / "cmal_small.yaml"
+            ).read_text()
+        )
+        declared = frozenset(config["static_features"])
+        assert len(declared) == 78, f"expected cmal_small's 78, got {len(declared)}"
+        return declared
 
     def test_a_package_imported_basin_resolves_every_declared_static(
         self, db_connection: sa.Connection

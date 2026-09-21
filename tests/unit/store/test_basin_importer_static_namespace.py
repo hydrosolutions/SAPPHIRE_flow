@@ -1,24 +1,27 @@
-"""Plan 306 T1 — a package-imported basin is in the wrong namespace.
+"""Plan 306 — the CONTROL half of the two-path comparison, plus fixture guards.
 
 Every aquacast model declares ``StaticNaming.CARAVAN``, which resolves a
 declared name to a ``caravan:``-prefixed key with **no bare fallback**
-(``types/enums.py``, ``services/caravan_statics.py``). The
-``basin-static-artifact/v1`` importer writes the package's parquet columns
-verbatim, unprefixed. The two do not meet.
+(``types/enums.py``, ``services/caravan_statics.py``). Before T2 the
+``basin-static-artifact/v1`` importer wrote the package's parquet columns
+verbatim, unprefixed, and the two did not meet. **T2 namespaces on the way in,
+so that is no longer the case** — this module's description of it is history,
+not current behaviour.
 
-⚠️ **The discriminating evidence is a TWO-PATH COMPARISON, not the text of an
-error.** No code emits a ``caravan:``-prefixed key on a miss — the miss is
-reported in *declared* names — so a test keyed on error text would be
-asserting something the code never says. Instead: the *same* model and the
-*same* declared names are resolved against a basin whose attributes arrived by
-each of the two import paths, and the outcomes must differ.
+What lives here:
 
-⚠️ **The END-STATE proof lives in the integration suite**, not here — see
-``tests/integration/services/test_basin_importer.py``. T2 namespaces at IMPORT
-time, so a unit test that hands RAW columns to the resolver is measuring the
-wrong seam: it could only go green by weakening the resolver, which T2's Out
-forbids. This file keeps the two things that ARE unit-level — that the fixture
-still carries every alias target, and that the Caravan control path resolves.
+* the **control** — attributes in the shape the Swiss path writes resolve for
+  a CARAVAN model, so a failure on the package side cannot be blamed on the
+  resolver;
+* **fixture guards** — the in-repo package still carries every alias target,
+  so neither side can pass for the wrong reason.
+
+⚠️ **The END-STATE proof is in the integration suite**, where a REAL import
+runs — ``tests/integration/services/test_basin_importer.py``. It belongs there
+because T2 namespaces at IMPORT time: a unit test that hands RAW columns to
+the resolver measures the wrong seam and could only go green by weakening the
+resolver, which T2's Out forbids. *(An earlier revision of this file did
+exactly that, and revealed it by staying red after the fix.)*
 """
 
 from __future__ import annotations

@@ -485,11 +485,20 @@ T1–T3.
   never explains how a host directory reaches that container; the base compose gives
   `prefect-worker` no operator bind. ⚖️ Recorded as `related: [307]`; **whether it becomes a formal
   dependency is the orchestrator's call.**
-- 🔴 **D1 chose option 4, so already-imported basins keep their bare keys.** Nothing here says
-  whether a re-import or backfill is needed. For the Swiss 148 the question is masked — their keys
-  come from the Caravan path and are already prefixed — so **T2's verification would not surface
-  the omission.** Any option that changes the written key shape must state what happens to rows
-  written before it.
+- 🔴 **D1 chose option 4, so basins imported BEFORE this change keep their bare keys, and
+  re-running the same package will NOT repair them.** *Independent review 2026-09-21 required this
+  disposition, which an earlier revision demanded and then did not supply.*
+  `store/basin_importer.py::_basin_needs_import` treats a basin whose current projection already
+  carries this `package_id` as already imported and skips it — by design, for idempotency. So a
+  re-run of an unchanged package is a no-op and the bare keys survive.
+  ⇒ **Remediation, and it is already the rule:** D2a requires the extractor to bump the package
+  version on *any* content change. A new version is a different `package_id`, so the basin is
+  re-imported and re-namespaced through the normal path. **No migration is needed and none should
+  be written** — but a deployment that has already imported a package and does not expect a new
+  version must re-import deliberately, because those basins will otherwise resolve nothing.
+  ⚠️ **Whether any such rows exist is deployment-specific and not determinable from this repo.**
+  Measured 2026-09-21: the staging database holds **148 BAFU basins and no package-imported
+  basin at all**, so on that host the question is moot today.
 
 ## Exit gates
 

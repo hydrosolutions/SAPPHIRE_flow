@@ -88,3 +88,47 @@ class TestNamespaceStaticColumns:
 
     def test_an_empty_source_is_not_an_error(self) -> None:
         assert namespace_static_columns({}) == {}
+
+
+class TestTheSwissPathsBehaviourIsPreserved:
+    """Plan 306 T2 extracted this operation FROM the Swiss import path, which
+    the plan forbids disturbing. These pin what changed and what did not.
+
+    ⚠️ Independent review 2026-09-21: the extraction is **not** byte-for-byte
+    behaviour-preserving across every input the Swiss loader accepts. It was
+    an unconditional comprehension; it is now idempotent-plus-refuse. Ordinary
+    bare columns — the only shape a Caravan attributes parquet has ever
+    produced — are unaffected. The two shapes that differ are recorded here
+    rather than left implicit, because "we extracted it unchanged" was not
+    quite true.
+    """
+
+    def test_ordinary_bare_columns_are_unchanged_by_the_extraction(self) -> None:
+        """The real Swiss shape: HydroATLAS codes, none prefixed. This is what
+        the extraction had to preserve, and does."""
+        raw = {"for_pc_sse": 45.5, "cly_pc_sav": 12.0, "area": 3716.26}
+
+        assert namespace_static_columns(raw) == {
+            f"{CARAVAN_PREFIX}for_pc_sse": 45.5,
+            f"{CARAVAN_PREFIX}cly_pc_sav": 12.0,
+            f"{CARAVAN_PREFIX}area": 3716.26,
+        }
+
+    def test_an_already_prefixed_column_no_longer_becomes_double_prefixed(
+        self,
+    ) -> None:
+        """CHANGED, deliberately. The old unconditional comprehension turned
+        `caravan:area` into `caravan:caravan:area`, which no resolver can
+        read — a silently unusable attribute. Nothing can depend on that."""
+        assert namespace_static_columns({f"{CARAVAN_PREFIX}area": 12.0}) == {
+            f"{CARAVAN_PREFIX}area": 12.0
+        }
+
+    def test_a_mixed_column_set_is_now_refused_instead_of_kept_apart(self) -> None:
+        """CHANGED, deliberately. The old comprehension kept `area` and
+        `caravan:area` as two distinct output keys — `caravan:caravan:area`
+        and `caravan:area` — so both survived and neither was obviously
+        wrong. Refusing is the safer answer: one source, two spellings of one
+        concept, and no way to tell which the model should read."""
+        with pytest.raises(ConfigurationError, match="area"):
+            namespace_static_columns({"area": 12.0, f"{CARAVAN_PREFIX}area": 34.0})
