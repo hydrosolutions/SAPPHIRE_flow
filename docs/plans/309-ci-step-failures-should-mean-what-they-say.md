@@ -15,14 +15,22 @@ source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224
 
 ## Status
 
-**DRAFT.** Two independent passes so far — a review (NEEDS CHANGES: 1 blocker, 6 major, 2 minor)
-and a recommendation pass that **disagreed with the author on two of three decisions and found a
-load-bearing factual error**. This document is the reconciliation of both.
+**DRAFT. Three independent passes, the most recent NEEDS CHANGES (4 major, 1 minor) — folded, and
+not yet re-reviewed.** ⛔ **D1 is open**, and it now covers both *what* to retry and *how often*.
 
-⚖️ **It is about a third of its previous size.** The reviewer's strongest point was not any single
-finding — it was that the plan was **too big for its evidence**. Reconciling on the measured facts
-removed three of its five tasks, two of its four decisions, and the standards amendment those
-required. What is left is a retry and an honest error message.
+| pass | outcome | what it changed |
+|---|---|---|
+| 1 — review | NEEDS CHANGES (1 blocker, 6 major, 2 minor) | the recommended retry **could not work**; four claims asserted where measurement was possible, **all four wrong** |
+| 2 — recommendations | disagreed on **2 of 3** decisions | found the load-bearing error (a retry's wait is not paid on healthy runs), and argued the plan was **too big for its evidence** |
+| 3 — review of the reconciliation | NEEDS CHANGES (4 major, 1 minor) | **two of the four majors were defects in the descope itself**, including a retry that would skip entirely underneath a red Trivy gate; supplied the D1 answer neither party had |
+
+⚖️ **The plan is about a third of its original size.** Pass 2's strongest point was not any single
+finding — it was that the plan was too big for its evidence. Reconciling on the measured facts
+removed three of five tasks, two of four decisions, and the standards amendment those required.
+What is left is a retry and an honest error message.
+
+⭐ **Making a plan smaller is a change like any other**, and pass 3 proved it earns its own review
+rather than inheriting the previous approval.
 
 ⚖️ **Plan number 309 is claimed, not granted.** 302–305 and 309+ are unused across `docs/plans/`
 and `docs/plans/archive/`; nothing in `docs/` refers to a "Plan 309". The owner grants numbers.
