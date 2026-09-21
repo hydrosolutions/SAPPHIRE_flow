@@ -87,15 +87,24 @@ their ids so anyone can check them.)*
 | original | `106377308103` | 14:38:56 | `504` on `…/releases/v1.51.1` |
 | re-run 1 | `106382760290` | 14:52:57 | the identical `504`, 16 min later |
 | re-run 2 | `106384504421` | 14:57:35 | `504` on `…/download/v1.51.1/syft_1.51.1_checksums.txt` |
+| re-run 3 | `106387452121` | ~15:05 | **succeeded** |
 
 From a developer machine at 14:55 the same hour, the tag page, the installer's own
 `releases/v1.51.1`, and the `syft_1.51.1_linux_amd64.tar.gz` asset **all returned 200**, and
 githubstatus.com reported **All Systems Operational**.
 
-🔑 **Three failures across 19 minutes, with the artifact reachable from here throughout.** That is
-why this is a plan and not a retry: an in-job retry on a seconds-to-minutes timescale would not
-have absorbed it, and the developer-side 200s are exactly the evidence that would otherwise have
-talked us out of the problem.
+🔑 **Three failures across 19 minutes, then recovery — the artifact reachable from here
+throughout.** That is why this is a plan and not a retry: an in-job retry on a seconds-to-minutes
+timescale would not have absorbed it, and the developer-side 200s are exactly the evidence that
+would otherwise have talked us out of the problem.
+
+⚠️ **One outage is one sample.** It recovered somewhere between 8 and 27 minutes after the last
+failure (14:57 → the successful attempt at ~15:05), so a retry that helps would need a wait in
+*minutes*, not seconds — and a wait that long inside a job is paid on every run, whether or not it
+is needed. ⛔ **Do not set T1's wait from this one number.** It bounds the outage; it does not
+establish a cadence, and the LINDAS precedent's 5 minutes came from a *measured upstream publish
+cycle*, which has no analogue here. If D1 cannot produce a defensible wait, a second attempt with
+no wait plus T2/T3 is the honest design.
 
 ### 2. What the standards actually say — including the part against this plan
 
@@ -205,9 +214,9 @@ log, the job concludes success, and the SBOM uploaded is the second attempt's.
 ⚠️ **Effectiveness in production stays unmeasured until observed.** §1b shows this outage would
 have survived a short retry; T1 is cheap insurance for the momentary case, not the fix.
 
-**Open:** the retry's wait. Nothing yet establishes a recovery time — 19 minutes is a lower bound on
-this outage, not a cadence. Do not copy the LINDAS 5 minutes; its number came from a measured
-upstream cycle.
+**Open:** the retry's wait — see §1b. The one observed outage ran ≥19 minutes and recovered within
+27; that bounds it without establishing a cadence, and a multi-minute in-job wait is paid on every
+run. ⛔ Do not copy the LINDAS 5 minutes.
 
 ### T2 — classify the residual failure by what actually happened
 
@@ -395,3 +404,8 @@ third 5 minutes after that. ⭐ One observation did not license a claim about th
 ⭐ **Five of the nine findings were the same error: asserting where I could have measured.** The
 branch protection, the run census, the retry semantics, the `:local` tag and the standards text were
 each checkable in seconds, and four of the five came out against the plan.
+
+**2026-09-21 — the outage ended.** The fourth attempt at the same job succeeded (`106387452121`),
+and PR #286 went fully green. Total span of the incident ~19 min of failures, recovered within 27.
+Folded into §1b and T1 as a **bound, not a cadence** — the temptation it creates is to set the
+retry's wait from a single sample, which is the same error as the falsified premise two entries up.
