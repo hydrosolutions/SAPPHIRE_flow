@@ -1008,12 +1008,41 @@ but the shim relabels it to `mm` at a daily step — still a depth, so `SUM` sta
 `discharge` changes kind. That is also why the gate saw sane precip (0–28 mm) and temp (6–21 °C)
 alongside nonsense discharge.
 
-### Also observed, and NOT yet explained
+### Also observed — now DIAGNOSED: the seam is continuous at ONE of the four scheduled cycles
 
-⚠️ **`2026-09-21` is in neither window.** Past ends `09-20` (correct — today is incomplete and the
-window is exclusive) and future begins `09-22`. The model therefore sees a one-day hole at the
-join. This may be intended, but nothing in this plan says so, and it was not part of the gate's
-stated checks. **Flagged, not diagnosed.**
+⚠️ **`2026-09-21` was in neither window.** Past ended `09-20`, future began `09-22`. Diagnosed
+2026-09-21 by computing the seam with the real functions (`aligned_lookback_bounds` plus the
+future path's `valid_time >= issue_time` rule) at each scheduled cycle:
+
+| cycle (UTC) | last PAST day | first FUTURE day | seam |
+|---|---|---|---|
+| **00:00** | 2026-09-20 | 2026-09-21 | ✅ **continuous** |
+| 06:00 | 2026-09-20 | 2026-09-22 | 🔴 **1-day hole** |
+| 12:00 | 2026-09-20 | 2026-09-22 | 🔴 **1-day hole** |
+| 18:00 | 2026-09-20 | 2026-09-22 | 🔴 **1-day hole** |
+| *(17:13, the gate's own ad-hoc run)* | 2026-09-20 | 2026-09-22 | 1-day hole — matches the observed frames |
+
+**Both halves are behaving as documented, and the seam between them is what nobody owns.**
+
+* **Past** — `aligned_lookback_bounds` ends the window at `floor_to_time_step(issue_time)`,
+  *exclusive*. The issue day is incomplete, so excluding it is right.
+* **Future** — `_filter_and_cap_daily_records` keeps buckets with `valid_time >= issue_time` and
+  drops the issue-day bucket at a non-midnight cycle because it "mixes already-elapsed hours with
+  future ones". Also right, on its own terms.
+* **The seam** — that same docstring explicitly protects continuity for the **midnight-exact**
+  case, citing *"Plan 129's 'no gap' seam-continuity claim"*, and says nothing about the other
+  three. `SCHEDULE_FORECAST_CYCLE` defaults to `0 */6 * * *` (`docker-compose.yml:417`), so
+  **3 of every 4 cycles carry the hole.**
+
+⛔ **What is NOT established: whether this harms the forecast.** That depends on whether the model
+consumes the timestamps or assumes `past_dynamic` and `future_dynamic` are contiguous. If it
+assumes contiguity, a forecast labelled D+1…D+5 would be interpreted as D…D+4 — a one-day shift.
+The aquacast package is not installed in a plain dev environment, so this was **not** verified
+here. ⚠️ **Do not repeat the "3 of 4 cycles are wrong" half of this without the "impact unverified"
+half.**
+
+**Cheap mitigation if it does matter:** the 00:00Z cycle is already continuous, so a pilot
+restricted to that cycle sidesteps the question entirely while it is answered properly.
 
 ### Consequence
 
