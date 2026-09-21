@@ -667,11 +667,13 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+        with:
+          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       - name: Wait 4 minutes before retrying the syft download
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
         run: |
           echo "::warning title=syft download failed::Attempt 1 could not obtain syft. Retrying in 4 minutes."
-          sleep 240
+          sleep 10
       - name: Download syft (attempt 2)
         id: syft-dl-2
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' }}
@@ -682,7 +684,7 @@ jobs:
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
         run: |
           echo "::warning title=syft download failed::Attempt 2 could not obtain syft. Retrying in 6 minutes."
-          sleep 360
+          sleep 10
       - name: Download syft (attempt 3)
         id: syft-dl-3
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
