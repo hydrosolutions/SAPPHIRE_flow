@@ -939,3 +939,74 @@ uv run pyright src
   ]
 }
 ```
+
+
+## T3b live-input gate — RUN 2026-09-21, **FAILED. The pilot stays UNASSIGNED.**
+
+Run read-only on the mini at v0.1.944 via `assemble_group_operational_inputs`; no prediction was
+called and no assignment was written. `fetch_group_model_assignments` confirmed empty before and
+after.
+
+**Cycle recorded as the gate requires:** issue time ≈ `2026-09-21T17:13Z`, NWP source
+`icon_ch2_eps` for both members, NWP age **11.22 h**, observation staleness **0.39 h**, warm-up
+`COLD_START` for both (no prior state — expected for a first run).
+
+### What passed
+
+| check | 2009 Porte_du_Scex | 2091 Rheinfelden |
+|---|---|---|
+| `past_targets` daily grid | **30/30**, `2026-08-22 → 2026-09-20`, **no gaps** | **30/30**, same span, **no gaps** |
+| `past_dynamic` (precip + temp) | **30/30**, no gaps, 0 nulls, 0 non-finite | same |
+| future forcing coverage | **5 steps** (`09-22 → 09-26`) | same |
+
+⚠️ **5 future steps against `forecast_horizon_steps = 10` is NOT a shortfall.** The model declares
+`declared_horizon_semantics = at_most` and `declared_min_future_steps = 1`, so the coverage
+requirement is met. *(Checked because it looked like a failure; it is not.)*
+
+### 🔴 What failed — the target values are daily SUMS of an instantaneous rate
+
+`past_targets.discharge` is **~142× too large**, and the factor is not constant:
+
+| | 2009 | 2091 |
+|---|---|---|
+| assembled `past_targets` range | 18,021 – 44,524 | 50,605 – 94,430 |
+| **raw stored observations** (7 d) | **75 – 302 m³/s** (mean 179) | **299 – 450 m³/s** (mean 376) |
+
+**Proved on a single day rather than inferred.** For `2026-09-19`, station 2091: 142 readings,
+`daily_mean = 356.37`, `daily_sum = 50,604.8` — and the assembled minimum for 2091 is
+**50,604.8 exactly**. The pipeline is summing 10-minute instantaneous m³/s over the day.
+
+⛔ **Not a scale error that could be divided out.** The multiplier is the number of readings that
+day (142 here, 144 on a complete day, fewer on a gappy one), so the distortion varies with data
+completeness.
+
+### Root cause — the model's own declaration, not a SAP3 defect
+
+| | |
+|---|---|
+| SAP3 v0 fallback (`services/training_data.py:44`) | `discharge: MEAN` — **correct** |
+| `cmal_small` declares | `declared_aggregations = {'temperature': MEAN, 'discharge': SUM, 'precipitation': SUM}` |
+| Plan 228's rule | **declared wins** over the name-keyed fallback |
+
+⟹ the model asks for its target to be summed, and SAP3 complies. Summing a rate is not a physically
+meaningful quantity, and whatever `cmal_small` was trained on, it was not this: the artifact was
+trained **externally** on daily CAMELS-CH data, where discharge is already one daily value, so a
+declared SUM is a **no-op at training time** and a **142× inflation at serve time**. That is a
+train/serve skew created by the declaration itself.
+
+⚖️ **Per the FI-adherence rule this is case 1** — our model does not comply and the model is what
+should change. It is not an FI expressiveness gap: the contract can express `MEAN` perfectly well.
+
+### Also observed, and NOT yet explained
+
+⚠️ **`2026-09-21` is in neither window.** Past ends `09-20` (correct — today is incomplete and the
+window is exclusive) and future begins `09-22`. The model therefore sees a one-day hole at the
+join. This may be intended, but nothing in this plan says so, and it was not part of the gate's
+stated checks. **Flagged, not diagnosed.**
+
+### Consequence
+
+⛔ **T3b's `--assign-model` step is NOT run and T5 does not proceed.** Per this task: *"If either
+station fails, leave the pilot unassigned and defer only its live activation."* Both stations fail
+on the same defect. The artifact import (T4) stands and is unaffected — it is an inert ACTIVE row
+until an assignment exists.
