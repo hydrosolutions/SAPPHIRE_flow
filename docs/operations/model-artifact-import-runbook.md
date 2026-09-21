@@ -26,6 +26,7 @@ describe the *real external training*; they are written into an immutable record
 | `expected_config_hash` | **computed at import time** from the model config in the owner's tree | ⛔ Never copy the constant vendored into this repo — that compares the repo file against itself, a check that can never fail. |
 | `expected_artifact_sha256` | `shasum -a 256` of the artifact file | Different from `expected_config_hash`: one digests the checkpoint bytes, the other the model's config. Never derive one from the other. |
 | `source_commit` | the training checkout revision | Leave **null** if it cannot be recovered. The package version recorded in the bundle is not necessarily the training source. |
+| `source_repository` | the repository the training code came from | ⚠️ **Do not default this to null alongside `source_commit`** — they are independently recoverable, and the repository usually *is* known even when the revision is not. *(Observed 2026-09-21: the first real import recorded both as null, and only the commit was justified.)* |
 | `group_id` / `station_id` | the target group or station | Exactly one. |
 
 ## Procedure
@@ -113,18 +114,36 @@ earlier claim that it "uniquely identifies" the import.)* These values describe 
 not a particular import execution — re-importing the same artifact creates a **new** row with a
 fresh id and identical provenance. So the row count is itself part of the check.
 
+🔴 **The provenance you supplied lives in a SECOND table.** `model_artifacts` holds the artifact
+and its training window; `model_artifact_provenance` holds `imported_at`, `imported_by`,
+`config_hash`, `notes`, `source_repository` and `source_commit`. *(Corrected 2026-09-21 after the
+first real import: this query previously selected `a.imported_at` from `model_artifacts`, where
+that column does not exist — it fails with `ERROR: column a.imported_at does not exist`, so the
+verification step could never have been run as written.)*
+
 ```sql
-SELECT a.id, a.model_id, a.station_id, a.group_id, a.status,
-       a.trained_at, a.training_period_start, a.training_period_end, a.imported_at
+SELECT a.id, a.model_id, a.station_id, a.group_id, a.status, a.sha256_hash,
+       a.trained_at, a.training_period_start, a.training_period_end,
+       a.created_at, a.promoted_at, a.superseded_at,
+       p.imported_at, p.imported_by, p.config_hash,
+       p.source_repository, p.source_commit
 FROM model_artifacts a
+LEFT JOIN model_artifact_provenance p ON p.artifact_id = a.id
 WHERE a.model_id = '<model>'
   AND a.group_id = '<group uuid>'          -- or a.station_id for a station import
   AND a.trained_at = '<the trained_at you supplied>';
 ```
 
+⚠️ **`LEFT JOIN`, deliberately** — an artifact row with no provenance row is a finding you want to
+see, not a row the query silently drops.
+
 Check that:
 
-- **how many rows come back.** One, and `imported_at` matches this run — that is your artifact.
+- **how many rows come back.** One, and `p.imported_at` matches this run — that is your artifact.
+  ⚠️ **A repeated import is NOT idempotent and promotion is automatic**: every successful run
+  creates a fresh artifact id, promotes it to `active`, and supersedes the previous active artifact
+  for that model/group. ⛔ **Never resubmit just because the client timed out** — the original run
+  may still be committing. Establish its terminal state and inspect the rows first.
   More than one means this artifact has been imported before, so check `imported_at` and `status`
   to tell yours from the earlier ones, and satisfy yourself the older rows are meant to be there.
   None means the import did not write, whatever the flow run appeared to do;
