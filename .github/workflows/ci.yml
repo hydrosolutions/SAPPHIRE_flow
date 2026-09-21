@@ -680,6 +680,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+        with:
+          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       - name: Wait 6 minutes before the final syft download attempt
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.syft-dl-1.outcome == 'failure' && steps.syft-dl-2.outcome == 'failure' }}
         run: |
@@ -691,6 +693,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+        with:
+          syft-version: v0.0.0-PLAN309-VERIFICATION-BOGUS
       # Select the first attempt that produced a syft binary. A DOWNLOAD produces a
       # command path, not an SBOM — install success is not artifact readiness, which
       # is why execution below is a separate step with its own outcome.
