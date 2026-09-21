@@ -7,7 +7,7 @@ title: A transient tool download reds a PR the security gate passed — CI step 
 scope: Make `build-image-and-scan`'s SBOM step distinguish "the tool could not be installed" from "the tool ran and produced nothing", retry the first, and give a genuinely missing SBOM a durable home before anything is relaxed. Includes the `security.md` / `cicd.md` amendments the relaxation requires. Explicitly NOT loosening any security gate (Trivy's scan, gate table, SARIF derivation and code-scanning upload are untouched), NOT a blanket `continue-on-error`, NOT changing what an SBOM contains, NOT the image build, NOT the model/forecast pipeline.
 depends_on: []
 blocks: []
-open_decisions: [D1, D2, D3]
+open_decisions: [D0, D1, D2, D3]
 source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224865, jobs 106377308103 / 106382760290 / 106384504421) between 14:38 and 14:57 UTC. The run census in §1 is reproducible from the script quoted there; every line anchor was verified by printing the line it names, against `main` at `e943f515`.
 ---
 
@@ -16,7 +16,7 @@ source: 2026-09-21 — the syft step failed three times on PR #286 (run 35613224
 ## Status
 
 **DRAFT — reviewed once (Codex, 2026-09-21: NEEDS CHANGES, 1 blocker + 6 major + 2 minor), fully
-rewritten in response.** Not re-reviewed. ⛔ Not implementable: **D1, D2 and D3 are all open**, and
+rewritten in response.** Not re-reviewed. ⛔ Not implementable: **D0, D1, D2 and D3 are all open**, and
 D2 gates the only task that keeps the rest safe.
 
 ⚖️ **Plan number 309 is claimed, not granted.** 302–305 and 309+ are unused across `docs/plans/`
@@ -98,13 +98,23 @@ throughout.** That is why this is a plan and not a retry: an in-job retry on a s
 timescale would not have absorbed it, and the developer-side 200s are exactly the evidence that
 would otherwise have talked us out of the problem.
 
-⚠️ **One outage is one sample.** It recovered somewhere between 8 and 27 minutes after the last
-failure (14:57 → the successful attempt at ~15:05), so a retry that helps would need a wait in
-*minutes*, not seconds — and a wait that long inside a job is paid on every run, whether or not it
-is needed. ⛔ **Do not set T1's wait from this one number.** It bounds the outage; it does not
-establish a cadence, and the LINDAS precedent's 5 minutes came from a *measured upstream publish
-cycle*, which has no analogue here. If D1 cannot produce a defensible wait, a second attempt with
-no wait plus T2/T3 is the honest design.
+⚠️ **One outage is one sample**, and it bounds rather than characterises the fault: ~19 minutes of
+failures, recovered within 27.
+
+🔴 **A retry's wait is NOT paid on healthy runs** — the second attempt is conditional on the first
+having failed, so the wait costs nothing whenever syft installs. *(Independent recommendation pass,
+2026-09-21: an earlier revision of this section claimed the wait is "paid on every run". That is
+simply wrong, and it was the load-bearing argument against a generous retry.)*
+
+**Which changes what is affordable, measured:** `build-image-and-scan` declares
+`timeout-minutes: 30` (`ci.yml:478`) and the job completes in **~3 minutes** when healthy
+(`106387452121`: 15:02:29 → 15:05:49). That leaves roughly **27 minutes of headroom** for retries
+inside the existing timeout — which would have covered this outage **with no margin at all**
+(first attempt 14:38, recovery ~15:05 = 27 minutes).
+
+⛔ **Still do not set the wait from this one sample.** The LINDAS precedent's 5 minutes came from a
+*measured upstream publish cycle*; nothing analogous exists here, and an outage one minute longer
+than this one exhausts the whole budget.
 
 ### 2. What the standards actually say — including the part against this plan
 
@@ -214,9 +224,10 @@ log, the job concludes success, and the SBOM uploaded is the second attempt's.
 ⚠️ **Effectiveness in production stays unmeasured until observed.** §1b shows this outage would
 have survived a short retry; T1 is cheap insurance for the momentary case, not the fix.
 
-**Open:** the retry's wait — see §1b. The one observed outage ran ≥19 minutes and recovered within
-27; that bounds it without establishing a cadence, and a multi-minute in-job wait is paid on every
-run. ⛔ Do not copy the LINDAS 5 minutes.
+**Open:** the retry's wait — see §1b. The observed outage ran ~19 minutes and recovered within 27,
+against ~27 minutes of headroom under the existing `timeout-minutes: 30`. The wait costs nothing on
+a healthy run, so the real constraint is the timeout, not the common case. ⛔ Do not copy the LINDAS
+5 minutes, and do not treat one sample as a cadence.
 
 ### T2 — classify the residual failure by what actually happened
 
@@ -294,12 +305,38 @@ without an SBOM and what catches it.
 
 ## Owner decisions
 
+### D0 — should this plan exist at its current size? *(raised by the review, not by the author)*
+
+🔴 **The option the plan never offered.** *(Independent recommendation pass, 2026-09-21.)* Bounded
+retry (T1) + a clearer failure message, **keeping the SBOM fatal on both events** — no classifier,
+no exception policy, no compensating notifier, no standards amendment. T2, T3 and T5 all disappear.
+
+**The case for it, now stronger than when the plan was written:**
+
+- the retry wait is free on healthy runs (§1b), and ~27 minutes of headroom exists inside the
+  current timeout — enough to have absorbed this outage, barely;
+- **1 affected run in 100**, with **no mechanical merge block** (§4);
+- every part of T2/T3/T5 is a new moving part with an owner cost, on a 3–4 person team with a
+  Nepal v1.0 deadline in **October 2026**.
+
+**The case against:** a retry that exhausts still reds the job for a reason unrelated to the
+change, and §1b shows a slightly longer outage does exactly that. D0 accepts that residue.
+
+⚖️ **This is the first decision, and it subsumes the other three** — if D0 is "keep it small",
+D2 and D3 become moot and D1 shrinks to a mechanics question.
+
 ### D1 — keep `anchore/sbom-action`, or move to the pinned syft CLI?
 
-Recommendation: **keep the action.** It is SHA-pinned per `security.md`'s supply-chain policy;
-installing a CLI ourselves trades one transient failure for a new pinning obligation. Cost: the
-pinned SHA then appears at two sites and must be bumped in both — mitigate with a comment at each
-naming the other.
+**Two recommendations, and they conflict — the owner picks.**
+
+| | choice | reasoning |
+|---|---|---|
+| author | **keep the action** | SHA-pinned per `security.md`'s supply-chain policy; self-installing a CLI trades one transient failure for a new pinning obligation. Cost: the pinned SHA appears at two sites and must be bumped in both |
+| independent reviewer (medium confidence) | **the pinned CLI** | the action "exposes no documented outputs" for the download / verify / install / execute stages, so **T2's stage evidence would have to be inferred from logs**. Pin version *and* expected checksum. Buys observability, not immunity from outages |
+
+⚖️ **The reviewer's argument is the stronger one *if* T2 survives D0** — stage evidence is exactly
+what T2 needs and log-scraping for it is fragile. If D0 keeps the plan small, T2 disappears and
+this reverts to a plain mechanics question where the author's answer holds.
 ⚠️ If (b) is chosen instead, `ci.yml:634` records the real equivalent
 (`syft sapphire-flow:ci-<sha> …`). `cicd.md:620`'s `sapphire-flow:local` is the **local** equivalent
 column and is correct as it stands — *(review, minor: an earlier draft called this a
@@ -313,16 +350,30 @@ contradiction; it is not)*.
 | a scheduled job checking recent runs produced `sbom-cyclonedx` | reads the artifact rather than a step's self-report; catches slow decay | a second moving part; artifact **retention** bounds the lookback; needs a named reader |
 | annotation only | free | ⛔ **the Plan 180 class** |
 
-Recommendation: **the scheduled check, extended to PR runs, with a named reader.** It verifies the
-artifact *exists* rather than that a step *reported success* — the distinction Plan 180 was about.
-⚠️ Establish the artifact retention period before adopting it; it sets the maximum lookback.
+**Two recommendations, and the reviewer's is better — recorded as such.**
+
+| | choice | reasoning |
+|---|---|---|
+| author | the scheduled check, extended to PR runs | verifies the artifact *exists* rather than that a step *reported success* |
+| independent reviewer (**high** confidence) | **an assigned GitHub issue**, opened/updated per incident | "the plan recommends a **detector** as though it were a **destination**". A scheduled check answers *whether*; an issue answers *who acts*. One issue per incident, updated with affected commits and runs — not one per retry |
+
+⚖️ **These compose rather than compete, which the plan got wrong**: verify the artifact's presence,
+*then* open or update an assigned issue. The open question is no longer which mechanism but **who
+it is assigned to** — the reviewer proposes the IT specialist who owns CI, with the owner as
+fallback.
+⚠️ If the scheduled check is adopted at all, establish the artifact retention period first; it sets
+the maximum lookback.
 
 ### D3 — does a missing SBOM fail `main`?
 
 §3 weakened the original argument: `main`'s CI image is discarded too, so this is about **continuity
 of a per-commit record**, not about a deployed artifact. Two defensible answers — keep `main` fatal
 (costs nothing while the tool works), or forgive both and rely wholly on D2's monitor (simpler, one
-mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it on continuity.
+mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it on continuity. The independent reviewer agrees
+(medium confidence) and adds a condition the plan had not stated: ⚠️ **a red `main` run is not
+continuity unless someone owns *recovering* the missing record** — re-running to regenerate it, or
+explicitly recording the gap as unrecoverable. Without that, the fatal signal preserves an
+obligation nobody discharges.
 
 ## Watch items, not tasks
 
@@ -341,6 +392,8 @@ mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it 
 
 ## Exit gates
 
+- 🔴 **D0 is CLOSED FIRST.** It subsumes the rest: a "keep it small" answer retires T2, T3, T5, D2
+  and D3 outright, and no other gate below applies. Nothing starts before D0.
 - **D1 and D3** are closed or explicitly carried, with the carrier named.
 - 🔴 **D2 is CLOSED — not carried.** T2 may not merge while D2 is open; carrying D2 defers T2.
   *(Review, major: the previous "closed or explicitly carried" wording let the safeguard decision
@@ -358,7 +411,9 @@ mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it 
 ```json
 {
   "phases": [
-    { "id": "P1", "tasks": ["T1"], "decision": "D1",
+    { "id": "P0", "tasks": [], "decision": "D0 must be CLOSED FIRST",
+      "note": "scope gate: a 'keep it small' answer deletes P2-P4 and leaves only P1 and P5" },
+    { "id": "P1", "tasks": ["T1"], "depends_on": ["P0"], "decision": "D1",
       "note": "retry the install — cheap, and MEASURED INSUFFICIENT alone: the same 504 recurred over 19 min" },
     { "id": "P2", "tasks": ["T3"], "depends_on": ["P1"], "decision": "D2 must be CLOSED",
       "note": "the durable signal must exist AND be demonstrated before the relaxation that relies on it" },
@@ -366,7 +421,7 @@ mechanism instead of two). Recommendation: **keep `main` fatal**, but decide it 
       "note": "classify by stage evidence; sequenced after T3 deliberately" },
     { "id": "P4", "tasks": ["T5"], "depends_on": ["P3"],
       "note": "amend the standards last, so they describe what shipped" },
-    { "id": "P5", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3", "P4"],
+    { "id": "P5", "tasks": ["T4"], "parallel_with": ["P0", "P1", "P2", "P3", "P4"],
       "note": "survey only; produces tasks, changes nothing" }
   ]
 }
@@ -409,3 +464,19 @@ each checkable in seconds, and four of the five came out against the plan.
 and PR #286 went fully green. Total span of the incident ~19 min of failures, recovered within 27.
 Folded into §1b and T1 as a **bound, not a cadence** — the temptation it creates is to set the
 retry's wait from a single sample, which is the same error as the falsified premise two entries up.
+
+**2026-09-21 — independent recommendation pass, and it disagreed with the author twice.** Asked for
+a recommendation on each open decision rather than another review, the reviewer chose **against**
+the plan's own recommendation on D1 (the pinned CLI, because the action exposes no documented
+stage outputs and T2 needs stage evidence, not log parsing) and on D2 (an **assigned issue**, on the
+ground that the plan "recommends a detector as though it were a destination" — artifact verification
+answers *whether*, an assigned issue answers *who acts*, and they compose rather than compete). It
+agreed on D3 while noting the justification is incomplete without someone owning **recovery** of a
+missing record.
+
+⭐ **It also found a load-bearing factual error**: the claim that a retry's wait is "paid on every
+run". A conditional second attempt runs only after a failure. Corrected in §1b and T1 — and the
+correction cuts against the plan, because it makes the cheap option better than the plan argued.
+
+**D0 added** as a result: the plan never offered "do the small thing and stop", and on the measured
+evidence that deserves to be the first decision rather than an unstated assumption.
