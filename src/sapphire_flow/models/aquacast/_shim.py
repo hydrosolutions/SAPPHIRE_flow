@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeVar
 
 import polars as pl
 from forecast_interface import (
+    AggregationMethod,
     DeterministicData,
     DynamicInputs,
     DynamicInputSpec,
@@ -135,6 +136,10 @@ def _translate_declared_unit(name: str, unit: Unit, *, time_step: timedelta) -> 
     valid at any step); the precipitation relabel is numerically identical to the
     aquacast unit ONLY at a daily step, so a non-daily branch must raise rather than
     silently be wrong by up to 8x.
+
+    ⚠️ Prefer `_translate_declared_variable`, which translates the unit and the
+    aggregation TOGETHER. This function is kept for the target path, where
+    `TargetSpec` carries no aggregation to get out of step with.
     """
     if name == _DISCHARGE and unit is Unit.MM_PER_DAY:
         return Unit.M3_PER_S
@@ -149,6 +154,57 @@ def _translate_declared_unit(name: str, unit: Unit, *, time_step: timedelta) -> 
     return unit
 
 
+def _translate_declared_aggregation(
+    name: str,
+    unit: Unit,
+    aggregation: AggregationMethod | None,
+    *,
+    translated_unit: Unit,
+) -> AggregationMethod | None:
+    """The aggregation that belongs with `translated_unit`.
+
+    🔴 Plan 262 T3b (2026-09-21). aquacast declares `discharge` in **mm/day** with
+    ``SUM``. Inside aquacast that is inert: it is a daily model, so "sum" over the one
+    value it has per day is the value. SAP3 is where it stops being inert — this shim
+    relabels the unit to **m³/s** and SAP3 then resamples LIVE SUB-DAILY observations
+    into the daily step using this declaration.
+
+    Summing sub-daily discharge is wrong under EITHER unit, because the observations
+    are instantaneous *rates*, not per-interval accumulations. *(Independent review
+    2026-09-21 corrected an earlier comment here that called mm/day "a depth" and
+    claimed ``SUM`` was therefore right for it; mm/day is a depth RATE, and summing
+    142 samples of it overstates by the same 142x.)* Measured on the mini: station
+    2091 on 2026-09-19 had 142 ten-minute readings, a daily mean of 356.37 m³/s and a
+    daily SUM of 50,604.8 — and it was the sum that reached the model. The multiplier
+    is the reading count, so it is not even a constant error.
+
+    `precipitation` is deliberately NOT included, and the reason is about the DATA,
+    not the unit: precipitation observations ARE per-interval accumulations, so
+    summing them into a daily total is right. That is also why the canonical unit for
+    it is `mm` rather than a rate. Same "one entry, not a general mechanism" rule as
+    the name and unit maps above.
+
+    Only ``SUM`` is corrected. ``MAX`` survives basin-area conversion untouched —
+    positive linear scaling maps a maximum to a maximum — so a model legally
+    declaring peak-flow semantics must keep them. *(Independent review 2026-09-21,
+    medium: an earlier version mapped EVERY non-None aggregation to ``MEAN`` and so
+    silently destroyed ``MAX``.)*
+
+    ``None`` is preserved. It means the model declared nothing, and SAP3's name-keyed
+    v0 fallback (`services/training_data.py`) then applies — inventing a declaration
+    here would override that table instead of deferring to it.
+    """
+    if aggregation is not AggregationMethod.SUM:
+        return aggregation
+    if (
+        name == _DISCHARGE
+        and unit is Unit.MM_PER_DAY
+        and translated_unit is Unit.M3_PER_S
+    ):
+        return AggregationMethod.MEAN
+    return aggregation
+
+
 _DeclaredVariable = TypeVar(
     "_DeclaredVariable", "PastKnownVariable", "FutureKnownVariable"
 )
@@ -161,17 +217,38 @@ def _translate_declared_group(
 ) -> dict[str, dict[str, _DeclaredVariable]]:
     return {
         product: {
-            AQUACAST_TO_CANONICAL_NAME.get(name, name): variable.model_copy(
-                update={
-                    "unit": _translate_declared_unit(
-                        name, variable.unit, time_step=time_step
-                    )
-                }
+            AQUACAST_TO_CANONICAL_NAME.get(name, name): _translate_declared_variable(
+                name, variable, time_step=time_step
             )
             for name, variable in variables.items()
         }
         for product, variables in group.items()
     }
+
+
+def _translate_declared_variable(
+    name: str, variable: _DeclaredVariable, *, time_step: timedelta
+) -> _DeclaredVariable:
+    """Translate ONE declared variable's unit and aggregation in a single
+    `model_copy`, so the two cannot drift apart.
+
+    🔴 They did drift: the previous version updated only ``unit``, which left
+    `discharge` declared as m³/s while still carrying the ``SUM`` that belonged to
+    its mm/day form (Plan 262 T3b). Doing both here is the point — a future unit
+    translation gets the aggregation question put in front of it.
+    """
+    translated_unit = _translate_declared_unit(name, variable.unit, time_step=time_step)
+    return variable.model_copy(
+        update={
+            "unit": translated_unit,
+            "aggregation": _translate_declared_aggregation(
+                name,
+                variable.unit,
+                variable.aggregation,
+                translated_unit=translated_unit,
+            ),
+        }
+    )
 
 
 def _canonical_requirement(req: InputRequirement) -> InputRequirement:
