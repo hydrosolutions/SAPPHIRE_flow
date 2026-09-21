@@ -466,6 +466,13 @@ T1–T3.
 
 ## Watch items, not tasks
 
+- 🔑 **T2 changes the stored key shape for package-imported basins, and that is safe only
+  because no NATIVE model reads statics.** Measured 2026-09-21 while implementing: every
+  discoverable model declaring `StaticNaming.NATIVE` declares **zero** static features, so none
+  can be affected. ⚠️ **That is a fact about today's model set, not a guarantee** — a NATIVE model
+  that declared statics and read a package-imported basin would resolve nothing after this change,
+  exactly as CARAVAN models did before it. The plan did not anticipate this direction; it is
+  recorded here rather than left for someone to rediscover.
 - **The Swiss path is not broken and must not be disturbed.** The 148 Swiss basins resolve today
   through the `caravan:` prefix written by the Plan 155/188 import.
 - **`cmal_small` is `GROUP`-scoped**, so Nepal basins would be assigned as a group, not per

@@ -20,8 +20,8 @@ import structlog
 from sapphire_flow.adapters.caravan_attributes import load_caravan_attribute_rows
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import (
-    CARAVAN_PREFIX,
     StaticCoverageGap,
+    namespace_static_columns,
     verify_static_coverage,
 )
 from sapphire_flow.store._helpers import require_real_transaction
@@ -161,7 +161,7 @@ def import_caravan_attributes(
         if station.basin_id is None:
             no_basin.add(code)
             continue
-        namespaced = {f"{CARAVAN_PREFIX}{col}": val for col, val in raw_attrs.items()}
+        namespaced = namespace_static_columns(raw_attrs)
         basin_store.merge_namespaced_attributes(station.basin_id, attributes=namespaced)
         matched.add(code)
         matched_basin_ids[code] = station.basin_id
