@@ -183,7 +183,7 @@ rejection, not a model-construction error.
 
 **Pre-change.** This task IS the pre-change evidence for T2.
 
-### T2 — close the namespace gap (D1 decides how)
+### T2 — close the namespace gap by translating at import (D1, closed)
 
 **Outcome.** A package-imported basin satisfies a `StaticNaming.CARAVAN` model's declared statics.
 
@@ -202,12 +202,12 @@ call site), `store/basin_importer.py` (call it on the package path), and the tes
 
 **Out.** Weakening D15's no-bare-fallback rule as a side effect. That rule exists because inference
 from the alias table cannot distinguish a Caravan direct name (`area`) from an incumbent model's
-own same-named bare attribute (`types/enums.py:142-144`). If D1 lands on relaxing it, that is a
-deliberate supersession with its own reasoning, not a convenience.
+own same-named bare attribute (`types/enums.py:142-144`). **D1 chose option 4, which does not
+touch that rule** — so weakening it is simply out of scope here, and any change that would is a
+deliberate supersession needing its own reasoning.
 
 **Verification.** T1's test goes green for the right reason; the 148 Swiss basins' resolution is
-unchanged (re-run whatever covers the Caravan path); and **for any option that prefixes on import,
-all three fixtures pass** — bare-key, already-prefixed (no `caravan:caravan:` double prefix), and
+unchanged (re-run whatever covers the Caravan path); and **all three fixtures pass** — bare-key, already-prefixed (no `caravan:caravan:` double prefix), and
 **mixed-with-conflict** (collision detected before the normalized dict is built; outcome
 independent of column order). `uv run pytest` clean.
 
@@ -221,9 +221,23 @@ this repository, beside `CARAVAN_ALIAS` where the name mapping already lives, an
 happens at the import boundary. An import whose delivered encoding disagrees is **refused**, the
 refusal naming the feature and both encodings.
 
-⚠️ **Not the package's own `unit` field — yet.** It is the natural long-term home, but measured
-today it is **wrong for `slp_dg_sav` and blank for `ari_ix_sav`** (see D2), so adopting it now
-would import a false statement wearing the appearance of a declared one. **Ask the extractor to
+🔴 **Both sides of the comparison must live in that table, because the package supplies neither.**
+*Confirming review 2026-09-21: an earlier wording located only the EXPECTED encoding and left the
+DELIVERED side unstated, so the rejection test below had nothing to compare.* With the package's
+own field ruled out, the table records two things per feature: **the encoding the model expects**,
+and **the encoding each known package source and contract version is vouched to deliver**.
+
+⇒ **A package from a source or contract version with no entry is REFUSED**, not assumed
+compatible. That is what makes the check real: it fails closed on an unrecognised producer instead
+of silently trusting whatever arrives. ⚠️ **This is the specification D2's answer implies rather
+than something the owner stated — flagged for confirmation, not treated as settled.** It does not
+gate T1 or T2.
+
+⚠️ **Not the package's own `unit` field — yet.** It is the natural long-term home, and once the
+extractor corrects and populates it the delivered side becomes self-declared and the vouching
+table shrinks to the expected side alone. But measured today it is **wrong for `slp_dg_sav` and
+blank for `ari_ix_sav`** (see D2), so adopting it now would import a false statement wearing the
+appearance of a declared one. **Ask the extractor to
 correct and populate it; switch when it is trustworthy.** That switch is a follow-on, not part of
 this plan.
 
@@ -240,8 +254,9 @@ makes the convention checkable; it does not change it.
 
 1. **Value preservation** — a known value survives *both* import paths and reaches the model
    bit-for-bit as delivered.
-2. **Encoding rejection** — a package declaring an encoding the model does not expect is refused,
-   the refusal naming the feature and both encodings.
+2. **Encoding rejection** — a package whose vouched delivered encoding disagrees with what the
+   model expects is refused, the refusal naming the feature and both encodings; **and a package
+   from a source or contract version with no recorded entry is refused** for that reason, named.
 
 ⛔ Neither may decide an encoding from the magnitude of the numbers.
 
@@ -262,11 +277,12 @@ scale is carried into T3's declaration.
 
 ### D1 — ✅ CLOSED, owner 2026-09-21: translate on the way in, reusing what the repo ships (option 4)
 
-**The owner chose to translate at import.** Of the two ways to do that, the recommendation the
-owner accepted was to reuse the existing operation rather than write a second one — option 4
-below. Options 2 and 3 were not taken; option 1 is the same behaviour as 4 with new code instead
-of reused code, and is the fallback only if the extraction proves impractical, in which case T2
-says so rather than switching silently.
+**The owner chose to translate at import**, and among the two ways of doing that, to reuse the
+existing operation rather than write a second one — **option 4**. Options 1, 2 and 3 were not
+taken. *(Confirming review 2026-09-21: an earlier wording of this paragraph kept option 1 as a
+fallback "if extraction proves impractical". No task or exit gate carried that fallback, so it
+was a contradiction, not an escape hatch. If extraction genuinely proves impractical, that is a
+finding to bring back here — not a licence to switch options mid-implementation.)*
 
 The four options as assessed, kept because the reasoning is what makes the caveats binding:
 
@@ -298,11 +314,13 @@ Neither T1 (bare-key fixture) nor the Swiss regression (Caravan path) would catc
 overwrites the other during dict construction — before the resolver runs, with **input order
 deciding the winner**.
 
-⇒ **Any import-prefixing option must** leave already-prefixed keys untouched, **detect collisions
-on the raw column set BEFORE the normalized dict is built**, state its policy (refuse, or a stated
-precedence), and verify that policy **independently of column order**, against **three** fixtures:
-bare-key, already-prefixed, and mixed-with-conflicting-values. *The third is the only one that
-catches a silent overwrite.*
+⇒ **The chosen option must** leave already-prefixed keys untouched, **detect collisions on the raw
+column set BEFORE the normalized dict is built**, and **REFUSE on conflict** — *confirming review
+2026-09-21: this sentence still offered "refuse, or a stated precedence" while T2 and the exit gate
+already mandated refusal.* A package carrying two shapes for one concept is a package we do not
+understand, and a precedence rule would turn that into a silent choice. Verify **independently of
+column order**, against **three** fixtures: bare-key, already-prefixed, and
+mixed-with-conflicting-values. *The third is the only one that catches a silent overwrite.*
 
 ⚠️ **No existing guard covers this.** `_collision_keys` handles a *different* pair —
 `caravan:for_pc_sse` and `caravan:forest_fraction`, both prefixed (the raw code and Caravan's own
@@ -330,8 +348,9 @@ an option.*
 
 For the two features §3 singles out, the catalog's `unit` is **wrong for one and missing for the
 other**. Adopting it would import a false unit wearing the appearance of a declared one — worse
-than today's comment, which at least does not claim authority. **Whatever D2 chooses must be
-verified against these two features specifically.**
+than today's comment, which at least does not claim authority. **The repo-side table D2 chose
+must be verified against these two features specifically** — they are the ones where a plausible
+declaration is wrong.
 
 ### D3 — are the >100 `lka_pc_sse` values a misread scale or a defect?
 
@@ -420,7 +439,7 @@ this plan describes in full.
 - The 148 Swiss basins' static resolution is unchanged — demonstrated, not assumed.
 - No stored attribute value was rescaled by this plan.
 - T3's two tests both exist, and neither infers an encoding from a value's magnitude.
-- For any prefixing option, all three T2 fixtures pass, including mixed-with-conflict.
+- All three T2 fixtures pass, including mixed-with-conflict.
 - D3 and D4 are each answered or explicitly carried, with the carrier named.
 
 ```json
