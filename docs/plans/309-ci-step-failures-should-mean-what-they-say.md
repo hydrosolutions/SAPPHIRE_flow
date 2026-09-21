@@ -534,3 +534,42 @@ The plan's substance has been stable since the descope; what keeps failing is th
 fourth pass's sharpest finding is the clearest case: a disclaimer was written saying the evidence
 could not support counterfactuals, and two counterfactuals were written underneath it. **Stating a
 limit is not the same as observing it.**
+
+## Execution record — T1, 2026-09-21
+
+Implemented on `feat/plan-309-sbom-retry`, **PR #287**, v0.1.943. Five forced-fault CI runs, each
+injecting a specific fault into the real workflow and then reverted:
+
+| run | fault injected | result |
+|---|---|---|
+| happy path | none | ✅ attempt 1 succeeded in 2 s, waits and attempts 2–3 **skipped**, enforcement passed with **27,087 components**, upload succeeded, job green in 3m06s |
+| **A** `35620778764` | attempt 1 pinned to a bogus syft version; 2–3 real | ✅ attempt 1 404'd, the warning fired, **attempt 2 downloaded the real syft**, resolve fell through to its `cmd`, execute + enforce + upload passed, **job green** |
+| **B** `35621394667` | all three attempts bogus | ✅ three failures, `installed=false`, execute **skipped**, enforcement **failed**, upload skipped, **job red**, annotation: *"syft could not be DOWNLOADED after 3 attempts… a fault on the download path, NOT a finding about the image"* |
+| **C** `35621971390` | syft real, scan targets a nonexistent image | ✅ enforcement **failed** naming the **scan** stage: *"…downloaded and RAN, but the scan failed… Do not assume a re-run fixes it"* |
+| **D** `35622426919` | scan succeeds but writes elsewhere | ✅ third message fired: *"…scan reported success, but sbom.cdx.json is missing… needs a human look rather than a re-run"*. 🔴 **And it found a defect — see below** |
+| **E** `35623093354` | a step fails **before** the chain, simulating a red CVE gate | 🔑 **the decisive one.** Job **red** from the injection, yet downloads, resolve, execute, enforcement **and upload** all ran and succeeded — the `!cancelled() && build-image == 'success'` guards hold |
+
+🔴 **Run D found a defect in this plan's own design.** The upload had been gated on the *execute*
+step. syft can exit 0 having written nothing, so `sbom-generate.outcome == 'success'` while no file
+exists — the upload then ran and failed on `if-no-files-found: error`, **adding a confusing second
+error beside the real one**. That is precisely what `ci.yml:649-650` was written to avoid, and this
+plan reintroduced it one step over. Fixed: the upload is gated on the **enforcement** step, keeping
+`!cancelled()` so the SBOM still uploads when the CVE gate has failed the job (run E proves that
+still works).
+
+⭐ **A fifth prose review would not have found it.** Four passes examined this design; a forced fault
+found the defect in one run. That is the argument for the owner's call to build rather than review
+again — recorded because the next plan will face the same choice.
+
+**Exit gates: 6 of 8 proven, 2 not attempted.**
+
+| gate | status |
+|---|---|
+| D1 closed as (b), raise-the-timeout rejected deliberately | ✅ |
+| retry proven by an **attempt-specific** fault, not a bogus version throughout | ✅ run A |
+| transient-then-recovered / persistent / ran-but-no-file conclusions recorded | ✅ A / B / D |
+| SBOM failure under an already-red gate: retries + enforcement still run | ✅ run E |
+| message reports the **stage that actually failed**, never a fixed cause | ✅ B, C and D each produced a different, correct message |
+| `security.md` and `cicd.md:518` unchanged | ✅ verified — the diff touches `cicd.md:620` and `:732` only |
+| **stalled** download / **stalled** execute → per-step timeout fires, job not cancelled | ⚠️ **NOT ATTEMPTED.** The `timeout-minutes` are declared and the mechanism is standard, but no run forced a stall |
+| **reduced starting headroom** → admission skips later attempts | ⚠️ **NOT IMPLEMENTED.** The plan called for checking remaining job time before each wait; the shipped version uses the fixed (b) schedule. Worst case is ~19 min against ~26, so it fits **provided the pre-SBOM steps stay near 2m49s**. A materially slower image build could push the last attempt past the job timeout — and a job timeout **cancels**, skipping the message. **Carried as a known gap, not silently dropped.** |
