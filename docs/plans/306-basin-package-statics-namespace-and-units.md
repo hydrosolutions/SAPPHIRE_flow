@@ -8,7 +8,7 @@ scope: Make the statics delivered by a `basin-static-artifact/v1` package reacha
 depends_on: []
 blocks: []
 related: [307]
-open_decisions: [D1, D2, D3, D4]
+open_decisions: [D3, D4]
 source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-mini staging database at v0.1.927, the `nepal-dhm-basins` package delivered 2026-09-20, and the owner's `cmal_small` model tree. Every number below was measured on that date, and each says how.
 ---
 
@@ -24,6 +24,11 @@ only the superseded wording is gone.** Review coverage and what each round chang
 Changelog.
 
 Plan number **306 granted by the owner, 2026-09-21**.
+
+⚖️ **D1 and D2 were closed by the owner on 2026-09-21, so this plan is implementable.** Translate
+the names **on the way in**, reusing the operation the repo already ships for the Swiss path; keep
+the encoding declaration **in our own code for now**, and ask the extractor to correct and populate
+the package's own field so it can take over later. D3 and D4 remain carried.
 
 ## Why this exists
 
@@ -182,7 +187,18 @@ rejection, not a model-construction error.
 
 **Outcome.** A package-imported basin satisfies a `StaticNaming.CARAVAN` model's declared statics.
 
-**In.** D1's chosen option, whose touched files D1 names per option.
+**In.** ⚖️ **D1 CLOSED — translate on the way in, reusing the operation the repo already ships
+(option 4).** So: `store/caravan_import.py` (extract the prefixing operation from its Swiss-only
+call site), `store/basin_importer.py` (call it on the package path), and the tests for both.
+
+⛔ **Two things the extraction must carry, both from review and neither optional:**
+
+1. **Leave an already-prefixed key untouched.** A compliant package may arrive already prefixed
+   (§2); prefixing it again yields `caravan:caravan:…`, which the resolver cannot resolve.
+2. **Detect collisions on the RAW column set, before the normalized dictionary is built.** Simply
+   making the prefixing idempotent maps `for_pc_sse` and `caravan:for_pc_sse` onto one key, so one
+   value silently overwrites the other with column order deciding the winner. Refuse on conflict —
+   a package carrying two shapes for one concept is a package we do not understand.
 
 **Out.** Weakening D15's no-bare-fallback rule as a side effect. That rule exists because inference
 from the alias table cannot distinguish a Caravan direct name (`area`) from an incumbent model's
@@ -200,8 +216,16 @@ independent of column order). `uv run pytest` clean.
 **Outcome.** Each static's encoding is **declared per feature**, and an import whose declared
 encoding disagrees with what the model expects is **rejected**, not warned about.
 
-**In.** D2's answer, which must name three things: where the declaration lives, which boundary
-enforces it, and what rejection looks like (refuse the import, or hold the basin).
+**In.** ⚖️ **D2 CLOSED — a repo-side table, for now.** The expected encoding per feature lives in
+this repository, beside `CARAVAN_ALIAS` where the name mapping already lives, and the comparison
+happens at the import boundary. An import whose delivered encoding disagrees is **refused**, the
+refusal naming the feature and both encodings.
+
+⚠️ **Not the package's own `unit` field — yet.** It is the natural long-term home, but measured
+today it is **wrong for `slp_dg_sav` and blank for `ari_ix_sav`** (see D2), so adopting it now
+would import a false statement wearing the appearance of a declared one. **Ask the extractor to
+correct and populate it; switch when it is trustworthy.** That switch is a follow-on, not part of
+this plan.
 
 ⛔ **Documentation alone does not satisfy this Outcome**, and ⛔ **a numeric range guard cannot do
 this job** — a `[0, 100]` check accepts a wrongly-rescaled `0.456` exactly as readily as a
@@ -236,9 +260,15 @@ scale is carried into T3's declaration.
 
 ## Owner decisions
 
-### D1 — how does a package-imported basin satisfy a `CARAVAN`-naming model?
+### D1 — ✅ CLOSED, owner 2026-09-21: translate on the way in, reusing what the repo ships (option 4)
 
-Four options. Whichever is chosen, **T2's In takes that option's touched files**.
+**The owner chose to translate at import.** Of the two ways to do that, the recommendation the
+owner accepted was to reuse the existing operation rather than write a second one — option 4
+below. Options 2 and 3 were not taken; option 1 is the same behaviour as 4 with new code instead
+of reused code, and is the fallback only if the extraction proves impractical, in which case T2
+says so rather than switching silently.
+
+The four options as assessed, kept because the reasoning is what makes the caveats binding:
 
 1. **Prefix at import** — `basin_importer` writes prefixed keys. Simple, but the package contract
    is model-agnostic (§4) and this bakes one model family's namespace into a general importer.
@@ -278,9 +308,12 @@ catches a silent overwrite.*
 `caravan:for_pc_sse` and `caravan:forest_fraction`, both prefixed (the raw code and Caravan's own
 canonical name). The bare-versus-prefixed collision has no guard at all.
 
-### D2 — where does the encoding declaration live?
+### D2 — ✅ CLOSED, owner 2026-09-21: a repo-side table for now, the package's own field later
 
-**Whatever D2 chooses must supply three things**, because T3 needs all three: the **delivered**
+**The owner chose to keep the declaration in our own code**, and to ask the extractor to correct
+and populate the package's `unit` field so it can become the source later.
+
+**Whatever carries it must supply three things**, because T3 needs all three: the **delivered**
 encoding per feature, the **expected** encoding per feature, and the **boundary that compares
 them** with a rejection policy. A repo-side table and an upstream catalog field are both viable
 carriers of the first two. *A comment carries neither; a range guard compares nothing. Neither is
@@ -359,7 +392,7 @@ T1–T3.
   never explains how a host directory reaches that container; the base compose gives
   `prefect-worker` no operator bind. ⚖️ Recorded as `related: [307]`; **whether it becomes a formal
   dependency is the orchestrator's call.**
-- **If D1 lands on option 1 or 4, already-imported basins keep their bare keys.** Nothing here says
+- 🔴 **D1 chose option 4, so already-imported basins keep their bare keys.** Nothing here says
   whether a re-import or backfill is needed. For the Swiss 148 the question is masked — their keys
   come from the Caravan path and are already prefixed — so **T2's verification would not surface
   the omission.** Any option that changes the written key shape must state what happens to rows
@@ -374,11 +407,13 @@ uv run ruff check src tests && uv run ruff format --check src tests
 uv run pyright src
 ```
 
-🔴 **D1 and D2 must be ANSWERED before implementation starts — they are not carryable.** T2 is
-entirely determined by D1 and T3 by D2. **D3 and D4 are carryable:** D3 is a question T4 asks, and
-D4 chooses between two outcomes this plan describes in full.
+✅ **D1 and D2 were answered by the owner on 2026-09-21** — they gated implementation and no longer
+do. **D3 and D4 remain carryable:** D3 is a question T4 asks, and D4 chooses between two outcomes
+this plan describes in full.
 
-- D1 and D2 are answered, and the task each determines names the chosen option and its files.
+- T2 implements D1's option 4 and carries both of its binding caveats (no double-prefixing;
+  collision detection before the normalized dict, refusing on conflict).
+- T3 implements D2's repo-side table, and does **not** adopt the package's `unit` field.
 - T1's test asserts the **end state** (all 78 resolve, with expected values), failed before T2 and
   passed after, and its discriminating evidence is the **two-path comparison** — not the text of
   any error message.
@@ -393,10 +428,10 @@ D4 chooses between two outcomes this plan describes in full.
   "phases": [
     { "id": "P1", "tasks": ["T1"],
       "note": "prove the namespace gap; if this comes up green the plan is withdrawn" },
-    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "requires_decision": "D1",
-      "note": "close the namespace gap" },
-    { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "requires_decision": "D2",
-      "note": "declare and enforce the encoding" },
+    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1 CLOSED 2026-09-21",
+      "note": "close the namespace gap: translate at import, reusing the existing operation" },
+    { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "decision": "D2 CLOSED 2026-09-21",
+      "note": "declare and enforce the encoding from a repo-side table" },
     { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"],
       "produces_decision": "D3",
       "deferred_outcome": "if the extractor has not answered when P1-P3 complete, T4 closes as CARRIED with the >100 values recorded as an open data question and this plan named as its carrier",

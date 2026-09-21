@@ -339,7 +339,11 @@ claim; the total is not. The registered schema also has no `artifact_path`.
 **Depends on T3b** — the new route must be deployed and re-registered first.
 
 **In.** The provenance values, all verified 2026-09-21 and recorded here **in full** so they are
-not re-derived. ⚠️ *Independent review 2026-09-21 (major): an earlier revision abbreviated both
+not re-derived — **with one deliberate exception: `expected_config_hash` MUST be recomputed** from
+`config.yaml` in the owner's tree at import time, and the digest recorded below is the value that
+recomputation must produce. *(Confirming review 2026-09-21: the blanket "not re-derived" wording
+still contradicted that requirement after the first fold — the same fix-one-site failure, twice in
+one document.)* ⚠️ *Independent review 2026-09-21 (major): an earlier revision abbreviated both
 digests with an ellipsis while forbidding re-derivation — an instruction that could not be
 followed. `services/model_import.py` compares `declared_config_hash != expected_config_hash` for
 exact equality, so a truncated value is not merely inconvenient, it is unusable.*
@@ -382,7 +386,8 @@ The `notes` field records what Plan 262 could not: this artifact was trained on 
 SAP3 serves UTC-day aggregates today and the declared Swiss target is 06:00Z (Plan 252 OD-15).
 **It is deliberately not served on the cut it was trained on**, and the record should say so.
 
-**Out.** Changing anything to make the import pass. Re-deriving any provenance value.
+**Out.** Changing anything to make the import pass. Re-deriving any provenance value **except
+`expected_config_hash`, whose recomputation from the owner's tree is REQUIRED** — see In.
 
 **Verification.** `model_artifacts` holds one ACTIVE row for `cmal_small` against the pilot group;
 the three timestamps are stored un-conflated; a deliberate second run with a wrong

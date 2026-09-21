@@ -22,7 +22,7 @@ and T3b's live-activation prerequisite still apply. Review coverage is recorded 
 | 1 | 2026-09-09 | the **pre-rewrite** plan (Claude + Codex) | findings folded — then the plan was REWRITTEN the same day, so this round does not cover the current text |
 | 2 | 2026-09-11 | the **pre-fold** text of this revision (Claude + two Codex passes) | NEEDS CHANGES — 1 provenance contradiction, 5 majors, 4 minors |
 | 3 | 2026-09-11 | **the fold of round 2** (Codex, confirming) | 6 of 9 FIXED, no blocker remaining; 1 major + 3 minors MOVED or STILL PRESENT — folded in turn, and this table is one of them |
-| 4 | 2026-09-21 | **the 2026-09-21 amendment ONLY** (Codex, on the diff) — the staged-path reroute, `depends_on: [261, 307]`, the timezone-aware bounds | NEEDS CHANGES — 2 majors, 3 minors, no blocker. Verdict on the framing: *"substantively honest, but incomplete"* — Plan 307 preserves the importer's safeguards and the flow run, but the mount, reader, guards and schema change **are** new machinery, which the untouched text did not acknowledge. All five folded; this row is one of them. ⚠️ **Covers the amendment, NOT the rest of the plan.** |
+| 4 | 2026-09-21 | **the 2026-09-21 amendment ONLY** (Codex, on the diff) — the staged-path reroute, `depends_on: [261, 307]`, the timezone-aware bounds | NEEDS CHANGES — 2 majors, 3 minors, no blocker. Verdict on the framing: *"substantively honest, but incomplete"* — Plan 307 preserves the importer's safeguards and the flow run, but the mount, reader, guards and schema change **are** new machinery, which the untouched text did not acknowledge. Fixes folded, then a confirming pass found **3 of 5 only PARTIALLY fixed** — each one a corrected site whose twin still stood — plus one new minor: this row had claimed all five were done before that pass ran. Swept by value and re-folded. ⚠️ **Covers the amendment, NOT the rest of the plan.** |
 
 A complete Codex pass over `ba1c807a` on 2026-09-11 found one remaining major:
 T3b would activate the pilot before T5's complete-window check. The owner accepted that
@@ -324,8 +324,10 @@ for a human or an orchestrator that honours `depends_on` only. It is written dow
 constraint is not lost, and it is satisfied by the deployment recorded below. Do not read it as
 automatic enforcement, and do not build machinery to make it one — that would be exactly the
 over-engineering this plan forbids. The earlier claim that the dependency is "encoded once" was
-also wrong: `depends_on: [261]` remains in the frontmatter, deliberately, as the prerequisite of
-record. The two now say the same thing rather than three different things.
+also wrong: the frontmatter's `depends_on` remains the prerequisite list of record — **now
+`[261, 307]`**. The two now say the same thing rather than three different things. *(Confirming
+review 2026-09-21: this sentence still read `[261]` after the amendment updated its twin four
+paragraphs earlier.)*
 
 ✅ **The gate is SATISFIED as of 2026-09-11.** Plan 261 merged (`75cf80cf`, PR #270) and deployed
 to the mini at v0.1.901. Its first cycle filled the past forcing tail **143 times with zero
@@ -633,7 +635,8 @@ deployment.
 
 🔴 **AMENDED 2026-09-21 (owner-directed). This task is blocked by Plan 307 and executes
 through it.** The original In said *"imported through the existing `import-model-artifact`
-deployment — no new import machinery"*. **Execution proved that route impossible**, exactly as
+deployment — no new import machinery"*. **Execution proved that route unusable under the current
+Prefect parameter limit**, exactly as
 this task's own "Risk to record" predicted: the artifact's base64 parameters are
 **2,420,511 bytes against a 524,288-byte Prefect server limit** (4.6×), and the flow run is
 refused at creation. See the Execution record above for the verbatim 422; **nothing was written**.
@@ -643,7 +646,9 @@ Plan 307 adds an `artifact_path` parameter to that same deployment, reading from
 staging mount, with a traversal guard and a required content checksum. `services/model_import.py`
 is **unchanged** — no new importer exists, and the flow run is preserved. The owner's deciding
 requirement was that **model onboarding must be replicable on Nepali servers**, which an
-in-process call could not satisfy and raising the server limit could not travel with.
+in-process call could not satisfy, and which the owner judged raising the server limit would not
+travel with. ⚠️ *That is an owner decision, not a demonstration — raising the limit was rejected as
+non-portable and unbounded, not proven impossible.*
 
 ⚠️ **T4 therefore runs after Plan 307's T3b** (deploy + worker recreation for the mount +
 re-registration of the parameter schema), not before. 307 T4 carries this task's provenance table
