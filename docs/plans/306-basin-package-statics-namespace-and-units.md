@@ -490,8 +490,11 @@ T1–T3.
   and that is the shape the 148 Swiss basins were imported from.** The two deltas apply only to
   inputs the loader permits but has not produced. Both changes are improvements (the old
   double-prefix was unresolvable), but they ARE changes to a live path this plan's watch items say
-  not to disturb. **If you would rather the Swiss call site keep its original line, say so — it is
-  a one-line revert** and the package path keeps the shared helper.
+  not to disturb.
+  ⚖️ **CLOSED, owner 2026-09-21: KEEP IT SHARED.** One implementation serves both imports; the
+  alternative was two copies that drift, and two imports answering differently on odd input. The
+  stricter behaviour stands as a **deliberate, recorded** change to the Swiss path rather than an
+  unnoticed side effect — which is the distinction that mattered, not the strictness itself.
 - **The Swiss path is not broken and must not be disturbed.** The 148 Swiss basins resolve today
   through the `caravan:` prefix written by the Plan 155/188 import.
 - **`cmal_small` is `GROUP`-scoped**, so Nepal basins would be assigned as a group, not per
@@ -646,3 +649,11 @@ that one error, including the caveat written to prevent it.
 
 **D2a closed by the owner 2026-09-21** with a rule better than the one this plan proposed — bind
 the description to a *versioned artifact* rather than vouching for a *producer*.
+
+**The Swiss call site stays SHARED — owner, 2026-09-21.** T2 extracted the prefixing operation
+*from* the Swiss import path, and the extraction is not byte-for-byte behaviour-preserving on two
+inputs the Swiss loader permits but has never produced (an already-prefixed column, and a mixed
+bare/prefixed source). The owner chose one shared implementation over two copies that drift. The
+stricter behaviour on those two inputs is therefore a **deliberate, recorded** change to a live
+path, pinned by `TestWhatTheSwissExtractionPreservedAndWhatItChanged` — not an unnoticed side
+effect. That distinction was the question; the strictness itself was never in doubt.
