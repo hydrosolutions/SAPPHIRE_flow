@@ -88,7 +88,7 @@ a gate. Today's behaviour is therefore stricter than the policy it implements.
 
 ### 3. The image a PR run scans is thrown away
 
-`docs/standards/cicd.md:461`: the CI tag `sapphire-flow:ci-${{ github.sha }}` is "purely local to
+`docs/standards/cicd.md:504`: the CI tag `sapphire-flow:ci-${{ github.sha }}` is "purely local to
 the CI runner … **discarded when the runner terminates; it is never pushed, tagged for release, or
 attached to a registry**." CI runs on `push: [main]` **and** `pull_request` (`ci.yml:3-6`), so the
 merge commit produces its own SBOM on `main`.
@@ -148,7 +148,7 @@ cannot be wrapped in a shell retry loop:
 | option | shape | cost |
 |---|---|---|
 | **(a)** keep the action | a second `uses:` step, identical inputs, `if: steps.sbom-generate.outcome == 'failure'` | duplicated step; the pinned SHA now appears twice and must be bumped in two places |
-| **(b)** move to the CLI | the equivalent already recorded at `ci.yml:634` and `cicd.md:577` — `syft sapphire-flow:ci-<sha> -o cyclonedx-json > sbom.cdx.json` — inside a bounded retry loop | we own the install step; loses whatever the action does beyond the CLI, which must be checked, not assumed |
+| **(b)** move to the CLI | the equivalent already recorded at `ci.yml:634` and `cicd.md:620` — `syft sapphire-flow:ci-<sha> -o cyclonedx-json > sbom.cdx.json` — inside a bounded retry loop | we own the install step; loses whatever the action does beyond the CLI, which must be checked, not assumed |
 
 **Verification.** ⚠️ **A retry cannot be verified by watching CI be green** — it is green either
 way. Prove it by forcing the first attempt to fail (an unreachable installer URL, or a deliberately
@@ -240,12 +240,12 @@ the tool works and keeps a hard failure on the lineage that matters.
   makes that distinguishable. This is the plan's own most likely failure.
 - 🪤 **`syft` failed once in 100 runs.** If review wants the stronger case, it is the class (3 of
   15 failures), not this step. Do not let the number drift upward in retelling.
-- **`ci.yml:634` and `cicd.md:577` both record the equivalent CLI — and they disagree.** `ci.yml`
-  names `sapphire-flow:ci-${{ github.sha }}`, the `cicd.md` table names `sapphire-flow:local`. If D1
+- **`ci.yml:634` and `cicd.md:620` both record the equivalent CLI — and they disagree.** `ci.yml`
+  names `sapphire-flow:ci-${{ github.sha }}`, the `cicd.md:620` table names `sapphire-flow:local`. If D1
   picks (b), the real command has to be established rather than copied from either, and both must be
-  updated, and `cicd.md:689` and `security.md:783` both describe the step "via `anchore/sbom-action`"
+  updated, and `cicd.md:732` and `security.md:783` both describe the step "via `anchore/sbom-action`"
   — four sites, not one.
-- **No job depends on `build-image-and-scan`** (`cicd.md:690`: the `e2e` job Plan 064 specified
+- **No job depends on `build-image-and-scan`** (`cicd.md:733`: the `e2e` job Plan 064 specified
   was never built). So this job's status blocks a PR only through the branch protection rules —
   worth confirming which checks are actually required before assuming T2 changes anything.
 
@@ -278,3 +278,10 @@ the tool works and keeps a hard failure on the lineage that matters.
 
 **2026-09-21 — created.** Written the same day the failure occurred, from the run log, the Actions
 API over the last 100 runs, and the standards text. **Not yet independently reviewed.**
+
+**2026-09-21 — four line anchors corrected.** The first commit cited `cicd.md` at 461/577/689/690.
+Those numbers came from a working tree that had not yet pulled the Plan 307 merge, which added
+lines to that file; against the real `main` they are 504/620/732/733 and land on unrelated text.
+⭐ Re-measured at the moment of writing, but against the wrong tree — `git fetch` updates the refs,
+not the checkout. Every anchor in this document has since been verified by printing the line it
+names. See `feedback_measure_at_the_moment_of_acting`.
