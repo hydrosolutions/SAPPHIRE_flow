@@ -19,9 +19,12 @@ question surfaced while checking whether `cmal_small` can run on the six DHM bas
 investigation found a second, larger problem sitting in front of the units one, and both are
 recorded here because they share a single seam: `basins.attributes`.
 
-⚠️ **Plan number 306 was picked as the first unreferenced number (302 is cited by
-`docs/v1-scope.md`, 303/304 are earmarked for the Nepal ingest QC decisions, 305 was withdrawn).
-The owner grants plan IDs — confirm or reassign before this is cited anywhere else.**
+⚠️ **Plan number 306 needs the owner's confirmation — the owner grants plan IDs.** 🔴 *The stated
+rationale was false and is withdrawn.* An earlier revision claimed 306 was "the first unreferenced
+number". Measured (independent review 2026-09-21): `docs/plans/` holds 270–273 then 301,
+`docs/plans/archive/` tops out at 300, and **274–299 are unreferenced repo-wide**. 306 is merely
+*a* free number, chosen badly. Plan 307 inherited the same false rationale and is corrected there
+too.
 
 ## Why this exists
 
@@ -58,7 +61,7 @@ Two facts, both read from the repo at `9dc07915`:
 
 - **Every aquacast model opts into strict namespaced resolution.**
   `models/aquacast/_shim.py:468` declares `static_naming: ClassVar[StaticNaming] = StaticNaming.CARAVAN`
-  on the shim base class, so every subclass inherits it. `types/enums.py:136` defines that as
+  on the shim base class, so every subclass inherits it. `types/enums.py:139-141` defines that as
   *"D15's strict `caravan:`-namespaced, **no-bare-fallback** resolution rule"*, and
   `services/caravan_statics.py::resolve_caravan_static_key` implements it: the key looked up for
   `forest_fraction` is `caravan:for_pc_sse`, and **there is no fallback to the bare name**.
@@ -87,10 +90,17 @@ resolver accepts only one — so "the package is contract-compliant" and "the pa
 our models" are independent facts today. D1 should be read with that in mind.
 
 Confirming context, measured on the live staging DB 2026-09-21: the 148 Swiss basins carry **516**
-attribute keys each, and their statics are stored `caravan:`-prefixed (`caravan:for_pc_sse` etc.) by
-the Plan 155/188 Caravan path. A query for the bare canonical names (`forest_fraction`,
-`clay_fraction`, …) returns **0 basins**. The two import paths write two different key shapes into
-one column.
+attribute keys each, and their statics are stored `caravan:`-prefixed (`caravan:for_pc_sse` etc.)
+by the Plan 155/188 Caravan path — written at `store/caravan_import.py:164`, which namespaces every
+column on the way in.
+
+⚠️ **An earlier revision offered a non-discriminating query as confirmation.** *Independent review
+2026-09-21 (major).* It reported that querying the bare **canonical** names (`forest_fraction`,
+`clay_fraction`, …) returns 0 basins — but **neither path ever writes a bare canonical name**: the
+package writes bare HydroATLAS codes, the Caravan path writes prefixed ones. That query returns 0
+whether or not the importer prefixes, so it confirmed nothing. **The discriminating query is for
+the bare HydroATLAS code** (`for_pc_sse` with no prefix), which is what a package-imported basin
+would carry and a Caravan-imported one would not.
 
 ### 3. The units: the name says fraction, the value is a percent — and sometimes not even that
 
@@ -157,17 +167,50 @@ characterization test pointing the wrong way. This is the same defect, in the sa
 caught twice in Plan 262's T1; see `feedback_red_first_must_prove_the_fault`. Assert the
 end state, let the current failure be the red.
 
-**In.** One test under `tests/unit/` (or `tests/integration/` if a real import is needed), using
-the existing reference package fixture if one covers the contract, otherwise a minimal package
-built in the test.
+**In.** One test under `tests/unit/` (or `tests/integration/` if a real import is needed).
 
-**Out.** Any production change. Any change to `caravan_statics.py` or `basin_importer.py`.
+🔴 **There are TWO different artifacts called `nepal-dhm-basins`, and the plan must not let an
+implementer confuse them.** *Independent review 2026-09-21 (major).*
 
-**Verification.** The test fails, and the failure names the missing `caravan:`-prefixed keys — not
-a `KeyError` from a missing basin, not a loader rejection, not a model-construction error. ⛔ A
-failure for any other reason is not red: see the T1 lesson recorded in Plan 262 (a red test was
-specified wrongly twice, in opposite directions, and both wordings looked like careful
-discipline).
+| | `tests/fixtures/basin_static/nepal-dhm-basins/` | the 2026-09-20 delivery |
+|---|---|---|
+| dated | 2026-07-17 | 2026-09-20 |
+| basins | **1** (a DHM test basin) | **6** (447, 450, 604.5, 647, 670, 684) |
+| parquet | 30,758 bytes | 33,541 bytes |
+| `for_pc_sse` | **76.82** | 8.41 – 45.56 |
+
+⛔ **Every number in §1 and §3 of this plan describes the DELIVERY, not the in-repo fixture**, and
+`76.82` falls outside the range §3 quotes. An implementer reaching for "the existing reference
+fixture" gets figures that contradict this plan. **T1 should use the in-repo fixture** — it is the
+right shape for the contract and needs no external file — **but must not expect §1/§3's values
+from it.**
+
+**Out.** Any production change. Any change to `caravan_statics.py` or `basin_importer.py`. Adding
+a new log message or error field (see the Verification note — that would be a production change
+dressed as test support).
+
+**Verification.** The test's assertion is the **end state**: all 78 declared statics resolve with
+their expected values. Today it fails because none resolves.
+
+🔴 **The discriminating criterion is a comparison between the two import paths, NOT the text of an
+error message.** *Independent review 2026-09-21 (blocker): an earlier revision required "the
+failure names the missing `caravan:`-prefixed keys" — and no code emits a prefixed key on a miss.*
+`services/training_data.py:526-531` logs `missing=sorted(missing_attrs)` where `missing_attrs =
+declared_names - available`, i.e. **declared canonical names** (`forest_fraction`), and
+`services/caravan_statics.py:524-528` builds `StaticCoverageGap.missing_statics` from `name for
+name in declared` — canonical again. The only place a `caravan:` key appears in an error is the
+collision raise (`:253-257`), which is a **different failure**. An implementer following the old
+criterion had to either invent a log message — which this task's own Out forbids — or write a test
+that passes for the wrong reason.
+
+**So the criterion is:** on a package-imported basin **all 78** declared statics report missing,
+while on a Caravan-imported basin **the same 78 resolve**. Same model, same declared names, two
+import paths, opposite outcomes — that is what makes it discriminating.
+
+⛔ A failure for any other reason is not red — not a `KeyError` from a missing basin, not a loader
+rejection, not a model-construction error. See the T1 lesson recorded in Plan 262, where a red
+test was specified wrongly twice, in opposite directions, and both wordings looked like careful
+discipline.
 
 **Pre-change.** This task IS the pre-change evidence for T2.
 
@@ -179,7 +222,7 @@ discipline).
 
 **Out.** Removing or weakening D15's no-bare-fallback rule as a side effect of an unrelated change.
 That rule exists because inference from the alias table cannot distinguish a Caravan direct name
-(`area`) from an incumbent model's own same-named bare attribute (`types/enums.py:136`) — if D1
+(`area`) from an incumbent model's own same-named bare attribute (`types/enums.py:142-144`) — if D1
 lands on relaxing it, that is a deliberate supersession with its own reasoning, not a convenience.
 
 **Verification.** T1's test goes green for the right reason; the 148 Swiss basins' existing
@@ -231,20 +274,50 @@ follow-on; if it is a scale, T3's declaration carries it.
 
 ## Owner decisions
 
-**D1 — how does a package-imported basin satisfy a `CARAVAN`-naming model?** Three options, each
-with a different blast radius:
+**D1 — how does a package-imported basin satisfy a `CARAVAN`-naming model?** Four options, each
+with a different blast radius. ⚠️ **Whichever is chosen, T2's In must then name the files it
+touches** — an implementer cannot start from "whichever option the owner takes".
+
   1. **Prefix at import** — `basin_importer` writes `caravan:`-prefixed keys. Simple, but the
      package contract is model-agnostic (§4) and this bakes one model family's namespace into a
-     general importer.
+     general importer. *Touches:* `store/basin_importer.py`, its tests.
   2. **Resolve by provenance** — `basins.package_id` already exists on the table; resolution could
      consult it and accept a package-sourced bare key. Keeps the importer neutral; adds a branch
-     to the resolver.
+     to the resolver. *Touches:* `services/caravan_statics.py`, its tests. ⚠️ This weakens D15's
+     no-bare-fallback rule, which T2's Out flags as needing its own reasoning.
   3. **The package declares its namespace** — a manifest field, validated by the loader. Cleanest
-     contractually, but it is an upstream contract change and the extractor must emit it.
+     contractually, but it is an **upstream `04-basin-static-artifact-contract` change** and the
+     extractor must emit it. ⚠️ This plan's scope line excludes the package contract, so choosing
+     option 3 **widens the scope** and the line must be amended rather than quietly overrun.
+  4. 🔑 **Reuse the prefixing the repo already ships.** *Added by independent review 2026-09-21
+     (major).* `store/caravan_import.py:164` already builds exactly the required shape —
+     `{f"{CARAVAN_PREFIX}{col}": val for col, val in raw_attrs.items()}` — driven by
+     `scripts/import_caravan_attributes.py`. It is currently pinned to the Swiss 148-code manifest
+     and `cmal_pool_pt`, so it would need generalising, but that is **a smaller blast radius than
+     an upstream contract change**. *Touches:* `store/caravan_import.py`,
+     `scripts/import_caravan_attributes.py`, their tests.
+
+⚠️ **The scope line's "(Plan 155/188, which works)" reads as "irrelevant" and should not.** That
+path is the one mechanism in the repo that already produces the key shape this plan needs. It is
+out of scope as a thing to *fix*; it is squarely in scope as a thing to *reuse*.
 
 **D2 — where does the unit live?** A comment (today), a declared field on the feature catalog, a
-repo-side table, or a runtime range guard. Note the catalog already has the right shape for it —
-each feature carries a `unit` field, and the package populates it (`area` is `km2`).
+repo-side table, or a runtime range guard.
+
+🔴 **The catalog's existing `unit` field is NOT the answer, and an earlier revision wrongly
+recommended it.** *Independent review 2026-09-21 (major).* Measured on the in-repo catalog:
+
+| feature | catalog `unit` | actual value | verdict |
+|---|---|---|---|
+| `area` | `km2` | — | correct |
+| `for_pc_sse`, `cly_pc_sav` | `%` | 8–77 | correct |
+| **`slp_dg_sav`** | **`degrees`** | **266.99** | 🔴 **false** — §3 shows this is a scaled integer, not 267 degrees |
+| **`ari_ix_sav`** | **`null`** | 56–527 | 🔴 **absent** |
+
+So for the two features §3 singles out, the catalog's `unit` is **wrong for one and missing for
+the other**. Adopting it as the declaration would import a false unit under the appearance of a
+declared one — worse than today's comment, which at least does not claim to be authoritative.
+Whatever D2 chooses must be verified against these two features specifically.
 
 **D3 — are the >100 `lka_pc_sse` values a misread scale or a defect?** Not answerable from this
 repo. Needs the extractor or the modeller.
@@ -259,11 +332,21 @@ from *both* `feature_catalog.json` and `static_attributes.parquet` disappears fr
 entirely — the one case a coverage gate exists to catch. A self-describing manifest cannot gate
 its own completeness.
 
-⚙️ **The hook for a working gate already exists.** That same function takes an optional
-`assigned_model_features: Callable[[BasinRecord], frozenset[str]] | None`. A real gate bases
-coverage on the **model's** declared requirement set — independent of the package — translates
-canonical names to package names (the T2 mapping), and holds or rejects per assignment. Without
-it, missing or null catalog-required features produce warnings, not holds.
+⚙️ **The hook for a working gate already exists** — `assigned_model_features:
+Callable[[BasinRecord], frozenset[str]] | None`, built in production by
+`services/basin_importer.py::build_assigned_model_features_resolver`, which unions
+`model.data_requirements.static_features` over every ACTIVE assignment covering the basin.
+
+🔴 **But that hook is currently comparing two different namespaces, so it can never hold for an
+aliased feature.** *Independent review 2026-09-21 (major), verified:* `catalog_required` is built
+from `entry.name` — the **raw catalog/parquet name** (`for_pc_sse`) — while `assigned` contains
+the model's **canonical** names (`forest_fraction`). The test is `if name in assigned`, so for all
+**23 aliased features of a CARAVAN model it is false by construction**, and the outcome is a
+WARNING, never a HOLD.
+
+⇒ **A working gate therefore needs two changes, not one:** populate `required_by_models`, **and**
+make the comparison alias-aware. Naming only the first would have produced a gate that looks
+present and never fires.
 
 ⚖️ **So D4 is a choice between two things, not one:** populate `required_by_models` as
 *documentation* (cheap, no gate), or build the assignment-aware gate through
@@ -279,6 +362,19 @@ assumed.
   station — relevant to whoever sequences the DHM onboarding, not to this plan.
 - **This plan does not make `cmal_small` runnable for Nepal on its own.** Statics are one input;
   the 30-day forcing window and the daily observation series are separate questions.
+- 🔑 **This plan needs the staging mount Plan 307 T1 builds, and neither plan said so.**
+  *Independent review 2026-09-21 (minor).* Importing a package on the staging host means getting a
+  package **directory** readable inside a read-only-rootfs container.
+  `docs/operations/basin-static-importer-runbook.md:54-61` says only `--package-dir
+  /path/to/nepal-dhm-basins` and never explains how a host directory reaches that container; the
+  base compose gives `prefect-worker` no operator bind. 307 T1 creates exactly that mount. Both
+  plans carried `depends_on: []`. ⚖️ **Whether that becomes a formal dependency or stays a noted
+  overlap is the orchestrator's call** — it is recorded here rather than decided.
+- **If D1 lands on option 1 (prefix at import), already-imported basins keep their bare keys.**
+  *Independent review 2026-09-21 (minor).* Nothing in this plan says whether a re-import or a
+  backfill is needed. For the Swiss 148 the question is masked — their keys come from the Caravan
+  path and are already prefixed — so **T2's verification would not surface the omission**. Any
+  option that changes the written key shape must state what happens to rows written before it.
 
 ## Exit gates
 

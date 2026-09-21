@@ -7,7 +7,7 @@ scope: Add an `artifact_path` parameter to the existing `import-model-artifact` 
 depends_on: []
 blocks: [262]
 open_decisions: []
-source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.1.927 was refused by the Prefect API. The refusal, its byte counts and the mount topology below were all measured that day; the owner then set the requirement that model onboarding must be replicable on Nepali servers, which is what selects this shape over the two alternatives.
+source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.1.927 was refused by the Prefect API. The refusal, its byte counts and the mount topology below were all measured that day; the owner then set the requirement that model onboarding must be replicable on Nepali servers, which is what selects this shape over the two alternatives. The provenance values in T4 come from the owner's model tree at `2025-01-BARHKH/models/global/cmal_small` (its `config.yaml`, `checkpoints/best.pt` and `logs/train.log`), which is NOT in this repository — a reviewer cannot verify them from the checkout, and Plan 262 names the same tree.
 ---
 
 # Plan 307 — import a model artifact from a staged path
@@ -18,8 +18,10 @@ source: 2026-09-21 — a live import attempt on the mac-mini staging host at v0.
 shape (option (a)) over an in-process call and over raising the Prefect server limit, on the
 ground that **model onboarding must be replicable on Nepali servers**.
 
-⚠️ Plan number 307 was the first unreferenced number after 306. The owner grants plan IDs —
-confirm or reassign before it is cited.
+⚠️ **Plan number 307 needs the owner's confirmation — the owner grants plan IDs.** 🔴 *The stated
+rationale was false and is withdrawn.* It claimed 307 was "the first unreferenced number after
+306", inheriting that reasoning from Plan 306. Measured (independent review 2026-09-21):
+**274–299 are unreferenced repo-wide.** 307 is merely *a* free number.
 
 ## The failure, measured
 
@@ -66,16 +68,29 @@ large input from a mounted path is how this codebase already imports bulk data; 
 model artifacts onto the same footing **while keeping the flow run**, which the CLI route would
 lose.
 
+⚠️ **That precedent has the identical staging gap, and citing it as "already works" overstates
+it.** *Independent review 2026-09-21 (minor).*
+`docs/operations/basin-static-importer-runbook.md:54-61` says only `--package-dir
+/path/to/nepal-dhm-basins` and never explains how a host directory reaches the hardened,
+read-only-rootfs container — because no operator bind exists for it either. The precedent
+establishes the **shape**; it does not demonstrate a working route. ⇒ **The mount T1 builds is
+what that runbook has been missing**, which is also why Plan 306 depends on it (see Watch items).
+
 ## The mount topology, measured 2026-09-21
 
 Read from `docker-compose.yml`, the mac-mini overlay, and `docker inspect` of the running worker:
 
-| mount | kind | in the worker | purpose today |
+🔴 **Every row below is attributed to its source, because an earlier revision mixed base compose
+with overlay and with `docker inspect`, and got two rows wrong.** *Independent review 2026-09-21
+(major).*
+
+| mount | kind | where it comes from | note |
 |---|---|---|---|
-| `/data/artifacts` | named volume `model_artifacts` | **rw** (worker), ro (api) | the artifact store's own persistence — **not** an operator drop point |
-| `/data/raw` | host bind | **ro** | where an operator stages input data; on the mini it is `/Users/sapphire/camels-ch` |
-| `/data/cache`, `/tmp` | tmpfs | rw | scratch |
-| container rootfs | — | **read-only** | hardened; `docker cp` into it is refused outright |
+| `/data/artifacts` | named volume `model_artifacts` | **base compose** — rw on `prefect-worker` (`:146`), ro on `api` (`:331`) | the artifact store's own persistence — **not** an operator drop point, and a named volume an operator cannot drop a file into |
+| `/data/raw` on **`prefect-worker`** | **nothing in the base compose** | **overlay only** — `docker-compose.macmini.yml:40` binds `/Users/sapphire/camels-ch:/data/raw:ro` | the base deliberately has no host bind here; the overlay header records that Plan 060 removed `sapphire_data:/data/raw` from the base |
+| `/data/raw` on **`prefect-worker-ingest`** | **tmpfs** (`docker-compose.yml:199`) | base compose | ⚠️ **not a bind at all** — the previous table presented `/data/raw` as a host bind without saying on which service |
+| `/data/cache`, `/tmp` | tmpfs | base compose | scratch |
+| container rootfs | `read_only: true` (`docker-compose.yml:139`) | base compose | hardened; `docker cp` into it is refused outright (observed 2026-09-21) |
 
 Two consequences the implementation must respect:
 
@@ -92,9 +107,22 @@ Two consequences the implementation must respect:
 
 ### T1 — a staging mount every deployment declares
 
-**Outcome.** A read-only staging directory — **`/data/incoming`** (D1) — exists in the worker on
-any deployment that follows the compose files, and its location is resolved from configuration
-rather than hardcoded.
+**Outcome.** A read-only staging directory — **`/data/incoming`** (D1) — is available to the
+worker, and its location is resolved from configuration rather than hardcoded.
+
+🔴 **The base compose cannot portably name a host path, and this task must say what it declares.**
+*Independent review 2026-09-21 (major): the previous Outcome promised the mount "exists in the
+worker on any deployment that follows the compose files" and verified a file placed in "the host
+directory" — but the base compose deliberately carries no host bind for `prefect-worker`
+(`/data/raw` is supplied only by the overlay, and Plan 060 removed the base one), while this
+task's Out forbids creating the directory from inside the read-only container.*
+
+⚖️ **The shape that resolves it:** the **base** declares the mount point and the env var naming it,
+each **deployment's overlay** supplies the host bind (the mini's in `docker-compose.macmini.yml`,
+a Nepali server's in its own). That keeps "the procedure is the same everywhere" true — the
+procedure is the same, the host path is per-deployment, and that is exactly how `/data/raw`
+already works. ⚠️ The exit gate must then check the **overlay-composed** configuration, not the
+base alone, or it will check a mount that is intentionally absent.
 
 **In.** `docker-compose.yml` (the mount on `prefect-worker`, which is where
 `import-model-artifact` lands — it declares no pool and so runs on `default`,
@@ -119,10 +147,23 @@ route, still valid below the limit) **or** as `artifact_path` resolved inside `/
 exactly one, never both, never neither. A path import additionally requires
 **`expected_artifact_sha256`** (D3) and refuses on mismatch before the bytes are used.
 
-**In.** `flows/import_model_artifact.py` **and its tests** (`tests/unit/flows/test_import_model_artifact.py`
-or the file that currently covers this flow). ⚠️ *Independent review 2026-09-21 (minor): the
-previous wording said this file "only" while the verification below mandates new tests — an In
-that forbids what its own verification requires.*
+**In.** `flows/import_model_artifact.py` **and `tests/unit/flows/test_import_model_artifact_flow.py`**,
+which pins the current parameter set through `Flow.validate_parameters` and **will break**.
+⚠️ *Independent review 2026-09-21 (minor): the previous wording said this file "only" while the
+verification below mandates new tests — an In that forbids what its own verification requires.*
+
+🔴 **"Add a parameter" understates the change, and the plan must say so.** *Independent review
+2026-09-21 (major).* `artifact_base64: str` is a **required positional parameter** at
+`flows/import_model_artifact.py:119`, followed by four more required ones — `trained_at`,
+`training_period_start`, `training_period_end`, `expected_config_hash` (`:120-123`). "Exactly one,
+never both, never neither" forces `artifact_base64` to become **optional**, which in turn forces
+either defaulting or reordering those four. That is a required→optional change to a **registered
+deployment's parameter schema**, which is the kind of change D2 was written to avoid.
+
+⚖️ **So T2 must state which it does** — give `artifact_base64` a `None` default and keep parameter
+order (the smaller change, and the one that keeps existing callers working), or reorder. It must
+not leave this to the implementer, because the two produce different registered schemas and
+**T3b's verification reads that schema.**
 
 Two guards, in this order:
 
@@ -234,6 +275,13 @@ digests with an ellipsis while forbidding re-derivation — an instruction that 
 followed. `services/model_import.py` compares `declared_config_hash != expected_config_hash` for
 exact equality, so a truncated value is not merely inconvenient, it is unusable.*
 
+⚖️ **Plan 262 is AUTHORITATIVE for these values; the table below is a working copy.**
+*Independent review 2026-09-21 (minor): 262 already records the same provenance — the
+byte-identical config hash, the 1,814,653 → 2,419,540 → 2,420,511 byte chain, the
+`2026-08-31T11:41:55Z` completion time, and the 0.1.346-bundle-under-0.1.356-runtime note. They
+agree today, and duplicating them creates two copies to keep in sync.* If the two ever disagree,
+**262 wins and this table is the error.**
+
 | field | value | source |
 |---|---|---|
 | `trained_at` | `2026-08-31T11:41:55+00:00` | `logs/train.log:632` (`aquacast.pipeline:168`, "Trained: best val_loss=-17.94623 @ epoch 5"), 13:41:55 on a Europe/Zurich machine in CEST — owner-confirmed |
@@ -278,6 +326,18 @@ the runbook a step that catches a truncated copy — the transfer in this sessio
 way, by hand. T2 owns the parameter and its refusal test; T3's procedure must produce the digest
 before the import, not after.
 
+## Watch items
+
+- 🔑 **Plan 306 needs the mount T1 builds, and neither plan said so.** *Independent review
+  2026-09-21 (minor).* 306's end-to-end goal is importing a basin package on the staging host,
+  which requires a package **directory** readable inside the read-only-rootfs container — exactly
+  what T1 creates. This plan's scope excludes the basin-package *route*; it does not exclude
+  serving that route's staging need. Both plans carried `depends_on: []`. ⚖️ **Whether this becomes
+  a formal dependency or stays a noted overlap is the orchestrator's call**, recorded here rather
+  than decided.
+- **`/data/incoming` is host-writable by anyone with shell access on the host.** That is why D3
+  requires the checksum, and why T2 hashes the buffer it passes on rather than re-reading.
+
 ## Interaction with Plan 262 — flagged, not assumed
 
 Plan 262 is `READY` and its T4 **In** says the import runs *"through the existing
@@ -306,7 +366,7 @@ uv run pyright src
   two boundaries are now stated separately because they genuinely differ.*
 - `services/model_import.py` is unchanged — shown by diff, not asserted.
 - `docker compose config` shows the staging mount read-only on `prefect-worker` and absent from
-  the other four services.
+  every other service. ⚠️ *Independent review 2026-09-21 (minor): an earlier revision said "the other four", but the compose defines seven services besides `prefect-worker` (postgres, prefect-server, prefect-worker-ingest, prefect-worker-backup, api, caddy, init). Name services, do not count them.*
 - T3b was completed before T4 ran, and the registered schema was confirmed to carry the new
   parameters — not assumed from a successful deploy.
 - T3's procedure was followed verbatim to produce T4's rows, and was corrected in place wherever
