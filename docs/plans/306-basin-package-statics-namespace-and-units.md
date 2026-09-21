@@ -287,22 +287,37 @@ touches** — an implementer cannot start from "whichever option the owner takes
      no-bare-fallback rule, which T2's Out flags as needing its own reasoning.
   3. **The package declares its namespace** — a manifest field, validated by the loader. Cleanest
      contractually, but it is an **upstream `04-basin-static-artifact-contract` change** and the
-     extractor must emit it. ⚠️ This plan's scope line excludes the package contract, so choosing
-     option 3 **widens the scope** and the line must be amended rather than quietly overrun.
-  4. 🔑 **Reuse the prefixing the repo already ships.** *Added by independent review 2026-09-21
+     extractor must emit it, so it needs coordination outside this repo. ⚠️ *Round 2 (minor): an
+     earlier note said this "widens the scope" because the scope line excludes the package
+     contract. It does not — the scope line excludes that contract's **geometry and provenance
+     rules**, and a namespace declaration is neither. The upstream-coordination cost is real; the
+     scope conflict was not.*
+  4. 🔑 **Extract the prefixing the repo already ships.** *Added by independent review 2026-09-21
      (major).* `store/caravan_import.py:164` already builds exactly the required shape —
-     `{f"{CARAVAN_PREFIX}{col}": val for col, val in raw_attrs.items()}` — driven by
-     `scripts/import_caravan_attributes.py`. It is currently pinned to the Swiss 148-code manifest
-     and `cmal_pool_pt`, so it would need generalising, but that is **a smaller blast radius than
-     an upstream contract change**. *Touches:* `store/caravan_import.py`,
-     `scripts/import_caravan_attributes.py`, their tests.
+     `{f"{CARAVAN_PREFIX}{col}": val for col, val in raw_attrs.items()}`.
+     🔴 *Round 2 (major): "reuse `scripts/import_caravan_attributes.py` as a second import step"
+     understates this badly.* That path is Swiss-specific well beyond its manifest pin:
+     `adapters/caravan_attributes.py:25-37,57` accepts only `caravan_camels_ch_` identities, and
+     `store/caravan_import.py:157` looks up network `"bafu"`. Running it as a separate command
+     also would not make T1's package-import test green, because T1 imports a **package**.
+     ⇒ **Option 4 means extracting the one-line prefixing operation into the package import path**,
+     not invoking the Caravan command. *Touches:* `store/caravan_import.py` (extract),
+     `store/basin_importer.py` (call it), their tests. If instead a second import step is wanted,
+     that is a different option and must carry identity parsing, network handling, sequencing and
+     its own verification.
 
 ⚠️ **The scope line's "(Plan 155/188, which works)" reads as "irrelevant" and should not.** That
 path is the one mechanism in the repo that already produces the key shape this plan needs. It is
 out of scope as a thing to *fix*; it is squarely in scope as a thing to *reuse*.
 
-**D2 — where does the unit live?** A comment (today), a declared field on the feature catalog, a
-repo-side table, or a runtime range guard.
+**D2 — where does the unit live?** ⚠️ *Round 2 (major): the previous list offered "a comment" and
+"a runtime range guard" as standalone options, both of which T3 explicitly rules out — so
+answering D2 would not have made T3 implementable.* They are removed.
+
+**Whatever D2 chooses must supply three things**, because T3 needs all three: the **delivered**
+encoding per feature, the **expected** encoding per feature, and the **boundary that compares
+them** with a rejection policy. A repo-side table and an upstream catalog field are both viable
+carriers of the first two; a comment carries neither, and a range guard compares nothing.
 
 🔴 **The catalog's existing `unit` field is NOT the answer, and an earlier revision wrongly
 recommended it.** *Independent review 2026-09-21 (major).* Measured on the in-repo catalog:
@@ -344,9 +359,20 @@ the model's **canonical** names (`forest_fraction`). The test is `if name in ass
 **23 aliased features of a CARAVAN model it is false by construction**, and the outcome is a
 WARNING, never a HOLD.
 
-⇒ **A working gate therefore needs two changes, not one:** populate `required_by_models`, **and**
-make the comparison alias-aware. Naming only the first would have produced a gate that looks
-present and never fires.
+⇒ **A working gate needs three things, and the third is the one that actually catches a deletion.**
+🔴 *Round 2 (major): "populate `required_by_models` and make the comparison alias-aware" still
+misses the drop-from-both case.* `catalog_required` is derived from **surviving catalog entries**
+(`:1237-1239`) and the loop iterates only those (`:1372-1378`), so a feature deleted from both
+files is never visited — alias-aware or not. The gate must:
+
+1. obtain the requirement set **independently of the package** (the model's declared statics, via
+   the existing `assigned_model_features` resolver);
+2. **iterate that set**, not the catalog's, resolving each requirement against the package values
+   regardless of whether the catalog still mentions it;
+3. translate canonical ↔ package names on the way (the T2 mapping).
+
+⚠️ And keep a test for the deletion case specifically — it is the one a self-describing manifest
+can never catch, and therefore the only one that proves the gate is real.
 
 ⚖️ **So D4 is a choice between two things, not one:** populate `required_by_models` as
 *documentation* (cheap, no gate), or build the assignment-aware gate through
@@ -392,9 +418,15 @@ deciding questions to stay open cannot be implemented.* D3 and D4 **are** carrya
 question for the extractor, and D4 chooses between a documentation outcome and an extra task.
 
 - D1 and D2 are answered, and the task each determines names the chosen option.
-- T1's test asserts the **end state** (all declared statics resolve, with expected values), was
-  failing before T2 and passing after, and its pre-change failure names the missing
-  `caravan:`-prefixed keys rather than an incidental error.
+- T1's test asserts the **end state** (all 78 declared statics resolve, with their expected
+  values), was failing before T2 and passing after. Its discriminating evidence is the
+  **two-path comparison** — all 78 missing on a package-imported basin, the same 78 resolving on a
+  Caravan-imported one — **not** the text of any error message.
+  🔴 *Independent review round 2, 2026-09-21 (blocker): the previous bullet still required the
+  pre-change failure to "name the missing `caravan:`-prefixed keys" — the exact criterion T1's own
+  correction had just removed as unachievable. Correcting the task and leaving the gate standing
+  documented the contradiction instead of fixing it; see
+  `feedback_correction_notes_do_not_replace_wrong_text`.*
 - The 148 Swiss basins' static resolution is unchanged — demonstrated, not assumed.
 - No stored attribute value was rescaled by this plan.
 - T3's two tests both exist, and neither infers an encoding from the magnitude of a value.
@@ -409,8 +441,10 @@ question for the extractor, and D4 chooses between a documentation outcome and a
       "note": "close the namespace gap" },
     { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"], "requires_decision": "D2",
       "note": "declare and enforce the encoding" },
-    { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"], "requires_decision": "D3",
-      "note": "a question to the extractor; blocks nothing in this plan" }
+    { "id": "P4", "tasks": ["T4"], "parallel_with": ["P1", "P2", "P3"],
+      "produces_decision": "D3",
+      "deferred_outcome": "if the extractor has not answered when P1-P3 complete, T4 closes as CARRIED with the >100 values recorded as an open data question and this plan named as its carrier",
+      "note": "T4's work IS obtaining D3; it cannot require D3 as an entry condition" }
   ]
 }
 ```

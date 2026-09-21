@@ -100,7 +100,7 @@ Two consequences the implementation must respect:
   the container creates. `config/paths.py::_ensure_subdir` already handles `EROFS` by skipping,
   which means a staging root that only exists as a `mkdir` would silently not exist.
 
-`SAPPHIRE_DATA_DIR=/data` is set on all four app services, and `config/paths.py` already resolves
+`SAPPHIRE_DATA_DIR=/data` is set on the four app services that need it (`prefect-worker` `:110`, `prefect-worker-ingest` `:171`, `prefect-worker-backup` `:230`, `api` `:293`), and `config/paths.py` already resolves
 `raw`, `artifacts` and `cache` beneath it — so a staging subdirectory fits the existing shape.
 
 ## Tasks
@@ -117,24 +117,37 @@ directory" — but the base compose deliberately carries no host bind for `prefe
 (`/data/raw` is supplied only by the overlay, and Plan 060 removed the base one), while this
 task's Out forbids creating the directory from inside the read-only container.*
 
-⚖️ **The shape that resolves it:** the **base** declares the mount point and the env var naming it,
-each **deployment's overlay** supplies the host bind (the mini's in `docker-compose.macmini.yml`,
-a Nepali server's in its own). That keeps "the procedure is the same everywhere" true — the
-procedure is the same, the host path is per-deployment, and that is exactly how `/data/raw`
-already works. ⚠️ The exit gate must then check the **overlay-composed** configuration, not the
-base alone, or it will check a mount that is intentionally absent.
+🔴 **DECIDED, and stated precisely because the previous wording contradicted itself** — it said the
+base "declares the mount point" while its own correction said that mount is "intentionally absent"
+from the base. *Round 2 (major).* What each file does:
 
-**In.** `docker-compose.yml` (the mount on `prefect-worker`, which is where
-`import-model-artifact` lands — it declares no pool and so runs on `default`,
-`cli/register_deployments.py:193-198`), `docker-compose.macmini.yml` (the host path for this
-box), `config/paths.py` (a resolver beside `resolve_artifact_dir`), `docs/spec/config-reference.toml`
-if a config field is added, and `docs/standards/cicd.md` § the deployment's required mounts.
+| file | declares |
+|---|---|
+| `docker-compose.yml` (base) | **no volume entry.** Only the configuration that *names* the staging root — the env var / `config.toml` default resolving to `/data/incoming`. The base has no portable host path to bind, exactly as with `/data/raw` since Plan 060. |
+| each deployment's overlay | **the bind itself** — `<host dir>:/data/incoming:ro`. The mini's goes in `docker-compose.macmini.yml`; a Nepali server supplies its own. |
 
-**Out.** Making it writable. Staging into `/data/artifacts`. Any change to the four other
-services. Creating the directory from inside the container.
+That keeps "the procedure is the same everywhere" true: the procedure and the container path are
+identical, only the host directory differs per deployment.
 
-**Verification.** `docker compose config` shows the mount read-only on `prefect-worker` and on no
-other service; a file placed in the host directory is visible at the expected path inside the
+**In.** `docker-compose.yml` — **the configuration naming the staging root only, no volume entry**
+(per the table above); `docker-compose.macmini.yml` — **the bind** `<host dir>:/data/incoming:ro`
+on `prefect-worker`, which is where `import-model-artifact` lands (it declares no pool and so runs
+on `default`, `cli/register_deployments.py:193-198`); `config/paths.py` — a resolver beside
+`resolve_artifact_dir`; `docs/spec/config-reference.toml` if a config field is added; and
+`docs/standards/cicd.md` § the deployment's required mounts, which must say that **a deployment
+without this bind cannot import an artifact by path** — that is the portability contract, and it
+is the sentence a Nepali deployment will be set up from.
+
+**Out.** Making it writable. Staging into `/data/artifacts`. A volume entry in the base compose.
+Any change to `prefect-worker-ingest`, `prefect-worker-backup`, `api`, `init`, `postgres`,
+`prefect-server` or `caddy`. Creating the directory from inside the container.
+
+**Verification.** ⚠️ **Every compose check in this plan composes BOTH files** —
+`docker compose -f docker-compose.yml -f docker-compose.macmini.yml config` — because the base
+alone intentionally lacks the bind, and checking the base would assert the absence of the thing
+this task adds. *Round 2 (major): two verification commands said plain `docker compose config`
+while the text required overlay composition.* That composed config shows the mount read-only on
+`prefect-worker` and on no other service; a file placed in the host directory is visible at the expected path inside the
 worker; a write from inside the container fails.
 
 **Pre-change.** The mount does not exist — `docker inspect` of the running worker lists the five
@@ -148,7 +161,14 @@ exactly one, never both, never neither. A path import additionally requires
 **`expected_artifact_sha256`** (D3) and refuses on mismatch before the bytes are used.
 
 **In.** `flows/import_model_artifact.py` **and `tests/unit/flows/test_import_model_artifact_flow.py`**,
-which pins the current parameter set through `Flow.validate_parameters` and **will break**.
+which exercises the flow's parameter set through `Flow.validate_parameters`.
+
+⚠️ *Round 2 (minor): an earlier revision claimed that test "will break". Measured — it supplies the
+existing required parameters and asserts only that `artifact_base64` survives validation and
+decodes to the original bytes (`:50-54`). It asserts nothing about the complete parameter set, so a
+compatible keyword-only addition need not break it.* The file is in scope because T2 **adds**
+schema tests to it — path-only validation succeeds, and no provenance field can be omitted — not
+because it is expected to fail.
 ⚠️ *Independent review 2026-09-21 (minor): the previous wording said this file "only" while the
 verification below mandates new tests — an In that forbids what its own verification requires.*
 
@@ -160,10 +180,32 @@ never both, never neither" forces `artifact_base64` to become **optional**, whic
 either defaulting or reordering those four. That is a required→optional change to a **registered
 deployment's parameter schema**, which is the kind of change D2 was written to avoid.
 
-⚖️ **So T2 must state which it does** — give `artifact_base64` a `None` default and keep parameter
-order (the smaller change, and the one that keeps existing callers working), or reorder. It must
-not leave this to the implementer, because the two produce different registered schemas and
-**T3b's verification reads that schema.**
+🔴 **DECIDED — the signature becomes keyword-only after `model_id`.** *Round 2 (major): the
+previous wording said T2 "must state which it does" and then did not state it — an annotation
+where a decision was needed. Worse, the option it leaned toward is not valid Python: four required
+positional parameters follow `artifact_base64` (`:120-123`), so defaulting only that one is a
+syntax error, and defaulting the four would silently make required provenance optional.*
+
+```python
+def import_model_artifact_flow(
+    model_id: str,
+    *,
+    artifact_base64: str | None = None,
+    artifact_path: str | None = None,
+    expected_artifact_sha256: str | None = None,
+    trained_at: str,
+    training_period_start: str,
+    training_period_end: str,
+    expected_config_hash: str,
+    ...
+) -> str:
+```
+
+Keyword-only parameters stay **required** even when earlier ones carry defaults, so this is the one
+shape that admits the new optional inputs **without weakening any provenance field**. It is safe
+here because nothing calls this flow positionally — measured: the only occurrence of
+`import_model_artifact_flow(` in `src/` and `tests/` is the definition itself, and both Prefect and
+the tests pass parameters by name.
 
 Two guards, in this order:
 
@@ -259,8 +301,12 @@ service; the registered deployment's parameter schema lists `artifact_path` and
 guard (naming the staging root) rather than by schema validation — which distinguishes "registered
 and reachable" from "registered but never invoked".
 
-**Pre-change.** Today the worker has five mounts and none is a staging root (`docker inspect`,
-2026-09-21), and the registered schema has no `artifact_path`.
+**Pre-change.** `docker inspect` of the running worker on 2026-09-21 showed **no staging mount**
+(its mounts are the artifact/NWP/BAFU volumes, the two config binds, the worker DB-password secret
+and the NWP tmpfs). ⚠️ *Round 2 (minor): an earlier revision asserted a total of "five mounts",
+which the table above does not support — that table lists selected relevant mounts plus rootfs
+state and an ingest-service row, not a worker inventory.* The absence of a staging root is the
+claim; the total is not. The registered schema also has no `artifact_path`.
 
 ### T4 — import `cmal_small` through the new route
 
@@ -365,8 +411,8 @@ uv run pyright src
   before the file is opened, which a checksum can never satisfy — digesting requires reading. The
   two boundaries are now stated separately because they genuinely differ.*
 - `services/model_import.py` is unchanged — shown by diff, not asserted.
-- `docker compose config` shows the staging mount read-only on `prefect-worker` and absent from
-  every other service. ⚠️ *Independent review 2026-09-21 (minor): an earlier revision said "the other four", but the compose defines seven services besides `prefect-worker` (postgres, prefect-server, prefect-worker-ingest, prefect-worker-backup, api, caddy, init). Name services, do not count them.*
+- The **overlay-composed** config (`-f docker-compose.yml -f docker-compose.macmini.yml`) shows
+  the staging mount read-only on `prefect-worker` and absent from every other service. ⚠️ *Independent review 2026-09-21 (minor): an earlier revision said "the other four", but the compose defines seven services besides `prefect-worker` (postgres, prefect-server, prefect-worker-ingest, prefect-worker-backup, api, caddy, init). Name services, do not count them.*
 - T3b was completed before T4 ran, and the registered schema was confirmed to carry the new
   parameters — not assumed from a successful deploy.
 - T3's procedure was followed verbatim to produce T4's rows, and was corrected in place wherever
