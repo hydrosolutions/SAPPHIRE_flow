@@ -627,10 +627,6 @@ jobs:
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
-      - name: TEMP PLAN309 VERIFICATION E — simulate a failed CVE gate
-        run: |
-          echo "Simulating Trivy gate failure: the job is red BEFORE the SBOM chain."
-          exit 1
       # B4 — SBOM generation (Plan 309). `syft` emits CycloneDX JSON for the built
       # image, uploaded as an artifact on every run so a future CVE landing has a
       # recoverable "which image contains library X?" trail.
