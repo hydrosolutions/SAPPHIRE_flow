@@ -19,8 +19,9 @@ source: 2026-09-21 — measured against the repo at `9dc07915`, the live mac-min
 **READY — set by the owner on 2026-09-21.** **D1, D2 and D2a are all closed; no open decision
 gates any task.** D3 and D4 are carried and gate nothing.
 
-Consolidating rewrite 2026-09-21 — see the Changelog. Six independent review rounds
-(one Claude, five Codex) were folded in place, which left the document carrying its own
+Consolidating rewrite 2026-09-21 — see the Changelog. **Seven independent review passes — one
+Claude and six Codex — across six numbered rounds** were folded in place, which left the document
+carrying its own
 archaeology; the corpus already records that layered corrections are how Plan 252 failed three
 rounds on its text rather than its reasoning. This is the rewrite. **Every finding is preserved;
 only the superseded wording is gone.** Review coverage and what each round changed are in the
@@ -33,7 +34,9 @@ reusing the operation the repo already ships for the Swiss path; keep the encodi
 **in our own code for now**, and ask the extractor to correct and populate the package's own field
 so it can take over later.
 
-**All three tasks are implementable.** D3 and D4 remain carried and block nothing.
+**All three implementation tasks — T1, T2 and T3 — are implementable.** T4 is a question to the
+extractor rather than an implementation task, and carries a deferred outcome. D3 and D4 remain
+carried and block nothing.
 
 ## Why this exists
 
@@ -436,7 +439,10 @@ work, and neither does the obvious repair.**
 ⇒ **A working gate must:** (1) obtain the requirement set **independently of the package**, via the
 existing `assigned_model_features` resolver; (2) **iterate that set**, not the catalog's, resolving
 each requirement against the package values regardless of catalog presence; (3) translate canonical
-↔ package names on the way (the T2 mapping). **Keep a test for the deletion case** — it is the only
+↔ package names on the way — via the existing `CARAVAN_ALIAS` resolution, **not** via T2. *(Final
+review 2026-09-21: an earlier wording called this "the T2 mapping". T2 extracts namespace
+**prefixing**; the canonical-to-HydroATLAS alias translation is a different mechanism that already
+exists, and pointing an implementer at T2 for it would have sent them to the wrong code.)* **Keep a test for the deletion case** — it is the only
 one that proves the gate is real.
 
 **Two things that make this more than a one-line choice:**
