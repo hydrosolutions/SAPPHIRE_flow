@@ -260,13 +260,14 @@ class TestStagedArtifactPath:
     def test_refuses_a_parent_traversal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Refused by the ``..`` check, which now runs before any
+        normalisation so that both spellings answer alike — see
+        ``test_refuses_traversal_in_an_absolute_path_too``."""
         root = tmp_path / "incoming"
         root.mkdir()
         (tmp_path / "secret.bin").write_bytes(b"do not read me")
         self._staging(monkeypatch, root)
-        with pytest.raises(
-            ConfigurationError, match="directly inside the staging root"
-        ):
+        with pytest.raises(ConfigurationError, match="contains"):
             _read_staged_artifact("../secret.bin", "0" * 64)
 
     def test_refuses_a_symlink_whose_target_escapes_the_root(
@@ -316,6 +317,27 @@ class TestStagedArtifactPath:
             )
 
         assert opened == [], f"refused only AFTER opening {opened}"
+
+    def test_refuses_traversal_in_an_absolute_path_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Final review 2026-09-21 (minor): the absolute branch resolved the
+        parent BEFORE checking components, so an absolute path containing
+        "sub/.." collapsed to a direct child and was accepted, while the same
+        input written relatively was refused. Containment was never at risk —
+        only the basename is ever opened against the pinned descriptor — but a
+        documented restriction that holds for one spelling and not the other
+        is a trap. Both spellings must be refused."""
+        root = tmp_path / "incoming"
+        (root / "sub").mkdir(parents=True)
+        (root / "best.pt").write_bytes(_RAW_ARTIFACT_BYTES)
+        monkeypatch.setenv("SAPPHIRE_INCOMING_DIR", str(root))
+        digest = hashlib.sha256(_RAW_ARTIFACT_BYTES).hexdigest()
+
+        with pytest.raises(ConfigurationError, match="contains"):
+            _read_staged_artifact(str(root / "sub" / ".." / "best.pt"), digest)
+        with pytest.raises(ConfigurationError, match="contains"):
+            _read_staged_artifact("sub/../best.pt", digest)
 
     def test_refuses_a_symlinked_staging_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -501,12 +523,17 @@ class TestStagedArtifactPath:
     ) -> None:
         """⚖️ Owner decision 2026-09-21. A hardlink inside the staging root to
         an outside file is readable and cannot be prevented without filesystem
-        isolation — but it is not an import vector, because importing would
-        need a SHA-256 preimage against the operator's digest. What remained
-        was a HASH ORACLE: echo the computed digest on mismatch and anyone who
-        can write the staging directory learns the hash of any file the worker
-        can read. The message must name the EXPECTED digest and never the one
-        it read."""
+        isolation. The digest prevents **different bytes** being substituted
+        for the ones the operator verified — it does not make such content
+        unimportable. *(Final review 2026-09-21: the retracted "not an import
+        vector / SHA-256 preimage" reasoning survived HERE after being
+        corrected in the code, the runbook and the plan — the same
+        fix-one-site failure this branch keeps producing.)*
+
+        What the read leaves behind is a HASH ORACLE: echo the computed digest
+        on mismatch and anyone who can write the staging directory learns the
+        hash of any file the worker can read. The message must name the
+        EXPECTED digest and never the one it read."""
         root = tmp_path / "incoming"
         root.mkdir()
         secret = b"content whose hash must not be disclosed"

@@ -68,6 +68,10 @@ fr = run_deployment(
         "training_period_end": "<UTC ISO-8601 with offset>",
         "expected_config_hash": "<digest from step 2>",
         "group_id": "<uuid>",
+        # Recoverable provenance. Pass the real values; use None ONLY when the
+        # value genuinely cannot be recovered, never as a shortcut.
+        "source_repository": "<repo, or None>",
+        "source_commit": "<training checkout revision, or None>",
         "imported_by": "<operator>",
         "operator": "<operator>",
         "notes": "<anything the record should carry — e.g. a training-cut convention we do not serve>",
@@ -87,6 +91,12 @@ told you to paste this value into a query against the artifact table, where it m
 ⚠️ **The `-i` is required.** `docker exec` does not attach stdin by default, so without it the
 heredoc never reaches Python, nothing is submitted, and the command exits silently as though it
 had worked.
+
+⚠️ **`source_commit` and `source_repository` default to `None` if you omit them**, and that null
+is written to the immutable record. *(Final review 2026-09-21: the table above told you to recover
+`source_commit` and leave it null only when unrecoverable, while this command never passed it — so
+following the procedure verbatim recorded null every time.)* Pass them, or pass `None`
+deliberately.
 
 `artifact_path` may be given relative to the staging root (`<name>.pt`) or absolute
 (`/data/incoming/<name>.pt`). ⛔ **It must name a file directly in the staging root** —

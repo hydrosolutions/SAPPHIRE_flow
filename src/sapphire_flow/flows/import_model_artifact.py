@@ -185,6 +185,23 @@ def _read_staged_artifact(artifact_path: str, expected_artifact_sha256: str) -> 
 
     root = resolve_incoming_dir()
     candidate = PurePosixPath(artifact_path)
+
+    # Refuse `..` in the SUPPLIED path, before any normalisation, so the rule
+    # the runbook states holds for both forms. Final review 2026-09-21 (minor):
+    # the absolute branch below resolves the parent first, which collapses
+    # `/data/incoming/sub/../best.pt` to a direct child and accepted it, while
+    # the relative `sub/../best.pt` was refused — the same input described two
+    # ways, answered two ways. Containment was never at risk (only `parts[0]`
+    # is ever opened, against the pinned descriptor), but a documented
+    # restriction that holds for one spelling and not the other is a trap.
+    if any(part == ".." for part in candidate.parts):
+        raise ConfigurationError(
+            f"import_model_artifact_flow: artifact_path {artifact_path!r} "
+            "contains '..' — the artifact must be named directly, without "
+            "traversal, in either relative or absolute form. Refusing to "
+            "import."
+        )
+
     if candidate.is_absolute():
         # Compare with ANCESTORS canonicalised on both sides, while the root's
         # FINAL component stays unresolved for the guarded open below.
