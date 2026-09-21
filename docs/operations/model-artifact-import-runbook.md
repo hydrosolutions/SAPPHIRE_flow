@@ -148,7 +148,8 @@ non-problem.)*
 | `expected_artifact_sha256 is required when artifact_path is used` | the staging directory is host-writable; an unverified read is not an import we can vouch for |
 | `expected_artifact_sha256 applies to artifact_path only` | you passed a digest with the **base64** route, where the bytes are already in the parameter and a digest protects nothing. It is refused rather than ignored, so you are not quietly told you asked for verification when you did not |
 | `artifact_base64 is not valid base64` | the base64 route received something that is not valid base64. Decoding is strict — invalid characters are rejected, never silently discarded |
-| `outside the staging root` / `plain path inside the staging root` | the path escapes the mount |
+| `outside the staging root` | the absolute path you gave does not lie inside the staging root |
+| `model ... is not discoverable` | the model's entry point is not installed in this worker's environment. Nothing to do with the artifact — check the image, not the file |
 | `could not be opened ... without following a symlink` | the guarded open failed. A symlink is what it exists to stop, but the same message also covers **a missing file, a permissions failure, or a file replaced mid-import**. Check the staged file exists and is readable before assuming an attack. *(Clean-room review 2026-09-21: this row previously diagnosed every such failure as a symlink.)* |
 | `content does not match expected_artifact_sha256` | the staged bytes are not the ones you verified. **Nothing is written.** The digest read is deliberately not reported — see Known limits |
 | `must name a file directly inside the staging root` | the path has a **directory component**. Subdirectories are not supported — containment cannot be guaranteed across an intermediate directory a host writer can move |
