@@ -14,7 +14,7 @@ source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at
 
 ## Status
 
-**DRAFT — all three decisions CLOSED by the owner 2026-09-22. Review record below, so the count
+**READY — all three decisions CLOSED by the owner 2026-09-22. Review record below, so the count
 cannot drift again** *(seventh pass, minor: a bare number disagreed with the recorded history
 twice)*:
 
@@ -28,9 +28,12 @@ twice)*:
 | 6 | NEEDS CHANGES — 2 minor (**no substantive finding**) | ✅ |
 | 7 | NEEDS CHANGES — 1 minor, this bookkeeping entry | ✅ |
 
-⭐ **Passes 1 and 2 found defects in the plan; 3 and 4 found the previous FOLD incomplete; 5, 6 and
-7 found only document defects.** No pass after the first has found a fault in the plan's substance,
-and passes 6 and 7 state explicitly that they found none.
+⭐ **Passes 1 AND 2 found substantive defects** — pass 2's was the resolver-overwrite problem that
+became D3, and it is the reason this plan has a precedence rule at all. **Passes 3 and 4 found the
+previous FOLD incomplete; 5 through 8 found only document defects**, and 6, 7 and 8 state explicitly
+that they found no substantive fault. *(Eighth pass, minor: an earlier version of this line claimed
+"no pass after the FIRST" found a substantive fault — contradicting the sentence immediately before
+it, which named pass 2.)*
 ✅ **READY — set by the orchestrator 2026-09-22 on the owner's instruction.** Seven independent
 passes; the last three found only document defects and passes 6 and 7 state explicitly that they
 found no substantive fault. ⚠️ **The pass-7 fold (this review record) is itself unreviewed** — an
@@ -409,3 +412,17 @@ the recorded history a second time. Replaced with the table in § Status, which 
 and its verdict, so the number cannot drift from the evidence again. That pass confirmed D3's table
 renders as three well-formed rows and found **no substantive implementation contradiction or
 code-behaviour mismatch**.
+
+
+**2026-09-22 — eighth pass (confirmation, alongside implementation): NEEDS CHANGES (2 minor, both
+explicitly NON-BLOCKING). Folded.** The § Status prose still opened "DRAFT" after the frontmatter
+became READY; and the review summary claimed no pass after the **first** found a substantive fault,
+contradicting its own preceding sentence — **pass 2's resolver-overwrite finding was substantive**,
+and it is why D3 exists.
+
+✅ **What this pass confirmed, which is what matters for the work now under way:** the three
+acceptance cases, the resolver-absence guard and the read-only accessor are **implementable as
+written** by someone holding only this document; the code at `40bdc3d3` supports the missing-resolver
+diagnosis, discovery's wrapping, the unconditional setter and the swallowed-error behaviour; the pure
+relocation, the replay verification and preserving existing resolver/adapter identity are mutually
+consistent; and **the accessor requires no FI-contract change**.
