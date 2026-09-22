@@ -24,7 +24,9 @@ These lock the incident's two root causes staying fixed:
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -751,9 +753,11 @@ class TestEveryNetworkStepIsBounded:
     explains itself into a bare cancellation.
 
     Measured on the healthy run 35625551801: every network fetch completed in
-    ≤ 40 s except `Build app image` at 124 s. The bounds are 5 or 10 minutes —
-    between 7x and 30x headroom — so this asserts the bound EXISTS, not that it
-    is tight.
+    ≤ 40 s except `Build app image` at 124 s. Bounds are 3–8 minutes; the
+    tightest ratio is `Build app image` at 480/124 ≈ **3.9x** and the loosest is
+    `actions/checkout` at 180/3 = 60x. *(An earlier docstring claimed "7x–30x",
+    which was wrong at both ends — independent review 2026-09-22.)* These assert
+    that a bound EXISTS, not that it is tight.
 
     ⚠️ Deliberately NOT applied to the pytest steps: they are the work, not a
     fetch, and the job timeout is their correct bound.
@@ -769,7 +773,11 @@ class TestEveryNetworkStepIsBounded:
         "aquasecurity/trivy-action@",
         "anchore/sbom-action",
     )
-    _NETWORK_RUN = ("apt-get", "uv sync", "pip install")
+    # 🔴 `gh api` was missing, and the count-based guard below could not see the
+    # omission — a whole CATEGORY can vanish while the count still passes
+    # (independent review 2026-09-22, medium). The category assertions in
+    # `test_every_network_category_is_represented` are what actually guard it.
+    _NETWORK_RUN = ("apt-get", "uv sync", "pip install", "gh api", "curl ", "wget ")
 
     def _network_steps(self) -> list[tuple[str, str, dict[str, Any]]]:
         workflow = yaml.safe_load(_ci_yml_text())
@@ -778,7 +786,10 @@ class TestEveryNetworkStepIsBounded:
             for step in job.get("steps") or []:
                 uses = str(step.get("uses", ""))
                 run = str(step.get("run", ""))
-                if "pytest" in run:
+                # ⚠️ Only skip a step that is PURELY pytest. A combined
+                # install-and-test script still fetches, and skipping it on the
+                # substring alone would hide it (independent review 2026-09-22).
+                if "pytest" in run and not any(tok in run for tok in self._NETWORK_RUN):
                     continue
                 hit = any(uses.startswith(u) for u in self._NETWORK_USES) or any(
                     token in run for token in self._NETWORK_RUN
@@ -794,6 +805,70 @@ class TestEveryNetworkStepIsBounded:
         steps = self._network_steps()
 
         assert len(steps) >= 15, f"expected the whole fetch surface, found {len(steps)}"
+
+    def test_every_network_category_is_represented(self) -> None:
+        """🔴 A count cannot detect a missing CATEGORY. The `gh api` steps were
+        absent from the selector list and the count still passed — which is how
+        an unbounded network step survived the first version of this convention
+        (independent review 2026-09-22, medium).
+
+        Each entry below is a distinct third party that can be down on its own.
+        """
+        found = self._network_steps()
+        blob = " ".join(
+            str(s.get("uses", "")) + " " + str(s.get("run", "")) for _, _, s in found
+        )
+        for category in (
+            "actions/checkout",  # github.com git
+            "astral-sh/setup-uv",  # the uv binary
+            "docker/build-push",  # Docker Hub
+            "aquasecurity/trivy",  # trivy binary + vulnerability DB
+            "anchore/sbom-action",  # the syft release
+            "apt-get",  # Debian/Ubuntu mirrors
+            "uv sync",  # PyPI + the private git repos
+            "gh api",  # the GitHub REST API
+        ):
+            assert category in blob, (
+                f"no network step matched {category!r} — either it was removed "
+                "from the workflow, or the selector stopped seeing a whole "
+                "category and the bound-check below is now blind to it"
+            )
+
+    def test_each_job_can_actually_reach_its_enforcement_steps(self) -> None:
+        """🔴 Bounding each step does not bound their SUM (independent review
+        2026-09-22, medium). If the bounded steps plus the retry sleeps can
+        exceed the JOB timeout, the job cancels mid-retry and skips the very
+        enforcement steps that exist to explain the failure — the bare
+        cancellation this whole plan set out to remove, reintroduced by its own
+        fix.
+
+        This asserts the arithmetic that was wrong: `build-image-and-scan` summed
+        to 69 minutes against a 30-minute job.
+        """
+        workflow = yaml.safe_load(_ci_yml_text())
+        over = []
+        for job_name, job in workflow["jobs"].items():
+            job_timeout = job.get("timeout-minutes")
+            if job_timeout is None:
+                continue
+            steps = job.get("steps") or []
+            bounded = sum(s.get("timeout-minutes") or 0 for s in steps)
+            sleeps = sum(
+                int(m) / 60
+                for s in steps
+                for m in re.findall(r"\bsleep\s+(\d+)", str(s.get("run", "")))
+            )
+            worst = bounded + sleeps
+            if worst > job_timeout:
+                over.append(
+                    f"{job_name}: bounded steps {bounded}m + sleeps {sleeps:.0f}m "
+                    f"= {worst:.0f}m > job timeout {job_timeout}m"
+                )
+
+        assert over == [], (
+            "a job cannot reach its own enforcement steps in the worst case: "
+            + "; ".join(over)
+        )
 
     def test_every_network_step_declares_its_own_timeout(self) -> None:
         unbounded = [
@@ -832,3 +907,77 @@ class TestEveryNetworkStepIsBounded:
             "the Trivy enforcement step must NOT be continue-on-error — it is "
             "the single explicit decision that keeps a missing report loud"
         )
+
+
+class TestTheTrivyReportCheckAcceptsACleanReport:
+    """🔴 A zero-result trivy report must be ACCEPTED, not called a download
+    failure.
+
+    `Results` carries `omitempty` in trivy's report type, so a report with no
+    result entries can omit the key entirely. An earlier version of this check
+    used `jq -e '.Results'`, which is a TRUTHINESS test: it rejects an absent or
+    null `Results` and would have labelled a legitimate clean scan a download
+    failure (independent review 2026-09-22, medium).
+
+    These run the filter **extracted from the workflow itself**, so the test
+    cannot drift away from what CI actually executes.
+    """
+
+    @staticmethod
+    def _filter_from_workflow() -> str:
+        step = _step_by_id(_build_image_and_scan_job(), "trivy-report")
+        m = re.search(r"jq -e '([^']+)' trivy-image\.json", step["run"])
+        assert m, "could not find the report-validity jq filter in the step"
+        return m.group(1)
+
+    @staticmethod
+    def _accepts(jq_filter: str, document: str) -> bool:
+        proc = subprocess.run(
+            ["jq", "-e", jq_filter],
+            input=document,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0
+
+    def test_a_clean_report_with_no_results_is_accepted(self) -> None:
+        """The case the old filter got wrong."""
+        clean = json.dumps(
+            {
+                "SchemaVersion": 2,
+                "ArtifactName": "sapphire-flow:ci-abc",
+                "ArtifactType": "container_image",
+                "Metadata": {"OS": {"Family": "debian"}},
+            }
+        )
+
+        assert self._accepts(self._filter_from_workflow(), clean), (
+            "a trivy report with no Results key is a CLEAN SCAN, not a download "
+            "failure — `Results` is omitempty"
+        )
+
+    def test_a_report_with_an_empty_results_array_is_accepted(self) -> None:
+        clean = json.dumps({"SchemaVersion": 2, "Results": []})
+
+        assert self._accepts(self._filter_from_workflow(), clean)
+
+    def test_a_report_with_findings_is_accepted(self) -> None:
+        found = json.dumps(
+            {
+                "SchemaVersion": 2,
+                "Results": [
+                    {"Target": "x", "Vulnerabilities": [{"VulnerabilityID": "CVE-1"}]}
+                ],
+            }
+        )
+
+        assert self._accepts(self._filter_from_workflow(), found)
+
+    def test_a_non_report_is_rejected(self) -> None:
+        """The check must still catch the thing it exists for."""
+        jq_filter = self._filter_from_workflow()
+
+        assert not self._accepts(jq_filter, "{}"), "an empty object is not a report"
+        assert not self._accepts(jq_filter, "[]"), "an array is not a report"
+        assert not self._accepts(jq_filter, '"nope"'), "a string is not a report"

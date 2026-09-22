@@ -27,12 +27,14 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20, not 10: the step bounds below sum to 16 (Plan 309 T2). The job runs in
+    # ~55s; this bounds the worst case, not the normal one.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        timeout-minutes: 5  # git fetch from github.com
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
-        timeout-minutes: 5  # downloads the uv binary
+        timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -96,7 +98,10 @@ jobs:
     # breaks; pull-requests: read is new, for the `gh api` lock-change check
     # below.
     permissions: { contents: read, pull-requests: read }
-    timeout-minutes: 25
+    # 30, not 25: the bounded steps below now sum to 27 (Plan 309 T2 added the
+    # `gh api` bound), and the job's own pytest step is unbounded and takes ~11
+    # minutes. At 25 a hung fetch plus a normal test run could cancel the job.
+    timeout-minutes: 30
     env:
       # Plan 185 D2 — read once at job level: a step-level `if:` cannot
       # reference `secrets.*` directly, but it CAN read the `env` context,
@@ -104,9 +109,9 @@ jobs:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        timeout-minutes: 5  # git fetch from github.com
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
-        timeout-minutes: 5  # downloads the uv binary
+        timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -194,6 +199,7 @@ jobs:
       # treats as "no selector" and falls back to guessing a PR from the
       # branch.
       - name: Detect uv.lock change (Dependabot degraded-coverage guard)
+        timeout-minutes: 3  # two `gh api` calls against the GitHub REST API
         if: >-
           env.AQUACAST_TOKEN_PRESENT != 'true' &&
           github.event_name == 'pull_request' &&
@@ -355,9 +361,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        timeout-minutes: 5  # git fetch from github.com
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
-        timeout-minutes: 5  # downloads the uv binary
+        timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -410,9 +416,9 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        timeout-minutes: 5  # git fetch from github.com
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
-        timeout-minutes: 5  # downloads the uv binary
+        timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -492,7 +498,18 @@ jobs:
   # The e2e job gates on this job succeeding (see `needs:` below).
   build-image-and-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Plan 309 T2, independent review 2026-09-22 (medium): 30 could not hold this
+    # job's own WORST CASE. Bounding each step individually does not bound their
+    # SUM — build (8) + two trivy attempts (10) + three syft attempts (9) + the
+    # 4- and 6-minute retry sleeps + the scans/uploads is ~57 minutes, so the JOB
+    # would cancel mid-retry and skip the very enforcement steps that exist to
+    # explain the failure. That is the bare-cancellation failure this plan set out
+    # to remove, reintroduced by the fix for it.
+    #
+    # Runner minutes are free (public repo), so the only cost is feedback latency
+    # on a genuinely hung job — and today that job already burns 30 minutes and
+    # then says nothing. `TestEveryNetworkStepIsBounded` asserts the arithmetic.
+    timeout-minutes: 60
     # security-events: write is required by github/codeql-action/upload-sarif
     # (T2, Plan 180). contents: read is the checkout minimum. Declared
     # explicitly rather than relying on the repo's ambient
@@ -503,15 +520,15 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        timeout-minutes: 5  # git fetch from github.com
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
-        timeout-minutes: 5  # downloads the buildx plugin
+        timeout-minutes: 3  # downloads the buildx plugin
       # B0 — Build the image and load it into the local docker daemon so the
       # later trivy and syft steps in this same job can reference the tag.
       - name: Build app image
         id: build-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
-        timeout-minutes: 10  # Docker Hub base images + uv sync inside; 124s observed
+        timeout-minutes: 8  # Docker Hub base images + uv sync inside; 124s observed
         with:
           context: .
           file: ./Dockerfile
@@ -587,15 +604,18 @@ jobs:
       # CVE finding. Four of the five `lint` failures in the 2026-09-11..21 window
       # were exactly that (CVE-2026-63374, anyio CRITICAL).
       #
-      # The DB half is already partly protected — trivy-action restores it from
-      # `actions/cache` with `restore-keys: cache-trivy-`, so a failed DB update can
-      # fall back to an older one. The BINARY fetch (via `setup-trivy`) has no retry
-      # of its own, which is what these two attempts cover.
+      # ⚠️ The cache does NOT make this redundant. `trivy-action` restores the DB
+      # from `actions/cache` BEFORE scanning; when trivy then decides an update is
+      # required, a failed download is an ERROR — it does not silently continue on
+      # the restored stale DB. *(Independent review 2026-09-22 corrected an earlier
+      # comment here, and the survey text it came from, which claimed exactly that
+      # fallback.)* Neither the binary fetch (via `setup-trivy`) nor the DB update
+      # retries on its own, which is what these two attempts cover.
       - name: Trivy image scan (report, attempt 1)
         id: trivy-scan
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        timeout-minutes: 10  # downloads the trivy binary AND the vulnerability DB
+        timeout-minutes: 5  # downloads the trivy binary AND the vulnerability DB (~31s observed)
         with:
           image-ref: sapphire-flow:ci-${{ github.sha }}
           format: json
@@ -608,7 +628,7 @@ jobs:
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' && steps.trivy-scan.outcome == 'failure' }}
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        timeout-minutes: 10
+        timeout-minutes: 5
         with:
           image-ref: sapphire-flow:ci-${{ github.sha }}
           format: json
@@ -625,19 +645,39 @@ jobs:
         if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
         run: |
           set -euo pipefail
-          if [ -s trivy-image.json ] && jq -e '.Results' trivy-image.json >/dev/null 2>&1; then
-            echo "Trivy report present."
+          # Validate the REPORT ENVELOPE, not the presence of findings.
+          # `Results` carries `omitempty` in trivy's report type, so a perfectly
+          # good zero-result report can omit it entirely — an earlier version of
+          # this check used `jq -e '.Results'` and would have rejected such a
+          # report as a download failure (independent review 2026-09-22, medium).
+          # `SchemaVersion` is what identifies this as a trivy report at all.
+          if [ -s trivy-image.json ] \
+             && jq -e 'type == "object" and has("SchemaVersion")' trivy-image.json >/dev/null 2>&1; then
+            echo "Trivy report present (SchemaVersion $(jq -r '.SchemaVersion' trivy-image.json), $(jq -r '(.Results // []) | length') result set(s))."
             exit 0
           fi
+
+          # Report what was OBSERVED; do not name a cause that has not been
+          # established. `exit-code: "0"` rules findings out as the cause, but a
+          # failure here may equally be image access, analysis or report writing —
+          # and if the scans never ran at all, "both attempts failed" would simply
+          # be false (independent review 2026-09-22, medium).
+          a1="${{ steps.trivy-scan.outcome }}"
+          a2="${{ steps.trivy-scan-2.outcome }}"
           {
-            echo "### Trivy image scan produced no report"
+            echo "### Trivy image scan produced no usable report"
             echo ""
-            echo "Both attempts failed to produce a usable trivy-image.json. This is a"
-            echo "fault on the trivy download path (binary or vulnerability DB), NOT a"
-            echo "vulnerability finding — the scan runs with exit-code 0 and cannot fail"
-            echo "on findings. A re-run is the first response."
+            echo "| | |"
+            echo "|---|---|"
+            echo "| scan attempt 1 | \`${a1:-not run}\` |"
+            echo "| scan attempt 2 | \`${a2:-not run}\` |"
+            echo "| \`trivy-image.json\` | missing, empty, or not a trivy report |"
+            echo ""
+            echo "This is **not** a vulnerability finding — the scan runs with"
+            echo "\`exit-code: 0\` and cannot fail on findings. Check the attempt"
+            echo "outcomes above before assuming which stage failed."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=Trivy scan produced no report::The trivy download path failed, not the CVE gate. A re-run is the first response."
+          echo "::error title=Trivy scan produced no usable report::attempt1=${a1:-not-run} attempt2=${a2:-not-run}; this is not a CVE finding. See the job summary."
           exit 1
       # Step 2 — the gate. Renders the human-readable table straight to the job log (no
       # `--output`, unlike the old sarif-to-file step this replaces) AND fails the job via
@@ -679,7 +719,7 @@ jobs:
       - name: Upload Trivy SARIF artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        timeout-minutes: 5  # uploads to the Actions artifact store
+        timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
         with:
           name: trivy-image-sarif
           path: trivy-image.sarif
@@ -695,7 +735,7 @@ jobs:
       - name: Upload Trivy SARIF to code scanning
         if: ${{ !cancelled() && steps.trivy-sarif.outcome == 'success' }}
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
-        timeout-minutes: 5  # posts to the code-scanning API
+        timeout-minutes: 3  # posts to the code-scanning API (~8s observed)
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -854,7 +894,7 @@ jobs:
         id: sbom-upload
         if: ${{ !cancelled() && steps.sbom-require.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        timeout-minutes: 5  # uploads to the Actions artifact store
+        timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
         with:
           name: sbom-cyclonedx
           path: sbom.cdx.json
