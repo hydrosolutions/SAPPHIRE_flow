@@ -14,7 +14,23 @@ source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at
 
 ## Status
 
-**DRAFT — all three decisions CLOSED by the owner 2026-09-22; FIVE review passes folded.**
+**DRAFT — all three decisions CLOSED by the owner 2026-09-22. Review record below, so the count
+cannot drift again** *(seventh pass, minor: a bare number disagreed with the recorded history
+twice)*:
+
+| pass | verdict | folded |
+|---|---|---|
+| 1 | NEEDS CHANGES — 1 major, 2 moderate, 1 minor | ✅ |
+| 2 | NEEDS CHANGES — 1 moderate, 1 minor | ✅ |
+| 3 | NEEDS CHANGES — 2 moderate, 1 minor | ✅ |
+| 4 | NEEDS CHANGES — 2 moderate, 2 minor | ✅ |
+| 5 | NEEDS CHANGES — 1 minor | ✅ |
+| 6 | NEEDS CHANGES — 2 minor (**no substantive finding**) | ✅ |
+| 7 | NEEDS CHANGES — 1 minor, this bookkeeping entry | ✅ |
+
+⭐ **Passes 1 and 2 found defects in the plan; 3 and 4 found the previous FOLD incomplete; 5, 6 and
+7 found only document defects.** No pass after the first has found a fault in the plan's substance,
+and passes 6 and 7 state explicitly that they found none.
 ⛔ **Not READY**: this closed state has not itself been reviewed, and on this week's evidence every
 fold has introduced or left something.
 
@@ -372,3 +388,21 @@ task still assigns relocation to T2; and adding a getter genuinely does **not** 
 contract — it exposes SAP3 adapter configuration without touching FI model methods, input/output
 semantics or artifacts — though it *does* narrowly expand that adapter's public surface, which the
 scope line and watch item now say.
+
+
+**2026-09-22 — fifth review pass: NEEDS CHANGES (1 minor). Folded.** The plan-number paragraph
+asserted in the present tense that 312 was "unused in `docs/plans/`" — which this file itself
+falsifies. Restated as the check performed at creation.
+
+**2026-09-22 — sixth review pass: NEEDS CHANGES (2 minor, NO substantive finding). Folded.** D3's
+cost cell was **malformed Markdown**: the pass-4 fold built it with Python string concatenation and
+leaked literal quotes and newlines, so the row rendered broken across three lines. ⭐ **The edit had
+"landed" and I had verified that it landed — landing and RENDERING are different things**, and the
+repair now checks every row in that table has the right cell count. The status line also said FOUR
+passes with five recorded.
+
+**2026-09-22 — seventh review pass: NEEDS CHANGES (1 minor). Folded.** The pass count disagreed with
+the recorded history a second time. Replaced with the table in § Status, which records every pass
+and its verdict, so the number cannot drift from the evidence again. That pass confirmed D3's table
+renders as three well-formed rows and found **no substantive implementation contradiction or
+code-behaviour mismatch**.
