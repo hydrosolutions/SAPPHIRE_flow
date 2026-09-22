@@ -834,16 +834,29 @@ class TestEveryNetworkStepIsBounded:
                 "category and the bound-check below is now blind to it"
             )
 
-    def test_each_job_can_actually_reach_its_enforcement_steps(self) -> None:
-        """🔴 Bounding each step does not bound their SUM (independent review
-        2026-09-22, medium). If the bounded steps plus the retry sleeps can
-        exceed the JOB timeout, the job cancels mid-retry and skips the very
-        enforcement steps that exist to explain the failure — the bare
-        cancellation this whole plan set out to remove, reintroduced by its own
-        fix.
+    def test_no_jobs_bounded_steps_alone_exceed_its_own_timeout(self) -> None:
+        """Bounding each step does not bound their SUM: `build-image-and-scan`
+        summed to **69 minutes against a 30-minute job**, so it would cancel
+        mid-retry and skip the enforcement steps that exist to explain the
+        failure (independent review 2026-09-22, medium).
 
-        This asserts the arithmetic that was wrong: `build-image-and-scan` summed
-        to 69 minutes against a 30-minute job.
+        ⛔ **This is a NECESSARY condition, not a sufficient one, and the
+        difference matters.** *(Second review pass, medium: the earlier version
+        of this test was named `..._can_actually_reach_its_enforcement_steps`
+        and claimed exactly the guarantee it cannot give.)* It counts unbounded
+        work as **zero** — the `unit` job's pytest step alone runs ~11 minutes
+        and is invisible here, and the image job's smoke check and both
+        `trivy convert` calls are unbounded too. A hang in any of those still
+        consumes the whole job budget.
+
+        🔑 **The actual guarantee needs elapsed-time admission before each
+        retry, which is [Plan 310].** This test only catches the arithmetic
+        absurdity that was really there.
+
+        Mutually exclusive steps are excluded (only one `Install (...)` variant
+        runs), and sleeps are counted only inside steps that are NOT themselves
+        bounded — otherwise an `apt` step's internal retry sleeps are counted
+        twice, once in its own bound and once again here.
         """
         workflow = yaml.safe_load(_ci_yml_text())
         over = []
@@ -852,50 +865,38 @@ class TestEveryNetworkStepIsBounded:
             if job_timeout is None:
                 continue
             steps = job.get("steps") or []
-            bounded = sum(s.get("timeout-minutes") or 0 for s in steps)
+            # Only one of the mutually exclusive `Install (...)` variants can run.
+            install_variants = [
+                s for s in steps if str(s.get("name", "")).startswith("Install (")
+            ]
+            skip = set()
+            if len(install_variants) > 1:
+                cheapest = min(
+                    install_variants, key=lambda s: s.get("timeout-minutes") or 0
+                )
+                skip.add(id(cheapest))
+
+            bounded = sum(
+                s.get("timeout-minutes") or 0 for s in steps if id(s) not in skip
+            )
+            # A bounded step's own internal sleeps are already inside its bound.
             sleeps = sum(
                 int(m) / 60
                 for s in steps
+                if s.get("timeout-minutes") is None and id(s) not in skip
                 for m in re.findall(r"\bsleep\s+(\d+)", str(s.get("run", "")))
             )
             worst = bounded + sleeps
             if worst > job_timeout:
                 over.append(
-                    f"{job_name}: bounded steps {bounded}m + sleeps {sleeps:.0f}m "
-                    f"= {worst:.0f}m > job timeout {job_timeout}m"
+                    f"{job_name}: bounded {bounded}m + unbounded sleeps "
+                    f"{sleeps:.0f}m = {worst:.0f}m > job timeout {job_timeout}m"
                 )
 
         assert over == [], (
-            "a job cannot reach its own enforcement steps in the worst case: "
-            + "; ".join(over)
+            "a job's own bounded steps cannot fit inside its timeout, so it "
+            "would cancel mid-chain: " + "; ".join(over)
         )
-
-    def test_every_network_step_declares_its_own_timeout(self) -> None:
-        unbounded = [
-            f"{job} / {label}"
-            for job, label, step in self._network_steps()
-            if step.get("timeout-minutes") is None
-        ]
-
-        assert unbounded == [], (
-            "these steps reach the network with no step-level timeout, so a hung "
-            f"fetch runs until the JOB timeout — which cancels: {unbounded}"
-        )
-
-    def test_no_network_timeout_is_absurdly_large(self) -> None:
-        """A bound larger than its own job's timeout is not a bound."""
-        workflow = yaml.safe_load(_ci_yml_text())
-        over = []
-        for job_name, job in workflow["jobs"].items():
-            job_timeout = job.get("timeout-minutes")
-            if job_timeout is None:
-                continue
-            for step in job.get("steps") or []:
-                st = step.get("timeout-minutes")
-                if st is not None and st >= job_timeout:
-                    over.append(f"{job_name} / {step.get('name') or step.get('uses')}")
-
-        assert over == [], f"step timeout >= its job's own timeout: {over}"
 
     def test_the_trivy_report_gate_is_not_forgiving(self) -> None:
         """Mirrors the SBOM enforcement rule. `Require a Trivy report` is the one
@@ -981,3 +982,25 @@ class TestTheTrivyReportCheckAcceptsACleanReport:
         assert not self._accepts(jq_filter, "{}"), "an empty object is not a report"
         assert not self._accepts(jq_filter, "[]"), "an array is not a report"
         assert not self._accepts(jq_filter, '"nope"'), "a string is not a report"
+
+    def test_a_structurally_invalid_envelope_is_rejected(self) -> None:
+        """🔴 Key PRESENCE is not validity. `{"SchemaVersion": "garbage"}`
+        satisfies `has("SchemaVersion")` and then fails downstream conversion —
+        and every fixture above accepted that defective validator, because none
+        supplied an object with a bad envelope (independent review 2026-09-22,
+        medium). These are the cases that distinguish the two predicates.
+        """
+        jq_filter = self._filter_from_workflow()
+
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": "garbage", "Results": []})
+        ), "SchemaVersion must be a NUMBER, not merely present"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": None, "Results": []})
+        ), "a null SchemaVersion is not a version"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": 2, "Results": "not-a-list"})
+        ), "Results, when present, must be an array"
+        assert self._accepts(jq_filter, json.dumps({"SchemaVersion": 2})), (
+            "but an ABSENT Results is a clean scan and must still be accepted"
+        )

@@ -27,8 +27,8 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    # 20, not 10: the step bounds below sum to 16 (Plan 309 T2). The job runs in
-    # ~55s; this bounds the worst case, not the normal one.
+    # 20: the step bounds below sum to 16 (Plan 309 T2), so 10 could not hold
+    # them. The job runs in ~55s; this bounds the worst case, not the normal one.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -498,17 +498,19 @@ jobs:
   # The e2e job gates on this job succeeding (see `needs:` below).
   build-image-and-scan:
     runs-on: ubuntu-latest
-    # Plan 309 T2, independent review 2026-09-22 (medium): 30 could not hold this
-    # job's own WORST CASE. Bounding each step individually does not bound their
-    # SUM — build (8) + two trivy attempts (10) + three syft attempts (9) + the
-    # 4- and 6-minute retry sleeps + the scans/uploads is ~57 minutes, so the JOB
-    # would cancel mid-retry and skip the very enforcement steps that exist to
-    # explain the failure. That is the bare-cancellation failure this plan set out
-    # to remove, reintroduced by the fix for it.
+    # 60: the BOUNDED steps alone sum to 47 minutes plus 10 of retry sleeps, so 30
+    # could not hold this job's own retries and would cancel mid-chain, skipping
+    # the enforcement steps that exist to explain the failure (independent review
+    # 2026-09-22, medium). Runner minutes are free on a public repo, so the only
+    # cost is feedback latency on a genuinely hung job — which today burns 30
+    # minutes and then says nothing at all.
     #
-    # Runner minutes are free (public repo), so the only cost is feedback latency
-    # on a genuinely hung job — and today that job already burns 30 minutes and
-    # then says nothing. `TestEveryNetworkStepIsBounded` asserts the arithmetic.
+    # ⛔ This raises a CEILING; it does not GUARANTEE that enforcement is reached.
+    # Several substantial steps here are deliberately unbounded (the image smoke
+    # check, both `trivy convert` calls), so a hang in one of those still consumes
+    # the whole budget. A real guarantee needs elapsed-time admission before each
+    # retry — that is **Plan 310**, filed separately, and this comment exists so
+    # the ceiling is not mistaken for the guarantee.
     timeout-minutes: 60
     # security-events: write is required by github/codeql-action/upload-sarif
     # (T2, Plan 180). contents: read is the checkout minimum. Declared
@@ -604,7 +606,12 @@ jobs:
       # CVE finding. Four of the five `lint` failures in the 2026-09-11..21 window
       # were exactly that (CVE-2026-63374, anyio CRITICAL).
       #
-      # ⚠️ The cache does NOT make this redundant. `trivy-action` restores the DB
+      # ⚠️ A failure here is NOT necessarily a download failure — image access,
+      # analysis and report writing can fail too. What `exit-code: "0"` rules out
+      # is a FINDING as the cause; the enforcement step below therefore reports the
+      # observed outcomes rather than naming a stage.
+      #
+      # ⚠️ The cache does NOT make the retry redundant. `trivy-action` restores the DB
       # from `actions/cache` BEFORE scanning; when trivy then decides an update is
       # required, a failed download is an ERROR — it does not silently continue on
       # the restored stale DB. *(Independent review 2026-09-22 corrected an earlier
@@ -650,9 +657,13 @@ jobs:
           # good zero-result report can omit it entirely — an earlier version of
           # this check used `jq -e '.Results'` and would have rejected such a
           # report as a download failure (independent review 2026-09-22, medium).
-          # `SchemaVersion` is what identifies this as a trivy report at all.
+          # Checks the envelope's TYPES, not just key presence: `{"SchemaVersion":
+          # "garbage", "Results": []}` satisfies `has("SchemaVersion")` and then
+          # fails downstream conversion (independent review 2026-09-22, medium).
+          # `Results` is validated only WHEN PRESENT, so a clean scan that omits it
+          # is still accepted.
           if [ -s trivy-image.json ] \
-             && jq -e 'type == "object" and has("SchemaVersion")' trivy-image.json >/dev/null 2>&1; then
+             && jq -e 'type == "object" and (.SchemaVersion | type) == "number" and ((has("Results") | not) or (.Results | type) == "array")' trivy-image.json >/dev/null 2>&1; then
             echo "Trivy report present (SchemaVersion $(jq -r '.SchemaVersion' trivy-image.json), $(jq -r '(.Results // []) | length') result set(s))."
             exit 0
           fi
