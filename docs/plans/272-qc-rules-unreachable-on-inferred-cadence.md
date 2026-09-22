@@ -914,7 +914,12 @@ defect must not be left with no owner.** Three options:
   costs: `discharge` and `water_level` are the two parameters alerting actually depends on.
 
 **⚖️ Owner decision, 2026-09-20: (ii) — a named successor, granted here as ⭐ PLAN 304.**
-The number is granted in this fold, which is what makes it a deferral rather than a promise. Its
+🔴 **As of 2026-09-22 no `docs/plans/304-*.md` exists and no other plan records 304 as a
+prerequisite, so by this plan's OWN standard it is still a promise wearing a number.**
+*(Independent review, 2026-09-22. An earlier line claimed granting the number was itself
+sufficient — it is not, and 303 shows the difference: `docs/plans/301-...md:12` records it as a
+gating prerequisite in the plan that is actually gated. 304 has no such receiving record.)*
+⇒ **Either write 304, or have the gated plan record it.** Its
 scope: supply `check` with the neighbouring observations a daily series needs, so daily
 `rate_of_change` and `spike` can fire on `discharge` and `water_level` — the two parameters
 alerting depends on — without widening what gets flagged. ⛔ Option (iii) was rejected: these are
@@ -1157,9 +1162,6 @@ production branches on its value** — the only readers are round-trip plumbing
   **Run both implementations from an identical database snapshot with a fixed clock, fixed
   fetched rows and fixed config** — T6's paired-harness shape — and require the resulting rows
   **and the existing counters** to be identical except for the sentinel.
-- The new counter reports zero-rule outcomes **separately from suspect**.
-- ⚠️ The count is **cumulative at stamp time**, not a status census: T2b item 8's
-  re-examination means a read-time `count(*)` undercounts by design.
 
 **Pre-change**: a RED test proving that today a zero-rule group and a clean pass are
 **indistinguishable in the stored row** — identical `qc_status`, identical empty `qc_flags`,
@@ -1240,19 +1242,24 @@ revision left T1 untouched while the preamble above disqualified its method, so 
 instructed the implementer to set D7's threshold from the very census it had just ruled
 unfaithful. Worse, the same edit **deleted** the guard that said so rather than reconciling it.*
 
-- **The D7 threshold comes from T0's sentinel**, partitioned per § the weather exclusion, and
-  read as a **cumulative stamp-time count** — never a `SELECT count(*) WHERE …` census, which
-  undercounts by design through re-examination and the upsert NULL-reset.
-- ⛔ **Q2's sliding-window recomputation is RETAINED ONLY as a separately labelled diagnostic
-  for shape and scale. It must NOT set D7's threshold.** *(Guard restored; its deletion was an
-  editing accident, not a decision.)*
-- 🔴 **Per-cycle is NOT recoverable and needs an explicit answer.** `update_qc` writes no QC
-  timestamp and `created_at` is insert time, so the row carries no cycle key; and the flow sums
-  per-`(station, parameter)` counts into fleet totals (`:754-757`), emitting one
-  `ingest.qc_complete`. **Either emit per-station counts from the loop at `:742-767`, which
-  already holds them, or give D7's denominator a different, stated definition.** Until one of
-  those lands, D7's "share per station per cycle" is not computable from anything this plan
-  builds.
+- **Q2's sliding-window loop is the measurement contract for this task** — shape and scale of
+  the zero-rule population, read-only, no code change. It is what T1 actually delivers.
+- 🛑 **D7's threshold does NOT come from T0's sentinel.** *(Circular requirement removed
+  2026-09-22 after independent review: the sentinel is a per-row `qc_rule_version` string that
+  re-examination and the upsert NULL-reset overwrite, so counting sentinel rows IS a
+  `SELECT count(*)` census — the very method the same bullet forbade — while `**In**` forbids
+  the code change that was the only other route named. Three requirements, none of which could
+  hold together.)* It comes from **Q2**, consistently with D7's own closure and T5.
+- 🔑 **The distinction that makes Q2 sufficient and the sentinel insufficient:** Q2 RECOMPUTES
+  the regime from observation timestamps over the real window, per `(station, parameter)`, every
+  5 minutes for ≥ 24 h. It never reads back a stored QC verdict, so neither the NULL-reset nor
+  re-examination touches it. **D7's denominator is therefore Q2's per-station, per-window
+  share** — stated here because "per cycle" invited the stored-row reading that does not work.
+- 🔴 **What genuinely is NOT recoverable, and why it is not needed:** a per-cycle share read
+  back from STORED rows. `update_qc` writes no QC timestamp, `created_at` is insert time, so no
+  row carries a cycle key; and the flow sums per-`(station, parameter)` counts into fleet totals
+  (`:754-757`), emitting one `ingest.qc_complete`. ⇒ **Do not attempt to derive D7 from stored
+  rows.** Q2's recomputation is the source.
 
 **In**: a read-only query against the staging database (T1b) and a local analysis over the checked-in
 fixture (T1a); both outputs recorded in this plan; no code change.
@@ -2555,8 +2562,9 @@ waiting to be asked.
 - **The enable path**: `config/overlays/mac-mini.toml`, a host bind mount into `prefect-worker`,
   `prefect-worker-ingest` and `api` (`docker-compose.macmini.yml:41, 47, 71`, `:ro`).
   ⚠️ Edit it **in place** — a new inode leaves the container reading the old content.
-- **D7's automatic abort**: the threshold, **its denominator and window** (share of rows per
-  station per cycle), the comparison, and the revert action. It reads T2b's new `unchecked`
+- **D7's automatic abort**: the threshold, **its denominator and window** — Q2's per-station,
+  per-window share, per T1; ⛔ NOT a per-cycle share read back from stored rows, which no row
+  carries a key for — the comparison, and the revert action. It reads T2b's new `unchecked`
   counter **separately** from `suspect`, or it measures the wrong thing. 🔴 **The number itself
   comes from T1's Q2 census** and is not set here.
 - **Retained-row behaviour after the flag is disabled** — rows already written `QC_UNCHECKED` stay
@@ -2674,8 +2682,12 @@ Writes of any kind. The flag, the canary and the abort (T5's). Anything under `s
 
 - **The frozen snapshot reproduces T2's byte-identical fixture exactly** — run first; nothing
   else in this task means anything until it passes.
-- A healthy pinned range and a degraded pinned range produce **different** diffs. Identical
-  diffs mean the degraded range was not degraded — re-pick it.
+- ⛔ *Deleted 2026-09-22 after independent review: a criterion requiring a healthy and a
+  degraded range to produce DIFFERENT diffs, on the reasoning that identical diffs prove the
+  range was not degraded. It does not. Missing readings or a rate-limit incident need not move
+  the median off 600 s, so both implementations can legitimately agree throughout a genuinely
+  degraded period, and the gate would reject a correct implementation. The per-observation
+  expectations and the required repairable case below already test what this was reaching for.*
 - A run against a database containing **zero** regime-2 groups **says so explicitly** rather
   than reporting success. *(The "0 findings" / "never ran" ambiguity is the failure mode this
   whole task exists to avoid; it must not reproduce it in its own output.)*
