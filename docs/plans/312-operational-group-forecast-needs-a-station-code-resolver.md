@@ -26,8 +26,10 @@ fold has introduced or left something.
 
 Written from a measured failure, not from a reading of the code.
 
-⚖️ **Plan number 312 is claimed, not granted** — unused in `docs/plans/` and `docs/plans/archive/`,
-and nothing in `docs/` refers to a "Plan 312".
+⚖️ **Plan number 312 is claimed, not granted.** *(Checked at creation, 2026-09-22, before this file
+existed: 312 was unused across `docs/plans/` and `docs/plans/archive/`, and nothing in `docs/`
+referred to a "Plan 312". Stated as the pre-creation check rather than a present-tense claim, which
+this file itself now falsifies — fifth review pass, minor.)*
 
 ## What happened
 
