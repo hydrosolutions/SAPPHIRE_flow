@@ -74,6 +74,23 @@ strong** — a synthetic test could have caught it at any time. What is true is 
 
 ## Tasks
 
+### T0 — relocate the resolver builder, changing nothing
+
+**Outcome.** `_build_station_code_resolver` lives where both the onboarding flow and the forecast
+cycle can import it, with **no behaviour change anywhere**.
+
+🔴 **Its own task and its own commit** — D1 closed as "move it, as a pure relocation", and
+*(third review pass, moderate)* the earlier task list bundled that into T2, where a reviewer could
+not see that it changes nothing.
+
+**In.** `flows/onboard_model.py` (remove the private definition, import instead) and the shared home.
+
+**Out.** ⛔ **No edit to the function body.** Not one rule about missing stations or empty codes may
+change while it moves. ⛔ No call-site behaviour change in onboarding.
+
+**Verification.** The relocation commit's diff shows the function's body **unchanged** (a pure move),
+and onboarding's existing tests pass untouched.
+
 ### T1 — a red test that fails for the right reason
 
 **Outcome.** A test that drives the **operational group path** with a GROUP-scoped FI model and
@@ -123,8 +140,8 @@ moderate; an earlier wording did.)* `adapt_if_fi` calls an **unconditional** set
 (`forecast_interface.py:476`), so attaching **replaces any resolver the object already carries** and
 the replacement **persists on the caller's object after the cycle returns**. A caller-supplied GROUP
 adapter configured with its own resolver works **today**; overwriting its station-code mapping could
-break artifact/code compatibility and every later use of that object. **D3 decides what happens
-there**, and T2 cannot be written until it does.
+break artifact/code compatibility and every later use of that object. **D3 settles it: the existing resolver WINS** — attach only
+when absent, leaving a configured adapter's mapping and identity untouched after the call.
 ⛔ No change to the FI contract, the adapter's requirement, or the onboarding flow.
 
 **Verification.**
@@ -141,9 +158,9 @@ there**, and T2 cannot be written until it does.
   seeded RNG — and compare forecast **values, valid times, representations and metadata**, excluding
   generated row ids. Comparing real rows remains the right bar; the method had to change, not the
   bar;
-- 🔴 **an already-configured adapter whose mapping DIFFERS from `station_store`**: assert which
-  mapping is used, and that the caller's object is in the intended state **after** the cycle
-  returns. An already-wrapped adapter with *no* resolver does not exercise this — it is the case
+- 🔴 **an already-configured adapter whose mapping DIFFERS from `station_store`**: assert that
+  **its own mapping is used**, and that it still carries **its own resolver, on the same object**,
+  after the cycle returns. An already-wrapped adapter with *no* resolver does not exercise this — it is the case
   the first draft would have tested and learned nothing from;
 - the resolver's own failure modes still raise clearly: unknown station id, and a station whose
   `code` is empty (`onboard_model.py:93-102` already distinguishes these).
@@ -174,10 +191,12 @@ relocation in its own commit so a reviewer can see it changes nothing.
 
 ### D2 — ✅ CLOSED, owner 2026-09-22: adapt every discovered model (and every supplied one)
 
-Adapting everything is what onboarding does and is one line. Adapting conditionally means the cycle
+Adapting everything is what onboarding does. Adapting conditionally means the cycle
 must know which models are group-assigned before it prepares them — information it has, but later.
 
-Recommendation: **adapt everything**. Review confirmed the STATION claim from the code: attachment
+⚖️ **CLOSED as adapt-everything, owner 2026-09-22** — every discovered model *and* every
+caller-supplied one, combined with D3's attach-only-when-absent. Review confirmed the STATION claim
+from the code: attachment
 only assigns the adapter's resolver field (`forecast_interface.py:476-481`), STATION input
 conversion keeps the literal `"station"` key (`:1254-1293`), STATION prediction never consults the
 resolver, and non-FI objects pass through untouched.
@@ -198,11 +217,28 @@ so "just call it" silently answers this question with "the cycle's".)*
 | **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller who wanted the cycle's resolver must clear theirs |
 | **(c)** raise on conflict | no silent anything | turns a working injected-model call into a failure |
 
-Recommendation: **(b)**. A supplied adapter carrying its own resolver was configured deliberately,
-and the operational cycle has no standing to overrule it — especially when the overwrite persists
-after the call. ⛔ **Implement the guard at the CYCLE's call site, not by changing `adapt_if_fi`**:
-onboarding depends on the attach-always behaviour (`onboard_model.py:854-857`), and this plan's
-scope excludes changing it.
+⚖️ **CLOSED as (b), owner 2026-09-22.** A supplied adapter carrying its own resolver was configured
+deliberately, and the operational cycle has no standing to overrule it — especially when the
+overwrite persists after the call. ⛔ **The guard goes at the CYCLE's call site, not in
+`adapt_if_fi`**: onboarding depends on attach-always (`onboard_model.py:854-857`).
+
+🔴 **But the guard has nothing to read.** *(Third review pass, moderate.)* The resolver is stored
+privately (`forecast_interface.py:472`) and the only public accessor is the **unconditional**
+setter (`:476-481`). So "attach only when absent" is **not expressible through today's public
+interface**, and the plan must say which way out it takes:
+
+| | |
+|---|---|
+| ✅ **add a read-only accessor** to `ForecastInterfaceAdapter` and widen scope to that file | a getter is not an FI-contract change — the contract is the FI protocol, not this adapter's surface — and it makes the precedence rule expressible without reaching into a private field |
+| reach into `_station_code_resolver` from the cycle | works (Python permits it), but couples the flow to the adapter's internals for want of one line |
+
+**Take the accessor.** The scope line's "NOT changing the FI contract" stands; adding a getter to a
+SAP3-side adapter is not that, and this plan now names `adapters/forecast_interface.py` as in scope
+**for a read-only accessor only**.
+
+🔴 **The guard must test RESOLVER ABSENCE, not adapter existence.** Testing "is it already wrapped"
+would **skip the discovered GROUP adapter that is the entire reason for this plan** — discovery
+wraps FI models *with no resolver* (`adapt_if_fi`'s own comment).
 
 ## Watch items
 
@@ -234,10 +270,12 @@ scope excludes changing it.
 ```json
 {
   "phases": [
-    { "id": "P1", "tasks": ["T1"],
+    { "id": "P0", "tasks": ["T0"],
+      "note": "pure relocation of the resolver builder, its own commit, body unchanged (D1)" },
+    { "id": "P1", "tasks": ["T1"], "depends_on": ["P0"],
       "note": "red first, through the CYCLE's path — not by calling _require_resolver directly" },
-    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1, D2 and D3 — D3 GATES this task",
-      "note": "attach AFTER the `if models is None` branch so caller-supplied models are covered too; station path shown unchanged by REPLAY under frozen inputs, not by successive live cycles" },
+    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1, D2, D3 all CLOSED",
+      "note": "attach AFTER the `if models is None` branch, ONLY when the resolver is absent (read via a new read-only accessor); station path shown unchanged by REPLAY under frozen inputs" },
     { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"],
       "note": "live re-run of 262 T5 after deploy; belongs to 262's record, not this merge gate" }
   ]
@@ -285,3 +323,17 @@ operative in T1, T2, the exit gates and the phase graph.
 
 ⚠️ Still carried: neither pass performed a repository-wide caller audit, so *"the only production
 caller"* holds for the inspected paths only.
+
+
+**2026-09-22 — third review pass (the closed state): NEEDS CHANGES (2 moderate, 1 minor). Folded.**
+
+| finding | what it was |
+|---|---|
+| **moderate** | 🔴 **D3 as closed was not implementable.** "Attach only when absent" needs to *observe* absence, but the resolver is private and the only public accessor is the unconditional setter. The plan now takes a **read-only accessor** (and says why that is not an FI-contract change) rather than reaching into a private field. It also makes explicit that the guard tests **resolver absence, not adapter existence** — the latter would skip the discovered GROUP adapter this plan exists for |
+| **moderate** | D1 closed as "a pure relocation, its own commit", but **no such task existed** — it was bundled into T2 where a reviewer could not see it changes nothing. **T0 added**, with the phase graph and scope line updated |
+| minor | the closure was incompletely swept: T2 still read "cannot be written until D3 decides", the verification still said "assert which mapping", D2 still called it "one line", and the graph still said "D3 GATES this task" |
+
+⭐ **All three are the same failure: closing a decision is not the same as folding it.** The status
+table said existing-wins while the operative surfaces still described an open choice — and the one
+that mattered, the accessor, only surfaced because someone asked whether the closure could actually
+be implemented.
