@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-22
 plan: 312
 title: A GROUP-scoped FI model can be onboarded but not served — the forecast cycle never supplies a station_code_resolver
@@ -31,8 +31,11 @@ twice)*:
 ⭐ **Passes 1 and 2 found defects in the plan; 3 and 4 found the previous FOLD incomplete; 5, 6 and
 7 found only document defects.** No pass after the first has found a fault in the plan's substance,
 and passes 6 and 7 state explicitly that they found none.
-⛔ **Not READY**: this closed state has not itself been reviewed, and on this week's evidence every
-fold has introduced or left something.
+✅ **READY — set by the orchestrator 2026-09-22 on the owner's instruction.** Seven independent
+passes; the last three found only document defects and passes 6 and 7 state explicitly that they
+found no substantive fault. ⚠️ **The pass-7 fold (this review record) is itself unreviewed** — an
+eighth pass runs alongside implementation rather than gating it, and anything it finds folds into
+the work.
 
 | decision | closed as |
 |---|---|
