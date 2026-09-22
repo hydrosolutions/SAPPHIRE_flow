@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import structlog
 
@@ -109,6 +109,9 @@ def _assert_model_classification_declared(
     adapted_model.static_naming = static_naming  # type: ignore[attr-defined]
 
 
+_UNDECLARED: Final[object] = object()
+
+
 def carry_model_classification(raw_model: object, adapted_model: object) -> None:
     """Copy whatever the RAW model declares onto a freshly wrapped adapter.
 
@@ -120,10 +123,19 @@ def carry_model_classification(raw_model: object, adapted_model: object) -> None
     model reaching the forecast cycle must not acquire that failure merely
     because the cycle now wraps it to attach a resolver (Plan 312), so this
     copies what the raw model declares and stays silent about what it does not.
+
+    The gate is a SENTINEL, not `is not None`, for the reason
+    `services/caravan_statics.py::declared_static_naming` uses one: an ABSENT
+    `static_naming` legitimately defaults to `NATIVE`, while one declared AS
+    `None` is malformed and must raise. Skipping `None` here would leave the
+    adapter with no attribute at all, turning the loud case back into the
+    silent one — the exact hole the Plan 155 D16 fixer round closed. A present
+    declaration is copied verbatim, malformed or not, so the wrap changes
+    nothing a downstream validator can observe.
     """
     for attribute in ("model_tier", "alert_eligibility", "static_naming"):
-        declared = getattr(raw_model, attribute, None)
-        if declared is not None:
+        declared = getattr(raw_model, attribute, _UNDECLARED)
+        if declared is not _UNDECLARED:
             setattr(adapted_model, attribute, declared)
 
 

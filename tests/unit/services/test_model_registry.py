@@ -5,8 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.caravan_statics import declared_static_naming
 from sapphire_flow.services.model_registry import (
     build_registry_entry,
+    carry_model_classification,
     discover_models,
     register_models,
 )
@@ -16,6 +18,7 @@ from sapphire_flow.types.enums import (
     ArtifactScope,
     ModelTier,
     SpatialRepresentation,
+    StaticNaming,
 )
 from sapphire_flow.types.ids import ModelId
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
@@ -441,3 +444,58 @@ class TestDiscoverModels:
         # otherwise the test would not be exercising the boundary at all.
         assert isinstance(adapted, fi_boundary.ForecastInterfaceAdapter)
         assert declared_static_naming(adapted) is StaticNaming.CARAVAN
+
+
+class TestCarryModelClassification:
+    """Plan 312: the forecast cycle wraps a RAW caller-supplied FI model to
+    attach a station-code resolver. `ForecastInterfaceAdapter` forwards
+    nothing, so the wrap must carry the raw model's declarations across
+    FAITHFULLY — including a malformed one, which must stay loud."""
+
+    def test_absent_declaration_stays_absent(self) -> None:
+        class _Raw:
+            model_tier = ModelTier.SKILL
+
+        class _Adapted:
+            pass
+
+        adapted = _Adapted()
+        carry_model_classification(_Raw(), adapted)
+
+        assert adapted.model_tier is ModelTier.SKILL  # type: ignore[attr-defined]
+        # Never declared, so never invented: `declared_static_naming` may keep
+        # applying its legitimate NATIVE default.
+        assert not hasattr(adapted, "static_naming")
+        assert declared_static_naming(adapted) is StaticNaming.NATIVE
+
+    def test_valid_declaration_is_copied(self) -> None:
+        class _Raw:
+            static_naming = StaticNaming.CARAVAN
+            alert_eligibility = AlertEligibility.SKILL_FORECAST
+
+        class _Adapted:
+            pass
+
+        adapted = _Adapted()
+        carry_model_classification(_Raw(), adapted)
+
+        assert declared_static_naming(adapted) is StaticNaming.CARAVAN
+        assert adapted.alert_eligibility is AlertEligibility.SKILL_FORECAST  # type: ignore[attr-defined]
+
+    def test_explicit_none_is_copied_and_still_raises(self) -> None:
+        """The case a `is not None` gate would swallow: declared-as-None is
+        MALFORMED, not absent. Dropping it on the floor would leave the
+        adapter with no attribute, silently downgrading the raise to NATIVE."""
+
+        class _Raw:
+            static_naming = None
+
+        class _Adapted:
+            pass
+
+        adapted = _Adapted()
+        carry_model_classification(_Raw(), adapted)
+
+        assert adapted.static_naming is None  # type: ignore[attr-defined]
+        with pytest.raises(ConfigurationError, match="static_naming=None"):
+            declared_static_naming(adapted)
