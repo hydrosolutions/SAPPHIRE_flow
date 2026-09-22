@@ -764,7 +764,7 @@ jobs:
       # matters.
       - name: Upload Trivy SARIF to code scanning
         if: ${{ !cancelled() && steps.trivy-sarif.outcome == 'success' }}
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd  # v4.38.1
         timeout-minutes: 3  # posts to the code-scanning API (~8s observed)
         with:
           sarif_file: trivy-image.sarif
