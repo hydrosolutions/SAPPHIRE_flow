@@ -6,7 +6,7 @@ title: A GROUP-scoped FI model can be onboarded but not served — the forecast 
 scope: Give the operational forecast cycle the `station_code_resolver` that the FI adapter requires for GROUP conversion, so a GROUP-scoped ForecastInterface model can actually produce forecasts. Explicitly NOT changing the FI contract, NOT changing the STATION forecast path, NOT the onboarding flow's behaviour (it already works), NOT training or hindcast, NOT the group-assignment or artifact-import machinery, NOT Plan 311's seam question.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2]
+open_decisions: [D1, D2, D3]
 source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at v0.1.949. Every line anchor below was read from `main` at `40bdc3d3`; the log lines are from that run.
 ---
 
@@ -51,8 +51,11 @@ across `meteoswiss_tabsd`/`rprelimd`. The cycle then completed normally for ever
 
 ⚠️ **This is ONE blocking dependency, not the whole of "operational `GroupForecastModel` support".**
 *(Independent review 2026-09-22, minor: an earlier wording equated the two.)* GROUP discovery,
-assembly, prediction and persistence all already exist and all ran in the T5 attempt — this repairs
-the single missing wire, and closing it does not discharge every GROUP follow-on `CLAUDE.md` lists.
+assembly, prediction and persistence all **exist**; in the T5 attempt discovery and assembly
+**succeeded** and prediction was **attempted**. ⛔ Nothing was persisted — `run_group_forecast`
+returned `{}`, so there were no station results to write. *(Second review pass, minor: an earlier
+wording said all four "ran".)* This repairs the single missing wire; closing it does not discharge
+every GROUP follow-on `CLAUDE.md` lists.
 
 ⚠️ **Not a regression**: the path was never wired. But ⛔ **"it could not have been noticed" is too
 strong** — a synthetic test could have caught it at any time. What is true is narrower: until Plan
@@ -103,9 +106,15 @@ moderate — I had placed it inside the branch.)* **Both routes must be exercise
 **already-wrapped GROUP adapter**, since `adapt_if_fi` attaches to those in place rather than
 re-wrapping.
 
-**Out.** ⛔ **The STATION path must not change behaviour.** `adapt_if_fi` returns non-FI objects
-untouched and attaches to an already-wrapped adapter, so this should be inert for every existing
-model — but "should be" is not evidence, and T2's verification has to demonstrate it.
+**Out.** ⛔ **The STATION path must not change behaviour.**
+
+⛔ **Do NOT claim this is inert for every existing model — it is not.** *(Second review pass,
+moderate; an earlier wording did.)* `adapt_if_fi` calls an **unconditional** setter
+(`forecast_interface.py:476`), so attaching **replaces any resolver the object already carries** and
+the replacement **persists on the caller's object after the cycle returns**. A caller-supplied GROUP
+adapter configured with its own resolver works **today**; overwriting its station-code mapping could
+break artifact/code compatibility and every later use of that object. **D3 decides what happens
+there**, and T2 cannot be written until it does.
 ⛔ No change to the FI contract, the adapter's requirement, or the onboarding flow.
 
 **Verification.**
@@ -122,6 +131,10 @@ model — but "should be" is not evidence, and T2's verification has to demonstr
   seeded RNG — and compare forecast **values, valid times, representations and metadata**, excluding
   generated row ids. Comparing real rows remains the right bar; the method had to change, not the
   bar;
+- 🔴 **an already-configured adapter whose mapping DIFFERS from `station_store`**: assert which
+  mapping is used, and that the caller's object is in the intended state **after** the cycle
+  returns. An already-wrapped adapter with *no* resolver does not exercise this — it is the case
+  the first draft would have tested and learned nothing from;
 - the resolver's own failure modes still raise clearly: unknown station id, and a station whose
   `code` is empty (`onboard_model.py:93-102` already distinguishes these).
 
@@ -164,6 +177,23 @@ existing resolver and mutates the adapter in place**. Preserving that same insta
 keeps discovery's copied classification attributes — which is an argument for attaching rather than
 re-wrapping, and a reason a fix that constructs a fresh adapter would be wrong.
 
+### D3 — when a supplied adapter ALREADY has a resolver, whose wins?
+
+*(Raised by the second review pass, moderate. Not a detail: `adapt_if_fi`'s setter is unconditional,
+so "just call it" silently answers this question with "the cycle's".)*
+
+| option | behaviour | cost |
+|---|---|---|
+| **(a)** cycle's resolver always wins | today's `adapt_if_fi` semantics, one line | silently overwrites a deliberate caller configuration, and the change **outlives the call** on the caller's object |
+| **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller who wanted the cycle's resolver must clear theirs |
+| **(c)** raise on conflict | no silent anything | turns a working injected-model call into a failure |
+
+Recommendation: **(b)**. A supplied adapter carrying its own resolver was configured deliberately,
+and the operational cycle has no standing to overrule it — especially when the overwrite persists
+after the call. ⛔ **Implement the guard at the CYCLE's call site, not by changing `adapt_if_fi`**:
+onboarding depends on the attach-always behaviour (`onboard_model.py:854-857`), and this plan's
+scope excludes changing it.
+
 ## Watch items
 
 - 🪤 **The FI adapter is shared with training and hindcast.** This plan changes only the operational
@@ -178,7 +208,8 @@ re-wrapping, and a reason a fix that constructs a fresh adapter would be wrong.
 ## Exit gates
 
 - T1's red is the **resolver error**, evidenced, not a signature or lookup failure.
-- D1 and D2 are closed, or explicitly carried with the carrier named.
+- D1, D2 and **D3** are closed, or explicitly carried with the carrier named. 🔴 **D3 gates T2**:
+  the resolver-precedence rule determines what T2 writes and what its tests assert.
 - The station path is shown unchanged by **comparison of real forecast rows from a REPLAY of the
   same cycle under frozen inputs** — not by successive live cycles (uncontrolled) and not by an
   assertion that restates the code.
@@ -195,7 +226,7 @@ re-wrapping, and a reason a fix that constructs a fresh adapter would be wrong.
   "phases": [
     { "id": "P1", "tasks": ["T1"],
       "note": "red first, through the CYCLE's path — not by calling _require_resolver directly" },
-    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1 and D2",
+    { "id": "P2", "tasks": ["T2"], "depends_on": ["P1"], "decision": "D1, D2 and D3 — D3 GATES this task",
       "note": "attach AFTER the `if models is None` branch so caller-supplied models are covered too; station path shown unchanged by REPLAY under frozen inputs, not by successive live cycles" },
     { "id": "P3", "tasks": ["T3"], "depends_on": ["P2"],
       "note": "live re-run of 262 T5 after deploy; belongs to 262's record, not this merge gate" }
@@ -226,3 +257,21 @@ regression follows from the proposed wiring.
 
 ⚠️ **Carried, not resolved:** the review's budget did not permit a repository-wide caller audit, so
 *"the only production caller"* is verified for the paths inspected, **not globally**.
+
+
+**2026-09-22 — second review pass: NEEDS CHANGES (1 moderate, 1 minor). Folded.**
+
+| finding | what it was |
+|---|---|
+| **moderate** | the fold correctly said attachment is not inert, then **left the blanket "should be inert for every existing model" standing in T2's Out** — the same fix-one-site-leave-its-twin failure the corpus records. Worse, the prescribed already-wrapped test case need not carry an **existing resolver**, so it would have exercised nothing. A supplied GROUP adapter with its own resolver **works today**; overwriting its mapping could break artifact/code compatibility, and the overwrite **outlives the call**. **D3 added**, and it now gates T2 |
+| minor | "discovery, assembly, prediction and persistence all **ran**" is false — prediction was *attempted* and nothing was persisted, because `run_group_forecast` returned `{}` |
+
+**Cleared by this pass:** the replay prescription **is achievable** — the cycle takes `clock` and
+`rng` explicitly (`:2124`) and stores, models, config, artifacts and model state are all injectable,
+with live defaults only when omitted (⚠️ reusing mutated stores or an advanced RNG would *not*
+satisfy "same initial state"); attachment after the `models is None` branch **is** the correct common
+point, with no third route found in the inspected cycle; and the swallowed-error corrections are
+operative in T1, T2, the exit gates and the phase graph.
+
+⚠️ Still carried: neither pass performed a repository-wide caller audit, so *"the only production
+caller"* holds for the inspected paths only.
