@@ -50,12 +50,26 @@ def _target(unit: fi.Unit) -> fi.TargetSpec:
     )
 
 
-def _past(unit: fi.Unit, *, lookback: int = 3) -> fi.PastKnownVariable:
-    return fi.PastKnownVariable(lookback=lookback, max_nan=0, unit=unit)
+def _past(
+    unit: fi.Unit,
+    *,
+    lookback: int = 3,
+    aggregation: fi.AggregationMethod | None = None,
+) -> fi.PastKnownVariable:
+    return fi.PastKnownVariable(
+        lookback=lookback, max_nan=0, unit=unit, aggregation=aggregation
+    )
 
 
-def _future(unit: fi.Unit, *, future_steps: int = 2) -> fi.FutureKnownVariable:
-    return fi.FutureKnownVariable(future_steps=future_steps, max_nan=0, unit=unit)
+def _future(
+    unit: fi.Unit,
+    *,
+    future_steps: int = 2,
+    aggregation: fi.AggregationMethod | None = None,
+) -> fi.FutureKnownVariable:
+    return fi.FutureKnownVariable(
+        future_steps=future_steps, max_nan=0, unit=unit, aggregation=aggregation
+    )
 
 
 def _native_requirement() -> fi.InputRequirement:
@@ -89,6 +103,63 @@ def _native_requirement() -> fi.InputRequirement:
             )
         },
         static={"area", "silt_fraction"},
+    )
+
+
+def _native_requirement_with_aggregations() -> fi.InputRequirement:
+    """`_native_requirement()` plus the aggregations aquacast actually declares.
+
+    aquacast declares `discharge` and `precipitation` in **mm/day** with
+    ``SUM``, and `mean_temperature` in degC with ``MEAN``. Inside aquacast the
+    ``SUM`` is inert — it is a daily model, so summing its one value per day is
+    that value. It only bites where SAP3 resamples sub-daily observations.
+
+    The base fixture leaves `aggregation=None`, which the FI adapter skips
+    entirely — so nothing in this module exercised aggregation before, and the
+    translation could drop it silently.
+    """
+    base = _native_requirement()
+    [spatial_spec] = base.dynamic.values()
+    [dyn] = spatial_spec.data.values()
+    return fi.InputRequirement(
+        targets=base.targets,
+        dynamic={
+            _DAILY: fi.SpatialInputSpec(
+                data={
+                    fi.SpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputSpec(
+                        past_known={
+                            "aquacast": {
+                                "discharge": _past(
+                                    fi.Unit.MM_PER_DAY,
+                                    aggregation=fi.AggregationMethod.SUM,
+                                ),
+                                "precipitation": _past(
+                                    fi.Unit.MM_PER_DAY,
+                                    aggregation=fi.AggregationMethod.SUM,
+                                ),
+                                "mean_temperature": _past(
+                                    fi.Unit.DEG_C,
+                                    aggregation=fi.AggregationMethod.MEAN,
+                                ),
+                            }
+                        },
+                        future_known={
+                            "aquacast": {
+                                "precipitation": _future(
+                                    fi.Unit.MM_PER_DAY,
+                                    aggregation=fi.AggregationMethod.SUM,
+                                ),
+                                "mean_temperature": _future(
+                                    fi.Unit.DEG_C,
+                                    aggregation=fi.AggregationMethod.MEAN,
+                                ),
+                            }
+                        },
+                    )
+                }
+            )
+        },
+        static=set(base.static),
     )
 
 
@@ -815,3 +886,114 @@ class TestVendoredConfigDigest:
         }
 
         assert len(set(digests.values())) == len(digests)
+
+
+class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:
+    """🔴 The defect the Plan 262 T3b live-input gate caught on 2026-09-21.
+
+    `_canonical_requirement` **used to** rewrite names and units via
+    ``model_copy(update={"unit": ...})``, carrying `aggregation` through
+    unchanged. For `discharge` that was wrong, and this translation is where the
+    declaration is corrected — before the downstream resample consumes it.
+    *(Independent review 2026-09-22: an earlier wording called this "the only
+    place" and "the last point SAP3 controls". Neither is true — SAP3 also owns
+    `resolved_aggregation_methods` and `resample_to_time_step`. The shim is the
+    chosen boundary, not the only possible one.)*:
+
+    * aquacast declares `discharge` in **mm/day** with ``SUM`` — inert inside a
+      daily model, where the "sum" of one value per day is that value;
+    * the shim relabels it to **m³/s**, a genuine conversion through basin area;
+    * the ``SUM`` rides along, and SAP3 resamples live SUB-DAILY observations
+      with it. Summing them is wrong under EITHER unit — they are instantaneous
+      *rates*, not per-interval accumulations.
+
+    Measured on the mini: station 2091 on 2026-09-19 has 142 ten-minute
+    readings, ``daily_mean = 356.37`` and ``daily_sum = 50,604.8`` — and the
+    assembled ``past_targets`` minimum was **50,604.8 exactly**, ~142x the
+    truth. Not divisible out either: the multiplier is that day's reading
+    count.
+
+    ⚠️ Precipitation is the control, and the reason is about the DATA, not the
+    unit: precipitation observations really are per-interval accumulations, so
+    summing them into a daily total is right. That is why the gate saw sane
+    precipitation sitting next to nonsense discharge.
+    """
+
+    def _past_known(self) -> dict[str, Any]:
+        shim = _shim_with_fake_inner(
+            input_requirement=_native_requirement_with_aggregations()
+        )
+        [spatial_spec] = shim.input_requirement.dynamic.values()
+        [dyn] = spatial_spec.data.values()
+        return dyn.past_known["aquacast"]
+
+    def test_discharge_is_corrected_to_mean_at_the_translation(self) -> None:
+        """The fault itself: summing instantaneous rate samples gives
+        sample-count x the mean, under either unit."""
+        discharge = self._past_known()["discharge"]
+
+        assert discharge.unit is fi.Unit.M3_PER_S, "precondition: unit was translated"
+        assert discharge.aggregation is fi.AggregationMethod.MEAN, (
+            "discharge is resampled from SUB-DAILY observations, which are "
+            "instantaneous rates — summing them overstates by the sample count. "
+            "The aggregation must be corrected where the unit is translated"
+        )
+
+    def test_precipitation_keeps_sum_because_its_data_accumulates(self) -> None:
+        """The control. Precipitation observations are per-interval
+        accumulations, so summing them into a daily total is right and must
+        stay. Without this, 'just map SUM to MEAN' would pass the test above
+        and silently break precipitation.
+
+        ⚠️ The distinction is about the DATA, not the unit — discharge is a
+        rate in BOTH mm/day and m³/s. *(Independent review 2026-09-22: the
+        earlier name and docstring said precipitation "stays a depth" while
+        discharge "becomes a rate", which is the physics error this class
+        already corrects elsewhere.)*"""
+        precipitation = self._past_known()["precipitation"]
+
+        assert precipitation.unit is fi.Unit.MM
+        assert precipitation.aggregation is fi.AggregationMethod.SUM
+
+    def test_temperature_aggregation_is_untouched(self) -> None:
+        temperature = self._past_known()["temperature"]
+
+        assert temperature.unit is fi.Unit.DEG_C
+        assert temperature.aggregation is fi.AggregationMethod.MEAN
+
+    def test_a_declared_max_survives_the_unit_conversion(self) -> None:
+        """🔴 Independent review 2026-09-21 (medium): the first fix mapped EVERY
+        non-None aggregation to ``MEAN``, so a model legally declaring peak-flow
+        semantics lost them silently.
+
+        Basin-area conversion is positive linear scaling, so it maps a maximum to
+        a maximum — ``MAX`` needs no correction and must not get one. Only ``SUM``
+        is wrong for a rate.
+        """
+        native = _native_requirement_with_aggregations()
+        [spatial_spec] = native.dynamic.values()
+        [dyn] = spatial_spec.data.values()
+        dyn.past_known["aquacast"]["discharge"] = _past(
+            fi.Unit.MM_PER_DAY, aggregation=fi.AggregationMethod.MAX
+        )
+
+        shim = _shim_with_fake_inner(input_requirement=native)
+        [out_spatial] = shim.input_requirement.dynamic.values()
+        [out_dyn] = out_spatial.data.values()
+        discharge = out_dyn.past_known["aquacast"]["discharge"]
+
+        assert discharge.unit is fi.Unit.M3_PER_S, "precondition: unit translated"
+        assert discharge.aggregation is fi.AggregationMethod.MAX, (
+            "a declared MAX is a peak, and a peak survives positive linear "
+            "scaling — only SUM is wrong for a rate"
+        )
+
+    def test_an_undeclared_aggregation_stays_undeclared(self) -> None:
+        """`None` means "the model did not declare one", and SAP3's name-keyed
+        v0 fallback then applies. The fix must not invent a declaration where
+        the model made none — that would override the fallback table."""
+        shim = _shim_with_fake_inner()  # the base fixture: every aggregation None
+        [spatial_spec] = shim.input_requirement.dynamic.values()
+        [dyn] = spatial_spec.data.values()
+
+        assert dyn.past_known["aquacast"]["discharge"].aggregation is None
