@@ -1088,3 +1088,52 @@ Every criterion T3b states is met. Activation is blocked by
 this very run — **past ends `2026-09-21`, future begins `2026-09-23`, so `2026-09-22` is in
 neither array**. 311 declares `blocks: [262]` precisely so the pilot does not go live on 3 of 4
 cycles while its T1 is unanswered. **That is an owner decision, not a gate failure.**
+
+
+## T3b ASSIGNED + T5 RUN — 2026-09-22. The pilot reaches the model and stops one step short.
+
+**T3b complete.** `create_group_assignment` written on the mini at v0.1.949 with an audited
+principal (tenant `…0001`), `time_step=1 day`, **`priority=50`** — lower is higher priority
+(`order_by(priority)` ascending), and 50 slots the pilot **after** every established station model
+(nwp_regression 10, seasonal 12, nwp_rainfall_runoff 20, linear_regression_daily 30) and **ahead of**
+the fallbacks (90, 100), so it produces forecasts without displacing production on these two
+stations. Verified by the exact lookup `discover_group_runs` performs:
+`fetch_groups_for_model('cmal_small') → ['13f2f0b0-…']`.
+
+**T5 run on the seam-continuous 00:00Z cycle** (owner-approved 2026-09-22).
+
+⚠️ **`cycle_time` sets the flow's nominal NOW, not the NWP cycle to use.** Pinning it to 00:00Z made
+the resolver judge the 00:00Z cycle **`age_minutes=0.0`** against `min_age_minutes=210` and fall back
+to `2026-09-21T18:00Z` for forcing. The *issue time* stays 00:00Z, so the seam stays continuous —
+but anyone reading `cycle_time` as "use this NWP cycle" will be wrong.
+
+**First attempt aborted on an upstream outage, not on us:** `nwp.fetch_failed … STAC request failed:
+500 Internal Server Error` from `data.geo.admin.ch`, mid-pagination. Both STAC endpoints answered
+**200** minutes later; the retry fetched **484 files / 2.87 GB** and archived cleanly.
+
+### 🔴 The run reached the model and failed there
+
+```
+run_group_forecast.predict_batch_failed
+  error='station_code_resolver required for GROUP input conversion / train / predict'
+forecast_cycle.group_completed  stations_forecast=0
+```
+
+**Everything upstream worked** — the group was discovered, inputs assembled (including Plan 261's
+in-memory tail fill, `filled=['precipitation@2026-09-21', 'temperature@2026-09-21']`), forcing
+resolved (58 rows, `meteoswiss_tabsd`/`rprelimd`). The cycle then completed normally for every other
+model.
+
+**Cause, measured:** the FI adapter requires a `station_code_resolver` for GROUP conversion
+(`adapters/forecast_interface.py:1595-1597`), and the **only** production caller that supplies one is
+`flows/onboard_model.py:857`. **The forecast cycle never does.** So a GROUP-scoped FI model can be
+onboarded but not served.
+
+⚖️ **This is not a regression and not a defect in this plan's work** — it is the
+**operational `GroupForecastModel` support** that `CLAUDE.md` already lists as an outstanding
+v0b/v0c follow-on. T5's value is that it converted a scoping line into a concrete, located gap: one
+resolver, threaded from the cycle's `station_store` into the discovered model.
+
+⛔ **T5 is therefore NOT complete**: no `cmal_small` forecast row exists
+(`SELECT count(*) FROM forecasts WHERE model_id='cmal_small'` → **0**). The assignment stands and is
+harmless — the group path runs, logs the failure, and the cycle completes for everything else.
