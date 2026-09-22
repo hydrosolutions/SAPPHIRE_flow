@@ -834,6 +834,41 @@ class TestEveryNetworkStepIsBounded:
                 "category and the bound-check below is now blind to it"
             )
 
+    def test_every_network_step_declares_its_own_timeout(self) -> None:
+        """🔴 RESTORED. A block replacement in an earlier fold deleted this and
+        the check below (independent review 2026-09-22, medium). Their loss was
+        worse than it looks: the aggregate budget test SUMS the bounds, so
+        deleting a step's timeout REDUCES that total and helps the aggregate
+        pass. An aggregate can never substitute for the per-step check.
+        """
+        unbounded = [
+            f"{job} / {label}"
+            for job, label, step in self._network_steps()
+            if step.get("timeout-minutes") is None
+        ]
+
+        assert unbounded == [], (
+            "these steps reach the network with no step-level timeout, so a hung "
+            f"fetch runs until the JOB timeout — which cancels: {unbounded}"
+        )
+
+    def test_no_network_timeout_is_absurdly_large(self) -> None:
+        """RESTORED alongside the check above. A bound equal to or larger than
+        its own job's timeout is not a bound — the job cancels at the same
+        instant, skipping the explanation."""
+        workflow = yaml.safe_load(_ci_yml_text())
+        over = []
+        for job_name, job in workflow["jobs"].items():
+            job_timeout = job.get("timeout-minutes")
+            if job_timeout is None:
+                continue
+            for step in job.get("steps") or []:
+                st = step.get("timeout-minutes")
+                if st is not None and st >= job_timeout:
+                    over.append(f"{job_name} / {step.get('name') or step.get('uses')}")
+
+        assert over == [], f"step timeout >= its job's own timeout: {over}"
+
     def test_no_jobs_bounded_steps_alone_exceed_its_own_timeout(self) -> None:
         """Bounding each step does not bound their SUM: `build-image-and-scan`
         summed to **69 minutes against a 30-minute job**, so it would cancel
@@ -1003,4 +1038,24 @@ class TestTheTrivyReportCheckAcceptsACleanReport:
         ), "Results, when present, must be an array"
         assert self._accepts(jq_filter, json.dumps({"SchemaVersion": 2})), (
             "but an ABSENT Results is a clean scan and must still be accepted"
+        )
+
+    def test_the_envelope_contract_matches_trivys_own_types(self) -> None:
+        """🔴 `SchemaVersion` is declared `int` with `omitempty` upstream, and
+        `trivy convert` does not require it (independent review 2026-09-22,
+        medium). So the predicate must ACCEPT a report that omits it and REJECT
+        a fractional value, which cannot decode into an int field. The earlier
+        version got both backwards.
+        """
+        jq_filter = self._filter_from_workflow()
+
+        assert self._accepts(
+            jq_filter,
+            json.dumps({"ArtifactName": "sapphire-flow:ci-abc", "Results": []}),
+        ), "SchemaVersion is omitempty — a report without it is still a report"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": 2.5, "Results": []})
+        ), "2.5 cannot decode into trivy's integer SchemaVersion"
+        assert not self._accepts(jq_filter, "{}"), (
+            "an empty object carries no report at all"
         )
