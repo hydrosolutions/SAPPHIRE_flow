@@ -326,13 +326,32 @@ package fixture (`tests/fixtures/basin_static/nepal-dhm-basins/`) is a **single 
 (`gauge_id = nepal_123`), so its values are NOT evidence about the delivery; where the real
 package was not measured, the question says so rather than quoting the fixture.
 
+**⚠️ TWO addressees, not one — established 2026-09-22 by reading the extractor's source.**
+The >100 lake values are **Swiss** basins, which come from Caravan's CAMELS-CH attributes via
+`store/caravan_import.py` (Plan 155 T1/T1b) — **not** from the Nepal extractor. Sending all of
+it to the extractor would earn a "not mine" on the first item. Item 1 goes to whoever owns the
+Caravan/CAMELS-CH side; items 2–5 go to the extractor.
+
+🔑 **What the extractor's source already settles, so do not ask it:** `static-attrs-nepal` applies
+**no rescaling**. It area-weights raw HydroATLAS values and writes them through
+(no scaling anywhere in `src/static_attrs_nepal/`), and the `unit` strings are a **hand-authored
+metadata table** — `src/static_attrs_nepal/hydroatlas_metadata.py:79-106` literally spells
+`slp_dg_sav` as `"degrees"`, `tmp_dc_syr` as `"deg C"`, and `ari_ix_sav`/`cmi_ix_syr` as `None`.
+So the delivered values ARE HydroATLAS natives and the question is not "is a scale factor
+applied" (it is not) but **"what is HydroATLAS's native encoding, and will you correct the table
+to state it?"**
+
+**To the Caravan/CAMELS-CH owner:**
+
 > **1. `lka_pc_sse` — lake extent above 100%.** Eight of our 148 Swiss (BAFU) basins carry a
 > `lka_pc_sse` above 100: **362.0** (2308 Goldach-Bleiche), **350.0** (2312 Salmsach-Hungerbühl),
 > then 157.0, 140.9, 109.0, 109.0, 108.0, 105.0. The six Nepal basins are all well under
-> (0.19 – 2.38). What is HydroATLAS's definition of `lka_pc_sse`, and do the delivered Caravan
-> values carry a scale factor we are not applying? If it is genuinely a percentage, the eight
-> Swiss values are a data defect and we need to know whose.
->
+> (0.19 – 2.38). What is HydroATLAS's definition of `lka_pc_sse`, and do the CAMELS-CH values
+> carry a scale factor we are not applying? If it is genuinely a percentage, the eight Swiss
+> values are a data defect and we need to know whose.
+
+**To the extractor (`static-attrs-nepal`):**
+
 > **2. `slp_dg_sav` — declared `degrees`, delivers values that cannot be degrees.** The
 > catalog declares `unit: "degrees"`. Measured, the delivery carries **162.3 – 276.1** across
 > the six Nepal basins, and our Swiss basins carry **14 – 325**. A mean terrain slope cannot
@@ -346,9 +365,10 @@ package was not measured, the question says so rather than quoting the fixture.
 > **4. `ari_ix_sav` and `cmi_ix_syr` — no unit declared at all.** Both carry `unit: null` in the
 > catalog. What are their encodings?
 >
-> **5. The field itself.** Can `unit` be corrected and populated for all 92 features in a future
-> extractor release? Until it is trustworthy we have to keep our own per-feature table, which
-> can only ever be a second copy of a fact you already hold.
+> **5. The field itself.** `hydroatlas_metadata.py` is hand-maintained, which is why items 2–4
+> can be wrong or blank without anything noticing. Can `unit` be corrected and populated for all
+> 92 features from HydroATLAS's own legend in a future release? Until it is trustworthy we have
+> to keep our own per-feature table, which can only ever be a second copy of a fact you hold.
 
 **Status: drafted, NOT sent — the owner sends it.** ⛔ Until answers land, T3 may not record a
 *verified* delivered encoding for features 2–4 — recording the catalog's own value would make
@@ -650,6 +670,13 @@ not the one D2 recorded: `slp_dg_sav` declares `degrees` while the real delivery
 HydroATLAS's usual °C × 10 convention (**unmeasured on the real delivery — asked, not asserted**),
 and `ari_ix_sav` and `cmi_ix_syr` declare nothing at all. All four go to the same party in one
 question. ⛔ Not sent — the owner sends it.
+
+**2026-09-22 (same day, second pass) — the question had TWO addressees and said one.** Reading
+`static-attrs-nepal` (cloned locally) established that it applies **no rescaling** and that its
+`unit` strings are a hand-authored table (`hydroatlas_metadata.py:79-106`), which both sharpens
+items 2–5 and removes a question not worth asking. It also showed item 1 is **not the
+extractor's**: the >100 lake values are Swiss, imported from Caravan's CAMELS-CH attributes by
+`store/caravan_import.py`. The question is now split by party.
 
 🪤 **The repo's package fixture is a single synthetic row** (`gauge_id = nepal_123`), so it is
 not evidence about the delivery. A draft of this question quoted a fixture temperature as if it
