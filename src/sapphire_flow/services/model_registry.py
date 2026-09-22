@@ -109,6 +109,24 @@ def _assert_model_classification_declared(
     adapted_model.static_naming = static_naming  # type: ignore[attr-defined]
 
 
+def carry_model_classification(raw_model: object, adapted_model: object) -> None:
+    """Copy whatever the RAW model declares onto a freshly wrapped adapter.
+
+    `ForecastInterfaceAdapter` forwards NOTHING (no `__getattr__`), so wrapping
+    a raw FI model drops its own `model_tier`/`alert_eligibility`/
+    `static_naming`. Discovery avoids that with
+    `_assert_model_classification_declared`, which also consults the config
+    tables and RAISES when nothing declares a value. A caller-supplied raw
+    model reaching the forecast cycle must not acquire that failure merely
+    because the cycle now wraps it to attach a resolver (Plan 312), so this
+    copies what the raw model declares and stays silent about what it does not.
+    """
+    for attribute in ("model_tier", "alert_eligibility", "static_naming"):
+        declared = getattr(raw_model, attribute, None)
+        if declared is not None:
+            setattr(adapted_model, attribute, declared)
+
+
 def discover_models() -> dict[ModelId, ForecastModel]:
     # adapt_if_fi wraps a `forecastinterface` model into the SAP3
     # StationForecastModel boundary; native SAP3 models pass through unchanged

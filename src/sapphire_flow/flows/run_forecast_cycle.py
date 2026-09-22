@@ -2130,21 +2130,29 @@ def _with_group_station_code_resolvers(
         ForecastInterfaceAdapter,
         adapt_if_fi,
     )
-    from sapphire_flow.services.model_registry import build_station_code_resolver
+    from sapphire_flow.services.model_registry import (
+        build_station_code_resolver,
+        carry_model_classification,
+    )
 
     resolver = build_station_code_resolver(station_store)
-    return {
-        model_id: (
-            model
-            if isinstance(model, ForecastInterfaceAdapter)
+
+    def _with_resolver(model: ForecastModel) -> ForecastModel:
+        if (
+            isinstance(model, ForecastInterfaceAdapter)
             and model.station_code_resolver is not None
-            else cast(
-                "ForecastModel",
-                adapt_if_fi(model, station_code_resolver=resolver),
-            )
-        )
-        for model_id, model in models.items()
-    }
+        ):
+            return model
+        adapted = adapt_if_fi(model, station_code_resolver=resolver)
+        if adapted is not model:
+            # A FRESH adapter — a RAW caller-supplied FI model. The adapter
+            # forwards nothing, so the raw model's own classification
+            # declarations would be lost here; discovery copies them at wrap
+            # time and this route is the only other one that wraps.
+            carry_model_classification(model, adapted)
+        return cast("ForecastModel", adapted)
+
+    return {model_id: _with_resolver(model) for model_id, model in models.items()}
 
 
 @flow(

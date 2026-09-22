@@ -434,6 +434,21 @@ class TestGroupFiResolverInTheForecastCycle:
 
         _assert_two_stations_forecast(stores, sid_a, sid_b, events)
 
+    def test_caller_supplied_raw_fi_model_keeps_its_own_declarations(self) -> None:
+        """Acceptance case (d): a RAW, never-wrapped FI model. The cycle must
+        wrap it to attach the resolver, and `ForecastInterfaceAdapter` forwards
+        NOTHING — so without carrying the raw model's own `model_tier` /
+        `alert_eligibility` / `static_naming` across, attaching a resolver would
+        strip declarations the cycle itself depends on. Cases (a)-(c) cannot
+        catch this: their fixtures pre-wrap and copy the attributes by hand."""
+        stores, sid_a, sid_b = _seed_group_of_two()
+        raw = SyntheticGroupFIModel()
+        assert not isinstance(raw, fi_boundary.ForecastInterfaceAdapter)
+
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: raw})
+
+        _assert_two_stations_forecast(stores, sid_a, sid_b, events)
+
     def test_caller_supplied_conflicting_resolver_survives_the_cycle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
