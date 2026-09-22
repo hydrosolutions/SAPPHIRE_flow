@@ -891,10 +891,11 @@ class TestVendoredConfigDigest:
 class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:
     """🔴 The defect the Plan 262 T3b live-input gate caught on 2026-09-21.
 
-    `_canonical_requirement` rewrites names and units via
-    ``model_copy(update={"unit": ...})`` — so `aggregation` is carried through
-    **unchanged**. For `discharge` that is wrong, because the unit translation
-    is where a sub-daily resample first consults it:
+    `_canonical_requirement` **used to** rewrite names and units via
+    ``model_copy(update={"unit": ...})``, carrying `aggregation` through
+    unchanged. For `discharge` that was wrong — and this translation is the only
+    place it can be put right, because it is the last point SAP3 controls before
+    the declaration is handed to a sub-daily resample that consumes it:
 
     * aquacast declares `discharge` in **mm/day** with ``SUM`` — inert inside a
       daily model, where the "sum" of one value per day is that value;

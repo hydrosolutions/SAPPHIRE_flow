@@ -235,10 +235,14 @@ def _translate_declared_variable(
     """Translate ONE declared variable's unit and aggregation in a single
     `model_copy`, so the two cannot drift apart.
 
-    🔴 They did drift: the previous version updated only ``unit``, which left
-    `discharge` declared as m³/s while still carrying the ``SUM`` that belonged to
-    its mm/day form (Plan 262 T3b). Doing both here is the point — a future unit
-    translation gets the aggregation question put in front of it.
+    🔴 They did drift: the previous version updated only ``unit``, so `discharge`
+    was re-declared as m³/s while still carrying the ``SUM`` it had inherited from
+    aquacast (Plan 262 T3b). ⚠️ That ``SUM`` was never right *for the unit* — a
+    discharge sample is a rate under mm/day just as much as under m³/s. It was
+    simply **harmless inside aquacast**, a daily model where summing one value per
+    day returns that value, and consequential here, because SAP3 hands this
+    declaration to a sub-daily resample. Doing both in one copy is the point: a
+    future unit translation gets the aggregation question put in front of it.
     """
     translated_unit = _translate_declared_unit(name, variable.unit, time_step=time_step)
     return variable.model_copy(
@@ -257,7 +261,11 @@ def _translate_declared_variable(
 def _canonical_requirement(req: InputRequirement) -> InputRequirement:
     """aquacast's own `input_requirement` -> the SAP3-canonical declaration this shim
     exposes. Preserves the nesting (`dynamic[step].data[spatial].{past,future}_known
-    [SOURCE][name]`, source key "aquacast") and every non-name/unit field."""
+    [SOURCE][name]`, source key "aquacast") and every other field — **with one
+    deliberate exception: `discharge`'s ``aggregation``**, which
+    `_translate_declared_aggregation` corrects from ``SUM`` to ``MEAN`` alongside
+    the unit (Plan 262 T3b). Targets carry no aggregation, so only the declared
+    variables are affected."""
     return InputRequirement(
         targets={
             AQUACAST_TO_CANONICAL_NAME.get(name, name): spec.model_copy(
