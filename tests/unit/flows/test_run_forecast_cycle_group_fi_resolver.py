@@ -434,7 +434,9 @@ class TestGroupFiResolverInTheForecastCycle:
 
         _assert_two_stations_forecast(stores, sid_a, sid_b, events)
 
-    def test_caller_supplied_conflicting_resolver_survives_the_cycle(self) -> None:
+    def test_caller_supplied_conflicting_resolver_survives_the_cycle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Acceptance case (c), D3: the EXISTING resolver wins. Its mapping, its
         identity and the adapter's identity all survive the call."""
         stores, sid_a, sid_b = _seed_group_of_two()
@@ -446,10 +448,34 @@ class TestGroupFiResolverInTheForecastCycle:
 
         adapter = _wrapped_group_adapter(station_code_resolver=caller_resolver)
         wrapped_fi_model = adapter._model  # noqa: SLF001
+
+        # Record the adapter the cycle ACTUALLY dispatched. Asserting on
+        # `adapter` alone proves nothing about identity: a REPLACEMENT adapter
+        # carrying the same model and the same resolver would leave `adapter`
+        # untouched and produce byte-identical rows.
+        dispatched: list[fi_boundary.ForecastInterfaceAdapter] = []
+        undecorated_predict_batch = fi_boundary.ForecastInterfaceAdapter.predict_batch
+
+        def _recording_predict_batch(
+            adapter_self: fi_boundary.ForecastInterfaceAdapter,
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            dispatched.append(adapter_self)
+            return undecorated_predict_batch(adapter_self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            fi_boundary.ForecastInterfaceAdapter,
+            "predict_batch",
+            _recording_predict_batch,
+        )
+
         events = _run_cycle(stores, models={_GROUP_MODEL_ID: adapter})
 
         # The adapter INSTANCE survives — not re-wrapped into a fresh one,
         # which would drop discovery's copied classification attributes.
+        assert dispatched, "predict_batch was never reached"
+        assert all(used is adapter for used in dispatched)
         assert adapter._model is wrapped_fi_model  # noqa: SLF001
         assert adapter.model_tier is ModelTier.SKILL  # type: ignore[attr-defined]
         assert adapter.station_code_resolver is caller_resolver
