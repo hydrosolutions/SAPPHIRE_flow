@@ -24,7 +24,9 @@ These lock the incident's two root causes staying fixed:
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,7 @@ def _eval_gha_if(
     job_status: str,
     outcomes: dict[str, str],
     outputs: dict[str, dict[str, str]] | None = None,
+    context: dict[str, str] | None = None,
 ) -> bool:
     """Evaluate the small subset of GitHub Actions `if:` syntax this workflow uses.
 
@@ -114,6 +117,8 @@ def _eval_gha_if(
         r"step_outputs['\1']['\2']",
         body,
     )
+    for dotted, value in (context or {}).items():
+        body = body.replace(dotted, repr(value))
     body = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"steps['\1']", body)
     body = body.replace("!=", "__NE__").replace("!", " not ").replace("__NE__", "!=")
     body = body.replace("&&", " and ").replace("||", " or ")
@@ -307,7 +312,11 @@ class TestFailurePathReallyPublishes:
     def test_gate_failed_not_cancelled_conversion_and_upload_both_run(self) -> None:
         """The failure path that matters: a real CVE tripped the gate."""
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "success", "trivy-gate-table": "failure"}
+        outcomes = {
+            "trivy-scan": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "failure",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
         assert sarif_runs, "SARIF conversion must still run when the gate step failed"
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -318,7 +327,14 @@ class TestFailurePathReallyPublishes:
         """An operational scan failure (not a finding) must not fabricate a
         report from a JSON file that was never written."""
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "failure"}
+        # Both attempts failed, so the enforcement step failed and no report
+        # exists. Plan 309 T2 (ii) added the retry between them; the property is
+        # unchanged — nothing downstream may run off a report nobody wrote.
+        outcomes = {
+            "trivy-scan": "failure",
+            "trivy-scan-2": "failure",
+            "trivy-report": "failure",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
         assert not sarif_runs, (
             "conversion must not run off a report the scan never wrote"
@@ -327,9 +343,50 @@ class TestFailurePathReallyPublishes:
         upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
         assert not upload_runs, "upload must not run without a SARIF file to upload"
 
+    def test_a_recovered_scan_still_converts_and_uploads(self) -> None:
+        """Plan 309 T2 (ii): attempt 1 failed to fetch trivy, attempt 2 worked.
+        The report exists, so everything downstream must run exactly as on a
+        first-attempt success — gating on attempt 1 alone would silently drop
+        the SARIF after a recovery."""
+        sarif_if, upload_if = self._conditions()
+        outcomes = {
+            "trivy-scan": "failure",
+            "trivy-scan-2": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "success",
+        }
+        sarif_runs = _eval_gha_if(sarif_if, job_status="success", outcomes=outcomes)
+        assert sarif_runs, "a recovered scan must still produce SARIF"
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        assert _eval_gha_if(upload_if, job_status="success", outcomes=outcomes), (
+            "a recovered scan must still reach code scanning"
+        )
+
+    def test_the_gating_scan_is_not_retried(self) -> None:
+        """🔴 The distinction the retry turns on. `lint`'s filesystem scan
+        carries `exit-code: "1"` — it IS the gate — so retrying it would re-run
+        a real CVE finding. Only the image scan, which is explicitly
+        non-gating (`exit-code: "0"`), may be retried."""
+        lint_steps = yaml.safe_load(_ci_yml_text())["jobs"]["lint"]["steps"]
+        fs_scan = next(
+            s
+            for s in lint_steps
+            if str(s.get("uses", "")).startswith("aquasecurity/trivy-action@")
+        )
+        assert fs_scan["with"]["exit-code"] == "1", "precondition: it gates"
+        assert "continue-on-error" not in fs_scan, (
+            "the GATING filesystem scan must never be continue-on-error — a "
+            "retry there re-runs a genuine CVE finding"
+        )
+        image_scan = _step_by_id(_build_image_and_scan_job(), "trivy-scan")
+        assert image_scan["with"]["exit-code"] == "0", (
+            "only a scan that cannot fail on findings may be retried"
+        )
+        assert image_scan["continue-on-error"] is True
+
     def test_cancelled_run_neither_conversion_nor_upload_run(self) -> None:
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "cancelled"}
+        outcomes = {"trivy-scan": "cancelled", "trivy-report": "cancelled"}
         sarif_runs = _eval_gha_if(sarif_if, job_status="cancelled", outcomes=outcomes)
         assert not sarif_runs, "a cancelled run must not still convert/upload"
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -338,7 +395,11 @@ class TestFailurePathReallyPublishes:
 
     def test_normal_success_conversion_and_upload_both_run(self) -> None:
         sarif_if, upload_if = self._conditions()
-        outcomes = {"trivy-scan": "success", "trivy-gate-table": "success"}
+        outcomes = {
+            "trivy-scan": "success",
+            "trivy-report": "success",
+            "trivy-gate-table": "success",
+        }
         sarif_runs = _eval_gha_if(sarif_if, job_status="success", outcomes=outcomes)
         assert sarif_runs
         outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
@@ -683,4 +744,352 @@ class TestTheHelperModelsImplicitSuccess:
             "${{ !cancelled() && steps.trivy-scan.outcome == 'success' }}",
             job_status="failure",
             outcomes={"trivy-scan": "success"},
+        )
+
+
+class TestEveryNetworkStepIsBounded:
+    """Plan 309 T2 (iii) — the convention, encoded so it cannot quietly erode.
+
+    A **job**-level timeout CANCELS the job, which skips every `!cancelled()`
+    step: no enforcement, no failure message, no upload. So a step that reaches
+    the network needs its OWN bound, or one hung fetch turns a red check that
+    explains itself into a bare cancellation.
+
+    Measured on the healthy run 35625551801: every network fetch completed in
+    ≤ 40 s except `Build app image` at 124 s. Bounds are 3–8 minutes; the
+    tightest ratio is `Build app image` at 480/124 ≈ **3.9x** and the loosest is
+    `actions/checkout` at 180/3 = 60x. *(An earlier docstring claimed "7x–30x",
+    which was wrong at both ends — independent review 2026-09-22.)* These assert
+    that a bound EXISTS, not that it is tight.
+
+    ⚠️ Deliberately NOT applied to the pytest steps: they are the work, not a
+    fetch, and the job timeout is their correct bound.
+    """
+
+    _NETWORK_USES = (
+        "actions/checkout@",
+        "astral-sh/setup-uv@",
+        "docker/setup-buildx-action@",
+        "docker/build-push-action@",
+        "actions/upload-artifact@",
+        "github/codeql-action/upload-sarif@",
+        "aquasecurity/trivy-action@",
+        "anchore/sbom-action",
+    )
+    # 🔴 `gh api` was missing, and the count-based guard below could not see the
+    # omission — a whole CATEGORY can vanish while the count still passes
+    # (independent review 2026-09-22, medium). The category assertions in
+    # `test_every_network_category_is_represented` are what actually guard it.
+    _NETWORK_RUN = ("apt-get", "uv sync", "pip install", "gh api", "curl ", "wget ")
+
+    def _network_steps(self) -> list[tuple[str, str, dict[str, Any]]]:
+        workflow = yaml.safe_load(_ci_yml_text())
+        found = []
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps") or []:
+                uses = str(step.get("uses", ""))
+                run = str(step.get("run", ""))
+                # ⚠️ Only skip a step that is PURELY pytest. A combined
+                # install-and-test script still fetches, and skipping it on the
+                # substring alone would hide it (independent review 2026-09-22).
+                if "pytest" in run and not any(tok in run for tok in self._NETWORK_RUN):
+                    continue
+                hit = any(uses.startswith(u) for u in self._NETWORK_USES) or any(
+                    token in run for token in self._NETWORK_RUN
+                )
+                if hit:
+                    label = step.get("name") or uses.split("@")[0] or run.strip()[:40]
+                    found.append((job_name, label, step))
+        return found
+
+    def test_the_survey_still_finds_network_steps(self) -> None:
+        """Guards the test itself: if the selectors stopped matching, every
+        assertion below would pass vacuously."""
+        steps = self._network_steps()
+
+        assert len(steps) >= 15, f"expected the whole fetch surface, found {len(steps)}"
+
+    def test_every_network_category_is_represented(self) -> None:
+        """🔴 A count cannot detect a missing CATEGORY. The `gh api` steps were
+        absent from the selector list and the count still passed — which is how
+        an unbounded network step survived the first version of this convention
+        (independent review 2026-09-22, medium).
+
+        Each entry below is a distinct third party that can be down on its own.
+        """
+        found = self._network_steps()
+        blob = " ".join(
+            str(s.get("uses", "")) + " " + str(s.get("run", "")) for _, _, s in found
+        )
+        for category in (
+            "actions/checkout",  # github.com git
+            "astral-sh/setup-uv",  # the uv binary
+            "docker/build-push",  # Docker Hub
+            "aquasecurity/trivy",  # trivy binary + vulnerability DB
+            "anchore/sbom-action",  # the syft release
+            "apt-get",  # Debian/Ubuntu mirrors
+            "uv sync",  # PyPI + the private git repos
+            "gh api",  # the GitHub REST API
+        ):
+            assert category in blob, (
+                f"no network step matched {category!r} — either it was removed "
+                "from the workflow, or the selector stopped seeing a whole "
+                "category and the bound-check below is now blind to it"
+            )
+
+    def test_every_network_step_declares_its_own_timeout(self) -> None:
+        """🔴 RESTORED. A block replacement in an earlier fold deleted this and
+        the check below (independent review 2026-09-22, medium). Their loss was
+        worse than it looks: the aggregate budget test SUMS the bounds, so
+        deleting a step's timeout REDUCES that total and helps the aggregate
+        pass. An aggregate can never substitute for the per-step check.
+        """
+        unbounded = [
+            f"{job} / {label}"
+            for job, label, step in self._network_steps()
+            if step.get("timeout-minutes") is None
+        ]
+
+        assert unbounded == [], (
+            "these steps reach the network with no step-level timeout, so a hung "
+            f"fetch runs until the JOB timeout — which cancels: {unbounded}"
+        )
+
+    def test_no_network_timeout_is_absurdly_large(self) -> None:
+        """RESTORED alongside the check above. A bound equal to or larger than
+        its own job's timeout is not a bound — the job cancels at the same
+        instant, skipping the explanation."""
+        workflow = yaml.safe_load(_ci_yml_text())
+        over = []
+        for job_name, job in workflow["jobs"].items():
+            job_timeout = job.get("timeout-minutes")
+            if job_timeout is None:
+                continue
+            for step in job.get("steps") or []:
+                st = step.get("timeout-minutes")
+                if st is not None and st >= job_timeout:
+                    over.append(f"{job_name} / {step.get('name') or step.get('uses')}")
+
+        assert over == [], f"step timeout >= its job's own timeout: {over}"
+
+    def test_no_jobs_bounded_steps_alone_exceed_its_own_timeout(self) -> None:
+        """Bounding each step does not bound their SUM: `build-image-and-scan`
+        summed to **69 minutes against a 30-minute job**, so it would cancel
+        mid-retry and skip the enforcement steps that exist to explain the
+        failure (independent review 2026-09-22, medium).
+
+        ⛔ **This is a NECESSARY condition, not a sufficient one, and the
+        difference matters.** *(Second review pass, medium: the earlier version
+        of this test was named `..._can_actually_reach_its_enforcement_steps`
+        and claimed exactly the guarantee it cannot give.)* It counts unbounded
+        work as **zero** — the `unit` job's pytest step alone runs ~11 minutes
+        and is invisible here, and the image job's smoke check and both
+        `trivy convert` calls are unbounded too. A hang in any of those still
+        consumes the whole job budget.
+
+        ⚠️ **Plan 310 does not close this gap either** — it adds admission before
+        the SBOM RETRY WAITS specifically and its scope excludes Trivy, so it
+        addresses retry-budget exhaustion, not a hang in an unbounded step.
+        *(Independent review 2026-09-22: the workflow comment was corrected and
+        this one was left overstating it.)* This test only catches the
+        arithmetic absurdity that was really there.
+
+        Mutually exclusive steps are excluded (only one `Install (...)` variant
+        runs), and sleeps are counted only inside steps that are NOT themselves
+        bounded — otherwise an `apt` step's internal retry sleeps are counted
+        twice, once in its own bound and once again here.
+        """
+        workflow = yaml.safe_load(_ci_yml_text())
+        over = []
+        for job_name, job in workflow["jobs"].items():
+            job_timeout = job.get("timeout-minutes")
+            if job_timeout is None:
+                continue
+            steps = job.get("steps") or []
+            # Only one of the two `Install (...)` variants can run — but that is
+            # PROVED here, not assumed from their names. ⚠️ Pattern-matching the
+            # guards is not enough either: give both `!= 'true'` and both run
+            # while this test still subtracts one, masking a real overrun
+            # (independent review 2026-09-22, medium). So the guards are
+            # EVALUATED, with every other conjunct forced true — the adversarial
+            # case — under both values of the variable they branch on.
+            variants = [
+                s for s in steps if str(s.get("name", "")).startswith("Install (")
+            ]
+            skip = set()
+            if len(variants) > 1:
+                assert len(variants) == 2, (
+                    f"expected 2 install variants, got {len(variants)}"
+                )
+                for token_present in ("true", "false"):
+                    ctx = {
+                        "env.AQUACAST_TOKEN_PRESENT": token_present,
+                        "env.UV_LOCK_CHANGED": "false",
+                        "github.event_name": "pull_request",
+                        "github.actor": "dependabot[bot]",
+                    }
+                    runnable = [
+                        _eval_gha_if(
+                            str(s.get("if", "success()")),
+                            job_status="success",
+                            outcomes={},
+                            context=ctx,
+                        )
+                        for s in variants
+                    ]
+                    assert sum(runnable) <= 1, (
+                        "the install variants are NOT mutually exclusive with "
+                        f"AQUACAST_TOKEN_PRESENT={token_present!r} — both would "
+                        "run, so subtracting one understates the budget"
+                    )
+                cheapest = min(variants, key=lambda s: s.get("timeout-minutes") or 0)
+                skip.add(id(cheapest))
+
+            bounded = sum(
+                s.get("timeout-minutes") or 0 for s in steps if id(s) not in skip
+            )
+            # A bounded step's own internal sleeps are already inside its bound.
+            sleeps = sum(
+                int(m) / 60
+                for s in steps
+                if s.get("timeout-minutes") is None and id(s) not in skip
+                for m in re.findall(r"\bsleep\s+(\d+)", str(s.get("run", "")))
+            )
+            worst = bounded + sleeps
+            if worst > job_timeout:
+                over.append(
+                    f"{job_name}: bounded {bounded}m + unbounded sleeps "
+                    f"{sleeps:.0f}m = {worst:.0f}m > job timeout {job_timeout}m"
+                )
+
+        assert over == [], (
+            "a job's own bounded steps cannot fit inside its timeout, so it "
+            "would cancel mid-chain: " + "; ".join(over)
+        )
+
+    def test_the_trivy_report_gate_is_not_forgiving(self) -> None:
+        """Mirrors the SBOM enforcement rule. `Require a Trivy report` is the one
+        step in that chain that decides, so it must not be continue-on-error —
+        otherwise both attempts can fail and the job still goes green."""
+        step = _step_by_id(_build_image_and_scan_job(), "trivy-report")
+
+        assert "continue-on-error" not in step, (
+            "the Trivy enforcement step must NOT be continue-on-error — it is "
+            "the single explicit decision that keeps a missing report loud"
+        )
+
+
+class TestTheTrivyReportCheckAcceptsACleanReport:
+    """🔴 A zero-result trivy report must be ACCEPTED, not called a download
+    failure.
+
+    `Results` carries `omitempty` in trivy's report type, so a report with no
+    result entries can omit the key entirely. An earlier version of this check
+    used `jq -e '.Results'`, which is a TRUTHINESS test: it rejects an absent or
+    null `Results` and would have labelled a legitimate clean scan a download
+    failure (independent review 2026-09-22, medium).
+
+    These run the filter **extracted from the workflow itself**, so the test
+    cannot drift away from what CI actually executes.
+    """
+
+    @staticmethod
+    def _filter_from_workflow() -> str:
+        step = _step_by_id(_build_image_and_scan_job(), "trivy-report")
+        m = re.search(r"jq -e '([^']+)' trivy-image\.json", step["run"])
+        assert m, "could not find the report-validity jq filter in the step"
+        return m.group(1)
+
+    @staticmethod
+    def _accepts(jq_filter: str, document: str) -> bool:
+        proc = subprocess.run(
+            ["jq", "-e", jq_filter],
+            input=document,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0
+
+    def test_a_clean_report_with_no_results_is_accepted(self) -> None:
+        """The case the old filter got wrong."""
+        clean = json.dumps(
+            {
+                "SchemaVersion": 2,
+                "ArtifactName": "sapphire-flow:ci-abc",
+                "ArtifactType": "container_image",
+                "Metadata": {"OS": {"Family": "debian"}},
+            }
+        )
+
+        assert self._accepts(self._filter_from_workflow(), clean), (
+            "a trivy report with no Results key is a CLEAN SCAN, not a download "
+            "failure — `Results` is omitempty"
+        )
+
+    def test_a_report_with_an_empty_results_array_is_accepted(self) -> None:
+        clean = json.dumps({"SchemaVersion": 2, "Results": []})
+
+        assert self._accepts(self._filter_from_workflow(), clean)
+
+    def test_a_report_with_findings_is_accepted(self) -> None:
+        found = json.dumps(
+            {
+                "SchemaVersion": 2,
+                "Results": [
+                    {"Target": "x", "Vulnerabilities": [{"VulnerabilityID": "CVE-1"}]}
+                ],
+            }
+        )
+
+        assert self._accepts(self._filter_from_workflow(), found)
+
+    def test_a_non_report_is_rejected(self) -> None:
+        """The check must still catch the thing it exists for."""
+        jq_filter = self._filter_from_workflow()
+
+        assert not self._accepts(jq_filter, "{}"), "an empty object is not a report"
+        assert not self._accepts(jq_filter, "[]"), "an array is not a report"
+        assert not self._accepts(jq_filter, '"nope"'), "a string is not a report"
+
+    def test_a_structurally_invalid_envelope_is_rejected(self) -> None:
+        """🔴 Key PRESENCE is not validity. `{"SchemaVersion": "garbage"}`
+        satisfies `has("SchemaVersion")` and then fails downstream conversion —
+        and every fixture above accepted that defective validator, because none
+        supplied an object with a bad envelope (independent review 2026-09-22,
+        medium). These are the cases that distinguish the two predicates.
+        """
+        jq_filter = self._filter_from_workflow()
+
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": "garbage", "Results": []})
+        ), "SchemaVersion must be a NUMBER, not merely present"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": None, "Results": []})
+        ), "a null SchemaVersion is not a version"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": 2, "Results": "not-a-list"})
+        ), "Results, when present, must be an array"
+        assert self._accepts(jq_filter, json.dumps({"SchemaVersion": 2})), (
+            "but an ABSENT Results is a clean scan and must still be accepted"
+        )
+
+    def test_the_envelope_contract_matches_trivys_own_types(self) -> None:
+        """🔴 `SchemaVersion` is declared `int` with `omitempty` upstream, and
+        `trivy convert` does not require it (independent review 2026-09-22,
+        medium). So the predicate must ACCEPT a report that omits it and REJECT
+        a fractional value, which cannot decode into an int field. The earlier
+        version got both backwards.
+        """
+        jq_filter = self._filter_from_workflow()
+
+        assert self._accepts(
+            jq_filter,
+            json.dumps({"ArtifactName": "sapphire-flow:ci-abc", "Results": []}),
+        ), "SchemaVersion is omitempty — a report without it is still a report"
+        assert not self._accepts(
+            jq_filter, json.dumps({"SchemaVersion": 2.5, "Results": []})
+        ), "2.5 cannot decode into trivy's integer SchemaVersion"
+        assert not self._accepts(jq_filter, "{}"), (
+            "an empty object carries no report at all"
         )
