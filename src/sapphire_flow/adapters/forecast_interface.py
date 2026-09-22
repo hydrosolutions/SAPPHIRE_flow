@@ -481,6 +481,15 @@ class ForecastInterfaceAdapter:
         return self
 
     @property
+    def station_code_resolver(self) -> Callable[[StationId], str] | None:
+        """Plan 312: read-only view of the attached GROUP resolver, ``None``
+        when absent. The operational cycle needs to observe absence to attach
+        only when a resolver is missing (D3, existing-wins) without reaching
+        into a private field. Read-only by design — there is no clearing API.
+        """
+        return self._station_code_resolver
+
+    @property
     def config_hash(self) -> str | None:
         """Plan 157 T3 fixer round: an FI model's own `config_hash` (a
         SAP3-side convention, not part of the FI protocol — D1 ships an

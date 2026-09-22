@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import structlog
 
@@ -18,13 +18,33 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sapphire_flow.protocols.forecast_model import ForecastModel
-    from sapphire_flow.protocols.stores import ModelStore
+    from sapphire_flow.protocols.stores import ModelStore, StationStore
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 log = structlog.get_logger()
 
 _ENTRY_POINT_GROUP = "sapphire_flow.models"
+
+
+def build_station_code_resolver(
+    station_store: StationStore,
+) -> Callable[[StationId], str]:
+    def resolve_station_code(station_id: StationId) -> str:
+        station = station_store.fetch_station(station_id)  # type: ignore[union-attr]
+        if station is None:
+            raise ConfigurationError(
+                f"station_store could not resolve station_id {station_id!r}"
+            )
+
+        station_code = station.code.strip()
+        if not station_code:
+            raise ConfigurationError(
+                f"station_store resolved station_id {station_id!r} without a code"
+            )
+        return station_code
+
+    return resolve_station_code
 
 
 def _derive_display_name(model_id: str) -> str:
@@ -87,6 +107,36 @@ def _assert_model_classification_declared(
     adapted_model.model_tier = tier  # type: ignore[attr-defined]
     adapted_model.alert_eligibility = eligibility  # type: ignore[attr-defined]
     adapted_model.static_naming = static_naming  # type: ignore[attr-defined]
+
+
+_UNDECLARED: Final[object] = object()
+
+
+def carry_model_classification(raw_model: object, adapted_model: object) -> None:
+    """Copy whatever the RAW model declares onto a freshly wrapped adapter.
+
+    `ForecastInterfaceAdapter` forwards NOTHING (no `__getattr__`), so wrapping
+    a raw FI model drops its own `model_tier`/`alert_eligibility`/
+    `static_naming`. Discovery avoids that with
+    `_assert_model_classification_declared`, which also consults the config
+    tables and RAISES when nothing declares a value. A caller-supplied raw
+    model reaching the forecast cycle must not acquire that failure merely
+    because the cycle now wraps it to attach a resolver (Plan 312), so this
+    copies what the raw model declares and stays silent about what it does not.
+
+    The gate is a SENTINEL, not `is not None`, for the reason
+    `services/caravan_statics.py::declared_static_naming` uses one: an ABSENT
+    `static_naming` legitimately defaults to `NATIVE`, while one declared AS
+    `None` is malformed and must raise. Skipping `None` here would leave the
+    adapter with no attribute at all, turning the loud case back into the
+    silent one — the exact hole the Plan 155 D16 fixer round closed. A present
+    declaration is copied verbatim, malformed or not, so the wrap changes
+    nothing a downstream validator can observe.
+    """
+    for attribute in ("model_tier", "alert_eligibility", "static_naming"):
+        declared = getattr(raw_model, attribute, _UNDECLARED)
+        if declared is not _UNDECLARED:
+            setattr(adapted_model, attribute, declared)
 
 
 def discover_models() -> dict[ModelId, ForecastModel]:

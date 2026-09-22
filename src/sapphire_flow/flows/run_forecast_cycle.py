@@ -2116,6 +2116,45 @@ def _resolve_forecast_cycle_run_name() -> str:
     return f"forecast-{cycle_time:%Y-%m-%dT%H}"
 
 
+def _with_group_station_code_resolvers(
+    models: dict[ModelId, ForecastModel],
+    station_store: StationStore,
+) -> dict[ModelId, ForecastModel]:
+    """Attach a station-code resolver to every FI model that lacks one.
+
+    The guard tests RESOLVER ABSENCE, not adapter existence: discovery hands
+    back already-wrapped adapters with no resolver, which is exactly the case
+    this exists for. Non-FI models pass through untouched.
+    """
+    from sapphire_flow.adapters.forecast_interface import (
+        ForecastInterfaceAdapter,
+        adapt_if_fi,
+    )
+    from sapphire_flow.services.model_registry import (
+        build_station_code_resolver,
+        carry_model_classification,
+    )
+
+    resolver = build_station_code_resolver(station_store)
+
+    def _with_resolver(model: ForecastModel) -> ForecastModel:
+        if (
+            isinstance(model, ForecastInterfaceAdapter)
+            and model.station_code_resolver is not None
+        ):
+            return model
+        adapted = adapt_if_fi(model, station_code_resolver=resolver)
+        if adapted is not model:
+            # A FRESH adapter — a RAW caller-supplied FI model. The adapter
+            # forwards nothing, so the raw model's own classification
+            # declarations would be lost here; discovery copies them at wrap
+            # time and this route is the only other one that wraps.
+            carry_model_classification(model, adapted)
+        return cast("ForecastModel", adapted)
+
+    return {model_id: _with_resolver(model) for model_id, model in models.items()}
+
+
 @flow(
     name="forecast-cycle",
     log_prints=False,
@@ -2355,6 +2394,14 @@ def run_forecast_cycle_flow(
             from sapphire_flow.services.model_registry import discover_models
 
             models = discover_models()
+
+        # Plan 312: a GROUP-scoped ForecastInterface model needs a
+        # `station_code_resolver` for input conversion and predict_batch.
+        # `discover_models()` wraps FI models WITHOUT one, so the cycle
+        # attaches its own here — AFTER the branch above, so caller-supplied
+        # models are covered too. D3: an existing resolver WINS; the cycle
+        # fills a gap and never overrides a deliberate configuration.
+        models = _with_group_station_code_resolvers(models, station_store)
 
         build_grid = nwp_enabled and config.nwp_grid_archive_base_path is not None
         if build_grid:

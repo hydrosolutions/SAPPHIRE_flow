@@ -97,6 +97,27 @@ include them in the task context packet.
 - ForecastInterface definition and adapters
 - model discovery / registry wrapping — FI entry-point models wrapped via
   `adapt_if_fi()` in `discover_models()` so all callers get SAP3-compatible models
+- Plan 312: `discover_models()` wraps FI models with **no** `station_code_resolver`,
+  which a GROUP-scoped FI model needs for input conversion and `predict_batch`
+  (`_require_resolver`). `run_forecast_cycle_flow` therefore attaches one —
+  `_with_group_station_code_resolvers`, immediately AFTER the `if models is None:`
+  discovery branch, so caller-supplied models are covered too. The guard tests
+  **resolver absence** (`ForecastInterfaceAdapter.station_code_resolver`, a
+  read-only accessor) and never overrides an existing one; the builder is shared
+  with onboarding as `services/model_registry.py::build_station_code_resolver`.
+  ⚠️ `services/run_group_forecast.py` CATCHES a resolver failure and returns `{}`,
+  so the cycle completes normally and stores nothing — never take "the cycle
+  passed" as evidence here; check `run_group_forecast.predict_batch_failed` and
+  the persisted rows
+- Plan 312 (review fold): wrapping a **raw** FI model to attach that resolver
+  would DROP its own `model_tier` / `alert_eligibility` / `static_naming` —
+  `ForecastInterfaceAdapter` has no `__getattr__` passthrough, which is why
+  `discover_models()` copies them at wrap time. Any new site that wraps a model
+  outside discovery must call `carry_model_classification`
+  (`services/model_registry.py`), whose gate is an `_UNDECLARED` **sentinel**, not
+  `is not None`: `declared_static_naming` treats an ABSENT declaration as a
+  legitimate `NATIVE` default but one declared as `None` as malformed, and a
+  `None`-skipping copy silently turns the second back into the first
 - Plan 156: `_project_requirements` rejects an `InputRequirement` declaring
   non-empty `future_known` in more than one `time_step` branch
   (`UnsupportedModelRequirementError`, deliberately not `ConfigurationError` —

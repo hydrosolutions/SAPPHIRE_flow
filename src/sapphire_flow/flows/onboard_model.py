@@ -33,7 +33,11 @@ from sapphire_flow.services.model_onboarding import (
     smoke_test_model,
     validate_compatibility_for_unit,
 )
-from sapphire_flow.services.model_registry import build_registry_entry, register_models
+from sapphire_flow.services.model_registry import (
+    build_registry_entry,
+    build_station_code_resolver,
+    register_models,
+)
 from sapphire_flow.services.training import (
     promote_artifact,
     train_group_model,
@@ -82,26 +86,6 @@ log = structlog.get_logger(__name__)
 
 def _unit_shard(unit: TrainingUnit) -> str:
     return str(unit.station_id) if unit.station_id is not None else str(unit.group_id)
-
-
-def _build_station_code_resolver(
-    station_store: object,
-) -> Callable[[StationId], str]:
-    def resolve_station_code(station_id: StationId) -> str:
-        station = station_store.fetch_station(station_id)  # type: ignore[union-attr]
-        if station is None:
-            raise ConfigurationError(
-                f"station_store could not resolve station_id {station_id!r}"
-            )
-
-        station_code = station.code.strip()
-        if not station_code:
-            raise ConfigurationError(
-                f"station_store resolved station_id {station_id!r} without a code"
-            )
-        return station_code
-
-    return resolve_station_code
 
 
 @task(
@@ -851,7 +835,9 @@ def onboard_model_flow(
             f"Available: {sorted(str(k) for k in discovered)}"
         )
     model_instance = discovered[typed_model_id]
-    station_code_resolver = _build_station_code_resolver(station_store)
+    station_code_resolver = build_station_code_resolver(
+        cast("StationStore", station_store)
+    )
     model_instance = adapt_if_fi(
         model_instance,
         station_code_resolver=station_code_resolver,
