@@ -6,7 +6,7 @@ title: Past and future inputs are contiguous only at the midnight cycle — 3 of
 scope: Decide whether the issue day must appear in a daily model's inputs at a non-midnight cycle, and if so, close the gap between `past_targets`/`past_dynamic` (which end before the issue day) and `future_dynamic` (which begins after it). Explicitly NOT changing either window's own rule — both are individually correct — NOT the aggregation fix (that is the Plan 262 T3b follow-up), NOT the forecast schedule itself, NOT sub-daily models, NOT the NWP ingest or archive.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2]
+open_decisions: [D1, D2]  # D1 narrowed by T1, see the T1 record
 source: 2026-09-21 — observed in the Plan 262 T3b live-input gate on the mac-mini at v0.1.944, then reproduced locally by computing the seam with the real functions (`aligned_lookback_bounds` and the future path's `valid_time >= issue_time` rule) at each scheduled cycle. Line anchors verified against `main` at `62ac7b9c`.
 ---
 
@@ -149,3 +149,49 @@ the Swiss pilot or must anticipate Nepal **before** T2 designs anything.
 ## Changelog
 
 **2026-09-21 — created** at the owner's request, from the Plan 262 T3b gate record. Not reviewed.
+
+
+## T1 — ANSWERED 2026-09-22: **timestamp-aligned.** The blocker as posed does not exist.
+
+Answered inside the staging worker, where the `aquacast` extra is installed. Two load-bearing
+claims independently re-verified against the container's own source rather than taken on report:
+
+| claim | evidence |
+|---|---|
+| past and future are reconciled on a **date key**, not by position | `operational/datasource.py::_merge_dynamic_inputs` — `pl.concat(frames, how="vertical").unique(subset="date", keep="first", maintain_order=True)`, then variables joined `on="date"` |
+| output `valid_time`s come from the real date index, never synthesised as `issue + t·step` | `inference/records.py:89-97` `target_dts.append(dates[target_idx])`, over a `DateIndex` built from the actual `date` column |
+| the shim does not drop timestamps | `_shim.py:277` renames/scales only `c != "datetime"`; `_TEMPORAL_COLUMNS` is excluded outbound too |
+
+⟹ **a missing 2026-09-22 yields no row for that date. It is never back-filled by the next future
+value, and it cannot relabel a step.** The D+1→D shift this plan was opened to rule out **does not
+happen**, and ⛔ **no downstream re-attachment is needed** — correctly, none is done.
+
+There is also a fail-closed backstop: `operational/model.py::_filter_issues` matches
+`forecast_issue_dt` by calendar date, so a mis-seated window returns
+`ModelFailure(cause=INPUT_DATA)` rather than a quiet shift.
+
+### 🔴 But it is not "merely a shorter horizon" either — a narrower defect, newly identified
+
+`cmal_small` is daily-only, so `mode = "daily_only"`, and **`_regrid_basin` runs ONLY under
+`synchronized_multi_res`** (verified: both call sites, `container.py:865` and `:978`, sit under
+`if mode == "synchronized_multi_res"`). That function is what turns a date gap into an all-null row
+— its own docstring says it is *"what makes the container's positional pairing true rather than
+lucky"*. It does not run here.
+
+⟹ the daily tensor slice **is** positional (`data/dataset.py:90`), so the rows for `09-21` and
+`09-23` end up **physically adjacent in the recurrence**: the CMAL sees a forcing sequence with one
+day **elided**, while the dates carried alongside stay true. The labels are right; the dynamics the
+recurrence integrates are compressed by one day at the seam. ⚠️ `_feed_horizon`
+(`model.py:325`) counts `(daily_end - issue).days + 1` from calendar dates, so the relaxed horizon
+counts the missing day while no row exists to fill it.
+
+### What this does to D1
+
+- ⛔ **The stated blocker is withdrawn**: no forecast is mislabelled, so the pilot is not unsafe in
+  the way this plan feared.
+- ✅ **Option (a) — run the pilot on the 00:00Z cycle — is now clearly the right FIRST move**, not a
+  dodge: that cycle is already seam-continuous, so the first real forecast carries **zero** exposure
+  to the elision, and the remaining question can be answered against real output instead of source.
+- The residual question is narrower and no longer blocking: *how much does a one-day elision at the
+  seam degrade a 30-day-lookback CMAL?* That is a modelling question for the modeller, with
+  evidence, not a correctness question about SAP3.
