@@ -6,7 +6,7 @@ title: A GROUP-scoped FI model can be onboarded but not served — the forecast 
 scope: Give the operational forecast cycle the `station_code_resolver` that the FI adapter requires for GROUP conversion, so a GROUP-scoped ForecastInterface model can actually produce forecasts. Explicitly NOT changing the FI contract, NOT changing the STATION forecast path, NOT the onboarding flow's behaviour (it already works), NOT training or hindcast, NOT the group-assignment or artifact-import machinery, NOT Plan 311's seam question.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2, D3]
+open_decisions: []
 source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at v0.1.949. Every line anchor below was read from `main` at `40bdc3d3`; the log lines are from that run.
 ---
 
@@ -14,7 +14,17 @@ source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at
 
 ## Status
 
-**DRAFT. Not reviewed.** Written from a measured failure, not from a reading of the code.
+**DRAFT — all three decisions CLOSED by the owner 2026-09-22; two review passes folded.**
+⛔ **Not READY**: this closed state has not itself been reviewed, and on this week's evidence every
+fold has introduced or left something.
+
+| decision | closed as |
+|---|---|
+| **D1** where the resolver builder lives | **move to a shared home**, as its own pure-relocation step |
+| **D2** which models to adapt | **every** discovered model — *and every caller-supplied one* |
+| **D3** whose resolver wins on conflict | 🔑 **the EXISTING one.** The cycle fills a gap and never overrides; the guard goes at the cycle's call site, NOT in `adapt_if_fi`, which onboarding depends on |
+
+Written from a measured failure, not from a reading of the code.
 
 ⚖️ **Plan number 312 is claimed, not granted** — unused in `docs/plans/` and `docs/plans/archive/`,
 and nothing in `docs/` refers to a "Plan 312".
@@ -147,7 +157,7 @@ verification that 262 has been waiting for, and it belongs to 262's record.
 
 ## Owner decisions
 
-### D1 — where should `_build_station_code_resolver` live?
+### D1 — ✅ CLOSED, owner 2026-09-22: move it to a shared home (option a)
 
 It is currently private to `flows/onboard_model.py`.
 
@@ -162,7 +172,7 @@ about what a resolver may return, and duplicating a contract is how the two copi
 onboarding flow must be covered by its existing tests after the move, and the move must be a pure
 relocation in its own commit so a reviewer can see it changes nothing.
 
-### D2 — adapt every discovered model, or only when a GROUP assignment exists?
+### D2 — ✅ CLOSED, owner 2026-09-22: adapt every discovered model (and every supplied one)
 
 Adapting everything is what onboarding does and is one line. Adapting conditionally means the cycle
 must know which models are group-assigned before it prepares them — information it has, but later.
@@ -177,7 +187,7 @@ existing resolver and mutates the adapter in place**. Preserving that same insta
 keeps discovery's copied classification attributes — which is an argument for attaching rather than
 re-wrapping, and a reason a fix that constructs a fresh adapter would be wrong.
 
-### D3 — when a supplied adapter ALREADY has a resolver, whose wins?
+### D3 — ✅ CLOSED, owner 2026-09-22: the EXISTING resolver wins (option b)
 
 *(Raised by the second review pass, moderate. Not a detail: `adapt_if_fi`'s setter is unconditional,
 so "just call it" silently answers this question with "the cycle's".)*
@@ -208,8 +218,8 @@ scope excludes changing it.
 ## Exit gates
 
 - T1's red is the **resolver error**, evidenced, not a signature or lookup failure.
-- D1, D2 and **D3** are closed, or explicitly carried with the carrier named. 🔴 **D3 gates T2**:
-  the resolver-precedence rule determines what T2 writes and what its tests assert.
+- ✅ D1, D2 and D3 all closed (owner, 2026-09-22) — D3 as **existing-wins**, which is what T2's
+  conflicting-mapping test must assert.
 - The station path is shown unchanged by **comparison of real forecast rows from a REPLAY of the
   same cycle under frozen inputs** — not by successive live cycles (uncontrolled) and not by an
   assertion that restates the code.
