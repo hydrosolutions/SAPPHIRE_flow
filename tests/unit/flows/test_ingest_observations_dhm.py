@@ -445,10 +445,29 @@ level_reference = "unknown"
         clients_created: list[httpx.Client] = []
 
         def make_client(*args: object, **kwargs: object) -> httpx.Client:
-            if "base_url" in kwargs:
-                return original_client(*args, **kwargs)
-            clients_created.append(client)
-            return client
+            # 🔴 Identify the DHM construction POSITIVELY, and let everything else
+            # through. `_fetch_configured_dhm` builds its client with exactly these
+            # three keywords (`flows/ingest_observations.py`).
+            #
+            # The previous rule — "no `base_url` kwarg means it is ours" — also
+            # captured Prefect's own readiness probe: `SubprocessASGIServer.start()`
+            # calls `httpx.Client()` with NO arguments and then GETs `/api/health`.
+            # `respond` answers 200 to any URL, so Prefect concluded its ephemeral
+            # server was ready before the subprocess accepted connections, and the
+            # real orchestration client that follows then failed with
+            # `RuntimeError: Failed to reach API at http://127.0.0.1:<port>/api/`.
+            # The probe also closed this mock client and added a phantom entry to
+            # `requests`/`clients_created`.
+            #
+            # It only bit when this test was the FIRST in its process to bring the
+            # ephemeral server up — otherwise `running` is already True and the probe
+            # is skipped. Serially the file's earlier flow tests warm it, so the whole
+            # file passed while this test ALONE failed; under `-n auto` it is often
+            # first on its worker, which is how it reached CI.
+            if {"timeout", "verify", "follow_redirects"} <= kwargs.keys():
+                clients_created.append(client)
+                return client
+            return original_client(*args, **kwargs)
 
         monkeypatch.setattr(httpx, "Client", make_client)
         result = ingest_observations_flow(
