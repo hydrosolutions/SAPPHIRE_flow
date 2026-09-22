@@ -1052,3 +1052,39 @@ restricted to that cycle sidesteps the question entirely while it is answered pr
 station fails, leave the pilot unassigned and defer only its live activation."* Both stations fail
 on the same defect. The artifact import (T4) stands and is unaffected — it is an inert ACTIVE row
 until an assignment exists.
+
+
+## T3b live-input gate — RERUN 2026-09-22 after the aggregation fix: **PASSES**
+
+Rerun on the mini at **v0.1.949** (main `40bdc3d3`, carrying PR #288). Read-only:
+`assemble_group_operational_inputs` only, no prediction, no assignment.
+
+**The fix is live.** `cmal_small` now resolves `discharge → mean` (was `sum`); precipitation stays
+`sum`, temperature `mean`. Verified inside the running worker, not inferred from the repo.
+
+| check | 2009 Porte_du_Scex | 2091 Rheinfelden |
+|---|---|---|
+| `past_targets` grid | **30/30**, `2026-08-23 → 09-21`, no gaps | same |
+| `past_dynamic` grid | **30/30**, no gaps, 0 nulls, 0 non-finite | same |
+| **discharge magnitude** | **126.9 – 313.3 m³/s** (mean 213.8) | **351.2 – 578.0** (mean 448.0) |
+| `future_dynamic` | **5 steps**, `09-23 → 09-27`, 0 nulls, 0 non-finite | same |
+| coverage vs declaration | 5 ≥ `declared_min_future_steps=1`, `at_most` semantics ⟹ **OK** | same |
+
+⟹ **the ~142× inflation is gone.** Before: 18,021–44,524 and 50,605–94,430. The values are now
+physically plausible against the raw observations (2009: 75–302; 2091: 299–450 over a different
+window).
+
+⚠️ **A harness bug nearly produced a false failure, recorded because it would recur.** The first
+rerun reported `future_dynamic` **empty** — which reads exactly like "no NWP available". It was not:
+the script passed `cycle_time=now` (08:53Z) while the stored cycle is `2026-09-22 00:00Z`, and the
+readback selects on `cycle_time`. NWP was present throughout (57,179,220 rows, valid to 09-27, both
+stations). ⛔ **A live-input check MUST resolve the real cycle via `fetch_latest_cycle_time`, never
+wall clock.**
+
+### ⛔ Still NOT assigned — and the reason is no longer this plan's
+
+Every criterion T3b states is met. Activation is blocked by
+**[Plan 311](311-forecast-seam-continuity-at-non-midnight-cycles.md)**: the seam gap reproduced on
+this very run — **past ends `2026-09-21`, future begins `2026-09-23`, so `2026-09-22` is in
+neither array**. 311 declares `blocks: [262]` precisely so the pilot does not go live on 3 of 4
+cycles while its T1 is unanswered. **That is an owner decision, not a gate failure.**
