@@ -137,9 +137,12 @@ def _translate_declared_unit(name: str, unit: Unit, *, time_step: timedelta) -> 
     aquacast unit ONLY at a daily step, so a non-daily branch must raise rather than
     silently be wrong by up to 8x.
 
-    ⚠️ Prefer `_translate_declared_variable`, which translates the unit and the
-    aggregation TOGETHER. This function is kept for the target path, where
-    `TargetSpec` carries no aggregation to get out of step with.
+    ⚠️ This is the UNIT half of `_translate_declared_variable`, which is what
+    declared variables go through — it translates unit and aggregation together so
+    the two cannot drift. Targets do not come through here at all; they have their
+    own `_translate_target_unit`, and `TargetSpec` carries no aggregation to get
+    out of step with. *(Independent review 2026-09-22 corrected an earlier note
+    that named this function as "kept for the target path".)*
     """
     if name == _DISCHARGE and unit is Unit.MM_PER_DAY:
         return Unit.M3_PER_S

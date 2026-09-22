@@ -888,13 +888,13 @@ class TestVendoredConfigDigest:
         assert len(set(digests.values())) == len(digests)
 
 
-class TestAggregationTravelsWithTheUnit:
+class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:
     """🔴 The defect the Plan 262 T3b live-input gate caught on 2026-09-21.
 
     `_canonical_requirement` rewrites names and units via
     ``model_copy(update={"unit": ...})`` — so `aggregation` is carried through
     **unchanged**. For `discharge` that is wrong, because the unit translation
-    changes the KIND of quantity:
+    is where a sub-daily resample first consults it:
 
     * aquacast declares `discharge` in **mm/day** with ``SUM`` — inert inside a
       daily model, where the "sum" of one value per day is that value;
@@ -923,8 +923,9 @@ class TestAggregationTravelsWithTheUnit:
         [dyn] = spatial_spec.data.values()
         return dyn.past_known["aquacast"]
 
-    def test_discharge_becomes_mean_when_its_unit_becomes_a_rate(self) -> None:
-        """The fault itself. A summed rate is not a quantity."""
+    def test_discharge_is_corrected_to_mean_at_the_translation(self) -> None:
+        """The fault itself: summing instantaneous rate samples gives
+        sample-count x the mean, under either unit."""
         discharge = self._past_known()["discharge"]
 
         assert discharge.unit is fi.Unit.M3_PER_S, "precondition: unit was translated"
@@ -934,10 +935,17 @@ class TestAggregationTravelsWithTheUnit:
             "The aggregation must be corrected where the unit is translated"
         )
 
-    def test_precipitation_keeps_sum_because_it_stays_a_depth(self) -> None:
-        """The control: a translation that does NOT change the kind of quantity
-        must not change the aggregation. Without this, 'just map SUM to MEAN'
-        would pass the test above and silently break precipitation."""
+    def test_precipitation_keeps_sum_because_its_data_accumulates(self) -> None:
+        """The control. Precipitation observations are per-interval
+        accumulations, so summing them into a daily total is right and must
+        stay. Without this, 'just map SUM to MEAN' would pass the test above
+        and silently break precipitation.
+
+        ⚠️ The distinction is about the DATA, not the unit — discharge is a
+        rate in BOTH mm/day and m³/s. *(Independent review 2026-09-22: the
+        earlier name and docstring said precipitation "stays a depth" while
+        discharge "becomes a rate", which is the physics error this class
+        already corrects elsewhere.)*"""
         precipitation = self._past_known()["precipitation"]
 
         assert precipitation.unit is fi.Unit.MM
