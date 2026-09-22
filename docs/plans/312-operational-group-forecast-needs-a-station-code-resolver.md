@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-22
 plan: 312
 title: A GROUP-scoped FI model can be onboarded but not served — the forecast cycle never supplies a station_code_resolver
-scope: Give the operational forecast cycle the `station_code_resolver` that the FI adapter requires for GROUP conversion, so a GROUP-scoped ForecastInterface model can actually produce forecasts. Explicitly NOT changing the FI contract, NOT changing the STATION forecast path, NOT the onboarding flow's behaviour (it already works), NOT training or hindcast, NOT the group-assignment or artifact-import machinery, NOT Plan 311's seam question.
+scope: Give the operational forecast cycle the `station_code_resolver` that the FI adapter requires for GROUP conversion, so a GROUP-scoped ForecastInterface model can actually produce forecasts. Also in scope, narrowly: a **read-only accessor** on SAP3's `ForecastInterfaceAdapter` so the cycle can see whether a resolver is already attached. Explicitly NOT changing the FI contract, NOT any other part of that adapter (the setter and `adapt_if_fi` semantics are untouched), NOT changing the STATION forecast path, NOT the onboarding flow's behaviour (it already works), NOT training or hindcast, NOT the group-assignment or artifact-import machinery, NOT Plan 311's seam question.
 depends_on: []
 blocks: [262]
 open_decisions: []
@@ -14,7 +14,7 @@ source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at
 
 ## Status
 
-**DRAFT — all three decisions CLOSED by the owner 2026-09-22; two review passes folded.**
+**DRAFT — all three decisions CLOSED by the owner 2026-09-22; FOUR review passes folded.**
 ⛔ **Not READY**: this closed state has not itself been reviewed, and on this week's evidence every
 fold has introduced or left something.
 
@@ -54,7 +54,7 @@ across `meteoswiss_tabsd`/`rprelimd`. The cycle then completed normally for ever
 | the FI adapter **requires** a resolver for GROUP conversion | `adapters/forecast_interface.py:1595-1600` — `_require_resolver` raises `ConfigurationError` when `self._station_code_resolver is None` |
 | the injection point exists and is well-behaved | `adapt_if_fi(obj, station_code_resolver=…)` (`:192-210`) — its own comment says `discover_models()` wraps FI models **with no resolver**, so a later call must **attach** to the already-wrapped adapter rather than drop it |
 | a builder already exists | `flows/onboard_model.py:87-104` `_build_station_code_resolver(station_store)` — fetches the station, rejects a missing station and an empty code with explicit errors |
-| the **only** production caller that supplies one | `flows/onboard_model.py:854-857` — the **onboarding** flow |
+| the only production caller that supplies one, **on the paths reviewed** | `flows/onboard_model.py:854-857` — the **onboarding** flow. ⚠️ No pass performed a repository-wide caller audit, so this is not a global claim |
 | the forecast cycle | `flows/run_forecast_cycle.py:2357` calls `discover_models()` and **never adapts** |
 
 ⟹ **a GROUP-scoped FI model can be onboarded but not served.**
@@ -123,7 +123,10 @@ equally silent.
 **Outcome.** The cycle adapts discovered FI models with a resolver built from its own
 `station_store`, and the group path produces forecasts.
 
-**In.** `flows/run_forecast_cycle.py`, plus wherever `_build_station_code_resolver` ends up (D1).
+**In.** `flows/run_forecast_cycle.py`; an **import** of the relocated builder from its shared home
+(T0 moved it — this task does not move anything); and `adapters/forecast_interface.py` for a
+**read-only accessor only**, so the guard can observe resolver presence without touching a private
+field (D3). ⛔ The setter and `adapt_if_fi`'s semantics stay exactly as they are.
 
 🔴 **Attach AFTER the `if models is None:` branch, not inside it.** `run_forecast_cycle_flow`
 accepts a caller-supplied `models` parameter (`:2138`), and discovery runs **only when it is
@@ -158,9 +161,17 @@ when absent, leaving a configured adapter's mapping and identity untouched after
   seeded RNG — and compare forecast **values, valid times, representations and metadata**, excluding
   generated row ids. Comparing real rows remains the right bar; the method had to change, not the
   bar;
-- 🔴 **an already-configured adapter whose mapping DIFFERS from `station_store`**: assert that
-  **its own mapping is used**, and that it still carries **its own resolver, on the same object**,
-  after the cycle returns. An already-wrapped adapter with *no* resolver does not exercise this — it is the case
+🔴 **Three acceptance cases, named separately.** *(Fourth review pass, moderate: "including an
+already-wrapped GROUP adapter" was satisfiable by the configured case below, so a wrong
+skip-existing-adapters guard could still have passed.)* Note discovery **already wraps** before
+returning (`services/model_registry.py:108`), so a fixture handing back a raw FI model does not
+represent the real path:
+
+  1. **discovered**, already-wrapped GROUP adapter with **no** resolver → two stations' expected rows
+     persist;
+  2. **caller-supplied**, already-wrapped GROUP adapter with **no** resolver → the same;
+  3. **caller-supplied** adapter with a **conflicting** resolver → its mapping, its resolver identity
+     and the adapter identity all survive the call. An already-wrapped adapter with *no* resolver does not exercise this — it is the case
   the first draft would have tested and learned nothing from;
 - the resolver's own failure modes still raise clearly: unknown station id, and a station whose
   `code` is empty (`onboard_model.py:93-102` already distinguishes these).
@@ -214,7 +225,9 @@ so "just call it" silently answers this question with "the cycle's".)*
 | option | behaviour | cost |
 |---|---|---|
 | **(a)** cycle's resolver always wins | today's `adapt_if_fi` semantics, one line | silently overwrites a deliberate caller configuration, and the change **outlives the call** on the caller's object |
-| **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller who wanted the cycle's resolver must clear theirs |
+| **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller wanting the cycle's resolver supplies a freshly constructed adapter without one. "
+    "⛔ NOT "clear theirs": the setter takes a callable, not `None`, and a read-only getter adds no "
+    "clearing API (fourth review pass, minor) |
 | **(c)** raise on conflict | no silent anything | turns a working injected-model call into a failure |
 
 ⚖️ **CLOSED as (b), owner 2026-09-22.** A supplied adapter carrying its own resolver was configured
@@ -242,8 +255,9 @@ wraps FI models *with no resolver* (`adapt_if_fi`'s own comment).
 
 ## Watch items
 
-- 🪤 **The FI adapter is shared with training and hindcast.** This plan changes only the operational
-  cycle; do not let the fix migrate into `services/training_data.py` or `hindcast.py` without their
+- 🪤 **The FI adapter is shared with training and hindcast.** This plan changes the operational
+  cycle **and adds one read-only accessor to that shared adapter** — a getter, which no existing
+  caller can be affected by, but it is a change to shared code and should be reviewed as one; do not let the fix migrate into `services/training_data.py` or `hindcast.py` without their
   own reasoning — they have their own resolver story, and Plan 262's onboarding already worked.
 - 🪤 **`discover_models()` wraps FI models with NO resolver** (`adapt_if_fi`'s own comment). A fix
   that constructs a *new* adapter instead of attaching to the existing one would silently drop
@@ -254,8 +268,13 @@ wraps FI models *with no resolver* (`adapt_if_fi`'s own comment).
 ## Exit gates
 
 - T1's red is the **resolver error**, evidenced, not a signature or lookup failure.
-- ✅ D1, D2 and D3 all closed (owner, 2026-09-22) — D3 as **existing-wins**, which is what T2's
-  conflicting-mapping test must assert.
+- ✅ D1, D2 and D3 all closed (owner, 2026-09-22) — D3 as **existing-wins**.
+- 🔴 **All THREE acceptance cases in T2 are exercised**, named separately: discovered-wrapped-without-
+  resolver, supplied-wrapped-without-resolver, and supplied-with-a-conflicting-resolver. ⛔ The first
+  two are not interchangeable with the third — a guard that wrongly skips *any* already-wrapped
+  adapter passes the third alone.
+- The read-only accessor is the **only** change to `adapters/forecast_interface.py`; the setter and
+  `adapt_if_fi` are untouched.
 - The station path is shown unchanged by **comparison of real forecast rows from a REPLAY of the
   same cycle under frozen inputs** — not by successive live cycles (uncontrolled) and not by an
   assertion that restates the code.
@@ -337,3 +356,19 @@ caller"* holds for the inspected paths only.
 table said existing-wins while the operative surfaces still described an open choice — and the one
 that mattered, the accessor, only surfaced because someone asked whether the closure could actually
 be implemented.
+
+
+**2026-09-22 — fourth review pass: NEEDS CHANGES (2 moderate, 2 minor). Folded.**
+
+| finding | what it was |
+|---|---|
+| **moderate** | 🔴 **the accessor never reached the implementation scope.** D3 authorised the getter, but the scope line and T2's In still named only the cycle and the builder's home — and **the previous changelog claimed the scope line had been updated when it had not.** *(Cause: that one edit was the single string replacement written without an assert, so it silently matched nothing. Fourth silent no-op this week; every replacement in this fold asserts, and the fold re-reads the file to confirm each landed.)* |
+| **moderate** | "including an already-wrapped GROUP adapter" was satisfiable by the **configured** adapter case, so a wrong skip-existing-adapters guard could still pass. Three cases are now named separately — and discovery **already wraps** before returning (`model_registry.py:108`), so a fixture returning a raw FI model does not represent the real path |
+| minor | D3's cost column said a caller "must clear theirs" — an operation that **does not exist**: the setter takes a callable, not `None`, and a getter adds no clearing API |
+| minor | the status line said "two review passes" with three recorded, and the Why table stated "the only production caller" unqualified while the changelog limited it to inspected paths |
+
+**Confirmed by this pass:** T0 is correct and `P0 → P1 → P2 → P3` matches D1's closure; no operative
+task still assigns relocation to T2; and adding a getter genuinely does **not** change the FI
+contract — it exposes SAP3 adapter configuration without touching FI model methods, input/output
+semantics or artifacts — though it *does* narrowly expand that adapter's public surface, which the
+scope line and watch item now say.
