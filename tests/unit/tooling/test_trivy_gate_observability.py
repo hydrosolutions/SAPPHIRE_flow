@@ -82,6 +82,7 @@ def _eval_gha_if(
     job_status: str,
     outcomes: dict[str, str],
     outputs: dict[str, dict[str, str]] | None = None,
+    context: dict[str, str] | None = None,
 ) -> bool:
     """Evaluate the small subset of GitHub Actions `if:` syntax this workflow uses.
 
@@ -116,6 +117,8 @@ def _eval_gha_if(
         r"step_outputs['\1']['\2']",
         body,
     )
+    for dotted, value in (context or {}).items():
+        body = body.replace(dotted, repr(value))
     body = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"steps['\1']", body)
     body = body.replace("!=", "__NE__").replace("!", " not ").replace("__NE__", "!=")
     body = body.replace("&&", " and ").replace("||", " or ")
@@ -884,9 +887,12 @@ class TestEveryNetworkStepIsBounded:
         `trivy convert` calls are unbounded too. A hang in any of those still
         consumes the whole job budget.
 
-        🔑 **The actual guarantee needs elapsed-time admission before each
-        retry, which is [Plan 310].** This test only catches the arithmetic
-        absurdity that was really there.
+        ⚠️ **Plan 310 does not close this gap either** — it adds admission before
+        the SBOM RETRY WAITS specifically and its scope excludes Trivy, so it
+        addresses retry-budget exhaustion, not a hang in an unbounded step.
+        *(Independent review 2026-09-22: the workflow comment was corrected and
+        this one was left overstating it.)* This test only catches the
+        arithmetic absurdity that was really there.
 
         Mutually exclusive steps are excluded (only one `Install (...)` variant
         runs), and sleeps are counted only inside steps that are NOT themselves
@@ -900,15 +906,43 @@ class TestEveryNetworkStepIsBounded:
             if job_timeout is None:
                 continue
             steps = job.get("steps") or []
-            # Only one of the mutually exclusive `Install (...)` variants can run.
-            install_variants = [
+            # Only one of the two `Install (...)` variants can run — but that is
+            # PROVED here, not assumed from their names. ⚠️ Pattern-matching the
+            # guards is not enough either: give both `!= 'true'` and both run
+            # while this test still subtracts one, masking a real overrun
+            # (independent review 2026-09-22, medium). So the guards are
+            # EVALUATED, with every other conjunct forced true — the adversarial
+            # case — under both values of the variable they branch on.
+            variants = [
                 s for s in steps if str(s.get("name", "")).startswith("Install (")
             ]
             skip = set()
-            if len(install_variants) > 1:
-                cheapest = min(
-                    install_variants, key=lambda s: s.get("timeout-minutes") or 0
+            if len(variants) > 1:
+                assert len(variants) == 2, (
+                    f"expected 2 install variants, got {len(variants)}"
                 )
+                for token_present in ("true", "false"):
+                    ctx = {
+                        "env.AQUACAST_TOKEN_PRESENT": token_present,
+                        "env.UV_LOCK_CHANGED": "false",
+                        "github.event_name": "pull_request",
+                        "github.actor": "dependabot[bot]",
+                    }
+                    runnable = [
+                        _eval_gha_if(
+                            str(s.get("if", "success()")),
+                            job_status="success",
+                            outcomes={},
+                            context=ctx,
+                        )
+                        for s in variants
+                    ]
+                    assert sum(runnable) <= 1, (
+                        "the install variants are NOT mutually exclusive with "
+                        f"AQUACAST_TOKEN_PRESENT={token_present!r} — both would "
+                        "run, so subtracting one understates the budget"
+                    )
+                cheapest = min(variants, key=lambda s: s.get("timeout-minutes") or 0)
                 skip.add(id(cheapest))
 
             bounded = sum(
