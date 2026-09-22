@@ -18,13 +18,33 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sapphire_flow.protocols.forecast_model import ForecastModel
-    from sapphire_flow.protocols.stores import ModelStore
+    from sapphire_flow.protocols.stores import ModelStore, StationStore
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 log = structlog.get_logger()
 
 _ENTRY_POINT_GROUP = "sapphire_flow.models"
+
+
+def build_station_code_resolver(
+    station_store: StationStore,
+) -> Callable[[StationId], str]:
+    def resolve_station_code(station_id: StationId) -> str:
+        station = station_store.fetch_station(station_id)  # type: ignore[union-attr]
+        if station is None:
+            raise ConfigurationError(
+                f"station_store could not resolve station_id {station_id!r}"
+            )
+
+        station_code = station.code.strip()
+        if not station_code:
+            raise ConfigurationError(
+                f"station_store resolved station_id {station_id!r} without a code"
+            )
+        return station_code
+
+    return resolve_station_code
 
 
 def _derive_display_name(model_id: str) -> str:
