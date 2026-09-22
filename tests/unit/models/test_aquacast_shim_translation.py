@@ -893,9 +893,12 @@ class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:
 
     `_canonical_requirement` **used to** rewrite names and units via
     ``model_copy(update={"unit": ...})``, carrying `aggregation` through
-    unchanged. For `discharge` that was wrong — and this translation is the only
-    place it can be put right, because it is the last point SAP3 controls before
-    the declaration is handed to a sub-daily resample that consumes it:
+    unchanged. For `discharge` that was wrong, and this translation is where the
+    declaration is corrected — before the downstream resample consumes it.
+    *(Independent review 2026-09-22: an earlier wording called this "the only
+    place" and "the last point SAP3 controls". Neither is true — SAP3 also owns
+    `resolved_aggregation_methods` and `resample_to_time_step`. The shim is the
+    chosen boundary, not the only possible one.)*:
 
     * aquacast declares `discharge` in **mm/day** with ``SUM`` — inert inside a
       daily model, where the "sum" of one value per day is that value;
