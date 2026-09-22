@@ -14,7 +14,7 @@ source: 2026-09-22 — the Plan 262 T5 first-forecast attempt on the mac-mini at
 
 ## Status
 
-**DRAFT — all three decisions CLOSED by the owner 2026-09-22; FOUR review passes folded.**
+**DRAFT — all three decisions CLOSED by the owner 2026-09-22; FIVE review passes folded.**
 ⛔ **Not READY**: this closed state has not itself been reviewed, and on this week's evidence every
 fold has introduced or left something.
 
@@ -227,9 +227,7 @@ so "just call it" silently answers this question with "the cycle's".)*
 | option | behaviour | cost |
 |---|---|---|
 | **(a)** cycle's resolver always wins | today's `adapt_if_fi` semantics, one line | silently overwrites a deliberate caller configuration, and the change **outlives the call** on the caller's object |
-| **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller wanting the cycle's resolver supplies a freshly constructed adapter without one. "
-    "⛔ NOT "clear theirs": the setter takes a callable, not `None`, and a read-only getter adds no "
-    "clearing API (fourth review pass, minor) |
+| **(b)** attach ONLY when absent | the cycle fills a gap and never overrides | one conditional at the cycle's call site; a caller wanting the cycle's resolver supplies a freshly constructed adapter without one — ⛔ NOT by "clearing theirs", an operation that does not exist (the setter takes a callable, not `None`, and a read-only getter adds no clearing API) |
 | **(c)** raise on conflict | no silent anything | turns a working injected-model call into a failure |
 
 ⚖️ **CLOSED as (b), owner 2026-09-22.** A supplied adapter carrying its own resolver was configured
