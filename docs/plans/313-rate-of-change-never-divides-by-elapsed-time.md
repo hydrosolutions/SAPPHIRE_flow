@@ -261,24 +261,44 @@ widening they need (`_make_obs` currently takes whole `hours` and hard-codes
 skip set, `merge_thresholds`, any threshold value, any config file. ⛔ Any new threshold key
 (under D1a).
 
-**Pre-change — the discriminating RED evidence.** Four cases, each of which must fail against
-`main` for the stated reason before the change, and the first two of which no existing test
-can accidentally satisfy:
+**Pre-change — the discriminating evidence.** ⚠️ **Three cases must go RED; the fourth is a
+GREEN control and must not.** *(Corrected 2026-09-22 after independent review — the earlier
+wording required all four to fail, which case 3 cannot do by construction.)*
 
-1. **Dense cadence must now flag.** Rule `time_step = 1 h`, `max_rate = 5.0`; two readings
-   **15 minutes** apart differing by `3.0`. Today: `3.0 ≤ 5.0` ⇒ no flag. Required: allowance
-   `5.0 × 0.25 = 1.25` ⇒ `QC_SUSPECT`.
-2. **A gap must now absorb a proportionate change.** Same rule; two readings **6 hours** apart
-   differing by `20.0`. Today: `20.0 > 5.0` ⇒ `QC_SUSPECT`. Required: allowance `30.0` ⇒ no
-   flag.
-3. **The backwards-compatibility control.** At exactly `Δt == time_step`, a pair just under
-   and a pair just over `max_rate` keep today's verdicts. ⚠️ This case must be written so it
-   would go red if the scaling were applied to the wrong quantity — a pair *at* nominal
-   spacing is the one place the two implementations agree, so it proves compatibility and
-   nothing else; cases 1 and 2 are what prove the fix.
-4. **Zero elapsed time (D2).** Two rows at one timestamp with different `source` (§ 7),
-   differing by more than `max_rate`. Today: `QC_SUSPECT`. Required under D2a: no flag, and
-   **no `ZeroDivisionError`**.
+🔑 **Every case must carry NOMINAL CONTEXT ROWS, and this is not optional padding.** The
+existing tests drive the rule through `Stage1QualityChecker.check`, which INFERS the cadence
+from the rows it is given — `_infer_time_step` takes the **median** of consecutive differences
+(`services/qc.py:40-47`) — and `rules_for` then selects on **exact equality**
+(`types/domain.py:163-166`). A two-row fixture spaced 15 minutes apart therefore infers a
+900 s cadence, matches no hourly rule, and **runs nothing at all**. Measured consequence of the
+naive fixture: cases 2 and 4 would pass without the fix, and case 1 would stay red *after* it —
+a test that proves the opposite of what it claims.
+
+⇒ **Each case supplies at least five consecutive differences at the rule's declared step, with
+the exceptional pair as a minority, so the median stays at the declared step and the rule is
+actually selected.** For an hourly rule: rows at 0 h, 1 h, 2 h, then the exceptional pair, then
+two more hourly rows — differences `[3600, 3600, X, 3600, 3600]`, median `3600`. ⛔ No change to
+selection, inference or `check`'s signature is needed or permitted to make this work.
+
+1. **Dense cadence must now flag — RED.** Hourly rule, `max_rate = 5.0`; the exceptional pair
+   **15 minutes** apart differing by `3.0`, inside hourly context. Today: `3.0 ≤ 5.0` ⇒ no flag.
+   Required: allowance `5.0 × 0.25 = 1.25` ⇒ `QC_SUSPECT`.
+2. **A gap must now absorb a proportionate change — RED.** ⚠️ **This case uses the deployed
+   600 s discharge rule, NOT an hourly one**, and that is deliberate: every other case here is
+   hourly, so an implementation that divides by a hard-coded one hour instead of by
+   `rule.time_step` would satisfy all of them while mis-scaling the 600 s and daily rules that
+   most of the live fleet actually runs. *(Added 2026-09-22 — independent review found the
+   whole set blind to that implementation.)* Rule `time_step = 600 s`, `max_rate = 50.0`; the
+   exceptional pair **60 minutes** apart differing by `200.0`, inside 600 s context. Today:
+   `200.0 > 50.0` ⇒ `QC_SUSPECT`. Required: allowance `50.0 × 6 = 300.0` ⇒ no flag.
+3. **The backwards-compatibility control — GREEN, before and after.** At exactly
+   `Δt == time_step`, a pair just under and a pair just over `max_rate` keep today's verdicts.
+   ⚠️ **This case passes against `main` and must keep passing; it is not RED evidence and
+   proves nothing about the fix** — nominal spacing is the one place the two implementations
+   agree by construction. Cases 1, 2 and 4 are what prove the fix.
+4. **Zero elapsed time (D2) — RED.** Two rows at one timestamp with different `source` (§ 7),
+   differing by more than `max_rate`, inside nominal context. Today: `QC_SUSPECT`. Required
+   under D2a: no flag, and **no `ZeroDivisionError`**.
 
 **Verification.**
 `uv run pytest tests/unit/services/test_qc.py tests/unit/flows/test_ingest_observations.py
@@ -356,6 +376,28 @@ these documents were wrong is § 5 of this plan, measured.
   relieve 272 of its rollout controls.
 - **269 is `blocked_by: [272]`** and proposes a rule→key validator (§ 406). Under D1a no key
   is added, so that validator is unaffected.
+
+## Review history
+
+**Round 1 — independent Codex pass, 2026-09-22. PROBLEMS FOUND (2 MEDIUM, 1 LOW), all three
+in T2's pre-change evidence, all three folded.** The arithmetic and the no-migration claim
+were NOT challenged, and no new mechanism was proposed — the fixes were "supply context rows"
+and "change one case to a non-hourly rule", explicitly *"rather than adding a harness"*.
+
+1. **The fixtures would not have exercised the rule at all** (MEDIUM). Two-row fixtures drive
+   `check`, which infers the cadence by MEDIAN and selects rules by EXACT equality, so a
+   15-minute pair matches no hourly rule. Cases 2 and 4 would have passed without the fix and
+   case 1 would have stayed red after it. ⇒ every case now carries nominal context rows, and
+   the mechanism is written down so the implementer cannot drop them as padding.
+2. **Nothing discriminated against a hard-coded hourly denominator** (MEDIUM). Every positive
+   case used `time_step = 1 h`, so an implementation dividing by a literal hour would pass the
+   whole set while mis-scaling the deployed 600 s and daily rules. ⇒ case 2 now uses the
+   deployed 600 s discharge rule.
+3. **The blanket "all four must fail first" contradicted case 3** (LOW), which is a
+   compatibility control and passes by construction. ⇒ three RED, one GREEN, each labelled.
+
+⚠️ Still owed before READY: the Claude half of the ordinary pair, plus the extra independent
+review this plan's high-risk classification requires.
 
 ```json
 {
