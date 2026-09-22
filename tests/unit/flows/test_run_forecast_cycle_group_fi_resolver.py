@@ -19,7 +19,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import polars as pl
 import pytest
@@ -45,10 +45,14 @@ from tests.fakes.fake_stores import (
     FakeWeatherForecastStore,
 )
 from tests.unit.flows.test_run_forecast_cycle import (
+    _MODEL_ID as _STATION_MODEL_ID,
+)
+from tests.unit.flows.test_run_forecast_cycle import (
     _build_station_and_stores,
     _clock,
     _empty_qc_rules,
     _make_alerting_config,
+    _SmallFakeModel,
     _store_group_run,
 )
 
@@ -65,6 +69,8 @@ _CODE_A = "gauge-a"
 _CODE_B = "gauge-b"
 # Distinguishable per station: station value = base + step index.
 _BASE_BY_CODE = {_CODE_A: 100.0, _CODE_B: 200.0}
+# Fixed, so the two frozen replays below compare the SAME station.
+_REPLAY_STATION_ID = StationId(UUID("00000000-0000-0000-0000-0000000003c8"))
 
 
 def _group_fi_requirement() -> fi_boundary.InputRequirement:
@@ -340,6 +346,61 @@ def _assert_two_stations_forecast(
     ]
 
 
+def _comparable_row(row: OperationalForecast) -> tuple[object, ...]:
+    """Everything about a persisted forecast except generated ids."""
+    ensemble = row.ensemble
+    return (
+        str(row.station_id),
+        str(row.model_id),
+        row.issued_at,
+        row.nwp_cycle_reference_time,
+        row.nwp_cycle_source,
+        row.representation,
+        row.status,
+        row.version,
+        row.qc_status,
+        row.qc_flags,
+        row.input_quality,
+        row.input_quality_flags,
+        row.combination_strategy,
+        ensemble.parameter,
+        ensemble.units,
+        ensemble.time_step,
+        ensemble.forecast_horizon_steps,
+        ensemble.representation,
+        ensemble.values.sort(ensemble.values.columns).to_dicts(),
+    )
+
+
+def _replay_station_cycle(
+    monkeypatch: pytest.MonkeyPatch, *, attach: bool
+) -> list[tuple[object, ...]]:
+    """One run of the STATION path under frozen inputs, with the Plan 312
+    attachment either live or disabled."""
+    with monkeypatch.context() as patch:
+        if not attach:
+            patch.setattr(
+                "sapphire_flow.flows.run_forecast_cycle."
+                "_with_group_station_code_resolvers",
+                lambda models, station_store: models,
+            )
+        stores = _Stores()
+        _build_station_and_stores(
+            _REPLAY_STATION_ID,
+            _STATION_MODEL_ID,
+            stores.station_store,
+            stores.obs_store,
+            stores.nwp_store,
+            stores.artifact_store,
+            stores.forcing_store,
+        )
+        _run_cycle(stores, models={_STATION_MODEL_ID: _SmallFakeModel()})
+    return sorted(
+        _comparable_row(row)
+        for row in stores.forecast_store._forecasts.values()  # noqa: SLF001
+    )
+
+
 class TestGroupFiResolverInTheForecastCycle:
     def test_discovered_wrapped_group_adapter_without_resolver_is_served(
         self, monkeypatch: pytest.MonkeyPatch
@@ -349,6 +410,7 @@ class TestGroupFiResolverInTheForecastCycle:
         adapters would skip exactly this case."""
         stores, sid_a, sid_b = _seed_group_of_two()
         adapter = _wrapped_group_adapter()
+        assert adapter.station_code_resolver is None
 
         events = _run_cycle(
             stores,
@@ -366,10 +428,68 @@ class TestGroupFiResolverInTheForecastCycle:
         discovery entirely and reach the same GROUP dispatch."""
         stores, sid_a, sid_b = _seed_group_of_two()
         adapter = _wrapped_group_adapter()
+        assert adapter.station_code_resolver is None
 
         events = _run_cycle(stores, models={_GROUP_MODEL_ID: adapter})
 
         _assert_two_stations_forecast(stores, sid_a, sid_b, events)
+
+    def test_caller_supplied_conflicting_resolver_survives_the_cycle(self) -> None:
+        """Acceptance case (c), D3: the EXISTING resolver wins. Its mapping, its
+        identity and the adapter's identity all survive the call."""
+        stores, sid_a, sid_b = _seed_group_of_two()
+        # A deliberate, CONFLICTING mapping: swaps the two stations' codes.
+        swapped = {sid_a: _CODE_B, sid_b: _CODE_A}
+
+        def caller_resolver(station_id: StationId) -> str:
+            return swapped[station_id]
+
+        adapter = _wrapped_group_adapter(station_code_resolver=caller_resolver)
+        wrapped_fi_model = adapter._model  # noqa: SLF001
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: adapter})
+
+        # The adapter INSTANCE survives — not re-wrapped into a fresh one,
+        # which would drop discovery's copied classification attributes.
+        assert adapter._model is wrapped_fi_model  # noqa: SLF001
+        assert adapter.model_tier is ModelTier.SKILL  # type: ignore[attr-defined]
+        assert adapter.station_code_resolver is caller_resolver
+        assert adapter.station_code_resolver(sid_a) == _CODE_B
+        assert adapter.station_code_resolver(sid_b) == _CODE_A
+
+        failures = _predict_batch_failures(events)
+        rows = _group_rows(stores)
+        assert failures == [], f"predict_batch_failed: {failures}"
+        # The caller's mapping decided the values: sid_a was served as gauge-b.
+        values_by_station = {
+            row.station_id: sorted(
+                row.ensemble.values.sort("valid_time")["value"].to_list()
+            )
+            for row in rows
+        }
+        assert values_by_station[sid_a] == [
+            _BASE_BY_CODE[_CODE_B] + float(s) for s in range(_HORIZON)
+        ]
+        assert values_by_station[sid_b] == [
+            _BASE_BY_CODE[_CODE_A] + float(s) for s in range(_HORIZON)
+        ]
+
+    def test_station_path_is_unchanged_under_a_frozen_replay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The STATION path must not change behaviour.
+
+        A REPLAY, not two successive live cycles: the same cycle runs twice
+        against freshly built, identical stores with the same injected clock
+        and a fresh `Random(42)`, once with the Plan 312 attachment disabled
+        and once with it live. Values, valid times, representation and
+        metadata must match; only generated ids (the forecast row id and the
+        per-store artifact id) are excluded.
+        """
+        baseline = _replay_station_cycle(monkeypatch, attach=False)
+        replay = _replay_station_cycle(monkeypatch, attach=True)
+
+        assert baseline == replay
+        assert baseline  # the replay compared real rows, not an empty set
 
     def test_resolver_rejects_unknown_station_and_empty_code(self) -> None:
         """The relocated builder's own failure modes still raise clearly."""
