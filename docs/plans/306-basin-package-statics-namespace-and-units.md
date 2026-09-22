@@ -313,6 +313,47 @@ the delivered Caravan values carry a scale factor — and the answer, written he
 **Verification.** The disposition is recorded with its source. A defect gets a named follow-on; a
 scale is carried into T3's declaration.
 
+#### The question, drafted 2026-09-22 — ⛔ NOT yet sent
+
+⚠️ **Widened beyond the lake percentages while drafting it.** The original scope was
+`lka_pc_sse` alone. Reading the delivered `feature_catalog.json` to write the question found
+that the catalog's own `unit` field is contradicted or absent for **four** features, not the
+one D2 recorded — and they are all the same question to the same party, so asking them
+separately would waste a round trip.
+
+🔑 **Only claims measured against the REAL delivery are stated as fact below.** The repo's
+package fixture (`tests/fixtures/basin_static/nepal-dhm-basins/`) is a **single synthetic row**
+(`gauge_id = nepal_123`), so its values are NOT evidence about the delivery; where the real
+package was not measured, the question says so rather than quoting the fixture.
+
+> **1. `lka_pc_sse` — lake extent above 100%.** Eight of our 148 Swiss (BAFU) basins carry a
+> `lka_pc_sse` above 100: **362.0** (2308 Goldach-Bleiche), **350.0** (2312 Salmsach-Hungerbühl),
+> then 157.0, 140.9, 109.0, 109.0, 108.0, 105.0. The six Nepal basins are all well under
+> (0.19 – 2.38). What is HydroATLAS's definition of `lka_pc_sse`, and do the delivered Caravan
+> values carry a scale factor we are not applying? If it is genuinely a percentage, the eight
+> Swiss values are a data defect and we need to know whose.
+>
+> **2. `slp_dg_sav` — declared `degrees`, delivers values that cannot be degrees.** The
+> catalog declares `unit: "degrees"`. Measured, the delivery carries **162.3 – 276.1** across
+> the six Nepal basins, and our Swiss basins carry **14 – 325**. A mean terrain slope cannot
+> exceed 90°. Is this HydroATLAS's degrees × 10 convention?
+>
+> **3. `tmp_dc_syr` — declared `deg C`, and we could not check it.** The catalog declares
+> `unit: "deg C"`. HydroATLAS's `dc` suffix normally means °C × 10. We have **not** measured
+> this feature on the real delivery, so we are asking rather than asserting: are the delivered
+> values °C, or °C × 10?
+>
+> **4. `ari_ix_sav` and `cmi_ix_syr` — no unit declared at all.** Both carry `unit: null` in the
+> catalog. What are their encodings?
+>
+> **5. The field itself.** Can `unit` be corrected and populated for all 92 features in a future
+> extractor release? Until it is trustworthy we have to keep our own per-feature table, which
+> can only ever be a second copy of a fact you already hold.
+
+**Status: drafted, NOT sent — the owner sends it.** ⛔ Until answers land, T3 may not record a
+*verified* delivered encoding for features 2–4 — recording the catalog's own value would make
+the comparison vacuous, since both sides would then derive from the same untrusted source.
+
 ## Owner decisions
 
 ### D1 — ✅ CLOSED, owner 2026-09-21: translate on the way in, reusing what the repo ships (option 4)
@@ -601,6 +642,18 @@ this plan describes in full.
 ```
 
 ## Changelog
+
+**2026-09-22 — T4's question drafted, and widened.** Writing it against the delivered
+`feature_catalog.json` found the catalog's `unit` field contradicted or absent for FOUR features,
+not the one D2 recorded: `slp_dg_sav` declares `degrees` while the real delivery carries
+162.3 – 276.1 (a mean slope cannot exceed 90°), `tmp_dc_syr` declares `deg C` against
+HydroATLAS's usual °C × 10 convention (**unmeasured on the real delivery — asked, not asserted**),
+and `ari_ix_sav` and `cmi_ix_syr` declare nothing at all. All four go to the same party in one
+question. ⛔ Not sent — the owner sends it.
+
+🪤 **The repo's package fixture is a single synthetic row** (`gauge_id = nepal_123`), so it is
+not evidence about the delivery. A draft of this question quoted a fixture temperature as if it
+were delivered data; the number was removed and the claim demoted to a question.
 
 **2026-09-21 — consolidating rewrite.** Six review rounds had been folded in place, leaving each
 correction sitting beside the wording it replaced. Rewritten per the house rule: superseded text is
