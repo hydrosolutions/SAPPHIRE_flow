@@ -244,8 +244,16 @@ class TestShippedDischargeCeiling:
     had no such binding and that a fourth surface still carried the old value.
     """
 
-    def test_config_toml_ships_the_loose_ceiling_at_both_cadences(self) -> None:
-        rules = load_qc_rules(_REPO_ROOT / "config.toml")
+    @pytest.mark.parametrize(
+        "relative_path",
+        ("config.toml", "docs/spec/config-reference.toml"),
+    )
+    def test_both_toml_surfaces_ship_the_loose_ceiling(
+        self, relative_path: str
+    ) -> None:
+        """⛔ The reference config is bound too. Review round 2 found that binding
+        `config.toml` alone let the documented one drift back silently."""
+        rules = load_qc_rules(_REPO_ROOT / relative_path)
 
         ceilings = {
             rule.time_step: rule.thresholds["value_max"]
