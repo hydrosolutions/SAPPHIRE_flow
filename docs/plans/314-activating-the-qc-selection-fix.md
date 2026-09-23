@@ -4,7 +4,7 @@ created: 2026-09-23
 plan: 314
 title: Activating the QC selection fix — the canary, the loss gate, and what can actually revert it
 scope: The ACTIVATION of Plan 272's selection fix on a live deployment — enabling the `QC_UNCHECKED` write per station, the loss threshold that aborts the rollout, and the artefact that reverts a selection change which ships unconditionally. NOT the selection fix itself, NOT the `QC_UNCHECKED` status or its consumer policy, NOT the paired evaluation harness, NOT the zero-rule telemetry — all Plan 272.
-depends_on: [272]
+depends_on: [272 phase-1]
 blocks: []
 related: [264, 269]
 open_decisions: [E1, E2]
@@ -13,9 +13,13 @@ source: 2026-09-23 — split out of Plan 272 on the owner's instruction, after t
 
 # Plan 314 — activating the QC selection fix
 
-⚠️ **The plan number 314 is PROVISIONAL until the owner grants it.** 313 is the highest
-existing file; 302–305 were granted in prose and never written, so the sequence is not a
-reliable allocator.
+⚠️ **The plan number 314 is PROVISIONAL until the owner grants it.** 302–305 were granted in
+prose and never written, so the sequence is not a reliable allocator.
+
+🔴 **E1 and E2 must close BEFORE Plan 272 lands, not after.** E1(b) and E1(c) would change 272's
+own tasks, and E2 names the quantity 272's D7 policy compares — so `depends_on` is 272's
+**measurement phase**, not the whole plan. *(An earlier draft depended on all of 272, which put
+both decisions after the work they govern.)*
 
 ## Status
 
@@ -75,16 +79,16 @@ This is the question 272 never answered, and the reason this plan exists.
 
 | | option | cost |
 |---|---|---|
-| **(a)** | **Tag and redeploy the pre-272 image.** The rollback anchor C9 already requires (`docker tag sapphire-flow:${OLD} sapphire-flow:rollback-backup`). | Reverts selection AND the status write together. ⚠️ Once any `qc_unchecked` row exists, the pre-272 image raises on the value it does not know — so this is only available BEFORE the first write, i.e. it protects the canary and nothing after it. |
-| **(b)** | **Build a genuine compatibility image**: understands `QC_UNCHECKED`, does NOT carry T2's selection change. | A real revert at any point. ⛔ Requires 272's T2 and T2b to be separable in the build, which the phase note currently forbids — it would change 272's phase graph. |
-| **(c)** | **Put the selection change behind the flag after all** — the alternative 272's T6 rejected. | A true behaviour rollback, at the cost of the duplicate path in `src` that 272 exists to remove, until the rollout completes. |
-| **(d)** | **Accept that selection is not revertible** and size the canary so that is tolerable: a small station set, a bounded window, and the paired harness as the pre-activation evidence. | Honest and cheap. ⛔ Means the abort can only stop the *status write*; the selection change would be reverted by (a) if still available, or by a forward fix. |
+| **(a)** ⭐ | **Rewrite the rows, then redeploy the pre-272 image.** One scoped statement — `UPDATE observations SET qc_status='qc_passed' WHERE qc_status='qc_unchecked'` — then redeploy the anchor tagged before the upgrade. | Reverts selection AND the status write, **at any point**. 🔑 The only thing that makes the old image raise is the stored VALUE: `qc_status` is plain `sa.Text` under a CHECK constraint that does not list `qc_unchecked` (`db/metadata.py:526-533`), and `QcStatus(row["qc_status"])` (`store/observation_store.py:318`) is what chokes. Rewriting the value restores legibility. **No artefact, no second build, one runbook line.** ⚠️ The rewritten rows keep T0's `-norules` sentinel in `qc_rule_version`, so they stay identifiable afterwards — the revert does not re-hide the defect. |
+| **(b)** | **Build a genuine compatibility image**: understands `QC_UNCHECKED`, does NOT carry T2's selection change. | A real revert at any point, at the cost of maintaining a second build. ⚠️ *An earlier draft priced this as "requires 272's T2 and T2b to be separable, which the phase note forbids" — that was wrong: the phase note forbids shipping a WRITING release without T2, and this image never writes.* |
+| **(c)** | **Put the selection change behind the flag after all** — the alternative 272's T6 rejected. | A true behaviour rollback, at the cost of the duplicate path in `src` that 272 exists to remove. ⛔ **Only available BEFORE 272 lands**, and no task here delivers it — choosing it re-opens 272's T2 and T6. |
+| **(d)** | **Accept fleet-wide selection exposure, with no automatic selection rollback** — the paired harness as the pre-activation evidence. | ⛔ **The canary CANNOT bound this.** The canary scopes the status write only; selection reaches every station the moment the image deploys, so a small station set buys nothing here. *(An earlier draft recommended this on the premise that selection "is not revertible" — (a) shows it is.)* |
 
-**Recommendation: (d), with (a) retained while it is still available.** It is the only option
-that adds no artefact and changes no other plan, and it matches what the evidence already
-supports — 272's paired harness is designed to establish the selection change's effect BEFORE
-activation, which is where the real protection lives. ⚠️ If the owner wants a true revert after
-the first `QC_UNCHECKED` row, that is (b), and it must go back into 272's phase graph.
+**Recommendation: (a).** It adds no artefact, changes no other plan, and — unlike the earlier
+recommendation of (d) — it actually works after the first `QC_UNCHECKED` row, which is when a
+revert is most likely to be wanted. ⚠️ **It requires the anchor to be tagged before the upgrade
+and to survive**, which is T2's job. 272's paired harness remains the pre-activation evidence
+either way; this is the escape hatch behind it.
 
 ### E2 — What does D7's abort actually compare, given the baseline is not stored?
 
@@ -92,8 +96,8 @@ Per § What is measured (3), the per-station per-cycle fraction is not queryable
 
 | | option | cost |
 |---|---|---|
-| **(a)** | Compare the **stored per-station verdict fraction**, stated explicitly as a proxy for cycle-level loss. | Queryable today, no new mechanism. Coarser than per-cycle, and re-examination (272's T2b item 8) moves rows in and out of the population while they remain in the checked window. |
-| **(b)** | Emit per-station counts from the ingest loop, which already holds them. | Exact. A code change, so it belongs to a task in this plan rather than to 272's T1. |
+| **(a)** ⭐ | Compare the **stored per-station verdict fraction over a NAMED WINDOW** — e.g. rows whose `timestamp` falls in the last N hours — stated explicitly as a proxy for cycle-level loss. | Queryable today, no new mechanism. ⚠️ **The window is not optional**: `observations` carries no QC timestamp (`db/metadata.py:537-543`) and `update_qc` writes none, so an unwindowed reading is whole-history and can never cross the threshold. Coarser than per-cycle, and re-examination (272's T2b item 8) moves rows in and out while they stay in the checked window. |
+| **(b)** | Emit per-station counts from the ingest loop, which already holds them. | Exact. A code change belonging to a task here. ⚠️ It cannot be compared against a 272 baseline, because 272's measurement runs before any code from this plan exists — choosing (b) means the baseline is measured here too. |
 | **(c)** | Drop the automatic abort; make the canary a human gate on the paired harness. | Removes the control. ⛔ 272's D7 rejected "turn it on and watch" for a measured reason: a skipped forecast raises no alarm today. |
 
 **Recommendation: (a)**, with the proxy named in the runbook. ⚠️ Whichever is chosen, T1's
@@ -123,9 +127,14 @@ answer "what do I do if the canary aborts after the first `QC_UNCHECKED` row" fr
 rebuild, and aborts itself when the measured loss exceeds D7's threshold.
 
 **In.**
-- **A `DeploymentConfig` flag defaulting `False`, gating Plan 272 T2b's `QC_UNCHECKED` write**
-  (272's T2b item 10). Follow the Plan 235 precedent at `config/deployment.py:146`.
-  ⛔ It does not gate the selection change — § What is measured (1).
+- **Enabling Plan 272 T2b's write gate — this task does NOT build it.** 272 T2b In item 12
+  ships it, defaulting `False`, with the write it gates.
+- 🔑 **State the field's SHAPE, because a bool cannot do the canary.** The Plan 235 precedent
+  (`config/deployment.py:146`) is `bool`, but this rollout enables 2–3 stations first, so the
+  setting must carry a station set (or a bool PLUS a station list) — ⛔ *an earlier draft
+  specified a bool and then required per-station enablement, which two implementers would build
+  two ways, and the bool build would pass the test while being incapable of the canary.*
+  ⛔ Neither shape gates the selection change — § What is measured (1).
 - **Per-station scoping** for the canary: `stations.network` exists and the QC loop already
   iterates per `(station_id, parameter)`. Enable on 2–3 BAFU stations, watch one full forecast
   cycle (`0 */6 * * *`), then widen.
@@ -135,8 +144,13 @@ rebuild, and aborts itself when the measured loss exceeds D7's threshold.
 - **The abort**, per E2: the measured fraction, the comparison, and the revert action E1 settles.
 - **Retained-row behaviour after the flag is disabled** — rows already written `QC_UNCHECKED`
   stay written; say so, and say what re-enables them (272's T2b item 8).
+- 🔴 **The calculated-station re-check, which came here with C9** (272 T2b's *Accepted
+  exception* makes it a precondition): if any calculated station exists in the deployment, its
+  dependent stations join the blast-radius assessment **before the flag is enabled**. Measured
+  inert today — `config.toml` declares no `[[stations]]` — so this is a re-check against the
+  live deployment, not an assumption.
 - **The rollback anchor, tagged BEFORE the upgrade**:
-  `docker tag sapphire-flow:${OLD} sapphire-flow:rollback-backup` — the host has no registry
+  `docker tag sapphire-flow:${OLD} sapphire-flow:rollback-272` — ⛔ *not the shared `rollback-backup` name, which `docs/standards/cicd.md:317` reuses for every upgrade, so any unrelated deploy during the widening would destroy this anchor; `rollback-272` still matches the `^rollback($|-)` protect pattern* — the host has no registry
   (`docs/standards/cicd.md:506`) and the Sunday prune protects only `^rollback($|-)` tags.
 
 **Out.** ⛔ The paired harness (272's T6). ⛔ The selection fix, the status, the consumer policy
@@ -151,8 +165,12 @@ a missing symbol proves nothing (272 § the same standard).
 **Verification.**
 - With the flag `False`, no `QC_UNCHECKED` row is written.
 - Enabling for one station changes that station and no other.
-- A simulated loss above the threshold aborts and performs E1's revert action without human
-  action.
+- A simulated loss above the threshold aborts **and performs E1's revert action** — ⛔ *not
+  merely reverting the flag, which § What is measured (1) proves does not stop the population
+  the abort counts; an implementation that reverts only the flag passes a weaker wording and
+  reproduces the exact defect this plan was split out to fix.* Under E1(a) the revert is a row
+  rewrite plus an image redeploy, so the abort **halts ingest and pages an operator** rather
+  than performing it in-flow; state which, and verify the halt.
 - The rollback anchor exists before the upgrade begins.
 
 ### T3 — Activate, and record what it did
@@ -168,10 +186,14 @@ that outlives its rollout becomes a second implementation nobody remembers is th
 
 **Out.** ⛔ Changing any threshold value to make activation pass.
 
-**Pre-change.** N/A — an operational procedure.
+**Pre-change.** N/A — activation is an operational procedure. ⚠️ *The harness deletion below is
+not: it removes a committed script and its entry in the Dockerfile's curated COPY list, so it
+lands as an ordinary code change with the suite green.*
 
 **Verification.** The per-station enablement sequence, the measured loss at each step against
-D7's threshold, and the terminal state, all recorded in this plan.
+D7's threshold, and the terminal state, all recorded in this plan — **and** the harness script
+and its frozen snapshot are absent from `scripts/` and from the Dockerfile's COPY list, with the
+suite passing.
 
 ## Explicitly out of scope
 
