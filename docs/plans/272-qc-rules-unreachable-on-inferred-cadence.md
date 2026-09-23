@@ -747,7 +747,7 @@ landing with T2.
   ordinary version. Asserted on the stored row.
 - 🔴 **Inertness, asserted not claimed — as a DETERMINISTIC REPLAY, not a live before/after.**
   **Run both implementations from an identical database snapshot with a fixed clock, fixed
-  fetched rows and fixed config** — T6's paired-harness shape — and require the resulting rows
+  fetched rows and fixed config** — a deterministic replay, NOT a live before/after (T6's harness is descoped this iteration, so do not depend on it) — and require the resulting rows
   **and the existing counters** to be identical except for the sentinel.
 
 **Pre-change**: a RED test proving that today a zero-rule group and a clean pass are
@@ -1986,6 +1986,22 @@ remove forecast inputs, from the moment the image deploys. Plan 314 enables the 
 
 ### T6 — The paired old/new evaluation harness
 
+🛑 **DESCOPED for this iteration — owner, 2026-09-23** (`docs/v1-scope.md` § QC posture).
+T6 exists as an ACTIVATION gate: know exactly what the fix changes on real data before
+enabling it. On a test deployment whose data is not used operationally and whose flags may be
+deleted and re-established freely, that evidence is obtainable by **running the fix and looking**
+— which is what the iteration is for. A committed harness, a frozen snapshot of two functions,
+a Dockerfile entry and a deletion checklist are disproportionate to that.
+
+⚖️ **This reverses an earlier owner instruction** (T6 was scoped 2026-09-20 at the owner's
+direction, when the rollout was assumed to be onto live operational data). The later framing is
+broader and supersedes it — but it is a reversal, so it is marked rather than quietly applied.
+
+**What survives and should still be built:** T2's byte-identical-output test over a pinned
+series (already a T2 deliverable) — that is the regression backstop, and it is cheap.
+⇒ **Rebuild T6 when the data becomes operational**, alongside Plan 314.
+
+
 
 **Outcome**: a **read-only** report that, over a pinned set of real stored observations,
 shows per observation exactly what the selection change does — partitioned by regime, and
@@ -2196,7 +2212,7 @@ removes if nothing wrote down what it was protecting.
   "phases": [
     { "id": "phase-1", "tasks": ["T0"] },
     { "id": "phase-1b", "tasks": ["T1"], "depends_on": ["phase-1"] },
-    { "id": "phase-2", "tasks": ["T2", "T2b", "T3", "T6"], "depends_on": ["phase-1b"] },
+    { "id": "phase-2", "tasks": ["T2", "T2b", "T3"], "depends_on": ["phase-1b"] },
     { "id": "phase-3", "tasks": ["T4"], "depends_on": ["phase-2"] }
   ]
 }

@@ -27,6 +27,21 @@ source: 2026-09-11 — the owner's 2026-09-10 decision on Plan 268 D14 (per-stat
 
 ## Status
 
+⭐ **ELEVATED, owner 2026-09-23: per-station thresholds are now REQUIRED, not a refinement.**
+`docs/v1-scope.md` § QC posture: *"some thresholds are system- or deployment-wide; maximum
+LEVELS and LEVEL CHANGES are per station"* — because one fleet-wide ceiling cannot be a
+physical-impossibility gate in Switzerland and in Nepal at once, and because the Nepali feed
+mixes datums, so a level limit is meaningless until it is per station.
+
+⭐ **Worth designing for: a RELATIVE change limit.** A level-change limit expressed as a
+proportion — of the station's own observed range, or of its current stage — transfers across
+stations *and* across datums, where an absolute metres-per-step limit needs calibrating per
+gauge. The owner raised this as more generalisable; it is not yet a decision.
+
+⚠️ This plan is `BLOCKED` behind Plan 272 and was written around a config surface before either
+point above was settled. **Re-read it against § QC posture before unblocking it.**
+
+
 **BLOCKED on Plan 272 (owner, 2026-09-11). Revision 6; round 6's findings are NOT folded.**
 
 Twelve independent reviews across six rounds, every one NOT READY (blockers per gate: 5/3, 3/3,

@@ -9,7 +9,7 @@ reviews:
   - "codex 2026-09-10 r2 — NOT READY, 4 blockers; killed the re-import claim and the QC isolation"
   - "claude 2026-09-10 r2 — NOT READY, 3 blockers + 7 majors; same two core failures, independently"
   - "codex 2026-09-10 set — NOT READY; reviewed with 264; 3 seam blockers neither plan owned"
-open_decisions: [D14]
+open_decisions: [D14 — NARROWING ONLY; the first-iteration wide ceiling is settled, owner 2026-09-23]
 depends_on: [264, 269]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
 scope: Parse the September 2026 DHM runoff delivery (6 daily-discharge series, 112 rating tables, 1 scanned station list) into SAP3 domain types, and land it as onboarded stations + rating curves + observations. NOT a live DHM API adapter, NOT a level→discharge operational path (no level data exists in this delivery), NOT a change to the halted time-grid/phase work, NOT a change to Plan 139's scope.
@@ -620,7 +620,36 @@ tables under linear interpolation put all but one value in range, which is weak 
 directional evidence that linear is what DHM uses. Worth confirming with DHM; not worth
 blocking on.
 
-**D14 — how the DHM daily QC thresholds are calibrated. REOPENED 2026-09-10: the closed answer aimed at the wrong target.**
+**D14 — how the DHM daily QC thresholds are calibrated. REOPENED 2026-09-10; ⚖️ UNBLOCKED for
+the first iteration, owner 2026-09-23.**
+
+⭐ **The first-iteration answer: set each station's ceiling ABSURDLY WIDE from a physical limit,
+mark it provisional, and narrow it with observed data later** (`docs/v1-scope.md` § QC posture —
+"thresholds start LOOSE and are narrowed with experience"; `docs/standards/wmo.md` — "a
+physical-impossibility gate, not an outlier filter … deliberately unreachable rather than
+discriminating").
+
+🔑 **This dissolves all three constraints below rather than answering them**, which is why it
+unblocks T7 today:
+
+- **Circularity** — does not arise. A limit nothing real can reach is not derived from the
+  record it judges.
+- **Rating-table ceilings are not independent evidence** — agreed, and they are no longer
+  needed as the source. The source is a physical envelope, not the delivery.
+- **A table-derived limit would publish a restricted value** — does not arise, because no
+  tabulated value is used. ⛔ *The lossy-transform requirement below still binds IF anyone later
+  derives a limit from the tables; it simply is not on the first-iteration path.*
+
+⚠️ **What remains genuinely D14's, and still needs the hydrologist:** the NARROWED values, once
+a season of observations exists. That is the second iteration, and it does not gate T7.
+
+⚠️ **A wide ceiling is not a free pass.** It must still be wide **in the right units and datum** —
+the level range currently deployed (`−2 … 20 m`) assumes gauge height, and the DHM feed mixes
+gauge height with metres above sea level while declaring neither, so a station reporting
+~162 m.a.s.l. fails every reading no matter how generous the ceiling. Per-station configuration
+(`docs/v1-scope.md` § QC posture, point 2) is what covers that, not a bigger number.
+
+*Original framing, retained because its three constraints bind again at narrowing time:*
 Opened by D12's answer. Swiss thresholds cannot be reused (see the table above), so a DHM
 daily rule set is needed. Three constraints on any answer, two of them found in round 2:
 

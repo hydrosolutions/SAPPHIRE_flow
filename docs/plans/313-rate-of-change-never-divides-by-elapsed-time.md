@@ -353,8 +353,15 @@ these documents were wrong is § 5 of this plan, measured.
   unowned. Flagging it to the owner as a separate decision, not adopting it.**
 - **`forecast_qc.py:184-200` `temporal_consistency`** — forecast steps sit on a regular grid
   by construction, so the defect does not arise. Untouched.
-- **Threshold VALUES** — Plan 268 D14 (needs a hydrologist). This plan changes what a value
-  *means at off-nominal spacing* and changes no value.
+- **Threshold VALUES** — Plan 268 D14. This plan changes what a value *means at off-nominal
+  spacing* and changes no value.
+- ⭐ **STATION-normalisation — a second axis, raised by the owner 2026-09-23, and NOT this
+  plan's.** A limit expressed as a proportion of the station's own range or current stage
+  transfers across stations and datums, where an absolute limit needs per-gauge calibration
+  (`docs/v1-scope.md` § QC posture). 🔑 **The two axes are independent and compose**: this plan
+  makes the limit per unit TIME; a relative limit would make it per unit STAGE. Owned by Plan
+  269 with the other threshold-shape questions. ⛔ Do not fold it in here — it would replace a
+  30-line arithmetic fix with a threshold redesign.
 - **Per-station overrides** — Plan 269. `merge_thresholds` is untouched; a scaled allowance
   applies identically to a merged threshold.
 - **Which rules are selected, and `QC_UNCHECKED`** — Plan 272. **Plan 264** for the network
