@@ -59,6 +59,29 @@ _QC_RULES = QcRuleSet(
             time_step=timedelta(seconds=600),
             thresholds={"value_min": 0.0, "value_max": 3000.0},
         ),
+        # Mirrors production: water_level always has at least one rule that
+        # does not depend on the station datum, so a datum-less station is
+        # still checked rather than QC_UNCHECKED.
+        QcRuleParams(
+            rule_id="rate_of_change",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"max_rate": 100.0},
+        ),
+    ),
+)
+
+_DATUM_ONLY_QC_RULES = QcRuleSet(
+    version="test-datum-only",
+    rules=(
+        QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"value_min": 0.0, "value_max": 3000.0},
+        ),
     ),
 )
 
@@ -614,6 +637,38 @@ class TestIngestObservationsFlow:
         assert result.observations_fetched == 1
         assert result.observations_stored == 1
         assert result.qc_passed == 1
+
+    def test_datum_skipped_rules_leave_the_group_unchecked(self) -> None:
+        """Every selected rule skipped for a missing datum is not a pass."""
+        lake = make_station_config(
+            code="9002",
+            name="Lake Datumless",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            rng=random.Random(12),
+        )
+
+        station_store = FakeStationStore()
+        station_store.store_station(lake)
+
+        obs_store = FakeObservationStore()
+        old = _make_obs(lake.id, "water_level", 400.0, offset_minutes=10)
+        obs_store.store_raw_observations([old])
+        for o in obs_store.observations():
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([_make_obs(lake.id, "water_level", 405.0)]),
+            qc_rules=_DATUM_ONLY_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_passed == 0
+        assert result.qc_unchecked == 1
 
     def test_mixed_river_and_lake_stations(self) -> None:
         river = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))

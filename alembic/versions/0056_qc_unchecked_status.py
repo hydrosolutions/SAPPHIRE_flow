@@ -43,11 +43,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Rows written by the newer image would violate the narrowed constraint.
-    # They are returned to the status this plan replaced, which is exactly the
-    # pre-272 behaviour: an unchecked group read as a clean pass.
+    # They become `raw` — the only pre-272 value that still means "QC has not
+    # run on this row". Rewriting them to `qc_passed` would reinstate the very
+    # false pass this revision exists to remove, and would do it silently.
+    # `raw` also leaves them eligible for a later re-check.
     op.execute(
-        "UPDATE observations SET qc_status = 'qc_passed' "
-        "WHERE qc_status = 'qc_unchecked'"
+        "UPDATE observations SET qc_status = 'raw' WHERE qc_status = 'qc_unchecked'"
     )
     op.drop_constraint("ck_observations_qc_status", "observations")
     op.create_check_constraint(

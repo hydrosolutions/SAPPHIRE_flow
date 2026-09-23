@@ -355,7 +355,9 @@ def _run_qc_task(
 
     # Plan 272 T3: what did selection actually resolve? Computed over the SAME
     # rows `check` saw, so the two agree by construction.
-    selection = resolve_selection(qc_observations, qc_rules)
+    selection = resolve_selection(
+        qc_observations, qc_rules, skipped_rule_ids=obs_skipped_rules(parameter, datum)
+    )
     unresolved = {key for key, (_, n_rules) in selection.items() if n_rules == 0}
     for station_key, parameter_key in unresolved:
         inferred, _ = selection[(station_key, parameter_key)]

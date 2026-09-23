@@ -81,7 +81,7 @@ class TestResolveSelection:
     def test_a_single_row_infers_no_cadence_rather_than_fabricating_one_hour(
         self,
     ) -> None:
-        """⛔ The regression this fix exists to prevent. `_infer_time_step` used
+        """⛔ The regression this fix exists to prevent. `infer_time_step` used
         to return one hour for a group it could not measure, so a one-row group
         silently selected whatever the hourly rules happened to be — or none —
         and the caller could not tell which."""
@@ -117,6 +117,19 @@ class TestResolveSelection:
             "a same-instant sibling skewed the median"
         )
         assert n_rules == 1
+
+    def test_a_skipped_rule_does_not_count_as_selected(self) -> None:
+        """A rule `check` will skip has not run. Counting it reports a check
+        that never happened — a water level with no datum skips `range_check`,
+        and if that is the only matching rule the group is UNCHECKED."""
+        obs = [_obs(0), _obs(10), _obs(20)]
+
+        step, n_rules = resolve_selection(
+            obs, _rule_set(600), skipped_rule_ids=frozenset({"range_check"})
+        )[(_STATION, "discharge")]
+
+        assert step == timedelta(seconds=600)
+        assert n_rules == 0
 
 
 class TestAggregateQcStatus:

@@ -55,7 +55,7 @@ def _with_cadence(obs: Observation) -> list[Observation]:
     """Plan 272: give `check` enough rows to INFER the cadence these rule sets
     declare (`_STEP`, one hour).
 
-    ⛔ These tests used to pass a single observation. `_infer_time_step` then
+    ⛔ These tests used to pass a single observation. `infer_time_step` then
     returned a fabricated one hour for a group it could not measure, which
     happened to equal `_STEP`, so the rules resolved by accident. With the
     fabrication removed a one-row group resolves NOTHING — correctly — so the

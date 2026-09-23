@@ -87,6 +87,10 @@ class QcStatus(Enum):
     QC_FAILED = "qc_failed"
     QC_SUSPECT = "qc_suspect"
     MISSING = "missing"
+    QC_UNCHECKED = "qc_unchecked"   # Plan 272: no rule was selected for the
+                                    # group, so nothing ran. Distinct from
+                                    # QC_PASSED (rules ran, found nothing) and
+                                    # from RAW (QC has not been attempted).
 
 class ForecastStatus(Enum):
     RAW = "raw"
@@ -513,7 +517,10 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     """Derive aggregate QC status from individual flags.
 
     Ordering: QC_FAILED > QC_SUSPECT > QC_PASSED.
-    Empty flags list after QC completes → QC_PASSED.
+    Empty flags list after QC completes → QC_PASSED — but ONLY when rules
+    actually ran. Plan 272: the ingest flow resolves that with
+    resolve_selection() first and stores QC_UNCHECKED for a group that
+    selected zero rules, rather than calling this function at all.
     """
     if not flags:
         return QcStatus.QC_PASSED
@@ -706,9 +713,11 @@ class QualityChecker(Protocol):
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
     ) -> dict[ObservationId, list[QcFlag]]: ...
-        # Returns QC flags per observation. Empty list = all rules passed (QC_PASSED).
-        # The caller aggregates flags via aggregate_qc_status() and calls
-        # ObservationStore.update_qc() to persist.
+        # Returns QC flags per observation. An EMPTY list is ambiguous on its
+        # own: every selected rule passed, OR no rule was selected at all
+        # (Plan 272). The caller resolves that with resolve_selection() and
+        # stores QC_PASSED only when rules actually ran, QC_UNCHECKED when
+        # none did, then calls ObservationStore.update_qc() to persist.
 ```
 
 Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
