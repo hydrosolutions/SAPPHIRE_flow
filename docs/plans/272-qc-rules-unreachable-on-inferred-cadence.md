@@ -175,6 +175,17 @@ T1's census must be read as measuring this population, not a daily one.
 
 ### C3 — 🔴 the fix's beneficiary population and its spurious-flag population are the same set
 
+🔴 **PLAN ORDER MAKES THIS CERTAIN, NOT MERELY POSSIBLE — found by review 2026-09-23.** T2
+first exposes daily series to thresholds that are already known to be wrong for them, while
+the loosening that defuses them (Plan 268 D14, Plan 269) is **blocked by this plan**. Measured:
+the deployed discharge ceiling flags **1,125 of 1,126** on one DHM station's genuine monsoon
+peaks (Plan 268 — *"not QC; a calibration error wearing QC's clothes"*).
+
+⇒ ⛔ **PRECONDITION on phase 2, and it is a config edit, not a mechanism:** widen or remove the
+drifted `range_check` values before T2 lands — discharge `value_max = 5000.0` at both
+`config.toml:215` and `:285`, and water level `-2 … 20` at `:250` / `-5 … 30` at `:313`.
+Loose-first (`docs/v1-scope.md` § QC posture) requires it anyway; the ordering makes it urgent.
+
 `_apply_rate_of_change` (`services/qc.py:71-89`) compares `|Δvalue|` between **consecutive
 stored rows against a flat `max_rate`** — it does **not** divide by elapsed time.
 `_apply_spike` (`:150-174`) is the same shape on `max_delta`. And the deployed thresholds
@@ -580,9 +591,10 @@ alerting depends on — without widening what gets flagged. ⛔ Option (iii) was
 not low-value checks.
 
 **D1–D6 are CLOSED (D1 2026-09-19, D2–D5 2026-09-20).** ⚠️ **D7 is closed as POLICY only:** its
-revert ACTION is Plan 314 E1 and the quantity its abort compares is Plan 314 E2, **both OPEN**.
-⛔ *Until they close, this plan's phase 2 has an open dependency — see T1.* What otherwise gates
-implementation is work, not answers: **C5a/C5b and C7** and the T2b scope named below.
+revert ACTION and the quantity its abort compares are Plan 314's, and 314 is SUSPENDED for this
+iteration — so neither gates this plan. ⛔ *An earlier revision made phase 2 depend on them,
+which made this plan wait on a plan declared 'not work to schedule'.*
+implementation is work, not answers: **C7** and the T2b scope named below.
 **D7 — NEW (2026-09-20, from the high-risk review). What rate of observations leaving
 `QC_PASSED` is acceptable, and what happens to a station whose forecast is skipped
 because they did?**
@@ -814,7 +826,7 @@ known LINDAS incident.
 
 ⛔ **Do not treat Q1–Q4 as optional pre-reading.** T1b as previously written is a single
 snapshot of an episodic condition, and the plan's rollout gate inherits that weakness
-(C5b).
+(the degraded-range preference, deleted with T6).
 
 **One distinction T2 depends on, so do not read this task as an argument against widening.**
 Widening the **QC window** — the rows that get checked — does not help a genuinely gappy series,
@@ -1281,119 +1293,26 @@ it is asserted on the SQL:
 #### Rollout gating and post-deploy monitoring
 
 
-**Required before rollout — the gate:**
+⛔ **The paired old/new evaluation gate is DELETED for this iteration (owner, 2026-09-23),**
+with T6 which built it. *(Descoping T6's task while leaving its gate mandatory here is what
+made the first descope nominal — found by review.)*
 
-- **A paired old/new evaluation over identical Swiss inputs.** Take a fixed set of real stored
-  observations (T1b's export, or a staging replay over a pinned time range covering every active
-  adapter), run **both** the old and the new selection path over **the same rows**, and diff the
-  result **per observation**: the **selected rules** (by the identity the resolution carries — see
-  T3 § The resolution is ONE object; **not by `rule_id`**, which cannot tell a 600 s `range_check`
-  from an 86400 s one), the resulting flags, and the aggregated status.
-  **This runs before any image is deployed and writes no verdicts.**
+⚖️ **What this iteration accepts, stated plainly:** if the selection fix silently changes a
+verdict, **nothing alarms and nothing re-judges it** — `update_qc` is the only writer on this
+path and D3 forbids re-QC of rows already stored `QC_PASSED`. That is acceptable because no one
+acts on this data (`docs/v1-scope.md` § QC posture, points 5-6). ⛔ **It stops being acceptable
+the moment the data becomes operational**, which is when T6 and Plan 314 come back.
 
+**What survives: the post-deploy latency monitoring below.** It is cheap, it is not a
+before/after comparison, and an over-budget QC path degrades ingest for every station.
 
-  | Class of group (in the pre-state) | Expected diff | Failure |
-  |---|---|---|
-  | **Repairable** — resolves zero rules today, and the widened lookback yields ≥ 2 rows at a cadence the rule set declares (regime 1 after the fix) | **non-empty**, and the newly selected rules are **exactly** those the regime table predicts for that cadence | empty diff, or a selection other than the predicted one |
-  | **Unresolved, regime 2** — ≥ 2 rows in the lookback, cadence declared nowhere | ⭐ **NOT empty — corrected 2026-09-20.** Selection and flags are unchanged (still zero rules), but the **aggregated status must change `QC_PASSED` → `QC_UNCHECKED`** (D5). The gate diffs status, so an empty diff here now means T2b did not run. | any rule selected (that is nearest-cadence matching, which T2 forbids) |
-  | **Unresolved, regime 3** — fewer than 2 rows in the whole lookback | **empty** on flags; the group is marked zero-rule | any rule selected |
-  | **Previously working** — resolves rules today (e.g. BAFU's 600 s groups) | **empty**, per observation — ⚠️ **unless the widened lookback legitimately infers a DIFFERENT cadence**, in which case the expectation is whatever the regime table predicts for the cadence inferred over the WIDENED lookback, stated per group in advance | a change not predicted by the regime table for the widened-lookback cadence |
-
-
-- **🔴 The input set must contain at least one REPAIRABLE group, and the gate fails if it does
-  not.** "The diff was empty everywhere" is the same observation as "nothing was repaired" and as
-  "the new code never ran", and the Swiss fleet may legitimately contain no repairable group at
-  all (§ Cross-plan's hypothesis is that BAFU's groups all resolve their 600 s rules today). So:
-  - If T1b finds a repairable live group, the paired evaluation must include it.
-  - **If it does not, the repairable case is constructed** — a seeded `(station, parameter)` group
-    with a **daily** series, given (i) a **narrow checked-window row set** matching what the
-    scheduled path would fetch, and (ii) a **separate, wider inference history** of ≥ 2 daily
-    rows. The two must be supplied separately, because supplying one wide row set would silently
-    test a widened *checked* window — the change § The inference lookback, bounded forbids — and
-    would pass for the wrong reason.
-  - The expected result for that group is stated in advance from the regime table. For a daily
-    `discharge` or `water_level` group that is **all four** of its daily rules selected, of which
-    `range_check` can fire, `gross_outlier` can fire **where a baseline exists** for the
-    day-of-year, and `rate_of_change` and `spike` are selected and **inert**
-    (§ What the repair actually restores). **A gate that expects every selected rule to produce a
-    flag is wrong**, and the first person it fails will "fix" it by weakening it — which is why
-    the expectation is written down before the run, not read off the result.
-- **Report the diff, not just its size** — the affected groups, their class from the table above,
-  the rules newly selected, and for each group whether the new selection is the one the regime
-  table predicts.
-
-**Operational monitoring after the deploy — no longer the gate, but still required:**
-
-- Capture the per-verdict counts (`QC_PASSED` / `QC_SUSPECT` / `QC_FAILED`, and the count of
-  `QC_PASSED`-with-empty-flags) over the last N scheduled runs before the deploy and the first N
-  after it. A large divergence outside T1b's groups is a **signal to investigate**, not a
-  pass/fail criterion — it can move for legitimate reasons and can stay still for illegitimate
-  ones. Its job is to catch what the paired evaluation's input set did not cover.
-- **Flow duration and query count, both captured pre and post — this part IS a hard gate.** Unlike
-  the verdict counts, latency is a property of the system rather than of the water, so successive
-  live periods are a fair comparison for it. The
-  widened inference adds one bounded query per ingesting `(station, parameter)` to a sequential
-  loop on a five-minute schedule, and verdict counts are blind to it: a run that gets the QC right
-  and takes six minutes has failed. Record (a) the flow's wall-clock duration distribution over the
-  N pre-deploy runs and the N post-deploy ones, and (b) **the QC path's `observations` *fetch*
-  count per run** — the `SELECT`s `_run_qc_task` issues, namely the existing context-window
-  `fetch_observations` (`flows/ingest_observations.py:311-316`) plus the new bounded inference
-  fetch — **measured by instrumenting the store, not by totalling statements against the table.**
-  **Fail the deploy if p95 duration rises above 150 s** — half the schedule interval, so a slow run
-  cannot overlap its successor — **or if the QC-path fetch count exceeds `2 × |station_params|`**,
-  which is the arithmetic bound of "one existing fetch plus one bounded inference fetch per
-  ingesting group". A count above that means the cap is not where the plan says it is.
-
-- N ≥ 12 (one hour of runs) covering at least one full poll cycle of every active adapter.
-
-**Rollback.** ⚠️ **Code-only rollback holds ONLY until the first `qc_unchecked` row exists.**
-*(Corrected 2026-09-22 after independent review — this paragraph still described the pre-T2b
-world and contradicted T2b item 10.)* **Before** any `QC_UNCHECKED` is written
-rollback is a redeploy of the previous image. **After** it, the previous image raises on the
-value it does not know and cannot read those rows — which is precisely why T2b item 10 requires
-a compatibility release to be deployed and verified FIRST. ⇒ **The compatibility release, not
-the pre-272 image, is the rollback floor once the flag has been on.** Stored verdicts
-written in between are **not** reverted: observations QC'd under the new matcher keep their flags,
-which is correct (they record what was known at judgement time, per D3) but means the rollback is
-asymmetric and the post-deploy counts above will show a mixed population across the boundary.
-Record the deploy and rollback timestamps so that boundary is identifiable. **This asymmetry is
-exactly why the gate is the pre-rollout paired evaluation and not the live counts**: a gate that
-can only fire after rows are written cannot prevent the damage it detects, and rolling back the
-image does not un-write them.
-
-**Pre-change**: a RED test proving that today a daily series in a three-hour window selects **no**
-rules and is reported `QC_PASSED` — failing on the flag/status outcome, not on a missing symbol.
-**The red-first test MUST load the real deployed ruleset** — via
-`sapphire_flow.config.qc_rules.load_qc_rules` against `config.toml`, or a fixture pinned to it —
-**not a hand-built `QcRuleSet`.** Every existing test in that file hand-builds a ruleset at
-`_STEP = timedelta(hours=1)`, which is `_infer_time_step`'s own fallback, so a hand-built ruleset
-is guaranteed to match its own fixture and can go red and green for reasons unrelated to the
-production failure. This repo's rule is that a red-first test must fail for the reason the bug
-exists.
 
 #### ⭐ Added 2026-09-20 — rollout controls the gate does not provide
 
 
-**C5a — the gate has no operational dimension.** It diffs selected rules, flags and
-aggregated status. A *correct* diff — repairable group, predicted rules selected, flags
-correctly produced — is **precisely** the case that removes rows from
-`operational_inputs`' `past_targets` and from the alert checker's `QC_PASSED` set
-(§ What a changed verdict does downstream). The gate as written reports success.
-**Required extension:** for every observation whose status changes away from
-`QC_PASSED`, report the station, the parameter, and whether the loss opens a gap in that
-station's resampled `past_targets` window under `validate_time_step_cadence`.
-
-**C5b — the gate samples the wrong period.** The repairable population on Swiss is
-**episodic**, appearing during degraded feed conditions. A pinned input set "covering
-every active adapter" taken from a healthy period yields an empty diff everywhere —
-which the gate's own text warns is indistinguishable from "nothing was repaired" and
-"the new code never ran", forcing the constructed-case fallback. Constructing the case
-proves the mechanism; it proves nothing about the fleet. **Required where one exists:** the
-pinned range must deliberately include a **known degraded window** — a LINDAS outage/429 stretch
-per Plan 175, or an ingest gap identified by Q2 below. ⚖️ **Where the retained history holds
-none, T2's constructed repairable case governs and activation may proceed on it**, with the
-limitation recorded — the alternative is a precondition nothing can satisfy.
-
+⛔ **C5a and C5b are DELETED with T6 (owner, 2026-09-23).** They were required extensions of the
+paired old/new evaluation, so they fall with it. *(They were still listed as gating
+implementation after T6 was descoped, which made the descope nominal.)*
 
 **C4 — ship behind a `DeploymentConfig` flag defaulting `False`, and bump
 `qc_rule_version`.** The plan specifies image-revert as rollback. **This repo already has
@@ -1518,11 +1437,14 @@ and the published API exclude them; and a row can be **re-examined later**.
     `str`-typed, so **no API schema break** — the only `Literal` is the forecast-lab one at
     `api/forecast_lab_schemas.py:160`.
 
-12. 🔴 **The write gate** — a `DeploymentConfig` flag defaulting `False` in
-    `config/deployment.py`, following the Plan 235 precedent at `:146`, so the first release
-    that CAN write `QC_UNCHECKED` does not. *(Was C4's, and the 2026-09-23 split left it in no
-    task's surface while three sites still claimed the plan lands behind it.)* Plan 314 T2 owns
-    ENABLING it; building it is here, with the write it gates.
+12. ⛔ **NO write gate this iteration — `QC_UNCHECKED` is written UNCONDITIONALLY.**
+    *(Owner, 2026-09-23. Both review gates found that a default-`False` gate, with only the
+    suspended Plan 314 able to enable it, left this plan shipping the selection change while
+    the headline symptom — zero rules reading as a clean pass — stayed live. The plan would
+    have fixed nothing.)* 🔑 **Allowing unchecked data to flow does not require calling it
+    checked**: the staged consumer policy (`docs/v1-scope.md` § QC posture) lets it reach
+    forecasting, and D5's per-site split still governs where else it lands. A flag returns with
+    Plan 314 when the data becomes operational.
 
 **Out**: no re-QC of rows already stored as `QC_PASSED` (D3). No new rule kinds. No change to
 `_USABLE_STATUSES` in `services/component_derivation.py:36-37` — see the accepted exception below.
@@ -1989,9 +1911,16 @@ remove forecast inputs, from the moment the image deploys. Plan 314 enables the 
 🛑 **DESCOPED for this iteration — owner, 2026-09-23** (`docs/v1-scope.md` § QC posture).
 T6 exists as an ACTIVATION gate: know exactly what the fix changes on real data before
 enabling it. On a test deployment whose data is not used operationally and whose flags may be
-deleted and re-established freely, that evidence is obtainable by **running the fix and looking**
-— which is what the iteration is for. A committed harness, a frozen snapshot of two functions,
-a Dockerfile entry and a deletion checklist are disproportionate to that.
+deleted and re-established freely, that evidence is not worth a committed harness, a frozen
+snapshot of two functions, a Dockerfile entry and a deletion checklist.
+
+⛔ **The honest statement, and it is NOT 'run it and look':** *this iteration accepts
+UNDETECTED selection regressions.* Reversibility is not detection — and D7 already rejected
+'turn it on and watch' for a measured reason: a skipped forecast raises no alarm today, so
+'watch' means a human remembering to look. ⚠️ **Nothing here changes that.** What makes it
+acceptable is only that nobody acts on this data (`docs/v1-scope.md` § QC posture, point 5).
+⛔ *T2's byte-identical fixture is NOT a backstop for this: it exercises the precipitation
+mask, not the scheduled ingest path.*
 
 ⚖️ **This reverses an earlier owner instruction** (T6 was scoped 2026-09-20 at the owner's
 direction, when the rollout was assumed to be onto live operational data). The later framing is
@@ -2102,9 +2031,8 @@ what stands in for a red test.
 
 #### Sequencing
 
-Lands in **phase 2** with T2/T2b/T3 — it needs T2's new path to compare against. **Running
-it is a Plan 314 T3 activation precondition**: the flag is not enabled until this gate has passed, on the
-input § C5b prescribes.
+⛔ **Not scheduled this iteration** (see the descope banner above); it is out of the phase graph.
+When it returns it lands with the activation work in Plan 314, not here.
 
 ### T4 — Documentation
 

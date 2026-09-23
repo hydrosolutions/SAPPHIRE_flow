@@ -103,8 +103,8 @@ This is the question 272 never answered, and the reason this plan exists.
 **Recommendation: (a).** It adds no artefact, changes no other plan, and — unlike the earlier
 recommendation of (d) — it actually works after the first `QC_UNCHECKED` row, which is when a
 revert is most likely to be wanted. ⚠️ **It requires the anchor to be tagged before the upgrade
-and to survive**, which is T2's job. 272's paired harness remains the pre-activation evidence
-either way; this is the escape hatch behind it.
+and to survive**, which is T2's job. the pre-activation evidence is whatever this plan establishes when it resumes — 272's T6 is
+descoped meanwhile; this is the escape hatch behind it.
 
 ### E2 — What does D7's abort actually compare, given the baseline is not stored?
 
@@ -194,7 +194,7 @@ a missing symbol proves nothing (272 § the same standard).
 **Outcome.** The fix is enabled across the Swiss fleet, or it is not and the reason is written
 down.
 
-**In.** Running 272's T6 paired harness as an activation precondition — on a degraded pinned
+**In.** Running a paired harness as an activation precondition — ⚠️ **272's T6 is DESCOPED for the current iteration, so this task must first establish whether one exists**; if not, it is built here or the precondition is dropped deliberately and recorded — on a degraded pinned
 range where the retained history holds one, and on 272's constructed repairable case where it
 does not. Then the canary, then the widening. **Deleting 272's T6 harness and its frozen
 snapshot when the rollout completes** is a checklist item: a frozen copy of a deleted code path
@@ -207,7 +207,7 @@ not: it removes a committed script and its entry in the Dockerfile's curated COP
 lands as an ordinary code change with the suite green.*
 
 **Verification.** The per-station enablement sequence, the measured loss at each step against
-D7's threshold, and the terminal state, all recorded in this plan — **and** the harness script
+D7's threshold, and the terminal state, all recorded in this plan — **and**, if a harness was built, its script
 and its frozen snapshot are absent from `scripts/` and from the Dockerfile's COPY list, with the
 suite passing.
 

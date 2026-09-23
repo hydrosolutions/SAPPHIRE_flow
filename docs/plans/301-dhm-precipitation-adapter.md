@@ -18,6 +18,10 @@ ingest path infers a series' cadence from a short window and matches it against 
 declared step, so a sub-daily precipitation feed resolves **zero rules**. Under Plan 272
 D5 such rows are stored `QC_UNCHECKED`, and Plan 272's consumer policy then excludes them
 from **alerting, skill scoring, model training, hindcast and the partner export**.
+⚠️ **STAGED since 2026-09-23** (`docs/v1-scope.md` § QC posture): while QC is being built,
+unchecked rows MAY flow through, forecasting included, with D5's per-site split still governing
+where else they land; once QC is fine-tuned they must NOT enter forecasting. ⇒ **The gating
+statement above is the END state, not today's.**
 
 ⇒ **If this plan ships first, precipitation is ingested and then used by essentially
 nothing.** Plan 303 adds the rule rows at the cadence this feed actually delivers.

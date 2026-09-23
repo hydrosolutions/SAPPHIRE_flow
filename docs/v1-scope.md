@@ -77,6 +77,18 @@ generated six review rounds across four plans without converging.*
   split, not a level. No reading of 162 m is measured anywhere. The datum-mixing claim holds;
   the illustration was fabricated.*
 
+5. ⚖️ **This iteration accepts UNDETECTED selection changes — stated, not assumed** (owner,
+   2026-09-23). No before/after comparison harness is built. If the selection fix silently
+   changes a verdict, nothing alarms. That is acceptable **only** because nobody acts on this
+   data; it stops being acceptable the moment it becomes operational.
+6. 🔴 **The "flags may be changed freely" premise must be CONFIRMED, not assumed.** Measured:
+   on the scheduled ingest path there is exactly one writer of a QC verdict
+   (`store/observation_store.py::update_qc`), and Plan 272 D3 forbids re-judging rows already
+   stored `QC_PASSED`. ⇒ **Today a changed verdict cannot be undone.** The ability to rewrite
+   flags on the test deployment — a scoped `UPDATE`, not a feature — is what makes every later
+   loosening possible, and it is an assumption until someone has actually run it. **Confirm it
+   before relying on it.**
+
 **What this does to the plans in flight:** the rollout apparatus that Plans 272 and 314 spent
 six review rounds failing to make coherent — a canary, an automatic abort, a loss threshold, a
 revert artefact — was justified by a risk that **does not exist in a test
@@ -99,7 +111,7 @@ is what the fine-tuning *after* evaluation is for.
 ⭐ **Criterion 2 re-prioritises existing work.** "Fine-tuning of configuration for Nepal cases"
 is, almost verbatim, Plan 269 — per-station QC thresholds declared in configuration. It has
 been treated as blocked and off the critical path. **On these criteria it is ON the critical
-path**, which makes the 272 → 269 dependency loop a blocker against a success criterion rather
+path**, which makes the 272 → 269 → 268 dependency chain a blocker against a success criterion rather
 than a scheduling nuisance.
 
 ### Who DHM are

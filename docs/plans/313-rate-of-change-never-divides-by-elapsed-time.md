@@ -233,7 +233,7 @@ removed*.
 agent with host access. The results, written into this plan.
 
 **Out.** ⛔ No evaluation harness, no paired old/new runner, no script committed to the repo,
-no monitoring. Plan 272 T6 and Plan 314 already own rollout controls for this module and this task must
+no monitoring. Plan 314 owns rollout controls for this module when the data becomes operational (272's T6 is descoped this iteration) and this task must
 not build a second set. ⛔ No writes of any kind.
 
 **Pre-change.** N/A — measurement only; no behaviour changes.

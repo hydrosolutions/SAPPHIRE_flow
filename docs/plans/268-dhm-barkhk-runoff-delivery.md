@@ -630,7 +630,13 @@ physical-impossibility gate, not an outlier filter … deliberately unreachable 
 discriminating").
 
 🔑 **This dissolves all three constraints below rather than answering them**, which is why it
-unblocks T7 today:
+unblocks D14's VALUE question. ⛔ **It does NOT unblock T7**, and an earlier revision said it
+did. Three further things still gate T7, none touched by this: Plan 264, Plan 269's per-station
+threshold tier (there is no override table, no store, no loader, and both production callers
+hard-code an empty list), and — the fourth constraint, recorded in this section already — **the
+ingest flow judges only stations whose `station_status` is `operational`, so a ceiling declared
+for these six resolves but is never applied until they are promoted.** What dissolves is the
+three constraints below:
 
 - **Circularity** — does not arise. A limit nothing real can reach is not derived from the
   record it judges.
