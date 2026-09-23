@@ -646,7 +646,9 @@ a season of observations exists. That is the second iteration, and it does not g
 ⚠️ **A wide ceiling is not a free pass.** It must still be wide **in the right units and datum** —
 the level range currently deployed (`−2 … 20 m`) assumes gauge height, and the DHM feed mixes
 gauge height with metres above sea level while declaring neither, so a station reporting
-~162 m.a.s.l. fails every reading no matter how generous the ceiling. Per-station configuration
+height above sea level — measured, **31 of 193** do — fails every reading no matter how
+generous the ceiling. *(An earlier revision said "a station reporting ~162 m.a.s.l."; 162 is the
+count of stations reporting a GAUGE reading, not a level.)* Per-station configuration
 (`docs/v1-scope.md` § QC posture, point 2) is what covers that, not a bigger number.
 
 *Original framing, retained because its three constraints bind again at narrowing time:*

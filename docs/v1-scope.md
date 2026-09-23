@@ -42,10 +42,14 @@ generated six review rounds across four plans without converging.*
 **What this means, concretely:**
 
 1. **Thresholds start LOOSE and are narrowed with experience.** ⛔ Do NOT carry narrow
-   thresholds in from the beginning. This restores the standard already recorded in
-   `docs/standards/wmo.md` — *"our QC is a physical-impossibility gate, not an outlier filter …
-   deliberately unreachable rather than discriminating"* — which the deployed config has drifted
-   from (see below).
+   thresholds in from the beginning. ⚠️ **This EXTENDS a precipitation-specific posture; it does
+   not restore a general standard.** `docs/standards/wmo.md:89-91` states the impossibility-gate
+   wording, but inside the *precipitation-undercatch* section, and its cited `200 mm/h` is the
+   offline mask script's default (`scripts/dhm_precip/params.py:144`), not a deployed QC rule —
+   the deployed precipitation ceiling is `500 mm/day` (`config.toml:369`). wmo.md's QC entries
+   state **no** threshold posture. ⛔ *So there is no "drift from a standard"; an earlier revision
+   of this section claimed one. This decision rests on the measured case below, not on wmo.md —
+   which is exactly the stale-plausible-evidence trap Plan 272 T4 warns about.*
 2. **Some thresholds are system- or deployment-wide; maximum LEVELS and LEVEL CHANGES are
    per station.** A single fleet-wide ceiling cannot be both a physical-impossibility gate in
    Switzerland and one in Nepal.
@@ -55,7 +59,7 @@ generated six review rounds across four plans without converging.*
    instead of needing calibration per gauge.
 4. **Consumer policy is STAGED, and the two stages differ:**
    - **Now, while QC is being built:** unchecked data **may** flow through, forecasting
-     included. We are developing; a blocked pipeline teaches us nothing.
+     included (D5's per-site split stands). We are developing; a blocked pipeline teaches us nothing.
    - **Once QC is in place and fine-tuned:** unchecked data **must NOT** enter forecasting.
      ⚠️ Note this end state is **stricter** than the interim policy Plan 272 D5 records.
 
@@ -65,13 +69,17 @@ generated six review rounds across four plans without converging.*
   plausibility filter in Nepal: **1,125 of 1,126 range-check flags on the delivered DHM record
   fall on one station**, whose genuine monsoon peaks exceed it. Plan 268 calls it *"not QC; a
   calibration error wearing QC's clothes."*
-- **Water level `−2 … 20 m`** assumes a gauge-height datum. The Nepali feed mixes gauge height
-  with metres above sea level and **nothing declares which**, so a station reporting ~162 m.a.s.l.
-  is "out of range" on every reading it ever sends.
+- **Water level `−2 … 20 m` (600 s) and `−5 … 30 m` (daily)** assume a gauge-height datum. The Nepali feed mixes gauge height
+  with metres above sea level and **nothing declares which** — measured, **31 of 193 stations
+  report height above sea level** (§ The material risks) — so those 31 are "out of range" on
+  every reading they ever send. ⛔ *An earlier revision of this bullet illustrated the point with
+  "a station reporting ~162 m.a.s.l."; 162 is the count of stations on the OTHER side of that
+  split, not a level. No reading of 162 m is measured anywhere. The datum-mixing claim holds;
+  the illustration was fabricated.*
 
 **What this does to the plans in flight:** the rollout apparatus that Plans 272 and 314 spent
 six review rounds failing to make coherent — a canary, an automatic abort, a loss threshold, a
-compatibility image, a revert artefact — was justified by a risk that **does not exist in a test
+revert artefact — was justified by a risk that **does not exist in a test
 deployment whose data is not operationally used and whose flags are freely mutable.** Size the
 activation work to the iteration we are actually in.
 
