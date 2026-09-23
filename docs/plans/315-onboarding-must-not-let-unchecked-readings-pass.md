@@ -5,12 +5,14 @@ revised: 2026-09-23
 plan: 315
 title: The onboarding loader must not let unchecked readings pass
 scope: The observation-onboarding QC path's fail-open (`services/onboarding.py:772-841`) — re-measuring whether a zero-rule group can still occur there once the QC ladder has landed, and closing the fail-open together with the three in-run consumers that read its output. NOT the scheduled ingest path (Plan 272, shipped), NOT the network dimension of rule selection (264), NOT per-station threshold overrides (269), NOT `rate_of_change`'s arithmetic (313), NOT new `precipitation`/`temperature` rule rows (303), NOT the rollout controls (314), NOT re-QC over already-stored history (closed by D3).
-depends_on: []
+depends_on: [264, 269, 303, 313]   # D1 — runs after every plan that changes the rule set's SHAPE
 blocks: []
 related: [264, 269, 272, 303, 313, 314]
 open_decisions: []
 reviews:
   - "codex 2026-09-23 r1 — NOT READY, 1 HIGH + 6 MEDIUM, all against the evidence; every one verified and folded"
+  - "codex 2026-09-23 r2 — NOT READY, 3 MEDIUM + 1 LOW on the fold: unsound descope, hardcoded cadence set, central-risk test with no expected outcome"
+  - "claude 2026-09-23 r2 — NOT READY, 6 MEDIUM + 2 LOW: the consumer exclusion is a NO-OP (store filters by equality), the hold mechanism already exists and was unnamed, census population contradiction, depends_on contradicted D1; VERIFIED claims 1-8 including the load-bearing per-day-of-year baseline argument"
 source: 2026-09-23 — owner, on reviewing PR #297: *"for now it's ok, we'll have to have a plan that follows the full QC implementation to check if this still happens. Once QC stands, we should not allow the loader to let unchecked readings pass."* Every claim below was measured on `feat/plan-272-qc-selection` at `54673d79` (v0.1.960), i.e. against the tree as it will be once #297 merges — not against today's `main`, which does not yet contain `QC_UNCHECKED`.
 ---
 
@@ -97,7 +99,7 @@ datum-only. **What can** is configuration — *"a TOML set omitting the generic 
 config-review concern, and it is not a reason to sequence behind 264.
 
 **5. Onboarding infers ONE cadence for the whole history.** `Stage1QualityChecker.check` groups
-by `(station_id, parameter)` and infers a single step per group (`services/qc.py:304-307`), and
+by `(station_id, parameter)` and infers a single step per group (`groupby` at `services/qc.py:306`, `infer_time_step` at `:308`), and
 Step 5 hands it the entire `start_utc → end_utc` window at once. ⚠️ **So "the window is wide"
 cuts both ways.** It is what makes a homogeneous series resolve — and it is also what makes a
 *mixed-cadence* history (daily before some date, 10-minute after) collapse to one median that may
@@ -144,18 +146,21 @@ history *plus* any row a restatement touches** — not history alone.
 
 **8. 🔴 The `-norules` sentinel that Plan 272 T0 specified did NOT ship.** T0's In-list requires a
 sentinel `qc_rule_version` (`"1.0-norules"` and the datum variants) when the resolved rule set is
-empty (`272:715-717`). Measured at `54673d79`: `obs_qc_rule_version`
+empty (`272:735-736`). Measured at `54673d79`: `obs_qc_rule_version`
 (`services/qc_datum.py:23-27`) returns `"1.0"`, `"1.1-datum"` or `"1.1-datum-skip"` and has no
 zero-rule variant; the flow writes that value unconditionally
 (`flows/ingest_observations.py:378,388`). Nothing in `src/` or `scripts/` contains the string
 `norules`. **Two consequences, both outside this plan's scope but owed to whoever owns them:**
 - With `QC_UNCHECKED` stored, zero-rule rows *are* identifiable by `qc_status`, so the sentinel is
   arguably superseded rather than missing. **Someone has to say which.**
-- ⛔ **Plan 314's E1(a) rests on it**: *"The rewritten rows keep T0's `-norules` sentinel in
-  `qc_rule_version`, so they stay identifiable afterwards — the revert does not re-hide the
-  defect."* Against the shipped code that sentence is **false** — after E1(a)'s `UPDATE` the rows
-  are indistinguishable again. 314 is suspended, so this is not urgent; it is recorded so the
-  suspension does not preserve a wrong sentence.
+- ✅ **Plan 314's E1(a) rested on it, and has been CORRECTED** (`main` `9fcc9eb4`;
+  `docs/plans/314-activating-the-qc-selection-fix.md:98` now says so in terms). Recorded here
+  because the sentinel itself is still absent, and E1(a) cannot be used until someone answers
+  whether it is superseded by `qc_status` or still owed.
+- 🔑 **And the sentinel would not have survived anyway**, which strengthens the point rather than
+  weakening it: `store_raw_observations` resets `qc_rule_version` to NULL on any value-changing
+  upsert (`store/observation_store.py:104-108`), so a restated value wipes it — 272 records this
+  at `:713-715`.
 
 ## Owner decisions — all three CLOSED 2026-09-23
 
@@ -213,30 +218,53 @@ is onboarded from scratch — so there is no later reader who needs to tell the 
 
 ### T1 — Measure whether a zero-rule group is still reachable at onboarding
 
-**Outcome.** A count, per station and parameter, of onboarding groups that resolve zero rules —
-and therefore a factual answer to "does this still happen", which may descope T2 and T3 entirely.
+**Outcome.** A count, per station and parameter, of onboarding groups that resolve zero rules,
+with the reason for each — evidence about how OFTEN this happens, which may shrink T2's testing
+surface.
+
+🔴 **What this task may NOT conclude, stated because an earlier draft did.** *"may descope T2 and
+T3 entirely"* was wrong twice over and is withdrawn:
+- **A zero count means it does not happen on the corpus measured; it does not mean the fail-open
+  is unreachable.** § What is measured (3), (5) and (7) each describe a reachable path — an
+  undeclared cadence, a mixed-cadence history, a restated single row re-entering QC — and a census
+  that happens to contain none of them refutes none of them. **T2 lands on the argument, not on
+  the count.**
+- **And the census runs BEFORE the plans D1 sequences this behind**, which change the very thing
+  it measures.
 
 **In.**
-- A read-only census over the deployed observation history, using `resolve_selection`
-  (`services/qc.py:70-100`) with the same rows and the same skip set Step 5 would pass
-  (`obs_skipped_rules(parameter, datum)`), per `(station_id, forecast target)`.
-- **Report the inferred cadence alongside the count**, because the *reason* separates the two
-  regimes and they have different fixes: a median outside `{600, 86400}` is § (3), a group of
-  fewer than two distinct timestamps is the cold case.
-- **The mixed-cadence probe from § (5), stated as a test of the DECLARED SET, not as a
-  difference.** ⛔ *A first draft compared the whole-window median against a recent-window median
-  and treated a difference as the finding; that is a non-sequitur — both can be declared values
-  (600 and 86400 are the two that exist), and the comparison would report a station that is fine.*
-  The probe is: **the whole-window median is outside `{600, 86400}` while a recent-window median
-  is inside it.** That, and only that, shows the wide window causing the mismatch.
+- A read-only census using `resolve_selection` (`services/qc.py:70-100`), per
+  `(station_id, forecast target)`, with the same skip set Step 5 would pass
+  (`obs_skipped_rules(parameter, datum)`).
+- 🔑 **Over the rows Step 5 WOULD group, not the rows it would fetch today.** ⛔ *An earlier draft
+  said "the deployed observation history" and "the same rows Step 5 would pass" in one breath;
+  those are different populations and the contradiction would have produced a near-empty result
+  that read as "this never happens".* Step 5 fetches `qc_status=RAW` only
+  (`services/onboarding.py:780-782`) and the staging corpus is already stamped, so a RAW-only
+  census returns almost nothing. The census simulates selection over the station's history
+  **regardless of stored status**, because what is being measured is which rules the cadence would
+  select — a question the stored status does not enter.
+- **Report the inferred cadence alongside the count**, because the reason separates two regimes
+  with different fixes: a median outside the declared set is § (3), a group of fewer than two
+  distinct timestamps is the cold case.
+- **The mixed-cadence probe from § (5), as a test of DECLARED-SET MEMBERSHIP.** ⛔ *A first draft
+  compared a whole-window median against a recent-window median and treated any difference as the
+  finding — a non-sequitur, since both can be declared values.* The probe is: **the whole-window
+  median is outside the declared set while a recent-window median is inside it.**
+  ⚠️ **Read the declared set from the rule set in force when the census RUNS — do not hardcode
+  `{600, 86400}`.** ⛔ *An earlier draft did, which contradicted D1: this plan is sequenced after
+  Plan 303, whose whole purpose is to declare rules at cadences that do not exist today. A
+  hardcoded set would classify exactly the groups 303 fixes as unsupported.*
 - Run it on the staging host against the live corpus, not on a fixture.
 
-**Out.** ⛔ Any write. ⛔ Any change to `services/onboarding.py`.
+**Out.** ⛔ Any write. ⛔ Any change to `services/onboarding.py`. ⛔ Concluding unreachability
+from a zero count.
 
 **Pre-change.** N/A — a measurement.
 
-**Verification.** The census output, recorded in this plan, with the date and the commit it ran
-against. ⚠️ **It expires** — per D1, re-run it at the trigger and say so next to the number.
+**Verification.** The census output, recorded in this plan, with the date, the commit, and **the
+declared cadence set it read**. ⚠️ **It expires** — per D1, re-run it at the trigger and say so
+next to the number.
 
 ### T2 — Close the fail-open, and apply D2's consumer policy in the same change
 
@@ -251,14 +279,35 @@ quietly narrowed baseline.
   not a second mechanism. ⚠️ **Do not re-invent it**: if the two paths need the same logic, the
   shared piece moves to one place rather than being copied. A hand-copied twin is exactly what
   Plan 272 had to delete from `scripts/dhm_precip/qc_mask.py`.
-- **D2's policy at all three sites** (`:258`, `:855`, `:902`), each touched deliberately and each
-  named in the diff — ⛔ *not a category ("the onboarding consumers"); Plan 272 T4 records why a
-  category cannot be checked off against the code.*
-- **The hold criterion**, using the existing minima for baselines and flow regimes, and a stated
-  one for skill (D2).
-- ⚠️ **The narrowed-baseline case is the one to test**, not the empty one: `onboarding.py:875-877`
-  stores only `if clim:`, so a shrunken-but-sufficient population overwrites the old baseline with
-  a narrower one and nothing reports it (§ What is measured (6)).
+- 🔑 **The exclusion is AUTOMATIC — do not write it.** ⛔ *An earlier draft made "exclude at all
+  three sites (`:258`, `:855`, `:902`)" the headline deliverable. It is a no-op:* all three already
+  pass `qc_status=QcStatus.QC_PASSED`, and the store filters by **equality**
+  (`store/observation_store.py:183-184`), so the moment this task stores `QC_UNCHECKED` those rows
+  leave all three populations with no edit at all. **Assert it at each of the three sites; do not
+  change them.** ⚠️ A redundant diff here would also hide that the hold below is the task's only
+  real deliverable.
+- 🔴 **The HOLD is the deliverable, and the mechanism already exists — reuse it, do not invent
+  one.** `services/onboarding.py:763` builds `held_out_ids`, `:937` consults it, and Step 8
+  promotes via `update_station_status(... OPERATIONAL)` at `:1198` and `:1214`. ⭐ The ordering is
+  already correct: Step 8 runs after Steps 5b/5c, so a shortfall detected while computing
+  baselines and regimes can still prevent promotion in the same run.
+- **The hold criterion per consumer.** Baselines and flow regimes have theirs already
+  (`min_samples = 10` per day-of-year, `min_observations = 365`). 🔴 **Skill has none, and this
+  task must state a VALUE with a basis, not defer it** — ⛔ *an earlier draft said only "a stated
+  one for skill", which leaves the verification "a station is HELD" uncheckable.* Derive it from
+  what the skill scores need to be meaningful, and write the derivation down in one line.
+- 🔴 **The narrowed-baseline case is the central risk and it needs a STATED EXPECTED OUTCOME.**
+  ⛔ *An earlier draft required the test but never said what should happen, while the verification
+  below promoted any station above its minimum — so the test could pass while the risk was live.*
+  `onboarding.py:875-877` stores only `if clim:`, and `store_baselines` upserts per
+  `(station_id, parameter, day_of_year)` (`store/clim_baseline_store.py:34`), so a shrunken
+  population **overwrites the day-windows that still clear `min_samples` and leaves the others
+  stale** — a baseline that is partly refreshed and partly not, with nothing recording which.
+  ⇒ **A per-station minimum cannot detect this, because the shortfall is per day-of-year.** State
+  what the run must do when a station's baseline would be written from a population materially
+  smaller than the one that produced the stored baseline: hold, or refuse the partial write, or
+  write it and record the mixture. **Whichever is chosen, "above the minimum ⇒ promote as today"
+  must stop being unconditional.**
 - The onboarding counters and the returned result gain the unchecked count, as
   `IngestResult.qc_unchecked` did.
 - **Delete the refusal comment at `services/onboarding.py:811-817`** in the same change. A comment
@@ -276,9 +325,14 @@ not because a symbol is missing** — the standard Plan 272 § the same standard
 **Verification.**
 - A zero-rule onboarding group stores `QC_UNCHECKED`; a group that resolves rules and passes them
   still stores `QC_PASSED`. The two are asserted separately.
-- Each of the three consumers is asserted at its own site.
+- Each of the three consumers is asserted at its own site to no longer see the unchecked rows —
+  **as an assertion about behaviour, with no edit to those call sites.**
 - A station whose checked population falls below its consumer's minimum is HELD with the reason
-  recorded; a station above it is promoted exactly as today.
+  recorded, **and the station's status is unchanged by Step 8** — the hold is asserted on the
+  stored status, not only on a log line.
+- **The narrowed-baseline case**: a station that clears its per-station minimum but whose
+  population no longer covers every day-of-year window behaves as this task decided above —
+  asserted explicitly, because this is the case a minimum check cannot see.
 - **A restated row re-enters Step 5 and is judged under the new rule** — § What is measured (7)
   makes this reachable, so it is asserted rather than assumed.
 
@@ -294,17 +348,19 @@ exclusion record that it was closed.
   including Plan 272 D5 and its § the second fail-open call site, and Plan 269 § What this
   deliberately does not do. *(Plan 272's own § Out-of-scope entry for re-QC stays true under D3
   and must not be edited to imply otherwise.)*
-- **Also fix, because T1's census hits it immediately:** `docs/v1-scope.md` § QC posture has a
-  broken blockquote — the owner's quote is split mid-sentence by the `enable_observation_alerts`
-  warning, leaving *"— and only from that point do the data-retention guarantees have to hold as
-  planned"* orphaned after it. Restore the quote, then place the warning after it.
 
-**Out.** ⛔ Any code change. ⛔ A boundary record of any kind (D3).
+⛔ **Two items an earlier draft listed here are ALREADY DONE on `main` (`9fcc9eb4`) and are
+removed, not carried:** the `docs/v1-scope.md` blockquote repair (the quote now reads whole at
+`:37-40`, with the warning after it at `:42-48`) and the Plan 314 E1(a) correction
+(`docs/plans/314-activating-the-qc-selection-fix.md:98`). *An implementer sent to fix a defect
+that no longer exists either edits a correct passage or stalls.*
+
+**Out.** ⛔ Any code change. ⛔ A boundary record of any kind (D3). ⛔ The two repairs above.
 
 **Pre-change.** N/A.
 
 **Verification.** A grep for the exclusion's wording returns only the records that say it was
-closed; the blockquote renders as one quotation.
+closed.
 
 ## Explicitly out of scope
 
@@ -313,8 +369,9 @@ closed; the blockquote renders as one quotation.
 - **The network dimension of selection** (264), **per-station thresholds** (269),
   **`precipitation`/`temperature` rule rows** (303) and **`rate_of_change`'s arithmetic** (313).
   This plan runs after them by D1 and inherits whatever shape they leave.
-- **The rollout controls** — Plan 314, suspended. ⚠️ Its E1(a) sentence is falsified by § What is
-  measured (8); that is recorded, not fixed here.
+- **The rollout controls** — Plan 314, suspended. ✅ Its E1(a) sentence was falsified by § What is
+  measured (8) and has since been corrected on `main`; the missing sentinel itself is still open
+  and unowned.
 - **A re-QC workflow over stored history** — closed by D3. ⚠️ *Not* because the reset operation is
   missing: it exists (D3). Because real deployments onboard afresh.
 - **The six DHM gauges' onboarding** — they have no forecast target, so Step 5 skips them
