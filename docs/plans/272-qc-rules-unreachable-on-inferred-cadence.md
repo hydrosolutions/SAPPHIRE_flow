@@ -27,10 +27,31 @@ the merge.
   path.** `QC_UNCHECKED` occurs in exactly three files: `types/enums.py`, `db/metadata.py` and
   `flows/ingest_observations.py` (the writer). **No consumer accepts it**, and consumers filter by
   equality (`store/observation_store.py:183-184`).
-- **The write gate this plan's own `scope` line promises** — *"this plan deploys with the
-  `QC_UNCHECKED` write disabled by a flag"*. No such flag exists in `config/deployment.py` or at
-  the write site (`flows/ingest_observations.py:380-388`); `_aggregate_qc_status` writes
-  unconditionally.
+- ⛔ **CORRECTED — the missing write gate is NOT a defect.** *An earlier revision of this section,
+  and the commit that added it, called the absent flag a second unshipped safeguard. Wrong:*
+  **T2b In item 12 WITHDREW it** (owner, 2026-09-23) — *"NO write gate this iteration —
+  `QC_UNCHECKED` is written UNCONDITIONALLY"*, because a default-`False` gate only Plan 314 could
+  enable would have shipped the selection change while the headline symptom stayed live. The
+  unconditional write is correct and intended. **The stale halves are the `scope` line and
+  `:1375`, which still promise the flag** — fix those, not the code.
+  🔴 **And this makes the consumer gap WORSE, not better.** Item 12's own reasoning is
+  *"allowing unchecked data to flow does not require calling it checked: the staged consumer
+  policy lets it reach forecasting, and D5's per-site split still governs where else it lands."*
+  ⇒ **D5's consumer split is the ONLY safeguard this plan retained — and it is the one that did
+  not ship.**
+
+**🔢 COMPLETENESS AUDIT, 2026-09-23 (Codex, In-list item by item): 54 items audited — 12 shipped,
+11 partial, 31 NOT shipped.** Deployment-blocking absences it names: the bounded inference fetch
+and shared resolution, the accepting consumer filters and `DEGRADED` provenance, re-examination,
+the published-endpoint exclusion, the compatibility release, the version boundary, and the
+health/watchdog delivery. T0's sentinel and T1's census are also absent.
+
+⭐ **One of those absences explains an operational warning I gave and must retract.** T2's
+*"separate bounded inference fetch"* (`inference_lookback` / `fetch_recent_observations`) did not
+ship — and that widened lookback is the mechanism C3 relied on to move sparse groups onto 600 s
+rules. Without it, **no rule is newly applied to any pair**, so the merged code creates **no new
+spurious-flag exposure**. ⛔ *Advice to watch the first cycle for spurious `QC_SUSPECT`/`QC_FAILED`
+on patchy feeds was wrong and is withdrawn.* The real risk is the opposite one, below.
 
 🔴 **Consequence if `main` is deployed as it stands:** a group resolving zero rules is written
 `QC_UNCHECKED` and **disappears from every consumer** — forecast inputs, the observation-alert
