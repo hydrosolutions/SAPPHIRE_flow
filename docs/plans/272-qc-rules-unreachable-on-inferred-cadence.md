@@ -87,10 +87,6 @@ first pass:
    daily-reporting station a multi-day catch-up *would* put the median on 86400 s and the daily
    rules *would* fire — which is precisely the history-dependence booked as a defect in point 2
    above: the same station gets different rules on a catch-up run than on a steady-state run.
-   *(An earlier review asserted the 86400 s outcome for the DHM feed specifically; that is not
-   supported — `adapters/dhm.py:206-220` returns the station's native ~10-minute rows on
-   recovery, so a multi-day catch-up yields a 600 s median and the daily rules stay
-   unreachable.)*
 
 So the headline claim is: **the twelve daily rules are unreachable on the scheduled ingest path,
 in steady state and on catch-up alike; and on the one path where the window is widened, rule
@@ -194,9 +190,6 @@ watched in the rollout; it is not a reason not to fix the fail-open.
 
 ### C2 — What a changed verdict does downstream
 
-**The plan never traced a changed verdict past the `observations` row.** Every rollout
-control it specifies — the paired gate, verdict counts, the p95 latency gate, image
-revert — operates on QC *outputs*. None operates on what consumes them.
 `PgObservationStore.fetch_observations` takes a `qc_status` filter
 (`store/observation_store.py:159-187`), and **thirteen call sites pass
 `QcStatus.QC_PASSED`** (verified by grep at `9dc07915`):
@@ -420,7 +413,7 @@ stronger than it reads.** Three things the decision did not say:
    CAMELS-CH history was properly checked. The corrupted population is confined to rows
    ingested by the *scheduled* path since onboarding — which on Swiss are 10-minute rows
    that mostly resolved their 600 s rules anyway. **The contamination is real but
-   bounded**, and its size is Q2-over-24 h (T1 § C7), not a doc claim.
+   bounded.**
 
 **🔴 The rollback control is weaker than this repo's own standard.**
 `docs/standards/cicd.md:202` requires a release to be rollback-safe for one version.
@@ -461,9 +454,6 @@ call site. Implementation facts, measured:
   did this for `missing`** — drop the old constraint by both possible names, recreate it widened.
 - The `(qc_status = 'missing') = (value IS NULL)` pairing constraint (`:543`) is unaffected: an
   unchecked reading still has a value.
-- ⚠️ `db/metadata.py:568` carries a **partial index** `postgresql_where=qc_status == "qc_passed"`.
-  Rows moving out of `QC_PASSED` leave that index; confirm the planner still uses it for the
-  thirteen filtered reads before and after (§ What a changed verdict does downstream).
 
 **🔴 And the consumer policy, which is the half a status change alone would get wrong.** All
 thirteen consumers filter on `QC_PASSED`, so introducing `QC_UNCHECKED` *without* this clause
@@ -565,13 +555,9 @@ Measured at `9dc07915` (T2 § What the repair actually restores): T2 makes all t
 most one row. They run and return nothing, and T3's telemetry correctly reports the group as
 *resolved*, so the shortfall is invisible from the outside.
 
-This is D4's situation in a different place, and this plan's own standard applies: **a documented
 **⚖️ Owner decision, 2026-09-20: (ii) — a named successor, granted here as ⭐ PLAN 304.**
 🔴 **As of 2026-09-22 no `docs/plans/304-*.md` exists and no other plan records 304 as a
 prerequisite, so by this plan's OWN standard it is still a promise wearing a number.**
-*(Independent review, 2026-09-22. An earlier line claimed granting the number was itself
-sufficient — it is not, and 303 shows the difference: `docs/plans/301-...md:12` records it as a
-gating prerequisite in the plan that is actually gated. 304 has no such receiving record.)*
 ⇒ **Either write 304, or have the gated plan record it.** Its
 scope: supply `check` with the neighbouring observations a daily series needs, so daily
 `rate_of_change` and `spike` can fire on `discharge` and `water_level` — the two parameters
@@ -727,10 +713,6 @@ landing with T2.
 - A zero-rule group's rows carry the sentinel; a group that resolved rules carries the
   ordinary version. Asserted on the stored row.
 - 🔴 **Inertness, asserted not claimed — as a DETERMINISTIC REPLAY, not a live before/after.**
-  ⛔ *An earlier revision specified "a run over the current fleet before and after T0". That is
-  invalidated by this plan's own argument three paragraphs up: the QC window is **run-dependent**
-  and the zero-rule condition is transient, so two successive live runs are not comparable —
-  new rows arrive, windows shift, `id` is a fresh `uuid4()` and `created_at` is `now()`.*
   **Run both implementations from an identical database snapshot with a fixed clock, fixed
   fetched rows and fixed config** — T6's paired-harness shape — and require the resulting rows
   **and the existing counters** to be identical except for the sentinel.
@@ -1056,14 +1038,6 @@ would have silently matched no rules."* `:143-163` `_raise_on_time_step_mismatch
 guards declares 3600 s throughout (`scripts/dhm_precip/qc_ruleset.py:38`,
 `QC_MASK_TIME_STEP = timedelta(seconds=3600)`).
 
-**The moment T2 relaxes exact equality, that docstring becomes false and the guard raises on rules
-the new matcher would select.** Worse, it fails *quietly* in review: the mirror and its tests are
-self-consistent, so `tests/unit/scripts/test_dhm_precip_mask.py` keeps passing while diverging from
-production. `:176-183` `test_a_time_step_mismatch_raises_the_typed_error` builds a 30-minute series
-against the 3600 s rule set and asserts a raise — under a tolerant matcher 1800 s would resolve to
-the 3600 s rules and the raise would be wrong, yet the test would still pass because it exercises
-the mirror. This feeds the Dudh Koshi handover mask, so a divergence here is a divergence in a
-delivered artefact.
 
 **Decision: update, by deletion of the duplicate — not by re-synchronising it.**
 - `_inferred_time_step` is **deleted**; the script imports the production cadence function instead.
@@ -1083,10 +1057,6 @@ delivered artefact.
 
 #### What the re-expressed guard does on each named case
 
-An earlier draft claimed the re-expression "preserves D5's intent verbatim". It preserves the
-*wording*; without the inferability clause above it does not preserve the *effect*, and the round-4
-gate is right that the difference is a build break in one direction and a silent hole in the other.
-Both outcomes are therefore stated, not left to the implementer.
 
 **(a) A station — or a single JJAS season — with exactly one observation. Required outcome: NO
 raise; the build completes. On mask keys the two cases differ — a one-row *season* contributes
@@ -1354,8 +1324,6 @@ exists.
 
 #### ⭐ Added 2026-09-20 — rollout controls the gate does not provide
 
-From the owner-commissioned high-risk operations review. The paired gate above is the
-**right instrument** and round 6 was right to force it. These are the gaps around it.
 
 **C5a — the gate has no operational dimension.** It diffs selected rules, flags and
 aggregated status. A *correct* diff — repairable group, predicted rules selected, flags
@@ -1419,10 +1387,6 @@ it" — reduces to a human remembering to look. One more probe URL makes it Slac
 
 ### T2b — Record an unchecked outcome as `QC_UNCHECKED` (D5, D2)
 
-*Added 2026-09-20 because D5's closure named a new stored status that no task owned.*
-⭐ **Rewritten the same day after the review pair: the first version was insufficient for exactly
-the half this plan calls "the half a status change alone would get wrong."** Four things it
-missed are now in scope, each verified against `main`.
 
 **Outcome**: a `(station, parameter)` group that resolves zero rules stores `QC_UNCHECKED`, not
 `QC_PASSED`; forecasts still run on those rows with `input_quality = DEGRADED` **and that
@@ -1981,8 +1945,7 @@ operator rather than waiting to be asked.
   after independent review, because nothing in this plan can satisfy it.* T2 deletes the
   `< 2 rows ⟹ 1 h` fallback outright and T6 **explicitly rejects** "a flag keeping the old path
   in `src`" as the duplication T2 exists to remove. So the selection arithmetic ships
-  UNCONDITIONALLY with T2 and the flag cannot restore the old verdicts; disabling the fetch and
-  the status write cannot undo a deleted branch.
+  UNCONDITIONALLY with T2.
   ⚖️ **OWNER — this narrows what the flag promises, and you should see that rather than find
   it.** The flag is a *status-write* control, not a *behaviour* rollback: it bounds the new
   `QC_UNCHECKED` population, not the changed selection. What covers the selection change is the
@@ -2214,7 +2177,6 @@ seen from two ends — building one without the other is the defect-with-telemet
 
 ## Explicitly out of scope
 
-- ⛔ ~~**The fail-closed policy for a resolve-nothing outcome** — Plan 264 T3 owns it (D2).~~ **NO LONGER OUT OF SCOPE.** D2 (closed 2026-09-20) moved it here: T2b writes `QC_UNCHECKED` and 264's raise is removed.
 - **Per-station threshold overrides** — Plan 269, which is paused pending this plan.
 - **Re-QC over historical observations** (D3).
 - **New rule kinds.**
