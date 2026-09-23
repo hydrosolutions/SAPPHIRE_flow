@@ -880,11 +880,13 @@ the affected groups, so **both** states are at least **auditable after the fact*
 Plan 268 runbook that it must be read, since nothing reads it automatically. It is also the only
 thing that distinguishes a transient regime 3 from a permanent regime 2: a group still named in
 the `WARNING` after several runs is regime 2, and needs D4's answer, not patience. (b) Fix the
-ordering by making **"T3's zero-rule telemetry names no group over a full poll cycle"** an
-explicit, checkable exit criterion of the switch-on, rather than a condition someone has to
-remember before making 264 T3 READY. *(An earlier draft made this "every new station has two rows
-in the inference lookback" — the wrong quantity, per the paragraph above and § Ordering
-consequence.)* **If the owner rejects, the alternative is to hold Plan 268's switch-on until 264 T3 can
+ordering with an explicit, checkable exit criterion of the switch-on rather than a condition
+someone has to remember before making 264 T3 READY. ⛔ **That criterion is the ORDERING
+constraint — T2b's write site lands before, or with, 264 T3.** *(Corrected 2026-09-22: this
+recommendation previously named "T3's zero-rule telemetry names no group over a full poll cycle",
+which D2's own closure later WITHDREW as a point-in-time check on an episodic condition — a
+recommendation left standing on a gate the same decision had removed. An earlier draft had made
+it "every new station has two rows in the inference lookback", also the wrong quantity.)* **If the owner rejects, the alternative is to hold Plan 268's switch-on until 264 T3 can
 land with it — which trades unchecked observations for no observations, and is a real option.**
 Note what the corrected sizing does to that trade: it buys **one run's** worth of checking per
 station, which makes holding the switch-on a considerably worse bargain than the original framing
@@ -1133,12 +1135,16 @@ plan cache, same rollback surface.
   `flows/ingest_observations.py:501` write `DERIVATION_RULE_VERSION` on a separate path —
   decide whether derived rows are in or out of the census.)*
 
-⚠️ **T0's surfacing shape is DELIBERATELY THROWAWAY.** T3 changes `check` again, in the
-opposite direction, and declares its shape **binding**: the resolution computed *outside*
-`check` and passed *in*, with `check` no longer calling `_infer_time_step`/`rules_for` at all.
-T0 builds an out-flow that T3 deletes. The churn is unavoidable — computing this in the flow
-instead is the route T3 rejects as self-defeating — **but say it, or two implementers build two
-things and one of them defends the wrong one.**
+🔑 **T0 builds T3's FINAL resolution shape, not a throwaway one.** *(Simplified 2026-09-22
+after independent review, which found the churn avoidable and the claim of inevitability
+false.)* T3's shape is binding — the resolution computed *outside* `check` and passed *in*,
+with `check` no longer calling `_infer_time_step`/`rules_for` itself — so **T0 introduces that
+shape directly**, initially computing it from the existing checked window with exact matching
+and the `< 2 rows ⟹ 1 h` fallback, which reproduces today's behaviour exactly. T2 then changes
+only what feeds it: the inference lookback and the fallback. ⇒ **One interface, introduced
+once.** ⛔ *An earlier revision required T0 to build an outward-facing selection result that T3
+would later delete, and told the implementer the resulting churn plus a second caller migration
+was unavoidable. Both are removed: there is no temporary interface and no second migration.*
 
 **Out**: ⛔ **no `QcStatus` member, no migration, no CHECK-constraint change, no compatibility
 release, no consumer or filter edit, no index change, no counter change, and no flag** — none is needed, which is
@@ -2791,9 +2797,12 @@ lands**, entered by every new group and by any station whose outage exceeded `L`
 well-determined cadence the rule set declares nowhere) **indefinitely**, which no number of rows
 exits and which D4 is the fix for. **Record the bound, not "the switch-on window"**: a station
 returning from an outage shorter than `L` keeps rows in the lookback and never enters regime 3 —
-**and record that leaving regime 3 is not the same as resolving a rule**, which is why 264 T3's
-rollout prerequisite is stated on T3's telemetry rather than on a row count (§ Ordering
-consequence).
+**and record that leaving regime 3 is not the same as resolving a rule**. ⛔ *Corrected
+2026-09-22: this previously read "which is why 264 T3's rollout prerequisite is stated on T3's
+telemetry rather than on a row count" — but D2 WITHDREW that telemetry gate (§ Cross-plan), so
+T4 was instructing an operator doc to explain a prerequisite that no longer exists.* What
+survives is an **ordering constraint, not a gate**: T2b's write site must land before, or with,
+264 T3 (§ Ordering consequence).
 
 **Also record (e) — the coverage the fix does NOT restore.** T2 makes the daily rules *selected*;
 it does not make all of them *effective*. Daily `rate_of_change` and `spike` cannot fire on a
@@ -2858,9 +2867,20 @@ tighter still**: T2's second inference fetch and T3's resolution object are the 
 seen from two ends — building one without the other is the defect-with-telemetry failure
 (§ The resolution is ONE object). They cannot be sliced apart even in principle.
 
-## Review divergences
+## Appendix — corrections and review divergences (NON-NORMATIVE)
 
-Recorded so a later reader does not re-derive them.
+⛔ **NOTHING IN THIS APPENDIX IS A REQUIREMENT.** It is a record of measured corrections and of
+where a review was not followed, kept so a later reader does not re-derive them. **The tasks and
+the closed decisions above are the whole of what this plan asks anyone to build.** *(Guard added
+2026-09-22 after independent review found retained review history reintroducing withdrawn
+requirements into executable tasks — three separate sites, all now corrected in place. The
+material stays because much of it is MEASURED EVIDENCE, not narrative: a blanket deletion would
+have destroyed the corrected 126-window count, the gap histogram and the 5/144 figure.)*
+
+⚠️ **Outstanding: this appendix has not been audited claim by claim.** Each entry is either a
+measurement already restated in the body (a duplicate, safe to delete) or one that exists only
+here (load-bearing, must be migrated up). Until someone does that pass, treat an entry that
+contradicts the body as superseded by the body.
 
 - **Catch-up does not make the daily rules fire.** The 2026-09-19 review stated that on a DHM
   catch-up run the widened window's median "lands on 86400 s and the twelve daily rules DO fire",
