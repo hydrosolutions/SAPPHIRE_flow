@@ -36,7 +36,15 @@ generated six review rounds across four plans without converging.*
 
 > **This is a first iteration and a test deployment. We do not need a finished product
 > tomorrow.** We can delete flags, re-establish them and change them freely for now. **We will
-> not use this data operationally until QC is fine-tuned** — and only from that point do the
+> not use this data operationally until QC is fine-tuned**
+
+⚠️ **One live consumer already exists and the premise must not be read as excluding it:**
+`config/overlays/mac-mini.toml:1` sets `enable_observation_alerts = true` on the staging host,
+and `services/observation_alert_checker.py:53-58` fetches `QC_PASSED` over a 24 h lookback. ⇒ **A
+fleet-wide threshold change reaches the live Swiss observation-alert path**, whatever it was
+intended for. Changes justified by DHM stations must be checked against that path, because the
+DHM six are not ingesting at all — ingest judges only `operational` stations and they sit at
+`onboarding`. — and only from that point do the
 > data-retention guarantees have to hold as planned.
 
 **What this means, concretely:**
@@ -71,8 +79,12 @@ generated six review rounds across four plans without converging.*
   calibration error wearing QC's clothes."*
 - **Water level `−2 … 20 m` (600 s) and `−5 … 30 m` (daily)** assume a gauge-height datum. The Nepali feed mixes gauge height
   with metres above sea level and **nothing declares which** — measured, **31 of 193 stations
-  report height above sea level** (§ The material risks) — so those 31 are "out of range" on
-  every reading they ever send. ⛔ *An earlier revision of this bullet illustrated the point with
+  report height above sea level** (§ The material risks). ⛔ **They do NOT fail QC for it.**
+  `services/qc_datum.py:41-52` subtracts the configured datum before QC, and `:29-32` SKIPS the
+  datum-dependent rules (`range_check` among them) when no datum is configured. *(Two earlier
+  revisions of this bullet asserted the opposite; the second was cited back as review evidence.
+  The level range is a datum-RELATIVE check that already works — the drift here is discharge
+  alone.)* ⛔ *An earlier revision of this bullet illustrated the point with
   "a station reporting ~162 m.a.s.l."; 162 is the count of stations on the OTHER side of that
   split, not a level. No reading of 162 m is measured anywhere. The datum-mixing claim holds;
   the illustration was fabricated.*

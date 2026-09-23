@@ -93,19 +93,26 @@ class TestBuildPrecipitationQcRuleSet:
 
 
 class TestRangeCheckCalibration:
+    # Plan 272: each case carries a benign companion an hour before the value
+    # under test, so `QC_MASK_TIME_STEP` (3600 s) is genuinely INFERABLE. With a
+    # single observation the cadence cannot be measured and no rule is selected
+    # — which used to be hidden by a fabricated one-hour fallback that happened
+    # to equal this rule set's step. ⚠️ The passing case below was silently
+    # vacuous under that fallback: it asserted "no flags" for a group nothing
+    # had checked.
     def test_a_legitimate_100mm_extreme_passes(self) -> None:
         start = datetime(2025, 7, 1, 0, tzinfo=UTC)
-        observations = [_obs(start, 100.0)]
+        observations = [_obs(start - timedelta(hours=1), 0.0), _obs(start, 100.0)]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
         flags = Stage1QualityChecker().check(observations, rule_set, [], [])
-        assert flags[observations[0].id] == []
+        assert flags[observations[1].id] == []
 
     def test_200_point_1_is_masked(self) -> None:
         start = datetime(2025, 7, 1, 0, tzinfo=UTC)
-        observations = [_obs(start, 200.1)]
+        observations = [_obs(start - timedelta(hours=1), 0.0), _obs(start, 200.1)]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
         flags = Stage1QualityChecker().check(observations, rule_set, [], [])
-        assert any(f.status == QcStatus.QC_FAILED for f in flags[observations[0].id])
+        assert any(f.status == QcStatus.QC_FAILED for f in flags[observations[1].id])
 
 
 if __name__ == "__main__":

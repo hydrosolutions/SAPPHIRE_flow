@@ -526,7 +526,8 @@ observations = sa.Table(
         "qc_status",
         sa.Text,
         sa.CheckConstraint(
-            "qc_status IN ('raw', 'qc_passed', 'qc_failed', 'qc_suspect', 'missing')"
+            "qc_status IN ('raw', 'qc_passed', 'qc_failed', 'qc_suspect', "
+            "'missing', 'qc_unchecked')"
         ),
         nullable=False,
         server_default="raw",
