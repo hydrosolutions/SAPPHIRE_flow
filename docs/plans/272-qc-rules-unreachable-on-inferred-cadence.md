@@ -13,6 +13,58 @@ source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (bot
 
 # Plan 272 — configured QC rules are unreachable when the inferred cadence matches nothing
 
+## 📋 Closure — triage of the 31 unshipped items (PROPOSAL, 2026-09-23)
+
+⚠️ **A proposal, not a decision.** It needs the owner's approval and an independent review before
+any of it is built. ⛔ **Do NOT read this as "build 31 items"** — most should never be built now.
+
+🔑 **The prerequisite that shapes the whole slice, measured:** `fetch_observations` takes a
+**scalar** status (`store/observation_store.py:166`), as do the Protocol (`protocols/stores.py:128`)
+and the fakes (`fake_stores.py:198`). Accepting `QC_PASSED` **and** `QC_UNCHECKED` at one read is
+therefore impossible without T2b item 3 first. That is why the consumer half is a slice, not a
+patch.
+
+### A — CLOSE: the user-visible consumer gap. One coherent slice, in this order.
+
+| item | what | why it cannot wait |
+|---|---|---|
+| **3** | store / Protocol / fakes take a **collection** of statuses | prerequisite for 6; nothing else unblocks it |
+| **6** | the four accepting reads take `{PASSED, UNCHECKED}` (`operational_inputs.py:890,940`; `track_assembly.py:285,338`) — the excluding reads stay as they are | D5's split is the ONLY safeguard this plan retained (item 12 withdrew the flag) |
+| **7** | `DEGRADED` provenance end to end — ⚠️ `OperationalInputMetadata` carries none today, and it must survive the dataframe conversion to reach station and group assessment | without it, accepted rows are indistinguishable from clean ones — the original defect, one layer out |
+| **9** | `api/routes/stations.py:698` excludes only `qc_failed` | **unchecked values reach the PUBLISHED observed series unmarked** — the reporting leak the second-opinion pass found |
+| **8** | re-examination | ingest selects `RAW` only (`:327`), so a row that lands unchecked **is never retried** |
+
+### B — SHOULD: observability (T3). A zero-rule group is currently ONE LOG LINE.
+
+`WARNING` health record + `PipelineCheckType` member (`enums.py:197`) + the aggregated
+one-record-per-run writer, and the watchdog probe. Without these nobody sees the condition
+without reading container logs.
+
+### C — PARK, with the reason, so nobody re-derives it
+
+- **T2's bounded inference fetch + bounded store method** (`inference_lookback`,
+  `fetch_recent_observations`). ⭐ **Re-justify before building.** The independent pass measured
+  that the existing two-hour context window (`flows/ingest_observations.py:299-327`) already
+  yields ~12 timestamps and a clean 600 s median on a healthy feed. This is an inference-robustness
+  improvement, not a correctness fix — and its absence is why C3's spurious-flag mechanism never
+  materialised.
+- **T2b 10 + the compatibility-image read** — rollout artefacts. **Plan 314**, suspended.
+- **T2b V's partial-index planner proof** — migration `0056` created no index; the clause has no
+  subject.
+- **T2b 11** (severity ranking, public-filter decision) — needs a decision, not code.
+- **T0's sentinel and T1's census** — ⛔ **structurally unbuildable now.** Both are *pre-change*
+  measurements of the unfixed logic, and the fix has shipped. The baseline they existed to take
+  cannot be taken. *(T0's sentinel is separately argued to be superseded by `QC_UNCHECKED` — see
+  Plan 315 § What is measured (8), still unowned.)*
+- **The unasserted Verification clauses** — real test debt; each should ride with the task it
+  verifies rather than being swept up alone.
+
+### D — DO NOW, trivial, no decision needed
+
+- **T3's Plan-264 debt recording** — a documentation edit this plan assigned and the
+  implementation skipped (`264:252,262` unchanged).
+- **T2b V's `qc_rule_version` bump** — `services/qc_datum.py:18,19,25` unchanged.
+
 ## Status
 
 🟠 **PARTIALLY IMPLEMENTED AND MERGED — REACTIVATED 2026-09-23.**
