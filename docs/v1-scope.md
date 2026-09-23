@@ -36,7 +36,8 @@ generated six review rounds across four plans without converging.*
 
 > **This is a first iteration and a test deployment. We do not need a finished product
 > tomorrow.** We can delete flags, re-establish them and change them freely for now. **We will
-> not use this data operationally until QC is fine-tuned**
+> not use this data operationally until QC is fine-tuned** — and only from that point do the
+> data-retention guarantees have to hold as planned.
 
 ⚠️ **One live consumer already exists and the premise must not be read as excluding it:**
 `config/overlays/mac-mini.toml:1` sets `enable_observation_alerts = true` on the staging host,
@@ -44,8 +45,7 @@ and `services/observation_alert_checker.py:53-58` fetches `QC_PASSED` over a 24 
 fleet-wide threshold change reaches the live Swiss observation-alert path**, whatever it was
 intended for. Changes justified by DHM stations must be checked against that path, because the
 DHM six are not ingesting at all — ingest judges only `operational` stations and they sit at
-`onboarding`. — and only from that point do the
-> data-retention guarantees have to hold as planned.
+`onboarding`.
 
 **What this means, concretely:**
 

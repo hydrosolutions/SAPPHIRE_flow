@@ -181,10 +181,29 @@ the loosening that defuses them (Plan 268 D14, Plan 269) is **blocked by this pl
 the deployed discharge ceiling flags **1,125 of 1,126** on one DHM station's genuine monsoon
 peaks (Plan 268 — *"not QC; a calibration error wearing QC's clothes"*).
 
-⇒ ✅ **PRECONDITION DISCHARGED 2026-09-23** (branch `feat/loose-first-thresholds`, held at PR):
-discharge widened to `0 … 30000 m³/s` and water level to `−10 … 9000 m` at both time steps,
-across all three surfaces (`config.toml`, `config/qc_rules.py`, `docs/spec/config-reference.toml`).
-⚠️ **It must be MERGED AND DEPLOYED before T2 lands**, or the ordering hazard above returns.
+⇒ ✅ **PRECONDITION DISCHARGED AND MERGED 2026-09-23** — PR #298 (`cdc2dd0c`, tag v0.1.963).
+⛔ **The values here were wrong in two ways while this said "held at PR"; corrected against the
+merged commit:** discharge went to **`0 … 100000 m³/s`**, not 30000, and **water level was NOT
+widened** — that change was reverted on the branch because its justification was false
+(`services/qc_datum.py:41-52` subtracts the datum before QC and `:29-32` skips the
+datum-dependent rules when none is configured, so the level range is datum-relative and already
+works). Water level stays `−2 … 20 m` (600 s) and `−5 … 30 m` (daily).
+⭐ **And a FOURTH surface was missed here and found only by independent review**:
+`config/forecast_qc_rules.py` carried the same 5000 ceiling and, unlike the observation side,
+**nothing overrides it** — no `[forecast_qc]` section exists in `config.toml` or any overlay, so
+its defaults ARE the running config. It is now 100000 too, by owner decision. All four surfaces
+are bound by value in tests.
+
+⚠️ **Ordering: both are on `main` and NEITHER IS DEPLOYED.** #297 (this plan, tag v0.1.960)
+merged before #298. That is harmless because there is **no deploy workflow in this repo** —
+merging is never deploying — and **one deploy of `main` now brings both live together**, which
+satisfies the ordering by construction.
+
+🔴 **What #298 does NOT discharge, stated because it reads as if it does:** C3's named hazard is
+`rate_of_change` and `spike`, and C3 itself calls `range_check` and `gross_outlier` safe. #298
+widened a **range check**. So the sparse-series flagging risk is **still open, and it is Plan
+313's** — watch the first forecast cycle after deploy for spurious `QC_SUSPECT`/`QC_FAILED` on
+stations with patchy feeds.
 
 `_apply_rate_of_change` (`services/qc.py:71-89`) compares `|Δvalue|` between **consecutive
 stored rows against a flat `max_rate`** — it does **not** divide by elapsed time.

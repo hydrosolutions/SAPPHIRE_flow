@@ -1,12 +1,12 @@
 ---
-status: BLOCKED
+status: DRAFT
 created: 2026-09-11
 revised: 2026-09-11
 plan: 269
 title: Per-station QC thresholds declared in onboarding configuration
 scope: Deliver per-station observation QC threshold overrides through configuration — a validated TOML surface, one pure resolution boundary, threading into the scheduled observation-ingest flow, and an edit-time validation command. NOT the onboarding QC path (descoped, see § What this deliberately does not do), NOT a database table, store or migration (the spec defers that to v1), NOT the DHM threshold values themselves (Plan 268 D14), NOT forecast QC overrides, NOT rule selection (Plan 264), NOT an API surface, NOT a new rule kind.
 blocks: [268]
-blocked_by: [272]
+blocked_by: []   # 272 MERGED 2026-09-23 (#297, tag v0.1.960) — this plan is UNBLOCKED
 related: [264, 268, 012]
 reviews:
   - "codex 2026-09-11 r1 — NOT READY, 5 blockers; killed the write path and the migration"
@@ -212,6 +212,24 @@ through `StationStore.fetch_thresholds` (`protocols/stores.py:623`) while its wr
 
 Both are the same failure: schema and type shipped, supply never built. **This plan is not done
 when the parser lands** — T3 is what makes it real.
+
+## ⏱️ Unblocked 2026-09-23
+
+`blocked_by: [272]` cleared: Plan 272 merged as PR #297 (`732f0b1d`, tag v0.1.960) and the
+loose-first thresholds followed as #298 (`cdc2dd0c`, tag v0.1.963). ⚠️ **Neither is DEPLOYED** —
+one deploy of `main` brings both live.
+
+🔑 **What 272 changed under this plan's feet, and it is not nothing:**
+- `resolve_selection` (`services/qc.py:70-100`) now reports, per group, the cadence and the
+  count of rules that will actually RUN — including the datum skip. This plan's rule→key
+  validator (§ 406) should be built on it rather than re-deriving selection.
+- A zero-rule group now stores `QC_UNCHECKED`, not `QC_PASSED`. Any assertion here that an
+  empty flag list means "passed" is stale.
+- ⛔ **The onboarding descope below still stands** and is now owned: it is **Plan 315**, which
+  runs last, with all three of its owner decisions closed 2026-09-23.
+
+⚠️ **This plan `blocks: [268]`, which another session owns.** Re-review before starting, and
+coordinate — the status change here is a fact, not a claim on the work.
 
 ## What this deliberately does not do
 
