@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
-scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan. ⛔ NOT the rollout controls — the flag's enablement, the canary, D7's automatic abort and the revert artefact are Plan 314; this plan lands INERT, behind a flag defaulting False.
+scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan. ⛔ NOT the rollout controls — the flag's enablement, the canary, D7's automatic abort and the revert artefact are Plan 314; this plan deploys with the QC_UNCHECKED write disabled by a flag, but selection changes on deploy — it is NOT inert.
 blocks: [264, 269, 314]
 related: [264, 268, 269, 301, 303, 304, 313, 314]
 open_decisions: []
@@ -572,10 +572,10 @@ scope: supply `check` with the neighbouring observations a daily series needs, s
 alerting depends on — without widening what gets flagged. ⛔ Option (iii) was rejected: these are
 not low-value checks.
 
-**All seven decisions are CLOSED (D1 2026-09-19, D2–D7 2026-09-20). Nothing in this plan is
-gated on an owner decision any more.** What gates implementation now is work, not answers:
-**C5a/C5b and C7** (§ The operational picture and § rollout controls) and the T2b scope named
-below.
+**D1–D6 are CLOSED (D1 2026-09-19, D2–D5 2026-09-20).** ⚠️ **D7 is closed as POLICY only:** its
+revert ACTION is Plan 314 E1 and the quantity its abort compares is Plan 314 E2, **both OPEN**.
+⛔ *Until they close, this plan's phase 2 has an open dependency — see T1.* What otherwise gates
+implementation is work, not answers: **C5a/C5b and C7** and the T2b scope named below.
 **D7 — NEW (2026-09-20, from the high-risk review). What rate of observations leaving
 `QC_PASSED` is acceptable, and what happens to a station whose forecast is skipped
 because they did?**
@@ -591,8 +591,8 @@ nicety**:
   cycle, so including it forces the threshold above 100 % to avoid aborting on the intended
   outcome — at which point it can no longer catch the C3 spurious-flag hazard it exists for.
   This is also what T2b item 5's separate `unchecked` bucket is for.
-- Exceeding it **automatically aborts the canary** (C9): it reverts the flag (C4) **and
-  performs the revert action **Plan 314 E1 settles**. ⛔ **The flag alone does not stop it.**
+- Exceeding it **automatically aborts the canary** (C9): it reverts the flag (C4) and performs
+  the revert action **Plan 314 E1 settles**. ⛔ **The flag alone does not stop it.**
   The flag gates only the `QC_UNCHECKED` write; the selection change ships unconditionally with
   T2, so the newly-selected rules keep producing `QC_FAILED`/`QC_SUSPECT` after a flag revert —
   which is the very population D7 measures. 🔴 **What CAN revert it is an open decision in 314,
@@ -629,7 +629,7 @@ the storage layer too.
 
 **And a reconstruction is unfaithful in BOTH directions — and worse, the window is
 RUN-DEPENDENT.** `_run_qc_task` **expands** `[now−2h, now+1h]` from whatever that run happened
-to fetch (`flows/ingest_observations.py:288-309`), so the judgment window was a function of one
+to fetch (`flows/ingest_observations.py:297-309`), so the judgment window was a function of one
 cycle's fetch and is not reconstructible from any stored artifact **even with a perfect clock**.
 `check` is also handed the whole window including already-QC'd rows while only `RAW` rows are
 updated, so a faithful replay would additionally need to know which rows were `RAW` at that
@@ -750,12 +750,16 @@ identical `qc_rule_version`. That indistinguishability is the defect; this task 
 ### T1 — Measure the blast radius
 
 **Outcome**: a measured count of how many `(station, parameter)` groups currently resolve zero
-rules on the scheduled path, and why — **and, from the same census, a proposed value for D7's
-loss threshold** (the share of rows per station per cycle that may leave `QC_PASSED` before the
-canary aborts — **Plan 314 T2 runs that abort; this plan owes it the number**). ⭐ *Added
-2026-09-20: D7 said "the number comes from T1" while T1 owed no such deliverable, so it belonged
-to nobody.**
-deliverable and a T1 verification item; a threshold chosen without the baseline is arbitrary.
+rules on the scheduled path, and why.
+
+⛔ **This task does NOT propose D7's loss threshold.** *(Removed 2026-09-23 with the Plan 314
+split.)* The quantity that threshold compares is **Plan 314 E2, an OPEN decision**, and the
+per-station per-cycle fraction D7 names is not persisted anywhere queryable — the counters are
+summed into in-memory fleet totals (`flows/ingest_observations.py:756-758`) and `update_qc`
+stores no cycle key (`store/observation_store.py:143-158`). 🔴 **Measuring it here would make
+this plan's phase 2 depend on its own successor.** 314 E2 names the quantity; whoever settles it
+measures it.
+
 Two deliverables — one runnable today, one needing the DB.
 
 **T1a (DB-independent — run this first).** Slide the real `[now − 2 h, now + 1 h]` window across
@@ -767,7 +771,7 @@ inferred cadence matches no configured `water_level` rule (600 s or 86400 s).
 `2026-05-04T18:15Z … 2026-05-05T18:05Z`, with inter-row gaps `600 s ×104, 1200 s ×6, 1800 s ×3,
 2400 s ×3, 3600 s ×1`. Over the 144 windows, **5 (3.5 %) infer a cadence matching nothing** —
 ⚠️ **Re-running the slide under the store's own half-open `[start, end)`
-(`store/observation_store.py:178-179`) gives 6 (4.2 %), five at 1500 s and one at 2400 s; the 5
+(`store/observation_store.py:173-174`) gives 6 (4.2 %), five at 1500 s and one at 2400 s; the 5
 holds only under a closed or open-start interval. T1b must state which convention it uses.**
 four at 1500 s and one at 2400 s — and therefore select zero rules and report `QC_PASSED`.
 
@@ -824,8 +828,6 @@ fixture (T1a); both outputs recorded in this plan; no code change.
 **Out**: ⛔ any code change, any write, any schema or counter addition, and any attempt to
 reconstruct the historical contamination — § What is NOT yet measured explains why it cannot be.
 **Verification**: both measurements recorded here with their method and the SHA measured against.
-**and** the proposed D7 threshold, with the measured `QC_FAILED`/`QC_SUSPECT` baseline it was
-derived from — the deliverable T1's Outcome promises.
 **Pre-change**: N/A — measurement.
 
 ### T2 — The fix
@@ -876,7 +878,7 @@ the mistake, which is this repo's stated preference for making invalid states un
 
 **Sweep of what consumes the fallback, measured at `9dc07915`.** `_infer_time_step` has exactly
 **two** references in the repo: its definition (`services/qc.py:40`) and one call
-(`services/qc.py:252`, inside `check`, which T3 removes in favour of the resolution). The only
+(`services/qc.py:252`, inside `check`, which T0 removes in favour of the resolution). The only
 *other* consumer of the 1 h fallback is the mirror `_inferred_time_step`
 (`scripts/dhm_precip/qc_mask.py:127`, called at `:154`), which this task **deletes** (§ The second
 implementation), so the fallback has no surviving consumer once the mirror is gone. Confirm this
@@ -1050,7 +1052,7 @@ the BAFU feed (§ Cross-plan).
 **In**: per D1 — the exact-equality match. `types/domain.py:160-167` (`QcRuleSet.rules_for`) and
 its caller `services/qc.py:252-253` (`_infer_time_step` at `:40-47`, **whose signature becomes
 `-> timedelta | None` with the `< 2 rows ⟹ 1 h` branch at `:40-42` deleted** — see § Regime 3 is
-the one that changes behaviour), **which T3 moves out of
+the one that changes behaviour), **which T0 moves out of
 `check` into the shared resolution object** (§ The resolution is ONE object — T2 and T3 are one
 landing, so this is one edit, not two); **plus a second, bounded
 inference fetch in `_run_qc_task` alongside the existing one at
@@ -1394,22 +1396,13 @@ two-release flag whose own comment explains it exists so "a rollback during the 
 window always lands on an image that already understands the rows on disk"
 (`docs/standards/cicd.md`'s one-release rollback rule). Adopt it:
 
-1. The `QC_UNCHECKED` write behind a flag, default `False`. ⛔ **The selection change is NOT
-   behind it and the image does not deploy byte-identical in behaviour** — T2 deletes the
-   `< 2 rows ⟹ 1 h` fallback and T6 rejects keeping the old path in `src`, so no flag can
-   restore the old verdicts (Plan 314 § What is measured).
-2. Enable it in `config/overlays/mac-mini.toml`, which is a **host bind mount** into
-   `prefect-worker`, `prefect-worker-ingest` and `api`
-   (`docker-compose.macmini.yml:46, 52, 76`, `:ro`). **Disabling the flag stops
-   `QC_UNCHECKED` writes; selection rollback requires the compatibility image.**
-   ⚠️ Edit it **in place**: this is a single-file bind mount, and an editor that writes a
-   new inode leaves the container reading the old content until it is recreated
-   (the known `git pull` trap).
-3. **Bump `qc_rule_version`** in `services/qc_datum.py:23-26`. Verified: it round-trips
-   into `Observation` but **no production code branches on its value** — so the bump is
-   free, and it converts D3's "record the deploy timestamp in a document" into a
-   **queryable column**, which is what makes the limitation auditable and a future re-QC
-   scopeable.
+1. **The write gate itself is T2b's** (In item 12) — a `DeploymentConfig` flag defaulting
+   `False`, so the first release that can write `QC_UNCHECKED` does not. ⛔ **It does NOT make
+   this plan inert**: T2 deletes the `< 2 rows ⟹ 1 h` fallback and T6 rejects keeping the old
+   path in `src`, so **selection changes the moment the image deploys**.
+2. **Enabling it — the overlay edit, the per-station canary and the rollback anchor — is Plan
+   314 T2.** The `qc_rule_version` bump is T2b's (see its Verification); it was stated twice
+   here with contradictory line numbers.
 
 **C9 — canary by station, and tag the rollback anchor first.** The plan's gate is binary
 and fleet-wide. `stations.network` exists and the QC loop already iterates per
@@ -1452,7 +1445,7 @@ and the published API exclude them; and a row can be **re-examined later**.
 4. **The write site** in `flows/ingest_observations.py`: zero resolved rules ⇒
    `QC_UNCHECKED`, empty `qc_flags`.
 5. 🔴 **The ingest counters, which today would silently mis-bucket it.**
-   `flows/ingest_observations.py:368-373` is `if PASSED … elif FAILED … else: suspect` (verified),
+   `flows/ingest_observations.py:368-373` is `if PASSED … elif FAILED … else: suspect` (verified) — and the `totals` initialiser at `:724` plus the summation at `:756-758` need the new key too, or it is a `KeyError` at summation rather than a mis-bucket —
    so `QC_UNCHECKED` lands in `counts["suspect"]` and flows into `IngestResult.qc_suspect` and the
    `ingest.qc_complete` log. **That corrupts the exact signal D7's automatic abort reads** — the
    C3 spurious-flag hazard and the unchecked population must be distinguishable. Add an
@@ -1517,6 +1510,12 @@ and the published API exclude them; and a row can be **re-examined later**.
     ✅ Stated positively, because it is the question a reader will ask: `api/schemas.py:84,97` are
     `str`-typed, so **no API schema break** — the only `Literal` is the forecast-lab one at
     `api/forecast_lab_schemas.py:160`.
+
+12. 🔴 **The write gate** — a `DeploymentConfig` flag defaulting `False` in
+    `config/deployment.py`, following the Plan 235 precedent at `:146`, so the first release
+    that CAN write `QC_UNCHECKED` does not. *(Was C4's, and the 2026-09-23 split left it in no
+    task's surface while three sites still claimed the plan lands behind it.)* Plan 314 T2 owns
+    ENABLING it; building it is here, with the write it gates.
 
 **Out**: no re-QC of rows already stored as `QC_PASSED` (D3). No new rule kinds. No change to
 `_USABLE_STATUSES` in `services/component_derivation.py:36-37` — see the accepted exception below.
@@ -1877,7 +1876,7 @@ resolved" is the intended request rather than a defect.
 invocations are **T0's**, not T3's — T0's binding already forces them and claiming them twice put
 the same edits in two phases.* T3 owns only what is new here:
 `flows/ingest_observations.py` — a counter on `IngestResult` and a `PipelineHealthRecord`
-at `WARNING` (`types/enums.py:187-190` — correct as originally cited; the enum has only
+at `WARNING` (`types/enums.py:187-190` — correct as originally cited; the enum has only Plus **`ops/watchdog.py:142-178`** — one more probe for the new `PipelineCheckType` member, so T3's `WARNING` reaches Slack instead of waiting on a human to query the health endpoint *(C4b; it was T5's until the 2026-09-23 split and the file was in no task's surface)*.
 `OK`/`WARNING`/`CRITICAL`). Also `types/enums.py:193+` — **T3 needs a new `PipelineCheckType`
 member**, which the first draft did not mention. **No migration is required**: `check_type` is
 `sa.Text` in `alembic/versions/0001_v0_schema.py:751` and no later migration alters it, so a new
@@ -1973,8 +1972,10 @@ keeping the old path in `src`, so **no flag can revert the selection change**, a
 compatibility image T2b item 10 defines carries that change too. 🔴 **What artefact reverts an
 unconditional selection change is Plan 314 E1, an OPEN owner decision.**
 
-⚠️ **This plan therefore lands INERT**: merged and deployed, with the `QC_UNCHECKED` write
-behind a flag defaulting `False` (C4). Turning it on is 314.
+⚠️ **This plan does NOT land inert.** *(Corrected 2026-09-23: three independent gates found the
+claim false.)* It deploys with the `QC_UNCHECKED` write **disabled** by T2b's flag — but the
+selection change is unconditional, so newly-selected rules begin producing verdicts, and can
+remove forecast inputs, from the moment the image deploys. Plan 314 enables the write.
 
 ### T6 — The paired old/new evaluation harness
 
@@ -2203,9 +2204,10 @@ would leave zero-rule groups still writing `QC_PASSED`, which is the defect itse
 T2b without T2 would move groups to `QC_UNCHECKED` that T2 would have repaired into a real verdict. An earlier graph put T3 in its own phase depending on T2, which contradicted the
 sentence beneath it and was wrong in both directions: D1's binding constraint is that a zero-rule
 outcome stops reading as a clean pass, which T2 alone does not discharge — *and* T2's rewrite of
-`_raise_on_time_step_mismatch` consumes the resolution object T3 defines, so T3 does not strictly
-follow T2 either. There is no edge between them; there is one change. **Round 6 makes this
-tighter still**: T2's second inference fetch and T3's resolution object are the *same* mechanism
+`_raise_on_time_step_mismatch` consumes the resolution object T0 defines. *(An earlier clause
+argued from that object that T3 does not strictly follow T2; it went vacuous when T0 took
+ownership of it, and is deleted.)* There is no edge between them; there is one change. **Round 6 makes this
+tighter still**: T2's second inference fetch and T0's resolution object are the *same* mechanism
 seen from two ends — building one without the other is the defect-with-telemetry failure
 (§ The resolution is ONE object). They cannot be sliced apart even in principle.
 
