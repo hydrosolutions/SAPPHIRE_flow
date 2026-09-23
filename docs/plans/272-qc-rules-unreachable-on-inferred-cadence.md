@@ -140,37 +140,6 @@ mechanism.
 
 ## ⚠️ Nepali QC thresholds — ⛔ THE PLAN 305 PREREQUISITE IS WITHDRAWN (2026-09-20)
 
-*An earlier revision of this section, written the same day, asserted that this plan must not
-land before a new "Plan 305" carrying Nepali threshold values, on the grounds that the Swiss
-`water_level` thresholds were "three to nine times too tight" and would mark every monsoon
-rise suspect. **Both the prerequisite and its justification are withdrawn.** Three of its four
-claims were wrong; the review pair found each one.*
-
-**1. The arithmetic was inverted.** `_apply_rate_of_change` compares **consecutive readings**
-(`services/qc.py:71-89`). The evidence quoted — largest one-day stage rises of 1.72–4.76 m —
-is a **per-day** quantity. Spread over a day of ~10-minute readings that is **0.012–0.033 m
-per reading**, against a `max_rate` of `0.5` — roughly an order of magnitude under it. The
-Swiss value is **too LOOSE here, not too tight.** ⚠️ **The magnitude is NOT established**: that
-is a *uniform-spread average* and a monsoon rise is not uniform. Tested on a real captured
-station-day the largest consecutive-reading change was **0.066 m** and neither `rate_of_change`
-nor `frozen_sensor` fired — but **the peak rate is unmeasured**, and that station-day comes
-from a different basin than the six.
-
-**2. The values are not unowned.** `docs/plans/268-dhm-barkhk-runoff-delivery.md` carries
-`open_decisions: [D14]` — *"how the DHM daily QC thresholds are calibrated"* — with its own T7
-waiting on it, and Plan 269's scope line defers to it explicitly. **Plan 305 forked a live
-decision and is withdrawn** (owner, 2026-09-20).
-
-**3. Plan 305 could not have been delivered anyway.** Per-station thresholds have no delivery
-surface: `overrides=[]` is hard-coded at every caller. That surface is Plan 269 —
-`status: BLOCKED`, `blocked_by: [272]`. So **272 → 305 → 269 → 272**.
-
-**🔑 4. What the real exposure is, stated honestly.** The rate rule **never divides by elapsed
-time**, so it is insensitive at a dense cadence and over-sensitive across a gap — which is
-§ C3's hazard, already recorded here. A sharp rise observed either side of a feed gap can trip
-it; an ordinary rise at full cadence will not. **How often is UNMEASURED** and needs sub-daily
-data nobody has. ⭐ **That missing time normalisation is the defect worth naming an owner for
-— not the threshold values.**
 
 ⇒ **This plan carries NO Plan 305 prerequisite.** What it does carry is the C3 hazard already
 documented: the newly-reachable rules land on the sparse/jittered population, where gap-blind
@@ -179,9 +148,6 @@ thresholds are most likely to fire wrongly. `spike` (`max_delta = 1.0`) and `gro
 
 ## ⭐ The operational picture — added 2026-09-20 from the high-risk review
 
-Eight review rounds assessed this plan as a *specification*. The owner-commissioned
-high-risk review assessed it as **a change to a running system**, and reached three
-things none of the earlier rounds did. All verified against `main` before folding.
 
 ### C1 — the blast radius, re-framed: no live Swiss group is daily
 
@@ -301,11 +267,6 @@ is, so it is retried every run and fails again, indefinitely.
 🔴 **This is worse than a halt, because a halt is visible.** A fleet-wide halt pages
 someone; a dark station looks like a quiet station.
 
-
-**The conclusion — 264 T3 must not land before this plan, or must land with it — stands. The
-reason stated in the first draft does not.** That draft asserted a fleet-wide halt from "every
-daily `(station, parameter)` group starts raising", while § What is NOT yet measured said the
-blast radius was unmeasured. Both could not stand, and the mechanism was mis-attributed.
 
 Stated as a **hypothesis pending T1** — and note that after D2 nothing *halts* at all; read "halt" throughout this subsection as **"is recorded `QC_UNCHECKED`"** (§ What 264 T3 actually does) — the dominant zero-rule sources on the live fleet are expected
 to be, in order:
@@ -481,7 +442,6 @@ alerting, scoring or training at all**. The number is granted here so this is a 
 promise; ⛔ *"a vague promise is not a deferral"* is this plan's own standard.
 
 
-
 **D5 — CLOSED 2026-09-20. A group that resolves no rules is recorded as UNCHECKED, not passed.**
 
 **⚖️ Owner decision:** *"'Passed' should mean checks ran and found nothing. A reading nothing could
@@ -547,13 +507,6 @@ forecast read cannot recover it. Measured inert today (no calculated station is 
 accepted on that basis; C9's canary must re-check it against the live deployment. See T2b
 § Accepted exception.
 
-**The two states this replaces** (kept because they explain *when* it fires):
-*(This plan's D5. Not `scripts/dhm_precip/qc_mask.py`'s D5, which is the time-step guard.)*
-
-This is currently derivable from T2 plus § Ordering consequence, and derivable is not the same as
-accepted. Stated once, as one consequence, for the owner to accept or reject:
-
-Two distinct states produce it, and an earlier draft of this decision named only the first:
 
 - **Regime 3 — transient.** A station with **fewer than two rows in the inference lookback** has
   no cadence to infer (§ The inference lookback, bounded), so **no rule runs on any observation it
@@ -572,10 +525,6 @@ In either state:
 - The stored row **used to read `QC_PASSED` with empty `qc_flags`** — the defect. **T2b now writes
   `QC_UNCHECKED` instead**, so the stored row itself carries the distinction and T3's aggregated
   `WARNING` in `pipeline_health` is a second signal rather than the only one.
-- Nothing halts — and **nothing halts under 264 T3 either.** 264 T3's raise is caught per-group
-  and strands the rows at `RAW`, which is a silently dark station, not a halt
-  (§ What 264 T3 actually does). § Ordering consequence then *forbids* landing 264 T3 while a
-  station is still cold — precisely because it would darken it.
 
 **🔴 How large the *regime 3* window is — measured, because an earlier draft of this decision said
 "their whole switch-on window" and that overstates it. This bound does not apply to regime 2,
@@ -603,29 +552,9 @@ The same correction narrows the outage case: with `L` = 30 days, a station retur
 **shorter than `L`** still has rows in the lookback and never enters regime 3 at all. Only an
 outage longer than `L`, or a genuinely new group, does.
 
-So a newly switched-on station ingests unchecked observations — indistinguishable downstream from
-checked ones — for the short window before its second row lands, **and a group whose cadence no
-rule declares does so indefinitely**, and the mechanism that would make
-that loud is the one we are deliberately holding back. That is coherent — guessing a cadence would
-be worse (see T2's regime table) — but it is a decision, not a side effect, and the owner should
-accept it at its **real** size rather than at the overstated one.
 
-*Recommendation: accept, with the two mitigations that cost nothing.* (a) The T3 `WARNING` names
-the affected groups, so **both** states are at least **auditable after the fact** — record in the
-Plan 268 runbook that it must be read, since nothing reads it automatically. It is also the only
-thing that distinguishes a transient regime 3 from a permanent regime 2: a group still named in
-the `WARNING` after several runs is regime 2, and needs D4's answer, not patience. (b) Fix the
-ordering with an explicit, checkable exit criterion of the switch-on rather than a condition
-someone has to remember before making 264 T3 READY. ⛔ **That criterion is the ORDERING
-constraint — T2b's write site lands before, or with, 264 T3.** *(Corrected 2026-09-22: this
-recommendation previously named "T3's zero-rule telemetry names no group over a full poll cycle",
-which D2's own closure later WITHDREW as a point-in-time check on an episodic condition — a
-recommendation left standing on a gate the same decision had removed. An earlier draft had made
-it "every new station has two rows in the inference lookback", also the wrong quantity.)* **If the owner rejects, the alternative is to hold Plan 268's switch-on until 264 T3 can
-land with it — which trades unchecked observations for no observations, and is a real option.**
-Note what the corrected sizing does to that trade: it buys **one run's** worth of checking per
-station, which makes holding the switch-on a considerably worse bargain than the original framing
-implied.
+*Recommendation: accept.* Record in the Plan 268 runbook that T3's `WARNING` names the
+affected groups and must be read, since nothing reads it automatically.
 
 **D6 — NEW (round 6). Who restores daily `rate_of_change` and `spike`, which selection alone
 cannot reach?**
@@ -637,19 +566,6 @@ most one row. They run and return nothing, and T3's telemetry correctly reports 
 *resolved*, so the shortfall is invisible from the outside.
 
 This is D4's situation in a different place, and this plan's own standard applies: **a documented
-defect must not be left with no owner.** Three options:
-
-- **(i) A scoped extra task in this plan** *(⛔ REJECTED; identifier removed for the same reason as D4's option (i))*. Supply the missing context without widening what gets
-  *flagged*: fetch the neighbouring rows for the checked window's observations and pass them to
-  `check` as context, flagging only the window's own rows. Keeps the fix with the plan that found
-  it; the cost is that this plan then touches `check`'s data flow a second time, on top of the
-  signature change T3 already carries.
-- **(ii) A named successor plan.** Cheap now, and honest **only if the number is granted here** —
-  D4's entry already says a vague promise is not a deferral.
-- **(iii) Accept permanently and document it as a known limit of sub-daily-window QC.** Defensible
-  only if the owner judges daily `rate_of_change`/`spike` to be low-value checks. Note what it
-  costs: `discharge` and `water_level` are the two parameters alerting actually depends on.
-
 **⚖️ Owner decision, 2026-09-20: (ii) — a named successor, granted here as ⭐ PLAN 304.**
 🔴 **As of 2026-09-22 no `docs/plans/304-*.md` exists and no other plan records 304 as a
 prerequisite, so by this plan's OWN standard it is still a promise wearing a number.**
@@ -662,21 +578,6 @@ scope: supply `check` with the neighbouring observations a daily series needs, s
 alerting depends on — without widening what gets flagged. ⛔ Option (iii) was rejected: these are
 not low-value checks.
 
-*Original recommendation, retained for the reasoning: (ii), with the number granted in this fold.* (i) enlarges a change that round 6
-has already grown once, and the four rules are inert **today** as well — this plan does not
-regress them, it stops over-claiming about them. But it must not close as a dangling sentence.
-**D6 was answered 2026-09-20: a named successor, ⭐ Plan 304, with the number granted in that
-fold** — on the same terms as D4, which went to ⭐ Plan 303.
-
-**Decision gating — ⭐ REWRITTEN 2026-09-20, because every clause of it was false after the
-closures and it actively instructed an implementer to skip T2b.**
-
-*The superseded text said implementation could proceed with D2–D6 open, that "D2 keeps the raise
-in 264 T3", and that "**D5 changes no code here at all — it is an acceptance**". All three are
-now wrong: D2 **removes** 264's raise, and D5 creates an enum member, a migration, a store
-signature change and thirteen consumer decisions. An implementer following that paragraph would
-have built T2 and T3 and shipped without T2b — the defect this plan exists to fix.*
-
 **All seven decisions are CLOSED (D1 2026-09-19, D2–D7 2026-09-20). Nothing in this plan is
 gated on an owner decision any more.** What gates implementation now is work, not answers:
 **C5, C6 and C7** (§ The operational picture and § rollout controls) and the T2b scope named
@@ -685,14 +586,6 @@ below.
 `QC_PASSED` is acceptable, and what happens to a station whose forecast is skipped
 because they did?**
 
-This is the decision the plan does not have, and the review ranks it as the one that
-matters most for production. It is **not derivable from D2–D6**: those settle *which
-rules run*, and this settles *what we accept when they do*. The fix's cost is that
-correctly-flagged rows are **removed** from every consumer in § What a changed verdict
-does downstream — including `operational_inputs`' `past_targets`, where enough dropped
-rows empty a resampled bucket, `validate_time_step_cadence` raises, and **that station's
-forecast is skipped for the cycle**. That is a silent per-station outage caused by a
-correct QC verdict.
 
 **⚖️ Owner decision, 2026-09-20: set the limit up front and abort the rollout if it is
 exceeded.** Confirmed as recommended, and it is now a **rollout gate, not a monitoring
@@ -713,11 +606,6 @@ question): a station whose forecast is skipped for missing input should say so. 
 in this plan's scope and is **recorded as a follow-on for the watchdog**, alongside C4b's
 zero-rule probe — the two are the same gap seen from two sides.
 
-**D1–D7 are all CLOSED (D1 2026-09-19; D2–D7 2026-09-20).** ⛔ **Threshold rows are out of
-scope UNCONDITIONALLY — nothing about D4 gates this plan.** The superseded text here quoted
-T2's *Out* as "no threshold changes (unless D4 selects (i))" and called it "a gate on merging",
-which implied threshold rows could still land here; D4 closed to Plan 303, T2's *Out* no longer
-says that, and no part of this plan is gated on it.
 
 ## Tasks
 
@@ -748,23 +636,6 @@ judged. A row checked cleanly looks zero-rule once its neighbours age out; a gen
 zero-rule row looks healthy once new neighbours arrive. ⇒ **A snapshot can say what the flow
 WOULD do now. It cannot say what it DID.**
 
-#### ⚖️ Owner decision, 2026-09-20: build the observability first, then measure
-
-⛔ **The instrument is NOT `QC_UNCHECKED`, and T2b is NOT split. Both were proposed, both
-were wrong, and the review pair killed them.** Recorded because the reasoning matters:
-
-*The first proposal was to split T2b into a "stamp only" step — write `QC_UNCHECKED`, leave
-every consumer accepting it — and a later consumer-policy step. It was claimed to be "near
-inert". **It is the opposite.*** `fetch_observations` filters on **exact status equality**
-(`store/observation_store.py:184`), so the instant a row carries the new status it
-**disappears** from all thirteen `QC_PASSED` reads — alerting, skill, training, hindcast,
-forecast inputs, the partner snapshot. That is the dark-station failure this plan exists to
-prevent, shipped alone and ungated. And the only alternative reading — widen all thirteen
-first — is not "the stamp only": it *is* T2b's item 3 and item 6, it would publish unchecked
-rows under the forecast-lab schema's `qc_status: Literal["qc_passed"]` per-point assertion,
-and **nine sites would be touched twice with opposite values**, which is more work than the
-unsplit landing and a fresh chance to leave one site wrong each time.
-
 **🔑 The instrument is `qc_rule_version` — a sentinel value at the zero-rule branch.**
 
 Verified: `observations.qc_rule_version` is `sa.Text`, **nullable, with NO CHECK constraint**
@@ -779,11 +650,6 @@ queryable marker of zero-selection rows — ⛔ **not D7's numerator** (T1, D7) 
   `qc_status`, which does not move;
 - **no rollback exposure, and no flag needed**, which removes the gating problem entirely.
 
-⭐ **It is genuinely inert, which the stamp only claimed to be** — and two independent
-adversarial reviews failed to break it: 8 occurrences in `src/`, all round-trip plumbing; zero
-in `api/`, `cli/`, `tools/`, `ops/`, `adapters/`; no comparison, parse, ordering, grouping,
-index, constraint, natural key, upsert-comparison, archive, migration or fixture consumes it;
-of 45 test occurrences only 6 assert a value and all 6 are rule-resolving scenarios.
 
 🔴 **BUT THE SPELLING MUST BE A SUFFIX, NOT A WHOLE VALUE.** T5 bumps this same field as its
 deploy-boundary marker, and `obs_qc_rule_version` already multiplexes datum provenance
@@ -828,18 +694,6 @@ plan cache, same rollback surface.
 - **The write site** (`flows/ingest_observations.py:350-356`) and
   **`services/qc_datum.py:23-26`** — write a **sentinel `qc_rule_version`** (e.g.
   `"1.0-norules"`, and the datum variants likewise) when the resolved rule set is empty.
-- ⛔ **NO counter change. Dropped 2026-09-20, and the reason it was here was FALSE.**
-  *An earlier revision pulled T2b item 5 forward, claiming "a zero-rule outcome is counted as
-  suspect today". Measured: `_aggregate_qc_status([])` returns **`QC_PASSED`**
-  (`flows/ingest_observations.py:145-150`), and T0 writes **no new status**, so a zero-rule
-  outcome lands in `counts["passed"]` at `:369` — **not** in `suspect` at `:373`. That premise
-  is true only for T2b, which introduces a status that falls through the `else`.*
-  🔴 **And implementing it would have broken T0's own guarantee**: moving those rows out of the
-  passed bucket changes `IngestResult.qc_passed` and the `ingest.qc_complete` emission — a
-  behaviour change, in the one task whose entire purpose is to change nothing, **which T0's
-  inertness test would not have caught** because that test is scoped to the observations table
-  and the counters live outside it. The sentinel already sits on the row with `station_id`;
-  no counter is needed. **Item 5 stays in T2b, where its premise is true.**
 
 - 🔴 **`services/onboarding.py` — the SECOND call site of BOTH changed functions**, omitted
   from an earlier revision of this list. It calls `checker.check(...)` at `:796`,
@@ -868,11 +722,6 @@ release, no consumer or filter edit, no index change, no counter change, and no 
 the entire point of choosing this carrier. `QC_UNCHECKED` and its consumer policy stay in T2b,
 landing with T2.
 
-**Why this carrier is safe, measured rather than assumed**: `observations.qc_rule_version` is
-`sa.Text`, **nullable, with no CHECK constraint** (`db/metadata.py:535`), and **nothing in
-production branches on its value** — the only readers are round-trip plumbing
-(`types/observation.py:43`, `store/observation_store.py:50, 299, 320`,
-`protocols/stores.py:118`).
 
 **Verification**:
 - A zero-rule group's rows carry the sentinel; a group that resolved rules carries the
@@ -914,9 +763,6 @@ four at 1500 s and one at 2400 s — and therefore select zero rules and report 
 the start of the captured file, so the window sees only 3-5 rows. Restricting to the **126**
 windows whose full three hours lie inside the captured span gives **0** zero-rule windows: with a
 full-width window the 104 ten-minute gaps dominate the median and it resolves to 600 s.
-*(126, not 132, as an earlier draft of this task said: 132 trims only the leading 12 grid points,
-but the 6 trailing points also have `now + 1 h` running past the last captured row. Re-measured at
-`9dc07915` — 144 grid points, 12 trimmed at the head, 6 at the tail. The result is 0 either way.)*
 **What this
 establishes is that a *sparse* window mis-infers — which happens in production on a new station,
 after an outage, or when the feed lags — not that 3.5 % of steady-state windows mis-infer.** The
@@ -953,26 +799,6 @@ because the gaps come with it. Widening the **inference lookback** — the rows 
 what cadence the series reports at — is a different change and is exactly what T2 does. T1a
 measures the first and says nothing against the second.
 
-**T1b (live).** For each `(station, parameter)` with observations in the last 30 days, report the
-median inter-row gap over a three-hour window, the cadence that would be inferred, whether any
-configured rule matches it, and the count of observations marked `QC_PASSED` with an empty
-`qc_flags`. **The headline number this plan needs is the proportion of QC-passed observations
-that had zero rules run.** T1b also settles the § Cross-plan hypothesis: how many live groups are
-genuinely daily, and whether BAFU's sub-daily parameters resolve their 600 s rules today.
-
-🔴 **REWRITTEN SCOPE, 2026-09-20 — this task now CONSUMES T0's sentinel.** *An earlier
-revision left T1 untouched while the preamble above disqualified its method, so the plan
-instructed the implementer to set D7's threshold from the very census it had just ruled
-unfaithful. Worse, the same edit **deleted** the guard that said so rather than reconciling it.*
-
-- **Q2's sliding-window loop is the measurement contract for this task** — shape and scale of
-  the zero-rule population, read-only, no code change. It is what T1 actually delivers.
-- 🛑 **D7's threshold does NOT come from T0's sentinel.** *(Circular requirement removed
-  2026-09-22 after independent review: the sentinel is a per-row `qc_rule_version` string that
-  re-examination and the upsert NULL-reset overwrite, so counting sentinel rows IS a
-  `SELECT count(*)` census — the very method the same bullet forbade — while `**In**` forbids
-  the code change that was the only other route named. Three requirements, none of which could
-  hold together.)* It comes from **Q2**, consistently with D7's own closure and T5.
 - 🔑 **Q2 supplies a prospective zero-selection BASELINE for choosing D7's threshold. D7 itself
   retains its per-station, per-cycle outcome fraction, read from the ingest counters.** ⛔ *They
   are different populations and an earlier fold conflated them (corrected 2026-09-23): Q2
@@ -1381,13 +1207,6 @@ reported as resolved by T3's telemetry.** That test pins the disclosed shortfall
 back into an unqualified coverage claim, and it fails the day someone widens the checked window
 without saying so.
 
-**🔴 That test only earns its keep if it can fail for the right reason — and the obvious way to
-write it cannot.** A fixture whose single daily value simply does not breach `max_rate` or
-`max_delta` satisfies "produces no flag" **identically**, and would stay green even if `prev` and
-`nxt` *were* supplied. It would then be a passing test that proves nothing, and the day someone
-widens the checked window it would keep passing — which is the one event it exists to catch. This
-is `feedback_red_first_must_prove_the_fault`: a red-first (or regression-pinning) test must fail
-for the reason the behaviour exists. Required, therefore:
 
 - **The fixture's consecutive daily values must BREACH the thresholds, and it must use the
   daily `water_level` rules.** ⚠️ *Corrected 2026-09-22 after independent review — an earlier
@@ -1442,28 +1261,6 @@ it is asserted on the SQL:
 
 #### Rollout gating and post-deploy monitoring
 
-T1b measures the *pre*-state. What gates the rollout, and what merely watches it afterwards, are
-two different things, and an earlier draft conflated them.
-
-**🔴 The rollout gate is a PAIRED evaluation on identical inputs — not a comparison of successive
-live periods.** An earlier draft made the gate "per-verdict counts over the N runs after the deploy
-must match the counts over the N runs before it, outside T1b's groups". **That is not a
-discriminating test, and it must not be the gate**, for two reasons that point in opposite
-directions:
-
-- It compares **different observations**. The pre-window and the post-window are different river
-  levels at different times. A rising stage, a storm, an instrument swap — any of these moves the
-  `QC_SUSPECT`/`QC_FAILED` counts on a group T1b never named, with nothing wrong in the code, and
-  the gate fails the deploy.
-- It is **insensitive in the direction that matters**. Verdict *counts* are aggregates: the new
-  matcher could classify a different set of observations and preserve the totals exactly — one
-  spurious `QC_FAILED` where one real one disappeared nets to zero. The gate would pass a
-  reclassification.
-
-**And the cost of getting it wrong is not symmetric: reverting the image does not undo the
-verdicts already written.** See § Rollback — observations QC'd under the new matcher keep their
-flags, by D3. A gate that only fires *after* rows have been persisted is therefore the wrong
-instrument regardless of how sensitive it is.
 
 **Required before rollout — the gate:**
 
@@ -1483,19 +1280,6 @@ instrument regardless of how sensitive it is.
   | **Unresolved, regime 3** — fewer than 2 rows in the whole lookback | **empty** on flags; the group is marked zero-rule | any rule selected |
   | **Previously working** — resolves rules today (e.g. BAFU's 600 s groups) | **empty**, per observation — ⚠️ **unless the widened lookback legitimately infers a DIFFERENT cadence**, in which case the expectation is whatever the regime table predicts for the cadence inferred over the WIDENED lookback, stated per group in advance | a change not predicted by the regime table for the widened-lookback cadence |
 
-  ⛔ **The unconditional "any change at all" failure was deleted 2026-09-22 after independent
-  review: it would reject a CORRECT implementation.** Widening the inference lookback can change
-  an already-resolving cadence, legitimately. Worked example: 32 rows at 1200 s followed by 18 at
-  600 s — the three-hour window sees only the recent rows and infers 600 s (a rule resolves),
-  while the widened lookback takes the median of all 49 gaps and infers 1200 s, which no rule
-  declares, so the correct new outcome is regime 2 / `QC_UNCHECKED`. That is the fix working, and
-  the old gate called it a regression. **Compare against the widened-lookback prediction, not
-  against the pre-state.**
-
-  A per-observation diff on identical inputs is discriminating in both directions the count
-  comparison is not: no legitimate measurement change can enter it, and no reclassification can
-  cancel out inside it. The partition is what makes it discriminating about *repair* as well as
-  about *regression*.
 
 - **🔴 The input set must contain at least one REPAIRABLE group, and the gate fails if it does
   not.** "The diff was empty everywhere" is the same observation as "nothing was repaired" and as
@@ -1541,19 +1325,6 @@ instrument regardless of how sensitive it is.
   which is the arithmetic bound of "one existing fetch plus one bounded inference fetch per
   ingesting group". A count above that means the cap is not where the plan says it is.
 
-  **🔴 Why that count is scoped to fetches, and not to every statement against `observations`.** An
-  earlier draft of this bullet bounded "the count of `observations` queries per run (from
-  `pg_stat_statements`)" by the same arithmetic. That measurement **fails on the *unchanged*
-  system, before any deploy**, so it would gate the deploy on a threshold nothing has ever met:
-  `_run_qc_task` calls `obs_store.update_qc` once **per observation**
-  (`flows/ingest_observations.py:356`), and each call issues one `UPDATE` against `observations`
-  (`store/observation_store.py:143-158`), on top of the per-run `INSERT` from
-  `store_raw_observations` (`store/observation_store.py:64-96`, reached via `_store_raw_task` at
-  `flows/ingest_observations.py:711`). A single group carrying 18 rows therefore contributes 19
-  statements by itself. The arithmetic intent — one existing fetch plus one bounded inference fetch
-  per ingesting group — was right; only the measurement scope was wrong. `pg_stat_statements` may
-  still be the instrument, but only with the QC-path `SELECT` isolated by `queryid`; counting the
-  writes says nothing about where the cap is.
 - N ≥ 12 (one hour of runs) covering at least one full poll cycle of every active adapter.
 
 **Rollback.** ⚠️ **Code-only rollback holds ONLY until the first `qc_unchecked` row exists.**
@@ -1619,8 +1390,8 @@ window always lands on an image that already understands the rows on disk"
    restore the old verdicts (§ T5 Verification).
 2. Enable it in `config/overlays/mac-mini.toml`, which is a **host bind mount** into
    `prefect-worker`, `prefect-worker-ingest` and `api`
-   (`docker-compose.macmini.yml:41, 47, 71`, `:ro`). **Rollback becomes a host file edit
-   plus a container restart — seconds, and reversible mid-cycle — instead of a rebuild.**
+   (`docker-compose.macmini.yml:41, 47, 71`, `:ro`). **Disabling the flag stops
+   `QC_UNCHECKED` writes; selection rollback requires the compatibility image.**
    ⚠️ Edit it **in place**: this is a single-file bind mount, and an editor that writes a
    new inode leaves the container reading the old content until it is recreated
    (the known `git pull` trap).
@@ -1645,10 +1416,6 @@ types (`ops/watchdog.py:142-178`). Without one more probe, T3's `WARNING` is pul
 `/api/v1/health/detail`, and D5's mitigation (a) — "the Plan 268 runbook reader must read
 it" — reduces to a human remembering to look. One more probe URL makes it Slack.
 
-**⛔ A true shadow mode is better and is NOT recommended.** Computing both and writing the
-old would make the paired gate continuous rather than one-shot, but it costs the double
-computation T3 explicitly forbids. The flag buys most of the safety for a fraction of the
-design.
 
 ### T2b — Record an unchecked outcome as `QC_UNCHECKED` (D5, D2)
 
@@ -1796,20 +1563,6 @@ alone**, as the first draft's *In* surface implied. Two routes exist:
 
 #### 🔴 The resolution is ONE object, and `check` consumes it — this DOES change `check`'s signature
 
-**An earlier draft of this task froze `check`'s signature and had the flow call a resolution method
-*alongside* it. That design reproduces the defect with reassuring telemetry, and it must not be
-built.** The mechanism, measured at `9dc07915`:
-
-`Stage1QualityChecker.check` infers the cadence from **the observations it was handed** — it groups
-its own argument (`services/qc.py:243-251`) and calls `time_step = _infer_time_step(group)` then
-`rule_set.rules_for(parameter, time_step)` (`:252-253`). The flow hands it the **three-hour checked
-window** (`flows/ingest_observations.py:334`, fed by the fetch at `:311-316`). T2 introduces a
-**second, wider** fetch for inference. If the resolution is computed from the wide fetch while
-`check` keeps inferring from the narrow one, then for a daily series **the telemetry resolves the
-daily rules from the 30-day lookback and reports the group as resolved, while `check` sees one row,
-infers 1 h, matches nothing and runs zero rules.** That is the original defect, now with a
-`pipeline_health` record asserting it did not happen — strictly worse than today, because today at
-least nothing claims otherwise.
 
 **So: one resolution, computed once from the inference lookback, consumed by BOTH the checking and
 the reporting.** There is no design in which `check` re-derives it and the two stay in agreement,
@@ -1835,34 +1588,6 @@ to carry identity regardless of the first point above.
 - the **selected rules**, as the actual `QcRuleParams` objects that `rules_for` returned — a
   `tuple[QcRuleParams, ...]`, empty for regimes 2 and 3.
 
-**🔴 NOT `rule_id`s, and not `rule_version`s either — `rule_id` identifies a KIND, not a
-configured rule.** An earlier draft of this bullet wrote "the actual `QcRuleParams` *(or their
-`rule_id`s)*", and the parenthetical reintroduces the defect the object exists to close. Measured
-at `9dc07915`:
-
-- `QcRuleId` is a `Literal` (`types/domain.py:137`) — a closed set of *kinds*. `config.toml`
-  carries **seven** rows with `rule_id = "range_check"` — measured by parsing the file at
-  `9dc07915`: `discharge` at 600 s and 86400 s, `water_level` at 600 s and 86400 s,
-  `water_temperature` at 600 s, `precipitation` at 86400 s, `temperature` at 86400 s. Since
-  `rules_for` also filters on `parameter` (`types/domain.py:163-167`), the collision that matters
-  is the **within-parameter** one: `discharge` and `water_level` each carry two `range_check` rows
-  differing **only** in cadence. And **every one of the file's 26 rows declares
-  `rule_version = "1.0.0"`** (`config.toml:212` onward) — also measured, not read off one row. So
-  neither field, alone or together, names a configured rule.
-- The repo already knows this and says so where it bit: `rule_subset`'s docstring
-  (`scripts/dhm_precip/qc_ruleset.py:111-114`) filters by `rule_version` explicitly because
-  `skipped_rule_ids` "cannot distinguish two `frozen_sensor` instances sharing one `rule_id`".
-  In the DHM mask rule set `rule_version` *is* the distinguishing field; in `config.toml` it is
-  not. There is no single scalar field that works for both.
-
-**The consequence if the parenthetical is built.** Take an hourly series against a rule set
-carrying `range_check` at 3600 s (selected) and `range_check` at 1800 s (not selected). The two
-rows share a `rule_id`. Asking "is this rule's id in the resolution's id set?" answers **yes for
-both**, so the 1800 s rule reads as selected and T2's re-expressed guard does not raise on it —
-**the mixed-set defect `_raise_on_time_step_mismatch` exists to catch survives the fix.** The
-existing mixed-set test cannot catch this: `tests/unit/scripts/test_dhm_precip_mask.py:185-216`
-mixes an hourly `range_check` with a 30-minute `frozen_sensor` — **two different kinds**, so id
-membership happens to give the right answer there and the test stays green.
 
 **Therefore, binding:** the resolution carries the rule objects, and membership is decided by
 object equality (`QcRuleParams` is a frozen dataclass with the default `eq=True`, so this is
@@ -1912,15 +1637,6 @@ fire on ordinary operational data.
 observations produces the marked zero-rule outcome and **does not raise** — asserted directly,
 because the failure is invisible in any test whose fixture happens to store its rows inside `L`.
 
-**✅ One adjacent hazard, CHECKED and cleared — recorded so nobody re-derives it.** The flow passes
-`check` the **datum-shifted** observations (`qc_observations`,
-`flows/ingest_observations.py:328-340`) while the inference fetch would read **raw** stored rows,
-so the two row sets are not the same objects and a key mismatch would produce exactly the raise
-above. It does not: `shift_observations_for_water_level_datum` (`services/qc_datum.py:41-52`)
-rebuilds each observation with `replace(obs, value=obs.value - datum)`, touching **`value` only** —
-`station_id`, `parameter`, `timestamp` and `id` are all preserved — so the `(station_id,
-parameter)` key set is identical either way. No spurious raise, and **no requirement to build the
-resolution from the shifted rows**. Recorded as a verified non-hazard, not as a task.
 
 #### 🔴 What happens to `check`'s OTHER two rule parameters — say it, or two implementers build two things
 
@@ -1985,12 +1701,6 @@ These are the sites that move, verified at `9dc07915`:
   and `scripts/dhm_precip/qc_mask.py:203` and `:208`.
 - **The spec**: `docs/spec/types-and-protocols.md:697-714` (the `QualityChecker` Protocol block) —
   T4 owns it, and it is **already** one parameter behind the code (see T4's *In*).
-- **Not in T4's surface, but do not be misled by it**: `docs/design/dhm-precipitation-milestones.md:1641-1642`
-  states that `Stage1QualityChecker` "has two call sites: `flows/ingest_observations.py:188` and
-  `services/onboarding.py:637`". Both line numbers are stale at `9dc07915` (the real sites are
-  `:333`/`:334` and `:773`/`:796`) and the count omits the two DHM-mask calls. That document is a
-  milestone record, not a contract, so this plan leaves it alone — **awareness only**, recorded
-  so the next reader does not take it as a competing call-site inventory.
 - **Test call sites**: `tests/unit/services/test_qc.py` (the bulk — 30 checker constructions),
   `tests/unit/config/test_qc_rules.py:165`,
   `tests/unit/scripts/test_dhm_precip_ruleset.py:72,91,100,107`, and
@@ -2044,16 +1754,6 @@ so
   test merging at all — they would have to be deleted or rewritten, and a "one-line migration"
   invites the first.
 
-*Method, measured at `b361eb22` on 2026-09-19:* regime 3 was simulated for the whole file by
-monkeypatching `QcRuleSet.rules_for` to return `()` on every call — exactly what the
-same-observations constructor produces for a one-row group — and running `uv run pytest
-tests/unit/services/test_qc.py`. Of the twelve sites the run reports six failures, five passes, and
-`:102` split two-and-two. **An earlier fold recorded this split as 8/4.** That figure was read off
-the assertions rather than run, and it mis-sorted three sites — `:117` and `:377` assert an *empty*
-result and therefore stay green rather than going red, `:385` asserts a flag and therefore goes red
-rather than staying green — and counted the parametrised `:102` as wholly red. **The substance is
-unchanged either way: the silently-green half is the hazard, and correcting the split makes it
-larger, not smaller.**
 
 **Required instead.** For each of those twelve sites, the implementer must:
 
@@ -2108,11 +1808,6 @@ consumes — the guard asks "which rules would the production matcher select for
 a cadence inferable at all", which is the two fields above. That is why T2 and T3 are one landing,
 not two (see the phase graph note below).
 
-**⚠️ What is NOT accepted any more: computing the resolution twice.** An earlier draft accepted
-re-running `groupby` and `_infer_time_step` alongside `check` as "the price of leaving `check`'s
-return type alone". With `check` consuming the resolution that price is not paid and the
-duplication does not exist — **and it must not be reintroduced**, because two computations over two
-different row sets *is* the defect above. Compute it once, pass it down.
 
 **The five *construction* sites, recorded by an earlier round and still the right set to sweep.**
 Constructions: `flows/ingest_observations.py:333`,
@@ -2155,14 +1850,6 @@ return empty flags, but only one of them is ever worth marking.)* The only thing
 `_empty_rule_set` path explicitly in T3's tests; it is the one caller for which "no rules
 resolved" is the intended request rather than a defect.
 
-**⚠️ And that test starts from ZERO coverage, so budget it as a new test rather than an
-amendment.** Measured at `9dc07915`: **nothing under `tests/` imports
-`build_dudh_koshi_handover`** — grep returns only `docs/plans/**` references — so
-`attribute_mask_by_rule` and `_empty_rule_set` (`build_dudh_koshi_handover.py:154-191`) have **no
-test anywhere**, despite `attribute_mask_by_rule` calling `qc_mask._station_mask` once per rule
-and feeding the Dudh Koshi handover's per-rule attribution (`:1080`). The path this constraint
-protects is therefore protected today by nothing at all, and a regression in it would surface in
-a delivered artefact rather than in CI. T3's test is the first coverage it gets.
 
 **In**: `services/qc.py` (the resolution value type, its constructor, and `check` consuming it —
 per (b) above and § The resolution is ONE object); `protocols/stores.py:1029-1037`
@@ -2206,9 +1893,6 @@ and `detail` shape.
 
 **🔓 What this does and does NOT close — say it in the merge, not after it.**
 
-⭐ **Rewritten 2026-09-20: D5's closure changed this answer.** An earlier revision said the
-fail-open stays open after this plan and that "the closure is 264 T3's raise". **Both halves are
-now wrong** — D5 closes it here, and D2 removed 264's raise.
 
 **What T2 + T2b + T3 now close.** An observation whose group resolved zero rules stores
 `QC_UNCHECKED`, not `QC_PASSED`. The stored row carries the distinction, the nine
@@ -2240,18 +1924,6 @@ historical and wide, which is why the daily rules *do* resolve there (§ Problem
 sentence into the diff.** Left unsaid, the asymmetry reads as an oversight to the next reviewer,
 who will either file it or fix it; T4 records it as the known limitation it is.
 
-⭐ **Reconciled with D5, 2026-09-20 — and D5's guarantee is hereby QUALIFIED.** D5 is written as
-an unqualified statement ("a zero-rule group is recorded `QC_UNCHECKED`"). It is not unqualified:
-onboarding's `:812` feeds `aggregate_qc_status([])`, which returns `QC_PASSED`, so **the onboarding
-path would still store `QC_PASSED` over zero rules.** The correct scope of D5 and T2b is
-**the scheduled ingest path**.
-
-**Accepted, for a measured reason rather than by omission**: onboarding's window is historical and
-wide, so the daily rules *do* resolve there (§ Problem) — which is also why the pre-existing
-contamination is bounded (D3). ⛔ **But it must be written into D5 and T2b as a stated boundary**,
-because an unqualified guarantee that a stored status carries a meaning is exactly the kind of
-claim a later consumer will rely on. If onboarding is ever given a narrow window, this exception
-becomes a defect and must be revisited.
 
 **Out**: **not** a raise — D2 (closed 2026-09-20) replaced Plan 264 T3's raise with T2b's
 `QC_UNCHECKED` record, so neither this task nor 264 raises on a zero-rule group. Not the stored
@@ -2283,11 +1955,10 @@ operator rather than waiting to be asked.
 - **The enable path**: `config/overlays/mac-mini.toml`, a host bind mount into `prefect-worker`,
   `prefect-worker-ingest` and `api` (`docker-compose.macmini.yml:41, 47, 71`, `:ro`).
   ⚠️ Edit it **in place** — a new inode leaves the container reading the old content.
-- **D7's automatic abort**: the threshold, **its denominator and window** — Q2's per-station,
-  per-window share, per T1; ⛔ NOT a per-cycle share read back from stored rows, which no row
-  carries a key for — the comparison, and the revert action. It reads T2b's new `unchecked`
-  counter **separately** from `suspect`, or it measures the wrong thing. 🔴 **The number itself
-  comes from T1's Q2 census** and is not set here.
+- **D7's automatic abort**: D7 compares the per-station, per-cycle outcome fraction from the
+  ingest counters against T1's proposed threshold, and reverts. Count `unchecked` separately
+  from `suspect`, or it measures the wrong thing. Q2 supplies the baseline for CHOOSING the
+  threshold, not the fraction the abort compares.
 - **Retained-row behaviour after the flag is disabled** — rows already written `QC_UNCHECKED` stay
   written; say so, and say what re-enables them (T2b item 7's re-examination).
 - **`qc_rule_version`** bump in `services/qc_datum.py:23-26`, making the deploy boundary a
@@ -2315,9 +1986,7 @@ operator rather than waiting to be asked.
   ⚖️ **OWNER — this narrows what the flag promises, and you should see that rather than find
   it.** The flag is a *status-write* control, not a *behaviour* rollback: it bounds the new
   `QC_UNCHECKED` population, not the changed selection. What covers the selection change is the
-  compatibility release plus T6's paired harness, which is what they are for. If a true
-  behaviour rollback is wanted instead, T6's rejected alternative has to be re-opened and the
-  old path kept in `src` — a decision, not an implementation detail.
+  compatibility release plus T6's paired harness, which is what they are for.
 - Enabling for one station changes that station and no other.
 - A simulated loss above the threshold aborts and reverts without human action.
 - The rollback anchor is tagged before the upgrade (`docker tag … rollback-backup`) — the mini has
@@ -2326,9 +1995,6 @@ operator rather than waiting to be asked.
 
 ### T6 — The paired old/new evaluation harness (C6)
 
-*Scoped 2026-09-20 at the owner's instruction. This was the last standing unowned condition
-and the one the plan leaned on hardest: every rollout control it specifies depends on this
-gate, and it had no file, no task and no owner through three review rounds.*
 
 **Outcome**: a **read-only** report that, over a pinned set of real stored observations,
 shows per observation exactly what the selection change does — partitioned by regime, and
@@ -2388,7 +2054,7 @@ let it abort the run.
 
 #### The pass criteria
 
-**Use T2's paired-evaluation pass criteria** (§ T2 — the regime-partitioned table). ⛔ *A duplicate table lived here and still required unchanged selection, flags and status for every group that resolves rules today — exactly the gate T2's table stopped requiring on 2026-09-22. Deleted rather than re-corrected: the criteria are stated once, in one place.*
+**Use T2's paired-evaluation pass criteria** (§ T2 — the regime-partitioned table).
 
 #### The input range — and why a healthy one is worthless
 
