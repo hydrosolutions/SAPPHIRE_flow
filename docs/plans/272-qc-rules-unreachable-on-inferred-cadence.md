@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: PARTIALLY_IMPLEMENTED   # reactivated 2026-09-23 — #297 shipped the write half only; see § Status
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
@@ -15,7 +15,38 @@ source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (bot
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+🔴 **PARTIALLY IMPLEMENTED AND MERGED — REACTIVATED 2026-09-23. ⛔ DO NOT DEPLOY `main` UNTIL THIS
+SECTION IS CLEARED.**
+
+PR #297 (`732f0b1d`, tag v0.1.960) merged claiming this plan's phase-2 (T2, T2b, T3). It shipped
+the **write** half and not the **consumer** half. Found by hand while reviewing Plan 313, after
+the merge.
+
+**Confirmed absent from `main` at `55e30d1a`, measured:**
+- **T2b In item 6 — the complete consumer filter policy — and item 7 — the `DEGRADED` provenance
+  path.** `QC_UNCHECKED` occurs in exactly three files: `types/enums.py`, `db/metadata.py` and
+  `flows/ingest_observations.py` (the writer). **No consumer accepts it**, and consumers filter by
+  equality (`store/observation_store.py:183-184`).
+- **The write gate this plan's own `scope` line promises** — *"this plan deploys with the
+  `QC_UNCHECKED` write disabled by a flag"*. No such flag exists in `config/deployment.py` or at
+  the write site (`flows/ingest_observations.py:380-388`); `_aggregate_qc_status` writes
+  unconditionally.
+
+🔴 **Consequence if `main` is deployed as it stands:** a group resolving zero rules is written
+`QC_UNCHECKED` and **disappears from every consumer** — forecast inputs, the observation-alert
+path (live on the mini per `docs/v1-scope.md:41-45`), skill and training. That is exactly the
+dark-fleet outcome D5's consumer split exists to prevent, and which this plan records as the
+Plan 264 T3 failure. Either safeguard alone would have prevented it; neither shipped.
+
+⚠️ **Why the reviews did not catch it, recorded because the method is the defect:** every gate run
+on #297 was **diff-scoped** — "does this diff close the finding / is it correct?" — and a missing
+deliverable is structurally invisible to that question. Two such reviews passed it, and the green
+suite could not help: tests do not fail for code nobody wrote. **No gate was ever asked "is this
+complete against the task's In-list?"** A completeness audit is running now; its result belongs in
+this section.
+
+**Prior status line, still true of the plan document itself:** **DRAFT.** ⛔ Only the orchestrator
+sets READY.
 
 ⚠️ **High-risk work** (`docs/workflow.md` § High-risk work): this changes scientific behaviour
 on the live Swiss deployment, so it needs a relevant independent review in ADDITION to the
