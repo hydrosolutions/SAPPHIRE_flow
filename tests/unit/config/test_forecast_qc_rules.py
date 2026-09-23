@@ -158,3 +158,23 @@ class TestOverlaySupport:
         # overlay deep-merged — version changed, rules preserved
         assert result.version == "4.2.0"
         assert len(result.rules) == 3
+
+
+class TestShippedForecastDischargeCeiling:
+    """The forecast defaults ARE the running configuration — no `[forecast_qc]`
+    section exists in `config.toml` or any overlay, so nothing overrides them.
+    That is the opposite of the observation side, and it is why a stale ceiling
+    here would reject a genuine Nepali monsoon peak with no config to correct it.
+    """
+
+    def test_the_defaults_carry_the_loose_ceiling_at_both_cadences(self) -> None:
+        ceilings = {
+            rule.time_step: rule.thresholds["value_max"]
+            for rule in _default_swiss_forecast_qc_rules().rules
+            if rule.rule_id == "range_check" and rule.parameter == "discharge"
+        }
+
+        assert ceilings == {
+            timedelta(seconds=3600): 100000.0,
+            timedelta(seconds=86400): 100000.0,
+        }

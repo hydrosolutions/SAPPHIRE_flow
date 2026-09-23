@@ -67,14 +67,14 @@ def _default_swiss_forecast_qc_rules() -> ForecastQcRuleSet:
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=86400),
-                thresholds={"value_min": 0.0, "value_max": 5000.0},
+                thresholds={"value_min": 0.0, "value_max": 100000.0},
             ),
             ForecastQcRuleParams(
                 rule_id="range_check",
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=3600),
-                thresholds={"value_min": 0.0, "value_max": 5000.0},
+                thresholds={"value_min": 0.0, "value_max": 100000.0},
             ),
             ForecastQcRuleParams(
                 rule_id="flat_ensemble",
