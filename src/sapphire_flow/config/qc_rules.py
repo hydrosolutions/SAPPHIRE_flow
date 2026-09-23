@@ -47,7 +47,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=600),
-                thresholds={"value_min": 0.0, "value_max": 5000.0},
+                thresholds={"value_min": 0.0, "value_max": 30000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
@@ -83,7 +83,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=86400),
-                thresholds={"value_min": 0.0, "value_max": 5000.0},
+                thresholds={"value_min": 0.0, "value_max": 30000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
@@ -119,7 +119,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="water_level",
                 time_step=timedelta(seconds=600),
-                thresholds={"value_min": -2.0, "value_max": 20.0},
+                thresholds={"value_min": -10.0, "value_max": 9000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
@@ -155,7 +155,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="water_level",
                 time_step=timedelta(seconds=86400),
-                thresholds={"value_min": -5.0, "value_max": 30.0},
+                thresholds={"value_min": -10.0, "value_max": 9000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
