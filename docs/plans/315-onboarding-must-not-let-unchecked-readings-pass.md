@@ -13,6 +13,8 @@ reviews:
   - "codex 2026-09-23 r1 — NOT READY, 1 HIGH + 6 MEDIUM, all against the evidence; every one verified and folded"
   - "codex 2026-09-23 r2 — NOT READY, 3 MEDIUM + 1 LOW on the fold: unsound descope, hardcoded cadence set, central-risk test with no expected outcome"
   - "claude 2026-09-23 r2 — NOT READY, 6 MEDIUM + 2 LOW: the consumer exclusion is a NO-OP (store filters by equality), the hold mechanism already exists and was unnamed, census population contradiction, depends_on contradicted D1; VERIFIED claims 1-8 including the load-bearing per-day-of-year baseline argument"
+  - "codex 2026-09-23 r3 — NOT READY, 3 MEDIUM: a fold bullet contradicted D1; the skill criterion and the narrowed-baseline outcome were still DEFERRED rather than decided"
+  - "claude 2026-09-23 r3 — NOT READY, 2 MEDIUM + 2 LOW: the baseline trigger and its test were DIFFERENT tests and neither could fire on a first-ever onboarding; held_out_ids also skips model assignment and training. NO correction overshot into a false claim; verified the Step 8 ordering, the no-op, and every citation in the real control flow"
 source: 2026-09-23 — owner, on reviewing PR #297: *"for now it's ok, we'll have to have a plan that follows the full QC implementation to check if this still happens. Once QC stands, we should not allow the loader to let unchecked readings pass."* Every claim below was measured on `feat/plan-272-qc-selection` at `54673d79` (v0.1.960), i.e. against the tree as it will be once #297 merges — not against today's `main`, which does not yet contain `QC_UNCHECKED`.
 ---
 
@@ -229,8 +231,6 @@ T3 entirely"* was wrong twice over and is withdrawn:
   undeclared cadence, a mixed-cadence history, a restated single row re-entering QC — and a census
   that happens to contain none of them refutes none of them. **T2 lands on the argument, not on
   the count.**
-- **And the census runs BEFORE the plans D1 sequences this behind**, which change the very thing
-  it measures.
 
 **In.**
 - A read-only census using `resolve_selection` (`services/qc.py:70-100`), per
@@ -287,27 +287,59 @@ quietly narrowed baseline.
   change them.** ⚠️ A redundant diff here would also hide that the hold below is the task's only
   real deliverable.
 - 🔴 **The HOLD is the deliverable, and the mechanism already exists — reuse it, do not invent
-  one.** `services/onboarding.py:763` builds `held_out_ids`, `:937` consults it, and Step 8
-  promotes via `update_station_status(... OPERATIONAL)` at `:1198` and `:1214`. ⭐ The ordering is
-  already correct: Step 8 runs after Steps 5b/5c, so a shortfall detected while computing
-  baselines and regimes can still prevent promotion in the same run.
-- **The hold criterion per consumer.** Baselines and flow regimes have theirs already
-  (`min_samples = 10` per day-of-year, `min_observations = 365`). 🔴 **Skill has none, and this
-  task must state a VALUE with a basis, not defer it** — ⛔ *an earlier draft said only "a stated
-  one for skill", which leaves the verification "a station is HELD" uncheckable.* Derive it from
-  what the skill scores need to be meaningful, and write the derivation down in one line.
-- 🔴 **The narrowed-baseline case is the central risk and it needs a STATED EXPECTED OUTCOME.**
-  ⛔ *An earlier draft required the test but never said what should happen, while the verification
-  below promoted any station above its minimum — so the test could pass while the risk was live.*
-  `onboarding.py:875-877` stores only `if clim:`, and `store_baselines` upserts per
+  one.** `services/onboarding.py:763-766` builds `held_out_ids`; Step 8 promotes via
+  `update_station_status(... OPERATIONAL)` at `:1198` and `:1214`. ⭐ Ordering confirmed in the
+  real control flow, not assumed: Step 5b `:843`, Step 5c `:890`, Step 7 `:1021`, Step 8 `:1177`
+  — **every shortfall is computed before promotion**, so it can still block it in the same run.
+- ⚠️ **State the mechanism's FULL reach, because "held, not promoted" understates it.**
+  `held_out_ids` also skips **model assignment** (`:937`) and **training** (`:1051`); a held
+  station is deliberately not trainable (the comment at `:935-936` says so, from Plan 115b2 §2C).
+  ⇒ Holding a station for thin QC coverage also withholds it from training — **which is correct
+  under this plan's own logic** (a model should not be trained on a population QC never checked),
+  but it is a larger consequence than the phrase implies and it must be asserted, not discovered.
+- 🔑 **The hold criterion, DECIDED — and it introduces no new number.** ⛔ *Two earlier drafts
+  deferred this ("a stated one for skill"), which left the verification uncheckable. Measured
+  instead:* **all three consumers already refuse to produce an artifact when their own support is
+  insufficient, and all three already record that support.** `compute_clim_baselines` emits only
+  day-of-year windows clearing `min_samples = 10` and stores `sample_count` per row
+  (`services/baselines.py:21,46,61`); `compute_flow_regime` returns `None` below
+  `min_observations = 365` and stores `observation_count` (`services/flow_regime.py:28,41,59`);
+  skill stores `sample_size` with its scores (`services/skill/service.py:418`).
+  ⇒ **The hold condition is therefore: a consumer produced NOTHING for this station.** Baselines
+  empty, or flow regime `None`, or no skill scores. No invented threshold, no new value, and each
+  arm is an existing, defined condition.
+  ⛔ **Skill needs no new minimum, and this is the reason, not an omission.** There is no
+  standards basis to invent one from — `docs/standards/wmo.md:45` maps WMO-1364, which defines
+  verification *dimensions and metrics* (CRPS, Brier, rank histograms) and states no sample-size
+  threshold. Skill already ships its own `sample_size`, so a thin score is **visible** rather than
+  hidden — which is exactly the property the baseline case lacks, and why that one needs a rule
+  and this one does not.
+- 🔴 **The narrowed-baseline case — the central risk. The outcome is PRESCRIBED: replace, never
+  merge.** ⛔ *An earlier draft left it as a menu of three with an undefined trigger ("materially
+  smaller"), and stated the trigger and the test differently — so the test could pass with the
+  risk live, which is the same failure this plan already folded once.*
+
+  The defect: `onboarding.py:875-877` stores only `if clim:`, and `store_baselines` upserts per
   `(station_id, parameter, day_of_year)` (`store/clim_baseline_store.py:34`), so a shrunken
-  population **overwrites the day-windows that still clear `min_samples` and leaves the others
-  stale** — a baseline that is partly refreshed and partly not, with nothing recording which.
-  ⇒ **A per-station minimum cannot detect this, because the shortfall is per day-of-year.** State
-  what the run must do when a station's baseline would be written from a population materially
-  smaller than the one that produced the stored baseline: hold, or refuse the partial write, or
-  write it and record the mixture. **Whichever is chosen, "above the minimum ⇒ promote as today"
-  must stop being unconditional.**
+  population overwrites the day-windows that still clear `min_samples` and **leaves the others
+  stale** — one stored baseline built from two populations, with nothing recording which row came
+  from which. ⚠️ A per-station minimum cannot see this at all: the shortfall is per day-of-year.
+
+  **The rule, in full, and it needs no threshold:**
+  1. When the recomputation produces rows, Step 5b calls
+     **`delete_baselines(station_id, parameter)`** (`store/clim_baseline_store.py:44-53`, exists
+     today, currently uncalled here) **before** `store_baselines`. The stored baseline then always
+     comes from exactly one population.
+  2. When it produces **nothing**, the stored baseline is left untouched and the station is
+     **HELD** — ⛔ *never delete-then-write-nothing, which would destroy a usable baseline and is
+     strictly worse than today.*
+
+  ⭐ **Why this and not the menu:** "materially smaller" needed a number nobody could source; this
+  needs none. It behaves identically on a first-ever onboarding (nothing to delete), which the
+  menu's trigger could never even fire on — the case D3 says is the normal one for a customer
+  deployment. The cost, stated: a worse recomputation replaces a better stored baseline instead of
+  silently keeping half of it. That is the right trade — a baseline whose support you can read off
+  `sample_count` beats one you cannot characterise.
 - The onboarding counters and the returned result gain the unchecked count, as
   `IngestResult.qc_unchecked` did.
 - **Delete the refusal comment at `services/onboarding.py:811-817`** in the same change. A comment
@@ -330,9 +362,13 @@ not because a symbol is missing** — the standard Plan 272 § the same standard
 - A station whose checked population falls below its consumer's minimum is HELD with the reason
   recorded, **and the station's status is unchanged by Step 8** — the hold is asserted on the
   stored status, not only on a log line.
-- **The narrowed-baseline case**: a station that clears its per-station minimum but whose
-  population no longer covers every day-of-year window behaves as this task decided above —
-  asserted explicitly, because this is the case a minimum check cannot see.
+- **The narrowed-baseline case, asserted as the SAME test the In-list prescribes** — ⛔ *an
+  earlier draft stated the trigger and the test differently, so both could pass with the risk
+  live:* after a recomputation that produces rows, **no stored day-of-year row survives from the
+  previous population** (the delete-then-write leaves exactly one population behind); and after a
+  recomputation that produces none, **the stored baseline is unchanged and the station is HELD**.
+- **A held station is also absent from model assignment and training** (`:937`, `:1051`) — the
+  hold's full reach, asserted rather than left to be discovered.
 - **A restated row re-enters Step 5 and is judged under the new rule** — § What is measured (7)
   makes this reachable, so it is asserted rather than assumed.
 
