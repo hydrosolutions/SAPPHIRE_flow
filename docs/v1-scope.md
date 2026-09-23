@@ -65,11 +65,11 @@ generated six review rounds across four plans without converging.*
 
 **Why the loose-first rule is not theoretical — two measured cases in the deployed config:**
 
-- **Discharge `value_max = 5000 m³/s`** is an impossibility gate in Switzerland and a
+- **Discharge `value_max = 5000 m³/s`** *(as deployed until 2026-09-23; now `30000`)* was an impossibility gate in Switzerland and a
   plausibility filter in Nepal: **1,125 of 1,126 range-check flags on the delivered DHM record
   fall on one station**, whose genuine monsoon peaks exceed it. Plan 268 calls it *"not QC; a
   calibration error wearing QC's clothes."*
-- **Water level `−2 … 20 m` (600 s) and `−5 … 30 m` (daily)** assume a gauge-height datum. The Nepali feed mixes gauge height
+- **Water level `−2 … 20 m` (600 s) and `−5 … 30 m` (daily)** *(as deployed until 2026-09-23; now `−10 … 9000` at both)* assumed a gauge-height datum. The Nepali feed mixes gauge height
   with metres above sea level and **nothing declares which** — measured, **31 of 193 stations
   report height above sea level** (§ The material risks) — so those 31 are "out of range" on
   every reading they ever send. ⛔ *An earlier revision of this bullet illustrated the point with

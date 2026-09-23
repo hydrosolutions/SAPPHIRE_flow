@@ -130,7 +130,7 @@ remained.
   extracts one named helper and T4 imports it.
 - **A water-level ceiling had no stated frame.** Observations are datum-shifted before the
   checker sees them (`services/qc_datum.py:41-52`), so base water-level thresholds are
-  gauge-relative (`config.toml:313` is `-5.0 … 30.0`). A ceiling written in metres above sea
+  gauge-relative (`config.toml` daily water level was `-5.0 … 30.0`; widened to `-10 … 9000` on 2026-09-23, which makes the GLOBAL gate nearly inert and this plan's per-station tier the only place tightness can return). A ceiling written in metres above sea
   level passes every validation this plan lists and is wrong by the station's datum.
 - **The descope's cost reaches the wired path.** Onboarding computes climatological baselines
   from `QC_PASSED` observations only (`services/onboarding.py:842-848`). With onboarding QC left
@@ -268,7 +268,7 @@ Four pieces, no persistence, one code path:
    **🔴 A water-level threshold is expressed in the datum-shifted frame, not metres above sea
    level.** Observations are shifted by the station's datum before the checker sees them
    (`services/qc_datum.py:41-52`, applied at `flows/ingest_observations.py:299-302`), so the base
-   thresholds are gauge-relative — `config.toml:313` is `-5.0 … 30.0`. A ceiling written in
+   thresholds are gauge-relative — the daily water-level range was `-5.0 … 30.0`, widened to `-10 … 9000` on 2026-09-23. A ceiling written in
    m a.s.l. passes every validation listed in T1 and T2 and is wrong by the station's datum.
    T1 documents the frame; nothing can detect the error automatically.
 

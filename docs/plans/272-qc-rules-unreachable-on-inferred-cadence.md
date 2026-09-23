@@ -181,10 +181,10 @@ the loosening that defuses them (Plan 268 D14, Plan 269) is **blocked by this pl
 the deployed discharge ceiling flags **1,125 of 1,126** on one DHM station's genuine monsoon
 peaks (Plan 268 — *"not QC; a calibration error wearing QC's clothes"*).
 
-⇒ ⛔ **PRECONDITION on phase 2, and it is a config edit, not a mechanism:** widen or remove the
-drifted `range_check` values before T2 lands — discharge `value_max = 5000.0` at both
-`config.toml:215` and `:285`, and water level `-2 … 20` at `:250` / `-5 … 30` at `:313`.
-Loose-first (`docs/v1-scope.md` § QC posture) requires it anyway; the ordering makes it urgent.
+⇒ ✅ **PRECONDITION DISCHARGED 2026-09-23** (branch `feat/loose-first-thresholds`, held at PR):
+discharge widened to `0 … 30000 m³/s` and water level to `−10 … 9000 m` at both time steps,
+across all three surfaces (`config.toml`, `config/qc_rules.py`, `docs/spec/config-reference.toml`).
+⚠️ **It must be MERGED AND DEPLOYED before T2 lands**, or the ordering hazard above returns.
 
 `_apply_rate_of_change` (`services/qc.py:71-89`) compares `|Δvalue|` between **consecutive
 stored rows against a flat `max_rate`** — it does **not** divide by elapsed time.
