@@ -180,12 +180,46 @@ creates the defect. § What is measured (4) retracts the first draft's claim tha
 included because it changes what `rules_for` returns, so the census must be taken against the
 final selector — not because it thins the set.
 
-### D2 — the consumer policy. **CLOSED: exclude, and hold the station loudly.**
+### D2 — the consumer policy. **CLOSED: exclude always; hold BEHIND A FLAG, default permissive.**
 
-Owner: *"yes to consumer action"* — the recommended option. All three consumers exclude
-`QC_UNCHECKED`; a station whose checked population falls short is **HELD, not promoted**, with the
-reason recorded, so the shortfall is visible at onboarding time instead of surfacing later as a
-quietly narrowed baseline.
+Owner: *"yes to consumer action"* — the recommended option. Then, **refined 2026-09-23 on reading
+this plan back**: *"that is true for operational deployment. for development and testing however,
+we'll need to allow stations that may not pass quality control to go into training and operational
+forecasting. if we can't allow that for development, we cannot test the stuff we're doing here."*
+
+🔴 **The refinement is not a change of mind — it caught this plan contradicting a decision already
+on record.** `docs/v1-scope.md:68-72` states the staged consumer policy in terms: *"Now, while QC
+is being built: unchecked data may flow through, forecasting included. We are developing; a
+blocked pipeline teaches us nothing."* Two drafts of this plan wrote the END state as though it
+applied on landing.
+
+⛔ **And the plan had collapsed two different things into one, which is what made it bite:**
+
+| | what it does | policy |
+|---|---|---|
+| **Excluding the rows** | unchecked readings leave the baseline / flow-regime / skill populations | **Always.** Automatic — the store filters by equality; no code does it and no flag can turn it off. |
+| **Holding the station** | no promotion, **no model assignment (`:937`), no training (`:1051`)** | **Behind a flag, DEFAULT OFF.** This is the one that would stop development dead. |
+
+**⇒ The hold is gated by a deployment setting that defaults to permissive.** ⭐ *This is not a new
+mechanism and not a new default: the hold being reused is ALREADY gated exactly this way —
+`require_meteoswiss_backfill: bool = False` (`services/onboarding.py:367`, consulted at `:764`),
+and `:757` records that the requirement is deliberately off by default. Two drafts reused the
+mechanism and silently dropped its gate.*
+
+- **Flag OFF (default — development, testing, and every deployment until the owner flips it):** the
+  shortfall is **measured, logged and counted in the result**, and the station proceeds to
+  promotion, model assignment and training exactly as today. The plan still delivers its whole
+  measurement; only enforcement waits.
+- **Flag ON (operational):** the station is held, with the reason recorded.
+
+⚠️ **A strict default is rejected explicitly**, not merely not-chosen: it would darken stations on
+the deploy that lands it — the precise failure Plan 264 T3 produced and that Plan 272 D5's consumer
+split exists to prevent.
+
+🔑 **What the flag does NOT gate: the baseline replace-never-merge rule below.** That is a
+correctness fix — a stored baseline must not be built from two populations at once — not an
+enforcement policy, and it applies in both postures. ⛔ *Gating it would leave the development
+deployment, the one we actually run, with the defect this plan exists to remove.*
 
 ⚠️ **Two of the three minima already exist and must be used, not invented** — § What is measured
 (6): `min_samples = 10` per day-of-year window for baselines, `min_observations = 365` for flow
@@ -286,17 +320,26 @@ quietly narrowed baseline.
   leave all three populations with no edit at all. **Assert it at each of the three sites; do not
   change them.** ⚠️ A redundant diff here would also hide that the hold below is the task's only
   real deliverable.
-- 🔴 **The HOLD is the deliverable, and the mechanism already exists — reuse it, do not invent
-  one.** `services/onboarding.py:763-766` builds `held_out_ids`; Step 8 promotes via
+- 🔴 **The MEASUREMENT is the unconditional deliverable; the hold is the gated one (D2).** Both
+  ship in this task, but they are not the same thing and must not be built as one:
+  - **Always:** detect the shortfall, log it, and count it in the onboarding result — in both
+    postures, so the development deployment produces the evidence that decides when to flip.
+  - **Behind the flag, default OFF:** act on it by holding the station.
+- 🔑 **The hold mechanism already exists — reuse it, and reuse its GATE too.**
+  `services/onboarding.py:763-766` builds `held_out_ids` under `if require_meteoswiss_backfill:`
+  (`:764`, parameter at `:367`, default `False`); Step 8 promotes via
   `update_station_status(... OPERATIONAL)` at `:1198` and `:1214`. ⭐ Ordering confirmed in the
   real control flow, not assumed: Step 5b `:843`, Step 5c `:890`, Step 7 `:1021`, Step 8 `:1177`
   — **every shortfall is computed before promotion**, so it can still block it in the same run.
+  ⚠️ **Whether this reuses that same flag or adds a sibling is an implementation choice**, but the
+  DEFAULT is not: off. *(The existing flag's name is about MeteoSwiss backfill; a QC-coverage hold
+  riding on it would be a misnomer. Prefer a sibling with the same shape and the same default.)*
 - ⚠️ **State the mechanism's FULL reach, because "held, not promoted" understates it.**
   `held_out_ids` also skips **model assignment** (`:937`) and **training** (`:1051`); a held
   station is deliberately not trainable (the comment at `:935-936` says so, from Plan 115b2 §2C).
-  ⇒ Holding a station for thin QC coverage also withholds it from training — **which is correct
-  under this plan's own logic** (a model should not be trained on a population QC never checked),
-  but it is a larger consequence than the phrase implies and it must be asserted, not discovered.
+  ⇒ **This is exactly why the flag defaults off.** Withholding a thin-QC station from training is
+  right operationally and fatal in development, where a station that never trains is a station the
+  pipeline can never be tested on.
 - 🔑 **The hold criterion, DECIDED — and it introduces no new number.** ⛔ *Two earlier drafts
   deferred this ("a stated one for skill"), which left the verification uncheckable. Measured
   instead:* **all three consumers already refuse to produce an artifact when their own support is
@@ -359,16 +402,21 @@ not because a symbol is missing** — the standard Plan 272 § the same standard
   still stores `QC_PASSED`. The two are asserted separately.
 - Each of the three consumers is asserted at its own site to no longer see the unchecked rows —
   **as an assertion about behaviour, with no edit to those call sites.**
-- A station whose checked population falls below its consumer's minimum is HELD with the reason
-  recorded, **and the station's status is unchanged by Step 8** — the hold is asserted on the
-  stored status, not only on a log line.
+- **With the hold flag OFF (the default): a station whose checked population falls short is
+  PROMOTED, assigned a model and trained exactly as today — and the shortfall is still logged and
+  counted in the result.** ⛔ *Asserted explicitly and first, because this is the posture every
+  deployment runs in until the owner flips it, and because a plan whose only hold test is the
+  strict one would ship a permissive path nobody exercised.*
+- **With the flag ON: the same station is HELD** with the reason recorded, **and its status is
+  unchanged by Step 8** — asserted on the stored status, not only on a log line.
 - **The narrowed-baseline case, asserted as the SAME test the In-list prescribes** — ⛔ *an
   earlier draft stated the trigger and the test differently, so both could pass with the risk
   live:* after a recomputation that produces rows, **no stored day-of-year row survives from the
   previous population** (the delete-then-write leaves exactly one population behind); and after a
   recomputation that produces none, **the stored baseline is unchanged and the station is HELD**.
-- **A held station is also absent from model assignment and training** (`:937`, `:1051`) — the
-  hold's full reach, asserted rather than left to be discovered.
+- **With the flag ON, a held station is also absent from model assignment and training**
+  (`:937`, `:1051`) — the hold's full reach, asserted rather than left to be discovered.
+  **With it OFF, it is present in both.**
 - **A restated row re-enters Step 5 and is judged under the new rule** — § What is measured (7)
   makes this reachable, so it is asserted rather than assumed.
 
@@ -378,8 +426,9 @@ not because a symbol is missing** — the standard Plan 272 § the same standard
 exclusion record that it was closed.
 
 **In.**
-- `docs/v1-scope.md` § QC posture point 4 — the "once QC is fine-tuned" half stops being a
-  commitment and becomes a description.
+- `docs/v1-scope.md` § QC posture point 4 — the staged policy gains the mechanism that makes it
+  real: the "once QC is fine-tuned" half is now **a flag with a default**, not a promise. Name the
+  setting there, and say that flipping it is an owner action on a deployment, not a release.
 - ⚠️ **A sweep by VALUE, not by site**: every place that states the onboarding exclusion,
   including Plan 272 D5 and its § the second fail-open call site, and Plan 269 § What this
   deliberately does not do. *(Plan 272's own § Out-of-scope entry for re-QC stays true under D3
