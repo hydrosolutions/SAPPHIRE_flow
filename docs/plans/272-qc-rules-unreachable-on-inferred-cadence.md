@@ -1670,11 +1670,17 @@ widens the checked window it would keep passing — which is the one event it ex
 is `feedback_red_first_must_prove_the_fault`: a red-first (or regression-pinning) test must fail
 for the reason the behaviour exists. Required, therefore:
 
-- **The fixture's consecutive daily values must BREACH the thresholds.** Build the daily series so
-  that adjacent values differ by more than the daily `rate_of_change` `max_rate` and so that the
-  middle value deviates from both neighbours by more than the daily `spike` `max_delta`
-  (`services/qc.py:79-80`, `:161-165`). Take the threshold values from the deployed rule set, not
-  from a hand-built one — the same constraint the red-first test carries.
+- **The fixture's consecutive daily values must BREACH the thresholds, and it must use the
+  daily `water_level` rules.** ⚠️ *Corrected 2026-09-22 after independent review — an earlier
+  wording said "the daily `spike` `max_delta`" as though every daily spike rule had one.*
+  Measured in the deployed set: daily **`water_level`** spike declares `max_delta = 5.0`
+  (`config.toml:327`), but daily **`discharge`** spike declares `tolerance = 0.5`
+  (`config.toml:299`), which `_apply_spike` implements as a **separate relative branch**
+  (`services/qc.py:161-165` is the `max_delta` branch; the `tolerance` branch is a different
+  comparison). ⇒ A fixture told to breach "the daily spike `max_delta`" **cannot be built for
+  discharge at all**. Build it on daily `water_level`: adjacent values differing by more than
+  that rule's `rate_of_change` `max_rate`, and a middle value deviating from both neighbours by
+  more than `max_delta = 5.0`. Take the values from the deployed rule set, not a hand-built one.
 - **Assert the positive control in the same test file: the SAME rule DOES flag when run over a
   group that contains the neighbours.** Hand `check` the whole daily series (so `prev`/`nxt` exist
   at `services/qc.py:267-268`) with the same resolution, and assert the `rate_of_change` and
@@ -1766,7 +1772,16 @@ instrument regardless of how sensitive it is.
   | **Repairable** — resolves zero rules today, and the widened lookback yields ≥ 2 rows at a cadence the rule set declares (regime 1 after the fix) | **non-empty**, and the newly selected rules are **exactly** those the regime table predicts for that cadence | empty diff, or a selection other than the predicted one |
   | **Unresolved, regime 2** — ≥ 2 rows in the lookback, cadence declared nowhere | ⭐ **NOT empty — corrected 2026-09-20.** Selection and flags are unchanged (still zero rules), but the **aggregated status must change `QC_PASSED` → `QC_UNCHECKED`** (D5). The gate diffs status, so an empty diff here now means T2b did not run. | any rule selected (that is nearest-cadence matching, which T2 forbids) |
   | **Unresolved, regime 3** — fewer than 2 rows in the whole lookback | **empty** on flags; the group is marked zero-rule | any rule selected |
-  | **Previously working** — resolves rules today (e.g. BAFU's 600 s groups) | **empty**, per observation | any change at all |
+  | **Previously working** — resolves rules today (e.g. BAFU's 600 s groups) | **empty**, per observation — ⚠️ **unless the widened lookback legitimately infers a DIFFERENT cadence**, in which case the expectation is whatever the regime table predicts for the cadence inferred over the WIDENED lookback, stated per group in advance | a change not predicted by the regime table for the widened-lookback cadence |
+
+  ⛔ **The unconditional "any change at all" failure was deleted 2026-09-22 after independent
+  review: it would reject a CORRECT implementation.** Widening the inference lookback can change
+  an already-resolving cadence, legitimately. Worked example: 32 rows at 1200 s followed by 18 at
+  600 s — the three-hour window sees only the recent rows and infers 600 s (a rule resolves),
+  while the widened lookback takes the median of all 49 gaps and infers 1200 s, which no rule
+  declares, so the correct new outcome is regime 2 / `QC_UNCHECKED`. That is the fix working, and
+  the old gate called it a regression. **Compare against the widened-lookback prediction, not
+  against the pre-state.**
 
   A per-observation diff on identical inputs is discriminating in both directions the count
   comparison is not: no legitimate measurement change can enter it, and no reclassification can
@@ -1832,8 +1847,14 @@ instrument regardless of how sensitive it is.
   writes says nothing about where the cap is.
 - N ≥ 12 (one hour of runs) covering at least one full poll cycle of every active adapter.
 
-**Rollback.** The change is code-only — no migration (T3 confirms `check_type` is `sa.Text`), no
-schema change, no data rewrite — so rollback is a redeploy of the previous image. Stored verdicts
+**Rollback.** ⚠️ **Code-only rollback holds ONLY until the first `qc_unchecked` row exists.**
+*(Corrected 2026-09-22 after independent review — this paragraph still described the pre-T2b
+world and contradicted T2b item 10.)* There is no migration (T3 confirms `check_type` is
+`sa.Text`), no schema change and no data rewrite, so **before** any `QC_UNCHECKED` is written
+rollback is a redeploy of the previous image. **After** it, the previous image raises on the
+value it does not know and cannot read those rows — which is precisely why T2b item 10 requires
+a compatibility release to be deployed and verified FIRST. ⇒ **The compatibility release, not
+the pre-272 image, is the rollback floor once the flag has been on.** Stored verdicts
 written in between are **not** reverted: observations QC'd under the new matcher keep their flags,
 which is correct (they record what was known at judgement time, per D3) but means the rollback is
 asymmetric and the post-deploy counts above will show a mixed population across the boundary.
@@ -1999,8 +2020,10 @@ and the published API exclude them; and a row can be **re-examined later**.
    the moment one `qc_unchecked` row exists, the previous image cannot read it — violating
    `docs/standards/cicd.md:202`'s one-release rollback rule. **Ship a compatibility release
    first**: an image that *understands* `QC_UNCHECKED` but never writes it, deployed and verified,
-   before the release that writes it. C4's flag gates the **selection change**; it must gate the
-   **status write** as well.
+   before the release that writes it. 🔑 **C4's flag gates the STATUS WRITE.** *(Restated
+   2026-09-22: it previously read "gates the selection change; it must gate the status write as
+   well". T6 explicitly rejects keeping the old path in `src`, so no flag can restore the old
+   selection — see T5 Verification. The selection change ships unconditionally with T2.)*
 
 11. **Two further sites that depend on the SET of `QcStatus` values, not on a filter.**
     `services/run_station_forecast.py:143-149` `worst_qc_status` enumerates all five members in a
@@ -2585,8 +2608,19 @@ waiting to be asked.
 **Out**: the harness itself (T6 builds it).
 
 **Verification**:
-- With the flag `False`, a run over the current Swiss station set produces an **identical**
-  observation table — not "no new rows", identical.
+- 🔑 **With the flag `False`: no `QC_UNCHECKED` row is written and no new inference fetch is
+  issued.** ⛔ *NOT "an identical observation table" — that requirement was deleted 2026-09-22
+  after independent review, because nothing in this plan can satisfy it.* T2 deletes the
+  `< 2 rows ⟹ 1 h` fallback outright and T6 **explicitly rejects** "a flag keeping the old path
+  in `src`" as the duplication T2 exists to remove. So the selection arithmetic ships
+  UNCONDITIONALLY with T2 and the flag cannot restore the old verdicts; disabling the fetch and
+  the status write cannot undo a deleted branch.
+  ⚖️ **OWNER — this narrows what the flag promises, and you should see that rather than find
+  it.** The flag is a *status-write* control, not a *behaviour* rollback: it bounds the new
+  `QC_UNCHECKED` population, not the changed selection. What covers the selection change is the
+  compatibility release plus T6's paired harness, which is what they are for. If a true
+  behaviour rollback is wanted instead, T6's rejected alternative has to be re-opened and the
+  old path kept in `src` — a decision, not an implementation detail.
 - Enabling for one station changes that station and no other.
 - A simulated loss above the threshold aborts and reverts without human action.
 - The rollback anchor is tagged before the upgrade (`docker tag … rollback-backup`) — the mini has
