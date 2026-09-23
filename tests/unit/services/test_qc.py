@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -48,6 +49,22 @@ def _make_obs(
         qc_rule_version=None,
         created_at=_T0,
     )
+
+
+def _with_cadence(obs: Observation) -> list[Observation]:
+    """Plan 272: give `check` enough rows to INFER the cadence these rule sets
+    declare (`_STEP`, one hour).
+
+    ⛔ These tests used to pass a single observation. `_infer_time_step` then
+    returned a fabricated one hour for a group it could not measure, which
+    happened to equal `_STEP`, so the rules resolved by accident. With the
+    fabrication removed a one-row group resolves NOTHING — correctly — so the
+    cadence has to be established rather than assumed. The companion carries the
+    SAME value, so it cannot itself introduce a difference-based flag, and every
+    assertion below still inspects the target observation only.
+    """
+    companion = replace(obs, id=ObservationId(uuid4()), timestamp=obs.timestamp - _STEP)
+    return [companion, obs]
 
 
 def _rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
@@ -99,7 +116,7 @@ class TestRangeCheckRealistic:
         checker = Stage1QualityChecker()
         obs = _make_obs(value)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 3000.0}))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         if expected_pass:
             assert flags == []
@@ -114,14 +131,14 @@ class TestRangeCheck:
         checker = Stage1QualityChecker()
         obs = _make_obs(50.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         assert result[obs.id] == []
 
     def test_value_below_min_fails(self) -> None:
         checker = Stage1QualityChecker()
         obs = _make_obs(-1.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -131,7 +148,7 @@ class TestRangeCheck:
         checker = Stage1QualityChecker()
         obs = _make_obs(200.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -374,7 +391,7 @@ class TestGrossOutlier:
         obs = _make_obs(12.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         baseline = self._baseline(mean=10.0, std=2.0)
-        result = checker.check([obs], rs, [], [baseline])
+        result = checker.check(_with_cadence(obs), rs, [], [baseline])
         assert result[obs.id] == []
 
     def test_outlier_detected(self) -> None:
@@ -382,7 +399,7 @@ class TestGrossOutlier:
         obs = _make_obs(100.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         baseline = self._baseline(mean=10.0, std=2.0)
-        result = checker.check([obs], rs, [], [baseline])
+        result = checker.check(_with_cadence(obs), rs, [], [baseline])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_SUSPECT
@@ -393,7 +410,7 @@ class TestGrossOutlier:
         obs = _make_obs(999.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         # No baseline provided — must not flag, must not raise
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         assert result[obs.id] == []
 
 
@@ -410,7 +427,7 @@ class TestOverrideMerging:
             time_step=_STEP,
             thresholds={"value_max": 50.0, "value_min": None},
         )
-        result = checker.check([obs], rs, [override], [])
+        result = checker.check(_with_cadence(obs), rs, [override], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -427,7 +444,7 @@ class TestOverrideMerging:
             time_step=_STEP,
             thresholds={"value_max": 200.0, "value_min": None},
         )
-        result = checker.check([obs], rs, [override], [])
+        result = checker.check(_with_cadence(obs), rs, [override], [])
         flags = result[obs.id]
         # value_min stays 0.0 (None → inherit), so -5.0 still fails
         assert len(flags) == 1
@@ -459,7 +476,7 @@ class TestWaterLevelQc:
             thresholds={"value_min": 0.0, "value_max": 100.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -490,7 +507,7 @@ class TestWaterLevelQc:
             thresholds={"value_min": 0.0, "value_max": 100.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         # No rules match the daily (1-hour step) obs — all pass
         assert result[obs.id] == []
 
@@ -528,5 +545,5 @@ class TestIntegration:
             thresholds={"value_min": -50.0, "value_max": 60.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check([obs], rs, [], [])
+        result = checker.check(_with_cadence(obs), rs, [], [])
         assert result[obs.id] == []

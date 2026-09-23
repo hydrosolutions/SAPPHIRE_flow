@@ -315,7 +315,7 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts == {"passed": 1, "failed": 0, "suspect": 0}
+        assert counts == {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0}
         assert latest.value == 261.2
         assert latest.qc_rule_version == "1.1-datum"
 
@@ -340,7 +340,7 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts == {"passed": 0, "failed": 0, "suspect": 1}
+        assert counts == {"passed": 0, "failed": 0, "suspect": 1, "unchecked": 0}
         assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
         assert latest.qc_rule_version == "1.1-datum-skip"
 
@@ -375,7 +375,7 @@ class TestIngestObservationsFlow:
 
         assert datum_result == no_datum_result
         assert datum_result == (
-            {"passed": 1, "failed": 0, "suspect": 0},
+            {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0},
             QcStatus.QC_PASSED,
             [],
         )
@@ -410,19 +410,25 @@ class TestIngestObservationsFlow:
         station_store = FakeStationStore()
         station_store.store_station(s1)
 
-        obs = _make_obs(s1.id, "discharge", 42.0)
+        # Plan 272: TWO rows ten minutes apart, so the 600 s cadence the rule
+        # set declares is genuinely inferable. A single row infers nothing and
+        # is now stored QC_UNCHECKED — correctly — where it used to resolve
+        # against a fabricated one-hour cadence.
+        obs = _make_obs(s1.id, "discharge", 42.0, offset_minutes=10)
+        obs_now = _make_obs(s1.id, "discharge", 43.0)
 
         result = ingest_observations_flow(
             station_store=station_store,
             obs_store=FakeObservationStore(),
             baseline_store=FakeClimBaselineStore(),  # empty
-            adapter=FakeStationDataSource([obs]),
+            adapter=FakeStationDataSource([obs, obs_now]),
             qc_rules=_QC_RULES,
             clock=_fixed_clock,
         )
 
-        # Range check still runs, value 42.0 within [0, 5000]
-        assert result.qc_passed == 1
+        # Range check still runs, values within [0, 5000]
+        assert result.qc_passed == 2
+        assert result.qc_unchecked == 0
 
     def test_clock_injection_affects_since(self) -> None:
         s1 = make_station_config(code="2135", name="Aare Bern")
@@ -490,13 +496,16 @@ class TestIngestObservationsFlow:
         )
 
         obs_store = FakeObservationStore()
-        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
+        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=20)
         obs_store.store_raw_observations([old_obs])
         for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
-        # offset_minutes=1 so timestamp < now (exclusive upper bound in fetch)
-        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=1)
+        # Plan 272: TEN minutes apart, so the 600 s cadence the rule set declares is
+        # inferable. At the previous 9-minute spacing nothing resolves, the new row
+        # stores QC_UNCHECKED, and the alert checker — which fetches QC_PASSED —
+        # correctly never sees the 150.0 reading. Still < now (exclusive bound).
+        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=10)
         alert_store = FakeAlertStore()
 
         config = DeploymentConfig(

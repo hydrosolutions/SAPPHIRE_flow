@@ -7,6 +7,10 @@ class QcStatus(Enum):
     QC_FAILED = "qc_failed"
     QC_SUSPECT = "qc_suspect"
     MISSING = "missing"
+    # Plan 272: no QC rule could be SELECTED for this observation's group — the
+    # cadence inferred from the rows in front of the checker matched no configured
+    # rule. Distinct from QC_PASSED, which means rules ran and found nothing wrong.
+    QC_UNCHECKED = "qc_unchecked"
 
 
 class ForecastStatus(Enum):
