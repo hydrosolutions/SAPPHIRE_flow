@@ -3,9 +3,9 @@ status: DRAFT
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
-scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan.
-blocks: [264, 269]
-related: [264, 268, 269, 301, 303, 304, 313]
+scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan. ⛔ NOT the rollout controls — the flag's enablement, the canary, D7's automatic abort and the revert artefact are Plan 314; this plan lands INERT, behind a flag defaulting False.
+blocks: [264, 269, 314]
+related: [264, 268, 269, 301, 303, 304, 313, 314]
 open_decisions: []
 closed_decisions: [D1, D2, D3, D4, D5, D6, D7]
 source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (both gates, independently) and verified directly against the repository. Plan 268 knew the single-row mechanism locally; nobody owned the systemic consequence.
@@ -592,11 +592,11 @@ nicety**:
   outcome — at which point it can no longer catch the C3 spurious-flag hazard it exists for.
   This is also what T2b item 5's separate `unchecked` bucket is for.
 - Exceeding it **automatically aborts the canary** (C9): it reverts the flag (C4) **and
-  redeploys the compatibility image**. ⛔ **The flag alone does not stop it.** The flag gates
-  only the `QC_UNCHECKED` write; the selection change ships unconditionally with T2, so the
-  newly-selected rules keep producing `QC_FAILED`/`QC_SUSPECT` after a flag revert — which is
-  the very population D7 measures. The compatibility release is already a prerequisite (T2b
-  item 10), so this adds no artefact. It does not merely log.
+  performs the revert action **Plan 314 E1 settles**. ⛔ **The flag alone does not stop it.**
+  The flag gates only the `QC_UNCHECKED` write; the selection change ships unconditionally with
+  T2, so the newly-selected rules keep producing `QC_FAILED`/`QC_SUSPECT` after a flag revert —
+  which is the very population D7 measures. 🔴 **What CAN revert it is an open decision in 314,
+  not a settled part of this plan.** It does not merely log.
 - The owner set the policy; **the number itself must be proposed with T1's measured
   `QC_FAILED`/`QC_SUSPECT` baseline in hand** — a limit chosen before we know the baseline is
   arbitrary. 🔴 T1 owes it.
@@ -653,10 +653,10 @@ queryable marker of zero-selection rows — ⛔ **not D7's numerator** (T1, D7) 
 - **no rollback exposure, and no flag needed**, which removes the gating problem entirely.
 
 
-🔴 **BUT THE SPELLING MUST BE A SUFFIX, NOT A WHOLE VALUE.** T5 bumps this same field as its
+🔴 **BUT THE SPELLING MUST BE A SUFFIX, NOT A WHOLE VALUE.** T2b bumps this same field as its
 deploy-boundary marker, and `obs_qc_rule_version` already multiplexes datum provenance
 (`"1.0"` / `"1.1-datum"` / `"1.1-datum-skip"`). A census written in phase 1b as whole-string
-equality would **silently return zero** for every row written after T5 lands in phase 2.
+equality would **silently return zero** for every row written after T2b lands in phase 2.
 ⛔ *This is `feedback_bind_published_numbers_on_values` — a text guard silenced by a change
 elsewhere.* **Define a stable `-norules` SUFFIX that survives the version bump, and write the
 census against the suffix.** State also which population it marks: **zero rules SELECTED**, not
@@ -752,8 +752,9 @@ identical `qc_rule_version`. That indistinguishability is the defect; this task 
 **Outcome**: a measured count of how many `(station, parameter)` groups currently resolve zero
 rules on the scheduled path, and why — **and, from the same census, a proposed value for D7's
 loss threshold** (the share of rows per station per cycle that may leave `QC_PASSED` before the
-canary aborts). ⭐ **Added 2026-09-20: D7's prose said "the number comes from T1" and T5's said
-"not set here", but T1 owed no such deliverable — the number belonged to nobody.** It is a T1
+canary aborts — **Plan 314 T2 runs that abort; this plan owes it the number**). ⭐ *Added
+2026-09-20: D7 said "the number comes from T1" while T1 owed no such deliverable, so it belonged
+to nobody.**
 deliverable and a T1 verification item; a threshold chosen without the baseline is arbitrary.
 Two deliverables — one runnable today, one needing the DB.
 
@@ -1396,7 +1397,7 @@ window always lands on an image that already understands the rows on disk"
 1. The `QC_UNCHECKED` write behind a flag, default `False`. ⛔ **The selection change is NOT
    behind it and the image does not deploy byte-identical in behaviour** — T2 deletes the
    `< 2 rows ⟹ 1 h` fallback and T6 rejects keeping the old path in `src`, so no flag can
-   restore the old verdicts (§ T5 Verification).
+   restore the old verdicts (Plan 314 § What is measured).
 2. Enable it in `config/overlays/mac-mini.toml`, which is a **host bind mount** into
    `prefect-worker`, `prefect-worker-ingest` and `api`
    (`docker-compose.macmini.yml:46, 52, 76`, `:ro`). **Disabling the flag stops
@@ -1419,7 +1420,7 @@ the mini has **no image registry** (`docs/standards/cicd.md:506`; images are loc
 the Sunday prune protects only `^rollback($|-)` tags). Image revert on this host is a
 procedure, not a button, and it needs both overlays plus the exported tokens.
 
-**C4b — wire the zero-rule check into the watchdog.** `types/enums.py`'s
+**C4b — wire the zero-rule check into the watchdog. ⭐ T3 owns this** *(it was T5's until the 2026-09-23 split; it ships with the code, not with activation).*
 `PipelineCheckType` has no zero-rule member and the watchdog probes exactly three check
 types (`ops/watchdog.py:142-178`). Without one more probe, T3's `WARNING` is pull-only via
 `/api/v1/health/detail`, and D5's mitigation (a) — "the Plan 268 runbook reader must read
@@ -1505,7 +1506,7 @@ and the published API exclude them; and a row can be **re-examined later**.
    before the release that writes it. 🔑 **C4's flag gates the STATUS WRITE.** *(Restated
    2026-09-22: it previously read "gates the selection change; it must gate the status write as
    well". T6 explicitly rejects keeping the old path in `src`, so no flag can restore the old
-   selection — see T5 Verification. The selection change ships unconditionally with T2.)*
+   selection — see Plan 314 § What is measured. The selection change ships unconditionally with T2.)*
 
 11. **Two further sites that depend on the SET of `QcStatus` values, not on a filter.**
     `services/run_station_forecast.py:143-149` `worst_qc_status` enumerates all five members in a
@@ -1544,6 +1545,11 @@ dependent stations join the blast-radius assessment before the flag is enabled.
   permanently-unresolvable group stops being retried once its rows leave the fetched checked
   window — on the DHM river path, the widened one (item 8).
 - Ingest counters report `unchecked` separately from `suspect`.
+- **`qc_rule_version` is bumped** — the VALUES at `services/qc_datum.py:18-19`
+  (`DATUM_QC_RULE_VERSION`, `DATUM_SKIP_QC_RULE_VERSION`) and the `"1.0"` literal at `:25`, not
+  the `obs_qc_rule_version` function that returns them. *(Was T5's; T5 moved to Plan 314 and the
+  bump ships with the code, not with activation.)* It makes the deploy boundary a queryable
+  column rather than a timestamp in a document.
 - The **compatibility release** is proven: an image without the write path reads a database
   containing `qc_unchecked` rows without raising.
 - ⚠️ **The partial index** `postgresql_where=qc_status == "qc_passed"` (`db/metadata.py:568`):
@@ -1953,65 +1959,22 @@ health record, while a run where every group resolves rules reports neither. **P
 many zero-rule groups writes one record, not one per group.
 **Pre-change**: a RED test proving that today such a run is indistinguishable from a clean one.
 
-### T5 — The rollout controls (C4, C9, C4b, D7)
+### T5 — MOVED to Plan 314
 
+⛔ **The rollout controls are no longer this plan's.** The flag, the per-station canary, D7's
+automatic abort, the enable path and the rollback anchor are
+`docs/plans/314-activating-the-qc-selection-fix.md` T2, which `depends_on: [272]`.
 
-**Outcome**: the `QC_UNCHECKED` write can be enabled per station, reverted in seconds without a
-rebuild, aborts itself if it removes too much data, and announces a zero-rule group to an
-operator rather than waiting to be asked.
+**Why they were split out (owner, 2026-09-23):** two independent review gates agreed this
+plan's CODE half is buildable from this document alone, while its rollout half was not — and
+could not be fixed by rewording, because it rests on an artefact that does not exist. The flag
+gates the `QC_UNCHECKED` WRITE only; T2 deletes the `< 2 rows ⟹ 1 h` fallback and T6 rejects
+keeping the old path in `src`, so **no flag can revert the selection change**, and the
+compatibility image T2b item 10 defines carries that change too. 🔴 **What artefact reverts an
+unconditional selection change is Plan 314 E1, an OPEN owner decision.**
 
-**In**:
-- **A `DeploymentConfig` flag defaulting `False`, gating T2b's `QC_UNCHECKED` WRITE** (T2b item
-  10, rollback). ⛔ *It does not gate the selection change — see T5 Verification.* Follow the
-  Plan 235 precedent at `config/deployment.py:146`.
-- **Per-station scoping** for the canary: `stations.network` exists and the QC loop already
-  iterates per `(station_id, parameter)`.
-- **The enable path**: `config/overlays/mac-mini.toml`, a host bind mount into `prefect-worker`,
-  `prefect-worker-ingest` and `api` (`docker-compose.macmini.yml:46, 52, 76`, `:ro`).
-  ⚠️ Edit it **in place** — a new inode leaves the container reading the old content.
-- **D7's automatic abort**: D7 compares the per-station, per-cycle `QC_FAILED`/`QC_SUSPECT`
-  fraction from the ingest counters against T1's proposed threshold; on breach it reverts the
-  flag **and redeploys the compatibility image**, because the flag does not gate selection
-  (§ D7). Count `unchecked` separately from `suspect`, or it measures the wrong thing.
-- **Retained-row behaviour after the flag is disabled** — rows already written `QC_UNCHECKED` stay
-  written; say so, and say what re-enables them (T2b item 8's re-examination).
-- **`qc_rule_version`** bump — the VALUES at `services/qc_datum.py:18-19`
-  (`DATUM_QC_RULE_VERSION`, `DATUM_SKIP_QC_RULE_VERSION`) and the `"1.0"` literal at `:25`, not
-  the `obs_qc_rule_version` function that returns them. Makes the deploy boundary a queryable
-  column rather than a timestamp in a document.
-- **The watchdog probe** for the `PipelineCheckType` member **T3 adds** (`types/enums.py:193-213`
-  — the same member; T5 does not add a second),
-  `ops/watchdog.py:142-178`) so T3's `WARNING` reaches Slack rather than waiting for a human to
-  query the health endpoint. *(This was described as a follow-on at C4b; it is in scope here.)*
-
-**Also in T5's surface, because T6 builds the harness but does not decide when it matters:**
-- **Running T6 is an activation precondition** — the flag is not enabled until that gate has
-  passed, on a degraded pinned range where the retained history holds one and on T2's
-  constructed repairable case where it does not (§ C5b).
-- **Deleting T6 and its frozen snapshot when the rollout completes** is an activation-checklist
-  item. ⛔ A frozen copy of a deleted code path that outlives its rollout becomes a second
-  implementation nobody remembers is there — the exact thing T2 exists to remove.
-
-**Out**: the harness itself (T6 builds it).
-
-**Pre-change**: a RED test proving the flag actually gates the write — with it `False`, a
-zero-rule group stores no `QC_UNCHECKED` row; with it `True`, the same group does.
-
-**Verification**:
-- 🔑 **With the flag `False`: no `QC_UNCHECKED` row is written.** ⛔ *NOT "an identical observation table" — that requirement was deleted 2026-09-22
-  after independent review, because nothing in this plan can satisfy it.* T2 deletes the
-  `< 2 rows ⟹ 1 h` fallback outright and T6 **explicitly rejects** "a flag keeping the old path
-  in `src`" as the duplication T2 exists to remove. So the selection arithmetic ships
-  UNCONDITIONALLY with T2.
-  ⚖️ **OWNER — this narrows what the flag promises, and you should see that rather than find
-  it.** The flag is a *status-write* control, not a *behaviour* rollback: it bounds the new
-  `QC_UNCHECKED` population, not the changed selection. What covers the selection change is the
-  compatibility release plus T6's paired harness, which is what they are for.
-- Enabling for one station changes that station and no other.
-- A simulated loss above the threshold aborts and reverts without human action.
-- The rollback anchor is tagged before the upgrade (`docker tag … rollback-backup`) — the mini has
-  **no image registry** (`docs/standards/cicd.md:506`) and the weekly prune protects only
-  `^rollback($|-)` tags.
+⚠️ **This plan therefore lands INERT**: merged and deployed, with the `QC_UNCHECKED` write
+behind a flag defaulting `False` (C4). Turning it on is 314.
 
 ### T6 — The paired old/new evaluation harness
 
@@ -2049,7 +2012,7 @@ measuring the wrong baseline and the gate is worse than no gate. **Assert this b
 harness is used for anything.**
 
 ⏳ **It has an expiry.** The harness and its snapshot are deleted when the rollout completes;
-T5's activation checklist carries the deletion.
+Plan 314 T3's activation checklist carries the deletion.
 
 #### In
 
@@ -2091,7 +2054,7 @@ forces the constructed-case fallback, which proves the mechanism and nothing abo
 
 #### Out
 
-Writes of any kind. The flag, the canary and the abort (T5's). Anything under `src/`.
+Writes of any kind. The flag, the canary and the abort (Plan 314's). Anything under `src/`.
 
 #### Pre-change
 
@@ -2115,8 +2078,8 @@ what stands in for a red test.
 
 #### Sequencing
 
-Lands in **phase 2** with T2/T2b/T3/T5 — it needs T2's new path to compare against. **Running
-it is a T5 activation precondition**: the flag is not enabled until this gate has passed, on the
+Lands in **phase 2** with T2/T2b/T3 — it needs T2's new path to compare against. **Running
+it is a Plan 314 T3 activation precondition**: the flag is not enabled until this gate has passed, on the
 input § C5b prescribes.
 
 ### T4 — Documentation
@@ -2225,7 +2188,7 @@ removes if nothing wrote down what it was protecting.
   "phases": [
     { "id": "phase-1", "tasks": ["T0"] },
     { "id": "phase-1b", "tasks": ["T1"], "depends_on": ["phase-1"] },
-    { "id": "phase-2", "tasks": ["T2", "T2b", "T3", "T5", "T6"], "depends_on": ["phase-1b"] },
+    { "id": "phase-2", "tasks": ["T2", "T2b", "T3", "T6"], "depends_on": ["phase-1b"] },
     { "id": "phase-3", "tasks": ["T4"], "depends_on": ["phase-2"] }
   ]
 }
@@ -2234,7 +2197,7 @@ removes if nothing wrote down what it was protecting.
 **T0 runs first** — the instrument must exist before T1 can measure anything (§ T1b cannot be
 measured first). T1a needs neither the database nor T0 and may run alongside it; it is already
 measured and recorded, so it is not work to schedule. **T2, T2b and T3 are one phase because
-they are one landing.** ⭐ **T5 joins phase 2 as well, corrected 2026-09-20** — an earlier graph put it in a later phase, which would have made phase 2 **a complete, mergeable, UNFLAGGED behaviour change with no abort control and no rollback-compatible release.** T2b item 10 requires the flag to gate the **status write**, and D7's auto-abort reverts that same flag; both presuppose the flag exists *in the release that first writes `QC_UNCHECKED`*. A safety control that lands after the thing it controls is not a safety control. T2b joins them for the same reason: the selection repair (T2) and the
+they are one landing.** ⛔ *T5 was in this phase until 2026-09-23; the rollout controls are now Plan 314.* The repaired selection (T2) and the
 corrected stored status (T2b) are two halves of one behaviour change — shipping T2 without T2b
 would leave zero-rule groups still writing `QC_PASSED`, which is the defect itself, and shipping
 T2b without T2 would move groups to `QC_UNCHECKED` that T2 would have repaired into a real verdict. An earlier graph put T3 in its own phase depending on T2, which contradicted the
