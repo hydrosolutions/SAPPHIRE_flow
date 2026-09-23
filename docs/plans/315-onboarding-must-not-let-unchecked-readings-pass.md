@@ -139,7 +139,8 @@ one direction and better in the other.** `onboarding.py:875-877` stores only `if
   two mix: the days that still clear `min_samples` are overwritten, the days that no longer do
   keep their old rows. The stored baseline ends up **partly refreshed and partly stale, with
   nothing recording which is which** — a state neither of the two bullets above describes on its
-  own, and the reason the hold criterion belongs at the station level rather than per row.
+  own. ⇒ **A per-station minimum cannot see this at all**, which is why T2's rule is
+  *replace, never merge* rather than a threshold.
 
 ⇒ **Closing the fail-open without deciding the consumer policy in the same change is the way to
 degrade the fleet quietly.** That is D2.
@@ -232,9 +233,11 @@ deployment, the one we actually run, with the defect this plan exists to remove.
 (6): `min_samples = 10` per day-of-year window for baselines, `min_observations = 365` for flow
 regimes. ⛔ *The first draft said these "must be made explicit"; they already are.*
 
-🔴 **Skill is the one that has none.** `services/skill/service.py:418` records `sample_size` and
-gates on nothing. T2 must state a hold criterion for it — a small design decision inside the
-task, not a new open decision.
+🔴 **Skill is the one that has none** — `services/skill/service.py:418` records `sample_size` and
+gates on nothing — **and T2 resolves that by needing no new number at all.** All three consumers
+already refuse to emit when their support is short, so the hold condition is "a consumer produced
+nothing". ⛔ *Two drafts left this as "T2 must state a criterion", which deferred the very thing
+review asked to be decided; see T2 for the decision and its basis.*
 
 ### D3 — history already stamped `QC_PASSED`. **CLOSED: leave it.**
 
@@ -310,7 +313,8 @@ next to the number.
 ### T2 — Close the fail-open, and apply D2's consumer policy in the same change
 
 **Outcome.** A group that resolves zero rules at onboarding is stored `QC_UNCHECKED`, the three
-consumers exclude it, and a station without enough checked data is held rather than promoted on a
+consumers exclude it, the shortfall is measured and reported in every posture, and — **with the
+D2 flag ON only** — a station without enough checked data is held rather than promoted on a
 quietly narrowed baseline.
 
 **In.**
