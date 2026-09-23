@@ -212,7 +212,7 @@ rule_id = "range_check"
 rule_version = "1.0.0"
 parameter = "discharge"
 time_step_seconds = 600
-thresholds = { value_min = 0.0, value_max = 30000.0 }
+thresholds = { value_min = 0.0, value_max = 100000.0 }
 
 [[qc_rules.rules]]
 rule_id = "rate_of_change"
@@ -282,7 +282,7 @@ rule_id = "range_check"
 rule_version = "1.0.0"
 parameter = "discharge"
 time_step_seconds = 86400
-thresholds = { value_min = 0.0, value_max = 30000.0 }
+thresholds = { value_min = 0.0, value_max = 100000.0 }
 
 [[qc_rules.rules]]
 rule_id = "rate_of_change"

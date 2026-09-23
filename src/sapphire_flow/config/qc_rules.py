@@ -47,7 +47,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=600),
-                thresholds={"value_min": 0.0, "value_max": 30000.0},
+                thresholds={"value_min": 0.0, "value_max": 100000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
@@ -83,7 +83,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="discharge",
                 time_step=timedelta(seconds=86400),
-                thresholds={"value_min": 0.0, "value_max": 30000.0},
+                thresholds={"value_min": 0.0, "value_max": 100000.0},
             ),
             QcRuleParams(
                 rule_id="rate_of_change",
