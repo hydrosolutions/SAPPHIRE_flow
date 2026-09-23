@@ -808,6 +808,13 @@ def _run_onboarding(
                 datum=datum,
             )
             qc_rule_version = obs_qc_rule_version(parameter, datum)
+            # Plan 272 D5, stated rather than overlooked: this is the SECOND
+            # fail-open call site, and it deliberately gets NO zero-rule
+            # marking. `aggregate_qc_status([])` still yields QC_PASSED here.
+            # The marking lives in the ingest flow, not in `check`, so a caller
+            # that is not that flow gets none; and onboarding's window is
+            # historical and wide, so the daily rules do resolve. Known
+            # limitation, not an oversight — see the plan before "fixing" it.
             for obs_id, obs_flags in flags.items():
                 status = aggregate_qc_status(obs_flags)
                 obs_store.update_qc(

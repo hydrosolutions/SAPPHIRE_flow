@@ -41,10 +41,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from statistics import median
 from typing import TYPE_CHECKING
 
-from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.services.qc import Stage1QualityChecker, infer_time_step
 from sapphire_flow.types.enums import QcStatus
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.qc_ruleset import (
@@ -57,7 +56,6 @@ from scripts.dhm_precip.seasons import Season, season_for
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from datetime import timedelta
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
@@ -124,22 +122,6 @@ class RuleProvenanceRow:
     thresholds: dict[str, float]
 
 
-def _inferred_time_step(observations: list[Observation]) -> timedelta:
-    """Mirrors `services.qc._infer_time_step` exactly — same fallback (1h
-    when fewer than 2 observations), same median-of-diffs formula — so the
-    guard raises precisely when, and only when, the production checker
-    would have silently matched no rules."""
-    from datetime import timedelta as _timedelta
-
-    if len(observations) < 2:
-        return _timedelta(hours=1)
-    diffs = [
-        (b.timestamp - a.timestamp).total_seconds()
-        for a, b in zip(observations, observations[1:], strict=False)
-    ]
-    return _timedelta(seconds=median(diffs))
-
-
 def _raise_on_time_step_mismatch(
     observations: list[Observation], rule_set: QcRuleSet
 ) -> None:
@@ -148,17 +130,31 @@ def _raise_on_time_step_mismatch(
     `QcRuleSet.rules_for` filters per-rule, so a rule set containing a mix of
     matching and mismatched rules would otherwise let the mismatched ones be
     silently and partially dropped while the matching ones still ran —
-    exactly the failure this guard exists to prevent."""
+    exactly the failure this guard exists to prevent.
+
+    Plan 272: expressed against the production selector itself rather than
+    against a local copy of the cadence rule, so the two cannot drift. A rule
+    is mismatched iff a cadence was inferable for this series AND the
+    production matcher does not select that rule for it. The leading clause is
+    load-bearing: when no cadence is inferable (a one-row station, or a
+    one-row JJAS season — ordinary in patchy DHM precipitation) no rule can
+    have been skipped by a *mismatch*, because there was no cadence to
+    mismatch. That group is simply too short to check, and the mask's correct
+    answer is the one it already gives for an empty station."""
     if not observations:
         return
-    inferred = _inferred_time_step(observations)
-    mismatched = [r for r in rule_set.rules if r.time_step != inferred]
+    inferred = infer_time_step(observations)
+    if inferred is None:
+        return
+    mismatched = [
+        r for r in rule_set.rules if r not in rule_set.rules_for(r.parameter, inferred)
+    ]
     if mismatched:
         offending = sorted(f"{r.rule_version} ({r.time_step})" for r in mismatched)
         raise TimeStepMismatchError(
             f"observations imply a {inferred} step; the following declared "
-            f"rules do not match it and would be silently skipped by "
-            f"Stage1QualityChecker.rules_for(), producing a mask that omits "
+            f"rules are not selected for it and would be silently skipped by "
+            f"QcRuleSet.rules_for(), producing a mask that omits "
             f"them without error (D5): {offending}"
         )
 

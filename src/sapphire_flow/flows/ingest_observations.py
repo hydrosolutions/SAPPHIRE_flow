@@ -12,7 +12,7 @@ from prefect.cache_policies import NO_CACHE
 from prefect.runtime import flow_run, task_run
 
 from sapphire_flow.exceptions import ConfigurationError
-from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.services.qc import Stage1QualityChecker, resolve_selection
 from sapphire_flow.services.qc_datum import (
     add_observation_datum_details,
     obs_qc_rule_version,
@@ -60,6 +60,7 @@ class IngestResult:
     qc_passed: int
     qc_failed: int
     qc_suspect: int
+    qc_unchecked: int = 0
     stations_failed: int
     errors: tuple[str, ...]
     # Plan 015 step 2.5 — calculated-station derivation (0 when no calculated stations).
@@ -142,9 +143,15 @@ def _fetch_configured_dhm(
         return _fetch_observations_task(adapter, station_configs, since)
 
 
-def _aggregate_qc_status(flags: list[object]) -> QcStatus:
+def _aggregate_qc_status(flags: list[object], *, rules_ran: bool = True) -> QcStatus:
+    """Plan 272 T2b: an empty flag list means one of two OPPOSITE things.
+
+    With rules selected, it means every rule ran and found nothing wrong —
+    `QC_PASSED`. With none selected, it means nothing was checked at all, which
+    used to be stored as the same clean pass. `rules_ran=False` separates them.
+    """
     if not flags:
-        return QcStatus.QC_PASSED
+        return QcStatus.QC_PASSED if rules_ran else QcStatus.QC_UNCHECKED
     if any(f.status == QcStatus.QC_FAILED for f in flags):  # type: ignore[union-attr]
         return QcStatus.QC_FAILED
     return QcStatus.QC_SUSPECT
@@ -315,11 +322,11 @@ def _run_qc_task(
         end=window_end,
     )
     if not all_obs:
-        return {"passed": 0, "failed": 0, "suspect": 0}
+        return {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
 
     raw_obs = [o for o in all_obs if o.qc_status == QcStatus.RAW]
     if not raw_obs:
-        return {"passed": 0, "failed": 0, "suspect": 0}
+        return {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
 
     raw_ids = {o.id for o in raw_obs}
 
@@ -346,13 +353,38 @@ def _run_qc_task(
         datum=datum,
     )
 
-    counts: dict[str, int] = {"passed": 0, "failed": 0, "suspect": 0}
+    # Plan 272 T3: what did selection actually resolve? Computed over the SAME
+    # rows `check` saw, so the two agree by construction.
+    selection = resolve_selection(
+        qc_observations, qc_rules, skipped_rule_ids=obs_skipped_rules(parameter, datum)
+    )
+    unresolved = {key for key, (_, n_rules) in selection.items() if n_rules == 0}
+    for station_key, parameter_key in unresolved:
+        inferred, _ = selection[(station_key, parameter_key)]
+        log.warning(
+            "qc.no_rules_selected",
+            station_id=str(station_key),
+            parameter=parameter_key,
+            inferred_time_step_seconds=(
+                inferred.total_seconds() if inferred is not None else None
+            ),
+            reason=(
+                "no_cadence_inferable" if inferred is None else "no_rule_declares_it"
+            ),
+            outcome="qc_unchecked",
+        )
+
+    counts: dict[str, int] = {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
     version = obs_qc_rule_version(parameter, datum)
     raw_by_id = {obs.id: obs for obs in all_obs}
     for obs_id, obs_flags in flags.items():
         if obs_id not in raw_ids:
             continue
-        status = _aggregate_qc_status(obs_flags)
+        obs_for_id = raw_by_id[obs_id]
+        status = _aggregate_qc_status(
+            obs_flags,
+            rules_ran=(obs_for_id.station_id, obs_for_id.parameter) not in unresolved,
+        )
         obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version=version)
         for flag in obs_flags:
             if flag.status == QcStatus.QC_FAILED:
@@ -369,6 +401,11 @@ def _run_qc_task(
             counts["passed"] += 1
         elif status == QcStatus.QC_FAILED:
             counts["failed"] += 1
+        elif status == QcStatus.QC_UNCHECKED:
+            # ⛔ NOT `suspect`: a group nothing checked and a group a rule
+            # found odd are different facts, and the counter is what an
+            # operator reads.
+            counts["unchecked"] += 1
         else:
             counts["suspect"] += 1
 
@@ -721,7 +758,7 @@ def ingest_observations_flow(
         for station in eligible
     }
 
-    totals = {"passed": 0, "failed": 0, "suspect": 0}
+    totals = {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
     errors: list[str] = []
     qc_failed_station_ids: set[StationId] = set()
     dhm_station_ids = {
@@ -756,6 +793,7 @@ def ingest_observations_flow(
             totals["passed"] += counts["passed"]
             totals["failed"] += counts["failed"]
             totals["suspect"] += counts["suspect"]
+            totals["unchecked"] += counts["unchecked"]
         except Exception as exc:
             log.warning(
                 "ingest.qc_failed",
@@ -771,6 +809,7 @@ def ingest_observations_flow(
         passed=totals["passed"],
         failed=totals["failed"],
         suspect=totals["suspect"],
+        unchecked=totals["unchecked"],
     )
 
     # --- Step 2.5: Calculated-station derivation (Plan 015) ---
@@ -832,6 +871,7 @@ def ingest_observations_flow(
         qc_passed=totals["passed"],
         qc_failed=totals["failed"],
         qc_suspect=totals["suspect"],
+        qc_unchecked=totals["unchecked"],
         stations_failed=len(all_failed_station_ids),
         errors=fetch_errors + tuple(errors),
         observations_derived=derived["derived"],
@@ -847,6 +887,7 @@ def ingest_observations_flow(
         qc_passed=result.qc_passed,
         qc_failed=result.qc_failed,
         qc_suspect=result.qc_suspect,
+        qc_unchecked=result.qc_unchecked,
         stations_failed=result.stations_failed,
         observations_derived=result.observations_derived,
         observations_missing=result.observations_missing,

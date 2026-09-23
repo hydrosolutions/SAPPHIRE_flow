@@ -182,6 +182,20 @@ class TestBuildMaskDefectSignatures:
         with pytest.raises(TimeStepMismatchError):
             build_mask({station: series}, DEFAULT_PARAMS)
 
+    def test_a_single_observation_does_not_raise(self) -> None:
+        # Plan 272 case (a): no cadence is inferable from one row, so no rule
+        # can have been skipped by a MISMATCH. A one-row JJAS season is
+        # ordinary in patchy DHM precipitation and must not hard-fail the
+        # handover build. It contributes no mask keys — the same answer the
+        # mask already gives for an empty station.
+        station = Station("A")
+        sid = StationId(uuid.uuid4())
+        start = datetime(2024, 7, 1, tzinfo=UTC)
+
+        mask = build_mask({station: [_obs(sid, start, 999.0)]}, DEFAULT_PARAMS)
+
+        assert mask == frozenset()
+
     def test_a_single_mismatched_rule_among_matching_rules_still_raises(
         self,
     ) -> None:

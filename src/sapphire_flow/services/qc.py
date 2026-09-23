@@ -37,14 +37,67 @@ def _merge_thresholds(
     )
 
 
-def _infer_time_step(obs: list[Observation]) -> timedelta:
-    if len(obs) < 2:
-        return timedelta(hours=1)
-    diffs = [
-        (obs[i].timestamp - obs[i - 1].timestamp).total_seconds()
-        for i in range(1, len(obs))
-    ]
+def infer_time_step(obs: list[Observation]) -> timedelta | None:
+    """Plan 272 T2: the cadence a group reports at, or ``None`` when it cannot
+    be inferred.
+
+    ⛔ **The ``< 2 rows ⟹ 1 h`` fallback is deliberately gone.** It fabricated a
+    cadence no rule may have declared, and `rules_for` then matched on it by
+    exact equality — so a one-row group silently selected the hourly rules, or
+    none at all, and either way the caller could not tell. The return type is
+    widened rather than guarded at the call site so the type checker refuses the
+    mistake: an inferred cadence and "no cadence" are now different things.
+    """
+    # 🔑 DISTINCT timestamps. The observations natural key includes `source`
+    # (`db/metadata.py`), so one instant can carry several rows — a `measured`
+    # reading and a `manual_import` or rating-curve-derived one. Counting the
+    # zero gap between them drags the median off the real cadence: two rows ten
+    # minutes apart plus a same-instant sibling gives gaps [600, 0] and a median
+    # of 300 s, which no rule declares. The cadence is a property of the SERIES,
+    # not of how many sources reported each point.
+    stamps = sorted({o.timestamp for o in obs})
+    if len(stamps) < 2:
+        return None
+    diffs = [(stamps[i] - stamps[i - 1]).total_seconds() for i in range(1, len(stamps))]
     return timedelta(seconds=median(diffs))
+
+
+def group_key(obs: Observation) -> tuple[StationId, str]:
+    """The `(station, parameter)` grouping QC selection works on."""
+    return (obs.station_id, obs.parameter)
+
+
+def resolve_selection(
+    observations: list[Observation],
+    rule_set: QcRuleSet,
+    *,
+    skipped_rule_ids: frozenset[str] = frozenset(),
+) -> dict[tuple[StationId, str], tuple[timedelta | None, int]]:
+    """Plan 272 T3: what `check` will select, per group, **before** it runs.
+
+    Returns the inferred cadence and the number of rules that resolve for it.
+    A group with ``0`` rules is one for which QC cannot run at all — the
+    condition that used to be stored as a clean pass.
+
+    🔑 Deliberately a separate, pure function over the SAME observation list the
+    caller passes to `check`, so both see one row set and agree by construction.
+    """
+    resolved: dict[tuple[StationId, str], tuple[timedelta | None, int]] = {}
+    for key, group_iter in groupby(
+        sorted(observations, key=lambda o: (o.station_id, o.parameter, o.timestamp)),
+        key=group_key,
+    ):
+        group = list(group_iter)
+        step = infer_time_step(group)
+        rules = rule_set.rules_for(group[0].parameter, step) if step else ()
+        # ⚠️ The SKIP filter must be applied here too. `check` skips these rules
+        # (`:303`), so a group whose only matching rule is skipped — a water
+        # level with no datum, say — executes nothing while a naive count
+        # reports one, and the caller stores QC_PASSED over an unchecked row.
+        # That is the very defect this function exists to expose.
+        runnable = [r for r in rules if r.rule_id not in skipped_rule_ids]
+        resolved[key] = (step, len(runnable))
+    return resolved
 
 
 def _apply_range_check(
@@ -130,7 +183,10 @@ def _apply_frozen_sensor(
             run_start = i
             ref_val = val
 
-        run_length = i - run_start + 1
+        # Count DISTINCT instants, not rows: the natural key includes `source`,
+        # so one timestamp can carry several reports and a six-sample run of
+        # duplicated readings would otherwise satisfy `min_consecutive=12`.
+        run_length = len({o.timestamp for o in group[run_start : i + 1]})
         if run_length >= min_consecutive:
             # Flag all obs in the current run
             for j in range(run_start, i + 1):
@@ -249,8 +305,10 @@ class Stage1QualityChecker:
 
         for (station_id, parameter), group_iter in groupby(sorted_obs, key=group_key):
             group = list(group_iter)
-            time_step = _infer_time_step(group)
-            rules = rule_set.rules_for(parameter, time_step)
+            time_step = infer_time_step(group)
+            # `None` means no cadence could be inferred, so no rule can be
+            # selected for this group — NOT that an hourly one should be.
+            rules = rule_set.rules_for(parameter, time_step) if time_step else ()
 
             for rule in rules:
                 if rule.rule_id in skipped_rule_ids:

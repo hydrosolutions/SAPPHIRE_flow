@@ -59,6 +59,29 @@ _QC_RULES = QcRuleSet(
             time_step=timedelta(seconds=600),
             thresholds={"value_min": 0.0, "value_max": 3000.0},
         ),
+        # Mirrors production: water_level always has at least one rule that
+        # does not depend on the station datum, so a datum-less station is
+        # still checked rather than QC_UNCHECKED.
+        QcRuleParams(
+            rule_id="rate_of_change",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"max_rate": 100.0},
+        ),
+    ),
+)
+
+_DATUM_ONLY_QC_RULES = QcRuleSet(
+    version="test-datum-only",
+    rules=(
+        QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"value_min": 0.0, "value_max": 3000.0},
+        ),
     ),
 )
 
@@ -315,7 +338,7 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts == {"passed": 1, "failed": 0, "suspect": 0}
+        assert counts == {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0}
         assert latest.value == 261.2
         assert latest.qc_rule_version == "1.1-datum"
 
@@ -340,7 +363,7 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts == {"passed": 0, "failed": 0, "suspect": 1}
+        assert counts == {"passed": 0, "failed": 0, "suspect": 1, "unchecked": 0}
         assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
         assert latest.qc_rule_version == "1.1-datum-skip"
 
@@ -375,7 +398,7 @@ class TestIngestObservationsFlow:
 
         assert datum_result == no_datum_result
         assert datum_result == (
-            {"passed": 1, "failed": 0, "suspect": 0},
+            {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0},
             QcStatus.QC_PASSED,
             [],
         )
@@ -410,19 +433,25 @@ class TestIngestObservationsFlow:
         station_store = FakeStationStore()
         station_store.store_station(s1)
 
-        obs = _make_obs(s1.id, "discharge", 42.0)
+        # Plan 272: TWO rows ten minutes apart, so the 600 s cadence the rule
+        # set declares is genuinely inferable. A single row infers nothing and
+        # is now stored QC_UNCHECKED — correctly — where it used to resolve
+        # against a fabricated one-hour cadence.
+        obs = _make_obs(s1.id, "discharge", 42.0, offset_minutes=10)
+        obs_now = _make_obs(s1.id, "discharge", 43.0)
 
         result = ingest_observations_flow(
             station_store=station_store,
             obs_store=FakeObservationStore(),
             baseline_store=FakeClimBaselineStore(),  # empty
-            adapter=FakeStationDataSource([obs]),
+            adapter=FakeStationDataSource([obs, obs_now]),
             qc_rules=_QC_RULES,
             clock=_fixed_clock,
         )
 
-        # Range check still runs, value 42.0 within [0, 5000]
-        assert result.qc_passed == 1
+        # Range check still runs, values within [0, 5000]
+        assert result.qc_passed == 2
+        assert result.qc_unchecked == 0
 
     def test_clock_injection_affects_since(self) -> None:
         s1 = make_station_config(code="2135", name="Aare Bern")
@@ -490,13 +519,16 @@ class TestIngestObservationsFlow:
         )
 
         obs_store = FakeObservationStore()
-        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
+        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=20)
         obs_store.store_raw_observations([old_obs])
         for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
-        # offset_minutes=1 so timestamp < now (exclusive upper bound in fetch)
-        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=1)
+        # Plan 272: TEN minutes apart, so the 600 s cadence the rule set declares is
+        # inferable. At the previous 9-minute spacing nothing resolves, the new row
+        # stores QC_UNCHECKED, and the alert checker — which fetches QC_PASSED —
+        # correctly never sees the 150.0 reading. Still < now (exclusive bound).
+        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=10)
         alert_store = FakeAlertStore()
 
         config = DeploymentConfig(
@@ -605,6 +637,38 @@ class TestIngestObservationsFlow:
         assert result.observations_fetched == 1
         assert result.observations_stored == 1
         assert result.qc_passed == 1
+
+    def test_datum_skipped_rules_leave_the_group_unchecked(self) -> None:
+        """Every selected rule skipped for a missing datum is not a pass."""
+        lake = make_station_config(
+            code="9002",
+            name="Lake Datumless",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            rng=random.Random(12),
+        )
+
+        station_store = FakeStationStore()
+        station_store.store_station(lake)
+
+        obs_store = FakeObservationStore()
+        old = _make_obs(lake.id, "water_level", 400.0, offset_minutes=10)
+        obs_store.store_raw_observations([old])
+        for o in obs_store.observations():
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([_make_obs(lake.id, "water_level", 405.0)]),
+            qc_rules=_DATUM_ONLY_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_passed == 0
+        assert result.qc_unchecked == 1
 
     def test_mixed_river_and_lake_stations(self) -> None:
         river = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))

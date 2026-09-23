@@ -360,9 +360,13 @@ class TestWeatherStationEndToEndReplay:
 
         # No rule matches "precipitation" yet (M-I4's job) -> passes by
         # default, with no flags raised.
-        assert stored[0].qc_status == QcStatus.QC_PASSED
+        # Plan 272: no configured rule matches this series, so nothing checked
+        # it. That is now stored as QC_UNCHECKED rather than as a clean pass —
+        # the defect this plan exists to remove, which this test asserted.
+        assert stored[0].qc_status == QcStatus.QC_UNCHECKED
         assert stored[0].qc_flags == []
-        assert result.qc_passed == 1
+        assert result.qc_passed == 0
+        assert result.qc_unchecked == 1
         assert result.qc_failed == 0
 
         # The fetch health record is written before QC (Plan 175's D8, not

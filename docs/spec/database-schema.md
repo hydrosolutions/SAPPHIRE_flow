@@ -143,7 +143,7 @@ erDiagram
         TEXT parameter
         DOUBLE_PRECISION value "NULL when missing"
         TEXT source "measured | manual_import"
-        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing"
+        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing | qc_unchecked"
         JSONB qc_flags
         TEXT qc_rule_version "NULL"
         TIMESTAMPTZ created_at
@@ -679,7 +679,7 @@ erDiagram
         TEXT source "measured | rating_curve_derived | manual_import | component_derived"
         UUID rating_curve_id FK "NULL"
         TEXT rating_curve_correction_version "NULL"
-        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing"
+        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing | qc_unchecked"
         JSONB qc_flags
         TEXT qc_rule_version "NULL"
         TIMESTAMPTZ created_at

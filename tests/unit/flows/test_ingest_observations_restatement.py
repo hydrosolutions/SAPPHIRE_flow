@@ -98,7 +98,11 @@ class TestIngestRestatement:
         assert result.observations_stored == 1
         assert result.observations_skipped == 0
         # Reset row was re-QC'd in the same run.
-        assert result.qc_passed == 1
+        # Plan 272: a restatement overwrites ONE timestamp, so the group is a
+        # single instant — no cadence is measurable and no rule is selected.
+        # QC_UNCHECKED is the honest outcome; it used to read as a clean pass.
+        assert result.qc_passed == 0
+        assert result.qc_unchecked == 1
 
         # Observability: the flow event reports stored = inserted + updated with
         # skipped excluding the genuine write.
@@ -110,7 +114,7 @@ class TestIngestRestatement:
         rows = obs_store.observations()
         assert len(rows) == 1
         assert rows[0].value == 130.0
-        assert rows[0].qc_status == QcStatus.QC_PASSED
+        assert rows[0].qc_status == QcStatus.QC_UNCHECKED
 
     def test_identical_reingest_no_write_and_no_qc_churn(self) -> None:
         s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
@@ -137,7 +141,9 @@ class TestIngestRestatement:
         seeded = obs_store.observations()
         assert len(seeded) == 1
         assert seeded[0].value == 130.0
-        assert seeded[0].qc_status == QcStatus.QC_PASSED
+        # Plan 272: the precondition RUN QC'd this row — one timestamp, no
+        # inferable cadence, so no rule was selected.
+        assert seeded[0].qc_status == QcStatus.QC_UNCHECKED
 
         # Identical re-ingest: same natural key AND same (restated) value.
         with structlog.testing.capture_logs() as captured:
@@ -164,4 +170,4 @@ class TestIngestRestatement:
         rows = obs_store.observations()
         assert len(rows) == 1
         assert rows[0].value == 130.0
-        assert rows[0].qc_status == QcStatus.QC_PASSED
+        assert rows[0].qc_status == QcStatus.QC_UNCHECKED
