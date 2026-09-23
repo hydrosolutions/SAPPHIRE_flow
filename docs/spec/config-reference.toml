@@ -361,7 +361,7 @@ rule_id = "range_check"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 600
-thresholds = { value_min = -10.0, value_max = 9000.0 }  # meters
+thresholds = { value_min = -2.0, value_max = 20.0 }  # meters
 
 [[qc_rules.rules]]
 rule_id = "rate_of_change"
@@ -397,7 +397,7 @@ rule_id = "range_check"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 86400
-thresholds = { value_min = -10.0, value_max = 9000.0 }  # meters
+thresholds = { value_min = -5.0, value_max = 30.0 }  # meters
 
 [[qc_rules.rules]]
 rule_id = "rate_of_change"
