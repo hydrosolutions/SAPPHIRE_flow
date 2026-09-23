@@ -14,6 +14,7 @@ reviews:
   - "codex 2026-09-23 r2 — NOT READY, 3 MEDIUM + 1 LOW on the fold: unsound descope, hardcoded cadence set, central-risk test with no expected outcome"
   - "claude 2026-09-23 r2 — NOT READY, 6 MEDIUM + 2 LOW: the consumer exclusion is a NO-OP (store filters by equality), the hold mechanism already exists and was unnamed, census population contradiction, depends_on contradicted D1; VERIFIED claims 1-8 including the load-bearing per-day-of-year baseline argument"
   - "codex 2026-09-23 r3 — NOT READY, 3 MEDIUM: a fold bullet contradicted D1; the skill criterion and the narrowed-baseline outcome were still DEFERRED rather than decided"
+  - "codex 2026-09-23 r4 (NARROW: plan vs the DECISION RECORD, not the code) — CONTRADICTIONS FOUND, 3 MEDIUM: an unconditional HOLD survived inside the flag-exempt baseline rule; the plan claimed to close 269's descope, which is about overrides not zero-rule marking; it assigned the DHM forecast targets to 268, which explicitly disclaims them"
   - "claude 2026-09-23 r3 — NOT READY, 2 MEDIUM + 2 LOW: the baseline trigger and its test were DIFFERENT tests and neither could fire on a first-ever onboarding; held_out_ids also skips model assignment and training. NO correction overshot into a false claim; verified the Step 8 ordering, the no-op, and every citation in the real control flow"
 source: 2026-09-23 — owner, on reviewing PR #297: *"for now it's ok, we'll have to have a plan that follows the full QC implementation to check if this still happens. Once QC stands, we should not allow the loader to let unchecked readings pass."* Every claim below was measured on `feat/plan-272-qc-selection` at `54673d79` (v0.1.960), i.e. against the tree as it will be once #297 merges — not against today's `main`, which does not yet contain `QC_UNCHECKED`.
 ---
@@ -43,11 +44,17 @@ neither left an owner behind:
   implementation filed that exclusion as a HIGH; it was refused, with the reason written into
   `services/onboarding.py:811-817`, and Codex accepted the refusal as a policy question for the
   owner.
-- **Plan 269 § What this deliberately does not do** descoped the same path for per-station
-  thresholds, and ends: *"If that becomes load-bearing, it is a follow-on that should be designed
-  against the onboarding path's own gate, not bolted onto this one."*
+- **Plan 269 § What this deliberately does not do** descoped the same path — *"The onboarding QC
+  path keeps `overrides=[]`"* (`269:236-238`) — and ends: *"If that becomes load-bearing, it is a
+  follow-on that should be designed against the onboarding path's own gate, not bolted onto this
+  one."*
 
-**This plan is that follow-on.** It is also the thing that makes `docs/v1-scope.md` § QC posture
+⛔ **But 269's descope and this plan's defect are NOT the same thing, and an earlier draft said
+they were.** 269 left onboarding judging history against **base thresholds only**, for want of
+per-station overrides. This plan leaves overrides untouched (see `scope`) and fixes a different
+defect on the same path: a group that selects **zero rules** reading as a clean pass. ⇒ **This
+plan is a follow-on against the gate 269 named, not the closure of 269's own limitation** — that
+one stays open and still belongs to whoever picks up per-station overrides for onboarding. It is also the thing that makes `docs/v1-scope.md` § QC posture
 point 4 true rather than aspirational — that section already commits to *"Once QC is in place and
 fine-tuned: unchecked data must NOT enter forecasting"*, and nothing currently delivers it on the
 onboarding side.
@@ -373,9 +380,14 @@ quietly narrowed baseline.
      **`delete_baselines(station_id, parameter)`** (`store/clim_baseline_store.py:44-53`, exists
      today, currently uncalled here) **before** `store_baselines`. The stored baseline then always
      comes from exactly one population.
-  2. When it produces **nothing**, the stored baseline is left untouched and the station is
-     **HELD** — ⛔ *never delete-then-write-nothing, which would destroy a usable baseline and is
-     strictly worse than today.*
+  2. When it produces **nothing**, the stored baseline is **left untouched** — ⛔ *never
+     delete-then-write-nothing, which would destroy a usable baseline and is strictly worse than
+     today.*
+  ⚠️ **Both arms above are unconditional; neither holds a station.** ⛔ *An earlier draft folded
+  "and the station is HELD" into arm 2, which put enforcement inside the rule D2 exempts from the
+  flag and quietly reinstated the staged-policy contradiction this plan had just removed.* The
+  empty-baseline case **reports** under the default posture and **holds only with the flag ON**,
+  exactly like every other shortfall.
 
   ⭐ **Why this and not the menu:** "materially smaller" needed a number nobody could source; this
   needs none. It behaves identically on a first-ever onboarding (nothing to delete), which the
@@ -413,7 +425,10 @@ not because a symbol is missing** — the standard Plan 272 § the same standard
   earlier draft stated the trigger and the test differently, so both could pass with the risk
   live:* after a recomputation that produces rows, **no stored day-of-year row survives from the
   previous population** (the delete-then-write leaves exactly one population behind); and after a
-  recomputation that produces none, **the stored baseline is unchanged and the station is HELD**.
+  recomputation that produces none, **the stored baseline is unchanged**. ⛔ *Both asserted in
+  BOTH postures — an earlier draft appended "and the station is HELD" here, which made the
+  acceptance test require enforcement the default posture does not perform.* Whether the station
+  is then held is the flag's business, asserted separately above.
 - **With the flag ON, a held station is also absent from model assignment and training**
   (`:937`, `:1051`) — the hold's full reach, asserted rather than left to be discovered.
   **With it OFF, it is present in both.**
@@ -429,9 +444,11 @@ exclusion record that it was closed.
 - `docs/v1-scope.md` § QC posture point 4 — the staged policy gains the mechanism that makes it
   real: the "once QC is fine-tuned" half is now **a flag with a default**, not a promise. Name the
   setting there, and say that flipping it is an owner action on a deployment, not a release.
-- ⚠️ **A sweep by VALUE, not by site**: every place that states the onboarding exclusion,
-  including Plan 272 D5 and its § the second fail-open call site, and Plan 269 § What this
-  deliberately does not do. *(Plan 272's own § Out-of-scope entry for re-QC stays true under D3
+- ⚠️ **A sweep by VALUE, not by site**: every place that states the onboarding **fail-open**,
+  including Plan 272 D5 and its § the second fail-open call site. ⛔ **Plan 269's § What this
+  deliberately does not do is NOT such a place** — its descope is about `overrides=[]`, which this
+  plan does not touch. Add a pointer there that the *fail-open* half is closed; **do not mark its
+  own limitation closed.** *(Plan 272's own § Out-of-scope entry for re-QC stays true under D3
   and must not be edited to imply otherwise.)*
 
 ⛔ **Two items an earlier draft listed here are ALREADY DONE on `main` (`9fcc9eb4`) and are
@@ -460,7 +477,12 @@ closed.
 - **A re-QC workflow over stored history** — closed by D3. ⚠️ *Not* because the reset operation is
   missing: it exists (D3). Because real deployments onboard afresh.
 - **The six DHM gauges' onboarding** — they have no forecast target, so Step 5 skips them
-  entirely (§ What is measured (2)). Giving them one is Plan 268's.
+  entirely (§ What is measured (2)). ⛔ **And giving them one is NOT Plan 268's**, which an earlier
+  draft asserted: 268 states *"`forecast_targets` stays unset"* (`268:852`), *"no `station_status`
+  promotion — these stay `onboarding`"* and *"Promotion … is not this plan's to trigger"*
+  (`268:862-872`), and tests that condition. ⇒ **Nobody owns setting them.** Recorded here as an
+  open gap rather than assigned away, because this plan's § (2) depends on it: until something
+  does, Step 5 never runs on the DHM six at all and nothing in this plan reaches them.
 
 ```json
 {
