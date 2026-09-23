@@ -5,7 +5,7 @@ plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
 scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan.
 blocks: [264, 269]
-related: [264, 268, 269, 301, 302, 303, 304]
+related: [264, 268, 269, 301, 303, 304, 313]
 open_decisions: []
 closed_decisions: [D1, D2, D3, D4, D5, D6, D7]
 source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (both gates, independently) and verified directly against the repository. Plan 268 knew the single-row mechanism locally; nobody owned the systemic consequence.
@@ -140,7 +140,11 @@ mechanism.
 ⇒ **This plan carries NO Plan 305 prerequisite.** What it does carry is the C3 hazard already
 documented: the newly-reachable rules land on the sparse/jittered population, where gap-blind
 thresholds are most likely to fire wrongly. `spike` (`max_delta = 1.0`) and `gross_outlier`
-(`k_sigma = 5.0`) remain Swiss-calibrated and are part of 268 D14's answer, not this plan's.
+(`k_sigma = 5.0`) remain Swiss-calibrated: their **values** are 268 D14's answer. 🔑 **The
+gap-blindness itself is Plan 313's** (`docs/plans/313-rate-of-change-never-divides-by-elapsed-time.md`)
+— `_apply_rate_of_change` compares `|Δvalue|` against a flat `max_rate` without dividing by
+elapsed time (`services/qc.py:71-89`), which is exactly why the newly-reachable rules over-flag a
+sparse window. **313 mitigates C3; neither plan depends on the other and either may land first.**
 
 ## ⭐ The operational picture — added 2026-09-20 from the high-risk review
 
@@ -364,7 +368,7 @@ a forecast ensemble carries its step as data; an observation series does not, an
 actually does: the raise never halted anything. It was caught per-group, the rows stranded at
 `RAW`, and because both QC entry points pick up only `RAW` they were retried and failed forever —
 a station invisible to every consumer with nothing raising an alarm. `QC_UNCHECKED` gives the same
-condition an explicit, queryable state — ⛔ **NOT a terminal one: D5 requires it to be re-examined and upgraded under a bounded attempt count (T2b item 7), and a builder who reads "terminal" here will skip that** — keeps forecasts running on marked-degraded
+condition an explicit, queryable state — ⛔ **NOT a terminal one: D5 requires it to be re-examined and upgraded while it stays in the checked window (T2b item 8), and a builder who reads "terminal" here will skip that** — keeps forecasts running on marked-degraded
 input, and keeps the data out of alerts, scores and training. It converts a silent failure into a
 recorded fact.
 
@@ -416,7 +420,7 @@ stronger than it reads.** Three things the decision did not say:
    bounded.**
 
 **🔴 The rollback control is weaker than this repo's own standard.**
-`docs/standards/cicd.md:202` requires a release to be rollback-safe for one version.
+`docs/standards/cicd.md:245` requires a release to be rollback-safe for one version.
 `services/qc_datum.py:23-26` stamps `qc_rule_version` as hard-coded `"1.0"` /
 `"1.1-datum"` / `"1.1-datum-skip"`, so new verdicts land **indistinguishable from the old
 ones** and "record the deploy and rollback timestamps" puts the only boundary marker in a
@@ -484,7 +488,7 @@ not — recorded here because the *method* was the error, not the count:
 | Site | What the grep missed | Policy |
 |---|---|---|
 | `hindcast.py:201` | in-memory `o.qc_status == QcStatus.QC_PASSED`, not a store filter | **No** |
-| `api/routes/stations.py:698` | **exclusion polarity** — `qc_status != "qc_failed"` | **No**, or render visibly (T2b item 8) |
+| `api/routes/stations.py:698` | **exclusion polarity** — `qc_status != "qc_failed"` | **No**, or render visibly (T2b item 9) |
 | `component_derivation.py:36-37` | `_USABLE_STATUSES`, applied **after** an unfiltered fetch | **No** — with a consequence, below |
 
 ⇒ **Nothing unchecked is published or learned from, and no directly-measured station goes dark.**
@@ -556,8 +560,8 @@ most one row. They run and return nothing, and T3's telemetry correctly reports 
 *resolved*, so the shortfall is invisible from the outside.
 
 **⚖️ Owner decision, 2026-09-20: (ii) — a named successor, granted here as ⭐ PLAN 304.**
-🔴 **As of 2026-09-22 no `docs/plans/304-*.md` exists and no other plan records 304 as a
-prerequisite, so by this plan's OWN standard it is still a promise wearing a number.**
+🔴 **As of 2026-09-23 no `docs/plans/304-*.md` exists**, so by this plan's OWN standard it is
+still a promise wearing a number — though `docs/plans/313-...md:362` now records it.
 ⇒ **Either write 304, or have the gated plan record it.** Its
 scope: supply `check` with the neighbouring observations a daily series needs, so daily
 `rate_of_change` and `spike` can fire on `discharge` and `water_level` — the two parameters
@@ -578,8 +582,11 @@ exceeded.** Confirmed as recommended, and it is now a **rollout gate, not a moni
 nicety**:
 
 - The threshold is expressed as a **share of rows per station per cycle** that may leave
-  `QC_PASSED` (to `QC_FAILED`, `QC_SUSPECT` **or** `QC_UNCHECKED` — all three are excluded
-  by the alerting/scoring/training consumers under D5).
+  `QC_PASSED` **to `QC_FAILED` or `QC_SUSPECT`**. ⛔ **`QC_UNCHECKED` is NOT in the numerator.**
+  A permanently-regime-2 group loses 100 % of its rows to `QC_UNCHECKED` *by design*, every
+  cycle, so including it forces the threshold above 100 % to avoid aborting on the intended
+  outcome — at which point it can no longer catch the C3 spurious-flag hazard it exists for.
+  This is also what T2b item 5's separate `unchecked` bucket is for.
 - Exceeding it **automatically aborts the canary** (C9) and reverts the flag (C4). It does
   not merely log.
 - The owner set the policy; **the number itself must be proposed with T1's Q2 census in
@@ -595,7 +602,7 @@ zero-rule probe — the two are the same gap seen from two sides.
 
 ## Tasks
 
-### 🔴 T1b CANNOT BE MEASURED FIRST — the phase order is wrong (found 2026-09-20)
+#### 🔴 T1b CANNOT BE MEASURED FIRST — the phase order is wrong (found 2026-09-20)
 
 *Discovered by building T1b's census and putting it through two independent reviews before
 running it. Both stopped it; the second identified why the task is unanswerable as written.*
@@ -681,6 +688,13 @@ plan cache, same rollback surface.
   **`services/qc_datum.py:23-26`** — write a **sentinel `qc_rule_version`** (e.g.
   `"1.0-norules"`, and the datum variants likewise) when the resolved rule set is empty.
 
+- 🔴 **The signature move, in full.** T0 moves the resolution outside `check` (see the binding
+  note below), so it owns **every** site that shape touches — not only `services/qc.py`:
+  **`protocols/stores.py:1028-1037`** (the `QualityChecker` Protocol, whose `check` signature
+  moves with it), the flow invocation at **`flows/ingest_observations.py:334`**, and the two
+  mask invocations at **`scripts/dhm_precip/qc_mask.py:203`, `:208`** and their tests — all
+  mechanical via the same-observations constructor. ⛔ *These were listed by T3 one phase later
+  while T0's binding already forced them, so phase 1 could not be built from its own surface.*
 - 🔴 **`services/onboarding.py` — the SECOND call site of BOTH changed functions**, omitted
   from an earlier revision of this list. It calls `checker.check(...)` at `:796`,
   `obs_qc_rule_version(...)` at `:810` and `update_qc(..., qc_rule_version=...)` at `:813-818`.
@@ -790,6 +804,8 @@ measures the first and says nothing against the second.
 
 **In**: a read-only query against the staging database (T1b) and a local analysis over the checked-in
 fixture (T1a); both outputs recorded in this plan; no code change.
+**Out**: ⛔ any code change, any write, any schema or counter addition, and any attempt to
+reconstruct the historical contamination — § What is NOT yet measured explains why it cannot be.
 **Verification**: both measurements recorded here with their method and the SHA measured against.
 **Pre-change**: N/A — measurement.
 
@@ -918,8 +934,12 @@ them back for resizing. An implementer must not cite them as evidence that the c
   (7 days is 6 gaps, and a single missed day moves the median). Chosen from that arithmetic alone.
 - **Row cap `N` = 50 most recent rows.** `N` rows give `N − 1` gaps *at any cadence*, so the cap is
   cadence-independent and self-scaling: 50 rows is ~8.2 h of a 10-minute series, ~2 d of an hourly
-  one, and all of a daily one inside `L`. 49 gaps is far more than a median needs. Also chosen from
-  that arithmetic alone.
+  one, and all of a daily one inside `L`. ⚠️ **`N` also bounds the repairable DURATION of a
+  degradation episode, and this is not a cost knob:** a group is repaired only while the off-grid
+  gaps stay a minority of the most recent `N`, so once an episode has run ~`N` × its degraded
+  cadence (≈16 h at 1200 s) the widened lookback returns the same off-grid median and the group
+  stays regime 2. The paired evaluation defines "Repairable" against the widened lookback, so it
+  cannot surface that shortfall either.
 - **🔴 The cap must be a SQL `LIMIT` over `ORDER BY timestamp DESC`, not a client-side slice.**
   Truncating in Python bounds the median's input and nothing else — the database still reads the
   whole 30 days. This is the difference between a bounded change and an unbounded one.
@@ -1358,7 +1378,7 @@ window always lands on an image that already understands the rows on disk"
    restore the old verdicts (§ T5 Verification).
 2. Enable it in `config/overlays/mac-mini.toml`, which is a **host bind mount** into
    `prefect-worker`, `prefect-worker-ingest` and `api`
-   (`docker-compose.macmini.yml:41, 47, 71`, `:ro`). **Disabling the flag stops
+   (`docker-compose.macmini.yml:46, 52, 76`, `:ro`). **Disabling the flag stops
    `QC_UNCHECKED` writes; selection rollback requires the compatibility image.**
    ⚠️ Edit it **in place**: this is a single-file bind mount, and an editor that writes a
    new inode leaves the container reading the old content until it is recreated
@@ -1374,7 +1394,7 @@ and fleet-wide. `stations.network` exists and the QC loop already iterates per
 `(station_id, parameter)`, so the flag can be scoped cheaply: enable on 2–3 BAFU stations,
 watch one full forecast cycle (`0 */6 * * *`), then widen. Before the upgrade, tag the
 rollback anchor — `docker tag sapphire-flow:${OLD} sapphire-flow:rollback-backup` — because
-the mini has **no image registry** (`docs/standards/cicd.md:274`; images are local-only and
+the mini has **no image registry** (`docs/standards/cicd.md:506`; images are local-only and
 the Sunday prune protects only `^rollback($|-)` tags). Image revert on this host is a
 procedure, not a button, and it needs both overlays plus the exported tokens.
 
@@ -1407,7 +1427,7 @@ and the published API exclude them; and a row can be **re-examined later**.
    `store/observation_store.py` (the implementation) and **every fake in the test suite**. The
    alternative — drop the filter and re-filter in Python at four call sites — is rejected: it
    moves a correctness rule out of one place into four and loses the index.
-4. **The write site** in `services/qc.py` / `flows/ingest_observations.py`: zero resolved rules ⇒
+4. **The write site** in `flows/ingest_observations.py`: zero resolved rules ⇒
    `QC_UNCHECKED`, empty `qc_flags`.
 5. 🔴 **The ingest counters, which today would silently mis-bucket it.**
    `flows/ingest_observations.py:368-373` is `if PASSED … elif FAILED … else: suspect` (verified),
@@ -1438,9 +1458,13 @@ and the published API exclude them; and a row can be **re-examined later**.
    outage would be excluded from alerting, skill, training and hindcast **forever**, even after
    the feed densified and the rules would resolve. **Widen the QC pick-up set to
    `{RAW, QC_UNCHECKED}`**, so a later run with a fuller window re-checks and upgrades it.
-   ⛔ **Bound the attempts** (a counter or an age cut-off) so a permanently-regime-2 group cannot
-   be re-examined on every run forever — silent unbounded retry is the 264 T3 failure in a new
-   costume. ⚠️ This does **not** reopen D3: no *historical* row is re-examined, because historical
+   🔑 **The checked window already bounds this — no attempt counter is needed or possible.**
+   `_run_qc_task` fetches `[now − 2 h, now + 1 h]` (`flows/ingest_observations.py:295-296`,
+   `context_window_hours: float = 2.0`, no deployment override), so a row leaves the pick-up
+   window ~2 h after its own timestamp and is never revisited whatever the status set. ⛔ *An
+   earlier revision demanded a bounded attempt count; `observations` carries no attempt column
+   (`db/metadata.py:509-545`), so it would have needed an unscoped migration — and the retry it
+   feared cannot occur.* **That 2 h ceiling is also the honest bound on D2's "not terminal".** ⚠️ This does **not** reopen D3: no *historical* row is re-examined, because historical
    rows are `QC_PASSED`, not `QC_UNCHECKED`.
 9. 🔴 **The published API surface the thirteen-site inventory missed.**
    `api/routes/stations.py:698` filters `obs.c.qc_status != "qc_failed"` — **exclusion polarity**,
@@ -1451,7 +1475,7 @@ and the published API exclude them; and a row can be **re-examined later**.
    `store/observation_store.py:318` executes `QcStatus(row["qc_status"])` (verified), which
    **raises on a value it does not know**, and ingest reads those rows without a status filter. So
    the moment one `qc_unchecked` row exists, the previous image cannot read it — violating
-   `docs/standards/cicd.md:202`'s one-release rollback rule. **Ship a compatibility release
+   `docs/standards/cicd.md:245`'s one-release rollback rule. **Ship a compatibility release
    first**: an image that *understands* `QC_UNCHECKED` but never writes it, deployed and verified,
    before the release that writes it. 🔑 **C4's flag gates the STATUS WRITE.** *(Restated
    2026-09-22: it previously read "gates the selection change; it must gate the status write as
@@ -1657,7 +1681,7 @@ were selected, not that any rule ran.** Two consequences, one required and one r
 
 **🔴 This IS a signature change on `Stage1QualityChecker.check` and on the `QualityChecker`
 Protocol. Stating it plainly is the point: the frozen-signature claim was not worth the defect.**
-These are the sites that move, verified at `9dc07915`:
+These are the sites that move, verified at `9dc07915` — **all of them T0's, per its `In`**:
 
 - **The Protocol**: `protocols/stores.py:1029-1037` (`QualityChecker.check`). Untouched:
   `ForecastQualityChecker` at `:1041+`, a different protocol.
@@ -1815,11 +1839,9 @@ return empty flags, but only one of them is ever worth marking.)* The only thing
 resolved" is the intended request rather than a defect.
 
 
-**In**: `services/qc.py` (the resolution value type, its constructor, and `check` consuming it —
-per (b) above and § The resolution is ONE object); `protocols/stores.py:1029-1037`
-(`QualityChecker.check`, whose signature moves with it); the three non-flow `check(...)`
-invocations (`services/onboarding.py:796`, `scripts/dhm_precip/qc_mask.py:203`, `:208`) and their
-tests, all mechanical via the same-observations constructor;
+**In**: ⛔ *The resolution value type, the `QualityChecker` Protocol and the non-flow `check(...)`
+invocations are **T0's**, not T3's — T0's binding already forces them and claiming them twice put
+the same edits in two phases.* T3 owns only what is new here:
 `flows/ingest_observations.py` — a counter on `IngestResult` and a `PipelineHealthRecord`
 at `WARNING` (`types/enums.py:187-190` — correct as originally cited; the enum has only
 `OK`/`WARNING`/`CRITICAL`). Also `types/enums.py:193+` — **T3 needs a new `PipelineCheckType`
@@ -1917,16 +1939,18 @@ operator rather than waiting to be asked.
 - **Per-station scoping** for the canary: `stations.network` exists and the QC loop already
   iterates per `(station_id, parameter)`.
 - **The enable path**: `config/overlays/mac-mini.toml`, a host bind mount into `prefect-worker`,
-  `prefect-worker-ingest` and `api` (`docker-compose.macmini.yml:41, 47, 71`, `:ro`).
+  `prefect-worker-ingest` and `api` (`docker-compose.macmini.yml:46, 52, 76`, `:ro`).
   ⚠️ Edit it **in place** — a new inode leaves the container reading the old content.
 - **D7's automatic abort**: D7 compares the per-station, per-cycle outcome fraction from the
   ingest counters against T1's proposed threshold, and reverts. Count `unchecked` separately
   from `suspect`, or it measures the wrong thing. Q2 supplies the baseline for CHOOSING the
   threshold, not the fraction the abort compares.
 - **Retained-row behaviour after the flag is disabled** — rows already written `QC_UNCHECKED` stay
-  written; say so, and say what re-enables them (T2b item 7's re-examination).
-- **`qc_rule_version`** bump in `services/qc_datum.py:23-26`, making the deploy boundary a
-  queryable column rather than a timestamp in a document.
+  written; say so, and say what re-enables them (T2b item 8's re-examination).
+- **`qc_rule_version`** bump — the VALUES at `services/qc_datum.py:18-19`
+  (`DATUM_QC_RULE_VERSION`, `DATUM_SKIP_QC_RULE_VERSION`) and the `"1.0"` literal at `:25`, not
+  the `obs_qc_rule_version` function that returns them. Makes the deploy boundary a queryable
+  column rather than a timestamp in a document.
 - **A new `PipelineCheckType` member and a watchdog probe** (`types/enums.py:193-213`,
   `ops/watchdog.py:142-178`) so T3's `WARNING` reaches Slack rather than waiting for a human to
   query the health endpoint. *(This was described as a follow-on at C4b; it is in scope here.)*
@@ -1939,6 +1963,9 @@ operator rather than waiting to be asked.
   implementation nobody remembers is there — the exact thing T2 exists to remove.
 
 **Out**: the harness itself (T6 builds it).
+
+**Pre-change**: a RED test proving the flag actually gates the write — with it `False`, a
+zero-rule group stores no `QC_UNCHECKED` row; with it `True`, the same group does.
 
 **Verification**:
 - 🔑 **With the flag `False`: no `QC_UNCHECKED` row is written.** ⛔ *NOT "an identical observation table" — that requirement was deleted 2026-09-22
@@ -1953,7 +1980,7 @@ operator rather than waiting to be asked.
 - Enabling for one station changes that station and no other.
 - A simulated loss above the threshold aborts and reverts without human action.
 - The rollback anchor is tagged before the upgrade (`docker tag … rollback-backup`) — the mini has
-  **no image registry** (`docs/standards/cicd.md:274`) and the weekly prune protects only
+  **no image registry** (`docs/standards/cicd.md:506`) and the weekly prune protects only
   `^rollback($|-)` tags.
 
 ### T6 — The paired old/new evaluation harness (C6)
@@ -2021,7 +2048,9 @@ let it abort the run.
 
 #### The input range — and why a healthy one is worthless
 
-🔴 **The pinned range MUST contain a known degraded window**: a LINDAS outage or 429 stretch
+🔴 **Prefer a pinned range containing a known degraded window** — and where the retained
+history holds none, T2's constructed repairable case governs, which is the only stated escape:
+a LINDAS outage or 429 stretch
 (Plan 175), or an ingest gap identified by T1's Q2 census. The repairable population on Swiss
 is *episodic*. A range taken from a healthy period yields an empty diff everywhere, which is
 indistinguishable from "nothing was repaired" and from "the new code never ran" — and then
@@ -2031,10 +2060,20 @@ forces the constructed-case fallback, which proves the mechanism and nothing abo
 
 Writes of any kind. The flag, the canary and the abort (T5's). Anything under `src/`.
 
+#### Pre-change
+
+N/A — this task adds an evaluation harness under `tests/`, changes no production behaviour, and
+its own first verification item (the frozen snapshot reproducing the pre-change selection) is
+what stands in for a red test.
+
 #### Verification
 
-- **The frozen snapshot reproduces T2's byte-identical fixture exactly** — run first; nothing
-  else in this task means anything until it passes.
+- **The frozen snapshot reproduces the pre-change SELECTION over a few pinned series** — the
+  inferred cadence and the selected rules, run first; nothing else in this task means anything
+  until it passes. ⛔ *Not T2's byte-identical mask artefact: that is `build_mask`'s output run
+  through the whole `scripts/dhm_precip/qc_mask.py` pipeline, while T6's snapshot is only
+  `rules_for` and `_infer_time_step`. Reproducing it would need a mask seam neither T2 nor T6
+  scopes, and T6's `In` lists no mask code.*
 - A run against a database containing **zero** regime-2 groups **says so explicitly** rather
   than reporting success. *(The "0 findings" / "never ran" ambiguity is the failure mode this
   whole task exists to avoid; it must not reproduce it in its own output.)*
@@ -2162,7 +2201,7 @@ removes if nothing wrote down what it was protecting.
 **T0 runs first** — the instrument must exist before T1 can measure anything (§ T1b cannot be
 measured first). T1a needs neither the database nor T0 and may run alongside it; it is already
 measured and recorded, so it is not work to schedule. **T2, T2b and T3 are one phase because
-they are one landing.** ⭐ **T5 joins phase 2 as well, corrected 2026-09-20** — an earlier graph put it in a later phase, which would have made phase 2 **a complete, mergeable, UNFLAGGED behaviour change with no abort control and no rollback-compatible release.** T2b item 9 requires the flag to gate the **status write**, and D7's auto-abort reverts that same flag; both presuppose the flag exists *in the release that first writes `QC_UNCHECKED`*. A safety control that lands after the thing it controls is not a safety control. T2b joins them for the same reason: the selection repair (T2) and the
+they are one landing.** ⭐ **T5 joins phase 2 as well, corrected 2026-09-20** — an earlier graph put it in a later phase, which would have made phase 2 **a complete, mergeable, UNFLAGGED behaviour change with no abort control and no rollback-compatible release.** T2b item 10 requires the flag to gate the **status write**, and D7's auto-abort reverts that same flag; both presuppose the flag exists *in the release that first writes `QC_UNCHECKED`*. A safety control that lands after the thing it controls is not a safety control. T2b joins them for the same reason: the selection repair (T2) and the
 corrected stored status (T2b) are two halves of one behaviour change — shipping T2 without T2b
 would leave zero-rule groups still writing `QC_PASSED`, which is the defect itself, and shipping
 T2b without T2 would move groups to `QC_UNCHECKED` that T2 would have repaired into a real verdict. An earlier graph put T3 in its own phase depending on T2, which contradicted the
