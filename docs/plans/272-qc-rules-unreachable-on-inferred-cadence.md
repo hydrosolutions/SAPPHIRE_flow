@@ -15,8 +15,39 @@ source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (bot
 
 ## Status
 
-🔴 **PARTIALLY IMPLEMENTED AND MERGED — REACTIVATED 2026-09-23. ⛔ DO NOT DEPLOY `main` UNTIL THIS
-SECTION IS CLEARED.**
+🟠 **PARTIALLY IMPLEMENTED AND MERGED — REACTIVATED 2026-09-23.**
+
+⛔ **CORRECTED: this section first said "DO NOT DEPLOY". That was OVERSTATED.** An adversarial
+independent pass (Codex, 2026-09-23, asked to reach its own verdict and to refute the assistant's)
+returned **SAFE-WITH-CAVEATS for experimental Swiss staging**, and found the tree *"does not
+support a fleet-wide outage prediction or establish items 6/7 as prerequisites for any
+deployment."* What it does show is real availability, reporting and rollback risk. The deploy is
+the owner's call on that basis, not a blocked gate. Corrections to the original wording, each
+verified:
+- **"Disappears from every consumer" is false.** The named forecast / alert / skill / training
+  reads do exclude it — but `api/routes/stations.py:698` excludes only `qc_failed`, so unchecked
+  values reach the **published observed series unmarked**. That is a reporting leak, nearly the
+  opposite of the availability failure first described here.
+- **Scale: exceptional, not fleet-wide.** The ingest context window is two hours
+  (`flows/ingest_observations.py:299-327`), so a healthy 10-minute feed yields ~12 timestamps, a
+  600 s median, and matching rules. Zero-rule groups need isolated arrivals, genuinely irregular
+  windows, or parameters with no rule at that cadence. ⚠️ **The tree cannot establish station
+  counts — neither "fleet-wide" nor "effectively nothing" is proven.**
+- **The retraction below of the spurious-flag warning was ITSELF wrong.** #297 changed inference
+  to **distinct timestamps** (`services/qc.py:51`), which can activate 600 s rules that
+  duplicate-source timestamps previously masked, and rate/spike still traverse individual rows
+  including same-instant siblings. ⇒ **Monitoring the first post-deploy cycle IS warranted**; only
+  C3's stated mechanism was wrong.
+- **The remaining work is larger than "four accepting reads".** Provenance must survive the
+  dataframe conversion and reach station and group quality assessment;
+  `OperationalInputMetadata` carries none today. Items 6/7 also omit re-examination and rollback
+  compatibility.
+
+**Three further risks, none of them noted before that pass:** unchecked rows are **never retried**
+(ingest selects `RAW` only); rollback is asymmetric (an older image cannot deserialise the value,
+and migration `0056`'s downgrade rewrites those rows); and PR #298 raised the discharge ceiling to
+100 000 for observations **and forecasts**, weakening corruption rejection on this same deploy — an
+accepted owner trade, restated here because it lands together with this.
 
 PR #297 (`732f0b1d`, tag v0.1.960) merged claiming this plan's phase-2 (T2, T2b, T3). It shipped
 the **write** half and not the **consumer** half. Found by hand while reviewing Plan 313, after
