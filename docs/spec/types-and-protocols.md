@@ -712,12 +712,17 @@ class QualityChecker(Protocol):
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]: ...
         # Returns QC flags per observation. An EMPTY list is ambiguous on its
         # own: every selected rule passed, OR no rule was selected at all
         # (Plan 272). The caller resolves that with resolve_selection() and
         # stores QC_PASSED only when rules actually ran, QC_UNCHECKED when
         # none did, then calls ObservationStore.update_qc() to persist.
+        # `skipped_rule_ids` are rules the caller knows cannot run on this
+        # group — a datum-dependent rule at a station with no water level
+        # datum. They do not execute, so they do not count as selected:
+        # resolve_selection() must be given the same set.
 ```
 
 Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
@@ -733,6 +738,7 @@ class ForecastQualityChecker(Protocol):
         rule_set: ForecastQcRuleSet,
         overrides: list[StationForecastQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> list[QcFlag]: ...
         # Returns QC flags for the forecast. Empty list = all rules passed.
         # The caller aggregates via aggregate_qc_status() and sets qc_status/qc_flags
