@@ -7,7 +7,8 @@ title: Per-station QC thresholds declared in onboarding configuration
 scope: Deliver per-station observation QC threshold overrides through configuration — a validated TOML surface, one pure resolution boundary, threading into the scheduled observation-ingest flow, and an edit-time validation command. NOT the onboarding QC path (descoped, see § What this deliberately does not do), NOT a database table, store or migration (the spec defers that to v1), NOT the DHM threshold values themselves (Plan 268 D14), NOT forecast QC overrides, NOT rule selection (Plan 264), NOT an API surface, NOT a new rule kind.
 blocks: [268]
 blocked_by: []   # 272 MERGED 2026-09-23 (#297, tag v0.1.960) — this plan is UNBLOCKED
-related: [264, 268, 012]
+related: [264, 268, 012, 315]
+open_gaps: ["onboarding keeps overrides=[] — the follow-on this plan names is UNOWNED; trigger and reasoning recorded in-plan 2026-09-23"]
 reviews:
   - "codex 2026-09-11 r1 — NOT READY, 5 blockers; killed the write path and the migration"
   - "claude 2026-09-11 r1 — NOT READY, 3 blockers; same central defect found independently"
@@ -253,9 +254,43 @@ path**: onboarding computes climatological baselines from `QC_PASSED` observatio
 excluded from the baseline — and the ingest path's `gross_outlier` rule, which **does** receive
 the override (`services/qc.py:212-216`), is then judged against a baseline censored by the
 un-overridden ceiling. Round 5 found this; it is a real limitation, not a rounding error.
-(Verified *not* a hazard: onboarding's re-QC cannot overwrite ingest verdicts — it fetches
-`qc_status=RAW` only, `services/onboarding.py:780-782`.) If that becomes load-bearing, it is a follow-on that should be
-designed against the onboarding path's own gate, not bolted onto this one.
+(⚠️ **Narrowed 2026-09-23**: true of *Step 5*, not of the whole run. Step 5 fetches
+`qc_status=RAW` only (`services/onboarding.py:780-782`), but Step 3's upsert **resets
+`qc_status` to `RAW`, clearing `qc_flags` and `qc_rule_version`, whenever a value or the
+rating-curve provenance changed** (`store/observation_store.py:97-117`), so a restated row
+re-enters Step 5 and IS re-judged. Measured while reviewing Plan 315.) If that becomes
+load-bearing, it is a follow-on that should be designed against the onboarding path's own gate,
+not bolted onto this one.
+
+---
+
+### 🔴 OPEN AND UNOWNED — the follow-on named just above has no plan and no owner
+
+**Recorded 2026-09-23 so it surfaces at its trigger instead of in a conversation.** ⛔ *Plan 315
+was briefly recorded as closing this. It does NOT: 315 fixes the zero-rule fail-open on this same
+path and leaves `overrides=[]` exactly as it is (315 `scope`). Different defect, same gate.*
+
+**What is still missing:** `services/onboarding.py:799` passes `overrides=[]`, so backfilled
+history is judged on base thresholds, and the censored-baseline loop above follows from it.
+
+**Why it is NOT folded into Plan 315, decided 2026-09-23 with the owner:** it looks like a
+one-argument change — `_merge_thresholds` exists (`services/qc.py:25-30`), it is consulted at
+`:316`, and the call site is three lines above the code 315 rewrites. It is not. This section
+already records that the onboarding path *"was the source of most blockers across rounds 2, 3 and
+4 — the batch-versus-registry question, the union, the write-order window, and Step 2.5's hidden
+observation writes"*, and that **the two paths have genuinely different judgement predicates**, so
+threading overrides here is a design question about which stations qualify, not a wiring change.
+Folding it into 315 — already five review rounds and sixteen findings for one narrow defect —
+would rebuild the plan shape that failed here across eight rounds.
+
+**The trigger, so this is not "someday":** draft it when a station whose operator has CORRECTED a
+threshold needs its backfilled history judged on the corrected value — in practice, a Nepal
+gauge onboarded after Plan 268 D14 sets real per-station ceilings. ⚠️ **And not before Plan 269
+itself lands**, because the resolution boundary it would thread does not exist yet.
+
+**Sequencing note:** Plan 315 runs last and rewrites Step 5. Whoever picks this up should check
+whether 315 has landed first — the two touch the same twenty lines, and doing them in either order
+is fine, but doing them in parallel is not.
 
 **With nothing declared, QC output is unchanged.** `merge_thresholds` over an empty list returns
 `dict(base_thresholds)` unchanged, and every existing deployment declares nothing. T5 asserts it
