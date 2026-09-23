@@ -233,3 +233,42 @@ class TestOverlaySupport:
         # overlay deep-merged into qc_rules, so version changed but rules preserved
         assert result.version == "3.5.0"
         assert len(result.rules) == 2
+
+
+class TestShippedDischargeCeiling:
+    """Bind the SHIPPED discharge ceiling by VALUE, on every surface that carries it.
+
+    The loose-first posture (`docs/v1-scope.md` § QC posture) is a decision about a
+    number, so a test asserting only that a `range_check` rule EXISTS cannot detect
+    the number changing back. An independent review found the observation surfaces
+    had no such binding and that a fourth surface still carried the old value.
+    """
+
+    def test_config_toml_ships_the_loose_ceiling_at_both_cadences(self) -> None:
+        rules = load_qc_rules(_REPO_ROOT / "config.toml")
+
+        ceilings = {
+            rule.time_step: rule.thresholds["value_max"]
+            for rule in rules.rules
+            if rule.rule_id == "range_check" and rule.parameter == "discharge"
+        }
+
+        assert ceilings == {
+            timedelta(seconds=600): 100000.0,
+            timedelta(seconds=86400): 100000.0,
+        }
+
+    def test_the_swiss_defaults_agree_with_the_shipped_config(self) -> None:
+        """They are separate surfaces, and only a test keeps them from drifting."""
+        defaults = {
+            rule.time_step: rule.thresholds["value_max"]
+            for rule in _default_swiss_qc_rules().rules
+            if rule.rule_id == "range_check" and rule.parameter == "discharge"
+        }
+        shipped = {
+            rule.time_step: rule.thresholds["value_max"]
+            for rule in load_qc_rules(_REPO_ROOT / "config.toml").rules
+            if rule.rule_id == "range_check" and rule.parameter == "discharge"
+        }
+
+        assert defaults == shipped
