@@ -23,7 +23,23 @@ both decisions after the work they govern.)*
 
 ## Status
 
-**DRAFT.** No review has run. ⛔ Only the orchestrator sets READY.
+**DRAFT.** ⛔ Only the orchestrator sets READY.
+
+🛑 **PREMISE SUSPENDED for this iteration — owner, 2026-09-23** (`docs/v1-scope.md` § QC posture).
+This plan exists to make activation safe on a live system. The owner has since recorded that
+**this is a test deployment, the data is not used operationally until QC is fine-tuned, and flags
+may be deleted, re-established and changed freely in the meantime.** The risk the canary, the
+automatic abort, the loss threshold and the revert artefact were designed to bound **does not
+exist in that setting.**
+
+⇒ **Do not build this plan as written.** What survives, and is worth keeping, is small:
+- the record of WHY the flag cannot revert a selection change (§ What is measured);
+- **E1(a)** — a scoped `UPDATE` plus the pre-tagged image reverts everything, at any point, for
+  one runbook line: that is the whole revert story for a test deployment;
+- the rollback anchor naming trap (`rollback-272`, not the shared name every upgrade reuses).
+
+**This plan becomes relevant again when the data becomes operational.** Until then it is a
+placeholder for that moment, not work to schedule.
 
 ⚠️ **High-risk work** (`docs/workflow.md`): it changes scientific behaviour on the live Swiss
 deployment, so it needs a relevant independent review in ADDITION to the ordinary Claude/Codex

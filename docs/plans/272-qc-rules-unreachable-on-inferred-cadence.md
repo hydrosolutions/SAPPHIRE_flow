@@ -445,6 +445,13 @@ promise; ⛔ *"a vague promise is not a deferral"* is this plan's own standard.
 
 **D5 — CLOSED 2026-09-20. A group that resolves no rules is recorded as UNCHECKED, not passed.**
 
+⚠️ **SUPERSEDED IN PART, owner 2026-09-23 — the consumer policy is now STAGED**
+(`docs/v1-scope.md` § QC posture). **Now, while QC is being built:** unchecked data MAY flow
+through, forecasting included — this is a test deployment whose data is not used
+operationally and whose flags are freely mutable. **Once QC is fine-tuned:** unchecked data
+must NOT enter forecasting, which is **stricter** than the split below. ⇒ D5's 13-consumer
+inventory stays correct and load-bearing; what changes is WHEN it binds and where it lands.
+
 **⚖️ Owner decision:** *"'Passed' should mean checks ran and found nothing. A reading nothing could
 be run against should say so."* The residual exposure described below is therefore **not**
 accepted as a silent `QC_PASSED` — it gets its own status.

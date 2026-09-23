@@ -29,6 +29,52 @@ discredits the demonstration far more than a gap does. *That* is why, for exampl
 figure computed only from the hours below a conversion ceiling is unacceptable: not because
 someone would act on it, but because the evaluator would spot it.
 
+## QC posture — LOOSE FIRST, narrowed with data
+
+*Owner, 2026-09-23. Recorded because it settles, in one stroke, a set of questions that had
+generated six review rounds across four plans without converging.*
+
+> **This is a first iteration and a test deployment. We do not need a finished product
+> tomorrow.** We can delete flags, re-establish them and change them freely for now. **We will
+> not use this data operationally until QC is fine-tuned** — and only from that point do the
+> data-retention guarantees have to hold as planned.
+
+**What this means, concretely:**
+
+1. **Thresholds start LOOSE and are narrowed with experience.** ⛔ Do NOT carry narrow
+   thresholds in from the beginning. This restores the standard already recorded in
+   `docs/standards/wmo.md` — *"our QC is a physical-impossibility gate, not an outlier filter …
+   deliberately unreachable rather than discriminating"* — which the deployed config has drifted
+   from (see below).
+2. **Some thresholds are system- or deployment-wide; maximum LEVELS and LEVEL CHANGES are
+   per station.** A single fleet-wide ceiling cannot be both a physical-impossibility gate in
+   Switzerland and one in Nepal.
+3. ⭐ **Relative change may generalise better than absolute.** Expressing a level-change limit
+   as a proportion — of the station's own observed range, or of its current stage — rather than
+   in metres per step is worth designing for, because it transfers across stations and datums
+   instead of needing calibration per gauge.
+4. **Consumer policy is STAGED, and the two stages differ:**
+   - **Now, while QC is being built:** unchecked data **may** flow through, forecasting
+     included. We are developing; a blocked pipeline teaches us nothing.
+   - **Once QC is in place and fine-tuned:** unchecked data **must NOT** enter forecasting.
+     ⚠️ Note this end state is **stricter** than the interim policy Plan 272 D5 records.
+
+**Why the loose-first rule is not theoretical — two measured cases in the deployed config:**
+
+- **Discharge `value_max = 5000 m³/s`** is an impossibility gate in Switzerland and a
+  plausibility filter in Nepal: **1,125 of 1,126 range-check flags on the delivered DHM record
+  fall on one station**, whose genuine monsoon peaks exceed it. Plan 268 calls it *"not QC; a
+  calibration error wearing QC's clothes."*
+- **Water level `−2 … 20 m`** assumes a gauge-height datum. The Nepali feed mixes gauge height
+  with metres above sea level and **nothing declares which**, so a station reporting ~162 m.a.s.l.
+  is "out of range" on every reading it ever sends.
+
+**What this does to the plans in flight:** the rollout apparatus that Plans 272 and 314 spent
+six review rounds failing to make coherent — a canary, an automatic abort, a loss threshold, a
+compatibility image, a revert artefact — was justified by a risk that **does not exist in a test
+deployment whose data is not operationally used and whose flags are freely mutable.** Size the
+activation work to the iteration we are actually in.
+
 ### Success criteria — what "v1 worked" means
 
 Owner's, verbatim in substance, and all four are testable:
