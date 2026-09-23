@@ -158,7 +158,7 @@ One deployment writes observations — `ingest-observations`, `*/5 * * * *` — 
 adapter constrains the surface hard. `HydroScraperAdapter` serves `discharge`,
 `water_level` and `water_temperature` only (`adapters/hydro_scraper.py:52-66`), skips
 every `WEATHER` config unconditionally (`:124-131`), and LINDAS serves only the **current
-value** (`:124` does `del since`) on a ~10-minute publish grid. CAMELS-CH daily data is
+value** (`:122` does `del since`) on a ~10-minute publish grid. CAMELS-CH daily data is
 loaded at *onboarding* only, where QC already runs at 86400 s over a wide historical
 window and the daily rules resolve correctly.
 
@@ -964,13 +964,13 @@ them back for resizing. An implementer must not cite them as evidence that the c
   whole 30 days. This is the difference between a bounded change and an unbounded one.
 - **Measured context the implementer must not rediscover.** `PgObservationStore.fetch_observations`
   (`store/observation_store.py:160-188`) filters `station_id`, `parameter` and a `timestamp` range.
-  **No index on `observations` contains `parameter`** — verified at `9dc07915`, there are three:
-  `ix_observations_station_timestamp` and the partial `ix_observations_station_timestamp_qc_passed`
-  on `(station_id, timestamp)` (`alembic/versions/0001_v0_schema.py:253-263`) and
-  `ix_observations_station_source_ts` on `(station_id, source, timestamp)`
-  (`alembic/versions/0035_observation_forecast_rating_curve_binding.py:80-84`). So `parameter` is a
-  **heap filter**: a backwards index walk reads every parameter's rows in the range and discards
-  the others. With the `LIMIT`, the walk stops after `N` matches — **but only if `N` matches
+  ⚠️ **`observations` carries FOUR indexes, and `uq_observations_natural_key` — UNIQUE on
+  `(station_id, timestamp, parameter, source)` (`db/metadata.py:570-577`, migration
+  `0008_add_constraints_indexes_columns.py:29-34`) — DOES contain `parameter`.** *(An earlier
+  draft said no index did and counted three; both were wrong.)* So `parameter` is an **index
+  condition**, not a heap filter: the walk discards non-matching rows inside the index instead of
+  fetching their heap tuples, so the cost below is an UPPER bound. With the `LIMIT`, the walk
+  stops after `N` matches — **but only if `N` matches
   exist.** 🔴 **An earlier draft named only the zero-row case; the full-`L` walk happens for *any*
   group with fewer than `N` matching rows in `L` — that is 0-49 rows at `N` = 50, not 0.** A group
   with 40 daily rows in 30 days never reaches the `LIMIT` and walks the whole range; so does a
@@ -1487,9 +1487,9 @@ and the published API exclude them; and a row can be **re-examined later**.
    catch-up run re-picks rows days old — the widening this plan documents at § Problem. **The
    bound is the FETCHED checked window, not a flat 2 h**, and on the one feed this plan is
    being landed for it is the wider one.
-   earlier revision demanded a bounded attempt count; `observations` carries no attempt column
-   (`db/metadata.py:509-545`), so it would have needed an unscoped migration — and the retry it
-   feared cannot occur.* **That 2 h ceiling is also the honest bound on D2's "not terminal".** ⚠️ This does **not** reopen D3: no *historical* row is re-examined, because historical
+   ⛔ *An earlier revision demanded a bounded attempt count; `observations` carries no attempt
+   column (`db/metadata.py:509-545`), so it would have needed an unscoped migration.*
+   ⚠️ This does **not** reopen D3: no *historical* row is re-examined, because historical
    rows are `QC_PASSED`, not `QC_UNCHECKED`.
 9. 🔴 **The published API surface the thirteen-site inventory missed.**
    `api/routes/stations.py:698` filters `obs.c.qc_status != "qc_failed"` — **exclusion polarity**,
