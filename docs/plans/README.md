@@ -612,6 +612,18 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — developer workflow (C)
 
+- **325** — [A compliance row proves our code does something, not that WMO asks for it](325-compliance-rows-must-cite-the-wmo-clause.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`. Raised by the owner on seeing a
+  compliance row's CODE citations go stale: the row's OTHER half was never
+  precise. 🔴 **All eleven compliance rows cite a publication; none cites a
+  clause, section or page** — four rest on `WMO-168 Vol I`, a few hundred pages.
+  ⭐ The standing evidence rule (253 T4c) disciplines the code half — "a named,
+  runnable test" — and is **silent on whether the requirement was ever located**,
+  so a row can pass it completely while nobody has opened the publication.
+  ⛔ Not a "standards are vague" problem: § 2 of the same document already names
+  chapter-level locators. T1 (the honest marker + extending the rule to both
+  halves) ships without waiting on the research.
+
 - **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — `DRAFT`,
   `open_decisions: [D1]`. From a full item-by-item audit of 272 against `main`:
   its BEHAVIOUR is complete and deployed (316/317/318 close triage §A and §B),

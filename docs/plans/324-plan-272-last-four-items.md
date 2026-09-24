@@ -1,12 +1,13 @@
 ---
 status: DRAFT
 created: 2026-09-24
+revised: 2026-09-24
 plan: 324
 title: Plan 272's last four items — a compliance row that points at nothing, and three records that describe a system we no longer run
 scope: Close the four items Plan 272's own triage marked "DO NOW" or "UNCONDITIONALLY" and which no follow-on plan owns — the stale WMO evidence row, the un-bumped observation QC rule version, Plan 264's unrecorded cross-plan debt, and Plan 272's own text describing the pre-316/317/318 world. NOT the parked items in 272's triage section C, NOT the DHM mask byte-identical test (item 5, deliberately deferred), NOT Plan 272's own `status:` field (the owner closes that after this merges), NOT the `status: READY` fields on merged plans 316/317/318, NOT Plan 314's open decisions, NOT any change to QC behaviour.
 depends_on: []
 blocks: []
-related: [101, 264, 272, 314, 315, 316, 317, 318, 323]
+related: [101, 264, 272, 314, 315, 316, 317, 318, 323, 325]
 open_decisions: [D1]
 source: 2026-09-24 — a full item-by-item audit of Plan 272 against `origin/main` at `8b68f6f8`, run because PR #297 had previously been merged believing it implemented 272 when it shipped 12 of 54 items. Every claim below was re-verified directly before drafting; each says how.
 ---
@@ -17,7 +18,7 @@ source: 2026-09-24 — a full item-by-item audit of Plan 272 against `origin/mai
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review is complete and the orchestrator sets
+**DRAFT.** Reviewed 2026-09-24 (4 medium, 1 low — folded at the foot, with the phase order corrected and the scope narrowed by the owner). ⛔ No implementation until D1 is closed and the orchestrator sets
 READY.
 
 ## Why this plan exists
@@ -218,6 +219,93 @@ different places. The owner merges, as always.
     {"phase": 2, "tasks": ["T2"], "parallel": false},
     {"phase": 3, "tasks": ["T4"], "parallel": false,
      "note": "last, because T4 must report what the earlier tasks actually closed"}
+  ]
+}
+```
+
+---
+
+## 🔴 Independent review, 2026-09-24 — **NEEDS CHANGES: 4 medium, 1 low.** Folded below.
+
+### M3 — the phase order re-stales the citations T1 just fixed. ⭐ The best catch.
+
+T2 inserts a comment beside the constants in `services/qc.py`, which **shifts every line number
+below it** — including the ones T1 has just corrected in the WMO row. ⛔ *A plan whose entire
+subject is stale line anchors would have created stale line anchors.*
+
+⇒ **The phase graph is corrected: T2 runs FIRST, then T1 against the final tree**, then T3, then T4.
+T1's In already says to read the numbers from the tree at implementation time; the ordering now
+makes that possible rather than merely instructed.
+
+### M1 — T2's sweep as written would destroy legitimate tests.
+
+"Every site carrying an old value" and "no test asserts an old value anywhere" are too broad:
+`tests/unit/flows/test_ingest_observations_recheck.py:250-268` **deliberately** seeds `"1.0"` to
+prove already-passed rows are left untouched. ⇒ **The sweep updates current-generation producers and
+their expectations only. A test asserting a historical value is evidence and must survive** — the
+implementer states, per site, which it is.
+
+### M2 — the bump's provenance claim was overstated.
+
+A version bump labels a **generation going forward**. ⛔ It does **not** retrospectively distinguish
+rows already stored under post-272 logic from pre-272 rows — they share a label — and after Plan
+314's status rewrite it cannot distinguish a formerly-unchecked row from a genuinely passed one
+either. ⇒ Both limits are stated in T2's Outcome and in the Plan 314 note, so the note does not read
+as an answer to 314's sentinel question. § (8) is narrowed accordingly.
+
+### M4 — T3's edit boundary stops short of the contradiction.
+
+Plan 264's superseded raise contract continues to **`:263-289`**, including its In and Verification
+clauses — editing only `:252-262` leaves executable instructions to raise standing beneath a
+corrected introduction. ⛔ *Exactly the "corrected note above wrong text" failure this repo has
+already paid three review rounds for.* ⇒ T3's In covers the whole affected T3 contract, while
+leaving 264's unrelated network decisions alone.
+
+### L1 — my own anchors were stale, and claim (3) was loose.
+
+- The datum assertions are at **`:352`/`:385`**, not `:344`/`:370`, and there is a **third**
+  assertion at `:456`. ⚠️ *Measured from one grep, quoted without re-reading — the very habit D1
+  exists to stop.*
+- Claim (3) said "nothing compares `qc_rule_version`". Precisely: **no production decision** compares
+  it; **tests do**, including store round-trip and preservation tests. The runtime-safety conclusion
+  stands; the wording did not.
+- The write-site inventory omitted the derived-observation writes at `ingest_observations.py:687`
+  and `calculated_station_onboarding.py:355`.
+
+### Two more traps the review named, now in T2's Out
+
+- **The stored non-water-level version comes from `qc_datum.py:25`, not `qc.py`'s `_RULE_VERSION`.**
+  There is a **fourth** literal, and naming only three would leave discharge rows on the old value.
+- ⛔ **`QcFlag.rule_version`, the rule-definition version and the stored
+  `Observation.qc_rule_version` are three different things** — frozen-sensor flags deliberately
+  carry the rule's own version (`qc.py:196`). Conflating them is how a bump leaks into flag data.
+
+### T2's forecast-QC guard, reworded
+
+"Assert `forecast_qc.py` is unchanged" is a **diff** check, not a unit test, and an `all(...)` over
+possibly-empty flags is vacuous. ⇒ The guard triggers a forecast QC failure, asserts exactly one
+flag, and asserts that flag's `rule_version` is still `"1.0"`.
+
+## ⚖️ Scope narrowed by the owner, 2026-09-24
+
+Owner: *"data quality checks should point at the correct locations in the wmo documents. that may
+require a separate plan."*
+
+⇒ **T1 corrects only where the row points INTO OUR CODE.** Making the row cite the WMO clause it
+claims conformance with is **[Plan 325](325-compliance-rows-must-cite-the-wmo-clause.md)**, which
+also found that **none of the eleven compliance rows cites a clause, section or page** — the
+standing evidence rule disciplines the code half of the claim and is silent on the WMO half.
+
+⛔ *This plan must not be read as making that row compliant. It makes one half of it accurate.*
+
+```json
+{
+  "phases": [
+    {"phase": 1, "tasks": ["T2"], "parallel": false,
+     "note": "FIRST — M3: T2's comment shifts the line numbers T1 cites"},
+    {"phase": 2, "tasks": ["T1", "T3"], "parallel": true,
+     "note": "T1 reads its anchors from the post-T2 tree"},
+    {"phase": 3, "tasks": ["T4"], "parallel": false}
   ]
 }
 ```
