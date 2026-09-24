@@ -61,6 +61,12 @@ class IngestResult:
     qc_failed: int
     qc_suspect: int
     qc_unchecked: int = 0
+    # Plan 317 T1: of the rows QC judged this run, how many were re-examined
+    # after being stored `QC_UNCHECKED` by an earlier run, and how many were
+    # judged for the first time. Kept apart so the effect is visible rather
+    # than inferred from a total.
+    qc_rechecked: int = 0
+    qc_newly_checked: int = 0
     stations_failed: int
     errors: tuple[str, ...]
     # Plan 015 step 2.5 — calculated-station derivation (0 when no calculated stations).
@@ -295,6 +301,12 @@ def _append_zero_rule_health_record(
         "observations_passed": totals["passed"],
         "observations_failed": totals["failed"],
         "observations_suspect": totals["suspect"],
+        # Plan 317 T1: `QC_UNCHECKED` is no longer terminal, so a record must
+        # say how much of this run was re-examination of earlier unchecked
+        # rows — otherwise a falling `observations_unchecked` cannot be told
+        # from a quiet feed.
+        "observations_rechecked": totals["rechecked"],
+        "observations_newly_checked": totals["newly_checked"],
     }
     try:
         append(
@@ -373,6 +385,33 @@ def _store_raw_task(
     return len(ids)
 
 
+# Plan 317 T1 (the owner's decision in 272 T2b item 8): `QC_UNCHECKED` is NOT
+# terminal. "No rule could be selected for this group" is usually a TRANSIENT
+# condition — a station's first row of the day, a feed catching up after an
+# outage, a window that straddled a gap — so the row is picked up again and
+# re-judged once the window holds enough context.
+# ⛔ This is the IN-MEMORY pick-up set, never a filter on the fetch below: the
+# unfiltered fetch is what supplies the already-checked neighbours that cadence
+# inference and the temporal rules need.
+_QC_PICKUP_STATUSES: frozenset[QcStatus] = frozenset(
+    {QcStatus.RAW, QcStatus.QC_UNCHECKED}
+)
+
+
+def _empty_qc_counts() -> dict[str, int]:
+    # `rechecked` / `newly_checked` (Plan 317 T1) split the rows counted above
+    # by what they were BEFORE this run, so re-examination is visible in its
+    # own right rather than inferred from a total that moved.
+    return {
+        "passed": 0,
+        "failed": 0,
+        "suspect": 0,
+        "unchecked": 0,
+        "rechecked": 0,
+        "newly_checked": 0,
+    }
+
+
 @task(
     name="run-qc-and-update",
     task_run_name="run-qc-{station_id}-{parameter}",
@@ -412,19 +451,16 @@ def _run_qc_task(
         end=window_end,
     )
     if not all_obs:
-        return QcTaskOutcome(
-            counts={"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0},
-            zero_rule_groups=(),
-        )
+        return QcTaskOutcome(counts=_empty_qc_counts(), zero_rule_groups=())
 
-    raw_obs = [o for o in all_obs if o.qc_status == QcStatus.RAW]
-    if not raw_obs:
-        return QcTaskOutcome(
-            counts={"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0},
-            zero_rule_groups=(),
-        )
+    pending_obs = [o for o in all_obs if o.qc_status in _QC_PICKUP_STATUSES]
+    if not pending_obs:
+        return QcTaskOutcome(counts=_empty_qc_counts(), zero_rule_groups=())
 
-    raw_ids = {o.id for o in raw_obs}
+    pending_ids = {o.id for o in pending_obs}
+    # Plan 317 T1: a row an earlier run could not judge. Its new verdict
+    # overwrites the old one (272:847) — there is no verdict history.
+    rechecked_ids = {o.id for o in pending_obs if o.qc_status == QcStatus.QC_UNCHECKED}
 
     baselines = baseline_store.fetch_baselines(station_id, parameter)
 
@@ -483,21 +519,25 @@ def _run_qc_task(
             outcome="qc_unchecked",
         )
 
-    counts: dict[str, int] = {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
+    counts: dict[str, int] = _empty_qc_counts()
     version = obs_qc_rule_version(parameter, datum)
-    raw_by_id = {obs.id: obs for obs in all_obs}
+    obs_by_id = {obs.id: obs for obs in all_obs}
     for obs_id, obs_flags in flags.items():
-        if obs_id not in raw_ids:
+        if obs_id not in pending_ids:
             continue
-        obs_for_id = raw_by_id[obs_id]
+        obs_for_id = obs_by_id[obs_id]
         status = _aggregate_qc_status(
             obs_flags,
             rules_ran=(obs_for_id.station_id, obs_for_id.parameter) not in unresolved,
         )
         obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version=version)
+        if obs_id in rechecked_ids:
+            counts["rechecked"] += 1
+        else:
+            counts["newly_checked"] += 1
         for flag in obs_flags:
             if flag.status == QcStatus.QC_FAILED:
-                obs = raw_by_id[obs_id]
+                obs = obs_by_id[obs_id]
                 log.debug(
                     "qc.rejected",
                     station_id=str(station_id),
@@ -867,7 +907,7 @@ def ingest_observations_flow(
         for station in eligible
     }
 
-    totals = {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
+    totals = _empty_qc_counts()
     # Plan 318 T1: accumulated across every (station, parameter) so the run
     # writes ONE record carrying all of them, not one record per group.
     zero_rule_groups: list[ZeroRuleGroup] = []
@@ -906,6 +946,8 @@ def ingest_observations_flow(
             totals["failed"] += counts.counts["failed"]
             totals["suspect"] += counts.counts["suspect"]
             totals["unchecked"] += counts.counts["unchecked"]
+            totals["rechecked"] += counts.counts["rechecked"]
+            totals["newly_checked"] += counts.counts["newly_checked"]
             zero_rule_groups.extend(counts.zero_rule_groups)
         except Exception as exc:
             log.warning(
@@ -923,6 +965,10 @@ def ingest_observations_flow(
         failed=totals["failed"],
         suspect=totals["suspect"],
         unchecked=totals["unchecked"],
+        # Plan 317 T1: of the rows judged above, how many were re-examined
+        # after an earlier run could not check them.
+        rechecked=totals["rechecked"],
+        newly_checked=totals["newly_checked"],
     )
 
     # Plan 318 T1: one record for the whole run, and ONLY when the condition
@@ -996,6 +1042,8 @@ def ingest_observations_flow(
         qc_failed=totals["failed"],
         qc_suspect=totals["suspect"],
         qc_unchecked=totals["unchecked"],
+        qc_rechecked=totals["rechecked"],
+        qc_newly_checked=totals["newly_checked"],
         stations_failed=len(all_failed_station_ids),
         errors=fetch_errors + tuple(errors),
         observations_derived=derived["derived"],
@@ -1012,6 +1060,8 @@ def ingest_observations_flow(
         qc_failed=result.qc_failed,
         qc_suspect=result.qc_suspect,
         qc_unchecked=result.qc_unchecked,
+        qc_rechecked=result.qc_rechecked,
+        qc_newly_checked=result.qc_newly_checked,
         stations_failed=result.stations_failed,
         observations_derived=result.observations_derived,
         observations_missing=result.observations_missing,

@@ -91,6 +91,10 @@ class QcStatus(Enum):
                                     # group, so nothing ran. Distinct from
                                     # QC_PASSED (rules ran, found nothing) and
                                     # from RAW (QC has not been attempted).
+                                    # Plan 317: NOT terminal — the ingest QC
+                                    # step picks up {RAW, QC_UNCHECKED}, so a
+                                    # row stored unchecked is re-judged once a
+                                    # later window holds enough context.
 
 class ForecastStatus(Enum):
     RAW = "raw"
