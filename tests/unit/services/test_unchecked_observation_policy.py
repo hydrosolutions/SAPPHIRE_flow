@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import ast
 import random
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sapphire_flow.config.deployment import DeploymentConfig
+import pytest
+
+from sapphire_flow.config.deployment import DeploymentConfig, InputQualityConfig
 from sapphire_flow.services.component_derivation import (
     _USABLE_STATUSES,
     DerivedPoint,
@@ -28,18 +31,30 @@ from sapphire_flow.services.component_derivation import (
 )
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
-from sapphire_flow.services.input_quality import MODEL_INPUT_QC_STATUSES
+from sapphire_flow.services.input_quality import (
+    MODEL_INPUT_QC_STATUSES,
+    assess_input_quality,
+)
 from sapphire_flow.services.operational_inputs import (
     OperationalInputMetadata,
     assemble_station_operational_inputs,
 )
 from sapphire_flow.services.run_station_forecast import (
     StationForecastResult,
+    run_all_station_forecasts_per_track,
     run_station_forecast,
+)
+from sapphire_flow.services.track_assembly import (
+    ReadyContext,
+    assemble_assignment_inputs,
 )
 from sapphire_flow.types.calculated_station import ComponentWeight
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import ForecastQcRuleSet
+from sapphire_flow.types.domain import (
+    ForecastQcRuleSet,
+    InputQualityFlag,
+    aggregate_input_quality,
+)
 from sapphire_flow.types.enums import (
     InputQualityCategory,
     InputQualityLevel,
@@ -49,7 +64,9 @@ from sapphire_flow.types.enums import (
     ObservationQcCoverage,
     QcStatus,
     SpatialRepresentation,
+    WarmUpSource,
 )
+from sapphire_flow.types.forcing_track import AssignmentKey, NoForcingRequired
 from sapphire_flow.types.ids import FormulaId, ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.station import ModelAssignment
@@ -118,24 +135,110 @@ def _hourly_observations(
     ]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _SeededStores:
+    """One station's stores, seeded identically for BOTH routes — the two
+    assemblers must be comparable, so they are never fed different data."""
+
+    station_id: StationId
+    obs_store: FakeObservationStore
+    station_store: FakeStationStore
+    state_store: FakeModelStateStore
+
+
+def _seed_stores(
+    *,
+    qc_status: QcStatus,
+    issue_time: UtcDatetime = _ISSUE,
+    window_issue_time: UtcDatetime | None = None,
+    trailing: tuple[UtcDatetime, QcStatus] | None = None,
+) -> _SeededStores:
+    """``window_issue_time`` anchors the observation series (it is the bucket
+    boundary the rows hang off); ``trailing`` adds ONE extra row, used to put a
+    reading in the freshness probe's window ``[past_targets_end, issue_time)``
+    and nowhere else."""
+    station_id = StationId(uuid4())
+    station_store = FakeStationStore()
+    station_store.store_station(make_station_config(station_id=station_id))
+    obs_store = FakeObservationStore()
+    obs_store.store_observations(
+        _hourly_observations(
+            station_id,
+            qc_status=qc_status,
+            issue_time=window_issue_time if window_issue_time else issue_time,
+        )
+    )
+    if trailing is not None:
+        timestamp, trailing_status = trailing
+        obs_store.store_observations(
+            [
+                make_observation(
+                    station_id=station_id,
+                    parameter="discharge",
+                    value=99.0,
+                    timestamp=timestamp,
+                    qc_status=trailing_status,
+                    rng=random.Random(5),
+                )
+            ]
+        )
+    state_store = FakeModelStateStore()
+    state_store.store_state(
+        station_id, _MODEL_ID, ensure_utc(issue_time - _STEP), b"warm-state"
+    )
+    return _SeededStores(
+        station_id=station_id,
+        obs_store=obs_store,
+        station_store=station_store,
+        state_store=state_store,
+    )
+
+
+def _seed_artifact(
+    station_id: StationId, issue_time: UtcDatetime
+) -> FakeModelArtifactStore:
+    artifact_store = FakeModelArtifactStore()
+    artifact_store.store_artifact(
+        model_id=_MODEL_ID,
+        artifact_bytes=b"artifact",
+        training_period_start=issue_time - timedelta(days=30),
+        training_period_end=issue_time - timedelta(days=1),
+        trained_at=issue_time - timedelta(days=1),
+        station_id=station_id,
+        status=ModelArtifactStatus.ACTIVE,
+    )
+    return artifact_store
+
+
+def _assignment(station_id: StationId, issue_time: UtcDatetime) -> ModelAssignment:
+    return ModelAssignment(
+        station_id=station_id,
+        model_id=_MODEL_ID,
+        time_step=_STEP,
+        status=ModelAssignmentStatus.ACTIVE,
+        priority=1,
+        created_at=issue_time,
+    )
+
+
+def _config() -> DeploymentConfig:
+    return DeploymentConfig(
+        max_retention_days=1000,
+        observation_staleness_warning_hours=6.0,
+    )
+
+
 def _forecast_with_observation_status(
     qc_status: QcStatus,
     *,
     issue_time: UtcDatetime = _ISSUE,
 ) -> StationForecastResult | None:
     """Store → assembler → runner, with every observation at ``qc_status``."""
-    station_id = StationId(uuid4())
-    station_store = FakeStationStore()
-    station_store.store_station(make_station_config(station_id=station_id))
-    obs_store = FakeObservationStore()
-    obs_store.store_observations(
-        _hourly_observations(station_id, qc_status=qc_status, issue_time=issue_time)
-    )
-
-    state_store = FakeModelStateStore()
-    state_store.store_state(
-        station_id, _MODEL_ID, ensure_utc(issue_time - _STEP), b"warm-state"
-    )
+    seeded = _seed_stores(qc_status=qc_status, issue_time=issue_time)
+    station_id = seeded.station_id
+    obs_store = seeded.obs_store
+    station_store = seeded.station_store
+    state_store = seeded.state_store
 
     model = _ObsOnlyModel()
     assembled = assemble_station_operational_inputs(
@@ -161,47 +264,77 @@ def _forecast_with_observation_status(
     if inputs.data.past_targets.height == 0:
         return None
 
-    artifact_store = FakeModelArtifactStore()
-    artifact_store.store_artifact(
-        model_id=_MODEL_ID,
-        artifact_bytes=b"artifact",
-        training_period_start=issue_time - timedelta(days=30),
-        training_period_end=issue_time - timedelta(days=1),
-        trained_at=issue_time - timedelta(days=1),
-        station_id=station_id,
-        status=ModelArtifactStatus.ACTIVE,
-    )
     return run_station_forecast(
         station_id=station_id,
         inputs=inputs,
         input_metadata=metadata,
-        assignments=[
-            ModelAssignment(
-                station_id=station_id,
-                model_id=_MODEL_ID,
-                time_step=_STEP,
-                status=ModelAssignmentStatus.ACTIVE,
-                priority=1,
-                created_at=issue_time,
-            )
-        ],
+        assignments=[_assignment(station_id, issue_time)],
         models={_MODEL_ID: model},  # type: ignore[dict-item]
-        artifact_store=artifact_store,
+        artifact_store=_seed_artifact(station_id, issue_time),
         qc_checker=ForecastOutputQualityChecker(),
         qc_rules=ForecastQcRuleSet(version="1.0", rules=()),
         qc_overrides=[],
         baselines=[],
         nwp_cycle_reference_time=_CYCLE,
         nwp_cycle_source=NwpCycleSource.PRIMARY,
-        config=DeploymentConfig(
-            max_retention_days=1000,
-            observation_staleness_warning_hours=6.0,
-        ),
+        config=_config(),
         clock=_clock,
         id_gen=lambda: UUID(int=random.Random(7).getrandbits(128)),
         rng=random.Random(11),
         model_state_store=state_store,
     )
+
+
+def _per_track_forecast_with_observation_status(
+    qc_status: QcStatus,
+    *,
+    issue_time: UtcDatetime = _ISSUE,
+) -> StationForecastResult | None:
+    """The PER-TRACK twin of ``_forecast_with_observation_status`` — the same
+    stores, the same model, the same assertions; only the assembler and the
+    runner differ (``assemble_assignment_inputs`` /
+    ``run_all_station_forecasts_per_track``)."""
+    seeded = _seed_stores(qc_status=qc_status, issue_time=issue_time)
+    station_id = seeded.station_id
+
+    model = _ObsOnlyModel()
+    ready = assemble_assignment_inputs(
+        station_id=station_id,
+        model_id=_MODEL_ID,
+        model=model,  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((station_id, _MODEL_ID))),
+        track_outcome=None,
+        issue_time=issue_time,
+        obs_store=seeded.obs_store,
+        station_store=seeded.station_store,
+        basin_store=FakeBasinStore(),
+        forcing_source=FakeWeatherReanalysisSource(),
+        weather_forecast_store=FakeWeatherForecastStore(),
+        nwp_source=_NWP_SOURCE,
+        clock=_clock,
+    )
+    if not isinstance(ready, ReadyContext):
+        return None
+    if ready.inputs.data.past_targets.height == 0:
+        return None
+
+    multi = run_all_station_forecasts_per_track(
+        station_id=station_id,
+        run_inputs={_MODEL_ID: ready},
+        assignments=[_assignment(station_id, issue_time)],
+        models={_MODEL_ID: model},  # type: ignore[dict-item]
+        artifact_store=_seed_artifact(station_id, issue_time),
+        qc_checker=ForecastOutputQualityChecker(),
+        qc_rules=ForecastQcRuleSet(version="1.0", rules=()),
+        qc_overrides=[],
+        baselines=[],
+        config=_config(),
+        clock=_clock,
+        id_gen=lambda: UUID(int=random.Random(7).getrandbits(128)),
+        rng=random.Random(11),
+        model_state_store=seeded.state_store,
+    )
+    return multi.results.get(_MODEL_ID)
 
 
 class TestUncheckedObservationsReachForecastingAsDegraded:
@@ -235,80 +368,139 @@ class TestUncheckedObservationsReachForecastingAsDegraded:
         assert forecast.input_quality_flags == ()
 
 
+class TestUncheckedObservationsReachTheForecastOnThePerTrackRoute:
+    """The SAME deliverable as the class above, on the other production route.
+    Correcting only the operational assembler would leave the per-track route
+    (``run_station_forecast.py``'s ``ReadyContext`` arm) dropping the rows and
+    the flag — and nothing else in the suite carries an unchecked verdict from
+    ``ReadyContext`` through the runner to a forecast."""
+
+    def test_unchecked_only_station_is_forecast_and_marked_degraded(self) -> None:
+        result = _per_track_forecast_with_observation_status(QcStatus.QC_UNCHECKED)
+
+        assert result is not None, "an unchecked-only station must still be forecast"
+        forecast = result.forecasts[0]
+        assert forecast.input_quality is InputQualityLevel.DEGRADED
+        observation_flags = [
+            flag
+            for flag in forecast.input_quality_flags
+            if flag.category is InputQualityCategory.OBSERVATION
+        ]
+        assert [flag.level for flag in observation_flags] == [
+            InputQualityLevel.DEGRADED
+        ]
+        assert "unchecked" in observation_flags[0].detail.lower()
+
+    def test_checked_station_carries_no_observation_flag(self) -> None:
+        """The control. ⚠️ Unlike the operational twin this cannot assert
+        ``FULL``: a ``NoForcingRequired`` per-track assignment resolves to
+        ``RUNOFF_ONLY``, which emits its own DEGRADED **NWP** flag on every
+        forecast this route produces. Scoped to the OBSERVATION category so
+        that pre-existing flag can neither hide a missing one nor fake a
+        present one."""
+        result = _per_track_forecast_with_observation_status(QcStatus.QC_PASSED)
+
+        assert result is not None
+        forecast = result.forecasts[0]
+        assert [
+            flag.category
+            for flag in forecast.input_quality_flags
+            if flag.category is InputQualityCategory.OBSERVATION
+        ] == []
+        assert {flag.category for flag in forecast.input_quality_flags} == {
+            InputQualityCategory.NWP
+        }
+
+
+_PROBE_ISSUE = ensure_utc(datetime(2026, 1, 10, 0, 30, tzinfo=UTC))
+_PROBE_NOW = ensure_utc(datetime(2026, 1, 10, 0, 45, tzinfo=UTC))
+_PROBE_TRAILING = ensure_utc(datetime(2026, 1, 10, 0, 15, tzinfo=UTC))
+
+
+def _probe_stores() -> _SeededStores:
+    """Every MODEL-INPUT row is checked; the ONE unchecked reading sits at
+    00:15, inside the probe window ``[past_targets_end, issue_time)`` and
+    nowhere else — which only exists because 00:30 is not a bucket boundary."""
+    return _seed_stores(
+        qc_status=QcStatus.QC_PASSED,
+        issue_time=_PROBE_ISSUE,
+        window_issue_time=ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
+        trailing=(_PROBE_TRAILING, QcStatus.QC_UNCHECKED),
+    )
+
+
 class TestFreshnessProbeSeesTheRowsButDoesNotDegrade:
     """D5: the staleness probe accepts the status and "does not by itself
-    degrade". The probe reads the trailing gap ``[past_targets_end,
-    issue_time)``, which only exists when the issue time is not a bucket
-    boundary."""
+    degrade". Asserted on BOTH routes — the property is what makes the
+    classification-before-the-probe ordering deliberate rather than accidental,
+    and each assembler owns its own copy of that ordering."""
 
-    _ISSUE_OFF_BOUNDARY = ensure_utc(datetime(2026, 1, 10, 0, 30, tzinfo=UTC))
-    _NOW_OFF_BOUNDARY = ensure_utc(datetime(2026, 1, 10, 0, 45, tzinfo=UTC))
-
-    def _assemble(self) -> tuple[object, OperationalInputMetadata]:
-        station_id = StationId(uuid4())
-        station_store = FakeStationStore()
-        station_store.store_station(make_station_config(station_id=station_id))
-        obs_store = FakeObservationStore()
-        # Every MODEL-INPUT row is checked; only the trailing probe window
-        # holds an unchecked one.
-        obs_store.store_observations(
-            _hourly_observations(
-                station_id,
-                qc_status=QcStatus.QC_PASSED,
-                issue_time=ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
-            )
-        )
-        rng = random.Random(5)
-        obs_store.store_observations(
-            [
-                make_observation(
-                    station_id=station_id,
-                    parameter="discharge",
-                    value=99.0,
-                    timestamp=ensure_utc(datetime(2026, 1, 10, 0, 15, tzinfo=UTC)),
-                    qc_status=QcStatus.QC_UNCHECKED,
-                    rng=rng,
-                )
-            ]
-        )
-        state_store = FakeModelStateStore()
-        state_store.store_state(
-            station_id,
-            _MODEL_ID,
-            ensure_utc(self._ISSUE_OFF_BOUNDARY - _STEP),
-            b"warm-state",
-        )
+    def _assemble_operational(self) -> tuple[object, OperationalInputMetadata]:
+        seeded = _probe_stores()
         assembled = assemble_station_operational_inputs(
-            station_id=station_id,
+            station_id=seeded.station_id,
             model=_ObsOnlyModel(),  # type: ignore[arg-type]
             model_id=_MODEL_ID,
-            issue_time=self._ISSUE_OFF_BOUNDARY,
+            issue_time=_PROBE_ISSUE,
             cycle_time=_CYCLE,
             nwp_source=_NWP_SOURCE,
             forcing_source=FakeWeatherReanalysisSource(),
             weather_forecast_store=FakeWeatherForecastStore(),
-            obs_store=obs_store,
-            station_store=station_store,
+            obs_store=seeded.obs_store,
+            station_store=seeded.station_store,
             basin_store=FakeBasinStore(),
-            model_state_store=state_store,
-            clock=lambda: self._NOW_OFF_BOUNDARY,
+            model_state_store=seeded.state_store,
+            clock=lambda: _PROBE_NOW,
             forecast_horizon_steps=3,
             time_step=_STEP,
         )
         assert assembled is not None
         return assembled
 
-    def test_probe_reads_the_unchecked_trailing_row(self) -> None:
-        _, metadata = self._assemble()
+    def _assemble_per_track(self) -> ReadyContext:
+        seeded = _probe_stores()
+        ready = assemble_assignment_inputs(
+            station_id=seeded.station_id,
+            model_id=_MODEL_ID,
+            model=_ObsOnlyModel(),  # type: ignore[arg-type]
+            projection=NoForcingRequired(
+                assignment=AssignmentKey((seeded.station_id, _MODEL_ID))
+            ),
+            track_outcome=None,
+            issue_time=_PROBE_ISSUE,
+            obs_store=seeded.obs_store,
+            station_store=seeded.station_store,
+            basin_store=FakeBasinStore(),
+            forcing_source=FakeWeatherReanalysisSource(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            nwp_source=_NWP_SOURCE,
+            clock=lambda: _PROBE_NOW,
+        )
+        assert isinstance(ready, ReadyContext)
+        return ready
+
+    def test_operational_probe_reads_the_unchecked_trailing_row(self) -> None:
+        _, metadata = self._assemble_operational()
 
         # 00:45 − 00:15 = 0.5h. Without the probe seeing the unchecked row the
-        # freshest reading would be 00:00, i.e. 0.75h.
+        # freshest reading would be the model-input series' last bucket at
+        # 23:00, i.e. 1.75h (measured against a reverted read).
         assert metadata.observation_staleness_hours == 0.5
 
-    def test_probe_alone_leaves_the_coverage_all_checked(self) -> None:
-        _, metadata = self._assemble()
+    def test_operational_probe_alone_leaves_the_coverage_all_checked(self) -> None:
+        _, metadata = self._assemble_operational()
 
         assert metadata.observation_qc_coverage is ObservationQcCoverage.ALL_CHECKED
+
+    def test_per_track_probe_reads_the_unchecked_trailing_row(self) -> None:
+        ready = self._assemble_per_track()
+
+        assert ready.observation_staleness_hours == 0.5
+
+    def test_per_track_probe_alone_leaves_the_coverage_all_checked(self) -> None:
+        ready = self._assemble_per_track()
+
+        assert ready.observation_qc_coverage is ObservationQcCoverage.ALL_CHECKED
 
 
 class TestExcludingConsumersStayExcluding:
@@ -443,3 +635,176 @@ class TestTheReadInventoryMatchesD5:
             frozenset({QcStatus.QC_PASSED, QcStatus.QC_UNCHECKED})
             == MODEL_INPUT_QC_STATUSES
         )
+
+
+class TestACleanStationIsUnchanged:
+    """The plan's "byte-identical to today". ⚠️ "FULL with no flags" is a
+    WEAKER claim — it would still hold if the widened read had started
+    returning different ROWS, or if the new branch had perturbed another one.
+    Both are pinned here as literal values."""
+
+    def test_a_clean_stations_rows_and_provenance_match_the_pre_316_golden(
+        self,
+    ) -> None:
+        seeded = _seed_stores(qc_status=QcStatus.QC_PASSED)
+        assembled = assemble_station_operational_inputs(
+            station_id=seeded.station_id,
+            model=_ObsOnlyModel(),  # type: ignore[arg-type]
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=FakeWeatherReanalysisSource(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            obs_store=seeded.obs_store,
+            station_store=seeded.station_store,
+            basin_store=FakeBasinStore(),
+            model_state_store=seeded.state_store,
+            clock=_clock,
+            forecast_horizon_steps=3,
+            time_step=_STEP,
+        )
+        assert assembled is not None
+        inputs, metadata = assembled
+
+        # Literal rows, not a comprehension: the claim is that the widened
+        # read returns the SAME six buckets it did before, so the expectation
+        # must not be derived from the same window arithmetic under test.
+        assert inputs.data.past_targets.to_dicts() == [
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 18, tzinfo=UTC)),
+                "discharge": 16.0,
+            },
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 19, tzinfo=UTC)),
+                "discharge": 17.0,
+            },
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 20, tzinfo=UTC)),
+                "discharge": 18.0,
+            },
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 21, tzinfo=UTC)),
+                "discharge": 19.0,
+            },
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 22, tzinfo=UTC)),
+                "discharge": 20.0,
+            },
+            {
+                "timestamp": ensure_utc(datetime(2026, 1, 9, 23, tzinfo=UTC)),
+                "discharge": 21.0,
+            },
+        ]
+        assert metadata == OperationalInputMetadata(
+            warm_up_source=WarmUpSource.FRESH,
+            warm_up_state_age_hours=1.5,
+            observation_staleness_hours=1.5,
+            nwp_age_hours=1.5,
+            observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
+        )
+
+
+# The pre-316 `(level, flags)` for a matrix of the OTHER inputs, as literals.
+# `ALL_CHECKED` must reproduce each one exactly, and `CONTAINS_UNCHECKED` must
+# reproduce it with the new flag PREPENDED and nothing else disturbed.
+_UNCHECKED_FLAG = InputQualityFlag(
+    category=InputQualityCategory.OBSERVATION,
+    level=InputQualityLevel.DEGRADED,
+    detail="Observations include readings no QC rule examined (qc_unchecked)",
+)
+
+_PRE_316_GOLDEN: list[tuple[str, dict[str, object], tuple[InputQualityFlag, ...]]] = [
+    (
+        "everything clean",
+        {},
+        (),
+    ),
+    (
+        "stale observations",
+        {"observation_staleness_hours": 20.0},
+        (
+            InputQualityFlag(
+                category=InputQualityCategory.OBSERVATION,
+                level=InputQualityLevel.DEGRADED,
+                detail="Observations 20.0h stale (threshold: 12.0h)",
+            ),
+        ),
+    ),
+    (
+        "old nwp cycle",
+        {"nwp_age_hours": 10.0},
+        (
+            InputQualityFlag(
+                category=InputQualityCategory.NWP,
+                level=InputQualityLevel.PARTIAL,
+                detail="NWP 10.0h stale (threshold: 9.0h)",
+            ),
+        ),
+    ),
+    (
+        "cold start",
+        {"warm_up_source": WarmUpSource.COLD_START, "warm_up_state_age_hours": None},
+        (
+            InputQualityFlag(
+                category=InputQualityCategory.WARM_UP,
+                level=InputQualityLevel.DEGRADED,
+                detail="Cold start (no warm-up snapshot available)",
+            ),
+        ),
+    ),
+]
+
+
+def _assess_kwargs(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "observation_staleness_hours": 0.0,
+        "warm_up_source": WarmUpSource.FRESH,
+        "warm_up_state_age_hours": 1.0,
+        "nwp_cycle_source": NwpCycleSource.PRIMARY,
+        "nwp_age_hours": 0.0,
+        "obs_partial_hours": 6.0,
+        "config": InputQualityConfig(),
+        "warmup_partial_hours": 24.0,
+        "warmup_degraded_hours": 42.0,
+    }
+    return {**base, **overrides}
+
+
+class TestTheNewBranchIsPurelyAdditive:
+    @pytest.mark.parametrize(
+        ("name", "overrides", "expected"),
+        _PRE_316_GOLDEN,
+        ids=[case[0] for case in _PRE_316_GOLDEN],
+    )
+    def test_all_checked_reproduces_the_pre_316_flags(
+        self,
+        name: str,
+        overrides: dict[str, object],
+        expected: tuple[InputQualityFlag, ...],
+    ) -> None:
+        level, flags = assess_input_quality(
+            observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
+            **_assess_kwargs(**overrides),  # type: ignore[arg-type]
+        )
+
+        assert flags == expected
+        assert level is aggregate_input_quality(list(expected))
+
+    @pytest.mark.parametrize(
+        ("name", "overrides", "expected"),
+        _PRE_316_GOLDEN,
+        ids=[case[0] for case in _PRE_316_GOLDEN],
+    )
+    def test_contains_unchecked_only_adds_its_own_flag(
+        self,
+        name: str,
+        overrides: dict[str, object],
+        expected: tuple[InputQualityFlag, ...],
+    ) -> None:
+        _, flags = assess_input_quality(
+            observation_qc_coverage=ObservationQcCoverage.CONTAINS_UNCHECKED,
+            **_assess_kwargs(**overrides),  # type: ignore[arg-type]
+        )
+
+        assert flags == (_UNCHECKED_FLAG, *expected)
