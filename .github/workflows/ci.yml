@@ -180,7 +180,35 @@ jobs:
             echo "::warning::apt-get update attempt $attempt stalled; retrying in a fresh process"
             sleep 5
           done
-          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+          # --no-upgrade: install what is MISSING, never upgrade what the runner
+          # image already has. On 2026-09-24 two `unit` shards failed here with
+          # a 404 on libexpat1/libexpat1-dev 2.6.1-2ubuntu0.6 — Ubuntu had
+          # published a newer security build and pulled the old .deb while the
+          # index we had just fetched still named it. The five packages we
+          # actually need (eccodes, geos and their deps) downloaded fine every
+          # time; apt only tried to UPGRADE libexpat1, which is already present
+          # on the image, because we name it explicitly. Two different mirror
+          # IPs served the same missing version.
+          #
+          # ⚠️ Two things this knowingly accepts. It can leave us on a library
+          # older than a Python wheel wants — apt cannot see what `uv`-installed
+          # packages link against, so if a minimum native version ever matters,
+          # assert it explicitly rather than relying on "latest available". And
+          # it skips Expat security updates for this job; that is a CI runner,
+          # not a deployed artefact, and the Dockerfile's own install is
+          # unaffected.
+          #
+          # ⛔ libexpat1 stays NAMED even though nothing else here depends on it:
+          # the Dockerfile records it as a rasterio runtime requirement, and
+          # Python wheels never ask apt for their system deps. Dropping it would
+          # dodge this trigger by weakening the declaration.
+          #
+          # Rejected: `--fix-missing` (holds back explicitly requested packages
+          # and does not repair the index). Retrying `install` after a fresh
+          # `update` remains a valid fallback if this recurs for a package we
+          # genuinely need — it is safe after a *download* failure, unlike the
+          # mid-unpack kill the comment above rules out.
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends --no-upgrade \
             libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
@@ -593,7 +621,35 @@ jobs:
             echo "::warning::apt-get update attempt $attempt stalled; retrying in a fresh process"
             sleep 5
           done
-          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+          # --no-upgrade: install what is MISSING, never upgrade what the runner
+          # image already has. On 2026-09-24 two `unit` shards failed here with
+          # a 404 on libexpat1/libexpat1-dev 2.6.1-2ubuntu0.6 — Ubuntu had
+          # published a newer security build and pulled the old .deb while the
+          # index we had just fetched still named it. The five packages we
+          # actually need (eccodes, geos and their deps) downloaded fine every
+          # time; apt only tried to UPGRADE libexpat1, which is already present
+          # on the image, because we name it explicitly. Two different mirror
+          # IPs served the same missing version.
+          #
+          # ⚠️ Two things this knowingly accepts. It can leave us on a library
+          # older than a Python wheel wants — apt cannot see what `uv`-installed
+          # packages link against, so if a minimum native version ever matters,
+          # assert it explicitly rather than relying on "latest available". And
+          # it skips Expat security updates for this job; that is a CI runner,
+          # not a deployed artefact, and the Dockerfile's own install is
+          # unaffected.
+          #
+          # ⛔ libexpat1 stays NAMED even though nothing else here depends on it:
+          # the Dockerfile records it as a rasterio runtime requirement, and
+          # Python wheels never ask apt for their system deps. Dropping it would
+          # dodge this trigger by weakening the declaration.
+          #
+          # Rejected: `--fix-missing` (holds back explicitly requested packages
+          # and does not repair the index). Retrying `install` after a fresh
+          # `update` remains a valid fallback if this recurs for a package we
+          # genuinely need — it is safe after a *download* failure, unlike the
+          # mid-unpack kill the comment above rules out.
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends --no-upgrade \
             libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
