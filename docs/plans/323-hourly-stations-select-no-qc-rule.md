@@ -1,13 +1,14 @@
 ---
 status: DRAFT
 created: 2026-09-24
+revised: 2026-09-24
 plan: 323
 title: Five Swiss stations report hourly and select no QC rule at all
 scope: Give the observation QC rule set a 3600 s cadence for the parameters the hourly BAFU stations deliver, so those stations are actually checked instead of selecting zero rules. NOT the DHM/Nepal rule rows (303), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT per-station overrides (269), NOT re-QC of the rows already stored (owner, 2026-09-24 — history is left), NOT the pick-up set (317, merged), NOT the consumer policy (316, merged).
 depends_on: []
 blocks: []
 related: [264, 269, 272, 303, 313, 316, 317, 318]
-open_decisions: [D1, D2, D3]
+open_decisions: []
 source: 2026-09-24 — the owner reported Slack warnings that BAFU observations were unchecked. Every claim in § What is measured was measured on the staging host that day against v0.1.965 and against `main` at `3b515f6b`; each says how.
 ---
 
@@ -90,33 +91,48 @@ All figures from the staging host, 2026-09-24, unless stated.
 
 ## Owner decisions
 
-### D1 — the hourly threshold values. **OPEN — the owner's, as hydrologist.**
+### D1 — the hourly threshold values. **⚖️ CLOSED — owner, 2026-09-24: derive them from these stations' OWN behaviour.**
 
-§ (6) shows no interpolation rule exists. Three ways to settle it:
+Owner: *measure what the five gauges actually do — typical hourly change, observed range, longest
+flat stretch — and set the thresholds from that*, rather than from judgement or from a factor
+applied to the 600 s row. § (6) is why: the existing pairs scale by ×10, ×4, ×5 and not at all
+depending on the rule, so there is nothing to interpolate.
 
-| | option | cost |
-|---|---|---|
-| (a) | The owner sets each hourly value directly. | Correct by construction. Needs their time on ~14 numbers. |
-| (b) | Derive from the 600 s row by a stated factor per rule, owner approving the factors. | Fewer decisions, but § (6) says the existing pairs contradict any single factor. |
-| (c) | Copy the 600 s values unchanged. | ⛔ Rejected in the drafting: it makes `rate_of_change` and `spike` **6× stricter** in physical terms (the same delta over 6× the interval) and would flag ordinary hourly variation as suspect. § (8) makes `frozen_sensor` worse still. |
+⇒ **The measurement is T1 and it is a deliverable, not preparation.** T2 may not invent a number
+T1 did not produce.
 
-⚠️ Whatever is chosen, **the plan records the basis for each number**, because § (5) shows an
-unexplained threshold survives for months without anyone noticing it never fired.
+🔴 **Three hazards the measurement must handle, or it produces confidently wrong thresholds:**
+- **The data has never been quality controlled** (§ 5). It therefore CONTAINS the very outliers the
+  rules exist to catch. ⛔ A threshold set at the observed maximum can never fire. Use high
+  percentiles and state which, per rule.
+- **Switzerland is in drought** (owner, 2026-09-24). Flows sampled now are at the low end of their
+  range, and a `range_check` or `rate_of_change` bound fitted to them would flag ordinary high water
+  as bad the first time it rains. ⇒ **T1 measures the longest history available for each series,
+  not the recent window**, and reports how much it found; if a series has only weeks, its bounds are
+  provisional and must say so.
+- **Every rule needs its own statistic.** `range_check` wants the value distribution; `rate_of_change`
+  and `spike` want the distribution of change BETWEEN consecutive readings; `frozen_sensor` wants the
+  longest run of near-identical values. ⛔ *One summary table of values cannot answer all four.*
 
-### D2 — which rules get an hourly row. **OPEN.**
+⚠️ `gross_outlier` is the exception: `k_sigma` is a multiplier on a climatological baseline, not a
+value in the series' units, and it is identical at 600 s and 86400 s (§ 6). It is cadence-independent
+and carries across unchanged — T1 need not measure for it.
 
-The 600 s set has 5 rules for discharge and water_level and 4 for water_temperature; the 86400 s set
-drops `frozen_sensor` entirely. So precedent exists for a cadence carrying a *subset*. The question
-is whether hourly gets the full 600 s set (with `frozen_sensor`'s count re-expressed per § 8) or the
-86400 s shape.
+### D2 — which rules get an hourly row. **⚖️ CLOSED — owner, 2026-09-24: all five.**
 
-### D3 — the next unseen cadence. **OPEN — and deliberately raised now.**
+Hourly data is frequent enough for every check to be meaningful, `frozen_sensor` included. ⛔ *The
+86400 s set drops it; hourly does not follow that precedent.*
 
-This plan adds one cadence because one appeared. The sixth station at some third cadence reopens it.
-The general alternative — matching a station's cadence to the *nearest* declared rule rather than an
-exact equal — is Plan 264's territory and changes selection for all 148 stations, so it is not in
-scope here. **What is in scope is deciding whether we keep adding rows or commission that work**,
-and recording the answer so the next occurrence is not rediscovered from a Slack alert.
+🔴 **`min_consecutive` must be re-expressed, not copied** (§ 8): it counts READINGS, so the 600 s
+value of 12 means 2 h there and would mean 12 h at 3600 s. T1 measures the longest flat run in
+hours; T2 converts to a reading count at 3600 s.
+
+### D3 — the next unseen cadence. **⚖️ CLOSED — owner, 2026-09-24: write the answer down, act later.**
+
+The general fix — matching a station to the NEAREST declared rule instead of requiring exact
+equality — is the right answer and is Plan 264's territory, since it changes selection for all 148
+stations. It is **not** commissioned by this plan. What this plan owes is the written answer, so the
+next person meeting a third cadence finds it instead of rediscovering it from an alert (T3).
 
 ⛔ **Not a decision: the stored history.** The owner closed it on 2026-09-24 — *leave it* — on the
 same reasoning as Plan 315 D3: real customer deployments are onboarded fresh, so a mixed-era corpus
@@ -124,43 +140,84 @@ exists only on this development host. § (5)'s 1,277 rows stay as they are.
 
 ## Tasks
 
-### T1 — Add the hourly rules (D1, D2)
+### T1 — Measure what the five gauges actually do (D1)
+
+**Outcome.** A table, per station and parameter, of the statistics D1 names — enough that every
+threshold T2 writes can cite a row of it.
+
+**In.**
+- Per series, over **the longest history the store holds** (not the recent window — D1's drought
+  hazard): the row count, the span in days, and the value distribution (min, max, and the 1st, 50th,
+  99th and 99.9th percentiles).
+- Per series, the distribution of **|change between consecutive readings|** at the hourly cadence —
+  same percentiles. This is what `rate_of_change` and `spike` are judged against, and it is a
+  different statistic from the value distribution.
+- Per series, the **longest run of near-identical values, in hours**, at the `tolerance` the 600 s
+  rule already uses (0.001 for discharge and water_level), so `frozen_sensor`'s count can be set
+  from observed behaviour rather than guessed.
+- ⚠️ **The span each series actually has, stated per series.** A series with only weeks of history
+  yields provisional bounds and T2 must mark them so.
+- The analysis run as a heredoc against the staging database per the repo convention, with the query
+  recorded in the plan so it can be re-run when the drought ends.
+
+**Out.** ⛔ Changing any rule — T1 only measures. ⛔ Excluding outliers by judgement: the point is
+to see them. ⛔ Any claim about *why* these five are hourly.
+
+**Pre-change.** N/A — measurement.
+
+**Verification.** Every number T2 writes traces to a cell in T1's table. ⭐ **A reviewer can re-run
+the recorded query and get the same table** — otherwise the thresholds rest on a measurement nobody
+can reproduce.
+
+🔴 **Blocked while the staging host is off the network** (2026-09-24). T1 cannot be done from the
+repo; it needs the live store.
+
+### T2 — Add the hourly rules (D1, D2)
 
 **Outcome.** A station delivering hourly selects a non-empty rule list, and its readings carry a
 real verdict.
 
 **In.**
-- The `[[qc_rules.rules]]` rows D1 and D2 settle, at `time_step_seconds = 3600`, each with the basis
-  for its value recorded.
-- 🔴 **A test that an hourly group selects a non-empty rule list**, by `resolve_selection` —
-  the operation Plan 272 built for exactly this question. ⛔ *Not "the config parses", which is
-  not this defect.*
-- `frozen_sensor`'s `min_consecutive` re-expressed for the new cadence if D2 includes it (§ 8).
+- Five `[[qc_rules.rules]]` rows at `time_step_seconds = 3600` for `discharge` and for
+  `water_level`, and the `water_temperature` set for Oberwald — D2 closed this as the full 600 s
+  shape, `frozen_sensor` included.
+- 🔴 **Each threshold carries the T1 statistic it came from**, in a comment beside it. § (5) is the
+  argument: an unexplained threshold survived months without anyone noticing it never fired.
+- `frozen_sensor.min_consecutive` expressed as a **reading count at 3600 s** derived from T1's
+  longest-flat-run-in-hours (D2), never copied from the 600 s row.
+- `gross_outlier.k_sigma` carried across unchanged, per D1's exception.
+- 🔴 **A test that an hourly group selects a non-empty rule list**, via `resolve_selection` — the
+  operation Plan 272 built for exactly this question. ⛔ *Not "the config parses", which is not this
+  defect.*
 
 **Out.** ⛔ Any change to the 600 s or 86400 s rows — this adds, it does not retune. ⛔ Any change
-to how selection MATCHES (that is D3/264). ⛔ Re-QC of stored rows. ⛔ DHM/Nepal rows (303).
+to how selection MATCHES (D3/264). ⛔ Re-QC of stored rows. ⛔ DHM/Nepal rows (303).
 
 **Pre-change.** A RED test asserting the DESIRED behaviour: **a group whose inferred cadence is
 3600 s resolves a non-empty rule list** — which fails today because nothing declares 3600 s.
 ⚠️ It must fail on the empty list, not on a missing config key.
 
 **Verification.**
-- An hourly group selects the D2 rule set; a 600 s group's selection is **unchanged** (asserted, so
+- An hourly group selects all five rules; **a 600 s group's selection is unchanged** (asserted, so
   the addition cannot perturb the 140 stations that were fine).
 - A synthetic hourly series with a value outside `range_check` comes back `QC_FAILED`; an ordinary
-  one comes back `QC_PASSED` — i.e. the rules can both fire and not fire.
+  one comes back `QC_PASSED` — the rules must be able both to fire and not to fire.
+- 🔴 **Each threshold is exercised at least once against T1's percentiles**: a value at the 99.9th
+  percentile does NOT flag, one beyond the chosen bound does. ⛔ *Otherwise a threshold can be
+  mistyped by an order of magnitude and every test still passes.*
 - ⭐ **On staging after deploy: the five stations' next readings are no longer `QC_UNCHECKED`**, and
-  the Plan 318 watchdog stops warning for them. This is the only verification that proves the live
-  defect closed; the unit tests prove the mechanism.
+  the Plan 318 watchdog stops warning for them. The unit tests prove the mechanism; only this proves
+  the live defect closed.
 
-### T2 — Record what we will do at the next unseen cadence (D3)
+### T3 — Record what happens at the next unseen cadence (D3)
 
 **Outcome.** D3's answer written where the next person meets it, not in this plan alone.
 
-**In.** D3's choice, in `docs/standards/wmo.md` or the QC section of the conventions — wherever the
-rule set's shape is described — plus a line in the touchpoint map for observation ingest.
+**In.** D3's choice — nearest-rule matching is the general fix, it is Plan 264's, and it is not
+commissioned here — stated in the QC section of the conventions or `docs/standards/wmo.md`,
+wherever the rule set's shape is described, plus a line in the observation-ingest touchpoint map.
 
-**Out.** ⛔ Implementing nearest-cadence matching. That is 264.
+**Out.** ⛔ Implementing nearest-cadence matching.
 
 **Pre-change.** N/A — documentation.
 
@@ -185,7 +242,8 @@ rule set's shape is described — plus a line in the touchpoint map for observat
 {
   "phases": [
     {"phase": 1, "tasks": ["T1"], "parallel": false},
-    {"phase": 2, "tasks": ["T2"], "parallel": false}
+    {"phase": 2, "tasks": ["T2"], "parallel": false},
+    {"phase": 3, "tasks": ["T3"], "parallel": false}
   ]
 }
 ```

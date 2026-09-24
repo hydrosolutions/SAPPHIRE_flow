@@ -621,10 +621,14 @@ exit criteria — Plan 212 owns that deeper screening.
   the fail-open signature, ~1,277 readings never actually checked. Plan 272/318
   are what made it visible. ⛔ **Plan 317 does not fix this**: re-examination is
   the right answer to a TRANSIENT cause, and this one recurs every cycle.
-  🔴 D1 is a hydrology decision — § (6) measures that the existing 600 s↔86400 s
-  threshold pairs follow NO formula (×10, ×4, ×5, unchanged), so hourly values
-  cannot be interpolated. ⚠️ Interacts with 313: if `rate_of_change` later
-  divides by elapsed time, every `max_rate` set here changes meaning.
+  ⚖️ All three decisions CLOSED by the owner 2026-09-24: thresholds are derived
+  from **these gauges' own measured behaviour** (§ 6 found the existing
+  600 s↔86400 s pairs follow NO formula — ×10, ×4, ×5, unchanged — so nothing
+  can be interpolated), hourly gets **all five** checks, and nearest-rule
+  matching is recorded as 264's work rather than commissioned here. ⇒ T1 is the
+  MEASUREMENT and is a deliverable; 🔴 it needs the staging host and is blocked
+  while that is off the network. ⚠️ Interacts with 313: if `rate_of_change`
+  later divides by elapsed time, every `max_rate` set here changes meaning.
 
 - **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
   — `READY`, both owner decisions closed 2026-09-24 (four shards; the shards'
