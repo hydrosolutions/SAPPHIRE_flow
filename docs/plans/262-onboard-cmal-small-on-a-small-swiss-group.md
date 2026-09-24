@@ -1137,3 +1137,67 @@ resolver, threaded from the cycle's `station_store` into the discovered model.
 ⛔ **T5 is therefore NOT complete**: no `cmal_small` forecast row exists
 (`SELECT count(*) FROM forecasts WHERE model_id='cmal_small'` → **0**). The assignment stands and is
 harmless — the group path runs, logs the failure, and the cycle completes for everything else.
+
+---
+
+## ▶ T5 RETRY — written 2026-09-24, BEFORE the run
+
+⛔ **Written in advance deliberately.** *If the criteria are set after seeing the output we will
+talk ourselves into whatever we get. This section is what a good result looks like, agreed before
+there is a result to rationalise.*
+
+⭐ **Why a retry is the next step at all:** T5 failed on a missing GROUP `station_code_resolver`.
+Plan 312 fixed it (#296, v0.1.957) and **staging runs v0.1.965**, so the fix is already live and
+**nobody has re-run since.** The import stands, the assignment stands, the input gate passed on
+2026-09-22. ⇒ This may simply work now.
+
+### Preconditions — VERIFY, do not assume
+
+⚠️ *Each of these has been true at some point and is not guaranteed today.*
+
+1. The resolver is live in the running worker — check the container's version, not the tag.
+2. `group_model_assignments` still holds the pilot, `status = 'active'`.
+3. 🔴 **The 30-day input window is still clean for BOTH stations.** The interior hole aged out on
+   2026-09-18; that was measured then, not now. A new gap anywhere in the last 30 days puts the
+   model back to a typed refusal.
+4. NWP is present for the cycle being used.
+
+### The run
+
+Trigger the forecast cycle **by hand** with `cycle_time` pinned to **00:00Z**. ⛔ *Not a scheduled
+run: `_resolve_cycle_time` returns the wall clock when nothing is passed, so a cron-fired "midnight"
+issues at 00:00:37Z and drops the issue-day bucket.* Pinning needs no code (Plan 326 is DEFERRED
+precisely because a manual run does not need it).
+
+⚠️ **Expected and NOT a fault:** pinning `cycle_time` sets the flow's nominal *now*, not the NWP
+cycle. The 00:00Z NWP cycle will read as `age_minutes=0` against `min_age_minutes=210` and the
+resolver will fall back to the previous cycle for forcing. **The issue time stays 00:00Z, so the
+seam stays continuous.** This was already observed on 2026-09-22; do not re-diagnose it.
+
+### What counts as SUCCESS
+
+- A `forecasts` row exists for `cmal_small` for **both** stations 2009 and 2091.
+- 🔴 **The values are physically plausible for those rivers.** The assembled inputs on 2026-09-22
+  were 2009: **126.9-313.3 m³/s**, 2091: **351.2-578.0**. A forecast in a comparable range is
+  plausible; one ~142× larger is the aggregation defect returning, and one near zero is a different
+  fault. ⛔ *State the numbers in T6; do not write "looks reasonable".*
+- `input_quality` is recorded on the rows rather than NULL.
+
+### What counts as FAILURE, and what each one means
+
+| symptom | reading |
+|---|---|
+| `ModelFailure(INPUT_DATA)` | the 30-day window is not clean — **name the missing day**, do not re-run hoping |
+| `predict_batch_failed` with a new error | another plumbing gap like the resolver; capture the exact message, it locates the next fix |
+| the group is not discovered | the assignment lapsed or the model is not loaded |
+| 🔴 the cycle "completes" and **no `cmal_small` row exists** | the silent case — ⛔ *`stations_forecast=0` with a green cycle is what today already looks like. Check for the ROW, never for cycle success.* |
+
+⛔ **Do not change anything to make it pass.** T5's Out already says so; it is repeated here because
+the temptation is strongest at the moment of a near-miss.
+
+### What the owner decides afterwards
+
+Whether the output is good enough to continue with — **a hydrologist's judgement, not a test.** The
+two questions: is the forecast in a plausible range for these rivers, and does its shape follow what
+the observations are actually doing? ⇒ Only a *yes* makes the unattended-scheduling work (Plan 326)
+worth its cost.

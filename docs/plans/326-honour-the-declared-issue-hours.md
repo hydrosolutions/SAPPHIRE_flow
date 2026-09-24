@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: DEFERRED
 created: 2026-09-24
 revised: 2026-09-24
 plan: 326
@@ -17,8 +17,25 @@ source: 2026-09-24 — Plan 311's closure needed an ENFORCED midnight restrictio
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review of *this* revision and a READY flip.
-**D1 decides whether the answer is ours at all.**
+**⏸️ DEFERRED — owner, 2026-09-24.** ⛔ *Not abandoned, and not blocked on anything external.*
+
+🔑 **The trigger: revive this when the pilot has produced a forecast we are happy with, and we want
+it to run unattended.** Until then it is enforcement for a pipeline that has never once succeeded
+end to end.
+
+⭐ **Why parking is the right call, not a delay.** The last pilot run failed on a missing group
+resolver; **that fix is merged and already running on staging**, and *nobody has tried since*. So
+the next run may simply work. Building a scheduling gate first would be building it for something
+we have not seen produce a single forecast — and if the run fails for a different reason, this
+plan's design may be the wrong shape anyway.
+
+⚠️ **The restriction is only worth its cost when nobody is watching.** A run triggered by hand can
+be pinned to midnight with an existing parameter (`cycle_time`), which needs no code at all. The
+three-failures-a-day problem this plan solves is an *unattended* problem.
+
+⛔ **Do not implement, and do not treat as neglected.** D1/D2/D3 stay open deliberately; D1's
+recommendation (a deployment decision, not a model property) is the owner's, taken 2026-09-24, and
+survives the pause.
 
 ## Why this plan exists
 
