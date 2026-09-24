@@ -2573,7 +2573,13 @@ class ObservationStore(Protocol):
         parameter: str,
         start: UtcDatetime,
         end: UtcDatetime,
-        qc_status: QcStatus | None = None,  # None = all statuses
+        # Plan 316 T1: a COLLECTION expresses Plan 272 D5's "forecasts accept
+        # QC_PASSED and QC_UNCHECKED". The scalar form is NOT legacy — 105 call
+        # sites use it and it stays supported. `None` = all statuses; an EMPTY
+        # collection accepts NOTHING (it says which statuses are acceptable,
+        # and none are). ⚠️ `fetch_observations_batch` below still takes the
+        # scalar only; its sole store-side caller is a tooling script.
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,  # None = all sources
     ) -> list[Observation]: ...
     def fetch_latest_timestamp(self, station_id: StationId, parameter: str) -> UtcDatetime | None: ...

@@ -9,7 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
     from datetime import date
     from pathlib import Path
     from uuid import UUID
@@ -125,7 +125,10 @@ class ObservationStore(Protocol):
         parameter: str,
         start: UtcDatetime,
         end: UtcDatetime,
-        qc_status: QcStatus | None = None,
+        # Plan 316 T1: a COLLECTION expresses Plan 272 D5's "forecasts accept
+        # QC_PASSED and QC_UNCHECKED"; the scalar form stays because 105 call
+        # sites use it and must keep working verbatim.
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
         raise NotImplementedError

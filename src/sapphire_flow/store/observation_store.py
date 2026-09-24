@@ -17,6 +17,8 @@ from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
 from sapphire_flow.types.observation import Observation, RawObservation
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from sapphire_flow.types.datetime import UtcDatetime
 
 log = structlog.get_logger(__name__)
@@ -28,6 +30,21 @@ _OBSERVATION_NATURAL_KEY_COLUMNS = (
     observations_table.c.parameter,
     observations_table.c.source,
 )
+
+
+def _qc_status_values(
+    qc_status: QcStatus | Collection[QcStatus],
+) -> list[str]:
+    """Plan 316 T1: normalise the scalar-or-collection status filter.
+
+    ⚠️ The scalar form is NOT legacy to be migrated — 105 call sites across
+    `src/` and `tests/` pass a bare `QcStatus`, and the plan requires every one
+    of them to keep working verbatim. Widening to a collection ONLY would turn
+    a signature change into a fleet-wide edit.
+    """
+    if isinstance(qc_status, QcStatus):
+        return [qc_status.value]
+    return [s.value for s in qc_status]
 
 
 class PgObservationStore:
@@ -163,7 +180,7 @@ class PgObservationStore:
         parameter: str,
         start: UtcDatetime,
         end: UtcDatetime,
-        qc_status: QcStatus | None = None,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
         stmt = (
@@ -181,7 +198,13 @@ class PgObservationStore:
             .order_by(observations_table.c.timestamp)
         )
         if qc_status is not None:
-            stmt = stmt.where(observations_table.c.qc_status == qc_status.value)
+            # Plan 316 T1: `IN` rather than `=`, so a caller can ask for
+            # `{QC_PASSED, QC_UNCHECKED}` — which Plan 272 D5's consumer policy
+            # requires and the scalar form could not express. An EMPTY
+            # collection accepts nothing, which is what it says.
+            stmt = stmt.where(
+                observations_table.c.qc_status.in_(_qc_status_values(qc_status))
+            )
         if source is not None:
             stmt = stmt.where(observations_table.c.source == source.value)
         rows = self._conn.execute(stmt).mappings().all()
