@@ -1,5 +1,5 @@
 ---
-status: PARTIALLY_IMPLEMENTED   # reactivated 2026-09-23 — #297 shipped the write half only; see § Status
+status: PARTIAL   # 2026-09-24: behaviour and records done (316/317/318/324). What remains is under § What is still open — one unowned test and three parks needing a decision. ⛔ PARTIALLY_IMPLEMENTED was never a canonical status.
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
@@ -83,6 +83,38 @@ without reading container logs.
   ⛔ `services/forecast_qc.py::_RULE_VERSION` is a different rule family and deliberately did not
   move. ⚠️ The bump is a **forward generation label only** — it does not repair the provenance of
   rows already written.
+
+## What is still open — 2026-09-24, after Plan 324 merged
+
+⭐ **The behaviour is complete and deployed, and the records now describe it.** ⛔ *Do not read the
+sections below this one as live alarms — several are dated 2026-09 and describe a system this plan
+itself changed. This section is the current state; they are the history.*
+
+| triage section | state |
+|---|---|
+| **A** — the user-visible consumer gap | ✅ **CLOSED** by **316** (unchecked reaches forecasting as `DEGRADED` and leaves the published series) and **317** (an unchecked reading is re-examined, not terminal) |
+| **B** — observability | ✅ **CLOSED** by **318** (the zero-rule health record and the watchdog probe) |
+| **C** — the parks | ⏸️ **STAND** — each needs a decision or a re-justification, not code |
+| **D** — the trivial records | ✅ **CLOSED** by **324** (the WMO row's code citations, the rule-version bump, Plan 264's cross-plan debt, and this plan's own stale text) |
+
+🔴 **What nobody owns**, stated plainly so a third audit does not have to rediscover it:
+
+1. **The DHM mask byte-identical-output test** (T2's In) — never created. ⛔ *A test to write, not a
+   record to correct; it belongs with whoever next touches `scripts/dhm_precip/qc_mask.py`.*
+2. **The bounded inference fetch** (`inference_lookback` / `fetch_recent_observations`) — parked in
+   § C pending re-justification. ⚠️ **Plan 323 attacks the same live symptom from the other side**
+   (declare the missing cadence's rules rather than widen inference), which makes the park more
+   defensible than when it was written — nothing had recorded that.
+3. **T2b item 11** — the `worst_qc_status` severity ranking and the public status filter. Latent
+   only: QC emits `PASSED`/`SUSPECT`/`FAILED`, so `QC_UNCHECKED` never reaches the ranking. ⛔ *That
+   is a coincidence this plan wanted made explicit, and it still is not.* Needs a decision.
+4. **The compatibility release and the rollout controls** → Plan **314** (E1/E2 open). ⚠️ 314's
+   sentinel question — *is T0's never-built `-norules` marker superseded by the status, or still
+   owed?* — is **open and unowned**, and 324's version bump gave it a new fact without answering it.
+
+⛔ **Closed, not outstanding:** the ~1,277 pre-2026-09-24 readings on the hourly gauges that were
+fail-open passed. The owner closed it 2026-09-24 — *history is left* — on Plan 315 D3's reasoning:
+a real customer deployment is onboarded afresh.
 
 ## Status
 

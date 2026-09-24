@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE   # merged #303, 2026-09-24. ⛔ A merged plan left reading READY is a live order to an agent — the hazard this repo already booked.
 created: 2026-09-24
 revised: 2026-09-24
 plan: 317

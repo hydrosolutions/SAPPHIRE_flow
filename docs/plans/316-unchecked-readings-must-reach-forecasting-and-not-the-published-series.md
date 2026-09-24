@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE   # merged #301, 2026-09-24. ⛔ A merged plan left reading READY is a live order to an agent — the hazard this repo already booked.
 created: 2026-09-24
 plan: 316
 title: Unchecked readings must reach forecasting as degraded, and must not reach the published series

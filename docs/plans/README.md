@@ -380,8 +380,16 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — v1 Nepal feature (B)
 
+- ⚠️ **PLAN NUMBER COLLISION, 2026-09-24 — `323` and `324` each name TWO different plans.**
+  On `main`: `323-hourly-stations-select-no-qc-rule.md` and
+  `324-plan-272-last-four-items.md` (merged, #305). Uncommitted in another
+  session's working tree: `323-chwrr-alert-evaluation-and-decisions.md` and
+  `324-chwrr-evidence-archive-and-replay.md`, alongside 320–322. 🔑 **Plans are
+  cited by NUMBER, so distinct slugs do not disambiguate** — this is the 258
+  collision again. ⛔ Neither side should renumber the other unilaterally; the
+  merged pair is already cited from a PR and from Plan 272's closing note.
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
-  together. Plan 318 is implemented in #299; Plans 316–317 are READY and pending implementation;
+  together. Plans 316, 317 and 318 are **COMPLETE** (#301, #303, #299);
   Plans 264/268/269/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
     `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set

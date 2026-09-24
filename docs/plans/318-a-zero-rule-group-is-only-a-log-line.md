@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE   # merged #299, 2026-09-24. ⛔ A merged plan left reading READY is a live order to an agent — the hazard this repo already booked.
 created: 2026-09-24
 plan: 318
 title: A zero-rule group is only a log line
