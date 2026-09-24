@@ -160,10 +160,12 @@ The procedure has four Gateway-side stages:
 1. **Upload the GeoPackage.** In the Gateway Swagger page at
    `https://recap.ieasyhydro.org/sdk/docs`, authorize with the Gateway API key
    and use `POST /hru/vector-files/upload`. Upload one `.gpkg` in WGS84
-   longitude/latitude degrees (EPSG:4326). Supply a fresh `hru_code`, an
-   optional description, and the file. The `hru_code` becomes the permanent
-   geometry name; it cannot be reused for another geometry. Do not put the API
-   key in this runbook or onboarding inventory.
+   longitude/latitude degrees (EPSG:4326). Extract the generated artifact and
+   upload its `basins.gpkg` file; do not upload the artifact ZIP or the static
+   attributes table. Supply a fresh `hru_code`, an optional description, and
+   the file. The `hru_code` becomes the permanent geometry name; it cannot be
+   reused for another geometry. Do not put the API key in this runbook or
+   onboarding inventory.
 2. **Verify it is ready.** In the Configurator at
    `https://recap.ieasyhydro.org/admin`, open the Shapefiles list and confirm
    the new geometry appears with status `Ready`. If it is absent or not ready,
