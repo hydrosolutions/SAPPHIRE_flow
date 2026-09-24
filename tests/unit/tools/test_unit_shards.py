@@ -219,6 +219,31 @@ class TestShardsPartitionTheUnitSuite:
 
         assert report.is_exhaustive_partition, report.describe()
 
+    def test_duplicating_a_named_group_is_caught_as_a_double_run(self) -> None:
+        """The half a count-only check cannot see.
+
+        Two shards claiming the same directory keeps the union exhaustive and
+        keeps the TOTAL right — every node still runs. It just runs twice, on
+        two paid runners. Only a per-node count catches it.
+        """
+        shards = build_shards(
+            (*NAMED_GROUPS, ("services-again", ("tests/unit/services",)))
+        )
+        nodes = {
+            shard.id: collect_node_ids(shard.pytest_args(), repo_root=_REPO_ROOT)
+            for shard in shards
+        }
+
+        report = check_partition(
+            shard_nodes=nodes,
+            all_nodes=collect_node_ids(("tests/unit",), repo_root=_REPO_ROOT),
+        )
+
+        assert report.missing == frozenset()
+        assert any(
+            node.startswith("tests/unit/services/") for node in report.duplicated
+        ), report.describe()
+
 
 class TestCiWorkflowMatrix:
     def test_the_matrix_lists_exactly_the_defined_shards(
