@@ -654,19 +654,21 @@ exit criteria — Plan 212 owns that deeper screening.
   sweep is bounded, because two independent counts of the same claim already
   disagree.
 
-- **326** — [The model says issue me at midnight, and we run it four times a day](326-honour-the-declared-issue-hours.md)
-  — `DRAFT`, `open_decisions: [D1, D2, D3]`, **`blocks: [262]`**. Went looking for
-  somewhere to enforce Plan 311's midnight restriction and found the declaration
-  already exists: ⭐ **`cmal_small.yaml:11` declares `issue_hours: [0]` and NOTHING
-  in `src/`, `tests/` or `scripts/` reads it.** Same shape as the discharge
-  aggregation defect — the model declares, our side drops it. The cycle runs
-  `0 */6 * * *`, so a model asking for one issue hour gets four, and 311 measured
-  that three of them refuse. 🔴 Selection cannot even see the cycle time
-  (`discover_group_runs` takes models + store only), and ⛔ `time_step` on the
-  assignment is the OUTPUT resolution, not a cycle gate. ⚠️ D1 may not be ours:
-  if FI cannot express issue hours, `AGENTS.md` requires an FI issue, not a SAP3
-  workaround. ⚠️ And an hour match alone does not fix it — the cycle time comes
-  from `clock()`, so 00:00 fires at `00:00:37Z` and still drops the bucket.
+- **326** — [Nothing records the hours at which a model may be issued](326-honour-the-declared-issue-hours.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`, **`blocks: [262]`**. Plan 311's
+  closure needs an ENFORCED midnight restriction and there is nowhere to put one.
+  ⛔ **This plan's first draft claimed the model already declares its issue hours
+  and we ignore them — an independent review proved that FALSE and it is
+  corrected in the text.** aquacast's `issue_hours` is a training-template field,
+  *"only meaningful for HOURLY regimes"*, and a non-hourly model **must** set
+  `(0,)` or aquacast raises ⇒ a mandatory constant, not a declaration.
+  🔴 Measured: **FI cannot express issue hours** (pinned `ad19597`), selection
+  cannot see the cycle time, and the assignment record has no field for it.
+  ⭐ D1 asks whether this is a MODEL property (⇒ an FI issue and an upstream
+  round-trip) or a DEPLOYMENT decision (⇒ ours, and not a workaround — *we* chose
+  to restrict the pilot; the model never asked). ⚠️ An hour match alone does not
+  fix it, and flooring the issue time is not small — it touches forecast
+  uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. Found from a live Slack warning on
