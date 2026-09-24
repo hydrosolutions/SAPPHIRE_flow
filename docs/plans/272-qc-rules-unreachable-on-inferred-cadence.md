@@ -28,9 +28,12 @@ corrected this plan's own stale text — the consumer claims above and the `Depl
 promises, which item 12 withdrew and which were **deliberately not built**. ⛔ *This plan's
 `status:` field is the owner's to set and is deliberately untouched.*
 
-🔑 **The prerequisite that shapes the whole slice, measured:** `fetch_observations` takes a
-**scalar** status (`store/observation_store.py:166`), as do the Protocol (`protocols/stores.py:128`)
-and the fakes (`fake_stores.py:198`). Accepting `QC_PASSED` **and** `QC_UNCHECKED` at one read is
+🔑 **The prerequisite that shaped the whole slice, as measured in 2026-09.**
+⚠️ **SHIPPED since — 2026-09-24 (Plan 324 T4): all three now accept a COLLECTION**
+(`store/observation_store.py:183`, `protocols/stores.py:131`, `tests/fakes/fake_stores.py:201`),
+delivered by Plan 316 T1. *The paragraph is kept because it explains why the slice is shaped as it
+is; ⛔ it is no longer a statement about the current tree.* At the time: `fetch_observations` took a
+**scalar** status, as did the Protocol and the fakes. Accepting `QC_PASSED` **and** `QC_UNCHECKED` at one read is
 therefore impossible without T2b item 3 first. That is why the consumer half is a slice, not a
 patch.
 
@@ -133,8 +136,12 @@ the merge.
   🔎 **Re-measured 2026-09-24: `QC_UNCHECKED` / `qc_unchecked` occurs in TEN files under `src/`,**
   and **four model-input reads accept it** through `MODEL_INPUT_QC_STATUSES`
   (`services/input_quality.py:37` → `services/track_assembly.py:293,349`;
-  `services/operational_inputs.py:900,955`). Every other consumer still asks for `QC_PASSED`
-  alone — the split is D5's, and it is built.
+  `services/operational_inputs.py:900,955`). ⛔ *An earlier wording here said "every other consumer
+  still asks for `QC_PASSED` alone". That is not what the code does:* the published series
+  **excludes** `QC_FAILED` and `QC_UNCHECKED` by `notin_` (`api/routes/stations.py:704-708`), so it
+  still admits `RAW` and `QC_SUSPECT`; only the remaining readers (calculated-station derivation,
+  the forecast lab) request `QC_PASSED` alone. ⇒ **There are three policies, not two** — the split
+  is D5's, and it is built.
 - ⛔ **CORRECTED — the missing write gate is NOT a defect.** *An earlier revision of this section,
   and the commit that added it, called the absent flag a second unshipped safeguard. Wrong:*
   **T2b In item 12 WITHDREW it** (owner, 2026-09-23) — *"NO write gate this iteration —
@@ -2097,9 +2104,12 @@ many zero-rule groups writes one record, not one per group.
 
 ### T5 — MOVED to Plan 314
 
-⛔ **The rollout controls are no longer this plan's.** The flag, the per-station canary, D7's
-automatic abort, the enable path and the rollback anchor are
+⛔ **The rollout controls are no longer this plan's.** The per-station canary, D7's automatic
+abort, the enable path and the rollback anchor are
 `docs/plans/314-activating-the-qc-selection-fix.md` T2, which `depends_on: [272]`.
+⚠️ **2026-09-24 (Plan 324 T4): "the flag" is struck from that list.** No `DeploymentConfig` flag
+exists or will — T2b In item 12 WITHDREW it (owner, 2026-09-23), and 314 inherits the rollout
+without one. ⛔ *This sentence sat directly above the paragraph recording that withdrawal.*
 
 **Why they were split out (owner, 2026-09-23):** two independent review gates agreed this
 plan's CODE half is buildable from this document alone, while its rollout half was not — and

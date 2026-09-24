@@ -280,19 +280,25 @@ owner's call; Plan 324 records the debt and does not re-scope it.
 resolved", and the second is ~~an error~~ **not** a pass.
 🔴 **SUPERSEDED IN PART, 2026-09-24 (Plan 324 T3): the "error" half is no longer the shipped
 design.** Plan 272 D2 chose a **status, not a raise** — a zero-rule group is stored
-`QC_UNCHECKED` (`flows/ingest_observations.py:160`), excluded from the model-input and published
-series, and re-examined when its window densifies. The distinction T3 asks for therefore **already
+`QC_UNCHECKED` (`flows/ingest_observations.py:160`), routed per consumer — **accepted into model
+inputs** and carried as `DEGRADED` (`services/input_quality.py:37`), **excluded** from the published
+series (`api/routes/stations.py:704-708`) — and re-examined when its window densifies (317). The distinction T3 asks for therefore **already
 exists**; what does not exist is a raise, and 264 must not be read as instructing one. ⛔ *Every
 "raise" below is retained as the 2026-09-11 record and is NOT an instruction — each is marked.*
 Added after the set review: the author's justification for most-specific-wins was that
 exact-match could resolve zero rules and be reported as passed — but **most-specific-wins does
 not close that path either**. An empty rule set, a TOML set omitting the generic rules, or a
 series whose parameter/cadence matches nothing all still yield empty flag lists, and
-`aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`). Today the live
-ingest and onboarding paths are fail-open in exactly this way. Plan 268 was going to bolt a
+`aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`).
+⚠️ **2026-09-24 (Plan 324 T3) — "today" is 2026-09-11 and is now half wrong.** The **scheduled
+ingest** path is no longer fail-open: 272 D2 marks a zero-rule group `QC_UNCHECKED`. The
+**onboarding** path still is, deliberately and with its reasoning recorded
+(`services/onboarding.py:811-817`), and closing it is Plan 315's. Plan 268 was going to bolt a
 local assertion onto its own import; the policy belongs here, once, for every caller.
 **In**: `src/sapphire_flow/services/qc.py`; `src/sapphire_flow/protocols/stores.py`;
-every call site's handling of the new error.
+~~every call site's handling of the new error~~ — ⚠️ **SUPERSEDED 2026-09-24 (Plan 324 T3): there is
+no new error.** 272 D2 chose a status, so there is nothing for a call site to handle; what a caller
+now sees is a `QC_UNCHECKED` row, and the per-consumer policy for that is already built (316).
 **🔴 It must not break a deliberate empty pass.** `build_dudh_koshi_handover.py:154` defines
 `_empty_rule_set()` and passes it into `check` on every iteration of `attribute_mask_by_rule`
 (`:174-190`) — an intentional, tested no-rules call. A blanket "no rules resolved → raise"
@@ -301,7 +307,9 @@ breaks it. ⚠️ *2026-09-24 (Plan 324 T3): "raise" here is the 2026-09-11 word
 The contract must distinguish **accidental** non-resolution (a rule set that should
 have matched and did not) from an **explicitly empty** rule set the caller supplied on purpose:
 an empty `QcRuleSet` is a caller's declared intent and passes; a non-empty rule set that
-resolves nothing for a series is the error.
+resolves nothing for a series is ~~the error~~ ⚠️ **the condition now recorded as `QC_UNCHECKED`**
+(Plan 324 T3 — 272 D2 chose a status, not an error). ⭐ *The distinction this paragraph draws is
+still right and still worth keeping; only the word "error" was superseded.*
 **Out**: no change to what any *resolved* rule does.
 **Verification**: ⛔ **SUPERSEDED as written, 2026-09-24 (Plan 324 T3) — do NOT assert a raise.**
 The 2026-09-11 text asked that a **non-empty** rule set resolving nothing for a series *raise*
