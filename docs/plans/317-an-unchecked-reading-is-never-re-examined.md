@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-24
 revised: 2026-09-24
 plan: 317
@@ -11,6 +11,7 @@ related: [272, 315, 316, 318]
 open_decisions: []
 reviews:
   - "codex 2026-09-24 r1 — PROBLEMS FOUND; the draft's premise was wrong (the fetch is not RAW-only) and its two 'open decisions' were already closed by 272 T2b item 8 and 272:847"
+  - "claude 2026-09-24 r2 — no findings against this plan; the corrected premise (unfiltered fetch at :318-323, pick-up at :327, widening at :302-315) verified independently"
 source: 2026-09-23 — the completeness audit of PR #297. An independent pass then named it: *"unchecked rows are never retried because ingestion selects only RAW."*
 ---
 
@@ -20,7 +21,7 @@ source: 2026-09-23 — the completeness audit of PR #297. An independent pass th
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+**READY** — set by the orchestrator 2026-09-24 on the owner's instruction, after the independent reviews recorded in the frontmatter.
 
 ⭐ **Independent of Plans 316 and 318 — and SMALLER than the first draft claimed.** ⛔ *That draft
 said this depends on 316's store-signature change. It does not: the fix is in memory, not in the
@@ -88,9 +89,11 @@ arrives, in the ordinary cycle.
 **Out.** ⛔ Rows stored `QC_PASSED` — 272 D3, no-backfill. ⛔ Any change to the fetched window or
 its widening. ⛔ Any sweep outside the window.
 
-**Pre-change.** A RED test: a row stored `QC_UNCHECKED` in one cycle stays `QC_UNCHECKED` in the
-next, even when the second cycle's window holds ample context. ⚠️ **It must fail because the row
-was not re-judged**, not because a symbol is missing.
+**Pre-change.** A RED test asserting the DESIRED behaviour: **a row stored `QC_UNCHECKED` in one
+cycle IS re-judged in the next, when that cycle's window holds ample context** — which fails today
+because the pick-up excludes it. ⚠️ **It must fail because the row was not re-judged**, not because
+a symbol is missing. ⛔ *Stated this way deliberately: "the row stays `QC_UNCHECKED`" describes the
+DEFECT, and a test asserting that would PASS before implementation.*
 
 **Verification.**
 - That row becomes `QC_PASSED` / `QC_SUSPECT` / `QC_FAILED` as the rules dictate.

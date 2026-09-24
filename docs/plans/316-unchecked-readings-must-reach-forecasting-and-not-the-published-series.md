@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-24
 plan: 316
 title: Unchecked readings must reach forecasting as degraded, and must not reach the published series
@@ -10,6 +10,7 @@ related: [272, 315, 317, 318]
 open_decisions: []
 reviews:
   - "codex 2026-09-24 r1 — PROBLEMS FOUND; the review classification over-applied the deployment ruling, and the excluding-reader checklist omitted calculated-station derivation"
+  - "claude 2026-09-24 r2 — PROBLEMS FOUND; assess_input_quality was the unnamed signature the plumbing claim rested on, the InputQualityFlag literal omitted required detail, and the 315 ordering claim was unsupported"
 source: 2026-09-23 — a completeness audit of PR #297 found 31 of 54 of Plan 272's items unshipped. This plan carries the subset that changes what the running system does. ⚠️ Every policy here was DECIDED in 272 D5; none is reopened.
 ---
 
@@ -20,7 +21,7 @@ written, so the sequence is not a reliable allocator).
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+**READY** — set by the orchestrator 2026-09-24 on the owner's instruction, after the independent reviews recorded in the frontmatter.
 
 ⚠️ **HIGH-RISK — on its own merits, not on deployment grounds.** ⛔ *An earlier draft called this
 "ordinary work, reviewed the ordinary way", which over-applied the owner's ruling.* The ruling
@@ -59,11 +60,19 @@ Measured on `main` at `dbb9105e`.
    `:940` (freshness probe); `services/track_assembly.py:285` (model input) and `:338` (freshness
    probe). ⚠️ **The two freshness probes accept the status but must NOT themselves degrade the
    forecast** — D5 says so in terms.
-3. **The provenance has nowhere to go.** `OperationalInputMetadata`
-   (`services/operational_inputs.py:59-63`) carries `warm_up_source`, `warm_up_state_age_hours`,
-   `observation_staleness_hours`, `nwp_age_hours` — **no quality field.** The vocabulary exists:
-   `InputQualityLevel` (`FULL`/`PARTIAL`/`DEGRADED`) and `InputQualityCategory`
-   (`OBSERVATION`/…) at `types/enums.py:401-415`, with `InputQualityFlag` alongside.
+3. **The provenance has nowhere to go — and the gap is a SIGNATURE, not just a dataclass.**
+   - `OperationalInputMetadata` (`services/operational_inputs.py:59-63`) carries
+     `warm_up_source`, `warm_up_state_age_hours`, `observation_staleness_hours`, `nwp_age_hours`
+     — **no quality field.**
+   - 🔴 **`assess_input_quality` (`services/input_quality.py:29-40`) derives `(level, flags)` from
+     scalar keywords and accepts no observation-quality input at all.** ⛔ *An earlier draft said
+     "the plumbing is the work" and then named only the four reads and the dataclass — this is
+     the signature that claim actually rests on, and leaving it unnamed left the hardest part
+     implicit.*
+   - The vocabulary exists: `InputQualityLevel` (`FULL`/`PARTIAL`/`DEGRADED`) and
+     `InputQualityCategory` (`OBSERVATION`/…) at `types/enums.py:401-415`, and
+     **`InputQualityFlag` requires `category`, `level` AND `detail: str`**
+     (`types/domain.py:111-116`, frozen, keyword-only).
 4. **The published endpoint's polarity.** `api/routes/stations.py:698` filters
    `qc_status != "qc_failed"` — an exclusion list, not an inclusion list, which is why the grep
    that built D5's inventory missed it (272 records this).
@@ -88,7 +97,9 @@ is T2.
 
 **Out.** ⛔ Any change to which rows a consumer receives.
 
-**Pre-change.** A RED test: a read asking for two statuses cannot be expressed today.
+**Pre-change.** A RED test asserting the DESIRED behaviour: **a read for
+`{QC_PASSED, QC_UNCHECKED}` returns the union** — which fails today because the signature takes a
+scalar. ⛔ *Not "a two-status read cannot be expressed", which states the defect and would pass.*
 
 **Verification.** A two-status read returns the union; every existing single-status call returns
 exactly what it returned before, asserted at the store and through one Protocol fake.
@@ -100,8 +111,14 @@ is marked `DEGRADED` on the `OBSERVATION` category rather than looking clean.
 
 **In.**
 - The two **model-input** reads (`operational_inputs.py:890`, `track_assembly.py:285`) accept
-  `{PASSED, UNCHECKED}` and raise an `InputQualityFlag(category=OBSERVATION, level=DEGRADED)`
-  when any accepted row is unchecked.
+  `{PASSED, UNCHECKED}` and **contribute** an
+  `InputQualityFlag(category=OBSERVATION, level=DEGRADED, detail=…)` when any accepted row is
+  unchecked. ⛔ *An earlier draft wrote "raise" and omitted `detail`. The flag is a value that is
+  aggregated (`types/domain.py:125`), not thrown, and `detail` is required — the literal as
+  written would not have constructed.*
+- 🔴 **`assess_input_quality` (`services/input_quality.py:29-40`) must take the observation
+  quality as an input.** It derives `(level, flags)` from scalar keywords today and cannot see
+  this at all. **This is the plumbing**, and it sits between the reads and the metadata.
 - The two **freshness probes** (`:940`, `:338`) accept the status **without** degrading —
   D5: *"staleness probe; does not by itself degrade"*.
 - 🔴 **The provenance must survive the whole route.** `OperationalInputMetadata` carries no
@@ -120,8 +137,9 @@ is marked `DEGRADED` on the `OBSERVATION` category rather than looking clean.
 
 **Out.** ⛔ The published endpoint (T3). ⛔ Any new quality category or level.
 
-**Pre-change.** A RED test: a station whose only observations are unchecked gets no forecast
-input today.
+**Pre-change.** A RED test asserting the DESIRED behaviour: **a station whose only observations
+are unchecked DOES get forecast input, marked `DEGRADED`** — which fails today on both halves.
+⛔ *Not "gets no input today", which states the defect and would pass.*
 
 **Verification.** That station gets input, the forecast carries `DEGRADED` on `OBSERVATION`, and
 the flag is readable at station and group level — not merely set inside the loader. A station
@@ -138,7 +156,9 @@ lists what to reject, so a new status is included by default. That is *why* it w
 **Out.** ⛔ Any change to the response schema. ⛔ Marking rather than excluding — D5 chose
 exclude.
 
-**Pre-change.** A RED test: an unchecked reading appears in the published series today.
+**Pre-change.** A RED test asserting the DESIRED behaviour: **an unchecked reading does NOT
+appear in the published series** — which fails today, because the filter excludes only
+`qc_failed`. ⛔ *Not "it appears today", which states the defect and would pass.*
 
 **Verification.** It does not appear; failed and passed rows behave exactly as before.
 
@@ -149,7 +169,10 @@ exclude.
 - **The selection fix, the status, the migration** — Plan 272, shipped.
 - **The bounded inference fetch** — 272 T2, unshipped and **needing re-justification, not
   building**: the existing two-hour window already yields a clean cadence on a healthy feed.
-- **The onboarding path** — Plan 315, which runs last.
+- **The onboarding path** — Plan 315. ⚠️ *An earlier draft said 315 "runs last" relative to these
+  three; that is unsupported by the records: 315's `depends_on` names 264, 269, 303 and 313 —
+  none of these — and all three of these carry `blocks: []`.* **There is no ordering relationship
+  between this plan and 315 in either direction.**
 
 ```json
 {
