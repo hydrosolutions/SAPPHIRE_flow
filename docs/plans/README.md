@@ -654,6 +654,20 @@ exit criteria — Plan 212 owns that deeper screening.
   sweep is bounded, because two independent counts of the same claim already
   disagree.
 
+- **326** — [The model says issue me at midnight, and we run it four times a day](326-honour-the-declared-issue-hours.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`, **`blocks: [262]`**. Went looking for
+  somewhere to enforce Plan 311's midnight restriction and found the declaration
+  already exists: ⭐ **`cmal_small.yaml:11` declares `issue_hours: [0]` and NOTHING
+  in `src/`, `tests/` or `scripts/` reads it.** Same shape as the discharge
+  aggregation defect — the model declares, our side drops it. The cycle runs
+  `0 */6 * * *`, so a model asking for one issue hour gets four, and 311 measured
+  that three of them refuse. 🔴 Selection cannot even see the cycle time
+  (`discover_group_runs` takes models + store only), and ⛔ `time_step` on the
+  assignment is the OUTPUT resolution, not a cycle gate. ⚠️ D1 may not be ours:
+  if FI cannot express issue hours, `AGENTS.md` requires an FI issue, not a SAP3
+  workaround. ⚠️ And an hour match alone does not fix it — the cycle time comes
+  from `clock()`, so 00:00 fires at `00:00:37Z` and still drops the bucket.
+
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s
