@@ -185,7 +185,14 @@ before still runs; the wall-clock of the slowest shard is reported.
 **In (cont.).** The `docs/standards/cicd.md` update — AGENTS.md requires every
 code change to update affected docs, and the CI topology is exactly that.
 
-**Out.** ⛔ Any change to a test. ⛔ **Removing or altering `-n auto`** — it stays
+**Out.** ⛔ Changing a test to make a shard go green. ⚠️ *This clause first read
+"any change to a test", which T1's own In-list makes unsatisfiable:
+`tests/unit/tooling/test_ci_credential_absence_guard.py` asserts on the unit
+job's **last** step and on it naming `tests/unit/`, and a shard matrix is
+neither. Retargeting that guard onto the shard step — same contract, no `-k`/`-m`,
+no hand-written subpath, coverage retained — is REQUIRED, not a breach. What
+stays forbidden is weakening a test's assertion to accommodate the split.*
+⛔ **Removing or altering `-n auto`** — it stays
 inside each shard exactly as it is today (⛔ *an earlier draft's Out-list said
 "`-n auto` inside a shard", which contradicted the In-list requiring it; an
 implementer could not satisfy both*). ⛔ Integration or nightly jobs. ⛔ Runner
@@ -198,8 +205,14 @@ job is slow", which is not a test.*
 **Verification.**
 - The union of the shards' collected NODE IDS equals the unsharded collection,
   as sets, with no node in two shards.
-- Removing any group from the shard definitions **fails** the check — and so
-  does duplicating one, which a count-only check would not catch.
+- **Duplicating** a group in the shard definitions **fails** the check — every
+  node still runs and the total is still right, so only a per-node count sees
+  it. ⛔ *An earlier version of this clause also said removing a group must
+  fail. That is wrong, and it contradicts the computed catch-all the In-list
+  requires: a removed named group is ABSORBED by the catch-all, which is the
+  whole safety property. What must fail is removing the **catch-all** — that
+  is the enumerate-the-subdirectories split this plan exists to prevent, and
+  it is the Pre-change RED test below.*
 - **The 44 root-level tests run in exactly one shard**, asserted by name, because
   they are what this plan's own first draft dropped.
 - The Plan 201 canary still runs sequentially, once, and still asserts its exact
