@@ -20,6 +20,12 @@ IFS forecast, and operational stitched values for `tp`, `2t`, `ssr`, and
 `str`. Those checks establish source availability; they do not establish that
 SAP3 persists every variable or can use it in a model.
 
+The package checks establish structural validity, not that each input gauge
+coordinate was independently verified against CHWRR/DHM records. Complete the
+coordinate confirmation below before generating replacement geometry or
+onboarding additional stations; if a coordinate correction changes a basin,
+issue a new geometry/package version and register the corrected geometry.
+
 The SAP3 onboarding sequence is not yet complete. Plan 143 and its upstream
 station/QC dependencies must be implemented and accepted before the steps in
 “Run SAP3 onboarding” can be executed. In particular, do not trigger the
@@ -27,27 +33,177 @@ parameterless `onboard-stations` deployment: its defaults select CAMELS-CH
 stations. Do not mark DHM stations operational or create forecast targets as
 a shortcut around the readiness gates.
 
-## 1. Prepare the station and Gateway inventory
+## 1. Confirm station identity and coordinates
 
-For each new batch, maintain one reviewed inventory with these fields:
+Before delineating any basin, prepare one reviewed station inventory. Keep the
+DHM gauge code distinct from BIPAD and River Watch identifiers. Confirm the
+River Watch gauge ID and coordinates with CHWRR/DHM; public BIPAD station
+records are a useful cross-check, but their station IDs may not be the same as
+the River Watch IDs. Record the source and date for each coordinate and have a
+second person verify the gauge identity, decimal-degree latitude/longitude,
+and that latitude and longitude have not been swapped. Do not start the
+appliance from an unverified coordinate or resolve a discrepancy by choosing
+the point that produces the more convenient basin.
+
+The static-attributes appliance expects latitude and longitude in WGS84
+decimal degrees. Its delineator snaps the supplied pour point onto a river
+cell, so the resulting outlet is not necessarily the input coordinate. For
+each gauge, compare the candidate coordinate and resulting basin with the
+station's river identity and a trusted drainage-area value when one is
+available. The appliance documentation reports where `distance-first` and
+`weight-first` snapping produce different catchments; use that audit as a
+review aid, not as proof that either coordinate is correct.
+
+For each new batch, the inventory should include:
 
 | Field | Meaning |
 |---|---|
 | DHM gauge code | The authoritative station code used to match the DHM record (keep dots, e.g. `604.5`). |
 | SAP3 network | `dhm`. |
 | River Watch station ID | Confirm against CHWRR/DHM's River Watch interface; do not assume a BIPAD ID is the same. |
-| Gateway HRU name | Exact registered shapefile/HRU name returned by the Gateway operator. |
-| Gateway polygon name | Exact `name` value returned by the Gateway for this gauge. |
+| Coordinate | Reviewed latitude and longitude in WGS84 decimal degrees. |
+| Coordinate evidence | Authoritative source, cross-check source, reviewer, and review date. |
+| Published drainage area | Area and source used to review the delineation, when available. |
 | Basin/static package ID | A new immutable ID for this release of geometry and attributes. |
+| Gateway HRU name | Exact registered shapefile/HRU name, recorded after Gateway registration. |
+| Gateway polygon name | Exact returned feature `name`, recorded after Gateway registration. |
 | Registration/data check | Date and evidence of polygon registration and requested source availability. |
 
-Ask the Gateway operator to register the batch GeoPackage and confirm the
-returned HRU and polygon names. A batch may be one HRU with multiple polygon
-features; the HRU name is not an individual gauge code. Record the exact
-returned identifiers in the inventory. Do not infer names from the station
-code when the Gateway can confirm them.
+The initial six-gauge batch's coordinates must be checked from the approved
+station source before running the appliance. Do not treat coordinates embedded
+in an old basin package or an example command as the authority for new runs.
 
-For the initial batch, the verified mapping is:
+## 2. Delineate basins and build the static-attributes package
+
+Use the [static-attrs-nepal README](https://github.com/hydrosolutions/static-attrs-nepal#headless-batch-cli)
+for the supported appliance route and full user instructions. The bundle route
+requires a real amd64 Linux host; running from source is the documented route
+for macOS. Its headless CLI accepts repeated
+`--station CODE "DISPLAY NAME" LAT LON` arguments. From source, the documented
+command shape is:
+
+```bash
+uv run python -m static_attrs_nepal.appliance \
+  --station DHM_CODE "DISPLAY NAME" LATITUDE LONGITUDE \
+  --snap-audit \
+  --hfx-dataset-dir "$HFX_DATASET_DIR" \
+  --hydroatlas-clip unused \
+  --era5-land-cube unused
+```
+
+Run the snap audit with the reviewed coordinate set before building the
+package. Review every disagreement and compare each selected basin with the
+known river and drainage area. Resolve any uncertain coordinate or catchment
+with CHWRR/DHM before proceeding. The appliance README documents
+`distance-first` as the default based on its Nepal published-area sweep; do
+not switch strategies without reviewing the expected catchment change.
+
+Once coordinates and basins are accepted, run the same CLI with all gauges,
+without `--snap-audit`, and with real local dataset paths, explicit network
+and the intended Gateway HRU name, and a versioned output path. Use one
+`--station` argument for each reviewed inventory row:
+
+```bash
+uv run python -m static_attrs_nepal.appliance \
+  --station DHM_CODE "DISPLAY NAME" LATITUDE LONGITUDE \
+  --network dhm \
+  --gateway-hru-name INTENDED_HRU_NAME \
+  --hfx-dataset-dir "$HFX_DATASET_DIR" \
+  --hydroatlas-clip "$HYDROATLAS_CLIP" \
+  --era5-land-cube "$ERA5_LAND_CUBE" \
+  --output VERSIONED_PACKAGE_ZIP
+```
+
+Repeat `--station` for every gauge. Follow the appliance's current README for
+the complete installation and package-validation procedure; do not copy
+example coordinates into a live batch. Save the generated package and its
+validation report as controlled deployment artifacts.
+
+The appliance output is the source for the basin geometry and static
+attributes; do not independently redraw a basin or substitute a different
+polygon after validation. Validate the generated package using the contract
+in
+[`04-basin-static-artifact-contract.md`](../requirements/04-basin-static-artifact-contract.md)
+and follow the [basin/static package importer runbook](basin-static-importer-runbook.md)
+for SAP3 package validation. The package includes `manifest.json`, `basins.gpkg`,
+`static_attributes.parquet`, `feature_catalog.json`, and
+`validation_report.json`; include `README.md` and checksums as required by the
+contract.
+
+Before Gateway registration, verify the geometry, attributes, and package
+structure. At this point the HRU and polygon names are proposed values; confirm
+them with the Gateway operator before treating them as registered identifiers.
+Verify all of the following:
+
+- `network` is `dhm` and the package ID is unique and immutable.
+- Every intended gauge occurs exactly once in both basin features and static
+  attributes; `gauge_id` joins the two files without missing or extra rows.
+- Each feature is a valid 2-D Polygon/MultiPolygon in EPSG:4326.
+- The feature name follows the Gateway naming convention and maps one-to-one
+  to its gauge; confirm the exact returned Gateway name after registration.
+- The proposed Gateway HRU and feature names are recorded as provisional until
+  confirmed by the Gateway operator.
+- The package loader and semantic validation report pass with no unexplained
+  errors or warnings.
+
+Generate and validate the basin geometry first, then register that geometry
+with the Gateway before finalizing the confirmed names in the SAP3 package
+metadata.
+
+## 3. Register the accepted geometry with the Data Gateway
+
+After the basin geometries pass coordinate and delineation review, follow the
+Gateway team's [new-geometry onboarding instructions](https://github.com/hydrosolutions/recap-dg-client/blob/main/docs/onboarding-a-new-geometry.md).
+
+The procedure has four Gateway-side stages:
+
+1. **Upload the GeoPackage.** In the Gateway Swagger page at
+   `https://recap.ieasyhydro.org/sdk/docs`, authorize with the Gateway API key
+   and use `POST /hru/vector-files/upload`. Upload one `.gpkg` in WGS84
+   longitude/latitude degrees (EPSG:4326). Supply a fresh `hru_code`, an
+   optional description, and the file. The `hru_code` becomes the permanent
+   geometry name; it cannot be reused for another geometry. Do not put the API
+   key in this runbook or onboarding inventory.
+2. **Verify it is ready.** In the Configurator at
+   `https://recap.ieasyhydro.org/admin`, open the Shapefiles list and confirm
+   the new geometry appears with status `Ready`. If it is absent or not ready,
+   stop and resolve the upload/CRS problem before enabling data.
+3. **Enable subscriptions.** In the Configurator, add and save the required
+   ERA5, IFS, and (if needed) Snow subscriptions for the new geometry. Select
+   variables required by the intended model and leave the enable toggle on.
+   For the current SAP3 forcing path, ERA5 precipitation and 2 m temperature
+   are supported; select the corresponding IFS surface variables required by
+   the deployment. Do not treat raw Gateway availability of radiation or snow
+   as SAP3 model support. Snow has separate forecast and reanalysis toggles;
+   enable the stream(s) actually required. If a needed variable is not listed,
+   ask a Recap administrator to add it before continuing.
+4. **Populate Gateway data.** In the Jobs dashboard at
+   `https://recap.ieasyhydro.org`, trigger one manual run of
+   `era5_land_backfill__targeted` using “Trigger DAG w/ config”. Enter
+   `shapefile_names` as the new `hru_code`, and set `year_start` and
+   `year_end` to the required calendar-year training window. `variables` may
+   list the subscribed ERA5 variables one per line, or be left empty to fill
+   every subscribed variable. At least one ERA5 subscription must already be
+   enabled. This is one run for the selected geometries, variables, and years;
+   it is not an Airflow date-range backfill.
+
+   Then backfill the recent IFS forecasts: open `ifs__subdaily`, choose
+   **Backfill**, set the date range to the last seven days, enable
+   reprocessing of existing runs, and start it. The backfill includes all
+   subscribed geometries and variables in that range, so do not start a
+   separate run per variable. The Gateway guide says repeated backfills
+   overwrite the same outputs.
+
+Retain the upload confirmation, readiness status, enabled subscriptions,
+backfill run identifiers and requested years with the station inventory. If
+the guide is not yet accessible to your team, request the current controlled
+copy from the Gateway operator rather than improvising these steps.
+
+Record the exact registered HRU name and every polygon `name` returned by the
+Gateway. A batch may be one HRU with multiple polygon features; the HRU name
+is not an individual gauge code. Do not infer the returned names from DHM
+codes. For the initial batch, the expected HRU is `nepal6_20260923` and the
+verified feature mapping is:
 
 | DHM gauge | Gateway polygon |
 |---:|---|
@@ -58,38 +214,26 @@ For the initial batch, the verified mapping is:
 | 670 | `g_670` |
 | 684 | `g_684` |
 
-## 2. Assemble and validate the basin/static package
+After backfills complete, confirm a read-only Gateway request succeeds for
+the registered HRU and polygons. Record request date, variables tested,
+returned coverage, unavailable values, and the Gateway job runs. Use the Recap
+Gateway runbook for probe credentials and coverage recording. A successful
+Gateway backfill is still separate from importing historical forcing into
+SAP3.
 
-Obtain a basin GeoPackage and static-attribute Parquet from the basin
-modeller. Build the package using the contract in
-[`04-basin-static-artifact-contract.md`](../requirements/04-basin-static-artifact-contract.md)
-and the existing [basin/static package importer runbook](basin-static-importer-runbook.md).
-The package includes `manifest.json`, `basins.gpkg`,
-`static_attributes.parquet`, `feature_catalog.json`, and
-`validation_report.json`; include `README.md` and checksums as required by the
-contract.
+## 4. Finalize and validate the SAP3 basin/static package
 
-Before import, verify all of the following:
+Once Gateway registration confirms the identifiers, write the final
+`gateway_hru_name` and per-feature Gateway `name` values into the SAP3 package
+metadata. Verify that `network` is `dhm`, that each basin feature's `name`
+matches its Gateway polygon exactly, and that the `gauge_id` static-attribute
+join is one-to-one and complete. Run the SAPPHIRE package loader and semantic
+validation report. Do not edit the original handover files in place; create a
+derived package with a new immutable package ID if metadata or contents need
+correction. Store the package and report in the deployment's controlled
+artifact location.
 
-- `network` is `dhm` and the package ID is unique and immutable.
-- Every intended gauge occurs exactly once in both basin features and static
-  attributes; `gauge_id` joins the two files without missing or extra rows.
-- Each feature is a valid 2-D Polygon/MultiPolygon in EPSG:4326.
-- The feature name is exactly the Gateway polygon name, including normalized
-  names such as `g_604_5`.
-- The package declares the correct Gateway HRU name and the six-station
-  inventory agrees with its contents.
-- The package loader and semantic validation report pass with no unexplained
-  errors or warnings.
-
-For the initial package, the Gateway HRU name must be `nepal6_20260923`.
-The delivered source package previously declared a placeholder HRU name, so
-check the current package metadata and correct it in a derived package copy
-before import; do not edit the original handover files in place. Store the
-resulting package and validation report in the deployment's controlled
-artifact location, not in a personal temporary directory.
-
-## 3. Confirm station rows exist before importing basins
+## 5. Confirm station rows exist before importing basins
 
 The basin importer resolves each package gauge to an existing SAP3 station by
 `(code, network)`. Confirm the six station records have been created by the
@@ -108,7 +252,7 @@ and database environment in the onboarding record. Do not rerun a modified
 package with an already-used package ID; issue a new package ID for corrected
 content.
 
-## 4. Verify Gateway source coverage
+## 6. Verify Gateway source coverage
 
 After polygon registration, probe the exact HRU and polygon names for each
 required variable and record the request window, returned coverage, and data
@@ -131,7 +275,7 @@ the inventory, command history, or onboarding report. A successful read-only
 probe does not mean historical values have been persisted in SAP3; the
 Nepal-specific historical forcing persistence step is delivered by Plan 143.
 
-## 5. Run SAP3 onboarding after its implementation is available
+## 7. Run SAP3 onboarding after its implementation is available
 
 Do this only when the orchestrator has made the onboarding implementation
 available and its documented invocation explicitly scopes the intended DHM
@@ -164,7 +308,7 @@ For each batch:
    `onboarding` lifecycle state; this procedure does not assign models,
    schedule forecast production, or activate alerts.
 
-## 6. Handover for a new station batch
+## 8. Handover for a new station batch
 
 Repeat this runbook for each new batch. Treat Gateway registration and basin
 packages as versioned inputs. A geometry or static-attribute correction gets
