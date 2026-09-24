@@ -19,7 +19,14 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ObservationId, StationId
     from sapphire_flow.types.observation import Observation
 
-_RULE_VERSION = "1.0"
+# Plan 324 T2: the generation label for observation QC verdicts. Bumped from
+# "1.0" to "1.2" so that a verdict produced by Plan 272's corrected rule
+# selection is distinguishable from one produced by the pre-272 code.
+# ⛔ FORWARD label only: rows already stored under post-272 logic keep the old
+# value, so this does not repair the provenance of anything already written.
+# ⛔ NOT the forecast-QC constant of the same name (`services/forecast_qc.py`),
+# which versions a different rule family and does not move with this one.
+_RULE_VERSION = "1.2"
 
 
 def _merge_thresholds(

@@ -3,7 +3,7 @@ status: PARTIALLY_IMPLEMENTED   # reactivated 2026-09-23 — #297 shipped the wr
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
-scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan. ⛔ NOT the rollout controls — the flag's enablement, the canary, D7's automatic abort and the revert artefact are Plan 314; this plan deploys with the QC_UNCHECKED write disabled by a flag, but selection changes on deploy — it is NOT inert.
+scope: Diagnose and fix the observation-QC rule-selection path so that a configured rule cannot be silently unreachable because the cadence inferred from a short observation window fails to match its declared time step. NOT new rule kinds, NOT threshold values, NOT per-station overrides (Plan 269), NOT the network dimension (Plan 264) — though this plan and 264 T3 must land in the right order, see § Cross-plan. ⛔ NOT the rollout controls — the flag's enablement, the canary, D7's automatic abort and the revert artefact are Plan 314; ⛔ CORRECTED 2026-09-24 (Plan 324 T4): this line used to say the plan deploys with the QC_UNCHECKED write disabled by a flag. T2b In item 12 WITHDREW that flag (owner, 2026-09-23) and it was DELIBERATELY NOT BUILT — QC_UNCHECKED is written UNCONDITIONALLY, and selection changes on deploy. The plan is NOT inert.
 blocks: [264, 269, 314]
 related: [264, 268, 269, 301, 303, 304, 313, 314]
 open_decisions: []
@@ -17,6 +17,16 @@ source: 2026-09-11 — found by the round-6 independent reviews of Plan 269 (bot
 
 ⚠️ **A proposal, not a decision.** It needs the owner's approval and an independent review before
 any of it is built. ⛔ **Do NOT read this as "build 31 items"** — most should never be built now.
+
+✅ **WHERE THIS TRIAGE STANDS, 2026-09-24 (recorded by Plan 324 T4).**
+**Section A is CLOSED by Plan 316** (items 3, 6, 7 and 9) **and Plan 317** (item 8, re-examination).
+**Section B is CLOSED by Plan 318** — the health record, the `PipelineCheckType` member
+(`types/enums.py:230`) and the watchdog probe. **Section C's parks STAND**, each for the reason
+given there. **Section D is closed by Plan 324**: the Plan-264 debt recording (T3) and the
+`qc_rule_version` bump (T2, now `"1.2"` / `"1.2-datum"` / `"1.2-datum-skip"`). Plan 324 also
+corrected this plan's own stale text — the consumer claims above and the `DeploymentConfig` flag
+promises, which item 12 withdrew and which were **deliberately not built**. ⛔ *This plan's
+`status:` field is the owner's to set and is deliberately untouched.*
 
 🔑 **The prerequisite that shapes the whole slice, measured:** `fetch_observations` takes a
 **scalar** status (`store/observation_store.py:166`), as do the Protocol (`protocols/stores.py:128`)
@@ -59,11 +69,17 @@ without reading container logs.
 - **The unasserted Verification clauses** — real test debt; each should ride with the task it
   verifies rather than being swept up alone.
 
-### D — DO NOW, trivial, no decision needed
+### D — DO NOW, trivial, no decision needed. ✅ **BOTH DONE — Plan 324, 2026-09-24.**
 
 - **T3's Plan-264 debt recording** — a documentation edit this plan assigned and the
-  implementation skipped (`264:252,262` unchanged).
-- **T2b V's `qc_rule_version` bump** — `services/qc_datum.py:18,19,25` unchanged.
+  implementation skipped. ✅ **Done: Plan 324 T3** corrected 264's whole T3 contract in place
+  (its blocker paragraph, Outcome, Verification and Pre-change), not just its introduction.
+- **T2b V's `qc_rule_version` bump** — ✅ **Done: Plan 324 T2.** All FOUR literals moved together:
+  `services/qc.py::_RULE_VERSION`, `services/qc_datum.py`'s `DATUM_QC_RULE_VERSION` and
+  `DATUM_SKIP_QC_RULE_VERSION`, and the non-water-level value returned by `obs_qc_rule_version`.
+  ⛔ `services/forecast_qc.py::_RULE_VERSION` is a different rule family and deliberately did not
+  move. ⚠️ The bump is a **forward generation label only** — it does not repair the provenance of
+  rows already written.
 
 ## Status
 
@@ -77,9 +93,12 @@ deployment."* What it does show is real availability, reporting and rollback ris
 the owner's call on that basis, not a blocked gate. Corrections to the original wording, each
 verified:
 - **"Disappears from every consumer" is false.** The named forecast / alert / skill / training
-  reads do exclude it — but `api/routes/stations.py:698` excludes only `qc_failed`, so unchecked
-  values reach the **published observed series unmarked**. That is a reporting leak, nearly the
-  opposite of the availability failure first described here.
+  reads do exclude it — and at the time this was written `api/routes/stations.py` excluded only
+  `qc_failed`, so unchecked values reached the **published observed series unmarked**: a reporting
+  leak, nearly the opposite of the availability failure first described here.
+  ✅ **BOTH HALVES ARE NOW CLOSED (2026-09-24, Plan 324 T4).** Plan 316 made the four model-input
+  reads accept unchecked rows and report `DEGRADED` instead of dropping them, and added the
+  explicit published-series exclusion (`api/routes/stations.py:706-707`).
 - **Scale: exceptional, not fleet-wide.** The ingest context window is two hours
   (`flows/ingest_observations.py:299-327`), so a healthy 10-minute feed yields ~12 timestamps, a
   600 s median, and matching rules. Zero-rule groups need isolated arrivals, genuinely irregular
@@ -107,27 +126,42 @@ the merge.
 
 **Confirmed absent from `main` at `55e30d1a`, measured:**
 - **T2b In item 6 — the complete consumer filter policy — and item 7 — the `DEGRADED` provenance
-  path.** `QC_UNCHECKED` occurs in exactly three files: `types/enums.py`, `db/metadata.py` and
-  `flows/ingest_observations.py` (the writer). **No consumer accepts it**, and consumers filter by
-  equality (`store/observation_store.py:183-184`).
+  path.** ✅ **BOTH HAVE SINCE SHIPPED (Plan 316), and the measurement below is no longer true.**
+  *As measured at `55e30d1a` it read: `QC_UNCHECKED` occurs in exactly three files —
+  `types/enums.py`, `db/metadata.py` and `flows/ingest_observations.py` (the writer); **no consumer
+  accepts it**; consumers filter by equality (`store/observation_store.py:183-184`).*
+  🔎 **Re-measured 2026-09-24: `QC_UNCHECKED` / `qc_unchecked` occurs in TEN files under `src/`,**
+  and **four model-input reads accept it** through `MODEL_INPUT_QC_STATUSES`
+  (`services/input_quality.py:37` → `services/track_assembly.py:293,349`;
+  `services/operational_inputs.py:900,955`). Every other consumer still asks for `QC_PASSED`
+  alone — the split is D5's, and it is built.
 - ⛔ **CORRECTED — the missing write gate is NOT a defect.** *An earlier revision of this section,
   and the commit that added it, called the absent flag a second unshipped safeguard. Wrong:*
   **T2b In item 12 WITHDREW it** (owner, 2026-09-23) — *"NO write gate this iteration —
   `QC_UNCHECKED` is written UNCONDITIONALLY"*, because a default-`False` gate only Plan 314 could
   enable would have shipped the selection change while the headline symptom stayed live. The
-  unconditional write is correct and intended. **The stale halves are the `scope` line and
-  `:1375`, which still promise the flag** — fix those, not the code.
+  unconditional write is correct and intended. **The stale halves were the `scope` line and the
+  rollout sections, which still promised the flag** — the code was never wrong.
+  ✅ **Fixed 2026-09-24 (Plan 324 T4): eight sites, each marked in place as DELIBERATELY NOT BUILT
+  rather than deleted** — the `scope` line, D7's abort clause, C4's heading and its item 1, C9's
+  canary, T2b item 10's rollback clause, the calculated-station canary note, and T5's "does NOT
+  land inert" paragraph.
   🔴 **And this makes the consumer gap WORSE, not better.** Item 12's own reasoning is
   *"allowing unchecked data to flow does not require calling it checked: the staged consumer
   policy lets it reach forecasting, and D5's per-site split still governs where else it lands."*
   ⇒ **D5's consumer split is the ONLY safeguard this plan retained — and it is the one that did
-  not ship.**
+  not ship.** ✅ **It has since shipped, as Plan 316. This bullet is history, not a live gap.**
 
 **🔢 COMPLETENESS AUDIT, 2026-09-23 (Codex, In-list item by item): 54 items audited — 12 shipped,
 11 partial, 31 NOT shipped.** Deployment-blocking absences it names: the bounded inference fetch
 and shared resolution, the accepting consumer filters and `DEGRADED` provenance, re-examination,
 the published-endpoint exclusion, the compatibility release, the version boundary, and the
 health/watchdog delivery. T0's sentinel and T1's census are also absent.
+✅ **Re-stated 2026-09-24 (Plan 324 T4): of those named absences, the accepting consumer filters,
+`DEGRADED` provenance and the published-endpoint exclusion shipped as Plan 316; re-examination as
+Plan 317; the health/watchdog delivery as Plan 318; and the version boundary as Plan 324 T2.**
+Still absent, and parked with their reasons in triage section C: the bounded inference fetch, the
+compatibility release, T0's sentinel and T1's census.
 
 ⭐ **One of those absences explains an operational warning I gave and must retract.** T2's
 *"separate bounded inference fetch"* (`inference_lookback` / `fetch_recent_observations`) did not
@@ -136,11 +170,17 @@ rules. Without it, **no rule is newly applied to any pair**, so the merged code 
 spurious-flag exposure**. ⛔ *Advice to watch the first cycle for spurious `QC_SUSPECT`/`QC_FAILED`
 on patchy feeds was wrong and is withdrawn.* The real risk is the opposite one, below.
 
-🔴 **Consequence if `main` is deployed as it stands:** a group resolving zero rules is written
-`QC_UNCHECKED` and **disappears from every consumer** — forecast inputs, the observation-alert
-path (live on the mini per `docs/v1-scope.md:41-45`), skill and training. That is exactly the
-dark-fleet outcome D5's consumer split exists to prevent, and which this plan records as the
-Plan 264 T3 failure. Either safeguard alone would have prevented it; neither shipped.
+✅ **CLOSED BY PLAN 316 — the consequence below no longer follows, and this headline must not be
+read as a live alarm.** *(Corrected 2026-09-24, Plan 324 T4.)* As written on 2026-09-23 it said:
+*if `main` is deployed as it stands, a group resolving zero rules is written `QC_UNCHECKED` and
+**disappears from every consumer** — forecast inputs, the observation-alert path (live on the mini
+per `docs/v1-scope.md:41-45`), skill and training — the dark-fleet outcome D5's consumer split
+exists to prevent, and which this plan records as the Plan 264 T3 failure.* 🔎 **Plan 316 shipped
+that split**: the four model-input reads accept `{QC_PASSED, QC_UNCHECKED}`, the forecast carries
+`DEGRADED` provenance instead of vanishing, and the published observed series excludes unchecked
+rows explicitly (`api/routes/stations.py:706-707`). ⇒ **A zero-rule station is forecast on and
+reported as degraded, not dark.** The alerting, skill and training exclusions are deliberate and
+unchanged.
 
 ⚠️ **Why the reviews did not catch it, recorded because the method is the defect:** every gate run
 on #297 was **diff-scoped** — "does this diff close the finding / is it correct?" — and a missing
@@ -766,6 +806,9 @@ nicety**:
   This is also what T2b item 5's separate `unchecked` bucket is for.
 - Exceeding it **automatically aborts the canary** (C9): it reverts the flag (C4) and performs
   the revert action **Plan 314 E1 settles**. ⛔ **The flag alone does not stop it.**
+  ⛔ **FLAG NOT BUILT (Plan 324 T4, 2026-09-24).** T2b In item 12 withdrew the `DeploymentConfig`
+  write gate (owner, 2026-09-23) and it was **deliberately not built** — `QC_UNCHECKED` is written
+  unconditionally. ⇒ the abort has no flag to revert; this whole control is Plan 314's.
   The flag gates only the `QC_UNCHECKED` write; the selection change ships unconditionally with
   T2, so the newly-selected rules keep producing `QC_FAILED`/`QC_SUSPECT` after a flag revert —
   which is the very population D7 measures. 🔴 **What CAN revert it is an open decision in 314,
@@ -1469,7 +1512,11 @@ paired old/new evaluation, so they fall with it. *(They were still listed as gat
 implementation after T6 was descoped, which made the descope nominal.)*
 
 **C4 — ship behind a `DeploymentConfig` flag defaulting `False`, and bump
-`qc_rule_version`.** The plan specifies image-revert as rollback. **This repo already has
+`qc_rule_version`.** ⛔ **THE FLAG HALF WAS DELIBERATELY NOT BUILT** — T2b In item 12, owner
+2026-09-23; `QC_UNCHECKED` is written unconditionally. *(The bump half is Plan 324 T2, done
+2026-09-24: `"1.2"` / `"1.2-datum"` / `"1.2-datum-skip"`.)* The recommendation below is retained
+as the record of a decision taken and then reversed, **not** as work outstanding.
+The plan specifies image-revert as rollback. **This repo already has
 the right pattern for exactly this shape of change:**
 `config/deployment.py:146` `enable_skill_generations: bool = False` is a Plan 235
 two-release flag whose own comment explains it exists so "a rollback during the rollout
@@ -1477,8 +1524,9 @@ window always lands on an image that already understands the rows on disk"
 (`docs/standards/cicd.md`'s one-release rollback rule). Adopt it:
 
 1. **The write gate itself is T2b's** (In item 12) — a `DeploymentConfig` flag defaulting
-   `False`, so the first release that can write `QC_UNCHECKED` does not. ⛔ **It does NOT make
-   this plan inert**: T2 deletes the `< 2 rows ⟹ 1 h` fallback and T6 rejects keeping the old
+   `False`, so the first release that can write `QC_UNCHECKED` does not.
+   ⛔ **SUPERSEDED — item 12 later withdrew this gate and it was never built (Plan 324 T4).**
+   ⛔ **It does NOT make this plan inert**: T2 deletes the `< 2 rows ⟹ 1 h` fallback and T6 rejects keeping the old
    path in `src`, so **selection changes the moment the image deploys**.
 2. **Enabling it — the overlay edit, the per-station canary and the rollback anchor — is Plan
    314 T2.** The `qc_rule_version` bump is T2b's (see its Verification); it was stated twice
@@ -1486,7 +1534,9 @@ window always lands on an image that already understands the rows on disk"
 
 **C9 — canary by station, and tag the rollback anchor first.** The plan's gate is binary
 and fleet-wide. `stations.network` exists and the QC loop already iterates per
-`(station_id, parameter)`, so the flag can be scoped cheaply: enable on 2–3 BAFU stations,
+`(station_id, parameter)`, so the flag could be scoped cheaply: enable on 2–3 BAFU stations,
+⚠️ *(Plan 324 T4: there is no flag — item 12 withdrew it and it was not built. A canary now has to
+be scoped by some other means; that is Plan 314's problem, not this plan's.)*
 watch one full forecast cycle (`0 */6 * * *`), then widen. Before the upgrade, tag the
 rollback anchor — `docker tag sapphire-flow:${OLD} sapphire-flow:rollback-backup` — because
 the mini has **no image registry** (`docs/standards/cicd.md:506`; images are local-only and
@@ -1576,7 +1626,10 @@ and the published API exclude them; and a row can be **re-examined later**.
    the moment one `qc_unchecked` row exists, the previous image cannot read it — violating
    `docs/standards/cicd.md:245`'s one-release rollback rule. **Ship a compatibility release
    first**: an image that *understands* `QC_UNCHECKED` but never writes it, deployed and verified,
-   before the release that writes it. 🔑 **C4's flag gates the STATUS WRITE.** *(Restated
+   before the release that writes it. 🔑 **C4's flag gates the STATUS WRITE.**
+   ⛔ **Except that the flag was withdrawn by item 12 and NOT built (Plan 324 T4) — so nothing
+   gates the status write, and the compatibility release this item asks for is the only remaining
+   rollback control. It is parked in triage section C, under Plan 314.** *(Restated
    2026-09-22: it previously read "gates the selection change; it must gate the status write as
    well". T6 explicitly rejects keeping the old path in `src`, so no flag can restore the old
    selection — see Plan 314 § What is measured. The selection change ships unconditionally with T2.)*
@@ -1613,7 +1666,8 @@ proceeds on unchecked data, which is the defect.
 🔎 **Measured inert today**: no calculated station is configured in `config.toml`, and
 `_derive_calculated` returns immediately when no formulas exist. **Accepted on that basis, and the
 canary (C9) must re-check it against the deployment** — if any calculated station exists, its
-dependent stations join the blast-radius assessment before the flag is enabled.
+dependent stations join the blast-radius assessment before the write is activated. ⚠️ *(Plan 324
+T4: "before the flag is enabled" — there is no flag; item 12 withdrew it and it was not built.)*
 
 **Verification**:
 - A zero-rule group stores `QC_UNCHECKED`; a group resolving rules stores an unchanged verdict —
@@ -2056,9 +2110,12 @@ compatibility image T2b item 10 defines carries that change too. 🔴 **What art
 unconditional selection change is Plan 314 E1, an OPEN owner decision.**
 
 ⚠️ **This plan does NOT land inert.** *(Corrected 2026-09-23: three independent gates found the
-claim false.)* It deploys with the `QC_UNCHECKED` write **disabled** by T2b's flag — but the
-selection change is unconditional, so newly-selected rules begin producing verdicts, and can
-remove forecast inputs, from the moment the image deploys. Plan 314 enables the write.
+claim false.)* ⛔ **And it is LESS inert than this paragraph used to say.** It said the plan deploys
+with the `QC_UNCHECKED` write **disabled** by T2b's flag; **that flag was withdrawn by T2b item 12
+and deliberately not built** (owner, 2026-09-23; corrected here 2026-09-24, Plan 324 T4). The write
+is **unconditional**, and the selection change is unconditional too, so newly-selected rules begin
+producing verdicts — and can change forecast inputs — from the moment the image deploys. Plan 314
+owns activation and rollback, not the write.
 
 ### T6 — The paired old/new evaluation harness
 

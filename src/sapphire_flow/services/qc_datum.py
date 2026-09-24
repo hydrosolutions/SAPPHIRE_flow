@@ -15,14 +15,17 @@ OBS_DATUM_DEPENDENT_RULES = frozenset({"range_check", "gross_outlier"})
 FORECAST_DATUM_DEPENDENT_RULES = frozenset(
     {"range_check", "negative_value", "climatology_outlier"}
 )
-DATUM_QC_RULE_VERSION = "1.1-datum"
-DATUM_SKIP_QC_RULE_VERSION = "1.1-datum-skip"
+# Plan 324 T2: bumped with `qc.py::_RULE_VERSION` — all four observation-QC
+# literals move together, or a parameter is left on the old generation.
+# The non-water-level value below (`obs_qc_rule_version`) is the fourth.
+DATUM_QC_RULE_VERSION = "1.2-datum"
+DATUM_SKIP_QC_RULE_VERSION = "1.2-datum-skip"
 SUPPORTED_WATER_LEVEL_UNITS = frozenset({"m", "m a.s.l."})
 
 
 def obs_qc_rule_version(parameter: str, datum: float | None) -> str:
     if parameter != "water_level":
-        return "1.0"
+        return "1.2"  # Plan 324 T2: the fourth literal — discharge and the rest.
     return DATUM_QC_RULE_VERSION if datum is not None else DATUM_SKIP_QC_RULE_VERSION
 
 

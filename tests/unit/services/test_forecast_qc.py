@@ -342,6 +342,23 @@ class TestForecastOutputQualityChecker:
         assert "negative_value" in rule_ids
         assert "flat_ensemble" in rule_ids
 
+    def test_forecast_flag_rule_version_is_unmoved_by_the_observation_qc_bump(
+        self,
+    ) -> None:
+        """Plan 324 T2: forecast QC has its OWN ``_RULE_VERSION`` and does not move
+        with the observation-QC generation bump. Asserted behaviourally — one
+        triggered failure, exactly one flag, that flag's version — so a blanket
+        edit of both constants fails here rather than silently re-versioning every
+        forecast QC flag.
+        """
+        ensemble = _make_members_ensemble([[10.0, -5.0, 30.0], [15.0, 25.0, 35.0]])
+        ruleset = _make_ruleset(_make_rule("negative_value", {"value_min": 0.0}))
+        checker = ForecastOutputQualityChecker()
+        flags = checker.check(ensemble, ruleset, [], [])
+        assert len(flags) == 1
+        assert flags[0].rule_id == "negative_value"
+        assert flags[0].rule_version == "1.0"
+
     def test_no_rules_returns_empty(self) -> None:
         ensemble = _make_members_ensemble([[10.0, 20.0, 30.0], [15.0, 25.0, 35.0]])
         # Ruleset targets a different parameter — no rules match discharge/1h
