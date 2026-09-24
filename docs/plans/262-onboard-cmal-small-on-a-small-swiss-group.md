@@ -181,7 +181,7 @@ Both models are **GROUP-scoped**. `_scope` returns `ArtifactScope.STATION` only 
 config names exactly one gauge (`aquacast/operational/model.py:671-677` **at the pinned
 revision `5460f898`**); `cmal_small` names 15,489 training basins and carries no
 `gauge_ids` key. Plan 241's note calling `cmal_small` "the immediate STATION-scoped
-relaxable candidate" (`241-adopt-declared-horizon-semantics.md:363`) is **wrong on that
+relaxable candidate" (`archive/241-adopt-declared-horizon-semantics.md:363`) is **wrong on that
 point**, and the follow-on it hands to "whichever plan first onboards a STATION-scoped
 relaxable model" is therefore *not* inherited here. This plan does not touch the
 one-timestamp cadence question.
@@ -856,7 +856,7 @@ first thing that would.
   re-enter combination on a later cycle either. `docs/touchpoint-maps.md:400` states it
   (**not `:381` — re-verified 2026-09-11, the file has grown**),
   and Plan 241 dropped its own T5 on exactly this ground
-  (`241-adopt-declared-horizon-semantics.md:339-345`). A GROUP-scoped `cmal_small` is
+  (`archive/241-adopt-declared-horizon-semantics.md:339-345`). A GROUP-scoped `cmal_small` is
   not a pooled contributor. *The first revision of this plan claimed the opposite and
   was wrong.*
 - **The group's all-or-nothing failure mode is unchanged and load-bearing.** Any member

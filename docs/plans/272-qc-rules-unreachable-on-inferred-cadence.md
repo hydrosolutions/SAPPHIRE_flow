@@ -1,5 +1,5 @@
 ---
-status: PARTIAL   # 2026-09-24: behaviour and records done (316/317/318/324). What remains is under § What is still open — one unowned test and three parks needing a decision. ⛔ PARTIALLY_IMPLEMENTED was never a canonical status.
+status: PARTIAL   # 2026-09-24: behaviour and records done (316/317/318/324). What remains is under § What is still open — one unowned test and two items needing a decision. ⛔ PARTIALLY_IMPLEMENTED was never a canonical status.
 created: 2026-09-11
 plan: 272
 title: Configured QC rules are unreachable when the inferred cadence matches nothing
@@ -97,14 +97,18 @@ itself changed. This section is the current state; they are the history.*
 | **C** — the parks | ⏸️ **STAND** — each needs a decision or a re-justification, not code |
 | **D** — the trivial records | ✅ **CLOSED** by **324** (the WMO row's code citations, the rule-version bump, Plan 264's cross-plan debt, and this plan's own stale text) |
 
-🔴 **What nobody owns**, stated plainly so a third audit does not have to rediscover it:
+🔴 **What nobody owns** — **three** items, stated plainly so a third audit does not have to
+rediscover them. ⭐ *A fourth was closed as superseded rather than carried; see (2).*
 
 1. **The DHM mask byte-identical-output test** (T2's In) — never created. ⛔ *A test to write, not a
    record to correct; it belongs with whoever next touches `scripts/dhm_precip/qc_mask.py`.*
-2. **The bounded inference fetch** (`inference_lookback` / `fetch_recent_observations`) — parked in
-   § C pending re-justification. ⚠️ **Plan 323 attacks the same live symptom from the other side**
-   (declare the missing cadence's rules rather than widen inference), which makes the park more
-   defensible than when it was written — nothing had recorded that.
+2. ✅ ~~**The bounded inference fetch**~~ — **CLOSED 2026-09-24 as SUPERSEDED, not parked.**
+   § C left `inference_lookback` / `fetch_recent_observations` pending a re-justification that has
+   now been answered from the other direction: **Plan 323 declares rules for the cadence the fleet
+   actually reports at**, which removes the motive for widening inference. ⭐ *The park was
+   conditional on someone re-arguing the case; the case is gone, so the item is closed rather than
+   left looking neglected.* ⛔ **If it is ever revived it needs a new argument**, not this one —
+   and note it was an inference-ROBUSTNESS improvement, never a correctness fix.
 3. **T2b item 11** — the `worst_qc_status` severity ranking and the public status filter. Latent
    only: QC emits `PASSED`/`SUSPECT`/`FAILED`, so `QC_UNCHECKED` never reaches the ranking. ⛔ *That
    is a coincidence this plan wanted made explicit, and it still is not.* Needs a decision.

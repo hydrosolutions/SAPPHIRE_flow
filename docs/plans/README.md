@@ -3,7 +3,7 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
-- **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — COMPLETE; reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
+- ⚠️ **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — `status: COMPLETE` **but NOT MERGED** — `feat/nepal-demo-export` is still unmerged into `main` (verified 2026-09-24), so it stays OUT of `archive/`. ⛔ *A plan reading COMPLETE for work that is not on `main` is the same hazard as one reading READY after merge, in the other direction.* Original note: reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
@@ -382,14 +382,14 @@ exit criteria — Plan 212 owns that deeper screening.
 
 - ⚠️ **PLAN NUMBER COLLISION, 2026-09-24 — `323` and `324` each name TWO different plans.**
   On `main`: `323-hourly-stations-select-no-qc-rule.md` and
-  `324-plan-272-last-four-items.md` (merged, #305). Uncommitted in another
+  `archive/324-plan-272-last-four-items.md` (merged, #305). Uncommitted in another
   session's working tree: `323-chwrr-alert-evaluation-and-decisions.md` and
   `324-chwrr-evidence-archive-and-replay.md`, alongside 320–322. 🔑 **Plans are
   cited by NUMBER, so distinct slugs do not disambiguate** — this is the 258
   collision again. ⛔ Neither side should renumber the other unilaterally; the
   merged pair is already cited from a PR and from Plan 272's closing note.
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
-  together. Plans 316, 317 and 318 are **COMPLETE** (#301, #303, #299);
+  together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
   Plans 264/268/269/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
     `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
@@ -634,7 +634,7 @@ exit criteria — Plan 212 owns that deeper screening.
   PRIORITY** backlog and must not displace the v1 critical path; and the target
   is publication number + URL + **CHAPTER**, ⛔ not clause or page.
 
-- **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — **`READY`**
+- **324** — [Plan 272's last four items](archive/324-plan-272-last-four-items.md) — **`COMPLETE`, ARCHIVED** (merged #305, 2026-09-24)
   (orchestrator 2026-09-24, after three review rounds — the middle one rejected a
   fold that acknowledged findings in an appendix while the task text still said
   the old thing). From a full item-by-item audit of 272 against `main`:
