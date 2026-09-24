@@ -1121,6 +1121,16 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   typed against this, not the concrete `HydroScraperAdapter`)
 - `ingest_observations_flow` — fetch → `_append_fetch_health_record` (BEFORE
   store/QC) → store → QC → result union of fetch + QC failures
+- Plan 317 T1 (the owner's decision in 272 T2b item 8): `_run_qc_task`'s
+  **in-memory** pick-up set is `_QC_PICKUP_STATUSES` = `{RAW, QC_UNCHECKED}`, so
+  a row stored unchecked is re-judged (and its verdict overwritten, 272:847)
+  once a later window holds enough context. ⛔ The fetch above it stays
+  **unfiltered** — it is what supplies the already-checked neighbours that
+  cadence inference and the temporal rules need; narrowing it would degrade QC
+  silently. `IngestResult.qc_rechecked` / `.qc_newly_checked`, the
+  `ingest.qc_complete` event and the `OBSERVATION_QC_UNCHECKED` health record
+  split the judged rows by what they were before the run. Asserted in
+  `tests/unit/flows/test_ingest_observations_recheck.py`
 - Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
   RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
   `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`

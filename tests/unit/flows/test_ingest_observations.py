@@ -338,7 +338,15 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts.counts == {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0}
+        assert counts.counts == {
+            "passed": 1,
+            "failed": 0,
+            "suspect": 0,
+            "unchecked": 0,
+            # Plan 317 T1: a first judgement, not a re-examination.
+            "rechecked": 0,
+            "newly_checked": 1,
+        }
         assert counts.zero_rule_groups == ()
         assert latest.value == 261.2
         assert latest.qc_rule_version == "1.1-datum"
@@ -364,7 +372,14 @@ class TestIngestObservationsFlow:
         )
 
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
-        assert counts.counts == {"passed": 0, "failed": 0, "suspect": 1, "unchecked": 0}
+        assert counts.counts == {
+            "passed": 0,
+            "failed": 0,
+            "suspect": 1,
+            "unchecked": 0,
+            "rechecked": 0,
+            "newly_checked": 1,
+        }
         assert counts.zero_rule_groups == ()
         assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
         assert latest.qc_rule_version == "1.1-datum-skip"
@@ -404,7 +419,14 @@ class TestIngestObservationsFlow:
 
         assert datum_result == no_datum_result
         assert datum_result == (
-            {"passed": 1, "failed": 0, "suspect": 0, "unchecked": 0},
+            {
+                "passed": 1,
+                "failed": 0,
+                "suspect": 0,
+                "unchecked": 0,
+                "rechecked": 0,
+                "newly_checked": 1,
+            },
             QcStatus.QC_PASSED,
             [],
         )
