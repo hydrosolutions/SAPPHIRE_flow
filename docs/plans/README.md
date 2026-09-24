@@ -612,6 +612,18 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — developer workflow (C)
 
+- **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — `DRAFT`,
+  `open_decisions: [D1]`. From a full item-by-item audit of 272 against `main`:
+  its BEHAVIOUR is complete and deployed (316/317/318 close triage §A and §B),
+  but four items it marked "DO NOW" or "UNCONDITIONALLY" are unshipped and
+  **owned by no follow-on**. 🔴 The headline one is a WMO compliance row
+  (`standards/wmo.md:187`) whose three code citations now land on a docstring
+  terminator, a parameter name and a keyword argument — the exact failure class
+  272's own T4 invoked Plan 023 about. ⛔ TRAP: there are TWO `_RULE_VERSION`
+  constants and only the observation one is in scope. D1 asks how the stale-text
+  sweep is bounded, because two independent counts of the same claim already
+  disagree.
+
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s
