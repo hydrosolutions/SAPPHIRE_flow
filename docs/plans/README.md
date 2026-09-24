@@ -612,6 +612,20 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — developer workflow (C)
 
+- **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`. Found from a live Slack warning on
+  2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s
+  and 86400 s, and selection matches by exact equality — so they resolve ZERO
+  rules. ⭐ Not new and not a regression: they have been hourly every day for at
+  least a fortnight, and their earlier rows carry a rule version with no flags —
+  the fail-open signature, ~1,277 readings never actually checked. Plan 272/318
+  are what made it visible. ⛔ **Plan 317 does not fix this**: re-examination is
+  the right answer to a TRANSIENT cause, and this one recurs every cycle.
+  🔴 D1 is a hydrology decision — § (6) measures that the existing 600 s↔86400 s
+  threshold pairs follow NO formula (×10, ×4, ×5, unchanged), so hourly values
+  cannot be interpolated. ⚠️ Interacts with 313: if `rate_of_change` later
+  divides by elapsed time, every `max_rate` set here changes meaning.
+
 - **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
   — `READY`, both owner decisions closed 2026-09-24 (four shards; the shards'
   coverage stitched back into one number; ⛔ no threshold introduced — none
