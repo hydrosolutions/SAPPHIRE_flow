@@ -380,8 +380,9 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — v1 Nepal feature (B)
 
-- **Nepal observation-ingest family (264 / 268 / 269)** — three `DRAFT` plans that must be
-  read together; none is READY and implementation has not started.
+- **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
+  together. Plan 318 is implemented in #299; Plans 316–317 are READY and pending implementation;
+  Plans 264/268/269/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
     `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
     review). Fifteen of sixteen decisions closed; **D14 reopened** — the DHM daily QC
@@ -412,6 +413,13 @@ exit criteria — Plan 212 owns that deeper screening.
     array replaces it wholesale (`config/_overlay.py:50-56`), the same trap 268 T7 routes around.
     🔴 **The persisted DB tier is now UNOWNED, deferred to v1**; when it lands the schema model
     is `station_thresholds`, **not** `forecast_qc_overrides` (no PK, no timestamps).
+  - **303** — DHM subdaily precipitation and temperature QC rules — `DRAFT`,
+    `depends_on: [264, 272]`, blocked on Plan 301 T1's source interval/cadence contract. Adds
+    only the DHM-network rule rows Plan 272 D4 requires; Plan 301 must not enable rainfall before
+    these rows are selected and tested.
+  - **304** — Daily QC neighbor context — `DRAFT`, `depends_on: [264, 272, 316, 317, 318]`.
+    Restores daily discharge/water-level `rate_of_change` and `spike` inputs without widening the
+    rows judged; short-window scheduled ingest and the onboarding QC follow-on must wait for it.
 
 - **106** — v1 (Nepal DHM) critical-path roadmap — `DRAFT` (was `READY (locked)` until the
   2026-09-18 audit; waves 0-3 contain completed work, so it must not be implemented as a plan) — **the
@@ -447,9 +455,7 @@ exit criteria — Plan 212 owns that deeper screening.
   0 artifacts, 0 observations, 0 assignments; forecasting 12300 is Plan 139. 🔴 Surfaced an unowned
   prerequisite: nothing ingests ERA5-Land or JSNOW **reanalysis**, so `historical_forcing` is 0 and training
   has no history.
-- **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
-  (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
-  `/plan`. Blocks 144.
+- **143** — DHM v1 station, basin and Gateway onboarding — `DRAFT` — consumes Plan 268's six station rows, binds the registered `nepal6_20260923` polygons, imports supported forcing and conditionally prepares approved, datum-compatible water-level targets; ends at model-onboarding readiness, not operational activation. Depends on Plans 120, 268, 304 and 315.
 - **144** — Multi-track probabilistic forecasting — `SUPERSEDED by docs/design/forecast-cycle-redesign.md`
   (2026-07-23). The multi-track/ensemble orchestration is folded into the forecast-cycle redesign (its D1–D6
   decisions carry over). Six /plan stalls proved it needs a forecast-cycle re-architecture, not incremental patches.
@@ -522,8 +528,8 @@ exit criteria — Plan 212 owns that deeper screening.
 - **120** — Basin/static importer + §5a persistence + versioned basin state — **COMPLETE, ARCHIVED
   (all 4 slices merged: #124 foundation / #126 loader / #128 write-side / #129 entrypoint+docs,
   2026-07-23).** Build-complete: a basin/static package imports end-to-end via
-  `import_basin_package_from_directory` / `python -m sapphire_flow.cli.import_basin_package`, and Plan 143
-  calls the `import_loaded_basin_package` core programmatically. Remaining gate is OPERATIONAL only (run
+  `import_basin_package_from_directory` / `python -m sapphire_flow.cli.import_basin_package`; Plan 143
+  is tasked with using the `import_loaded_basin_package` core for the Nepal package. Remaining gate is OPERATIONAL only (run
   the importer against a real accepted package before 082's resolver returns non-`None` in production —
   the "Production-gate note"). See [archive/120-basin-static-importer.md](archive/120-basin-static-importer.md).
 - **147** — Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless) — **COMPLETE, ARCHIVED
@@ -660,9 +666,9 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
    adapter boundary (Plan 101 only *guards* the metres assumption).
 4. **ERA5-Land reanalysis adapter** (`WeatherReanalysisSource` for Nepal) — folded
    verbally into 081/047, no dedicated build plan.
-5. **Flow 0 Nepal deployment onboarding** — AoI definition and full onboarding
-   flow still need a dedicated plan; the basin/static artifact boundary is now
-   tracked in Plan 117.
+5. **Flow 0 Nepal deployment onboarding** — the six-station basin/Gateway and
+   model-onboarding readiness path is tracked in Plan 143; the basin/static
+   artifact boundary is tracked in Plan 117.
 6. **Rating-curve h→Q ingestion + reprocessing** (Flow 12 Branch A) — 035 covers
    provenance only.
 7. ~~**Auth / RBAC / audit** for the multi-tenant handover~~ — **no longer a gap**:
