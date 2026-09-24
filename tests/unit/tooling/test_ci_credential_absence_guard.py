@@ -377,30 +377,38 @@ class TestStepOrdering:
         assert install < prove
 
 
-class TestFinalUnitTestStepUnchanged:
-    """The credential-absence steps must not narrow or replace the final
-    full-suite run.
+class TestUnitSuiteStepIsNotNarrowed:
+    """The credential-absence steps must not narrow or replace the suite run.
 
     Asserted by COMPONENT, not by exact string. The original exact-equality
     assertion collided with PR #185 (which added `-n auto` and dropped `-v`)
     and turned `main` red — a guard that breaks on any incidental flag change
-    is testing the command's spelling, not its contract. What actually matters
-    is that the last step still runs pytest over the WHOLE `tests/unit/` tree
-    with coverage over `src/sapphire_flow`; runner flags (parallelism,
-    verbosity, reporting) are free to change.
+    is testing the command's spelling, not its contract.
+
+    Plan 319 split that run across a shard matrix, so it is no longer the job's
+    LAST step and no longer names `tests/unit/` itself: the scope of each leg
+    comes from `tools/unit_shards.py`, and that the four legs cover the whole
+    tree exactly once is proved by collected node id in
+    `tests/unit/tools/test_unit_shards.py`. What this guard still owns is that
+    the credential steps have not narrowed the run — no `-k`/`-m` selection, no
+    hand-written subpath, coverage still over `src/sapphire_flow`.
     """
 
-    def test_last_step_still_runs_the_full_unit_suite(self) -> None:
-        run = _unit_job()["steps"][-1].get("run", "")
+    def test_the_shard_step_still_runs_pytest_with_coverage(self) -> None:
+        run = _step("Run unit shard")["run"]
         assert "uv run pytest" in run
-        assert "tests/unit/" in run
         assert "--cov=src/sapphire_flow" in run
 
-    def test_last_step_is_not_narrowed_to_a_subset(self) -> None:
-        """`tests/unit/` must be the whole tree — not `tests/unit/foo/` and
-        not a `-k`/`-m` selection that would silently skip the credential
-        path this guard exists to protect."""
-        run = _unit_job()["steps"][-1].get("run", "")
+    def test_the_shard_step_takes_its_scope_from_the_shard_definitions(
+        self,
+    ) -> None:
+        assert "tools/unit_shards.py --pytest-args" in _step("Run unit shard")["run"]
+
+    def test_the_shard_step_is_not_narrowed_to_a_subset(self) -> None:
+        """No hand-written subpath — not `tests/unit/foo/` — and no `-k`/`-m`
+        selection that would silently skip the credential path this guard
+        exists to protect."""
+        run = _step("Run unit shard")["run"]
         assert not re.search(r"tests/unit/\S", run)
         assert " -k " not in run
         assert " -m " not in run
