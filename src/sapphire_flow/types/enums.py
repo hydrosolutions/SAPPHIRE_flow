@@ -219,6 +219,15 @@ class PipelineCheckType(Enum):
     # and from OBSERVATION_FRESHNESS (per-station staleness). Reusing either
     # would contaminate a check the watchdog already queries.
     OBSERVATION_INGEST_FETCH = "observation_ingest_fetch"
+    # Plan 318 T1: a QC group that resolved ZERO rules, so nothing was checked
+    # and the rows stored QC_UNCHECKED (Plan 272). Deliberately distinct from
+    # OBSERVATION_INGEST_FETCH — that one is written on EVERY run and reports
+    # fetch outcomes, so reusing it would make the zero-rule signal
+    # indistinguishable from an ordinary heartbeat. ⚠️ Unlike every other
+    # member, a record of THIS type is written only when the condition occurs,
+    # which is why its watchdog probe is a PRESENCE probe and not a freshness
+    # probe (Plan 318 T2).
+    OBSERVATION_QC_UNCHECKED = "observation_qc_unchecked"
 
 
 class NotificationChannel(Enum):

@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 from prefect import flow, task
@@ -227,6 +227,96 @@ def _fetch_health_status(
     return PipelineHealthStatus.WARNING
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ZeroRuleGroup:
+    """Plan 318 T1: one `(station, parameter)` group that resolved zero rules.
+
+    The reason separates two regimes with different fixes — a cadence that
+    could not be inferred at all, versus one no rule declares.
+    """
+
+    station_id: StationId
+    parameter: str
+    inferred_time_step_seconds: float | None
+    reason: Literal["no_cadence_inferable", "no_rule_declares_it"]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcTaskOutcome:
+    """Plan 318 T1: what `_run_qc_task` reports back.
+
+    ⚠️ It used to return `counts` alone, so the station, parameter and inferred
+    cadence existed ONLY inside the `qc.no_rules_selected` log call and could
+    not reach a health record. Widening this return is what makes the record
+    writable at all.
+    """
+
+    counts: dict[str, int]
+    zero_rule_groups: tuple[ZeroRuleGroup, ...]
+
+
+def _append_zero_rule_health_record(
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    groups: tuple[ZeroRuleGroup, ...],
+    totals: dict[str, int],
+) -> None:
+    """Plan 318 T1. Shaped after `_append_fetch_health_record` below — same
+    no-op on a missing store, same best-effort try/except.
+
+    ⛔ Two differences from that helper, both deliberate:
+    - **Nothing is written when `groups` is empty.** An always-written record
+      is noise, and the absence IS the healthy signal the T2 probe reads.
+    - **One record per RUN**, carrying every affected group, not one per group:
+      a fleet-wide cadence problem must not write hundreds of records for one
+      cause.
+    """
+    if not groups or pipeline_health_store is None:
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    detail: dict[str, object] = {
+        "zero_rule_groups": [
+            {
+                "station_id": str(g.station_id),
+                "parameter": g.parameter,
+                "inferred_time_step_seconds": g.inferred_time_step_seconds,
+                "reason": g.reason,
+            }
+            for g in groups
+        ],
+        "groups_affected": len(groups),
+        "observations_unchecked": totals["unchecked"],
+        "observations_passed": totals["passed"],
+        "observations_failed": totals["failed"],
+        "observations_suspect": totals["suspect"],
+    }
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=PipelineCheckType.OBSERVATION_QC_UNCHECKED,
+                checked_at=checked_at,
+                status=PipelineHealthStatus.WARNING,
+                subject="ingest_observations",
+                detail=detail,
+                cycle_time=None,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort telemetry write
+        log.warning(
+            "pipeline.health_record_write_failed",
+            check_type=PipelineCheckType.OBSERVATION_QC_UNCHECKED.value,
+            subject="ingest_observations",
+            error=str(exc),
+        )
+
+
 def _append_fetch_health_record(
     pipeline_health_store: object | None,
     *,
@@ -298,7 +388,7 @@ def _run_qc_task(
     datum: float | None = None,
     context_window_hours: float = 2.0,
     fetched_times: tuple[UtcDatetime, ...] = (),
-) -> dict[str, int]:
+) -> QcTaskOutcome:
     window_start = ensure_utc(now - timedelta(hours=context_window_hours))
     window_end = ensure_utc(now + timedelta(hours=1))
     if fetched_times:
@@ -322,11 +412,17 @@ def _run_qc_task(
         end=window_end,
     )
     if not all_obs:
-        return {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
+        return QcTaskOutcome(
+            counts={"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0},
+            zero_rule_groups=(),
+        )
 
     raw_obs = [o for o in all_obs if o.qc_status == QcStatus.RAW]
     if not raw_obs:
-        return {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
+        return QcTaskOutcome(
+            counts={"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0},
+            zero_rule_groups=(),
+        )
 
     raw_ids = {o.id for o in raw_obs}
 
@@ -359,18 +455,31 @@ def _run_qc_task(
         qc_observations, qc_rules, skipped_rule_ids=obs_skipped_rules(parameter, datum)
     )
     unresolved = {key for key, (_, n_rules) in selection.items() if n_rules == 0}
-    for station_key, parameter_key in unresolved:
+    # Plan 318 T1: the same facts the warning carries, kept as VALUES so they
+    # can reach a health record. Before this they existed only inside the log
+    # call and the record could not be written at all.
+    zero_rule_groups: list[ZeroRuleGroup] = []
+    ordered = sorted(unresolved, key=lambda k: (str(k[0]), k[1]))
+    for station_key, parameter_key in ordered:
         inferred, _ = selection[(station_key, parameter_key)]
+        reason: Literal["no_cadence_inferable", "no_rule_declares_it"] = (
+            "no_cadence_inferable" if inferred is None else "no_rule_declares_it"
+        )
+        seconds = inferred.total_seconds() if inferred is not None else None
+        zero_rule_groups.append(
+            ZeroRuleGroup(
+                station_id=station_key,
+                parameter=parameter_key,
+                inferred_time_step_seconds=seconds,
+                reason=reason,
+            )
+        )
         log.warning(
             "qc.no_rules_selected",
             station_id=str(station_key),
             parameter=parameter_key,
-            inferred_time_step_seconds=(
-                inferred.total_seconds() if inferred is not None else None
-            ),
-            reason=(
-                "no_cadence_inferable" if inferred is None else "no_rule_declares_it"
-            ),
+            inferred_time_step_seconds=seconds,
+            reason=reason,
             outcome="qc_unchecked",
         )
 
@@ -409,7 +518,7 @@ def _run_qc_task(
         else:
             counts["suspect"] += 1
 
-    return counts
+    return QcTaskOutcome(counts=counts, zero_rule_groups=tuple(zero_rule_groups))
 
 
 def _component_eligible(cfg: StationConfig | None) -> bool:
@@ -759,6 +868,9 @@ def ingest_observations_flow(
     }
 
     totals = {"passed": 0, "failed": 0, "suspect": 0, "unchecked": 0}
+    # Plan 318 T1: accumulated across every (station, parameter) so the run
+    # writes ONE record carrying all of them, not one record per group.
+    zero_rule_groups: list[ZeroRuleGroup] = []
     errors: list[str] = []
     qc_failed_station_ids: set[StationId] = set()
     dhm_station_ids = {
@@ -790,10 +902,11 @@ def ingest_observations_flow(
                 context_window_hours=context_window_hours,
                 fetched_times=tuple(recovered_times.get((station_id, parameter), ())),
             )
-            totals["passed"] += counts["passed"]
-            totals["failed"] += counts["failed"]
-            totals["suspect"] += counts["suspect"]
-            totals["unchecked"] += counts["unchecked"]
+            totals["passed"] += counts.counts["passed"]
+            totals["failed"] += counts.counts["failed"]
+            totals["suspect"] += counts.counts["suspect"]
+            totals["unchecked"] += counts.counts["unchecked"]
+            zero_rule_groups.extend(counts.zero_rule_groups)
         except Exception as exc:
             log.warning(
                 "ingest.qc_failed",
@@ -810,6 +923,17 @@ def ingest_observations_flow(
         failed=totals["failed"],
         suspect=totals["suspect"],
         unchecked=totals["unchecked"],
+    )
+
+    # Plan 318 T1: one record for the whole run, and ONLY when the condition
+    # occurred. The absence of a record is the healthy signal the T2 probe
+    # reads, which is why this is not written unconditionally like the fetch
+    # record above.
+    _append_zero_rule_health_record(
+        pipeline_health_store,
+        checked_at=now,
+        groups=tuple(zero_rule_groups),
+        totals=totals,
     )
 
     # --- Step 2.5: Calculated-station derivation (Plan 015) ---
