@@ -41,8 +41,8 @@ That is the state of the table today.
 
 `docs/standards/wmo.md` on `origin/main`, 2026-09-24.
 
-1. 🔴 **Eleven compliance rows. NONE cites a clause, section or page.** Every one points at a
-   publication:
+1. 🔴 **Eleven compliance rows — 4 verified, 1 specified, 6 deferred. NONE cites a chapter,
+   clause or page.** Every one points at a publication or a framework:
 
    | reference as written | rows |
    |---|---|
@@ -52,7 +52,9 @@ That is the state of the table today.
    | `WMO-1254 Tier 2/3` | 1 |
    | `WMO-1150` / `WMO-1109` / `WMO-1192` / `WHOS` | 4 (bare publication) |
 
-   Three carry a topical hint; **none is locatable.** ⚠️ `WMO-168 Vol I` is a volume of the *Guide
+   Three carry a topical hint; **none is locatable.** ⚠️ `WHOS` is a system, not a numbered
+   publication, so its row needs a different kind of reference than the rest. ⚠️ A further prose
+   claim sits **outside** this eleven-row table and is not counted here. ⚠️ `WMO-168 Vol I` is a volume of the *Guide
    to Hydrological Practices* — a few hundred pages. Four of our eleven claims rest on it.
 2. **The standing rule covers only our side.** Plan 253 T4c, at the head of the same section:
    a row is *Verified* only on *"evidence from the running system or a named, runnable test —
@@ -115,61 +117,88 @@ and the owner answers it then, against a real list rather than a hypothetical.
 
 ## Tasks
 
-### T1 — Say what the table currently is (D1c)
+### T1 — Say what the table currently is
 
-**Outcome.** No reader mistakes a publication-level assertion for a located requirement.
+**Outcome.** No reader mistakes a publication-level assertion for a located requirement — and the
+document's evidence rule covers **both halves** of a compliance claim instead of one.
+
+🔴 **The two halves are INDEPENDENT axes and T1 must keep them apart.** A row's *code* status (does
+our code do X, and how do we know) and its *WMO reference* status (where does WMO ask for X) are
+different questions with different evidence. ⛔ *Conflating them is how the first draft of this task
+broke the existing rule — see Out.*
 
 **In.**
-- Each of the eleven rows' WMO reference marked as **publication-level, requirement not yet
-  located** — a single consistent marker, not eleven phrasings.
-- The standing rule at the head of the section extended to cover **both halves**: a row is
-  *Verified* only when the requirement is cited to a clause AND the code evidence is a named,
-  runnable test. ⭐ *This is the durable deliverable; the citations are the backlog it creates.*
-- A line stating that the marker is a statement about **our evidence**, not about WMO — ⛔ *nothing
-  here says the standards are unclear or that we fail to conform.*
+- **Every row carries a WMO-reference status** — the chapter, or the marker *"publication-level;
+  chapter not located"*. One consistent marker, not eleven phrasings.
+  🔴 **Every row, regardless of its code status.** The table holds **4 verified, 1 specified and 6
+  deferred** rows. ⛔ *A rule that bites only on `Verified` leaves 7 rows carrying no obligation at
+  all, and the deferred rows make exactly the same WMO claim.*
+- The standing rule extended with a **second, independent requirement**: a row states its WMO
+  reference status as well as its code evidence. ⭐ *This is the durable deliverable; the chapters
+  are the backlog it creates.*
+- A line stating that the marker describes **our evidence**, not WMO — ⛔ *nothing here says the
+  standards are unclear or that we fail to conform.*
 
-**Out.** ⛔ Any change to what a row claims about our code. ⛔ Deleting or downgrading any row —
-that is D3, after T2 establishes whether the clause exists. ⛔ The § 2 inventory.
+**Out.**
+- ⛔ **ANY change to the existing code-evidence rule.** It accepts *a named runnable command* **or**
+  *a recorded live query with its result and date*. ⛔ *The first draft of this task rewrote it as
+  "a named, runnable test", silently deleting the live-query alternative — a real rule, quietly
+  narrowed while claiming only to extend it.*
+- ⛔ Changing any row's *Verified* status, or its date. A row verified on code evidence **stays
+  verified**; it simply also states that its WMO reference is not yet located.
+- ⛔ Deleting or downgrading any row — that is D3, after T2 reports.
+- ⛔ The § 2 inventory. ⛔ The separate prose claim outside the eleven-row table.
 
 **Pre-change.** N/A — documentation.
 
-**Verification.** Every row carries the marker or a clause, with none silently in between. ⭐ The
-extended standing rule, applied to the table as it stands, would mark all eleven — asserted by
-reading it, because a rule that the current table already passes has changed nothing.
+**Verification.**
+- All eleven rows carry a WMO-reference status; none is silently in between.
+- 🔴 **The extended rule, read against the table as it stands, demands a marker on all ELEVEN** —
+  not on the four `Verified` ones. ⛔ *Checked by reading the rule's own wording, because a rule the
+  current table already satisfies has changed nothing, and manually marking eleven rows does not
+  prove the rule requires eleven markers.*
+- The code-evidence rule is **byte-identical** to before, both alternatives intact — asserted by
+  diff, because this is the one way T1 can do damage.
 
-### T2 — Locate and cite the requirements (D1, D2)
+### T2 — Locate and cite the chapters (D1, D2) — LOW PRIORITY
 
-**Outcome.** Each row in D2's scope cites the clause, section or page it rests on, with the
-sentence that carries the requirement.
+**Outcome.** Each row in D2's scope names the publication, a working URL and the chapter its claim
+rests on.
 
 **In.**
-- Per row: **publication number, a working URL, and the chapter** — with the chapter's TITLE, so a
-  wrong chapter is visible without opening the PDF (D1). ⛔ *Not clause or page: the owner ruled that
-  out, and pursuing it would slow T2 for precision nobody asked for.*
-- 🔴 **Whatever was NOT found, reported as a finding** — per row, what was searched and what came
-  back. ⛔ *A row quietly left publication-level is indistinguishable from one nobody reached.*
-- Each located row's *Verified* date restamped to when the clause was read.
+- Per row: **publication number, a working URL, and the chapter — with the chapter's TITLE**, so a
+  wrong chapter is visible without opening the PDF (D1). ⛔ *Not clause, section or page: the owner
+  ruled that out, and pursuing it would slow T2 for precision nobody asked for.*
+- 🔴 **Whatever was NOT found, reported per row** — what was searched, and what came back.
+  ⛔ *A row quietly left publication-level is indistinguishable from one nobody reached.*
+  ⚠️ **"I could not retrieve the PDF" and "the chapter does not exist" are different findings** and
+  must be reported as such — T3 branches on the difference.
+- Each located row's **WMO-reference status** updated from the marker to the chapter.
 
-**Out.** ⛔ Inventing a locator from a plausible chapter title. ⛔ Citing a secondary source
-(a textbook, another agency's guidance) as though it were the WMO requirement. ⛔ Changing our code
-to match a requirement discovered here — if a gap appears, it is a finding and a new plan.
+**Out.**
+- ⛔ **Touching a row's *Verified* status or its date.** Those record CODE evidence. ⛔ *The first
+  draft restamped the Verified date when the WMO reference was read, which would have made a code
+  claim look freshly checked because someone opened a PDF.*
+- ⛔ Inventing a locator from a plausible chapter title. ⛔ Citing a secondary source as though it
+  were the WMO requirement. ⛔ Changing our code to match a requirement found here — that is a
+  finding and a new plan.
 
 **Pre-change.** N/A — research.
 
 **Verification.** ⭐ **A reader can open the URL, turn to the named chapter, and find the subject
-there.** The chapter title is what makes a wrong locator visible on the page rather than only to
-someone who reads the whole volume. ⚠️ Anything weaker is a topical hint, and § (1) shows we already
-have three of those.
+there.** The chapter title is what makes a wrong locator visible on the page. ⚠️ Anything weaker is
+a topical hint, and § (1) shows we already have three of those.
 
-### T3 — Resolve the rows with no locatable requirement (D3)
+### T3 — Resolve the rows with no locatable chapter (D3) — LOW PRIORITY
 
 **Outcome.** Every row is conformance, alignment, or gone — none is an unqualified claim nobody can
 check.
 
 **In.** D3's choice applied to T2's not-found list, one row at a time, each with its reason.
 
-**Out.** ⛔ Running before T2 reports. ⛔ Treating "I could not retrieve the PDF" as "no requirement
-exists" — those are different findings and T2 must distinguish them.
+**Out.** ⛔ Running before T2 reports. ⛔ Treating *"I could not retrieve the PDF"* as *"no
+requirement exists"* — T2 reports them separately and only the second reaches D3; the first is a
+retrieval failure to retry. ⛔ Changing any row's code-evidence status or date.
 
 **Pre-change.** N/A.
 
@@ -195,3 +224,23 @@ exists" — those are different findings and T2 must distinguish them.
   ]
 }
 ```
+
+## Changelog
+
+**2026-09-24 — created**, from the owner's observation that fixing a compliance row's CODE citations
+left its WMO half as imprecise as ever. **Reviewed the same day: NEEDS CHANGES, 3 medium — all
+three in T1/T2's operative text, all three now applied there rather than appended.**
+
+| finding | what was wrong | where it now lives |
+|---|---|---|
+| the extended rule narrowed an existing one | T1 rewrote the code-evidence rule as *"a named, runnable test"*, **silently deleting its *"or a recorded live query with its result and date"* alternative** | T1's Out forbids touching that rule at all; a diff assertion guards it |
+| the rule would not mark eleven rows | it bit only on rows moving to *Verified* — **4 of 11** — leaving the 1 specified and 6 deferred rows, which make the same WMO claim, with no obligation | T1 requires a WMO-reference status on **every** row regardless of code status, on an independent axis |
+| WMO research changed code evidence | T2 restamped a row's *Verified* date when its WMO reference was read, making a **code** claim look freshly checked because someone opened a PDF | T2's Out forbids touching *Verified* or its date; the two axes are separate throughout |
+
+⚠️ Also corrected: the row breakdown (**4 verified / 1 specified / 6 deferred**), that `WHOS` is a
+system rather than a numbered publication and needs a different kind of reference, and that a
+further prose claim sits outside the eleven-row table.
+
+⭐ **The shape of all three: I extended a rule and did not check what the existing rule already
+said.** Same class as the plan's own subject — a claim asserted without opening the document it
+rests on.

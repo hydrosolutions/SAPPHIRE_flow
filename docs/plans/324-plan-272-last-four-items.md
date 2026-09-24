@@ -53,18 +53,27 @@ Verified against `origin/main` on 2026-09-24. Commands are given so a reviewer c
    `qc_datum.py` is byte-identical to its pre-#297 state. ⇒ **a verdict produced by the new
    selection logic is indistinguishable from one produced by the old**, which is the property
    272 T2b's verification clause asked for.
-3. ✅ **Bumping is safe — nothing compares the value.** `qc_rule_version` is written and stored and
-   never read back for a decision: `grep -rn qc_rule_version src/` returns only the dataclass field
-   (`types/observation.py:43`), the column (`db/metadata.py:536`), the two write sites
-   (`flows/ingest_observations.py:487`, `services/onboarding.py:810`), the producer
-   (`services/qc_datum.py:23`) and store plumbing. **No equality test, no filter, no branch.**
+3. ✅ **Bumping is safe — no PRODUCTION DECISION compares the value.** ⚠️ *The first draft said
+   "nothing compares it". Tests do — store round-trip and preservation tests, and
+   `test_ingest_observations_recheck.py:267`. The safety conclusion survives; the wording did not.*
+   Searches across `src/`, `tests/`, `scripts/`, `alembic/` and SQL find **no branch, filter or
+   equality test in production code**. The write sites are `flows/ingest_observations.py:533`,
+   `services/onboarding.py:824`, and — ⛔ **omitted from the first draft** — the derived-observation
+   writes at `flows/ingest_observations.py:687` and
+   `services/calculated_station_onboarding.py:355`.
 4. ⛔ **THE TRAP: there are TWO `_RULE_VERSION = "1.0"` constants.** `services/qc.py:22` is
    observation QC and in scope; **`services/forecast_qc.py:22` is FORECAST QC and is NOT**. A
    blanket edit or a careless `sed` hits both and silently re-versions every forecast QC flag.
-5. **Two tests assert the datum versions by exact value** — `tests/unit/flows/test_ingest_observations.py:344`
-   (`== "1.1-datum"`) and `:370` (`== "1.1-datum-skip"`). They move with the bump.
-   ⚠️ **This list came from one grep pattern and is therefore a starting point, not an inventory** —
-   see D1 and T2's In.
+5. **THREE tests assert versions by exact value** in `tests/unit/flows/test_ingest_observations.py`:
+   `:352` (`"1.1-datum"`), `:385` (`"1.1-datum-skip"`) and `:456`. ⛔ *The first draft said two, at
+   `:344`/`:370` — quoted from one grep without re-reading the file, which is the exact habit D1
+   exists to stop. Corrected here rather than noted below.*
+   🔴 **A FOURTH literal exists and is easy to miss: the stored version for non-water-level
+   parameters comes from `services/qc_datum.py:25`, not from `qc.py`'s `_RULE_VERSION`.** Bumping
+   three and not the fourth leaves discharge rows on the old value.
+   ⚠️ **Not every old-value assertion moves.** `test_ingest_observations_recheck.py:250-268`
+   deliberately seeds `"1.0"` to prove already-passed rows are left untouched — that is **evidence
+   and must survive**. See T2's In.
 6. **Plan 264 carries a false premise about live code.** `docs/plans/264-...md:252-262` states that
    *"`_infer_time_step` returns one hour for fewer than two rows (`services/qc.py:40-47`)"*. That
    branch was **deleted** by 272: the function is now `infer_time_step` at `:40-61` and returns
@@ -80,9 +89,11 @@ Verified against `origin/main` on 2026-09-24. Commands are given so a reviewer c
 8. ⚠️ **The bump interacts with an OPEN, UNOWNED question in Plan 314.** `314:98` asks whether
    T0's never-implemented `-norules` sentinel *"is superseded by the status, or still owed"*, and
    records that after 314's rollback statement the rewritten rows become indistinguishable again.
-   A version bump changes what such a revert could identify afterwards. ⛔ **This plan does not
-   answer 314's question** — it must not silently foreclose it either, so T2 records the
-   interaction where 314's reader will meet it.
+   ⚠️ **But a bump labels a GENERATION GOING FORWARD and nothing more.** ⛔ It cannot retrospectively
+   separate rows already stored under post-272 logic from pre-272 rows — they share a label — and
+   after 314's status rewrite it cannot recover which rows were formerly unchecked either. ⇒ **This
+   plan does not answer 314's question and does not weaken it**; T2 records both limits where 314's
+   reader will meet them.
 
 ## Owner decisions
 
@@ -110,64 +121,90 @@ size, and a reviewer must accept a measured count rather than a checklist.
 **Outcome.** The WMO-168 row cites the code it claims to evidence.
 
 **In.**
-- `docs/standards/wmo.md:187`: `:50` → **`:103`**, `:71` → **`:124`**, `:225` → **`:281`**, and the
-  *Verified* date restamped to the date the check is actually re-run.
+- `docs/standards/wmo.md:187`: the three `services/qc.py` anchors repointed at
+  `_apply_range_check`, `_apply_rate_of_change` and `Stage1QualityChecker`, **read from the tree
+  after T2 has run**, and the *Verified* date restamped to the day the check is re-run.
+  ⛔ *The numbers in § (1) (`:103`, `:124`, `:281`) were measured BEFORE T2 inserts its comment
+  beside the constants, which shifts every line below it. Copying them is the defect this plan
+  exists to fix, committed by the plan itself.*
 - 🔴 **Re-verify every OTHER `services/qc.py` line citation in that file at the same time.** § (1)
   is one row; 272's whole point was that this class hides. ⛔ *Do not fix only the row this plan
   names.*
 
 **Out.** ⛔ Any change to what the row CLAIMS about WMO compliance — the claim is unchanged, only
-its citations were wrong. ⛔ Other standards documents.
+its citations into OUR CODE were wrong. ⛔ **Where the row points into the WMO publication** — that
+is Plan 325, which found that none of the eleven compliance rows cites a chapter at all.
+⛔ Other standards documents.
 
-**Pre-change.** N/A — documentation. ⚠️ *But the line numbers must be read from the tree at
-implementation time, not copied from § (1): this plan's own numbers go stale the moment `qc.py`
-changes.*
+**Pre-change.** N/A — documentation. 🔴 **T1 RUNS AFTER T2** — see the phase graph. That is not a
+preference: T2 edits `qc.py`, so anchors read before it are wrong by construction.
 
 **Verification.** Each cited line, opened in the tree, contains the symbol the row names. ⭐ Stated
 as an operation a reviewer performs, not as a claim the implementer makes.
 
 ### T2 — Bump the observation QC rule version (audit item 2)
 
-**Outcome.** A verdict produced by the post-272 selection logic is distinguishable, by stored value,
-from one produced before it.
+**Outcome.** Observation QC verdicts written **from this bump onward** carry a version that
+identifies the post-272 generation.
+
+🔴 **What this does NOT do, stated in the Outcome because it was overclaimed once:** it does **not**
+retrospectively separate rows already stored under post-272 logic from pre-272 rows — they keep the
+same label — and after Plan 314's status rewrite it does **not** recover which rows were formerly
+unchecked. ⛔ *The bump is a forward generation label, not a provenance repair.*
 
 **In.**
-- `services/qc.py:22` and `services/qc_datum.py:18-19` bumped to the next version, the three moving
-  together so a row's version identifies one logic generation.
-- Every site carrying an old value by literal, found by a **value sweep** (D1a) rather than from
-  § (5)'s list — at least `tests/unit/flows/test_ingest_observations.py:344,370`.
-- A line beside the constants saying what the bump marks, so the next reader knows what changed.
-- ⚠️ **A note in Plan 314 beside `:98`** recording that the bump gives its open question a new fact:
-  post-bump rows are identifiable by version as well as by status (§ 8). ⛔ *Recording only — this
-  plan does not answer 314's question.*
+- **All FOUR literals** moved together (§ 5): `services/qc.py:22`, `services/qc_datum.py:18`, `:19`
+  and the non-water-level value at **`qc_datum.py:25`**.
+- The **current-generation expectations** updated to match — the three assertions at
+  `test_ingest_observations.py:352`, `:385`, `:456`.
+  ⛔ **NOT "every site carrying an old value".** A test that deliberately seeds an old version to
+  prove historical rows are untouched — `test_ingest_observations_recheck.py:250-268` — is
+  **evidence and must survive**. ⇒ The implementer states, per site found, whether it is a
+  current-generation expectation (update) or a historical fixture (keep).
+- A line beside the constants saying what the bump marks.
+- A note in Plan 314 beside `:98` recording that post-bump rows carry a generation label —
+  **together with both limits from the Outcome**, so it cannot be read as answering 314's sentinel
+  question.
 
-**Out.** ⛔ **`services/forecast_qc.py` — the other `_RULE_VERSION`** (§ 4). ⛔ Rewriting any stored
-row. ⛔ Any change to QC behaviour: this changes a label, nothing else. ⛔ Answering 314's sentinel
-question.
+**Out.** ⛔ **`services/forecast_qc.py`** (§ 4). ⛔ Rewriting any stored row. ⛔ Any change to QC
+behaviour. ⛔ Answering 314's sentinel question. ⛔ Touching historical-version fixtures.
+⛔ **Conflating the three different things called a version**: `QcFlag.rule_version`, the
+rule-definition version, and the stored `Observation.qc_rule_version`. Frozen-sensor flags
+deliberately carry the rule's own version (`qc.py:196`).
 
 **Pre-change.** A test asserting the DESIRED behaviour: **an observation checked by the current code
-carries the new version**, which fails today because the constant still reads the old one.
-⚠️ It must fail on the version value, not on a missing symbol.
+carries the new version**. Written by changing an existing flow assertion to the new literal before
+the production change, so it fails on the VALUE, not on a missing symbol. Cover the ordinary, datum
+and datum-skip paths — they come from different literals.
 
 **Verification.**
-- The new value is what the ingest path stores, asserted through the flow rather than by reading the
-  constant.
-- 🔴 **`services/forecast_qc.py:22` is UNCHANGED** — asserted, because § (4) is the one way this task
-  can do damage and nothing else would catch it.
-- No test asserts an old value anywhere (the value sweep's result, reported as a count).
+- The new value is what the ingest path stores on each of the three paths, asserted through the
+  flow, not by reading the constant.
+- 🔴 **Forecast QC is untouched**, asserted behaviourally: trigger one forecast QC failure, assert
+  **exactly one** flag, and assert that flag's `rule_version` is still `"1.0"`. ⛔ *Not "the file is
+  unchanged" — that is a diff check, not a test — and not an `all(...)` over possibly-empty flags,
+  which passes vacuously on zero flags.*
+- Every **current-generation** expectation carries the new value, and every historical fixture still
+  carries its old one. Reported as two counts, not one.
 
 ### T3 — Record Plan 264's cross-plan debt (audit item 3)
 
 **Outcome.** A reader of Plan 264 is not sent to implement a superseded design against a deleted
 branch.
 
-**In.** At `264:252-262`: that `_infer_time_step`'s under-two-rows fallback **no longer exists**
-(now `infer_time_step` → `timedelta | None`), and that T3's **raise** was replaced by 272 D2's
-`QC_UNCHECKED` status. ⛔ *Correct the text in place — a note appended beneath wrong text leaves the
-contradiction standing, which this repo has already paid three review rounds for.*
+**In.** 🔴 **The WHOLE of Plan 264's T3 contract — `:252` through `:289`, its In and its
+Verification included.** ⛔ *The first draft bounded this to `:252-262`, which would have left
+executable instructions to raise standing at `:281-289` beneath a corrected introduction — the
+"corrected note above wrong text" failure this repo has already paid three review rounds for, and
+which this very plan then committed in its own first fold.*
 
-**Out.** ⛔ Re-scoping Plan 264, changing its status, or closing its decisions. This records a debt;
-264 remains its owner's.
+Record: that `_infer_time_step`'s under-two-rows fallback **no longer exists** (now
+`infer_time_step` → `timedelta | None`), and that T3's **raise** was replaced by 272 D2's
+`QC_UNCHECKED` status. ⛔ **Correct the text in place**, including the verification clauses that
+would otherwise still instruct someone to assert a raise.
+
+**Out.** ⛔ Re-scoping Plan 264, changing its status, or closing its decisions. ⛔ **Its network-
+dimension decisions**, which 272 did not touch. This records a debt; 264 remains its owner's.
 
 **Pre-change.** N/A — documentation.
 
@@ -212,79 +249,28 @@ The code change (T2) and the record corrections (T1/T3/T4) go in **one PR**, aga
 are the *evidence* for the version bump, and splitting them would put the reviewer's two halves in
 different places. The owner merges, as always.
 
-```json
-{
-  "phases": [
-    {"phase": 1, "tasks": ["T1", "T3"], "parallel": true},
-    {"phase": 2, "tasks": ["T2"], "parallel": false},
-    {"phase": 3, "tasks": ["T4"], "parallel": false,
-     "note": "last, because T4 must report what the earlier tasks actually closed"}
-  ]
-}
-```
 
 ---
 
-## 🔴 Independent review, 2026-09-24 — **NEEDS CHANGES: 4 medium, 1 low.** Folded below.
+## Changelog
 
-### M3 — the phase order re-stales the citations T1 just fixed. ⭐ The best catch.
+**2026-09-24 — reviewed twice.** Round 1: NEEDS CHANGES, 4 medium + 1 low. Round 2, on the fold:
+**NEEDS CHANGES again — every finding was acknowledged in an appended section while the operative
+task text still said the old thing.** ⛔ *That is the "corrected note above wrong text" failure this
+repo has already booked, committed here by the fold that was supposed to fix it. The appended
+section has been deleted and the findings applied where the implementer actually reads:*
 
-T2 inserts a comment beside the constants in `services/qc.py`, which **shifts every line number
-below it** — including the ones T1 has just corrected in the WMO row. ⛔ *A plan whose entire
-subject is stale line anchors would have created stale line anchors.*
+| finding | where it now lives |
+|---|---|
+| **M3** T2's comment shifts the lines T1 cites | the single phase graph (T2 first), and T1's Pre-change states it is not a preference. The superseded graph is **deleted**, not left alongside. |
+| **M1** the sweep would destroy historical fixtures | T2's In distinguishes current-generation expectations from historical evidence, per site; § (5) names the surviving fixture |
+| **M2** the bump cannot repair provenance | T2's **Outcome** states both limits; § (8) narrowed |
+| **M4** 264's raise contract runs to `:289` | T3's In covers `:252-289` including its Verification |
+| **L1** stale anchors, loose claim 3 | § (3) and § (5) corrected in place — three assertions at `:352`/`:385`/`:456`, a **fourth literal** at `qc_datum.py:25`, and "no production decision compares it" |
 
-⇒ **The phase graph is corrected: T2 runs FIRST, then T1 against the final tree**, then T3, then T4.
-T1's In already says to read the numbers from the tree at implementation time; the ordering now
-makes that possible rather than merely instructed.
-
-### M1 — T2's sweep as written would destroy legitimate tests.
-
-"Every site carrying an old value" and "no test asserts an old value anywhere" are too broad:
-`tests/unit/flows/test_ingest_observations_recheck.py:250-268` **deliberately** seeds `"1.0"` to
-prove already-passed rows are left untouched. ⇒ **The sweep updates current-generation producers and
-their expectations only. A test asserting a historical value is evidence and must survive** — the
-implementer states, per site, which it is.
-
-### M2 — the bump's provenance claim was overstated.
-
-A version bump labels a **generation going forward**. ⛔ It does **not** retrospectively distinguish
-rows already stored under post-272 logic from pre-272 rows — they share a label — and after Plan
-314's status rewrite it cannot distinguish a formerly-unchecked row from a genuinely passed one
-either. ⇒ Both limits are stated in T2's Outcome and in the Plan 314 note, so the note does not read
-as an answer to 314's sentinel question. § (8) is narrowed accordingly.
-
-### M4 — T3's edit boundary stops short of the contradiction.
-
-Plan 264's superseded raise contract continues to **`:263-289`**, including its In and Verification
-clauses — editing only `:252-262` leaves executable instructions to raise standing beneath a
-corrected introduction. ⛔ *Exactly the "corrected note above wrong text" failure this repo has
-already paid three review rounds for.* ⇒ T3's In covers the whole affected T3 contract, while
-leaving 264's unrelated network decisions alone.
-
-### L1 — my own anchors were stale, and claim (3) was loose.
-
-- The datum assertions are at **`:352`/`:385`**, not `:344`/`:370`, and there is a **third**
-  assertion at `:456`. ⚠️ *Measured from one grep, quoted without re-reading — the very habit D1
-  exists to stop.*
-- Claim (3) said "nothing compares `qc_rule_version`". Precisely: **no production decision** compares
-  it; **tests do**, including store round-trip and preservation tests. The runtime-safety conclusion
-  stands; the wording did not.
-- The write-site inventory omitted the derived-observation writes at `ingest_observations.py:687`
-  and `calculated_station_onboarding.py:355`.
-
-### Two more traps the review named, now in T2's Out
-
-- **The stored non-water-level version comes from `qc_datum.py:25`, not `qc.py`'s `_RULE_VERSION`.**
-  There is a **fourth** literal, and naming only three would leave discharge rows on the old value.
-- ⛔ **`QcFlag.rule_version`, the rule-definition version and the stored
-  `Observation.qc_rule_version` are three different things** — frozen-sensor flags deliberately
-  carry the rule's own version (`qc.py:196`). Conflating them is how a bump leaks into flag data.
-
-### T2's forecast-QC guard, reworded
-
-"Assert `forecast_qc.py` is unchanged" is a **diff** check, not a unit test, and an `all(...)` over
-possibly-empty flags is vacuous. ⇒ The guard triggers a forecast QC failure, asserts exactly one
-flag, and asserts that flag's `rule_version` is still `"1.0"`.
+⚠️ **Two defects the second round found in the fold itself:** the forecast-QC guard as first written
+required asserting `"1.0"`, contradicting the same task's sweep; and the plan carried **two phase
+graphs** saying opposite things.
 
 ## ⚖️ Scope narrowed by the owner, 2026-09-24
 
