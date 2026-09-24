@@ -1,12 +1,13 @@
 ---
 status: DRAFT
 created: 2026-09-21
+revised: 2026-09-24
 plan: 311
 title: Past and future inputs are contiguous only at the midnight cycle — 3 of 4 scheduled cycles leave a one-day hole
 scope: Decide whether the issue day must appear in a daily model's inputs at a non-midnight cycle, and if so, close the gap between `past_targets`/`past_dynamic` (which end before the issue day) and `future_dynamic` (which begins after it). Explicitly NOT changing either window's own rule — both are individually correct — NOT the aggregation fix (that is the Plan 262 T3b follow-up), NOT the forecast schedule itself, NOT sub-daily models, NOT the NWP ingest or archive.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2]  # D1 narrowed by T1, see the T1 record
+open_decisions: [D1, D2]  # D1 narrowed by T1; a closure for BOTH is drafted at the foot of this plan and awaits the owner
 source: 2026-09-21 — observed in the Plan 262 T3b live-input gate on the mac-mini at v0.1.944, then reproduced locally by computing the seam with the real functions (`aligned_lookback_bounds` and the future path's `valid_time >= issue_time` rule) at each scheduled cycle. Line anchors verified against `main` at `62ac7b9c`.
 ---
 
@@ -195,3 +196,72 @@ counts the missing day while no row exists to fill it.
 - The residual question is narrower and no longer blocking: *how much does a one-day elision at the
   seam degrade a 30-day-lookback CMAL?* That is a modelling question for the modeller, with
   evidence, not a correctness question about SAP3.
+
+---
+
+## ⚖️ Decision closure — DRAFTED 2026-09-24, **awaiting the owner's confirmation**
+
+⛔ **Not yet the owner's words.** This is the closure T1's measurement earns, written out so the
+owner can confirm or correct it in one reading. Until they do, `open_decisions` stays as it is and
+`blocks: [262]` stands. ⚠️ *The orchestrator may set a plan READY; it may not close an owner
+decision. This section is a proposal, not an authority.*
+
+### D1 — proposed: **(a) now, and (d) is what T1 actually established.**
+
+T1 answered the question the options were written before: the model reconciles past and future on a
+**date key** and takes its output timestamps from the real date index, so the D+1→D shift this plan
+was opened to rule out does not occur. That is option (d)'s precondition — *"only valid if T1 shows
+the model is timestamp-aware"* — and it holds.
+
+⇒ **The labels are safe at every cycle.** But (d)'s own wording, *"merely a shorter horizon"*, is
+**withdrawn by T1's second finding**: `cmal_small` is `daily_only`, `_regrid_basin` never runs, so
+the daily tensor slice is positional and a missing date leaves the neighbouring rows physically
+adjacent. The recurrence integrates a sequence with one day elided while the dates beside it stay
+true. Nothing is mislabelled; the dynamics are compressed at the seam.
+
+⇒ **Therefore (a) for the pilot — not as a dodge, as the only option with zero exposure.** The
+00:00Z cycle is already seam-continuous, so the first real forecast meets none of this, and the
+residual can then be judged against real output rather than against source.
+
+**What this obliges, concretely:**
+- **Plan 262 T5 must name the 00:00Z cycle** and say why. Its In today says only *"the first cycle
+  following T3b's gated live activation"*, which at three cycles in four is the exposed case. ⇒ a
+  one-line amendment to 262, carried with this closure.
+- ⚠️ **The restriction must be OPERATIONAL, not merely written.** ⛔ *An instruction to observe the
+  midnight cycle does not stop the other three running.* If the pilot's assignment is live, the
+  other cycles will fire. Whether that is acceptable — they are label-safe, only dynamics-compressed
+  — or whether the assignment must be gated to one cycle is **the part of D1 the owner must settle**,
+  because it is the difference between a note and a code change.
+
+### D2 — proposed: **scoped to the Swiss pilot; Nepal does not inherit it.**
+
+The elision arises from a **daily** model issued off midnight. Nepal's forcing is hourly, which is
+precisely what lets any issue phase be honoured there (recorded under the modeller's confirmed
+conventions: daily = local per basin, sub-daily = UTC). A seam fix shaped for a Swiss daily model
+would therefore be designed against a constraint Nepal does not have.
+
+⇒ **Do not anticipate Nepal here.** ⚠️ **But do not read that as "Nepal is fine" either** — nobody
+has measured the Nepal seam, and Plans 252/254/258 still hold the target cadence open. The honest
+statement is *unexamined*, not *safe*, and this closure records it as such rather than implying
+clearance.
+
+### The residual, with a named carrier
+
+*How much does a one-day elision at the seam degrade a 30-day-lookback CMAL?* — a modelling
+question, to be answered **with evidence from real pilot output**, not from source.
+
+⚖️ **Proposed carrier: the modeller (Sandro), after 262 T5 produces output.** ⛔ *Named rather than
+left to "the modeller" in the abstract, because an unowned residual is how this reappears as a
+surprise.* The owner should confirm the carrier — routing work to a collaborator is theirs, not the
+orchestrator's.
+
+### What closing this unblocks
+
+`blocks: [262]` exists because *"the pilot should not go live on 3-of-4 cycles while T1 is
+unanswered"*. T1 is answered. ⇒ **On the owner's confirmation, `blocks: [262]` lifts** and Plan 262
+proceeds: re-register the import flow schema → T4 import → T3b gate and assign → T5 on the 00:00Z
+cycle.
+
+⛔ **This plan's T2 does not run.** T2 was conditional — *"only runs if T1 says it matters"* — and
+T1 says the correctness question it was written for does not exist. Closing D1 on (a) leaves T2
+unexecuted by design, not skipped.
