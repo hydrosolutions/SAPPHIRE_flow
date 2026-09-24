@@ -455,7 +455,7 @@ The configured daily rules are another exact match, not a sub-daily fallback.
 When the 600 s rules do match, omitting a datum only skips `range_check` and
 `gross_outlier`, not the Swiss rate/spike/frozen
 thresholds. [Plan 264](../264-qc-rules-select-on-network.md) owns network-aware QC
-selection and zero-match failure policy; [Plan 272](../272-qc-rules-unreachable-on-inferred-cadence.md)
+selection and zero-match failure policy; [Plan 272](272-qc-rules-unreachable-on-inferred-cadence.md)
 owns cadence reachability and must precede or land with 264's relevant activation.
 T3's DHM history-window extension touches `_run_qc_task`, also a candidate
 implementation site for Plan 272 T2/D1(b). It does not select or pre-empt Plan 272's

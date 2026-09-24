@@ -380,14 +380,20 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — v1 Nepal feature (B)
 
-- ⚠️ **PLAN NUMBER COLLISION, 2026-09-24 — `323` and `324` each name TWO different plans.**
-  On `main`: `323-hourly-stations-select-no-qc-rule.md` and
-  `archive/324-plan-272-last-four-items.md` (merged, #305). Uncommitted in another
-  session's working tree: `323-chwrr-alert-evaluation-and-decisions.md` and
-  `324-chwrr-evidence-archive-and-replay.md`, alongside 320–322. 🔑 **Plans are
-  cited by NUMBER, so distinct slugs do not disambiguate** — this is the 258
-  collision again. ⛔ Neither side should renumber the other unilaterally; the
-  merged pair is already cited from a PR and from Plan 272's closing note.
+- ✅ **Plan-number collision RESOLVED, 2026-09-24.** `323` and `324` briefly named two plans each;
+  the other session renumbered its series to **340–344**, so `323`/`324`/`325` are unambiguous.
+  🔑 *Kept as a note because plans are cited by NUMBER and the collision window produced commits and
+  a PR body — a citation written during it may still mean the other plan.*
+- ✅ **272 is COMPLETE and ARCHIVED** (2026-09-24) —
+  [archive/272-qc-rules-unreachable-on-inferred-cadence.md](archive/272-qc-rules-unreachable-on-inferred-cadence.md).
+  Behaviour shipped via 316/317/318, records repaired by 324, and its last three items closed on
+  evidence rather than carried: the DHM mask byte-identical test was **superseded** (the mirrored
+  implementation it guarded was deleted in favour of importing the production selector, and the
+  removed fallback could not have altered an hourly series anyway), the bounded inference fetch was
+  **superseded** by 323, and the severity-ranking gap is **unreachable** (a `QcFlag` cannot carry
+  `QC_UNCHECKED`, because that status means no rule ran and so no flag exists).
+  ⛔ *Plan 314's sentinel question is 314's, not 272's — a plan does not stay open because a
+  different plan has an open decision.*
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
   together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
   Plans 264/268/269/301/303/304/315 remain DRAFT.
