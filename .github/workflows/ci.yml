@@ -136,6 +136,16 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+          # Plan 319 turned this job into a FOUR-leg matrix, so what used to be
+          # one cold torch download per run is now four. Measured 2026-09-24 on
+          # a single run: three legs installed in 42-44s and the fourth took
+          # 312s and hit the 5-minute timeout; an earlier run had 41s/49s/196s.
+          # ⭐ The legs are NOT contending — one runner's fetch goes pathological
+          # now and then, and sharding simply gives that four chances per run
+          # instead of one. Caching takes the download off the critical path
+          # rather than widening the window we sit in waiting for it.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Install system deps for cfgrib / rioxarray / exactextract
         # A stalled acquisition here used to eat the whole 25-minute job budget
         # and surface as a test failure. Bounding it with apt's own transport
@@ -304,11 +314,20 @@ jobs:
       # shim's tests skip via importorskip and the aquacast boundary is
       # exercised on nobody's machine but the author's, a weak position for
       # code that will feed operational forecasts. It costs a torch download
-      # on this one job; every other job stays on the plain sync.
+      # on this job; every other job stays on the plain sync.
+      #
+      # ⛔ This used to read "on this ONE job". Plan 319 made the job a four-leg
+      # matrix and did not update it — the cost is paid once per LEG. The cache
+      # on setup-uv above is what keeps that from being four cold downloads.
       - name: Install (aquacast extra)
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
         run: uv sync --frozen --extra aquacast
-        timeout-minutes: 5  # PyPI + two private git repos
+        # 10, not 5: the measured install is ~42s, but the 2026-09-24 outlier
+        # took 312s and this step is the one that timed out. A backstop for a
+        # slow fetch, NOT the fix — the cache above is. ⛔ Do not raise it again
+        # to chase a hang; a genuinely stuck fetch should fail fast and legibly,
+        # which is the lesson the apt step above already records.
+        timeout-minutes: 10
       # D1 case 2 / D3 — token absent, Dependabot-actor run, uv.lock
       # untouched: degrade loudly instead of failing red. The plain sync
       # still runs everything else in tests/unit/; only the aquacast shim's
