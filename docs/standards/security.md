@@ -583,7 +583,9 @@ Every externally-pulled image is pinned by **manifest-list digest** (not per-pla
 `docker-compose.yml` / `ci.yml` (and, since, `restore-rehearsal.sh`) shows a **single-platform `linux/amd64`
 manifest, not a manifest list** — and Docker Hub confirms `postgis/postgis` has never published an arm64 image
 for **any** `16-3.4*` tag. So "the same pin works for both amd64 CI and arm64 Mac mini" does **not** hold for
-that pin today; the mac-mini's production Postgres container runs it under emulation.
+that pin today; the mac-mini's Postgres container runs it under emulation. *(⛔ Terminology
+corrected 2026-09-23: this said "production Postgres container". **There is no production
+deployment** — the mini is a test/staging host, see the README. The emulation fact is unchanged.)*
 
 **Owner decision (2026-08-18, same day, superseding an intermediate round of this fix):** an earlier round of
 `restore-rehearsal.sh` re-pinned to `imresamu/postgis:16-3.4@sha256:6da75969...` instead — verified
@@ -596,7 +598,8 @@ and this container's whole job is to hold a fully-restored production dump, incl
 access-token hashes, which is exactly the kind of container where introducing an additional, independently-less-
 audited vendor is not worth it just to buy native arm64 on the mini. `restore-rehearsal.sh` keeps the
 `RESTORE_IMAGE` override so anyone who wants a native-arm64 image locally can still opt in. Reconciling the
-`docker-compose.yml` / `ci.yml` pin itself (same emulation trade-off, already accepted in production) is out of
+`docker-compose.yml` / `ci.yml` pin itself (same emulation trade-off, already accepted on the
+staging host — ⛔ *this said "in production"; there is none*) is out of
 scope here — that pin was never changed by T5.
 
 Because this container holds a fully-restored, decrypted dump (including `access_tokens` — token hashes,

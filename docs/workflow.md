@@ -147,7 +147,19 @@ Security/auth, container privilege or secrets handling, data-loss or migration
 risk, external-facing contracts or APIs, live-database impact, Prefect scheduling,
 Docker entrypoints, ForecastInterface boundaries, user-visible behavior, scientific
 behavior with material operational consequences, and anything the owner flags are
-high risk. In addition to the ordinary pair, the owner commissions one relevant
+high risk.
+
+⛔ **A deployment being "live" is NOT by itself one of them.** There is no production deployment
+(see the README): every instance, the Swiss staging host included, is a sandbox that can be wiped
+and rebuilt, and its data is not used operationally. **"It runs against the live deployment" is
+not sufficient grounds to self-classify a plan as high-risk.** Owner ruling, 2026-09-10
+(`docs/plans/264-qc-rules-select-on-network.md` — *"the Swiss deployment is a sandbox, not
+production"*, that framing *"overstated"*), restated 2026-09-23.
+
+⚠️ **This narrows the argument, not the triggers.** Every trigger above still stands on its own
+merits, *user-visible behaviour and scientific behaviour included* — judge them by what the change
+actually does, and say so. Migrations, secrets, auth, external contracts and anything the owner
+flags remain high-risk regardless. In addition to the ordinary pair, the owner commissions one relevant
 independent review before the orchestrator sets a plan READY and again before opening its
 implementation PR. The prompts do not build or manage a panel.
 

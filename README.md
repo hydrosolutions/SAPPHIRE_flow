@@ -19,6 +19,29 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 
 🟢 **Active** – Developed & maintained by [hydrosolutions](https://github.com/hydrosolutions)
 
+> ### ⚠️ There is no production deployment of this system.
+>
+> **Every running instance is a development or test deployment**, including the Swiss one on the
+> staging host. It is a **sandbox: it can be wiped and rebuilt**, and its data is not used
+> operationally.
+>
+> ⛔ **Do not classify work as high-risk on the grounds that "it runs against the live
+> deployment".** Owner rulings:
+> [2026-09-10](docs/plans/264-qc-rules-select-on-network.md) (*"the Swiss deployment is a sandbox,
+> not production"*; that framing *"overstated"*) and 2026-09-23. The risk triggers in
+> [the workflow guide](docs/workflow.md) still apply on their own merits — a migration is still a
+> migration — but the deployment being live is not one of them.
+>
+> ⚠️ **Two qualifications, so this is not read wider than it is.** *(a)* Quality-control flags are
+> expected to be freely re-writable on the test deployment, but that is an **assumption pending
+> confirmation**, not a capability — see `docs/v1-scope.md` § QC posture point 6; today a changed
+> verdict cannot be undone. *(b)* One live consumer does exist: observation alerts are enabled on
+> the staging host, so fleet-wide changes must still be checked against that path.
+>
+> **When this stops applying** is a state, not a date: the stricter consumer policy begins when
+> quality control is fine-tuned, and operational use when the owner says the data has become
+> operational — neither is tied to the v1.0 release.
+
 ## Vision
 
 SAPPHIRE Flow turns public weather and river data into **operational, reviewable
