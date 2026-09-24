@@ -361,6 +361,42 @@ class TestAuditLogAppendOnlyHoldsForBothAppRoles:
         )
 
 
+class TestForecastEvidenceRoleGrants:
+    def test_worker_can_insert_blob(self, bootstrapped: _RoleBootstrapHarness) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert not bootstrapped.denied(
+            url,
+            "INSERT INTO forecast_evidence_blobs (sha256, payload, byte_length) "
+            "VALUES (repeat('a', 64), decode('', 'hex'), 0) "
+            "ON CONFLICT DO NOTHING",
+        )
+
+    @pytest.mark.parametrize(
+        "role,password",
+        (
+            ("sapphire_api", "api-pw-initial"),
+            ("sapphire_worker", "worker-pw-initial"),
+        ),
+    )
+    @pytest.mark.parametrize("table", ("forecast_evidence", "forecast_evidence_blobs"))
+    @pytest.mark.parametrize("action", ("UPDATE", "DELETE", "TRUNCATE"))
+    def test_service_roles_cannot_mutate_evidence(
+        self,
+        bootstrapped: _RoleBootstrapHarness,
+        role: str,
+        password: str,
+        table: str,
+        action: str,
+    ) -> None:
+        url = bootstrapped.role_url(role, password)
+        statement = (
+            f"UPDATE {table} SET created_at = now()"
+            if action == "UPDATE"
+            else f"{action} {table}"
+        )
+        assert bootstrapped.denied(url, statement)
+
+
 class TestPerTableGrantsAreNotBlanket:
     """The core F3(b) invariant: SELECT is broad, but write access is scoped
     per table — a role must not silently gain UPDATE/DELETE everywhere."""

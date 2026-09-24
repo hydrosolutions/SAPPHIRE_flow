@@ -152,6 +152,24 @@ def fan_out_ensemble(
     }
 
 
+def prediction_member_inputs(
+    inputs: StationModelInputs, *, future_features: frozenset[str]
+) -> tuple[tuple[int | None, StationModelInputs], ...]:
+    """Return the exact per-member inputs passed by ``fan_out_ensemble``."""
+    member_sets = _member_index_sets(
+        columns=inputs.data.future_dynamic.columns,
+        future_features=future_features,
+    )
+    if not member_sets:
+        return ((None, inputs),)
+    members = _reconcile_member_indices(member_sets)
+    fanned_features = frozenset(member_sets)
+    return tuple(
+        (member, _slice_member(inputs, features=fanned_features, member=member))
+        for member in members
+    )
+
+
 def _member_index_sets(
     *,
     columns: list[str],

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         ModelArtifactStatus,
         SpatialRepresentation,
     )
+    from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 
 ModelParams = dict[str, Any]
@@ -77,6 +78,7 @@ class StationModelInputs:
     # legacy superset route must stay byte-for-byte unchanged, so it is the
     # default and every incumbent construction site keeps it.
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
+    source_evidence: StationSourceEvidence | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -100,6 +102,7 @@ class GroupModelInputs:
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
+    source_evidence: tuple[tuple[StationId, StationSourceEvidence], ...] = ()
 
     def for_station(self, station_id: StationId) -> StationInputData:
         if station_id not in self.station_ids:

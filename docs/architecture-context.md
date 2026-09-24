@@ -1820,6 +1820,30 @@ Two distinct domain types with different metadata, storage tables, and lifecycle
 
 **`OperationalForecast`** — produced in real time by Flow 1. Has a publication lifecycle (`raw → reviewed → published`), forecaster adjustments, and operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`). Stored in `forecasts` + `forecast_values`.
 
+**As-used evidence (Plan 340 T1).** New operational forecasts also write one
+`forecast_evidence` row in the same transaction as the forecast and its values.
+It links compressed, SHA-256-addressed input snapshots and model artifact bytes
+in `forecast_evidence_blobs`. The snapshot contains the model-ready Polars
+frames, source observation/QC and forcing records, model requirements, warm-up
+state, RNG state and deployment configuration. Ensemble fan-out snapshots also
+retain the per-member frames passed to prediction. FI-adapted forecasts additionally
+capture the exact FI input hierarchy after adapter selection and slicing;
+group snapshots identify every member and the stations delivered to FI.
+Effective forecast QC rules, station overrides, baselines and water-level datum
+are captured as used. Combined forecasts retain contributor forecast IDs,
+evidence hashes and weights; storage checks that those contributors were
+persisted and marks missing or mismatched references incomplete.
+The manifest binds the forecast ID, model/artifact, weather cycle, QC and input
+quality, rating curve and as-used threshold hash. Threshold values are stored
+beside it. `PgForecastStore.fetch_evidence(id)` verifies blob hashes on read.
+Missing provenance, thresholds or the worker's `SAPPHIRE_IMAGE_DIGEST`
+environment value produces an explicit `evidence_incomplete` reason, including
+for forecasts written before this capture existed. Existing Compose workers do
+not set that value automatically. A syntactically valid digest alone still
+marks `runtime_image_bytes_unpinned`: the capture cannot prove that the running
+image bytes were retained. Plan 340 T2 supplies protected backup/restore and the
+publication activation gate. Plan 344 supplies later cold archive and replay.
+
 **`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
 
 Both share the ensemble payload (member traces or quantiles) and can be used for skill computation. The skill service accepts either via a common verification interface — both provide ensemble values, issue time, station, and model needed for metric computation.

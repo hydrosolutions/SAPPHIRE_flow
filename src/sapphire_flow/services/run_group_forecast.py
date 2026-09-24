@@ -6,6 +6,7 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ModelOutputError, StoreError
+from sapphire_flow.services.forecast_evidence import capture_group_evidence
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import (
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource
+    from sapphire_flow.types.forecast_evidence import ForecastEvidence
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.model import ModelDataRequirements, StationModelInputs
     from sapphire_flow.types.station import GroupModelAssignment, StationGroup
@@ -215,6 +217,11 @@ def assemble_group_operational_inputs(
         issue_time=first.issue_time,
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
+        source_evidence=tuple(
+            (station_input.station_id, station_input.source_evidence)
+            for station_input in station_inputs
+            if station_input.source_evidence is not None
+        ),
     )
 
     return inputs, metadata_by_station
@@ -265,6 +272,7 @@ def _build_station_result(
     data_requirements: ModelDataRequirements,
     ensembles: dict[str, ForecastEnsemble],
     new_state: bytes | None,
+    evidence: ForecastEvidence,
     qc_checker: ForecastOutputQualityChecker,
     qc_rules: ForecastQcRuleSet,
     qc_overrides: list[StationForecastQcOverride],
@@ -367,6 +375,7 @@ def _build_station_result(
                 qc_flags=tuple(flags),
                 input_quality=input_quality,
                 input_quality_flags=input_quality_flags,
+                evidence=evidence,
             )
         )
 
@@ -501,6 +510,19 @@ def run_group_forecast(
         return {}
 
     artifact_id, artifact_bytes = artifact_result
+    rng_state = rng.getstate()
+    evidence = capture_group_evidence(
+        inputs=group_inputs,
+        model=model,
+        model_id=assignment.model_id,
+        artifact_bytes=artifact_bytes,
+        rng_state=rng_state,
+        config=config,
+        qc_rules=qc_rules,
+        qc_overrides=qc_overrides,
+        baselines_by_station=baselines_by_station,
+        water_level_datums_masl=water_level_datums_masl or {},
+    )
 
     try:
         artifact = model.deserialize_artifact(artifact_bytes)
@@ -597,6 +619,7 @@ def run_group_forecast(
             data_requirements=model.data_requirements,
             ensembles=ensembles,
             new_state=new_state,
+            evidence=evidence,
             qc_checker=qc_checker,
             qc_rules=qc_rules,
             qc_overrides=qc_overrides,

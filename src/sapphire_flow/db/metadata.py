@@ -1203,6 +1203,70 @@ forecast_values = sa.Table(
     ),
 )
 
+forecast_evidence_blobs = sa.Table(
+    "forecast_evidence_blobs",
+    metadata,
+    sa.Column("sha256", sa.Text, primary_key=True),
+    sa.Column("payload", BYTEA, nullable=False),
+    sa.Column("byte_length", sa.BigInteger, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "length(sha256) = 64", name="ck_forecast_evidence_blob_hash_length"
+    ),
+    sa.CheckConstraint("byte_length >= 0", name="ck_forecast_evidence_blob_length"),
+)
+
+forecast_evidence = sa.Table(
+    "forecast_evidence",
+    metadata,
+    sa.Column(
+        "forecast_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("forecasts.id"),
+        primary_key=True,
+    ),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("manifest_json", sa.Text, nullable=False),
+    sa.Column(
+        "snapshot_sha256",
+        sa.Text,
+        sa.ForeignKey("forecast_evidence_blobs.sha256"),
+        nullable=True,
+    ),
+    sa.Column(
+        "artifact_sha256",
+        sa.Text,
+        sa.ForeignKey("forecast_evidence_blobs.sha256"),
+        nullable=True,
+    ),
+    sa.Column("thresholds_json", sa.Text, nullable=True),
+    sa.Column("reason", sa.Text, nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "status IN ('complete', 'evidence_incomplete')",
+        name="ck_forecast_evidence_status",
+    ),
+    sa.CheckConstraint(
+        "status <> 'complete' OR (snapshot_sha256 IS NOT NULL "
+        "AND thresholds_json IS NOT NULL AND reason IS NULL)",
+        name="ck_forecast_evidence_complete",
+    ),
+    sa.CheckConstraint(
+        "status <> 'evidence_incomplete' OR reason IS NOT NULL",
+        name="ck_forecast_evidence_incomplete_reason",
+    ),
+)
+
 # Index on forecast_values
 sa.Index(
     "ix_forecast_values_forecast_valid_time",

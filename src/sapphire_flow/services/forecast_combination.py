@@ -7,6 +7,7 @@ import numpy as np
 import polars as pl
 import structlog
 
+from sapphire_flow.services.forecast_evidence import capture_combined_evidence
 from sapphire_flow.services.qc_datum import (
     add_forecast_datum_details,
     forecast_skipped_rules,
@@ -521,6 +522,26 @@ def build_combined_forecasts(
                 strategy=combination_strategy_label,
             )
 
+        contributors = tuple(
+            fc
+            for model_id, result in combinable_results.items()
+            if result.ensembles.get(param) is not None
+            and result.ensembles[param].representation == EnsembleRepresentation.MEMBERS
+            and (weights is None or weights.get(model_id, 0.0) > 0.0)
+            for fc in result.forecasts
+            if fc.ensemble.parameter == param
+        )
+        evidence = capture_combined_evidence(
+            model_id=combined_model_id,
+            strategy=combination_strategy_label,
+            contributors=contributors,
+            weights=weights,
+            qc_rules=qc_rules,
+            qc_overrides=qc_overrides,
+            baselines=baselines,
+            water_level_datum_masl=water_level_datum_masl,
+        )
+
         forecast = OperationalForecast(
             id=ForecastId(uuid_factory()),
             station_id=station_id,
@@ -544,6 +565,7 @@ def build_combined_forecasts(
             input_quality_flags=input_quality_flags,
             combination_strategy=combination_strategy_label,
             source_model_ids=source_model_ids,
+            evidence=evidence,
         )
         forecasts.append(forecast)
 

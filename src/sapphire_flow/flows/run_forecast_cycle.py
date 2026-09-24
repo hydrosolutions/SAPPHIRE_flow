@@ -66,6 +66,7 @@ from sapphire_flow.types.forcing_track import (
     ForcingResolutionPolicy,
     StationUnavailableReason,
 )
+from sapphire_flow.types.forecast_evidence import incomplete_evidence
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
     FALLBACK_MODEL_IDS,
@@ -110,7 +111,7 @@ if TYPE_CHECKING:
     from sapphire_flow.services.track_assembly import AssignmentRunInput
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import ForecastQcRuleSet
+    from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forcing_track import (
         ForcingTrackKey,
@@ -133,12 +134,20 @@ log = structlog.get_logger(__name__)
 def _bind_rating_curve(
     fc: OperationalForecast,
     active_curves: dict[StationId, RatingCurve] | None,
+    thresholds: dict[StationId, list[StationThreshold]] | None = None,
 ) -> OperationalForecast:
     """Bind the station's rating curve (active at the forecast's issue time) to a
     forecast before storage (Plan 035 Task 4). ``active_curves`` is ``None`` when
     the feature is off (no ``rating_curve_store`` injected, e.g. v0) — a pure
-    no-op with no logging. An empty dict means the feature is on but the station
-    reports discharge directly (no curve)."""
+    no-op for the rating-curve field. An empty dict means the feature is on but
+    the station reports discharge directly (no curve). ``thresholds`` is the
+    pre-fetched cycle view and is bound even when rating curves are off."""
+    if thresholds is not None:
+        evidence = fc.evidence or incomplete_evidence("prediction_capture_unavailable")
+        fc = replace(
+            fc,
+            evidence=evidence.with_thresholds(tuple(thresholds.get(fc.station_id, []))),
+        )
     if active_curves is None:
         return fc
     curve = active_curves.get(fc.station_id)
@@ -2488,7 +2497,7 @@ def run_forecast_cycle_flow(
             sid: _active_only(assignments)
             for sid, assignments in model_assignments.items()
         }
-        all_thresholds: dict[StationId, list] = {
+        all_thresholds: dict[StationId, list[StationThreshold]] = {
             s.id: station_store.fetch_thresholds(s.id)  # type: ignore[union-attr]
             for s in operational
         }
@@ -2938,7 +2947,9 @@ def run_forecast_cycle_flow(
                             multi_result.primary_model_id
                         ]
                         for fc in primary_result.forecasts:
-                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            fc = _bind_rating_curve(
+                                fc, active_rating_curves, all_thresholds
+                            )
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
@@ -2968,7 +2979,9 @@ def run_forecast_cycle_flow(
                     else:
                         for mid, mresult in multi_result.results.items():
                             for fc in mresult.forecasts:
-                                fc = _bind_rating_curve(fc, active_rating_curves)
+                                fc = _bind_rating_curve(
+                                    fc, active_rating_curves, all_thresholds
+                                )
                                 try:
                                     forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                     forecasts_stored += 1
@@ -3015,7 +3028,9 @@ def run_forecast_cycle_flow(
                         )
                         if combined_forecasts:
                             for fc in combined_forecasts:
-                                fc = _bind_rating_curve(fc, active_rating_curves)
+                                fc = _bind_rating_curve(
+                                    fc, active_rating_curves, all_thresholds
+                                )
                                 try:
                                     forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                     forecasts_stored += 1
@@ -3226,7 +3241,9 @@ def run_forecast_cycle_flow(
                         continue
 
                     for fc in fc_result.forecasts:
-                        fc = _bind_rating_curve(fc, active_rating_curves)
+                        fc = _bind_rating_curve(
+                            fc, active_rating_curves, all_thresholds
+                        )
                         try:
                             forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                             forecasts_stored += 1
@@ -3300,7 +3317,9 @@ def run_forecast_cycle_flow(
                     # Store all individual model forecasts
                     for mid, result in multi_result.results.items():
                         for fc in result.forecasts:
-                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            fc = _bind_rating_curve(
+                                fc, active_rating_curves, all_thresholds
+                            )
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
@@ -3345,7 +3364,9 @@ def run_forecast_cycle_flow(
                     )
                     if combined_forecasts:
                         for fc in combined_forecasts:
-                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            fc = _bind_rating_curve(
+                                fc, active_rating_curves, all_thresholds
+                            )
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
@@ -3560,7 +3581,9 @@ def run_forecast_cycle_flow(
 
                     for sid, result in group_results.items():
                         for fc in result.forecasts:
-                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            fc = _bind_rating_curve(
+                                fc, active_rating_curves, all_thresholds
+                            )
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1

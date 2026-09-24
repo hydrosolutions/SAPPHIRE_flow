@@ -929,7 +929,10 @@ creates two scoped, non-superuser roles and grants them per-table:
 - **`sapphire_worker`** — connects as itself (`prefect-worker`/`prefect-worker-ingest`), its own
   secret (`sapphire_worker_db_password`). Broad `SELECT`; per-table `INSERT`/`UPDATE`/`DELETE` on the
   domain tables the flow/CLI write paths actually write (see `conventions.md` § Service users for the
-  exact matrix); `INSERT`-only on `audit_log`.
+  exact matrix); `INSERT`-only on `audit_log`. Plan 340 T1 also grants `INSERT` only on
+  `forecast_evidence` and `forecast_evidence_blobs`. Migration 0057 rejects `UPDATE`, `DELETE` and
+  `TRUNCATE` on both evidence tables for every role, including the owner. The API role has no
+  evidence write grant; this slice adds no evidence endpoint.
 - **Neither role** has `CREATE`/`DROP`/`CREATEDB`/`CREATEROLE`/superuser, and neither can `CONNECT` to
   the separate `prefect` database (`REVOKE CONNECT ... FROM PUBLIC` — revoking from the named role
   alone is insufficient, since every role implicitly inherits PUBLIC's ACL).

@@ -62,7 +62,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
 )
 from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
-from sapphire_flow.types.model import ModelDataRequirements
+from sapphire_flow.types.model import GroupModelInputs, ModelDataRequirements
 
 if TYPE_CHECKING:
     import random
@@ -72,7 +72,6 @@ if TYPE_CHECKING:
     from sapphire_flow.types.forcing_track import FeatureFetchHorizons
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
-        GroupModelInputs,
         GroupTrainingData,
         ModelArtifact,
         ModelParams,
@@ -1064,6 +1063,25 @@ class ForecastInterfaceAdapter:
         self._assert_single_deliverable_dynamic_branch()
         model_inputs = self._model_inputs_from_data(data)
         return self._model.train(model_inputs, config=params, rng=rng)
+
+    def evidence_inputs(
+        self, inputs: StationModelInputs | GroupModelInputs
+    ) -> ModelInputs:
+        """Return the FI arrays this adapter will pass into prediction."""
+        if isinstance(inputs, GroupModelInputs):
+            serviceable_station_ids = tuple(
+                station_id
+                for station_id in inputs.station_ids
+                if not self._variables_over_nan_tolerance(
+                    past_targets=inputs.for_station(station_id).past_targets,
+                    past_dynamic=inputs.for_station(station_id).past_dynamic,
+                    future_dynamic=inputs.for_station(station_id).future_dynamic,
+                )
+            )
+            return self._model_inputs_from_group_data(
+                inputs, station_ids=serviceable_station_ids
+            )
+        return self._model_inputs_from_data(inputs)
 
     def predict(
         self,

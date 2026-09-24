@@ -56,6 +56,7 @@ from sapphire_flow.types.forcing_track import (
     StationUnavailableReason,
 )
 from sapphire_flow.types.forecast import ForecastProvenance
+from sapphire_flow.types.forecast_evidence import StationSourceEvidence
 from sapphire_flow.types.model import StationInputData, StationModelInputs
 
 if TYPE_CHECKING:
@@ -76,9 +77,11 @@ if TYPE_CHECKING:
         StationTrackOutcome,
         TrackProjection,
     )
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.model import ModelDataRequirements
     from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.weather import WeatherForecastRecord
 
 log = structlog.get_logger(__name__)
 
@@ -220,6 +223,7 @@ def assemble_assignment_inputs(
     nwp_age_hours: float | None = None
     contract: ForcingContract | None = None
     future_dynamic = pl.DataFrame()
+    station_records: list[WeatherForecastRecord] = []
     forecast_horizon_steps = reqs.forecast_horizon_steps
     cycle_source = NwpCycleSource.RUNOFF_ONLY
 
@@ -362,6 +366,8 @@ def assemble_assignment_inputs(
         )
 
     past_dynamic_features = list(reqs.past_dynamic_features)
+    raw_forcing: list[RawHistoricalForcing] = []
+    tail_records: list[WeatherForecastRecord] = []
     if past_dynamic_features:
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
@@ -403,6 +409,7 @@ def assemble_assignment_inputs(
                 window_end=past_targets_end,
                 time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
+                source_records=tail_records,
             )
     else:
         past_dynamic = pl.DataFrame()
@@ -440,6 +447,13 @@ def assemble_assignment_inputs(
         # demote the route: the route is which assembler built the inputs,
         # never an inference from an absent contract.
         forcing_route=ForcingRoute.PER_TRACK,
+        source_evidence=StationSourceEvidence(
+            observations=tuple(all_observations),
+            freshness_observations=tuple(freshness_observations),
+            historical_forcing=tuple(raw_forcing),
+            future_weather=tuple(station_records),
+            tail_weather=tuple(tail_records),
+        ),
     )
     provenance = ForecastProvenance(
         nwp_cycle_source=cycle_source,

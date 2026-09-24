@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         NwpCycleSource,
         WarmUpSource,
     )
+    from sapphire_flow.types.forecast_evidence import ForecastEvidence
     from sapphire_flow.types.ids import (
         ArtifactId,
         ForecastAdjustmentId,
@@ -77,6 +78,7 @@ class OperationalForecast:
     NULL for stations that report discharge directly (Swiss BAFU, weather-only).
     Set at forecast-storage time by Task 4; Task 2 only plumbs the column.
     """
+    evidence: ForecastEvidence | None = None
 
     @property
     def provenance(self) -> ForecastProvenance:
