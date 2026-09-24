@@ -10,6 +10,10 @@ import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
+from sapphire_flow.services.input_quality import (
+    MODEL_INPUT_QC_STATUSES,
+    classify_observation_qc_coverage,
+)
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     floor_to_time_step,
@@ -22,7 +26,7 @@ from sapphire_flow.types.enums import (
     AggregationMethod,
     EnsembleMode,
     ForcingRoute,
-    QcStatus,
+    ObservationQcCoverage,
     WarmUpSource,
 )
 from sapphire_flow.types.model import (
@@ -61,6 +65,11 @@ class OperationalInputMetadata:
     warm_up_state_age_hours: float | None
     observation_staleness_hours: float | None
     nwp_age_hours: float
+    # Plan 316 T2: the model-input read accepts QC_UNCHECKED rows (Plan 272
+    # D5), so the forecast has to be able to say it ran on them. The
+    # dataframe conversion below keeps no QC column, so the fact is taken
+    # from the observations and carried here.
+    observation_qc_coverage: ObservationQcCoverage
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -87,6 +96,7 @@ class ModelRunContext:
     model_id: ModelId
     inputs: StationModelInputs
     observation_staleness_hours: float | None
+    observation_qc_coverage: ObservationQcCoverage
     nwp_age_hours: float | None
     prior_state: bytes | None
     warm_up_source: WarmUpSource
@@ -887,9 +897,14 @@ def assemble_station_operational_inputs(
             parameter=parameter,
             start=past_targets_start,
             end=past_targets_end,
-            qc_status=QcStatus.QC_PASSED,
+            qc_status=MODEL_INPUT_QC_STATUSES,
         )
         all_observations.extend(obs)
+
+    # Taken from the MODEL-INPUT rows only — the freshness probe below
+    # extends `freshness_observations` with more rows, and D5 says that probe
+    # must not by itself degrade the forecast.
+    observation_qc_coverage = classify_observation_qc_coverage(all_observations)
 
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
@@ -937,7 +952,7 @@ def assemble_station_operational_inputs(
                     parameter=parameter,
                     start=past_targets_end,
                     end=issue_time,
-                    qc_status=QcStatus.QC_PASSED,
+                    qc_status=MODEL_INPUT_QC_STATUSES,
                 )
             )
 
@@ -1157,6 +1172,7 @@ def assemble_station_operational_inputs(
         warm_up_source=warm_up_source,
         warm_up_state_age_hours=warm_up_state_age_hours,
         observation_staleness_hours=observation_staleness_hours,
+        observation_qc_coverage=observation_qc_coverage,
         nwp_age_hours=nwp_age_hours,
     )
 

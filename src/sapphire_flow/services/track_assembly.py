@@ -25,6 +25,10 @@ import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
+from sapphire_flow.services.input_quality import (
+    MODEL_INPUT_QC_STATUSES,
+    classify_observation_qc_coverage,
+)
 from sapphire_flow.services.operational_inputs import (
     build_future_dynamic_frame,
     fill_past_forcing_tail,
@@ -41,7 +45,7 @@ from sapphire_flow.types.enums import (
     EnsembleMode,
     ForcingRoute,
     NwpCycleSource,
-    QcStatus,
+    ObservationQcCoverage,
 )
 from sapphire_flow.types.forcing_track import (
     AssignmentKey,
@@ -119,6 +123,10 @@ class ReadyContext:
 
     inputs: StationModelInputs
     observation_staleness_hours: float | None
+    # Plan 316 T2: the per-track twin of `OperationalInputMetadata`'s field —
+    # the model-input read accepts QC_UNCHECKED (Plan 272 D5), so the runner
+    # needs the fact the dataframe conversion drops.
+    observation_qc_coverage: ObservationQcCoverage
     nwp_age_hours: float | None
     provenance: ForecastProvenance
     contract: ForcingContract | None
@@ -282,9 +290,12 @@ def assemble_assignment_inputs(
                 parameter=parameter,
                 start=past_targets_start,
                 end=past_targets_end,
-                qc_status=QcStatus.QC_PASSED,
+                qc_status=MODEL_INPUT_QC_STATUSES,
             )
         )
+    # MODEL-INPUT rows only: the freshness probe below adds more, and D5 says
+    # that probe must not by itself degrade the forecast.
+    observation_qc_coverage = classify_observation_qc_coverage(all_observations)
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
         past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
@@ -335,7 +346,7 @@ def assemble_assignment_inputs(
                     parameter=parameter,
                     start=past_targets_end,
                     end=issue_time,
-                    qc_status=QcStatus.QC_PASSED,
+                    qc_status=MODEL_INPUT_QC_STATUSES,
                 )
             )
 
@@ -437,6 +448,7 @@ def assemble_assignment_inputs(
     return ReadyContext(
         inputs=inputs,
         observation_staleness_hours=observation_staleness_hours,
+        observation_qc_coverage=observation_qc_coverage,
         nwp_age_hours=nwp_age_hours,
         provenance=provenance,
         contract=contract,

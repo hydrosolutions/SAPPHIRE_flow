@@ -28,6 +28,7 @@ from sapphire_flow.types.enums import (
     ForcingRoute,
     ModelAssignmentStatus,
     NwpCycleSource,
+    ObservationQcCoverage,
 )
 from sapphire_flow.types.forcing_track import (
     FeatureName,
@@ -126,6 +127,7 @@ def _ready_context(
     return ReadyContext(
         inputs=inputs,
         observation_staleness_hours=1.0,
+        observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
         nwp_age_hours=0.5,
         provenance=provenance,
         contract=contract,

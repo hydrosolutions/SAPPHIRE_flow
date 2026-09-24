@@ -20,6 +20,8 @@ from sapphire_flow.types.enums import (
     EnsembleMode,
     ForcingRoute,
     NwpCycleSource,
+    ObservationQcCoverage,
+    QcStatus,
     SpatialRepresentation,
     WeatherSourceRole,
     WeatherSourceStatus,
@@ -965,3 +967,101 @@ def test_the_per_track_fill_stops_at_the_aligned_bound_not_the_issue_time() -> N
         ensure_utc(window_end - timedelta(hours=2)),
         ensure_utc(window_end - timedelta(hours=1)),
     ]
+
+
+def test_unchecked_observations_reach_the_per_track_model_input() -> None:
+    """Plan 316 T2 / Plan 272 D5: the per-track assembler is the SECOND
+    model-input read. Correcting only `operational_inputs.py` would leave this
+    production route excluding the rows."""
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=3,
+        forecast_horizon_steps=2,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    obs_store.store_observations(
+        [
+            make_observation(
+                station_id=_STATION,
+                parameter="discharge",
+                value=float(day),
+                timestamp=ensure_utc(_ISSUE - timedelta(days=day)),
+                qc_status=QcStatus.QC_UNCHECKED,
+                rng=random.Random(day),
+            )
+            for day in (1, 2, 3)
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=_ISSUE,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
+        clock=_clock,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    assert result.inputs.data.past_targets.height == 3
+    assert result.observation_qc_coverage is ObservationQcCoverage.CONTAINS_UNCHECKED
+
+
+def test_checked_observations_leave_the_per_track_coverage_all_checked() -> None:
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=3,
+        forecast_horizon_steps=2,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    obs_store.store_observations(
+        [
+            make_observation(
+                station_id=_STATION,
+                parameter="discharge",
+                value=float(day),
+                timestamp=ensure_utc(_ISSUE - timedelta(days=day)),
+                qc_status=QcStatus.QC_PASSED,
+                rng=random.Random(day),
+            )
+            for day in (1, 2, 3)
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=_ISSUE,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        weather_forecast_store=FakeWeatherForecastStore(),  # type: ignore[arg-type]
+        nwp_source=_NWP_SOURCE_261,
+        clock=_clock,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    assert result.observation_qc_coverage is ObservationQcCoverage.ALL_CHECKED

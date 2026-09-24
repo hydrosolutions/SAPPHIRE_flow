@@ -37,6 +37,7 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
+    ObservationQcCoverage,
     SpatialRepresentation,
     WarmUpSource,
 )
@@ -237,6 +238,7 @@ def _metadata() -> OperationalInputMetadata:
         warm_up_source=WarmUpSource.FRESH,
         warm_up_state_age_hours=None,
         observation_staleness_hours=1.0,
+        observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
         nwp_age_hours=0.5,
     )
 

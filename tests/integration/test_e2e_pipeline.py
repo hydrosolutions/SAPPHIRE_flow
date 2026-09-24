@@ -561,7 +561,7 @@ class TestE2ePipeline:
             OperationalInputMetadata,
         )
         from sapphire_flow.services.run_station_forecast import run_station_forecast
-        from sapphire_flow.types.enums import WarmUpSource
+        from sapphire_flow.types.enums import ObservationQcCoverage, WarmUpSource
         from sapphire_flow.types.model import StationInputData, StationModelInputs
 
         qc_checker = ForecastOutputQualityChecker()
@@ -624,6 +624,7 @@ class TestE2ePipeline:
                     warm_up_source=WarmUpSource.COLD_START,
                     warm_up_state_age_hours=None,
                     observation_staleness_hours=0.0,
+                    observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
                     nwp_age_hours=0.0,
                 )
 

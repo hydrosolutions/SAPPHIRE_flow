@@ -17,6 +17,7 @@ from sapphire_flow.api.model_visibility import (
 from sapphire_flow.api.routes.tables import get_reflected
 from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import QcStatus
 from sapphire_flow.types.ids import ModelId, StationId
 
 if TYPE_CHECKING:
@@ -695,7 +696,17 @@ def station_hindcasts_json(
                         obs.c.parameter == parameter,
                         obs.c.timestamp >= start_dt,
                         obs.c.timestamp < end_dt,
-                        obs.c.qc_status != "qc_failed",
+                        # Plan 316 T3 / Plan 272 D5: the PUBLISHED observed
+                        # series shows only readings QC actually cleared.
+                        # ⚠️ This filter lists what to REJECT, so every new
+                        # status is published by default — which is exactly
+                        # how `qc_unchecked` reached the series unmarked.
+                        obs.c.qc_status.notin_(
+                            [
+                                QcStatus.QC_FAILED.value,
+                                QcStatus.QC_UNCHECKED.value,
+                            ]
+                        ),
                     )
                 )
                 .order_by(obs.c.timestamp)
