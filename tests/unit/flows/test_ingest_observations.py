@@ -349,7 +349,7 @@ class TestIngestObservationsFlow:
         }
         assert counts.zero_rule_groups == ()
         assert latest.value == 261.2
-        assert latest.qc_rule_version == "1.1-datum"
+        assert latest.qc_rule_version == "1.2-datum"
 
     def test_null_water_level_datum_skips_datum_dependent_rules_only(self) -> None:
         station = make_station_config()
@@ -382,7 +382,7 @@ class TestIngestObservationsFlow:
         }
         assert counts.zero_rule_groups == ()
         assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
-        assert latest.qc_rule_version == "1.1-datum-skip"
+        assert latest.qc_rule_version == "1.2-datum-skip"
 
     def test_water_level_datum_is_not_applied_to_discharge(self) -> None:
         station = make_station_config(water_level_datum_masl=260.0)
@@ -453,7 +453,7 @@ class TestIngestObservationsFlow:
         latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
         assert result.qc_passed == 1
         assert result.qc_failed == 0
-        assert latest.qc_rule_version == "1.0"
+        assert latest.qc_rule_version == "1.2"
         assert latest.qc_flags == []
 
     def test_no_baselines_still_runs_range_check(self) -> None:

@@ -249,44 +249,85 @@ run, because the checker has no access to it.
 
 ### T3 — Fail closed when no rule resolves
 
-**🔴 SEQUENCING BLOCKER, added 2026-09-11 — T3 must not land before Plan 272.** Plan 269's
-round-6 reviews measured that configured rules are already unreachable on the scheduled ingest
-path: the QC window is a fixed three hours (`flows/ingest_observations.py:277-280`),
-`_infer_time_step` returns one hour for fewer than two rows (`services/qc.py:40-47`), `rules_for`
-matches on exact equality (`types/domain.py:160-167`), and `config.toml` declares only 600 s and
-86400 s rules — so **every daily `(station, parameter)` group resolves zero rules today**. T3's
-policy is right, but landing it against that defect turns a silent fail-open into a **fleet-wide
-halt on every scheduled run**, and T3's unit test would pass while doing it. Plan 272 owns the
-reachability fix; T3 lands after it, or together with it.
+**⚖️ SEQUENCING BLOCKER — LIFTED 2026-09-24 (Plan 324 T3). Plan 272 has landed, and the
+measurements this paragraph rested on are now FALSE.** It argued, from Plan 269's round-6 reviews,
+that configured rules were already unreachable on the scheduled ingest path — a fixed three-hour QC
+window, a cadence-inference fallback that returned one hour for fewer than two rows, exact-equality
+rule matching, and a `config.toml` declaring only 600 s and 86400 s rules — so that every daily
+`(station, parameter)` group resolved zero rules, and landing T3's policy on top would turn a silent
+fail-open into a fleet-wide halt. ⛔ *The two code anchors it cited for the fallback are deliberately
+not reproduced here: the code they named is gone, and a live-looking citation of a deleted branch is
+exactly what Plan 324 T3 exists to remove.* **Measured against the tree on 2026-09-24:**
+
+- 🔴 **The under-two-rows one-hour fallback NO LONGER EXISTS.** Plan 272 deleted it. The function
+  is now `infer_time_step` (public, no leading underscore) at `services/qc.py:47-70`, returning
+  `timedelta | None` — `None` where it used to fabricate one hour. ⛔ *A reader who implemented
+  against the old branch would be implementing against deleted code.*
+- The QC window is **not** a fixed three hours: it is `context_window_hours: float = 2.0`
+  (`flows/ingest_observations.py:428`), widened to cover a catch-up delivery at `:437`.
+- `rules_for` matching on exact equality still holds (`types/domain.py:160-167`), and the zero-rule
+  condition is real — but it is now **observable rather than silent**: `resolve_selection`
+  (`services/qc.py:77-107`) reports the resolved count per group, the flow stores `QC_UNCHECKED`
+  instead of `QC_PASSED` (`flows/ingest_observations.py:160`), and the groups are emitted as
+  `zero_rule_groups` / `qc.no_rules_selected` (`:497-514`).
+
+⇒ **The reachability fix T3 was waiting for has shipped.** T3's remaining question is therefore no
+longer *when* it may land but *whether its policy is still wanted*, given that 272 D2 already chose
+a different answer for the same condition — see the note in the Outcome below. That is 264's
+owner's call; Plan 324 records the debt and does not re-scope it.
 
 **Outcome**: `Stage1QualityChecker` distinguishes "rules ran and found nothing" from "no rules
-resolved", and the second is an error rather than a pass.
+resolved", and the second is ~~an error~~ **not** a pass.
+🔴 **SUPERSEDED IN PART, 2026-09-24 (Plan 324 T3): the "error" half is no longer the shipped
+design.** Plan 272 D2 chose a **status, not a raise** — a zero-rule group is stored
+`QC_UNCHECKED` (`flows/ingest_observations.py:160`), routed per consumer — **accepted into model
+inputs** and carried as `DEGRADED` (`services/input_quality.py:37`), **excluded** from the published
+series (`api/routes/stations.py:704-708`) — and re-examined when its window densifies (317). The distinction T3 asks for therefore **already
+exists**; what does not exist is a raise, and 264 must not be read as instructing one. ⛔ *Every
+"raise" below is retained as the 2026-09-11 record and is NOT an instruction — each is marked.*
 Added after the set review: the author's justification for most-specific-wins was that
 exact-match could resolve zero rules and be reported as passed — but **most-specific-wins does
 not close that path either**. An empty rule set, a TOML set omitting the generic rules, or a
 series whose parameter/cadence matches nothing all still yield empty flag lists, and
-`aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`). Today the live
-ingest and onboarding paths are fail-open in exactly this way. Plan 268 was going to bolt a
+`aggregate_qc_status([])` returns `QC_PASSED` (`types/domain.py:104-109`).
+⚠️ **2026-09-24 (Plan 324 T3) — "today" is 2026-09-11 and is now half wrong.** The **scheduled
+ingest** path is no longer fail-open: 272 D2 marks a zero-rule group `QC_UNCHECKED`. The
+**onboarding** path still is, deliberately and with its reasoning recorded
+(`services/onboarding.py:811-817`), and closing it is Plan 315's. Plan 268 was going to bolt a
 local assertion onto its own import; the policy belongs here, once, for every caller.
 **In**: `src/sapphire_flow/services/qc.py`; `src/sapphire_flow/protocols/stores.py`;
-every call site's handling of the new error.
+~~every call site's handling of the new error~~ — ⚠️ **SUPERSEDED 2026-09-24 (Plan 324 T3): there is
+no new error.** 272 D2 chose a status, so there is nothing for a call site to handle; what a caller
+now sees is a `QC_UNCHECKED` row, and the per-consumer policy for that is already built (316).
 **🔴 It must not break a deliberate empty pass.** `build_dudh_koshi_handover.py:154` defines
 `_empty_rule_set()` and passes it into `check` on every iteration of `attribute_mask_by_rule`
 (`:174-190`) — an intentional, tested no-rules call. A blanket "no rules resolved → raise"
-breaks it. The contract must distinguish **accidental** non-resolution (a rule set that should
+breaks it. ⚠️ *2026-09-24 (Plan 324 T3): "raise" here is the 2026-09-11 wording, superseded by
+272 D2's `QC_UNCHECKED` — the constraint stands, and reads the same for any fail-closed policy.*
+The contract must distinguish **accidental** non-resolution (a rule set that should
 have matched and did not) from an **explicitly empty** rule set the caller supplied on purpose:
 an empty `QcRuleSet` is a caller's declared intent and passes; a non-empty rule set that
-resolves nothing for a series is the error.
+resolves nothing for a series is ~~the error~~ ⚠️ **the condition now recorded as `QC_UNCHECKED`**
+(Plan 324 T3 — 272 D2 chose a status, not an error). ⭐ *The distinction this paragraph draws is
+still right and still worth keeping; only the word "error" was superseded.*
 **Out**: no change to what any *resolved* rule does.
-**Verification**: a **non-empty** rule set that resolves nothing for a series raises rather
-than returning empty flags; a series that resolves rules and trips none still returns
-`QC_PASSED`; **an explicitly empty `QcRuleSet` still returns empty flags without raising** —
-asserted directly against the handover builder's path
-(`tests/unit/scripts/test_dhm_precip_*`), because without that case a blanket "no rules
-resolved → raise" satisfies every other assertion here and breaks a deliberate caller; and the
-three outcomes are distinguishable in the caller's logs.
-**Pre-change**: a RED test proving that today a rule set with no matching rule marks every
-observation `qc_passed` with zero rules run.
+**Verification**: ⛔ **SUPERSEDED as written, 2026-09-24 (Plan 324 T3) — do NOT assert a raise.**
+The 2026-09-11 text asked that a **non-empty** rule set resolving nothing for a series *raise*
+rather than return empty flags. Against the shipped code that assertion is **false by
+construction**: the condition is carried as `QC_UNCHECKED` on the stored row (272 D2), and
+`Stage1QualityChecker.check` does not raise on it. What survives unchanged and is still worth
+asserting: a series that resolves rules and trips none still returns `QC_PASSED`; **an explicitly
+empty `QcRuleSet` still returns empty flags without raising** — asserted directly against the
+handover builder's path (`tests/unit/scripts/test_dhm_precip_*`), because without that case a
+blanket "no rules resolved → *fail closed*" satisfies every other assertion here and breaks a
+deliberate caller; and the three outcomes are distinguishable in the caller's logs. ⇒ If 264's
+owner still wants a policy beyond 272's status, it must be specified against `QC_UNCHECKED`, not
+against a raise.
+**Pre-change**: ⛔ **SUPERSEDED, same reason.** The 2026-09-11 text asked for a RED test proving
+that today a rule set with no matching rule marks every observation `qc_passed` with zero rules
+run. **That is no longer today's behaviour** — such a group is stored `QC_UNCHECKED`, and a test
+written to the old text would fail for the wrong reason. Any replacement Pre-change must start
+from the `QC_UNCHECKED` behaviour.
 
 ### T4 — Equivalence for a Swiss-only deployment
 

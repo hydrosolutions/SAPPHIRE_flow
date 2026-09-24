@@ -100,6 +100,17 @@ This is the question 272 never answered, and the reason this plan exists.
 | **(c)** | **Put the selection change behind the flag after all** — the alternative 272's T6 rejected. | A true behaviour rollback, at the cost of the duplicate path in `src` that 272 exists to remove. ⛔ **Only available BEFORE 272 lands**, and no task here delivers it — choosing it re-opens 272's T2 and T6. |
 | **(d)** | **Accept fleet-wide selection exposure, with no automatic selection rollback** — the paired harness as the pre-activation evidence. | ⛔ **The canary CANNOT bound this.** The canary scopes the status write only; selection reaches every station the moment the image deploys, so a small station set buys nothing here. *(An earlier draft recommended this on the premise that selection "is not revertible" — (a) shows it is.)* |
 
+⚠️ **Plan 324 T2 (2026-09-24) — a generation label now exists, and it does NOT answer the open
+sentinel question above.** `qc_rule_version` was bumped to `"1.2"` / `"1.2-datum"` /
+`"1.2-datum-skip"` (`services/qc.py`, `services/qc_datum.py`), so observation QC verdicts written
+**from that bump onward** are distinguishable from pre-272 ones by the stored column. ⛔ **Two
+limits, stated because the bump has been overclaimed once already:** it is a **forward** label and
+cannot retrospectively separate rows already stored under post-272 logic from pre-272 rows — they
+share the old value — and after this option's `UPDATE` it still cannot recover which rows were
+formerly `qc_unchecked`. ⇒ 🔴 **"is T0's `-norules` sentinel superseded by the status, or still
+owed?" remains OPEN and unowned**; Plan 324 records the bump's reach and deliberately does not
+close it.
+
 **Recommendation: (a).** It adds no artefact, changes no other plan, and — unlike the earlier
 recommendation of (d) — it actually works after the first `QC_UNCHECKED` row, which is when a
 revert is most likely to be wanted. ⚠️ **It requires the anchor to be tagged before the upgrade

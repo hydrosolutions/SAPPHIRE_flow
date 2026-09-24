@@ -307,3 +307,53 @@ standing evidence rule disciplines the code half of the claim and is silent on t
   ]
 }
 ```
+
+## Execution record — 2026-09-24
+
+Implemented on `fix/plan-324-272-remainder`, phase order **T2 → T1 + T3 → T4** as mandated.
+Independently reviewed; the code and test diff passed inspection with **no findings**, and all four
+findings were in newly written prose. They are folded here.
+
+### T2's two counts, measured (the clause the first pass under-reported)
+
+| category | count | sites |
+|---|---|---|
+| **current-generation expectations UPDATED** | **3** | `tests/unit/flows/test_ingest_observations.py:352` (datum), `:385` (datum-skip), `:456` (ordinary — the fourth literal's path) |
+| **old-value sites PRESERVED** | **8** | `test_ingest_observations_recheck.py:250,267` (historical QC evidence — proves an already-passed row is not re-judged); `tests/integration/store/test_observation_store.py:88,102` and `test_observation_store_upsert.py:89,121,145,165` (opaque round-trip payloads — these never invoke observation QC) |
+
+⭐ **Counted independently twice and agreed.** The second category divides further: 2 sites are QC
+evidence that must survive, 6 are store-persistence fixtures the constant cannot reach.
+
+⚠️ **The integration sites were NOT executed** — they need a live Postgres. The argument that a
+store round-trip cannot be affected by a QC constant is sound but is reasoning, not a green run; CI
+settles it.
+
+### The review's four findings
+
+🔴 **M1 — the fix introduced two NEW false claims.** ⛔ *The exact failure class this plan exists to
+prevent, committed by the plan's own implementation.*
+- Plan 264 gained *"excluded from the model-input and published series"*. **Model inputs ACCEPT
+  `QC_UNCHECKED`** (`services/input_quality.py:37`) — that is Plan 316's whole point. Corrected to
+  the real per-consumer routing.
+- Plan 272 gained *"every other consumer still asks for `QC_PASSED` alone"*. The published series
+  **excludes** `QC_FAILED` and `QC_UNCHECKED` by `notin_` (`api/routes/stations.py:704-708`), so it
+  still admits `RAW` and `QC_SUSPECT`. ⇒ **Three policies, not two.**
+
+**M2 — Plan 264's T3 *In* contract was corrected only in part.** Its Outcome, Verification and
+Pre-change were marked superseded while `:292` still called live ingest fail-open, `:295` still
+required *"every call site's handling of the new error"*, and `:304` still called non-resolution
+*"the error"*. All three now corrected in place. ⚠️ `:292` was **half** wrong, and the half that was
+right matters: scheduled ingest is no longer fail-open, **onboarding still is** — deliberately, and
+Plan 315 owns it.
+
+**M3 — two stale twins the sweep missed.** `272:31` still presented the scalar-only store/Protocol/
+fakes as a *measured prerequisite* when all three now accept a collection (shipped by 316 T1); and
+`272:2106` still listed *"the flag"* among 314's inherited rollout controls — **directly above** the
+paragraph recording that the flag was withdrawn.
+
+**L1 — T2's reporting clause was under-satisfied.** The counts above.
+
+⭐ **The recurring shape, for the fourth time in this plan's history: a correction applied in one
+place while its twin stood.** Three of the four findings are that, and the sweep that found eight
+flag promises still missed two more claims. ⇒ **A concept sweep is better than a pattern sweep and
+is still not a proof.**
