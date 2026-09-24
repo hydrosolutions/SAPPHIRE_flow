@@ -621,8 +621,10 @@ exit criteria — Plan 212 owns that deeper screening.
   runnable test" — and is **silent on whether the requirement was ever located**,
   so a row can pass it completely while nobody has opened the publication.
   ⛔ Not a "standards are vague" problem: § 2 of the same document already names
-  chapter-level locators. T1 (the honest marker + extending the rule to both
-  halves) ships without waiting on the research.
+  chapter-level locators. ⚖️ Owner 2026-09-24: **T1 approved to ship now** (the
+  honest marker + extending the standing rule to BOTH halves); **T2/T3 are LOW
+  PRIORITY** backlog and must not displace the v1 critical path; and the target
+  is publication number + URL + **CHAPTER**, ⛔ not clause or page.
 
 - **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — `DRAFT`,
   `open_decisions: [D1]`. From a full item-by-item audit of 272 against `main`:

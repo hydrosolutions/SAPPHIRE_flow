@@ -1,13 +1,15 @@
 ---
 status: DRAFT
 created: 2026-09-24
+revised: 2026-09-24
 plan: 325
 title: A compliance row proves our code does something — not that WMO asks for it
+priority: LOW for T2/T3 (owner, 2026-09-24); T1 approved to ship immediately
 scope: Make each row of the WMO compliance table cite the specific clause, section or page of the WMO publication it claims conformance with, and extend the standing evidence rule to cover that half of the claim. NOT changing any QC, alerting or verification BEHAVIOUR. NOT the code-side citations in those rows (Plan 324 T1). NOT the document inventory in § 2. NOT adding WMO conformance we do not have.
 depends_on: []
 blocks: []
 related: [023, 253, 272, 324]
-open_decisions: [D1, D2, D3]
+open_decisions: [D3]  # D1/D2 closed by the owner 2026-09-24; D3 goes live only if T2 reports a not-found
 source: 2026-09-24 — the owner, on being shown that a compliance row's CODE citations had gone stale: *"data quality checks should point at the correct locations in the wmo documents. that may require a separate plan."* Every count below was measured against `docs/standards/wmo.md` on `origin/main` that day.
 ---
 
@@ -17,8 +19,9 @@ source: 2026-09-24 — the owner, on being shown that a compliance row's CODE ci
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review is complete and the orchestrator sets
-READY. D1 is the owner's — it needs a hydrologist and the publications themselves.
+**DRAFT.** D1 and D2 are closed (below). ⭐ **T1 is approved by the owner to ship**; it still needs
+an independent review and a READY flip before implementation, like anything else. **T2 and T3 are
+LOW PRIORITY backlog** and must not displace the v1 critical path.
 
 ## Why this plan exists
 
@@ -72,40 +75,43 @@ That is the state of the table today.
 
 ## Owner decisions
 
-### D1 — who locates the clauses. **OPEN — needs the publications.**
+### D1 — how precise a locator, and who finds it. **⚖️ CLOSED — owner, 2026-09-24.**
 
-| | option | cost |
-|---|---|---|
-| (a) | The owner cites each clause directly, as hydrologist. | Authoritative. Eleven rows of their time, against documents they know. |
-| (b) ⭐ | **I fetch the publications and propose a clause per row with the quoted sentence; the owner confirms or corrects.** | The owner reviews rather than researches. ⚠️ Several are large PDFs behind library links; retrieval may simply fail for some, which T1 must report as a result rather than paper over. |
-| (c) | Mark every row publication-level and stop. | ⛔ Insufficient alone — but see T1: doing this FIRST is right either way. |
+Owner: *"no need to cite exact rows in the wmo documents, but the document/report number/url and
+chapters would be good to have correctly eventually."*
 
-**Recommendation: (c) immediately, then (b).** ⭐ *The honest label costs nothing and can ship today;
-the research is the slow part and should not hold it.*
+⇒ **The target is publication number + URL + CHAPTER.** ⛔ *Not clause, section or page — the draft
+asked for more precision than the owner wants, and chasing it would make T2 far slower for no
+benefit the owner asked for.*
 
-### D2 — all eleven rows, or a priority subset. **OPEN.**
+⇒ **Who: I propose, the owner confirms.** The chapter for each row, with the chapter TITLE (so a
+wrong chapter is visible without opening the PDF) rather than a quoted requirement sentence, which
+clause-level precision would have needed.
 
-§ 2 already ranks the publications — *Critical* (1072, 1364, 1091, 1254), *High* (168, 1150, 1109,
-QMF-H), and below. Observation QC sits under WMO-168 (*High*) and is the subject the owner raised.
+⚠️ **Retrieval may simply fail for some publications** — several are large PDFs behind library
+links. T2 reports that as a result per row, ⛔ never as silence.
 
-⚠️ **The ranking is about the publications, not about our exposure.** A bare `WHOS` row claims an
-interoperability conformance nobody will test until data is shared internationally; a
-`WMO-168 Vol I` QC row underwrites a check that runs against every reading, every cycle, today.
-⇒ Ordering by *what we would have to defend first* is not the same as ordering by § 2.
+### D2 — scope and priority. **⚖️ CLOSED — owner, 2026-09-24: LOW PRIORITY.**
 
-### D3 — what happens when no clause can be found. **OPEN — and the most important of the three.**
+Owner: *"put that into a plan with low priority for now."*
 
-If a row's requirement cannot be located in the publication, the options are materially different:
+⇒ **T2 and T3 are backlog.** They are not sequenced against the v1 critical path and should not
+displace Nepal onboarding, the pilot, or QC work. ⛔ *Recorded so a future agent does not read an
+unstarted DRAFT as neglected and "helpfully" pick it up ahead of the owner's actual priorities.*
 
-| | option |
-|---|---|
-| (a) | Reword the row as *our own practice, consistent with WMO* — an honest downgrade from conformance to alignment. |
-| (b) | Delete the row. |
-| (c) | Keep it, marked explicitly as *claimed, requirement not located*. |
+⇒ **T1 is NOT low priority — the owner approved it to ship now** (*"ok to the cheap honest step"*).
+⭐ That is the whole reason T1 was separated from T2: the honest label costs nothing and does not
+wait on research.
 
-⛔ **Not an option: leaving it as-is.** ⚠️ *A reader — including an auditor, and including a future
-agent — reads the present table as established conformance. That is the defect, independent of
-whether any individual row turns out to be justified.*
+### D3 — what happens when no chapter can be found. **OPEN, but much less likely to bite.**
+
+The options are unchanged — reword the row as *our own practice, consistent with WMO*, delete it, or
+keep it marked *claimed, chapter not located*. ⛔ **Not an option: leaving it unmarked.**
+
+⚠️ **D1's relaxation changes the odds, not the question.** A chapter is far easier to locate than a
+clause, so most rows should resolve — but § (5) still stands: a row may have no WMO basis at all,
+and *"QC flag vocabulary"* is the one to watch. ⇒ **D3 becomes live only if T2 reports a not-found**,
+and the owner answers it then, against a real list rather than a hypothetical.
 
 ## Tasks
 
@@ -137,8 +143,9 @@ reading it, because a rule that the current table already passes has changed not
 sentence that carries the requirement.
 
 **In.**
-- Per row: publication, edition, and the narrowest locator the document supports (clause number,
-  section, or page), plus the quoted requirement sentence so a reader need not re-open the PDF.
+- Per row: **publication number, a working URL, and the chapter** — with the chapter's TITLE, so a
+  wrong chapter is visible without opening the PDF (D1). ⛔ *Not clause or page: the owner ruled that
+  out, and pursuing it would slow T2 for precision nobody asked for.*
 - 🔴 **Whatever was NOT found, reported as a finding** — per row, what was searched and what came
   back. ⛔ *A row quietly left publication-level is indistinguishable from one nobody reached.*
 - Each located row's *Verified* date restamped to when the clause was read.
@@ -149,9 +156,10 @@ to match a requirement discovered here — if a gap appears, it is a finding and
 
 **Pre-change.** N/A — research.
 
-**Verification.** ⭐ **A reader with the publication open can confirm each citation without
-searching** — the locator plus the quoted sentence is the test. Anything weaker is a hint, and § (1)
-shows we already have four of those.
+**Verification.** ⭐ **A reader can open the URL, turn to the named chapter, and find the subject
+there.** The chapter title is what makes a wrong locator visible on the page rather than only to
+someone who reads the whole volume. ⚠️ Anything weaker is a topical hint, and § (1) shows we already
+have three of those.
 
 ### T3 — Resolve the rows with no locatable requirement (D3)
 
