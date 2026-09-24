@@ -171,6 +171,19 @@ def _bafu_obs_url_from_health(health_url: str) -> str:
     return f"{base}/health/detail?check_type=bafu_observation_freshness&limit=1"
 
 
+def _qc_unchecked_url_from_health(health_url: str) -> str:
+    """Plan 318 T2. Same derivation as `_bafu_url_from_health`, for the
+    zero-rule QC check.
+
+    ⛔ **This one is NOT a freshness check, despite the identical URL shape.**
+    Its records are written only when the condition OCCURS (Plan 318 T1), so a
+    missing record is the HEALTHY case — the exact inverse of every other probe
+    in this module. See `probe_qc_unchecked`.
+    """
+    base = health_url.rsplit("/health", 1)[0]
+    return f"{base}/health/detail?check_type=observation_qc_unchecked&limit=1"
+
+
 def _forecast_freshness_url_from_health(health_url: str) -> str:
     """Same derivation as `_bafu_url_from_health`, for the forecast-
     production freshness check (Plan 116)."""
@@ -197,6 +210,14 @@ BAFU_STALE_THRESHOLD = timedelta(hours=3)
 # only ever coincidentally equal to the flow-side measurement-age
 # threshold, which is a different quantity — see
 # flows/collect_bafu_observations.py's _STALE_MEASUREMENT_THRESHOLD).
+# Plan 318 T2: how recently a zero-rule record must have been written for the
+# condition to count as CURRENT. Records are written only on affected runs, so
+# without a lookback a single bad run would alert for ever. Six hours spans
+# several ingest cycles — long enough that an intermittent feed is not missed
+# between ticks, short enough that a resolved condition stops alerting the same
+# day. ⚠️ A starting value, not a derived one: nothing in the tree can yet say
+# how often this fires, which is why Plan 318 T1 exists.
+QC_UNCHECKED_LOOKBACK = timedelta(hours=6)
 BAFU_OBS_STALE_THRESHOLD = timedelta(minutes=15)
 # The forecast cycle runs every 6h by default (SCHEDULE_FORECAST_CYCLE,
 # cli/register_deployments.py) — stale after ~18h (three missed cycles),
@@ -305,6 +326,9 @@ class WatchdogState:
     # `_backup_notification_kind`), so it stays > 0 for the ENTIRE failing
     # streak rather than resetting the alert cadence every 6 ticks.
     consecutive_forecast_freshness_failures: int = 0
+    # Plan 318 T2: hysteresis for the zero-rule PRESENCE check, so an
+    # intermittent feed does not re-alert on every tick.
+    consecutive_qc_unchecked_failures: int = 0
     # Plan 237 T3: a forecast-freshness notification owed but not yet
     # DELIVERED -- same role as `backup_notification_pending`. Retried
     # every tick until delivery succeeds, so a recovery alert lost to a
@@ -449,6 +473,9 @@ class WatchdogState:
             consecutive_forecast_freshness_failures=int(
                 raw.get("consecutive_forecast_freshness_failures", 0)
             ),
+            consecutive_qc_unchecked_failures=int(
+                raw.get("consecutive_qc_unchecked_failures", 0)
+            ),
             # Backward compatible with state files written before Plan 237
             # T3's alert-once policy: absent key defaults to None.
             forecast_freshness_notification_pending=(
@@ -484,6 +511,9 @@ class WatchdogState:
             "backup_notification_pending": self.backup_notification_pending,
             "consecutive_forecast_freshness_failures": (
                 self.consecutive_forecast_freshness_failures
+            ),
+            "consecutive_qc_unchecked_failures": (
+                self.consecutive_qc_unchecked_failures
             ),
             "forecast_freshness_notification_pending": (
                 self.forecast_freshness_notification_pending
@@ -585,6 +615,139 @@ def _parse_probe_timestamp(raw: object) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcUncheckedResult:
+    """Plan 318 T2: the outcome of probing for a zero-rule QC record.
+
+    ⛔ **Read `found` the OPPOSITE way to `BafuFreshnessResult.found`.** There,
+    `found=False` means "no heartbeat" and is the alarm. Here a record exists
+    only when observations went unchecked, so **`found=True` is the alarm and
+    `found=False` is healthy.**
+    """
+
+    found: bool
+    checked_at: datetime | None
+    groups_affected: int | None
+    observations_unchecked: int | None
+    # Plan 318 T2 Verification: "reports the AFFECTED STATIONS from the
+    # records" — counts alone do not let an operator act, and T1 puts the
+    # identifiers in the record's `zero_rule_groups` precisely so this can.
+    stations: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def probe_qc_unchecked(
+    url: str, *, client: httpx.Client | None = None, token: str | None = None
+) -> QcUncheckedResult:
+    """Plan 318 T2. Synchronous PRESENCE probe of
+    `/health/detail?check_type=observation_qc_unchecked`.
+
+    Same HTTP shape, auth header and exception boundary as
+    `probe_bafu_freshness` — and the opposite meaning. Plan 318 T1 writes a
+    record ONLY on a run that had a zero-rule group, so:
+
+    - **no record ⇒ healthy** (the ordinary steady state);
+    - **a record ⇒ observations went unchecked**, and the caller alerts.
+
+    ⚠️ Every failure path returns `found=False`, i.e. *healthy*. That is the
+    deliberate fail-safe direction for a presence probe — a broken probe must
+    not cry wolf — but it does mean a probe that cannot reach the API reports
+    nothing rather than reporting itself. `error` carries the reason and is
+    logged by the caller.
+    """
+    owns_client = client is None
+    c: httpx.Client | None = client
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    try:
+        if c is None:
+            c = httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+        resp = c.get(url, headers=headers)
+        status_code = resp.status_code
+        if status_code < 200 or status_code >= 300:
+            return QcUncheckedResult(
+                found=False,
+                checked_at=None,
+                groups_affected=None,
+                observations_unchecked=None,
+                error=f"http_status:{status_code}",
+            )
+        try:
+            payload: dict[str, Any] = resp.json()
+        except ValueError as exc:
+            return QcUncheckedResult(
+                found=False,
+                checked_at=None,
+                groups_affected=None,
+                observations_unchecked=None,
+                error=f"invalid_json: {exc}",
+            )
+        items: list[Any] = payload.get("items") or []
+        if not items:
+            # ⭐ The healthy case, and the common one.
+            return QcUncheckedResult(
+                found=False,
+                checked_at=None,
+                groups_affected=None,
+                observations_unchecked=None,
+                error=None,
+            )
+        item: dict[str, Any] = items[0]
+        # ⚠️ `detail` is a stored JSONB blob, so it can be ANY JSON value.
+        # `item.get("detail") or {}` accepts a truthy non-dict (a string, a
+        # list) and the following `.get` then raises — which the outer handler
+        # turns into found=False, SILENTLY HIDING a record that does exist.
+        # That is the worst failure direction for a presence probe.
+        raw_detail: object = item.get("detail")
+        detail: dict[str, Any] = (
+            cast("dict[str, Any]", raw_detail) if isinstance(raw_detail, dict) else {}
+        )
+        raw_groups: object = detail.get("zero_rule_groups")
+        groups: list[Any] = (
+            cast("list[Any]", raw_groups) if isinstance(raw_groups, list) else []
+        )
+        station_ids: set[str] = set()
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            station_id: object = cast("dict[str, Any]", group).get("station_id")
+            if station_id:
+                station_ids.add(str(station_id))
+        stations = tuple(sorted(station_ids))
+        return QcUncheckedResult(
+            found=True,
+            checked_at=_parse_probe_timestamp(item.get("checked_at")),
+            groups_affected=detail.get("groups_affected"),
+            observations_unchecked=detail.get("observations_unchecked"),
+            stations=stations,
+            error=None,
+        )
+    except _HTTP_CALL_EXCEPTIONS as exc:
+        return QcUncheckedResult(
+            found=False,
+            checked_at=None,
+            groups_affected=None,
+            observations_unchecked=None,
+            error=str(exc),
+        )
+    except Exception as exc:  # defensive containment boundary
+        log.error("watchdog.probe_qc_unchecked_unexpected_error", error=str(exc))
+        return QcUncheckedResult(
+            found=False,
+            checked_at=None,
+            groups_affected=None,
+            observations_unchecked=None,
+            error=f"unexpected: {exc}",
+        )
+    finally:
+        if owns_client and c is not None:
+            try:
+                c.close()
+            except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+                log.warning(
+                    "watchdog.probe_qc_unchecked_client_close_failed", error=str(exc)
+                )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -1475,6 +1638,43 @@ def _format_minutes_aware_duration(threshold: timedelta) -> str:
     return f"{total_seconds // 60}m"
 
 
+def _format_qc_unchecked_alert(
+    *, hostname: str, now: datetime, result: QcUncheckedResult
+) -> str:
+    """Plan 318 T2. ⚠️ Says what was NOT checked, not that a check is missing —
+    the opposite of every stale-alert formatter beside it."""
+    when = result.checked_at.isoformat() if result.checked_at else "unknown"
+    groups = result.groups_affected if result.groups_affected is not None else "?"
+    obs = (
+        result.observations_unchecked
+        if result.observations_unchecked is not None
+        else "?"
+    )
+    # ⚠️ Name the stations. A count tells an operator something is wrong; the
+    # identifiers tell them WHERE, and T1 puts them in the record for this.
+    # Capped so one fleet-wide cadence problem cannot post an unreadable wall.
+    shown = ", ".join(result.stations[:10]) if result.stations else "unknown"
+    more = f" (+{len(result.stations) - 10} more)" if len(result.stations) > 10 else ""
+    return (
+        f"[SAPPHIRE staging] observations went UNCHECKED — host: {hostname}, "
+        f"time: {now.isoformat()}, last_run: {when}, "
+        f"station_parameter_groups: {groups}, observations: {obs}, "
+        f"stations: {shown}{more} "
+        f"(no QC rule matched the inferred cadence; the readings are stored "
+        f"qc_unchecked and are excluded from alerting, skill and training)"
+    )
+
+
+def _format_qc_unchecked_recovery_alert(*, hostname: str, now: datetime) -> str:
+    """Plan 318 T2. Recovery = no record within the lookback, i.e. the ordinary
+    healthy state has returned."""
+    return (
+        f"[SAPPHIRE staging] observation QC RECOVERED — no unchecked groups "
+        f"in the last {_format_minutes_aware_duration(QC_UNCHECKED_LOOKBACK)} — "
+        f"host: {hostname}, time: {now.isoformat()}"
+    )
+
+
 def _format_bafu_obs_stale_alert(
     *, hostname: str, now: datetime, result: BafuFreshnessResult
 ) -> str:
@@ -1569,6 +1769,9 @@ class WatchdogConfig:
     # Plan 116: same semantics as bafu_health_detail_url, for the
     # forecast-production freshness check.
     forecast_freshness_health_detail_url: str | None = None
+    # Plan 318 T2: same semantics as the URLs above, for the zero-rule QC
+    # PRESENCE check. ⛔ Not a freshness check — see `probe_qc_unchecked`.
+    qc_unchecked_health_detail_url: str | None = None
     # Plan 147 Slice C: admin-scoped probe token for the now-authenticated
     # `/health/detail`.
     probe_token_path: Path = DEFAULT_PROBE_TOKEN_PATH
@@ -1615,6 +1818,8 @@ def run_once(
     forecast_freshness_probe: Callable[
         [str], ForecastFreshnessResult
     ] = probe_forecast_freshness,
+    # Plan 318 T2: the zero-rule QC PRESENCE probe, injected like every other.
+    qc_unchecked_probe: Callable[[str], QcUncheckedResult] = probe_qc_unchecked,
     deadman_poster: DeadmanPoster = default_deadman_poster,
     # Plan 194: the backup-target device predicate, injected like every
     # other probe above so tests can stub the OS-level device/mount checks
@@ -2081,6 +2286,67 @@ def run_once(
     else:
         state = replace(state, consecutive_bafu_obs_failures=0)
 
+    # --- Zero-rule QC presence (Plan 318 T2, additive) ---------------------
+    # 🔴 THE POLARITY IS INVERTED relative to every check above. Those alarm
+    # when a heartbeat is MISSING. Plan 318 T1 writes a record only on a run
+    # that had a zero-rule group, so here a record FOUND (and recent) is the
+    # alarm and no record is the healthy steady state. Copying the freshness
+    # shape above would alert on every healthy tick.
+    qc_unchecked_url = (
+        config.qc_unchecked_health_detail_url
+        or _qc_unchecked_url_from_health(config.health_url)
+    )
+    qc_unchecked_result = qc_unchecked_probe(qc_unchecked_url)
+    qc_unchecked_recent = (
+        qc_unchecked_result.checked_at is not None
+        and (now - qc_unchecked_result.checked_at) <= QC_UNCHECKED_LOOKBACK
+    )
+    qc_unchecked_fail = qc_unchecked_result.found and qc_unchecked_recent
+    log.info(
+        "watchdog.qc_unchecked_check_completed",
+        url=qc_unchecked_url,
+        found=qc_unchecked_result.found,
+        checked_at=qc_unchecked_result.checked_at.isoformat()
+        if qc_unchecked_result.checked_at
+        else None,
+        groups_affected=qc_unchecked_result.groups_affected,
+        observations_unchecked=qc_unchecked_result.observations_unchecked,
+        error=qc_unchecked_result.error,
+        recent=qc_unchecked_recent,
+        prev_failures=state.consecutive_qc_unchecked_failures,
+    )
+
+    qc_unchecked_alert_now = should_alert_health(
+        state.consecutive_qc_unchecked_failures,
+        current_ok=not qc_unchecked_fail,
+        current_fail=qc_unchecked_fail,
+    )
+
+    if qc_unchecked_alert_now:
+        if qc_unchecked_fail:
+            message = _format_qc_unchecked_alert(
+                hostname=host, now=now, result=qc_unchecked_result
+            )
+            log.warning("watchdog.qc_unchecked_alert", message=message)
+        else:
+            message = _format_qc_unchecked_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.qc_unchecked_recovery_alert", message=message)
+        if webhook:
+            posted = _safe_slack_post(slack_poster, webhook, message)
+            log.info("watchdog.slack_post_attempted", posted=posted)
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+
+    if qc_unchecked_fail:
+        state = replace(
+            state,
+            consecutive_qc_unchecked_failures=(
+                state.consecutive_qc_unchecked_failures + 1
+            ),
+        )
+    else:
+        state = replace(state, consecutive_qc_unchecked_failures=0)
+
     # --- Forecast-production freshness (Plan 116, additive) -----------------
     # A third, independently-parameterized freshness check, probing
     # `PipelineCheckType.FORECAST_FRESHNESS` (`flows/run_forecast_cycle.py`
@@ -2386,6 +2652,12 @@ def main(argv: list[str] | None = None) -> int:
     forecast_freshness_probe_bound = functools.partial(
         probe_forecast_freshness, token=probe_token
     )
+    # ⚠️ Plan 318 T2 MUST bind the token too. `/health/detail` is admin-only,
+    # and an unbound probe gets 401 → found=False → "healthy" → the check
+    # SILENTLY NEVER FIRES. The fail-safe direction that protects against a
+    # flapping probe is exactly what hides this, so it cannot be caught by
+    # watching for false alarms.
+    qc_unchecked_probe_bound = functools.partial(probe_qc_unchecked, token=probe_token)
 
     try:
         run_once(
@@ -2396,6 +2668,7 @@ def main(argv: list[str] | None = None) -> int:
             bafu_probe=bafu_probe_bound,
             bafu_obs_probe=bafu_probe_bound,
             forecast_freshness_probe=forecast_freshness_probe_bound,
+            qc_unchecked_probe=qc_unchecked_probe_bound,
         )
     except Exception as exc:  # unrecoverable: let launchd see the non-zero
         log.error("watchdog.unrecoverable_error", error=str(exc))
