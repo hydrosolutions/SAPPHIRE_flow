@@ -242,6 +242,15 @@ gates.
   slices it
 - gates: `assess_future_coverage` (horizon truncation), `assess_input_quality`
   (degraded / partial input flags)
+- Plan 316 T2 / Plan 272 D5: the model-input read and the freshness probe in BOTH
+  assemblers (`operational_inputs.py`, `track_assembly.py`) ask for
+  `MODEL_INPUT_QC_STATUSES` = `{QC_PASSED, QC_UNCHECKED}`. The coverage verdict is
+  classified from the MODEL-INPUT rows only (the probe must not degrade by itself),
+  rides `OperationalInputMetadata` / `ReadyContext` → `ModelRunContext`, and becomes a
+  `DEGRADED`/`OBSERVATION` `InputQualityFlag`. ⛔ Every other observation read still
+  excludes `QC_UNCHECKED`; the whole inventory is asserted in
+  `tests/unit/services/test_unchecked_observation_policy.py` — a NEW consumer that
+  forgets the split fails that test.
 - Plan 145 D3.2d: an empty future-NWP read (`weather_forecast_store.fetch_weather_forecasts`
   returns nothing while `reqs.future_dynamic_features` is non-empty) does
   **NOT** return `None` from `assemble_station_operational_inputs` — it logs
@@ -312,6 +321,8 @@ gates.
   `tests/unit/services/test_past_forcing_tail_fill.py`
 - `assess_input_quality` coverage (`test_input_quality.py`) when changing staleness /
   degraded-input thresholds or `OperationalInputMetadata` fields
+- `test_unchecked_observation_policy.py` when changing ANY
+  `ObservationStore.fetch_observations` call site — it holds the D5 read inventory
 - log/observability assertion if changing operational warnings
 - full Task Exit Gate for implementation PRs
 

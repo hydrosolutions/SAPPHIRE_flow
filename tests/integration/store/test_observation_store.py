@@ -463,3 +463,97 @@ class TestRatingCurveProvenance:
         )
         with pytest.raises(sa.exc.IntegrityError):
             store.store_raw_observations([wrong])
+
+
+class TestTwoStatusRead:
+    """Plan 316 T1 — a caller must be able to ask for `{QC_PASSED,
+    QC_UNCHECKED}` in ONE read.
+
+    Plan 272 D5 says forecasts accept both, but `fetch_observations` takes a
+    SCALAR status and the store filters by equality, so that policy is not
+    expressible today — which is why the consumer half of 272 was never built.
+    ⚠️ The existing single-status calls (105 of them across src and tests) must
+    keep working verbatim, or this becomes a fleet-wide edit rather than a
+    signature change.
+    """
+
+    def _seed_one_of_each(self, db_connection: sa.Connection) -> StationId:
+        sid = _seed_station(db_connection, rng_seed=31)
+        store = PgObservationStore(db_connection)
+        store.store_observations(
+            [
+                make_observation(
+                    station_id=sid,
+                    timestamp=_utc(hour=h),
+                    qc_status=status,
+                    value=float(h),
+                    rng=random.Random(31 + h),
+                )
+                for h, status in enumerate(
+                    (
+                        QcStatus.QC_PASSED,
+                        QcStatus.QC_UNCHECKED,
+                        QcStatus.QC_FAILED,
+                        QcStatus.RAW,
+                    )
+                )
+            ]
+        )
+        return sid
+
+    def test_a_two_status_read_returns_the_union(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """⛔ The RED assertion. Stated as the DESIRED behaviour: asking for two
+        statuses returns both and nothing else. It fails today because the
+        parameter is a scalar."""
+        sid = self._seed_one_of_each(db_connection)
+        store = PgObservationStore(db_connection)
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=9),
+            qc_status={QcStatus.QC_PASSED, QcStatus.QC_UNCHECKED},
+        )
+
+        assert {o.qc_status for o in fetched} == {
+            QcStatus.QC_PASSED,
+            QcStatus.QC_UNCHECKED,
+        }
+        assert len(fetched) == 2
+
+    def test_a_single_status_read_is_unchanged(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """The compatibility half, and the one that matters most: 105 existing
+        call sites pass a bare `QcStatus` and must behave exactly as before."""
+        sid = self._seed_one_of_each(db_connection)
+        store = PgObservationStore(db_connection)
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=9),
+            qc_status=QcStatus.QC_PASSED,
+        )
+
+        assert len(fetched) == 1
+        assert fetched[0].qc_status is QcStatus.QC_PASSED
+
+    def test_no_status_still_returns_everything(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = self._seed_one_of_each(db_connection)
+        store = PgObservationStore(db_connection)
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=9),
+        )
+
+        assert len(fetched) == 4

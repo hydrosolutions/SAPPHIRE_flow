@@ -407,6 +407,19 @@ class OnboardingOutcome(Enum):
     FAILED_ASSIGNMENT = "failed_assignment"
 
 
+class ObservationQcCoverage(Enum):
+    """Whether the observations behind a forecast were actually examined by QC.
+
+    Plan 272 D5: a ``QC_UNCHECKED`` reading still feeds forecasting, but the
+    forecast must carry the fact. This is the provenance the model-input reads
+    hand to :func:`sapphire_flow.services.input_quality.assess_input_quality`,
+    which the dataframe conversion would otherwise discard.
+    """
+
+    ALL_CHECKED = "all_checked"
+    CONTAINS_UNCHECKED = "contains_unchecked"
+
+
 class InputQualityLevel(Enum):
     FULL = "full"
     PARTIAL = "partial"

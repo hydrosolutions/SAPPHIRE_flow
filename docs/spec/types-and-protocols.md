@@ -559,6 +559,34 @@ class InputQualityFlag:
     detail: str
 ```
 
+### ObservationQcCoverage (Plan 316 T2)
+
+```python
+class ObservationQcCoverage(Enum):
+    ALL_CHECKED = "all_checked"
+    CONTAINS_UNCHECKED = "contains_unchecked"
+```
+
+Plan 272 D5's consumer split, made expressible. The two **model-input** reads
+(`services/operational_inputs.py`, `services/track_assembly.py`) accept
+`MODEL_INPUT_QC_STATUSES = {QC_PASSED, QC_UNCHECKED}`; each classifies the rows it
+accepted **before** the dataframe conversion, which keeps no QC column, and carries the
+verdict on `OperationalInputMetadata` / `ReadyContext` → `ModelRunContext`.
+`assess_input_quality` turns `CONTAINS_UNCHECKED` into an
+`InputQualityFlag(category=OBSERVATION, level=DEGRADED, detail=…)`, so a forecast that
+ran on unexamined readings says so instead of looking clean.
+
+Both modules also run their **freshness probe** on the same two statuses, but the
+coverage is taken from the model-input rows only — D5: *"staleness probe; does not by
+itself degrade"*.
+
+⛔ Every other consumer keeps excluding `QC_UNCHECKED`: alerting, skill, training,
+hindcast (including its in-memory re-filter), onboarding's three reads, the forecast-lab
+source, the published observed series (`api/routes/stations.py`), and calculated-station
+derivation (`services/component_derivation.py::_USABLE_STATUSES` — 272 records the
+resulting darkness as an **accepted exception**, not an oversight). The inventory is
+asserted in `tests/unit/services/test_unchecked_observation_policy.py`.
+
 ```python
 def aggregate_input_quality(flags: list[InputQualityFlag]) -> InputQualityLevel:
     """Derive aggregate InputQualityLevel from individual flags.
@@ -2573,7 +2601,13 @@ class ObservationStore(Protocol):
         parameter: str,
         start: UtcDatetime,
         end: UtcDatetime,
-        qc_status: QcStatus | None = None,  # None = all statuses
+        # Plan 316 T1: a COLLECTION expresses Plan 272 D5's "forecasts accept
+        # QC_PASSED and QC_UNCHECKED". The scalar form is NOT legacy — 105 call
+        # sites use it and it stays supported. `None` = all statuses; an EMPTY
+        # collection accepts NOTHING (it says which statuses are acceptable,
+        # and none are). ⚠️ `fetch_observations_batch` below still takes the
+        # scalar only; its sole store-side caller is a tooling script.
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,  # None = all sources
     ) -> list[Observation]: ...
     def fetch_latest_timestamp(self, station_id: StationId, parameter: str) -> UtcDatetime | None: ...
@@ -3668,6 +3702,8 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 >     inputs: StationModelInputs           # shared in Phase 1 (referenced, not copied) — per-assignment inputs
 >                                           # are a later phase (component 3 above)
 >     observation_staleness_hours: float | None   # shared non-state scalar, copied from OperationalInputMetadata
+>     observation_qc_coverage: ObservationQcCoverage  # Plan 316 T2, likewise copied — the QC-coverage verdict
+>                                           # the dataframe conversion drops; feeds assess_input_quality
 >     nwp_age_hours: float | None                 # shared non-state scalar, copied from OperationalInputMetadata
 >     prior_state: bytes | None            # per-assignment (Plan 148's fix: no longer shared across assignments)
 >     warm_up_source: WarmUpSource         # per-assignment

@@ -312,6 +312,7 @@ def _build_station_result(
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
         observation_staleness_hours=input_metadata.observation_staleness_hours,
+        observation_qc_coverage=input_metadata.observation_qc_coverage,
         warm_up_source=input_metadata.warm_up_source,
         warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
         nwp_cycle_source=nwp_cycle_source,
