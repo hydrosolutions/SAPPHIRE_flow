@@ -7,7 +7,7 @@ title: Past and future inputs are contiguous only at the midnight cycle — 3 of
 scope: Decide whether the issue day must appear in a daily model's inputs at a non-midnight cycle, and if so, close the gap between `past_targets`/`past_dynamic` (which end before the issue day) and `future_dynamic` (which begins after it). Explicitly NOT changing either window's own rule — both are individually correct — NOT the aggregation fix (that is the Plan 262 T3b follow-up), NOT the forecast schedule itself, NOT sub-daily models, NOT the NWP ingest or archive.
 depends_on: []
 blocks: [262]
-open_decisions: [D1, D2]  # D1 narrowed by T1; a closure for BOTH is drafted at the foot of this plan and awaits the owner
+open_decisions: [D1, D2]  # a closure is drafted at the foot of this plan; reviewed 2026-09-24 (4 majors, folded) and awaits the owner. D1 now has an ENFORCEMENT half the first draft omitted.
 source: 2026-09-21 — observed in the Plan 262 T3b live-input gate on the mac-mini at v0.1.944, then reproduced locally by computing the seam with the real functions (`aligned_lookback_bounds` and the future path's `valid_time >= issue_time` rule) at each scheduled cycle. Line anchors verified against `main` at `62ac7b9c`.
 ---
 
@@ -265,3 +265,88 @@ cycle.
 ⛔ **This plan's T2 does not run.** T2 was conditional — *"only runs if T1 says it matters"* — and
 T1 says the correctness question it was written for does not exist. Closing D1 on (a) leaves T2
 unexecuted by design, not skipped.
+
+---
+
+## 🔴 Independent review of the closure, 2026-09-24 — **PROBLEMS: 4 major.** Folded below.
+
+The closure above was reviewed before being put to the owner. It came back with four majors, all
+verified against source before folding. ⭐ **Two of them change the substance, not the wording** —
+the closure was written from a reassuring half of T1 and from a stale picture of Plan 262.
+
+### M1 — the model REFUSES; it does not silently compress. **The closure's characterisation was wrong.**
+
+The closure said the seam leaves output *"label-safe, only dynamics-compressed"*. That overlooks an
+earlier gate. Verified at the pinned revision:
+
+- `operational/datasource.py::_block_problems` requires **every** consecutive gap to equal the
+  declared step — `delivered_diffs != [declared]` is a problem (`:538-545`). A seam gap delivers
+  `{1 day, 2 days}` and fails it.
+- `_cadence_problem` runs at `datasource.py:100` — **before any flattening or tensor construction**.
+- The result is `ModelFailure(cause=INPUT_DATA)` (`operational/model.py:637-643`).
+
+⇒ **The positional compression T1 identified describes what an admitted gappy tensor WOULD do. It is
+not reachable for this feed**, because the gappy tensor is never built. ⭐ This is *better* news than
+the closure claimed — a loud typed refusal, not a quiet degradation — but it is a different
+operational fact: **a non-midnight cycle produces NOTHING, not a worse forecast.** ⛔ *Do not carry
+the phrase "merely dynamics-compressed" forward; it names a behaviour the gate prevents.*
+
+### M2 — option (a) requires an ENFORCED restriction, and T2 is deferred, not dismissed.
+
+The closure correctly noted that observing the midnight cycle does not stop the other three firing,
+then left enforcement undecided **while lifting the blocker anyway**. That is the waved-through
+half. Owner risk-acceptance is legitimate; it does not substitute for the technical judgement:
+
+⇒ **(a) is only (a) if the restriction is enforced.** An unenforced (a) is "run on all four cycles
+and look at one", which under M1 means three cycles a day returning `INPUT_DATA` failures.
+
+⇒ **T2 is DEFERRED under that restriction — ⛔ not "does not run by design".** The closure's
+reasoning (correct labels ⟹ the seam does not matter) does not survive M1. ⚠️ And note the trap:
+**midnight-only output can never measure the effect of a seam it never encounters**, so the residual
+question cannot be answered from pilot output alone while (a) holds. The closure implied it could.
+
+### M3 — "3 of 4 cycles" is NOMINAL. Even the midnight cycle is not automatically continuous.
+
+`_resolve_cycle_time` (`flows/run_forecast_cycle.py:698-704`) returns **`clock()`** when no explicit
+cycle time is supplied. A cron-scheduled midnight run therefore issues at, say, `00:00:37Z` — and
+under the future window's `valid_time >= issue_time` rule the `00:00Z` bucket is **dropped**.
+
+⇒ **Option (a) requires an explicitly PINNED issue time, not a schedule.** ⭐ Plan 262's own
+execution record already learned this class of error on 2026-09-22 — *"a live-input check MUST
+resolve the real cycle via `fetch_latest_cycle_time`, never wall clock"* — and its T5 run did pin
+`cycle_time` to `00:00Z` for exactly this reason. The closure did not carry that forward.
+
+### M4 — the "remaining path" in the closure is STALE. Most of it is already done.
+
+The closure proposed *re-register schema → T4 import → T3b gate and assign → T5*. Plan 262's
+execution record says otherwise, and the code confirms it:
+
+| step | actual state |
+|---|---|
+| T4 import | **DONE** — the artifact is an ACTIVE row |
+| T3b live-input gate | **RERUN 2026-09-22 and PASSES** — the ~142× inflation is gone; `discharge → mean` verified inside the running worker |
+| T3b assignment | **DONE 2026-09-22** — `create_group_assignment`, audited, `priority=50` |
+| T5 | **RAN and FAILED** at the model: `station_code_resolver required for GROUP input conversion` |
+| the resolver | **FIXED AND DEPLOYED** — Plan 312 (#296) at v0.1.957; staging runs v0.1.965. Present at `flows/run_forecast_cycle.py:2119` |
+
+⇒ **The real remaining path is three steps, not five:**
+1. **Close D1 including its enforcement half** (M2) — the only genuinely open question.
+2. **Re-run 262 T5** on an **explicitly pinned** `00:00Z` issue time (M3), with the resolver fix
+   confirmed live on the host rather than inferred from the version number.
+3. **262 T6** — record what the pilot proved and what it did not.
+
+⚠️ **Plan 312 still reads `status: READY` with `blocks: [262]` although it is merged and deployed.**
+That is a stale machine field on a live gate — it should be reconciled with 262's, not left to be
+rediscovered.
+
+### What this does to the proposed closure
+
+- **D1's recommendation stands — (a) — but for a corrected reason** (M1: the alternative is three
+  daily typed refusals, not degraded forecasts) and **with an added obligation**: the restriction
+  must be enforced and the issue time pinned (M2, M3).
+- **D2 is unchanged.** The review called its "Nepal unexamined" caveat appropriately cautious.
+- **The residual's carrier stands**, but ⚠️ **it cannot be answered from pilot output while (a)
+  holds** (M2) — whoever carries it needs a different evidence route, and that should be said when
+  it is handed over.
+- ⛔ **`blocks: [262]` does NOT lift on this text alone.** It lifts when D1 is closed *including*
+  enforcement. The closure's claim that confirmation alone unblocks 262 was premature.
