@@ -68,7 +68,7 @@ if TYPE_CHECKING:
         StationForecastQcOverride,
     )
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.enums import NwpCycleSource
+    from sapphire_flow.types.enums import NwpCycleSource, ObservationQcCoverage
     from sapphire_flow.types.model import StationModelInputs
     from sapphire_flow.types.station import ModelAssignment
 
@@ -222,6 +222,7 @@ def _run_single_model(
     assignment: ModelAssignment,
     inputs: StationModelInputs,
     observation_staleness_hours: float | None,
+    observation_qc_coverage: ObservationQcCoverage,
     nwp_age_hours: float | None,
     model_state_store: ModelStateStore,
     models: dict[ModelId, ForecastModel],
@@ -395,6 +396,7 @@ def _run_single_model(
         model_id=assignment.model_id,
         inputs=inputs,
         observation_staleness_hours=observation_staleness_hours,
+        observation_qc_coverage=observation_qc_coverage,
         nwp_age_hours=nwp_age_hours,
         prior_state=warm_up.prior_state,
         warm_up_source=warm_up.warm_up_source,
@@ -578,6 +580,7 @@ def _run_single_model(
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
         observation_staleness_hours=context.observation_staleness_hours,
+        observation_qc_coverage=context.observation_qc_coverage,
         warm_up_source=context.warm_up_source,
         warm_up_state_age_hours=context.warm_up_state_age_hours,
         nwp_cycle_source=nwp_cycle_source,
@@ -659,6 +662,7 @@ def run_all_station_forecasts(
     # (Plan 148 D3) — every assignment's own warm-up state is read separately,
     # per-assignment, inside ``_run_single_model``.
     observation_staleness_hours = input_metadata.observation_staleness_hours
+    observation_qc_coverage = input_metadata.observation_qc_coverage
     nwp_age_hours = input_metadata.nwp_age_hours
 
     results: dict[ModelId, StationForecastResult] = {}
@@ -674,6 +678,7 @@ def run_all_station_forecasts(
                 assignment=assignment,
                 inputs=inputs,
                 observation_staleness_hours=observation_staleness_hours,
+                observation_qc_coverage=observation_qc_coverage,
                 nwp_age_hours=nwp_age_hours,
                 model_state_store=model_state_store,
                 models=models,
@@ -798,6 +803,7 @@ def run_all_station_forecasts_per_track(
             case ReadyContext(
                 inputs=run_inputs_data,
                 observation_staleness_hours=observation_staleness_hours,
+                observation_qc_coverage=observation_qc_coverage,
                 nwp_age_hours=nwp_age_hours,
                 provenance=provenance,
                 contract=contract,
@@ -810,6 +816,7 @@ def run_all_station_forecasts_per_track(
                 assignment=assignment,
                 inputs=run_inputs_data,
                 observation_staleness_hours=observation_staleness_hours,
+                observation_qc_coverage=observation_qc_coverage,
                 nwp_age_hours=nwp_age_hours,
                 model_state_store=model_state_store,
                 models=models,

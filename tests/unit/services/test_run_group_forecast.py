@@ -27,6 +27,7 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
+    ObservationQcCoverage,
     QcStatus,
     WarmUpSource,
 )
@@ -37,6 +38,7 @@ from sapphire_flow.types.model import (
     StationModelInputs,
 )
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
+from tests.conftest import make_observation
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
@@ -124,11 +126,15 @@ def _make_station_inputs(
     )
 
 
-def _make_metadata(nwp_age_hours: float) -> OperationalInputMetadata:
+def _make_metadata(
+    nwp_age_hours: float,
+    observation_qc_coverage: ObservationQcCoverage = ObservationQcCoverage.ALL_CHECKED,
+) -> OperationalInputMetadata:
     return OperationalInputMetadata(
         warm_up_source=WarmUpSource.FRESH,
         warm_up_state_age_hours=1.0,
         observation_staleness_hours=0.5,
+        observation_qc_coverage=observation_qc_coverage,
         nwp_age_hours=nwp_age_hours,
     )
 
@@ -1166,3 +1172,107 @@ class TestGroupCoverageGuard:
 
         assert set(results) == {sid_a, sid_b}
         assert model.predict_calls == 1
+
+
+class TestUncheckedObservationProvenanceReachesTheGroupForecast:
+    """Plan 316 T2 verification: the ``DEGRADED``/``OBSERVATION`` flag must be
+    readable at GROUP level, not merely set inside the loader. Driven by the
+    REAL ``assemble_group_operational_inputs`` — the per-station assembler is
+    what classifies the coverage, so hand-built metadata would prove nothing
+    about whether the group route carries it."""
+
+    @staticmethod
+    def _seed(
+        obs_store: FakeObservationStore, sid: StationId, qc: QcStatus, seed: int
+    ) -> None:
+        # A distinct seed per station: `make_observation` derives the
+        # observation id from the rng, so a shared one would make the second
+        # station's rows collide with the first's in the fake store.
+        rng = random.Random(seed)
+        lookback = FakeGroupForecastModel.data_requirements.lookback_steps
+        obs_store.store_observations(
+            [
+                make_observation(
+                    station_id=sid,
+                    parameter="discharge",
+                    value=10.0,
+                    timestamp=ensure_utc(_ISSUE - (lookback - step) * _STEP),
+                    qc_status=qc,
+                    rng=rng,
+                )
+                for step in range(lookback)
+            ]
+        )
+
+    def test_only_the_unchecked_station_is_degraded_on_observation(self) -> None:
+        unchecked_sid = StationId(uuid4())
+        checked_sid = StationId(uuid4())
+        group = _make_group(unchecked_sid, checked_sid)
+
+        obs_store = FakeObservationStore()
+        self._seed(obs_store, unchecked_sid, QcStatus.QC_UNCHECKED, seed=316)
+        self._seed(obs_store, checked_sid, QcStatus.QC_PASSED, seed=317)
+
+        state_store = FakeModelStateStore()
+        for sid in (unchecked_sid, checked_sid):
+            state_store.store_state(
+                sid, _MODEL_ID, ensure_utc(_ISSUE - timedelta(hours=1)), b"state"
+            )
+
+        assemble_result = service.assemble_group_operational_inputs(
+            group=group,
+            model=FakeGroupForecastModel(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source_by_station={
+                unchecked_sid: "icon_ch2_eps",
+                checked_sid: "icon_ch2_eps",
+            },
+            forcing_source=FakeWeatherReanalysisSource(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            obs_store=obs_store,
+            station_store=FakeStationStore(),
+            basin_store=FakeBasinStore(),
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=2,
+            time_step=_STEP,
+        )
+        assert assemble_result is not None
+        group_inputs, metadata_by_station = assemble_result
+
+        artifact_store = FakeModelArtifactStore()
+        _seed_group_artifact(artifact_store, group)
+        results = _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=metadata_by_station,
+            model=_BatchGroupModel(
+                {
+                    unchecked_sid: (
+                        {"discharge": _make_ensemble(unchecked_sid, 10.0)},
+                        None,
+                    ),
+                    checked_sid: (
+                        {"discharge": _make_ensemble(checked_sid, 20.0)},
+                        None,
+                    ),
+                }
+            ),
+            artifact_store=artifact_store,
+        )
+
+        def _observation_levels(sid: StationId) -> list[InputQualityLevel]:
+            return [
+                flag.level
+                for flag in results[sid].forecasts[0].input_quality_flags
+                if flag.category == InputQualityCategory.OBSERVATION
+            ]
+
+        assert _observation_levels(unchecked_sid) == [InputQualityLevel.DEGRADED]
+        assert _observation_levels(checked_sid) == []
+        assert (
+            results[unchecked_sid].forecasts[0].input_quality
+            is InputQualityLevel.DEGRADED
+        )

@@ -18,17 +18,42 @@ if TYPE_CHECKING:
 
     from sapphire_flow.config.deployment import InputQualityConfig
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.observation import Observation
 from sapphire_flow.types.enums import (
     InputQualityCategory,
     InputQualityLevel,
     NwpCycleSource,
+    ObservationQcCoverage,
+    QcStatus,
     WarmUpSource,
 )
+
+# Plan 272 D5 / Plan 316 T2: the statuses a MODEL-INPUT read accepts. An
+# observation no QC rule could be selected for is still forecast on — it is
+# the forecast's `input_quality` that carries the fact, not an exclusion.
+# ⛔ Every other consumer (alerting, skill, training, hindcast, onboarding,
+# calculated-station derivation, the forecast lab) keeps asking for
+# QC_PASSED alone.
+MODEL_INPUT_QC_STATUSES: frozenset[QcStatus] = frozenset(
+    {QcStatus.QC_PASSED, QcStatus.QC_UNCHECKED}
+)
+
+
+def classify_observation_qc_coverage(
+    observations: Iterable[Observation],
+) -> ObservationQcCoverage:
+    """The coverage fact, taken BEFORE the dataframe conversion drops it."""
+    return (
+        ObservationQcCoverage.CONTAINS_UNCHECKED
+        if any(obs.qc_status is QcStatus.QC_UNCHECKED for obs in observations)
+        else ObservationQcCoverage.ALL_CHECKED
+    )
 
 
 def assess_input_quality(
     *,
     observation_staleness_hours: float | None,
+    observation_qc_coverage: ObservationQcCoverage,
     warm_up_source: WarmUpSource | None,
     warm_up_state_age_hours: float | None,
     nwp_cycle_source: NwpCycleSource,
@@ -50,6 +75,20 @@ def assess_input_quality(
         )
 
     flags: list[InputQualityFlag] = []
+
+    # Plan 272 D5: unchecked observations reach forecasting, and say so. This
+    # is INDEPENDENT of staleness below — a fresh reading no rule examined is
+    # degraded provenance, not a stale one.
+    if observation_qc_coverage is ObservationQcCoverage.CONTAINS_UNCHECKED:
+        flags.append(
+            InputQualityFlag(
+                category=InputQualityCategory.OBSERVATION,
+                level=InputQualityLevel.DEGRADED,
+                detail=(
+                    "Observations include readings no QC rule examined (qc_unchecked)"
+                ),
+            )
+        )
 
     # Observation staleness
     if observation_staleness_hours is not None:

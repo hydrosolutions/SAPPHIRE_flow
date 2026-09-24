@@ -32,6 +32,7 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
+    ObservationQcCoverage,
     QcStatus,
     SpatialRepresentation,
     WarmUpSource,
@@ -73,11 +74,13 @@ def _make_metadata(
     warm_up_source: WarmUpSource = WarmUpSource.FRESH,
     observation_staleness_hours: float | None = 1.0,
     nwp_age_hours: float = 0.5,
+    observation_qc_coverage: ObservationQcCoverage = ObservationQcCoverage.ALL_CHECKED,
 ) -> OperationalInputMetadata:
     return OperationalInputMetadata(
         warm_up_source=warm_up_source,
         warm_up_state_age_hours=None,
         observation_staleness_hours=observation_staleness_hours,
+        observation_qc_coverage=observation_qc_coverage,
         nwp_age_hours=nwp_age_hours,
     )
 
@@ -920,6 +923,7 @@ class TestAssignmentOutcomeShape:
             assignment=_make_assignment(_MODEL_ID_A),
             inputs=_make_inputs(),
             observation_staleness_hours=1.0,
+            observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
             nwp_age_hours=0.5,
             model_state_store=FakeModelStateStore(),
             models={_MODEL_ID_A: FakeStationForecastModel()},  # type: ignore[dict-item]

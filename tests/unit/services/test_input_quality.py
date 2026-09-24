@@ -21,6 +21,7 @@ from sapphire_flow.types.enums import (
     InputQualityCategory,
     InputQualityLevel,
     NwpCycleSource,
+    ObservationQcCoverage,
     WarmUpSource,
 )
 
@@ -28,6 +29,7 @@ from sapphire_flow.types.enums import (
 def _default_kwargs() -> dict:
     return dict(
         observation_staleness_hours=0.0,
+        observation_qc_coverage=ObservationQcCoverage.ALL_CHECKED,
         warm_up_source=WarmUpSource.FRESH,
         warm_up_state_age_hours=None,
         nwp_cycle_source=NwpCycleSource.PRIMARY,

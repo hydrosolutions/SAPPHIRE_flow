@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence  # noqa: TC003
+from collections.abc import (
+    Collection,  # noqa: TC003 — runtime isinstance/set use in fetch_observations
+    Sequence,  # noqa: TC003
+)
 from dataclasses import replace
 from datetime import UTC, date, datetime  # noqa: TC003
 from pathlib import Path
@@ -195,17 +198,27 @@ class FakeObservationStore:
         parameter: str,
         start: UtcDatetime,
         end: UtcDatetime,
-        qc_status: QcStatus | None = None,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
         self.fetch_observations_call_count += 1
+        # Plan 316 T1: mirror the store's scalar-or-collection filter exactly.
+        # A fake that accepted only the scalar would make every two-status
+        # caller untestable against it.
+        accepted: set[QcStatus] | None
+        if qc_status is None:
+            accepted = None
+        elif isinstance(qc_status, QcStatus):
+            accepted = {qc_status}
+        else:
+            accepted = set(qc_status)
         return [
             o
             for o in self._observations.values()
             if o.station_id == station_id
             and o.parameter == parameter
             and start <= o.timestamp < end
-            and (qc_status is None or o.qc_status == qc_status)
+            and (accepted is None or o.qc_status in accepted)
             and (source is None or o.source == source)
         ]
 
