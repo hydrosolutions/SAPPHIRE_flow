@@ -252,7 +252,7 @@ unqualified station as a water-level target.
 **Outcome:** the operator has a per-station readiness report for model
 onboarding, and the staging records remain in the `onboarding` lifecycle state.
 
-**In:** the Plan 143 operator runbook and checks for basin/binding, supported
+**In:** `docs/operations/nepal-station-onboarding-runbook.md` and checks for basin/binding, supported
 forcing, target-history, QC, tenant, and unmet model-input requirements.
 **Out:** model assignment, training, hindcast, operational promotion, schedule
 registration, alerts.
