@@ -612,6 +612,22 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — developer workflow (C)
 
+- **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
+  — `READY`, both owner decisions closed 2026-09-24 (four shards; the shards'
+  coverage stitched back into one number; ⛔ no threshold introduced — none
+  exists today). Follows PR #300, which fixed test-worker ISOLATION and so made
+  CI reliable without making it faster: CI already ran `-n auto`, and the gap is
+  the runner (2–4 cores against 12 locally). Measured: 11m18s serial / 2m49s
+  `-n auto` / 3m09s with coverage, against 11m53s–13m22s for the same CI job.
+  ⚠️ Two things a reader should carry from it: **N shards pay the geospatial apt
+  setup N times** and take N times the exposure to a step whose own comment
+  records eight stalls in one day — stated as a risk to measure, not a predicted
+  failure rate; and **a test in no shard runs nowhere and nothing fails**, which
+  caught this plan's own first draft (a directory split that silently dropped the
+  44 tests sitting directly in `tests/unit/`). The split is therefore proved by
+  collected NODE ID, not by directory. Three review rounds; the evidence was
+  wrong twice — once from counting `def test_` (parametrisation diverges), once
+  from running the count in the WRONG WORKTREE.
 - **231 / 232 / 233** — `SUPERSEDED` by 242 after PR #247 dogfood showed their
   manifests, fingerprints, evidence schemas, and confirmation mechanics made the
   workflows slower and less reliable.
