@@ -547,7 +547,8 @@ git push / open PR
         ▼
 [CI gate — GitHub Actions ci.yml]
   Tier 1 lint     → ruff format --check, ruff check, trivy fs
-  Tier 2 unit     → pytest tests/unit/ (system deps + postgres service)
+  Tier 2 unit     → pytest tests/unit/ across FOUR sharded jobs, `-n auto` in each (system deps)
+  Tier 2 unit-coverage → coverage combine over the four shards → one whole-suite number
   Tier 2 wheel    → wheel-only-guard (no-build uv sync)
   Tier 3 integration → pytest tests/integration/ (postgres service)
   Tier 4 build    → docker buildx build, trivy image, syft SBOM
@@ -557,7 +558,7 @@ git push / open PR
 merge to main
 ```
 
-Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests, and (Plan 201 T3 layer 3) a full SEQUENTIAL `tests/unit/` run that catches test-ordering / global-state leaks the push/PR path's `-n auto` unit job cannot see; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
+Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests, and (Plan 201 T3 layer 3) a full SEQUENTIAL `tests/unit/` run that catches test-ordering / global-state leaks the push/PR path's sharded, `-n auto` unit jobs cannot see; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
 
 ### Known external-dependency caveats
 
@@ -578,7 +579,8 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 
 Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
 
-- **Every job sets `timeout-minutes`** — `lint` 10, `unit` 25, `wheel-only-guard` 15, `integration` 25, `build-image-and-scan` 30. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
+- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration` 25, `build-image-and-scan` 60. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires. (Values re-read from `ci.yml` on 2026-09-24, Plan 319; the previous figures had drifted.)
+- **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
 
 <!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
@@ -604,7 +606,12 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 2 | `unit` | `Install (no aquacast extra — degraded)` — `uv sync --frozen` + `::warning::` (Plan 185 D1 case 2 / D3) | — | `uv sync` | Yes — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot |
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
 | 2 | `unit` | `Plan 201 regression — known ordering leak stays fixed (sequential)` — runs the 4-file Plan 201 reproducer sequentially and asserts it passes (Plan 201 T3 layer 2) | — | `uv run pytest -q tests/unit/cli/test_export_forecast_lab.py tests/unit/flows/test_compute_skills.py tests/unit/scripts/test_backfill_meteoswiss_history_script.py tests/unit/services/skill/test_combined_skill.py` | No |
-| 2 | `unit` | `uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing` (corrected 2026-08-28, Plan 201 — this row previously showed `-v` with no `-n auto`, which had drifted from `ci.yml:277`) | — | `uv run pytest tests/unit/` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
+| 2 | `unit` | `Run unit shard` — `uv run pytest $(uv run python tools/unit_shards.py --pytest-args <shard>) -n auto --cov=src/sapphire_flow --cov-report=` (Plan 319; runs once per matrix leg, and echoes that leg's wall-clock as a `::notice::`). Was a single unsharded `uv run pytest tests/unit/ … --cov-report=term-missing` step until 2026-09-24 | — | `uv run pytest tests/unit/` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
+| 2 | `unit` | `Upload this shard's coverage data` (`uses: actions/upload-artifact`, `if-no-files-found: error`) | `Run unit shard` | n/a — a local run needs no stitching | Yes — feeds the `unit-coverage` job |
+| 2 | `unit-coverage` | `Configure git auth for the private clones` | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 2 | `unit-coverage` | `uv sync --frozen` | — | `uv sync` | No |
+| 2 | `unit-coverage` | `Download every shard's coverage data` (`uses: actions/download-artifact`, `pattern: unit-coverage-*`, `merge-multiple: true`) | `unit` (all legs) | n/a | Yes — reads the Actions artifact store |
+| 2 | `unit-coverage` | `Combine the shards into one whole-suite number` — `uv run coverage combine coverage-data/shard.*.coverage` then `uv run coverage report --show-missing` (Plan 319 D2a) | the download step | `uv run pytest tests/unit --cov=src/sapphire_flow --cov-report=term-missing` (one unsharded local run already prints the whole-suite number) | Yes — only a sharded run needs combining |
 | 2 | `wheel-only-guard` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client` | — | Same command | No |
 | 2 | `wheel-only-guard` | Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client` | Step 1 guard | Same command | No |
@@ -635,6 +642,63 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | Scheduled (event-driven) | `retry` | `gh run list ...` (Cap retries at 12 per day) | live-lindas-weekly.yml failure | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
 | Scheduled (event-driven) | `retry` | `sleep 300` (Wait 5 minutes for BAFU LINDAS to recover) | n/a | n/a (event-triggered automation) | Yes — bounded wait for upstream recovery |
 | Scheduled (event-driven) | `retry` | `gh workflow run live-lindas-weekly.yml` (Re-dispatch live-lindas-weekly.yml) | sleep | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
+
+### The unit-suite shard matrix (Plan 319)
+
+The `unit` job runs as a **four-leg matrix**, one leg per shard, each on its own
+runner: `scripts`, `services`, `adapters-flows`, `rest`. `-n auto` (Plan 300)
+stays **inside** each leg — the shards add runners, they do not replace
+in-runner parallelism. `fail-fast: false`, so one red leg does not cancel the
+other three's verdicts.
+
+Why: `-n auto` already used every core of one runner, and `ubuntu-latest` gives
+2-4 cores against 12 on a developer machine. The same suite took 12-13 minutes
+in CI and under 3 minutes locally; more parallelism inside one runner could not
+close that, more runners can. The trade is that **each leg pays the setup cost
+in full** — checkout, `setup-uv`, and the `apt-get` step for cfgrib / rioxarray
+/ exactextract — so four legs take four times the exposure to that step's known
+stalls. That is the reason the shard count is four and not eight.
+
+**The shard definitions live in `tools/unit_shards.py`, not in `ci.yml`.** The
+workflow asks that module for each leg's pytest arguments
+(`--pytest-args <shard>`), so no test path is written twice.
+
+🔴 **The last shard is COMPUTED, never listed.** It is `tests/unit` with one
+`--ignore` per path the named groups claim — "whatever the first three are not".
+This is not a stylistic preference. A split that enumerates subdirectories
+silently stops covering whatever it forgets, and **a test in no shard runs
+nowhere and fails nothing**: the suite goes green having run less. An earlier
+draft of Plan 319 enumerated the subdirectories and thereby dropped the 44 tests
+that live in files directly under `tests/unit/` (`test_config.py`,
+`test_check.py`, `test_structlog_cache_isolation.py` and others). Adding a named
+group is safe; replacing the computed catch-all with a list is not.
+
+`tests/unit/tools/test_unit_shards.py` proves the split **by collected node
+id** — the union of the four legs' `--collect-only` ids equals the unsharded
+collection as sets, with no id in two legs. A directory-level check would not
+do: it cannot see the root-level files, and directory coverage plus a total
+count cannot tell "each node ran once" from "one ran twice and another never".
+
+Two things deliberately stay **unsharded**:
+
+- **The Plan 201 sequential ordering-leak canary** runs its four named files in
+  a fixed order and asserts an exact node id reports PASSED. It is pinned to the
+  `scripts` leg (`if: matrix.shard == 'scripts'`) so the matrix cannot multiply
+  it: one place, one run, unchanged.
+- **Coverage** (Plan 319 D2a). Each leg writes a data file
+  (`COVERAGE_FILE=coverage-data/shard.<shard>.coverage`, `--cov-report=` so no
+  per-shard percentage is printed) and uploads it; the `unit-coverage` job then
+  runs `coverage combine` + `coverage report --show-missing` for the single
+  whole-suite number a PR reader has always seen. Four partial percentages, each
+  looking like a regression against the old number, is what D2 rejected. The
+  number remains **informational**: there is no `--cov-fail-under` in `ci.yml`
+  or `pyproject.toml`, and adding one is a separate decision.
+
+Each leg echoes its own wall-clock as a `::notice::`. Plan 319 D1 balanced the
+shards on **collected counts**, which are a proxy for duration and not a good
+one; that annotation is how the proxy gets checked against reality. If the legs
+come out lopsided, the answer is a duration-based split (`pytest-split`), not a
+hand-tuned group list.
 
 ### Private dependency credentials — both secret stores (Plan 185)
 

@@ -32,9 +32,16 @@ CI_ONLY_ALLOWLIST: dict[tuple[str, str], str] = {
         "system-package install (libeccodes0 libexpat1 libgeos-c1v5), "
         "not project-managed"
     ),
-    ("ci", "<unnamed step in unit>"): (
-        "uv run pytest tests/unit/: covered manually via 'uv run pytest tests/unit'; "
+    # Plan 319 renamed the unit job's pytest step and split it across a shard
+    # matrix; the whole suite still runs, one quarter per matrix leg.
+    ("ci", "Run unit shard"): (
+        "uv run pytest <shard>: covered manually via 'uv run pytest tests/unit'; "
         "not gated by uv run check by design (requires system deps)"
+    ),
+    ("ci", "Combine the shards into one whole-suite number"): (
+        "uv run coverage combine/report over the shards' uploaded data files "
+        "(Plan 319 D2a); nothing to run locally - one unsharded local run "
+        "already prints the whole-suite number"
     ),
     # ── ci.yml / wheel-only-guard ────────────────────────────────────────────
     # (uv sync --frozen --no-build ... is covered-by-uv-sync)

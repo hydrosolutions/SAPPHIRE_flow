@@ -93,6 +93,23 @@ jobs:
 
   unit:
     runs-on: ubuntu-latest
+    # Plan 319 — one leg per shard, each on its own runner. `-n auto` (Plan 300)
+    # already used every core of ONE runner; `ubuntu-latest` gives 2-4 of them
+    # against 12 on a developer machine, which is why the same suite took 12-13
+    # minutes here and under 3 locally. More parallelism inside one runner
+    # cannot close that gap; more runners can.
+    #
+    # The shard IDs are the source of truth in tools/unit_shards.py, which also
+    # derives each leg's pytest arguments — no test path is repeated in this
+    # file. tests/unit/tools/test_unit_shards.py proves, by collected node id,
+    # that the legs partition the suite exactly. The hazard it defends against
+    # is a test in NO shard: it runs nowhere, and nothing fails.
+    strategy:
+      # Every shard's verdict is wanted: cancelling the other three on the first
+      # red would hide whether a failure is local to one shard.
+      fail-fast: false
+      matrix:
+        shard: [scripts, services, adapters-flows, rest]
     # Plan 185 D6 — pinned exactly. Specifying ANY permissions block zeroes the
     # unspecified ones, so contents: read must be restated here or checkout
     # breaks; pull-requests: read is new, for the `gh api` lock-change check
@@ -101,8 +118,10 @@ jobs:
     # 30, not 25: the bounded steps below sum to 27 as written, though only 22
     # are EXECUTABLE together — the two `Install (...)` variants are mutually
     # exclusive (Plan 309 T2 added the `gh api` bound). The job's own pytest step
-    # is unbounded and takes ~11 minutes, so at 25 a hung fetch plus a normal test
-    # run could cancel the job.
+    # is unbounded; before Plan 319 it took ~11 minutes and a shard of it takes a
+    # fraction of that. Left at 30 rather than tightened: the headroom bounds a
+    # hung fetch plus a normal test run, and sharding makes the setup steps above
+    # no faster — each of the four legs pays them in full.
     timeout-minutes: 30
     env:
       # Plan 185 D2 — read once at job level: a step-level `if:` cannot
@@ -282,6 +301,11 @@ jobs:
       # installed case PROVES the shim test ran, not just that the process
       # didn't crash. Because exactly one node is requested, no other test
       # can satisfy the grep.
+      #
+      # Plan 319 deliberately did NOT pin this to one matrix leg: each leg is a
+      # separate runner with its own install, so the proof is worth having on
+      # each. Its `if:` is the safety property Plan 185 D1 case 1 tests by full
+      # string — leave it alone.
       - name: Prove the aquacast shim test ran
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
         run: |
@@ -311,7 +335,14 @@ jobs:
       # nothing in the run failed, errored, or was skipped — a disappearing
       # victim then shows up as a missing PASSED line, not a silently
       # shrinking count.
+      #
+      # Plan 319 — UNSHARDED and pinned to one matrix leg. This check owns its
+      # own four files in a fixed order; splitting them across legs would
+      # destroy the very ordering it exists to exercise, and repeating it on
+      # every leg would run the same sequential probe four times. It stays
+      # exactly as it was: one place, one run, the same exact node id asserted.
       - name: Plan 201 regression — known ordering leak stays fixed (sequential)
+        if: matrix.shard == 'scripts'
         run: |
           set -o pipefail
           uv run pytest -v \
@@ -323,12 +354,106 @@ jobs:
           grep -Fq 'tests/unit/services/skill/test_combined_skill.py::TestCoverageLogging::test_coverage_log_message PASSED' "$RUNNER_TEMP/plan201-sequential.txt"
           ! grep -Eq '^[0-9]+ (failed|error)' "$RUNNER_TEMP/plan201-sequential.txt"
           ! grep -q ' skipped' "$RUNNER_TEMP/plan201-sequential.txt"
-      # -n auto: the unit suite is ~3700 tests and was the whole critical path
-      # (~15 min of a ~16 min job; setup is only ~70 s). Verified parallel-safe
-      # on 2026-08-18 — a full `tests/unit/ -n auto` run passed with workers
-      # sharing one PREFECT_HOME. Dropped `-v`: thousands of PASSED lines that
-      # nobody reads on a green run and that bury the failure on a red one.
-      - run: uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing
+      # -n auto STAYS, inside every shard (Plan 300, and Plan 319's Out-list):
+      # the shards ADD runners, they do not replace in-runner parallelism.
+      # Verified parallel-safe on 2026-08-18 and re-isolated per xdist worker by
+      # Plan 300. No `-v`: thousands of PASSED lines nobody reads on a green run
+      # that bury the failure on a red one.
+      #
+      # The scope comes from tools/unit_shards.py, never from a path written
+      # here — the `rest` shard is COMPUTED as "everything the named groups are
+      # not", so a new tests/unit subdirectory, or a test file added directly in
+      # tests/unit/, lands in a shard by construction instead of silently
+      # running nowhere.
+      #
+      # Coverage (Plan 319 D2a): each leg only WRITES its data file —
+      # `--cov-report=` suppresses the per-shard report, because four partial
+      # percentages that each look like a regression against the old whole-suite
+      # number is exactly what D2 rejected. The `unit-coverage` job below
+      # stitches the four back into the one number. It stays INFORMATIONAL:
+      # there is no --cov-fail-under here or in pyproject.toml, and adding one
+      # is a different decision.
+      - name: Run unit shard
+        env:
+          COVERAGE_FILE: ${{ github.workspace }}/coverage-data/shard.${{ matrix.shard }}.coverage
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$COVERAGE_FILE")"
+          args="$(uv run python tools/unit_shards.py --pytest-args '${{ matrix.shard }}')"
+          echo "shard ${{ matrix.shard }}: pytest $args"
+          started=$SECONDS
+          # Word-splitting $args is deliberate — it is an argument list.
+          # shellcheck disable=SC2086
+          uv run pytest $args -n auto --cov=src/sapphire_flow --cov-report=
+          # Plan 319 D1 balanced the shards on COLLECTED COUNTS, which are a
+          # proxy for duration and not a good one. This line is how that proxy
+          # gets checked against reality; if the legs come out lopsided, the
+          # answer is a duration-based split (D1 option b).
+          echo "::notice title=unit shard ${{ matrix.shard }}::wall-clock $((SECONDS - started))s"
+      - name: Upload this shard's coverage data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
+        with:
+          name: unit-coverage-${{ matrix.shard }}
+          path: coverage-data/shard.${{ matrix.shard }}.coverage
+          # error, not warn: a missing fraction would silently understate the
+          # combined number rather than fail, which is the same silence this
+          # plan exists to remove.
+          if-no-files-found: error
+
+  # Plan 319 D2a — the shards each see a fraction of the source; this job
+  # stitches their four coverage data files back into the single whole-suite
+  # number a PR reader has always had. Informational, exactly as before: no
+  # threshold is introduced here (see the shard step above).
+  #
+  # Needs no apt packages and no aquacast extra: `coverage report` reads data
+  # files and source text, it imports nothing from the project.
+  unit-coverage:
+    runs-on: ubuntu-latest
+    needs: unit
+    permissions: { contents: read }
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        timeout-minutes: 3  # downloads the uv binary (~6s observed)
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+      # recap-dg-client is a private repo (Plan 082 Task 2H) — every job that
+      # runs `uv sync` clones it, so git needs authenticated HTTPS access.
+      # Scoped via insteadOf to ONLY this repo URL.
+      - name: Configure git auth for the private clones
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and this job does
+          # not install the `aquacast` extra.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
+      - run: uv sync --frozen
+        timeout-minutes: 5  # PyPI + two private git repos
+      - name: Download every shard's coverage data
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        timeout-minutes: 3  # reads from the Actions artifact store
+        with:
+          pattern: unit-coverage-*
+          merge-multiple: true
+          path: coverage-data
+      - name: Combine the shards into one whole-suite number
+        run: |
+          set -euo pipefail
+          # One data file per shard, named by shard, so a missing leg is visible
+          # here rather than silently lowering the combined percentage.
+          ls -1 coverage-data/
+          uv run coverage combine coverage-data/shard.*.coverage
+          uv run coverage report --show-missing
 
   # A4 — Wheel-only guard for dependency-update installs.
   #
