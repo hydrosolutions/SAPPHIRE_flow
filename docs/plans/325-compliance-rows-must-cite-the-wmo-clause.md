@@ -128,8 +128,11 @@ different questions with different evidence. ⛔ *Conflating them is how the fir
 broke the existing rule — see Out.*
 
 **In.**
-- **Every row carries a WMO-reference status** — the chapter, or the marker *"publication-level;
-  chapter not located"*. One consistent marker, not eleven phrasings.
+- **Every row carries a WMO-reference status** — a located reference, or the marker
+  *"publication-level; reference not located"*. One consistent marker, not eleven phrasings.
+  ⚠️ **"Located" means a chapter for a numbered publication and a named section for a system or
+  framework** (T2). ⛔ *Wording the marker around "chapter" alone would leave the `WHOS` and `QMF-H`
+  rows permanently unsatisfiable.*
   🔴 **Every row, regardless of its code status.** The table holds **4 verified, 1 specified and 6
   deferred** rows. ⛔ *A rule that bites only on `Verified` leaves 7 rows carrying no obligation at
   all, and the deferred rows make exactly the same WMO claim.*
@@ -166,9 +169,16 @@ broke the existing rule — see Out.*
 rests on.
 
 **In.**
-- Per row: **publication number, a working URL, and the chapter — with the chapter's TITLE**, so a
-  wrong chapter is visible without opening the PDF (D1). ⛔ *Not clause, section or page: the owner
-  ruled that out, and pursuing it would slow T2 for precision nobody asked for.*
+- Per row, **one of two locator kinds**, because the table's references are not all of one shape:
+  - **A numbered publication** → publication number, a working URL, and the **chapter with its
+    TITLE**, so a wrong chapter is visible without opening the PDF (D1).
+  - 🔴 **A system or framework rather than a publication** → the authoritative document or
+    specification page for it, a working URL, and the **named section**. ⛔ *`WHOS` and `QMF-H` have
+    no publication number and no chapters. The first draft demanded "publication number + chapter"
+    from every row, which those rows cannot satisfy at all — an instruction that cannot be followed
+    is not a stricter standard, it is a task that stalls.*
+  ⛔ *Neither kind is clause, section-of-a-clause or page level: the owner ruled that out, and
+  pursuing it would slow T2 for precision nobody asked for.*
 - 🔴 **Whatever was NOT found, reported per row** — what was searched, and what came back.
   ⛔ *A row quietly left publication-level is indistinguishable from one nobody reached.*
   ⚠️ **"I could not retrieve the PDF" and "the chapter does not exist" are different findings** and
@@ -185,24 +195,37 @@ rests on.
 
 **Pre-change.** N/A — research.
 
-**Verification.** ⭐ **A reader can open the URL, turn to the named chapter, and find the subject
-there.** The chapter title is what makes a wrong locator visible on the page. ⚠️ Anything weaker is
-a topical hint, and § (1) shows we already have three of those.
+**Verification.** ⭐ **A reader can open the URL, turn to the named chapter or section, and find the
+subject there.** The chapter or section TITLE is what makes a wrong locator visible on the page.
+⚠️ Anything weaker is a topical hint, and § (1) shows we already have three of those. ⚠️ Applies to
+both locator kinds — a framework row is held to the same standard, not excused from it.
 
-### T3 — Resolve the rows with no locatable chapter (D3) — LOW PRIORITY
+### T3 — Decide the reference disposition of rows T2 could not locate (D3) — LOW PRIORITY
 
-**Outcome.** Every row is conformance, alignment, or gone — none is an unqualified claim nobody can
-check.
+**Outcome.** Every row T2 reports as not-located has a **stated reference disposition**, so no row
+carries an unqualified WMO claim that nobody can check.
 
-**In.** D3's choice applied to T2's not-found list, one row at a time, each with its reason.
+🔴 **This task settles the REFERENCE axis only.** ⛔ *The first draft said "every row is conformance,
+alignment, or gone" — wrong twice over: it contradicts D3, which expressly permits keeping a row
+marked unresolved, and it implies that locating a reference establishes CONFORMANCE. It does not.
+Seven of the eleven rows are not verified on the code axis at all, and finding their chapter does
+not change that.*
 
-**Out.** ⛔ Running before T2 reports. ⛔ Treating *"I could not retrieve the PDF"* as *"no
+**In.** D3's choice applied to T2's not-found list, one row at a time, each with its reason. The
+three dispositions D3 allows: reworded as *our own practice, consistent with WMO*; deleted; or kept
+and **marked unresolved**.
+
+**Out.** ⛔ Running before T2 reports. ⛔ Treating *"I could not retrieve the document"* as *"no
 requirement exists"* — T2 reports them separately and only the second reaches D3; the first is a
-retrieval failure to retry. ⛔ Changing any row's code-evidence status or date.
+retrieval failure to retry. ⛔ **Changing any row's code-evidence status or date** — a reference
+disposition says nothing about whether our code does the thing. ⛔ Asserting conformance for a row
+whose code evidence is still deferred.
 
 **Pre-change.** N/A.
 
-**Verification.** No row remains in the state § (1) describes.
+**Verification.** No row remains in the state § (1) describes — an unqualified claim resting on a
+publication nobody has opened. ⚠️ **A row kept and marked unresolved SATISFIES this**; the
+deliverable is a stated disposition, not the disappearance of every difficulty.
 
 ## Explicitly out of scope
 
@@ -220,7 +243,8 @@ retrieval failure to retry. ⛔ Changing any row's code-evidence status or date.
     {"phase": 1, "tasks": ["T1"], "parallel": false,
      "note": "ships immediately — the honest label does not wait on the research"},
     {"phase": 2, "tasks": ["T2"], "parallel": false, "decision": "D1 and D2 CLOSED"},
-    {"phase": 3, "tasks": ["T3"], "parallel": false, "decision": "D3 CLOSED, and T2 has reported"}
+    {"phase": 3, "tasks": ["T3"], "parallel": false, "decision": "D3 CLOSED, and T2 has reported",
+     "conditional": "runs ONLY if T2 reports at least one row it could not locate; if T2 locates every row, T3 does not run and D3 is never needed"}
   ]
 }
 ```
@@ -244,3 +268,15 @@ further prose claim sits outside the eleven-row table.
 ⭐ **The shape of all three: I extended a rule and did not check what the existing rule already
 said.** Same class as the plan's own subject — a claim asserted without opening the document it
 rests on.
+
+**2026-09-24 — round 3.** 324 came back **READY, no findings**. 325 returned **2 medium, both mine,
+both applied to the task text:**
+
+| finding | what was wrong | fix |
+|---|---|---|
+| `WHOS` acknowledged but still impossible | § (1) noted `WHOS` is a system, yet T2 still demanded *publication number + chapter* **from every row** — which `WHOS` and `QMF-H` cannot satisfy. ⛔ *The changelog claimed this was corrected when only the measured claim had been.* | T2 defines **two locator kinds**; T1's marker wording follows |
+| T3's completion contract contradicted D3 | *"conformance, alignment, or gone"* forbids the marked-unresolved outcome D3 expressly allows — and implies that finding a reference establishes **conformance**, which it does not for the seven rows with no code evidence | T3 rewritten around **reference disposition**; the phase gate is now conditional on T2 finding something |
+
+⚠️ **The recurring shape, third time:** a correction recorded in one place while its operative twin
+stood. ⭐ *Acknowledging a finding in prose is not fixing it — the test is whether the instruction
+an implementer follows has changed.*

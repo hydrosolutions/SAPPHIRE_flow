@@ -626,8 +626,10 @@ exit criteria — Plan 212 owns that deeper screening.
   PRIORITY** backlog and must not displace the v1 critical path; and the target
   is publication number + URL + **CHAPTER**, ⛔ not clause or page.
 
-- **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — `DRAFT`,
-  `open_decisions: [D1]`. From a full item-by-item audit of 272 against `main`:
+- **324** — [Plan 272's last four items](324-plan-272-last-four-items.md) — **`READY`**
+  (orchestrator 2026-09-24, after three review rounds — the middle one rejected a
+  fold that acknowledged findings in an appendix while the task text still said
+  the old thing). From a full item-by-item audit of 272 against `main`:
   its BEHAVIOUR is complete and deployed (316/317/318 close triage §A and §B),
   but four items it marked "DO NOW" or "UNCONDITIONALLY" are unshipped and
   **owned by no follow-on**. 🔴 The headline one is a WMO compliance row

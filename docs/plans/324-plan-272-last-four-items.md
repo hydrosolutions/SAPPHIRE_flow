@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-24
 revised: 2026-09-24
 plan: 324
@@ -8,7 +8,7 @@ scope: Close the four items Plan 272's own triage marked "DO NOW" or "UNCONDITIO
 depends_on: []
 blocks: []
 related: [101, 264, 272, 314, 315, 316, 317, 318, 323, 325]
-open_decisions: [D1]
+open_decisions: []
 source: 2026-09-24 — a full item-by-item audit of Plan 272 against `origin/main` at `8b68f6f8`, run because PR #297 had previously been merged believing it implemented 272 when it shipped 12 of 54 items. Every claim below was re-verified directly before drafting; each says how.
 ---
 
@@ -18,7 +18,10 @@ source: 2026-09-24 — a full item-by-item audit of Plan 272 against `origin/mai
 
 ## Status
 
-**DRAFT.** Reviewed 2026-09-24 (4 medium, 1 low — folded at the foot, with the phase order corrected and the scope narrowed by the owner). ⛔ No implementation until D1 is closed and the orchestrator sets
+**READY** — set by the orchestrator 2026-09-24, after **three** independent review rounds: 4 medium
++ 1 low, then 4 medium + 1 low again on the fold (every finding acknowledged in an appendix while
+the task text still said the old thing), then **READY with no findings** on the corrected operative
+text. D1 closed below. ⛔ *The first two rounds are why this is not "reviewed once"* and the orchestrator sets
 READY.
 
 ## Why this plan exists
@@ -97,7 +100,7 @@ Verified against `origin/main` on 2026-09-24. Commands are given so a reviewer c
 
 ## Owner decisions
 
-### D1 — how the stale-text sweep is bounded. **OPEN.**
+### D1 — how the stale-text sweep is bounded. **⚖️ CLOSED — orchestrator, 2026-09-24: (a).**
 
 § (7) and § (5) are both enumerations, and **both of my counts came from a single grep pattern.**
 The audit's count of the flag-promise sites (five) and mine (two) **disagree**, because we matched
@@ -111,8 +114,17 @@ inventory", after a sweep missed three consumers a pattern could not match.*
 | **(a)** ⭐ | **Sweep by VALUE and by CONCEPT**: for each claim, grep case-insensitively for the *thing* (the flag, the three-files claim, the consumer claim) in several spellings, and fix every hit found. The task reports the final count as a measurement, not as a target. | Slower; the number is unknown until done. Correct. |
 | (b) | Fix the sites this plan lists and stop. | ⛔ Rejected in drafting: two independent counts already disagree, so a fixed list is known-incomplete before work starts. |
 
-**Recommendation: (a).** The owner's confirmation matters because (a) means T4 has no pre-agreed
-size, and a reviewer must accept a measured count rather than a checklist.
+**⚖️ Closed on (a) — sweep by value and by concept, report the count as a measurement.**
+
+⚠️ *This was drafted as an owner decision and should not have been. The owner's response — "no need
+to... put that into a plan" on the neighbouring question, and silence here — plus the fact that (b)
+is known-incomplete before work starts, leaves exactly one defensible answer. Asking the owner to
+choose between a right option and a self-evidently wrong one is offloading a judgement, not seeking
+a decision.* ⇒ Closed by the orchestrator under its delegated sequencing authority; ⛔ the owner can
+of course overturn it.
+
+⇒ **T4 has no pre-agreed size**, and a reviewer must accept a measured count rather than tick a
+checklist.
 
 ## Tasks
 
