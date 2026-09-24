@@ -191,7 +191,13 @@ The procedure has four Gateway-side stages:
    **Backfill**, set the date range to the last seven days, enable
    reprocessing of existing runs, and start it. The backfill includes all
    subscribed geometries and variables in that range, so do not start a
-   separate run per variable. The Gateway guide says repeated backfills
+   separate run per variable. This is a shared, broad reprocessing operation,
+   not a station-scoped action: before triggering it, review which geometries
+   and variables are subscribed to `ifs__subdaily`, confirm with the Gateway
+   operator which outputs in the seven-day window will be overwritten, and
+   coordinate a run window with the owners of any other affected deployments.
+   If the affected scope or overwrite is not confirmed and authorized, stop;
+   do not trigger the backfill. The Gateway guide says repeated backfills
    overwrite the same outputs.
 
 Retain the upload confirmation, readiness status, enabled subscriptions,
