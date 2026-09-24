@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-24
 plan: 319
 title: Shard the unit suite across parallel CI jobs
@@ -7,7 +7,7 @@ scope: Split the single `unit` CI job into N jobs that run concurrently on separ
 depends_on: []
 blocks: []
 related: [201, 300]
-open_decisions: [D1, D2]
+open_decisions: []
 reviews:
   - "codex 2026-09-24 r1 — NOT READY, 3 HIGH: wrong-kind counts, a T1 self-contradiction, and a directory check that misses the root-level files"
   - "codex 2026-09-24 r2 — NOT READY, 1 HIGH: counts STILL wrong — measured in the Plan 316 worktree, not the main checkout"
@@ -21,7 +21,9 @@ source: 2026-09-24 — the owner, after PR #300 landed: "CI is still really slow
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+**READY** — set by the orchestrator 2026-09-24 on the owner's instruction, after
+three independent review rounds (see frontmatter) and with both decisions
+closed.
 
 ⚠️ **Not high-risk.** CI configuration only; no product code, no deployment.
 (There is no production deployment — see README.)
@@ -126,8 +128,8 @@ the one thing an implementer must not treat as a nicety.
 | (b) | **`pytest-split`**, which balances on a recorded durations file. | Properly balanced on DURATION, and shard count becomes a number to turn. A new dependency, plus a durations file that must be regenerated as the suite changes or the balance silently rots. |
 | (c) | **2 shards.** | Halves the setup multiplication and the § (2) exposure. Roughly half the speedup. |
 
-**Recommendation: (a) with 4** — with what it can and cannot promise stated
-plainly rather than implied.
+**⚖️ CLOSED — owner, 2026-09-24: (a), four shards.** Recorded with what it can
+and cannot promise stated plainly rather than implied.
 
 ⚠️ **A count-based estimate of ~3.3×, NOT a ceiling.** The largest shard
 (`scripts`, 1757) is **30% of 5842**, and a sharded job is only as fast as its
@@ -153,8 +155,10 @@ Today one job prints whole-suite coverage. Sharded, each shard sees a fraction.
 | (b) | **Drop coverage from the PR path; measure it on `main` only.** | Simplest, and removes the ~11%. ⛔ The number disappears from the PR where someone might act on it. |
 | (c) | Print per-shard coverage and accept four partial numbers. | ⛔ Rejected: four numbers that each look like a regression against the old one, and none is comparable. |
 
-**Recommendation: (a).** ⚠️ It is informational either way (§ 3), so this is
-about what the owner wants to SEE on a PR, not about a gate.
+**⚖️ CLOSED — owner, 2026-09-24: (a), stitch the shards back into ONE number.**
+⚠️ It is informational either way (§ 3) — this was about what the owner wants to
+SEE on a PR, not about a gate. ⛔ Do NOT add a threshold while wiring this up;
+none exists today and adding one is a different decision.
 
 ## Tasks
 
