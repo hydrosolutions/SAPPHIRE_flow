@@ -64,6 +64,23 @@ _QC_RULES = QcRuleSet(
 )
 
 
+# `rate_of_change` flags QC_SUSPECT where `range_check` flags QC_FAILED, so the
+# third verdict arm needs its own set rather than a wider shared fixture.
+_QC_RULES_WITH_RATE = QcRuleSet(
+    version="test-rate",
+    rules=(
+        *_QC_RULES.rules,
+        QcRuleParams(
+            rule_id="rate_of_change",
+            rule_version="1.0",
+            parameter="discharge",
+            time_step=timedelta(seconds=600),
+            thresholds={"max_rate": 1.0},
+        ),
+    ),
+)
+
+
 def _fixed_clock() -> UtcDatetime:
     return _NOW
 
@@ -96,13 +113,14 @@ def _run(
     obs_store: FakeObservationStore,
     station_store: FakeStationStore,
     delivered: list[RawObservation],
+    qc_rules: QcRuleSet = _QC_RULES,
 ):
     return ingest_observations_flow(
         station_store=station_store,
         obs_store=obs_store,
         baseline_store=FakeClimBaselineStore(),
         adapter=FakeStationDataSource(delivered),
-        qc_rules=_QC_RULES,
+        qc_rules=qc_rules,
         clock=_fixed_clock,
     )
 
@@ -161,6 +179,40 @@ class TestUncheckedIsReExamined:
         assert rows[70].qc_status is QcStatus.QC_FAILED
         assert [flag.rule_id for flag in rows[70].qc_flags] == ["range_check"]
         assert result.qc_failed == 1
+
+    def test_a_rejudged_row_can_come_back_suspect(self) -> None:
+        """The third verdict arm. Plan 317 verifies the row takes `QC_PASSED`,
+        `QC_SUSPECT` or `QC_FAILED` as the rules dictate; passed and failed are
+        covered above, and both reviewers of this task named suspect as the
+        gap. Here the unchecked row is the LATEST reading, so re-examination
+        gives it a predecessor and `rate_of_change` a pair to judge."""
+        station_store, station_id = _station()
+        obs_store = FakeObservationStore()
+
+        first = _run(
+            obs_store,
+            station_store,
+            [_obs(station_id, 40, 10.0)],
+            _QC_RULES_WITH_RATE,
+        )
+        assert first.qc_unchecked == 1, "precondition: the lone row goes unchecked"
+
+        result = _run(
+            obs_store,
+            station_store,
+            [
+                _obs(station_id, 70, 11.0),
+                _obs(station_id, 60, 12.0),
+                _obs(station_id, 50, 13.0),
+            ],
+            _QC_RULES_WITH_RATE,
+        )
+
+        rows = _by_minutes_ago(obs_store)
+        assert rows[40].qc_status is QcStatus.QC_SUSPECT
+        assert [flag.rule_id for flag in rows[40].qc_flags] == ["rate_of_change"]
+        assert result.qc_suspect == 1
+        assert result.qc_rechecked == 1
 
     def test_a_group_that_still_resolves_zero_rules_stays_unchecked(self) -> None:
         """Re-examination is not a promotion: a window that still selects no
