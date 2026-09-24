@@ -26,11 +26,68 @@ os.environ.setdefault("ACCESS_TOKEN_PEPPER", "test-only-pepper-do-not-use-in-pro
 # environment".
 #
 # `setdefault`, so an explicit PREFECT_HOME still wins. The containers already
-# scope this (`PREFECT_HOME: /tmp/prefect`, docker-compose.yml); CI is safe
-# because its runners start clean. Local development was the remaining gap.
-os.environ.setdefault(
-    "PREFECT_HOME", str(pathlib.Path(__file__).resolve().parent.parent / ".prefect")
-)
+# scope this (`PREFECT_HOME: /tmp/prefect`, docker-compose.yml).
+#
+# ⛔ CORRECTED: this used to say "CI is safe because its runners start clean".
+# Cleanliness was never the issue — CONCURRENCY BETWEEN THE xdist WORKERS OF A
+# SINGLE JOB is, and CI runs `pytest tests/unit/ -n auto`
+# (`.github/workflows/ci.yml`). A per-CHECKOUT path gives every worker the same
+# SQLite database, so two workers that each start an ephemeral Prefect server
+# contend and one fails with `RuntimeError: Failed to reach API`. That is
+# distribution-dependent: adding or removing ANY test reshuffles xdist's
+# allocation and can expose or hide it, which is how a CI-only change turned a
+# PR red twice while main stayed green.
+#
+# ⇒ Fold the worker id in, so each worker gets its own database.
+#
+# 🔴 `setdefault` ALONE DOES NOT WORK HERE, and the failure is silent. The xdist
+# CONTROLLER imports this file first, sets PREFECT_HOME to the unscoped path,
+# and every worker INHERITS it through the environment — so `setdefault` finds
+# it already set and leaves all workers sharing one database, exactly as
+# before. Caught by `tests/unit/test_prefect_home_isolation.py`; a naive
+# one-line change looks correct and changes nothing.
+#
+# So: `setdefault` for the unscoped default (an explicit PREFECT_HOME still
+# wins), then OVERRIDE inside a worker — but only when the current value is the
+# unscoped default we ourselves computed, so a genuinely explicit PREFECT_HOME
+# is still respected.
+# ⛔ The override is gated on a MARKER, not on comparing the path string. String
+# equality cannot tell whether WE set the default or a caller happened to set
+# the same value explicitly, and overwriting an explicit choice is exactly the
+# thing `setdefault` exists to avoid. The marker is set only when we supply the
+# default, and it is inherited by workers alongside PREFECT_HOME itself — which
+# is precisely the signal needed.
+# ⚠️ The marker records the VALUE it vouches for, not a bare "1". It is
+# inherited by CHILD PROCESSES, so a bare flag would travel into a nested
+# pytest run that sets its own explicit PREFECT_HOME — and we would then
+# overwrite that explicit value in its workers. Recording the path means the
+# marker only authorises the exact value we set; anything else fails the
+# comparison and is left alone. (`tools/standing_snapshot.py:559` runs the
+# suite as a subprocess with its own PREFECT_HOME, which is this case.)
+#
+# ⚠️ One residual corner, reviewed and accepted: a nested run that sets its own
+# PREFECT_HOME to EXACTLY the inherited marker's value is indistinguishable
+# from the default, so its workers get per-worker sub-homes anyway. That is the
+# behaviour such a run would want regardless, so it is left as is rather than
+# carrying more machinery to detect it.
+if "PREFECT_HOME" not in os.environ:
+    os.environ["PREFECT_HOME"] = str(
+        pathlib.Path(__file__).resolve().parent.parent / ".prefect"
+    )
+    os.environ["_SAPPHIRE_PREFECT_HOME_IS_DEFAULT"] = os.environ["PREFECT_HOME"]
+if (
+    os.environ.get("PYTEST_XDIST_WORKER")
+    and os.environ.get("_SAPPHIRE_PREFECT_HOME_IS_DEFAULT")
+    == os.environ["PREFECT_HOME"]
+):
+    os.environ["PREFECT_HOME"] = str(
+        pathlib.Path(__file__).resolve().parent.parent
+        / f".prefect-{os.environ['PYTEST_XDIST_WORKER']}"
+    )
+    # Keep the invariant: the marker always names the value WE set. Without
+    # this it still names the pre-override path, the comparison above stops
+    # matching, and anything gated on "is this ours?" silently reads False.
+    os.environ["_SAPPHIRE_PREFECT_HOME_IS_DEFAULT"] = os.environ["PREFECT_HOME"]
 
 from sapphire_flow.logging import configure_test_logging
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
