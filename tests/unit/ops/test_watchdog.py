@@ -25,6 +25,7 @@ from sapphire_flow.ops.watchdog import (
     BafuFreshnessResult,
     ForecastFreshnessResult,
     HealthProbeResult,
+    QcUncheckedResult,
     WatchdogConfig,
     WatchdogState,
     default_slack_poster,
@@ -157,6 +158,23 @@ def _bafu_obs_not_found_probe(_url: str) -> BafuFreshnessResult:
 def _bafu_obs_degraded_probe(_url: str) -> BafuFreshnessResult:
     return BafuFreshnessResult(
         found=True, checked_at=_NOW, status="warning", error=None
+    )
+
+
+def _qc_unchecked_absent_probe(_url: str) -> QcUncheckedResult:
+    """Plan 318 T2: the HEALTHY state for the zero-rule QC PRESENCE check —
+    T1 writes a record only when observations went unchecked, so "absent" is
+    normal. Injected as the default `qc_unchecked_probe` fake for every
+    pre-existing test in this file so the additive check does not change their
+    behaviour — and, more importantly, so they do not make a REAL HTTP attempt
+    through the default `probe_qc_unchecked` (exactly the role
+    `_bafu_obs_ok_probe` and `_forecast_freshness_ok_probe` play above).
+    """
+    return QcUncheckedResult(
+        found=False,
+        checked_at=None,
+        groups_affected=None,
+        observations_unchecked=None,
     )
 
 
@@ -884,6 +902,7 @@ class TestRunOnceHappyPath:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -910,6 +929,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -936,6 +956,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -958,6 +979,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -982,6 +1004,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1005,6 +1028,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1033,6 +1057,7 @@ class TestRunOnceBackup:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1058,6 +1083,7 @@ class TestRunOnceBackup:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1104,6 +1130,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1121,6 +1148,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1142,6 +1170,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1162,6 +1191,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1202,6 +1232,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1221,6 +1252,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1239,6 +1271,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1256,6 +1289,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1285,6 +1319,7 @@ class TestRunOnceBackupNotificationStateMachine:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
             )
@@ -1326,6 +1361,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1349,6 +1385,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1367,6 +1404,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1400,6 +1438,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1419,6 +1458,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1436,6 +1476,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1460,6 +1501,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1507,6 +1549,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1526,6 +1569,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1545,6 +1589,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1563,6 +1608,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1599,6 +1645,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1617,6 +1664,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1633,6 +1681,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1659,6 +1708,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,  # unverified too
             launchd_probe=_launchd_ok_probe,
         )
@@ -1683,6 +1733,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1709,6 +1760,7 @@ class TestRunOnceBackupDeviceVerification:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=_spy_verifier,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1748,6 +1800,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1767,6 +1820,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1785,6 +1839,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1821,6 +1876,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1838,6 +1894,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1858,6 +1915,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1874,6 +1932,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1902,6 +1961,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1920,6 +1980,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1938,6 +1999,7 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -1961,6 +2023,7 @@ def _run_once_launchd(
         bafu_probe=_bafu_ok_probe,
         bafu_obs_probe=_bafu_obs_ok_probe,
         forecast_freshness_probe=_forecast_freshness_ok_probe,
+        qc_unchecked_probe=_qc_unchecked_absent_probe,
         backup_device_verifier=lambda _: True,
         launchd_probe=launchd_probe,
     )
@@ -2374,6 +2437,7 @@ class TestRunOnceLaunchdAgentHealth:
             bafu_probe=_counting_bafu_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=lambda _l: _launchd_verdicts(unknown=True),
             deadman_poster=deadman,
@@ -2401,6 +2465,7 @@ class TestRunOnceLaunchdAgentHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=lambda _l: _launchd_verdicts(failing=[_LABEL_A]),
         )
@@ -2432,6 +2497,7 @@ class TestRunOnceSlackBehaviour:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2454,6 +2520,7 @@ class TestRunOnceSlackBehaviour:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2736,6 +2803,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2769,6 +2837,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_spy,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2791,6 +2860,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2814,6 +2884,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_not_found_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2838,6 +2909,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_degraded_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2862,6 +2934,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2877,6 +2950,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2898,6 +2972,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2925,6 +3000,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2968,6 +3044,7 @@ class TestBafuObsStaleThresholdValueAndBoundary:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -2996,6 +3073,7 @@ class TestBafuObsStaleThresholdValueAndBoundary:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3019,6 +3097,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3051,6 +3130,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_spy,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3073,6 +3153,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             hostname="test-host",
@@ -3111,6 +3192,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_not_found_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3135,6 +3217,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_degraded_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3159,6 +3242,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3174,6 +3258,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3195,6 +3280,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3223,6 +3309,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3256,6 +3343,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3286,6 +3374,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_spy,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3308,6 +3397,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_stale_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3351,6 +3441,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_fresh_checked_at_stale_cycle_time,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3374,6 +3465,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_not_found_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3402,6 +3494,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3460,6 +3553,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3516,6 +3610,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3573,6 +3668,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3625,6 +3721,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3650,6 +3747,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3665,6 +3763,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3686,6 +3785,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3712,6 +3812,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3747,6 +3848,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_degraded_cycle_but_ok_freshness,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3780,6 +3882,7 @@ class TestRunOnceForecastFreshness:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_critical_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
             )
@@ -3798,6 +3901,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -3830,6 +3934,7 @@ class TestRunOnceHealthHysteresisUnchangedByForecastFreshnessCadence:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
             )
@@ -3858,6 +3963,7 @@ class TestRunOnceHealthHysteresisUnchangedByForecastFreshnessCadence:
                 bafu_probe=_bafu_stale_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
             )
@@ -3973,6 +4079,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -4006,6 +4113,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -4035,6 +4143,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
         )
@@ -4611,6 +4720,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=deadman,
@@ -4630,6 +4740,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=deadman,
@@ -4654,6 +4765,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=deadman,
@@ -4676,6 +4788,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=_RaisingDeadmanPoster(),
@@ -4699,6 +4812,7 @@ class TestRunOnceDeadmanHeartbeat:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
                 deadman_poster=deadman,
@@ -4742,6 +4856,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=_poster,
@@ -4781,6 +4896,7 @@ class TestRunOnceDeadmanHeartbeat:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                qc_unchecked_probe=_qc_unchecked_absent_probe,
                 backup_device_verifier=lambda _: True,
                 launchd_probe=_launchd_ok_probe,
                 deadman_poster=deadman,
@@ -4820,6 +4936,7 @@ class TestSlackExceptionDuringBackupTransition:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             launchd_probe=_launchd_ok_probe,
             deadman_poster=deadman,
@@ -4990,6 +5107,7 @@ class TestRaisingSlackPosterAcrossAllFiveAlertBranches:
             bafu_probe=bafu_probe,  # type: ignore[arg-type]
             bafu_obs_probe=bafu_obs_probe,  # type: ignore[arg-type]
             forecast_freshness_probe=forecast_freshness_probe,  # type: ignore[arg-type]
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=disk_probe,  # type: ignore[arg-type]
             launchd_probe=_launchd_ok_probe,
@@ -5331,6 +5449,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5354,6 +5473,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5371,6 +5491,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._ok_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5398,6 +5519,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: False,  # unverified too
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5441,6 +5563,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,  # device fine; backup STALE
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5467,6 +5590,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._ok_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5495,6 +5619,7 @@ class TestRunOnceDiskSpace:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             disk_probe=_spy_probe,
             launchd_probe=_launchd_ok_probe,
         )
@@ -5531,6 +5656,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5553,6 +5679,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5572,6 +5699,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5612,6 +5740,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             deadman_poster=deadman,
@@ -5650,6 +5779,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5671,6 +5801,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
             launchd_probe=_launchd_ok_probe,
@@ -5692,6 +5823,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
             launchd_probe=_launchd_ok_probe,
@@ -5710,6 +5842,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
             launchd_probe=_launchd_ok_probe,
@@ -5745,6 +5878,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             launchd_probe=_launchd_ok_probe,
@@ -5764,6 +5898,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
             launchd_probe=_launchd_ok_probe,
@@ -5783,6 +5918,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            qc_unchecked_probe=_qc_unchecked_absent_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
             launchd_probe=_launchd_ok_probe,
