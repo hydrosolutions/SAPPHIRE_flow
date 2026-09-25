@@ -669,7 +669,7 @@ exit criteria — Plan 212 owns that deeper screening.
   value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
-- **330** — [SAP3 never calls the warm-start retrain both sides already implement](330-wire-warm-start-retrain.md)
+- **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
   rather than onboard ERA5-Land.

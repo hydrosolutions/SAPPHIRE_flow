@@ -1,26 +1,26 @@
 ---
 status: DRAFT
 created: 2026-09-25
-plan: 330
+plan: 399
 title: SAP3 never calls the warm-start retrain both sides already implement
 scope: Make SAP3 able to fine-tune an existing model artifact — the FI `RetrainableModel.retrain()` capability check, the passthrough down to the model, a channel for the fine-tuning config (there is none today), base-artifact selection, and recording which artifact a retrained one came from. NOT the FI contract changes in fi-issue 004 (a typed training failure, FI-side parent identity), NOT the fine-tuning STRATEGY surface (owner: accepted as opaque config for v1), NOT judging whether a retrained model is good (that is skill comparison, ours and outside this plan), NOT ERA5-Land onboarding (deliberately superseded by this approach).
 depends_on: []
 blocks: []
 related: [262, 307, 329]
-open_decisions: [D1, D2, D3]
+open_decisions: [D3]   # D1 and D2 closed by the owner 2026-09-25
 source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` on Swiss forcing rather than onboard ERA5-Land. Measured the same day: the capability exists on BOTH sides and SAP3 never calls it.
 ---
 
-# Plan 330 — the warm-start retrain nobody calls
+# Plan 399 — the warm-start retrain nobody calls
 
-⚠️ **Plan number PROVISIONAL until the owner grants it.** 340-344 are held by a concurrent session;
-330 was free at drafting.
+⚖️ **Plan number 399 GRANTED by the owner, 2026-09-25** (drafted as 330; renumbered on the grant).
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip. **D3 is load-bearing
-and must be answered first** — there is no channel for model config today at all, so without it
-nothing can select a fine-tuning strategy and the rest of the plan cannot run.
+**DRAFT.** ⛔ No implementation until an independent review and a READY flip.
+⚖️ **D1 and D2 closed by the owner 2026-09-25.** **D3 remains open and is load-bearing** — there is
+no channel for model config today at all, so without it nothing can select a fine-tuning strategy
+and the rest of the plan cannot run.
 
 ## Why this plan exists
 
@@ -81,17 +81,36 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
 
 ## Owner decisions
 
-### D1 — which artifact is the base? **OPEN.**
+### D1 — which artifact is the base? **⚖️ CLOSED — owner, 2026-09-25: an explicit INPUT.**
 
 | | option | cost |
 |---|---|---|
 | **(a)** ⭐ | **The caller names it explicitly** (an artifact id parameter on the run). | Unambiguous, and a fine-tune is a deliberate act, not a schedule. ⚠️ One more thing to get right when triggering. |
 | (b) | Implicit: the model's current ACTIVE artifact. | Convenient. ⛔ *A scheduled retrain would then silently fine-tune a fine-tune, drifting generation by generation with nothing naming the original.* |
 
-**Recommendation: (a).** ⚠️ *(b) becomes reasonable only once § 9's parent lineage exists AND
-someone has decided how many generations deep is acceptable — neither is true today.*
+**⚖️ CLOSED on (a).** Owner: *"the parent model is an input so it can be clearly identified and
+stored."*
 
-### D2 — what if the model does NOT support retrain? **OPEN — and we should not follow FI's default.**
+⇒ **The base artifact is named by the caller**, never inferred. ⛔ *No implicit "current ACTIVE
+artifact" resolution — (b) stays rejected.*
+
+🔑 **AND the base model's own configuration is stored with it.** Owner: *"that model should also
+have its base config so that can also be stored (I mean the paths to params and config here)."*
+
+⇒ A retrained artifact records **three** things about what it came from:
+| | what | why it is recoverable |
+|---|---|---|
+| the base **artifact id** | which weights were fine-tuned | chosen by the caller (D1) — known at the call |
+| the path to the base **config** | the model template the donor was built from | `model_artifacts.artifact_path` already exists; the vendored config path is derivable from the model |
+| the path to the base **params** | the configuration the donor was trained with | D3's channel, once it exists — ⚠️ *for the CURRENT `cmal_small` this is genuinely absent (§ 5: nothing has ever received params), so the field is nullable and the first retrain records none* |
+
+⚠️ **A path alone is weak provenance — pin it with the hash that already exists.** *`_shim.py`'s
+`config_hash` (SHA-256 of the vendored config's bytes) is already computed and already used by
+`services/model_import.py` to refuse an artifact/config mismatch. Storing the path WITHOUT it would
+record a pointer that silently changes meaning when the file does.* ⇒ **T4 stores path + hash**,
+which is what makes the owner's requirement actually answerable later.
+
+### D2 — what if the model does NOT support retrain? **⚖️ CLOSED — owner, 2026-09-25: REFUSE.**
 
 FI's comment says SAP3 *"falls back to `train`"*.
 
@@ -100,9 +119,15 @@ FI's comment says SAP3 *"falls back to `train`"*.
 | **(a)** ⭐ | **REFUSE**, with a typed error naming the model. | ⛔ *A silent fall-back means asking to fine-tune and getting a FROM-SCRATCH retrain — which discards exactly the global pre-training that motivated this plan, and the resulting artifact is indistinguishable in the table.* |
 | (b) | Fall back to `train`, as FI suggests. | Matches the contract's stated expectation. 🔴 *Dangerous here for the reason above.* |
 
-**Recommendation: (a), and say so in fi-issue 004** — a provider refusing is a legitimate reading,
-but the contract currently suggests the opposite, so the divergence should be recorded rather than
-left as a surprise for the next reader.
+**⚖️ CLOSED on (a) — REFUSE.** Owner: *"agreed to refuse to fall back to training from start."*
+
+⇒ **A model that does not implement `retrain` gets a typed error naming it.** ⛔ *There is no
+fall-back path to `train`, at any layer.*
+
+🔴 **This is a DELIBERATE divergence from the FI contract's own comment**, which says SAP3
+*"falls back to `train`"*. ⇒ **fi-issue 004 must record it** — ⛔ *a provider that refuses where the
+contract says it falls back is a real interoperability difference, and leaving it undocumented is
+how the next reader finds it the hard way.*
 
 ### D3 — where does the fine-tuning config come from? **OPEN — nothing can run without this.**
 
@@ -132,7 +157,11 @@ does not.
 - The passthrough in `adapters/forecast_interface.py` and `models/aquacast/_shim.py` (§ 4).
 - `retrain_station_model` / `retrain_group_model` in `services/training.py`, mirroring the existing
   pair.
-- **The capability check** — `isinstance(model, RetrainableModel)` — and D2's answer when false.
+- **The capability check** — `isinstance(model, RetrainableModel)` — and, per **D2 (closed:
+  REFUSE)**, a typed error naming the model when it is false. ⛔ *No fall-back to `train` at any
+  layer.*
+- ⚠️ **A note in `docs/fi-issues/004` recording the divergence** — FI's own comment says SAP3 falls
+  back to `train`; we refuse. ⭐ *One paragraph, not a new issue.*
 
 **Out.** ⛔ Changing `train`'s signature or behaviour. ⛔ The FI package (fi-issue 004). ⛔ Making
 retrain mandatory on any protocol.
@@ -144,7 +173,9 @@ which a stub satisfies.*
 **Verification.**
 - The base artifact reaches the model **unchanged** — round-tripped through serialize/deserialize
   and compared, because that is the path a stored artifact takes (§ 8).
-- 🔴 **A model WITHOUT retrain behaves per D2, asserted** — and with D2(a), the error names the model.
+- 🔴 **A model WITHOUT retrain is REFUSED with a typed error naming it** (D2), asserted.
+  ⛔ *Explicitly assert that `train` is NOT called — "an error was raised" would also pass on an
+  implementation that trained from scratch and then failed for some other reason.*
 - 🔴 **Every existing model still trains unchanged** — the Swiss statistical models do not implement
   retrain and must be untouched.
 
@@ -171,7 +202,8 @@ must fail because the config did not arrive — not because a parameter is missi
 
 **Outcome.** A fine-tune of `cmal_small` on Swiss forcing produces a stored artifact.
 
-**In.** D1's base-artifact selection; the retrain path wired into the training flow; and
+**In.** The base artifact as an **explicit caller-supplied input** (D1, closed) — ⛔ *never resolved
+implicitly from the model's ACTIVE artifact*; the retrain path wired into the training flow; and
 🔴 **one real run on staging**, since § 10 shows the group training path has never produced an
 artifact here.
 
@@ -182,6 +214,7 @@ owner-gated act. ⛔ Judging whether it is any good (skill comparison, outside t
 
 **Verification.**
 - An artifact is produced, stored, and deserializes back to a working model.
+- 🔴 **A run that names no base artifact does NOT silently train from scratch** — asserted (D1).
 - 🔴 **It is NOT promoted and NOT assigned** — asserted, not assumed. ⭐ *`cmal_small`'s current
   artifact keeps serving until a human decides otherwise.*
 - ⚠️ **The forcing it trained on is the SAME binding the operational path reads** (§ 6) — recorded
@@ -192,10 +225,15 @@ owner-gated act. ⛔ Judging whether it is any good (skill comparison, outside t
 
 **Outcome.** "What was this fine-tuned from?" is answerable from our own records.
 
-**In.** Parent-artifact identity on the produced artifact, with a migration. ⭐ *We know the parent
-because we chose it (D1) — this does not wait on fi-issue 004.* Follow
-`store/model_artifact_lineage.py`'s precedent: a standalone helper, **not** a widening of the
-cross-cutting `ModelArtifactStore` Protocol.
+**In.** Per **D1 (closed)**, the produced artifact records **all three**: the parent artifact id,
+the path to the base **config**, and the path to the base **params** — each stored **with the hash
+that pins it** where one exists (D1's note: a bare path silently changes meaning when the file
+does). ⭐ *We know all of it because the caller named the base (D1) — this does not wait on
+fi-issue 004.* With a migration. Follow `store/model_artifact_lineage.py`'s precedent: a standalone
+helper, **not** a widening of the cross-cutting `ModelArtifactStore` Protocol.
+⚠️ **The params path is NULLABLE and the first retrain will record none** — § 5: no model has ever
+received params, so `cmal_small` has none to point at. ⛔ *Do not model it as required and discover
+this on the first real run.*
 
 **Out.** ⛔ Backfilling a parent for existing artifacts — there is exactly one candidate and it has
 none. ⛔ The rest of FI's deferred provenance set (scope, region, seed, product versions); SAP3
@@ -205,8 +243,12 @@ already records those.
 none.**
 
 **Verification.**
-- Parent recorded on retrain, absent on train, asserted **both** ways.
+- Parent id, base config path and base params path recorded on retrain; **all three absent on a
+  fresh train**, asserted both ways.
 - The parent is resolvable to a real artifact row.
+- 🔴 **A base with no params recorded still retrains, and stores a NULL params path** — asserted,
+  because that is exactly the state `cmal_small` is in today (§ 5).
+- Each stored path carries its hash where one exists, and the hash matches the file it names.
 - 🔴 **Deleting or superseding a parent does not orphan the child's record** — ⚠️ *state the intended
   behaviour rather than discovering it; supersession already exists (Plan 328).*
 
@@ -227,8 +269,8 @@ none.**
 ```json
 {
   "phases": [
-    {"phase": 1, "tasks": ["T2"], "parallel": false,
-     "note": "the config channel first — D3 blocks everything; nothing can select a strategy without it"},
+    {"phase": 1, "tasks": ["T2"], "parallel": false, "decision": "D3 CLOSED",
+     "note": "the config channel first — D3 is the ONE decision still open and it blocks everything; nothing can select a strategy without it"},
     {"phase": 2, "tasks": ["T1"], "parallel": false, "decision": "D2 CLOSED"},
     {"phase": 3, "tasks": ["T4"], "parallel": false,
      "note": "lineage BEFORE the first real run, so the first retrained artifact is not the one with no parent recorded"},
@@ -243,3 +285,20 @@ none.**
   and the live staging DB the same day. ⭐ *The headline finding is that this plan asks for no new
   capability: the contract, the model implementation and the Swiss-forcing training assembler all
   already exist. SAP3 is the only side that does not participate.*
+- **2026-09-25** — ⚖️ **Plan number 399 granted; D1 and D2 CLOSED by the owner.**
+  - **D2 = REFUSE.** *"agreed to refuse to fall back to training from start."* ⇒ a model without
+    `retrain` gets a typed error; there is no fall-back to `train` at any layer. 🔴 **This is a
+    deliberate divergence from the FI contract's own comment**, so T1 now also records it in
+    `docs/fi-issues/004` — a provider that refuses where the contract says it falls back is a real
+    interoperability difference.
+  - **D1 = an explicit INPUT**, plus a requirement the draft did not have: *"that model should also
+    have its base config so that can also be stored (I mean the paths to params and config here)."*
+    ⇒ a retrained artifact now records **three** things — the parent artifact id, the base config
+    path, and the base params path — not just parentage. T4 grew accordingly.
+  - ⚠️ **Two consequences the owner's requirement surfaced, folded rather than discovered later:**
+    a bare path is weak provenance, so each is stored with the hash that pins it (`config_hash`
+    already exists and is already used to refuse an artifact/config mismatch); and the **params path
+    must be NULLABLE**, because § 5 measured that no model has ever received params — so
+    `cmal_small`, the very first base, has none to point at.
+  - ⛔ **D3 remains open and still gates everything**, now declared as a machine-readable gate on
+    phase 1 rather than only noted in prose.
