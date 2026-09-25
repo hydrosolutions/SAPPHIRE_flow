@@ -99,6 +99,57 @@ def test_migrated_check_admits_every_declared_status(
     assert "superseded" not in narrowed
 
 
+def test_the_downgrades_collision_condition_is_what_the_migration_claims(
+    migration_engine: tuple[sa.Engine, str],
+) -> None:
+    """⚠️ The migration's docstring states WHEN the downgrade fails. Measured
+    here against the real partial index rather than reasoned about, because
+    the first wording of that claim was wrong in both directions.
+
+    A supersession pair collides, a CHAIN of them collides too, and only a
+    superseded row with no sibling under its natural key downgrades cleanly —
+    which ``store_forecast`` never produces, since it writes the replacement
+    in the same transaction as the mark.
+    """
+    engine, url = migration_engine
+    command.upgrade(_config(url), "0058")
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("CREATE TABLE probe (id int primary key, k text, status text)")
+        )
+        connection.execute(
+            sa.text(
+                "CREATE UNIQUE INDEX uq_probe ON probe (k) WHERE status <> 'superseded'"
+            )
+        )
+
+    cases = {
+        "pair": [(1, "A", "superseded"), (2, "A", "raw")],
+        "chain": [(1, "A", "superseded"), (2, "A", "superseded"), (3, "A", "raw")],
+        "lone": [(1, "A", "superseded")],
+    }
+    outcomes: dict[str, str] = {}
+    for label, rows in cases.items():
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM probe"))
+            for row_id, key, status in rows:
+                connection.execute(
+                    sa.text("INSERT INTO probe VALUES (:i, :k, :s)"),
+                    {"i": row_id, "k": key, "s": status},
+                )
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    sa.text("UPDATE probe SET status = 'raw' WHERE status='superseded'")
+                )
+            outcomes[label] = "clean"
+        except sa.exc.IntegrityError:
+            outcomes[label] = "collides"
+
+    assert outcomes == {"pair": "collides", "chain": "collides", "lone": "clean"}
+
+
 def test_migrated_predicate_names_only_declared_statuses(
     migration_engine: tuple[sa.Engine, str],
 ) -> None:

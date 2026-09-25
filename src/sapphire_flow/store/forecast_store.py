@@ -445,11 +445,14 @@ class PgForecastStore:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]:
-        # Plan 328 T3 — DELIBERATELY UNFILTERED. This is the record listing,
-        # and `ForecastSummaryRow.status` carries each row's state, so a
-        # superseded forecast reads as superseded rather than as current.
-        # Hiding it here would also leave no way to discover the id that
-        # by-id access needs.
+        # Plan 328 T3 — DELIBERATELY UNFILTERED. This is the record listing:
+        # it answers "what forecasts exist for this station over this window",
+        # not "what is current", and `ForecastSummaryRow.status` carries each
+        # row's state so a superseded forecast reads as superseded. Filtering
+        # here would make the totals disagree with the table.
+        # ⛔ NOT because it is the only way to find a superseded id — it is
+        # not: the admin `/forecasts/` list and the generic `/tables/` browser
+        # expose it too.
         filters = [
             forecasts.c.station_id == station_id,
             forecasts.c.issued_at >= start,

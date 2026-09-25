@@ -73,13 +73,20 @@ def downgrade() -> None:
     # carried before it was replaced — which is honest about the loss: the
     # older image has no way to express "replaced" at all.
     #
-    # 🔴 This reinstates the collision the supersession resolved: the
-    # superseded row and its replacement then BOTH satisfy the partial index's
-    # predicate and the unique index refuses the pair. Deduplicating is
-    # deliberately NOT done here — deleting a forecast would orphan the
-    # evidence that migration 0057 forbids removing. A downgrade past this
-    # revision on a database that has superseded anything is an operator
-    # decision, and it fails loudly rather than discarding a record.
+    # 🔴 The collision condition, MEASURED against Postgres rather than
+    # reasoned about: this UPDATE raises exactly when a natural key
+    # `(station_id, model_id, issued_at, parameter)` would end up holding MORE
+    # THAN ONE non-superseded row. A supersession pair (original +
+    # replacement) collides, and so does a chain of them — every row under the
+    # key becomes `raw` at once and the partial unique index refuses them.
+    # ⛔ Only a superseded row with NO sibling under its key downgrades
+    # cleanly, and `store_forecast` never produces one: it writes the
+    # replacement in the same transaction as the mark. ⇒ In practice, a
+    # downgrade past this revision fails on any key this code has superseded.
+    # Deduplicating is deliberately NOT done here — deleting a forecast would
+    # orphan the evidence migration 0057 forbids removing — so the collision
+    # is an operator decision and fails loudly rather than discarding a
+    # record.
     op.execute("UPDATE forecasts SET status = 'raw' WHERE status = 'superseded'")
     _drop_status_check()
     op.create_check_constraint(

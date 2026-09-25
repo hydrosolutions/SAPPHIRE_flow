@@ -277,3 +277,53 @@ class TestForecastDetailInputQuality:
         body = resp.json()
         assert body["input_quality"] is None
         assert body["input_quality_flags"] is None
+
+
+class TestSupersededForecastOverTheApi:
+    """Plan 328 T3 — the API surfaces, asserted individually.
+
+    ⛔ A dispositions table in a doc is not a test. Each of these is a reader
+    the inventory calls HISTORICAL; if one silently started filtering, a
+    superseded forecast's evidence would become unreachable over HTTP.
+    """
+
+    def _superseded_and_replacement(
+        self, station_id: StationId, fake_stores: dict[str, Any]
+    ) -> tuple[Any, Any]:
+        original = _make_operational_forecast(
+            station_id=station_id, rng=random.Random(11)
+        )
+        fake_stores["forecast_store"].store_forecast(original)
+        replacement = _make_operational_forecast(
+            station_id=station_id, rng=random.Random(12)
+        )
+        fake_stores["forecast_store"].store_forecast(replacement)
+        return original, replacement
+
+    def test_by_id_still_serves_it_and_marks_it_superseded(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        original, replacement = self._superseded_and_replacement(
+            station.id, fake_stores
+        )
+
+        resp = client.get(f"/api/v1/forecasts/{original.id}")
+
+        assert resp.status_code == 200, "by-id access must be PRESERVED"
+        assert resp.json()["status"] == ForecastStatus.SUPERSEDED.value
+        assert client.get(f"/api/v1/forecasts/{replacement.id}").json()["status"] == (
+            ForecastStatus.RAW.value
+        )
+
+    def test_the_ensemble_of_a_superseded_forecast_is_still_served(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        """Its values are what the retained evidence is evidence OF."""
+        station = make_station_config(rng=random.Random(1))
+        original, _ = self._superseded_and_replacement(station.id, fake_stores)
+
+        body = client.get(f"/api/v1/forecasts/{original.id}").json()
+
+        assert body["ensemble"]["series"], "a superseded forecast keeps its values"
+        assert body["ensemble"]["valid_times"]
