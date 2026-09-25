@@ -1,15 +1,31 @@
 """Plan 198 T2b — database readers for the Forecast Lab snapshot.
 
 Thin, pure query functions over the EXISTING store Protocols
-(`protocols/stores.py`) — no new store code, no new query surface (D14), no
-migration. `build_snapshot()` (T3) constructs a `ForecastLabStores` bundle
-once per invocation and passes it down.
+(`protocols/stores.py`) — no new store code and no migration. ⚠️ Plan 329
+amended D14's "no new query surface": the bundle now carries a
+`StationGroupStore`, and `fetch_active_model_assignments` issues, PER
+ELIGIBLE STATION, one station→groups lookup plus — for each group returned —
+one member-set query (inside `_build_group`) and one assignment query. That is
+`1 + 2g` queries per station, and the member-set query materialises the FULL
+membership of every matching group: for the 139-member pilot group that is
+~139 × 139 ≈ 19k membership rows built and discarded per export, plus one
+extra round-trip for every station in no group at all.
+
+⚖️ **Measured, named and ACCEPTED** rather than optimised: the export is an
+offline batch document over ~148 stations, not a request-path query. No new
+store CODE (the Protocol and both implementations already existed). ⛔ If the
+station count or the group size grows by an order of magnitude, resolve
+station→groups→assignments ONCE per snapshot instead of once per station.
+
+`build_snapshot()` (T3) constructs a `ForecastLabStores` bundle once per
+invocation and passes it down.
 
 D17 — the eligible station set is narrowed BEFORE principal scoping, on
 BOTH the list-all sweep and the explicitly-requested-code path:
 ``network='bafu' AND station_kind='river' AND station_status='operational'``.
-Model assignments are filtered to ``ACTIVE`` (D17b) — an inactive
-assignment must never be exported or win `is_primary`.
+Station AND group model assignments are filtered to ``ACTIVE`` (D17b,
+extended by Plan 329) — an inactive assignment must never be exported or win
+`is_primary`, and ACTIVE is filtered BEFORE the minimum priority is taken.
 """
 
 from __future__ import annotations
@@ -25,6 +41,10 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 
+# Plan 329 — constructed at runtime (a group assignment is projected into
+# one), so this cannot stay under TYPE_CHECKING.
+from sapphire_flow.types.station import ModelAssignment
+
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import (
         BasinStore,
@@ -32,6 +52,7 @@ if TYPE_CHECKING:
         ModelArtifactStore,
         ModelStore,
         ObservationStore,
+        StationGroupStore,
         StationStore,
     )
     from sapphire_flow.types.datetime import UtcDatetime
@@ -39,7 +60,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId, BasinId, ModelId, StationId
     from sapphire_flow.types.model import ModelArtifactProvenance, ModelRecord
     from sapphire_flow.types.observation import Observation
-    from sapphire_flow.types.station import ModelAssignment, StationConfig
+    from sapphire_flow.types.station import StationConfig
 
 _ELIGIBLE_NETWORK = "bafu"
 _ELIGIBLE_KIND = StationKind.RIVER
@@ -65,6 +86,10 @@ class ForecastLabStores:
     artifact_store: ModelArtifactStore
     provenance_store: ArtifactProvenanceStore
     basin_store: BasinStore
+    # Plan 329 — group assignments. `fetch_active_model_assignments` reads
+    # station AND group assignments; without this field the snapshot is
+    # structurally blind to a group-assigned model.
+    group_store: StationGroupStore
 
 
 def _is_eligible(station: StationConfig) -> bool:
@@ -141,10 +166,50 @@ def fetch_active_model_assignments(
 ) -> list[ModelAssignment]:
     """D17b — ACTIVE only, pre-sorted `(priority asc, model_key asc)`
     (D12's `is_primary` tiebreak — `priority` has no uniqueness
-    constraint and a `server_default` of 0)."""
-    assignments = stores.station_store.fetch_model_assignments(station_id)
-    active = [a for a in assignments if a.status is ModelAssignmentStatus.ACTIVE]
-    return sorted(active, key=lambda a: (a.priority, a.model_id))
+    constraint and a `server_default` of 0).
+
+    Plan 329 — the station's OWN assignments UNION the ACTIVE assignments of
+    every group it belongs to. A `GroupModelAssignment` is projected into a
+    `ModelAssignment` carrying THIS station's id (it has none of its own);
+    nothing downstream reads any field but `model_id`, so the fabricated
+    record is inert. A model assigned both ways appears ONCE at the MINIMUM
+    priority, with ACTIVE filtered BEFORE the minimum is taken — filtering
+    after would let an inactive row lower the exported priority. At an equal
+    minimum the station assignment wins, else the lowest `group_id`: neither
+    group query is ordered, so without a rule the winner is undefined."""
+    station_assignments = [
+        a
+        for a in stores.station_store.fetch_model_assignments(station_id)
+        if a.status is ModelAssignmentStatus.ACTIVE
+    ]
+    # `(priority, is_group, group_id)` — False sorts before True, so a station
+    # assignment wins an equal-priority tie; group_id breaks a group/group tie.
+    candidates: dict[ModelId, tuple[tuple[int, bool, str], ModelAssignment]] = {
+        a.model_id: ((a.priority, False, ""), a) for a in station_assignments
+    }
+    for group in stores.group_store.fetch_groups_for_station(station_id):
+        for ga in stores.group_store.fetch_group_model_assignments(group.id):
+            if ga.status is not ModelAssignmentStatus.ACTIVE:
+                continue
+            rank = (ga.priority, True, str(group.id))
+            existing = candidates.get(ga.model_id)
+            if existing is not None and existing[0] <= rank:
+                continue
+            candidates[ga.model_id] = (
+                rank,
+                ModelAssignment(
+                    station_id=station_id,
+                    model_id=ga.model_id,
+                    time_step=ga.time_step,
+                    status=ga.status,
+                    priority=ga.priority,
+                    created_at=ga.created_at,
+                ),
+            )
+    return sorted(
+        (a for _, a in candidates.values()),
+        key=lambda a: (a.priority, a.model_id),
+    )
 
 
 def fetch_latest_forecast_for_model(

@@ -4,8 +4,9 @@ survives a mid-write failure."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import pytest
 
@@ -15,7 +16,13 @@ from sapphire_flow.cli.export_forecast_lab import (
 )
 from sapphire_flow.services.forecast_lab.db_sources import ForecastLabStores
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ModelCombinationStrategy
+from sapphire_flow.types.enums import (
+    ModelAssignmentStatus,
+    ModelCombinationStrategy,
+    StationStatus,
+)
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from tests.conftest import make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
@@ -24,6 +31,7 @@ from tests.fakes.fake_stores import (
     FakeModelArtifactStore,
     FakeModelStore,
     FakeObservationStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -33,7 +41,10 @@ if TYPE_CHECKING:
 _EPOCH = ensure_utc(datetime(2026, 8, 21, 10, 45, 0, tzinfo=UTC))
 
 
-def _stores(station_store: FakeStationStore | None = None) -> ForecastLabStores:
+def _stores(
+    station_store: FakeStationStore | None = None,
+    group_store: FakeStationGroupStore | None = None,
+) -> ForecastLabStores:
     return ForecastLabStores(
         station_store=station_store or FakeStationStore(),
         observation_store=FakeObservationStore(),
@@ -42,6 +53,7 @@ def _stores(station_store: FakeStationStore | None = None) -> ForecastLabStores:
         artifact_store=FakeModelArtifactStore(),
         provenance_store=FakeArtifactProvenanceStore(),
         basin_store=FakeBasinStore(),
+        group_store=group_store or FakeStationGroupStore(),
     )
 
 
@@ -301,6 +313,7 @@ class TestCombinationStrategyPropagation:
             artifact_store=FakeModelArtifactStore(),
             provenance_store=FakeArtifactProvenanceStore(),
             basin_store=FakeBasinStore(),
+            group_store=FakeStationGroupStore(),
         )
 
         class _FakeConfig:
@@ -329,3 +342,52 @@ class TestCombinationStrategyPropagation:
         on_disk = json.loads(output_path.read_text())
         assert on_disk["stations"][0]["combined_forecast"]["available"] is True
         assert on_disk["stations"][0]["combined_forecast"]["model_key"] == "_pooled"
+
+
+class TestGroupMembershipDoesNotExpandTheExportedStationSet:
+    """Plan 329 T1 — eligibility is resolved BEFORE the group lookup, at the
+    CALLER. `build_snapshot` filters neither, so this cannot be proven from
+    a direct builder test."""
+
+    def test_an_ineligible_group_member_is_not_exported(self, tmp_path: Path) -> None:
+        eligible = make_station_config(code="2009")
+        ineligible = make_station_config(
+            code="2091",
+            station_id=StationId(uuid4()),
+            station_status=StationStatus.ONBOARDING,
+        )
+        station_store = FakeStationStore()
+        station_store.store_station(eligible)
+        station_store.store_station(ineligible)
+        # BOTH stations are members of the group.
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="pilot",
+            station_ids=frozenset({eligible.id, ineligible.id}),
+            created_at=_EPOCH,
+        )
+        group_store.store_group(group)
+        group_store.seed_group_model_assignment(
+            group.id,
+            ModelId("cmal_small"),
+            GroupModelAssignment(
+                group_id=group.id,
+                model_id=ModelId("cmal_small"),
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=50,
+                created_at=_EPOCH,
+            ),
+        )
+
+        snapshot = export_forecast_lab_snapshot(
+            _stores(station_store, group_store),
+            archive_base_path=None,
+            station_codes=[],
+            observation_hours=168,
+            output_path=tmp_path / "snapshot.json",
+            clock=lambda: _EPOCH,
+        )
+
+        assert [s.station.code for s in snapshot.stations] == ["2009"]

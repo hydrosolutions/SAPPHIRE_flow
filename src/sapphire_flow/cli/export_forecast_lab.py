@@ -71,6 +71,7 @@ def _forecast_lab_stores(conn: sa.Connection) -> ForecastLabStores:
     from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
     from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
+    from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
 
     return ForecastLabStores(
@@ -81,6 +82,7 @@ def _forecast_lab_stores(conn: sa.Connection) -> ForecastLabStores:
         artifact_store=PgModelArtifactStore(conn, resolve_artifact_dir()),
         provenance_store=PgArtifactProvenanceStore(conn),
         basin_store=PgBasinStore(conn),
+        group_store=PgStationGroupStore(conn),
     )
 
 

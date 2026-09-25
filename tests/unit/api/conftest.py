@@ -25,6 +25,7 @@ from tests.fakes.fake_stores import (
     FakeModelStore,
     FakeObservationStore,
     FakePipelineHealthStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -79,6 +80,10 @@ def fake_stores() -> dict[str, Any]:
         "model_store": FakeModelStore(),
         "basin_store": FakeBasinStore(),
         "provenance_store": FakeArtifactProvenanceStore(),
+        # Plan 329 — the snapshot reads group assignments too. `api/deps.py`
+        # already supplies this key in production; without it here, every
+        # forecast-lab route test fails on a missing key.
+        "group_store": FakeStationGroupStore(),
     }
 
 
