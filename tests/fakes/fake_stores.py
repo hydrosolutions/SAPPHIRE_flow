@@ -12,6 +12,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 import polars as pl
+from sqlalchemy.exc import IntegrityError
 
 from sapphire_flow.exceptions import (
     ArtifactIntegrityError,
@@ -303,6 +304,25 @@ class FakeForecastStore:
         # a synthetic `pre_capture_forecast` marker rather than `None`.
         self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
 
+    def _current_id_for_key(
+        self, key: tuple[StationId, ModelId, UtcDatetime, str]
+    ) -> ForecastId | None:
+        """Mirror `uq_forecasts_station_model_issued_param`'s PARTIAL
+        predicate: a SUPERSEDED row does not occupy the natural key.
+
+        ⛔ Reading `_by_key` directly is the divergence this exists to stop.
+        A seeded-superseded row (or one superseded earlier) would otherwise
+        make an identical submission return the SUPERSEDED id, where Postgres
+        excludes it from the lookup and inserts a new forecast.
+        """
+        existing_id = self._by_key.get(key)
+        if existing_id is None:
+            return None
+        stored = self._forecasts.get(existing_id)
+        if stored is None or stored.status is ForecastStatus.SUPERSEDED:
+            return None
+        return existing_id
+
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         key = (
             forecast.station_id,
@@ -310,7 +330,7 @@ class FakeForecastStore:
             forecast.issued_at,
             forecast.ensemble.parameter,
         )
-        existing_id = self._by_key.get(key)
+        existing_id = self._current_id_for_key(key)
         if existing_id is not None:
             stored = self._forecasts[existing_id]
             row = classify_forecast_retry(stored=stored, recomputed=forecast)
@@ -335,6 +355,21 @@ class FakeForecastStore:
                 stored,
                 status=ForecastStatus.SUPERSEDED,
                 version=stored.version + 1,
+            )
+        # `forecasts.id` is the PRIMARY KEY, and this is the INSERT — checked
+        # HERE, after the resume/refuse branches, exactly where Postgres hits
+        # it. A row-4 resume never reaches the insert, so re-submitting the
+        # very same forecast object still resumes rather than colliding.
+        # ⛔ Without this the fake silently overwrites the row AND its evidence
+        # where Postgres rejects the write and rolls the mark back with it.
+        if forecast.id in self._forecasts:
+            raise IntegrityError(
+                "INSERT INTO forecasts",
+                {},
+                Exception(
+                    f"duplicate key value violates unique constraint "
+                    f'"forecasts_pkey" (id={forecast.id})'
+                ),
             )
         self._forecasts[forecast.id] = forecast
         self._by_key[key] = forecast.id

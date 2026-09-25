@@ -2573,3 +2573,91 @@ class TestV2SchemaVersionCutover:
         assert (
             snapshot.stations[0].verification.method_version == "forecast-comparison/v1"
         )
+
+
+class TestTheSnapshotRendersTheReplacementNotTheOriginal:
+    """Plan 328 T3 — the RENDERED output, not just the source selection.
+
+    ⛔ Proving `fetch_latest_forecast()` filters is one layer short of the
+    verification clause: what matters is that the published snapshot a
+    consumer reads carries the replacement's numbers and none of the
+    original's.
+    """
+
+    def test_the_published_series_shows_the_replacements_values(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        original_ensemble = _members_ensemble(
+            station.id,
+            issued_at=_EPOCH,
+            rng=random.Random(301),
+            n_members=10,
+            valid_times=[vt],
+        )
+        replacement_ensemble = _members_ensemble(
+            station.id,
+            issued_at=_EPOCH,
+            rng=random.Random(302),
+            n_members=10,
+            valid_times=[vt],
+        )
+        forecast_store = FakeForecastStore()
+        original = _forecast(
+            station_id=station.id,
+            model_id=ModelId("nwp_regression"),
+            ensemble=original_ensemble,
+            issued_at=_EPOCH,
+        )
+        forecast_store.store_forecast(original)
+        # Decision-table row 1 — this supersedes and replaces.
+        replacement = _forecast(
+            station_id=station.id,
+            model_id=ModelId("nwp_regression"),
+            ensemble=replacement_ensemble,
+            issued_at=_EPOCH,
+        )
+        forecast_store.store_forecast(replacement)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        entry = snapshot.stations[0].sapphire_forecasts[0]
+        assert isinstance(entry, SapphireForecastAvailableSchema)
+        point = entry.points[0]
+
+        replacement_median = float(
+            np.quantile(
+                replacement_ensemble.values.filter(pl.col("valid_time") == vt)[
+                    "value"
+                ].to_numpy(),
+                0.5,
+                method="linear",
+            )
+        )
+        original_median = float(
+            np.quantile(
+                original_ensemble.values.filter(pl.col("valid_time") == vt)[
+                    "value"
+                ].to_numpy(),
+                0.5,
+                method="linear",
+            )
+        )
+        assert replacement_median != pytest.approx(original_median), (
+            "guard: the two runs must differ, or this proves nothing"
+        )
+        assert point.median == pytest.approx(replacement_median)
+        assert point.median != pytest.approx(original_median)
+
+        # ...and the original is still on record, marked.
+        superseded = forecast_store.fetch_forecast(original.id)
+        assert superseded is not None
+        assert superseded.status is ForecastStatus.SUPERSEDED

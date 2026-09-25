@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+import sqlalchemy.exc
 
 from sapphire_flow.db.metadata import forecasts as forecasts_table
 from sapphire_flow.store import forecast_store as forecast_store_module
@@ -23,6 +24,7 @@ from sapphire_flow.types.ids import ForecastId
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
     _ISSUED_B,
+    _capturing_spy_factory,  # noqa: PLC2701
     _make_forecast,
     _seed_artifact,
     _seed_model,
@@ -211,6 +213,86 @@ class TestSupersedeAndReplace:
         assert store.fetch_forecast(replacement.id) is None
 
 
+class TestTheMarkSharesTheReplacementsTransaction:
+    """🔴 The rollback test alone does NOT prove this.
+
+    Its `savepoint_factory` nests a savepoint on the SAME connection the store
+    holds as ``self._conn``, so a mark routed through ``self._conn`` still
+    rolls back *in that fixture* — while in production ``self._begin`` is
+    ``conn.engine.begin``, a DIFFERENT connection, and the flows' connection is
+    AUTOCOMMIT: the mark would commit on its own and survive the failure it
+    was supposed to roll back with.
+
+    The spy records only what is executed through the INJECTED handle, so a
+    statement issued on ``self._conn`` is invisible to it. Asserting the
+    supersession UPDATE appears in the SAME spy as the replacement INSERT is
+    what pins mark and insert to one transaction.
+    """
+
+    def test_the_supersession_update_goes_through_the_injected_txn(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+
+        store = _store(db_connection)
+        original_id = store.store_forecast(
+            _make_forecast(sid, mid, aid, rng=random.Random(131))
+        )
+
+        spies, factory = _capturing_spy_factory(db_connection)
+        replacing_store = PgForecastStore(db_connection, transaction_factory=factory)
+        replacement = _make_forecast(sid, mid, aid, rng=random.Random(132))
+        replacing_store.store_forecast(replacement)
+
+        assert len(spies) == 1, "the replacement must use exactly ONE transaction"
+        spy = spies[0]
+        updates = [
+            stmt
+            for stmt in spy.executed
+            if isinstance(stmt, sa.Update)
+            and getattr(getattr(stmt, "table", None), "name", None) == "forecasts"
+        ]
+        inserts = [
+            stmt
+            for stmt in spy.executed
+            if isinstance(stmt, sa.Insert)
+            and getattr(getattr(stmt, "table", None), "name", None) == "forecasts"
+        ]
+
+        # ⛔ A mark issued on `self._conn` instead of the injected handle would
+        # leave this list EMPTY while every assertion about the final row state
+        # still passed.
+        assert len(updates) == 1, (
+            f"the supersession UPDATE on `forecasts` did not go through the "
+            f"injected transaction — spy recorded {len(updates)} such updates"
+        )
+        assert len(inserts) == 1, "the replacement INSERT must share that spy"
+        assert spy.executed.index(updates[0]) < spy.executed.index(inserts[0]), (
+            "the mark must precede the replacement insert"
+        )
+        assert _status_of(db_connection, original_id) == "superseded"
+
+    def test_an_identical_rerun_issues_no_update_at_all(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Row 4 writes nothing — no mark either."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+
+        store = _store(db_connection)
+        original = _make_forecast(sid, mid, aid, rng=random.Random(133))
+        store.store_forecast(original)
+
+        spies, factory = _capturing_spy_factory(db_connection)
+        resuming = PgForecastStore(db_connection, transaction_factory=factory)
+        resuming.store_forecast(replace(original, id=ForecastId(uuid4())))
+
+        assert not [stmt for stmt in spies[0].executed if isinstance(stmt, sa.Update)]
+
+
 class TestReadersStopServingTheSupersededRow:
     """T3 — the part a schema-only change would have missed.
 
@@ -370,3 +452,76 @@ class TestReadersStopServingTheSupersededRow:
         assert total == 2
         assert by_id[original_id].status is ForecastStatus.SUPERSEDED
         assert by_id[replacement.id].status is ForecastStatus.RAW
+
+
+class TestPostgresParity:
+    """The facts `tests/unit/fakes/test_fake_forecast_store_supersession.py`
+    asserts about `FakeForecastStore`, asserted here against Postgres.
+
+    ⚠️ A fake that drifts from these makes every flow test built on it
+    meaningless — the failure class Plan 327's original fake already hit.
+    """
+
+    def test_a_superseded_row_does_not_occupy_the_natural_key(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = _store(db_connection)
+
+        superseded = _make_forecast(sid, mid, aid, rng=random.Random(141))
+        superseded_id = store.store_forecast(superseded)
+        _mark_superseded_directly(db_connection, superseded_id)
+
+        # The SAME numbers arriving again: nothing CURRENT holds the key, so
+        # this is an INSERT, not a resume.
+        arriving = replace(superseded, id=ForecastId(uuid4()))
+        returned = store.store_forecast(arriving)
+
+        assert returned == arriving.id
+        assert returned != superseded_id
+        assert _status_of(db_connection, superseded_id) == "superseded"
+
+    def test_a_row_1_rerun_reusing_the_original_id_is_rejected_and_rolls_back(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """⛔ The primary key refuses it, and the supersession mark goes back
+        with it — the original stays CURRENT with its evidence."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = _store(db_connection)
+
+        original = replace(
+            _make_forecast(sid, mid, aid, rng=random.Random(142)),
+            evidence=incomplete_evidence("original_capture"),
+        )
+        original_id = store.store_forecast(original)
+        evidence_before = store.fetch_evidence(original_id)
+
+        colliding = replace(
+            _make_forecast(sid, mid, aid, rng=random.Random(143)), id=original_id
+        )
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            store.store_forecast(colliding)
+
+        assert _status_of(db_connection, original_id) == "raw"
+        survivor = store.fetch_forecast(original_id)
+        assert survivor is not None
+        assert survivor.ensemble.values.equals(original.ensemble.values)
+        assert store.fetch_evidence(original_id) == evidence_before
+
+    def test_resubmitting_the_very_same_forecast_still_resumes(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = _store(db_connection)
+
+        original = _make_forecast(sid, mid, aid, rng=random.Random(144))
+        original_id = store.store_forecast(original)
+
+        assert store.store_forecast(original) == original_id
+        assert _status_of(db_connection, original_id) == "raw"
