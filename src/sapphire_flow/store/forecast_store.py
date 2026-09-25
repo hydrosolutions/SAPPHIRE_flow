@@ -1,17 +1,30 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+import hashlib
+import json
+import zlib
 from collections import defaultdict
 from datetime import timedelta
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import polars as pl
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from sapphire_flow.db.metadata import forecast_values, forecasts
+from sapphire_flow.db.metadata import (
+    forecast_evidence,
+    forecast_evidence_blobs,
+    forecast_values,
+    forecasts,
+)
 from sapphire_flow.exceptions import ConflictError
+from sapphire_flow.services.forecast_evidence import (
+    restore_snapshot,
+    serialize_thresholds,
+)
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -25,6 +38,12 @@ from sapphire_flow.types.enums import (
     WarmUpSource,
 )
 from sapphire_flow.types.forecast import OperationalForecast
+from sapphire_flow.types.forecast_evidence import (
+    EvidenceStatus,
+    ForecastEvidence,
+    PersistedForecastEvidence,
+    incomplete_evidence,
+)
 from sapphire_flow.types.forecast_summary import ForecastSummaryRow
 from sapphire_flow.types.ids import (
     ArtifactId,
@@ -35,6 +54,43 @@ from sapphire_flow.types.ids import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+def _combined_contributor_gap(
+    txn: sa.Connection, evidence: ForecastEvidence
+) -> str | None:
+    if evidence.snapshot is None:
+        return "contributor_snapshot_unavailable"
+    try:
+        references = restore_snapshot(evidence.snapshot).get("contributors")
+    except (ValueError, UnicodeDecodeError, zlib.error):
+        return "contributor_snapshot_unreadable"
+    if not isinstance(references, list) or not references:
+        return "contributor_references_unavailable"
+    for reference in cast("list[object]", references):
+        if not isinstance(reference, dict):
+            return "contributor_references_invalid"
+        fields = cast("dict[str, object]", reference)
+        raw_forecast_id = fields.get("forecast_id")
+        if not isinstance(raw_forecast_id, str):
+            return "contributor_references_invalid"
+        try:
+            forecast_id = UUID(raw_forecast_id)
+        except ValueError:
+            return "contributor_references_invalid"
+        row = txn.execute(
+            sa.select(
+                forecast_evidence.c.status, forecast_evidence.c.snapshot_sha256
+            ).where(forecast_evidence.c.forecast_id == forecast_id)
+        ).one_or_none()
+        if row is None:
+            return "contributor_evidence_not_persisted"
+        if row.snapshot_sha256 != fields.get("evidence_sha256"):
+            return "contributor_evidence_mismatch"
+        if row.status != EvidenceStatus.COMPLETE.value:
+            return "contributor_evidence_incomplete"
+    return None
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -124,7 +180,173 @@ class PgForecastStore:
             rows = _build_value_rows(forecast)
             if rows:
                 txn.execute(sa.insert(forecast_values), rows)
+            evidence = forecast.evidence or incomplete_evidence(
+                "prediction_capture_unavailable"
+            )
+            thresholds_json = (
+                serialize_thresholds(evidence.thresholds)
+                if evidence.thresholds is not None
+                else None
+            )
+            status = evidence.status
+            reason = evidence.reason
+            if thresholds_json is None:
+                status = EvidenceStatus.INCOMPLETE
+                reason = (
+                    f"{reason};thresholds_unavailable"
+                    if reason
+                    else "thresholds_unavailable"
+                )
+            if forecast.combination_strategy is not None:
+                contributor_gap = _combined_contributor_gap(txn, evidence)
+                if contributor_gap is not None:
+                    status = EvidenceStatus.INCOMPLETE
+                    reason = (
+                        f"{reason};{contributor_gap}" if reason else contributor_gap
+                    )
+            manifest = json.loads(evidence.manifest_json)
+            manifest.update(
+                forecast_id=str(forecast.id),
+                station_id=str(forecast.station_id),
+                parameter=forecast.ensemble.parameter,
+                issued_at=forecast.issued_at.isoformat(),
+                model_artifact_id=(
+                    str(forecast.model_artifact_id)
+                    if forecast.model_artifact_id is not None
+                    else None
+                ),
+                nwp_cycle_reference_time=(
+                    forecast.nwp_cycle_reference_time.isoformat()
+                    if forecast.nwp_cycle_reference_time is not None
+                    else None
+                ),
+                nwp_cycle_source=forecast.nwp_cycle_source.value,
+                rating_curve_id=(
+                    str(forecast.rating_curve_id)
+                    if forecast.rating_curve_id is not None
+                    else None
+                ),
+                qc_status=forecast.qc_status.value,
+                qc_flags=[
+                    {
+                        "rule_id": flag.rule_id,
+                        "rule_version": flag.rule_version,
+                        "status": flag.status.value,
+                        "detail": flag.detail,
+                    }
+                    for flag in forecast.qc_flags
+                ],
+                input_quality=(
+                    forecast.input_quality.value
+                    if forecast.input_quality is not None
+                    else None
+                ),
+                input_quality_flags=[
+                    {
+                        "category": flag.category.value,
+                        "level": flag.level.value,
+                        "detail": flag.detail,
+                    }
+                    for flag in forecast.input_quality_flags
+                ],
+                thresholds_sha256=(
+                    hashlib.sha256(thresholds_json.encode("utf-8")).hexdigest()
+                    if thresholds_json is not None
+                    else None
+                ),
+            )
+            for digest, payload in (
+                (evidence.snapshot_sha256, evidence.snapshot),
+                (evidence.artifact_sha256, evidence.artifact),
+            ):
+                if digest is None or payload is None:
+                    continue
+                if hashlib.sha256(payload).hexdigest() != digest:
+                    raise ValueError("forecast evidence blob hash mismatch")
+                txn.execute(
+                    pg_insert(forecast_evidence_blobs)
+                    .values(sha256=digest, payload=payload, byte_length=len(payload))
+                    .on_conflict_do_nothing(index_elements=["sha256"])
+                )
+                retained = txn.execute(
+                    sa.select(
+                        forecast_evidence_blobs.c.payload,
+                        forecast_evidence_blobs.c.byte_length,
+                    ).where(forecast_evidence_blobs.c.sha256 == digest)
+                ).one()
+                if (
+                    retained.payload != payload
+                    or retained.byte_length != len(retained.payload)
+                    or hashlib.sha256(retained.payload).hexdigest() != digest
+                ):
+                    raise ValueError("retained forecast evidence blob mismatch")
+            txn.execute(
+                sa.insert(forecast_evidence).values(
+                    forecast_id=forecast.id,
+                    status=status.value,
+                    manifest_json=json.dumps(
+                        manifest, sort_keys=True, separators=(",", ":")
+                    ),
+                    snapshot_sha256=evidence.snapshot_sha256,
+                    artifact_sha256=evidence.artifact_sha256,
+                    thresholds_json=thresholds_json,
+                    reason=reason,
+                )
+            )
         return forecast.id
+
+    def fetch_evidence(
+        self, forecast_id: ForecastId
+    ) -> PersistedForecastEvidence | None:
+        row = (
+            self._conn.execute(
+                sa.select(forecast_evidence).where(
+                    forecast_evidence.c.forecast_id == forecast_id
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            exists = self._conn.execute(
+                sa.select(forecasts.c.id).where(forecasts.c.id == forecast_id)
+            ).scalar_one_or_none()
+            if exists is None:
+                return None
+            return PersistedForecastEvidence(
+                status=EvidenceStatus.INCOMPLETE,
+                manifest_json="{}",
+                snapshot=None,
+                snapshot_sha256=None,
+                artifact=None,
+                artifact_sha256=None,
+                thresholds_json=None,
+                reason="pre_capture_forecast",
+            )
+
+        def blob(digest: str | None) -> bytes | None:
+            if digest is None:
+                return None
+            payload = self._conn.execute(
+                sa.select(forecast_evidence_blobs.c.payload).where(
+                    forecast_evidence_blobs.c.sha256 == digest
+                )
+            ).scalar_one()
+            data = bytes(payload)
+            if hashlib.sha256(data).hexdigest() != digest:
+                raise ValueError("forecast evidence blob hash mismatch")
+            return data
+
+        return PersistedForecastEvidence(
+            status=EvidenceStatus(row["status"]),
+            manifest_json=row["manifest_json"],
+            snapshot=blob(row["snapshot_sha256"]),
+            snapshot_sha256=row["snapshot_sha256"],
+            artifact=blob(row["artifact_sha256"]),
+            artifact_sha256=row["artifact_sha256"],
+            thresholds_json=row["thresholds_json"],
+            reason=row["reason"],
+        )
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
         rows = (

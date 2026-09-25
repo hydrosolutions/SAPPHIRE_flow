@@ -5,8 +5,10 @@ plan: 266
 title: CAP 1.2-conformant hydrological alert publication
 priority: low
 reviews: []
-open_decisions: []
-related: [041, 147]
+open_decisions:
+  - CHWRR must approve the later CAP hazard-specific event/text/area mappings for both high- and low-flow warnings before ACTUAL enablement. CAP is disabled for the CHWRR MVP.
+related: [041, 147, 341, 340, 342]
+depends_on: [341, 342]
 scope: Add an opt-in OASIS CAP 1.2 Message Producer and an authenticated WMO-1109-aligned CAP source/RSS feed for station-scoped hydrological alerts, backed by an immutable issuance history. Preserve the existing internal alert engine. NOT a CAP consumer, NOT a public unauthenticated feed, NOT WIS 2.0, NOT notification-channel delivery, NOT impact modelling, NOT pipeline-alert publication, and NOT a claim that SAPPHIRE or a deployment operator is legally recognized as an alerting authority.
 source: 2026-09-10 — owner requested a low-priority plan to bring SAPPHIRE Flow into CAP conformance after a repository-grounded gap assessment found an internal alert lifecycle but no CAP message model, serializer, issuance history or feed.
 ---
@@ -15,13 +17,15 @@ source: 2026-09-10 — owner requested a low-priority plan to bring SAPPHIRE Flo
 
 ## Status
 
-**DRAFT — NOT READY. Low priority.** No independent review has run. This is an
-external-facing, user-visible warning contract and a database/API change, so before the owner may
-set it READY it needs the ordinary independent Claude + Codex plan reviews and one additional
-owner-commissioned review relevant to operational warning dissemination (`docs/workflow.md` §
-High-risk work).
+**DRAFT — NOT READY. Low priority.** This is an external-facing, user-visible warning
+contract and a database/API change. Resolve its independent-review findings and follow the
+high-risk review rules in `docs/workflow.md` before the orchestrator may set it READY.
 
-The plan has no open design decision. Its narrow target is technical **CAP 1.2 Message Producer**
+**MVP decision (owner, 2026-09-24):** CAP remains `DISABLED` for the CHWRR MVP dashboard and initial
+post-event workflow. This plan is a later optional publication path; the MVP must not depend on its
+implementation. Reconcile its open review findings before any later CAP enablement.
+
+Its narrow target is technical **CAP 1.2 Message Producer**
 conformance plus the CAP source/feed steps from WMO-No. 1109. It deliberately does not claim that
 technical conformance makes a deployment an authorized public-warning originator; that requires
 an external authority decision and the enablement gate in T7.
@@ -126,37 +130,42 @@ Using a restricted source is explicitly compatible with WMO-1109's incremental i
 path. A public unauthenticated CAP source would change the repository's security boundary and gets
 its own later decision.
 
-`TEST` may exercise forecast and observation candidates. `ACTUAL` is limited to observation
-candidates in this plan: v0 forecast alerts are calculated from raw, unreviewed forecasts and carry
-no Flow-3 publication decision. Configuring forecast CAP eligibility in `ACTUAL` therefore fails
-preflight. Actual forecast issuance waits for Flow 3 (or a separately reviewed authority decision)
-to carry explicit forecast-publication provenance into this boundary.
+`TEST` may exercise synthetic or human-published forecast and observation warning records. `ACTUAL`
+accepts only human-PUBLISHED warning decisions from Plan 342, regardless of source. A published
+forecast's selected-forecast threshold recheck must supply forecast warning provenance. Raw
+forecast/observation candidates and mutable active `alerts` rows cannot issue CAP. Keep `ACTUAL`
+disabled for CHWRR until Plans 341 and 342 are implemented and this plan's enablement checks pass.
 
 A database-aware transition guard rejects `TEST`↔`ACTUAL`, enabled→`DISABLED`, sender removal or
 station-scope removal while an affected CAP incident remains open. T4 supplies a controlled
 operator cancellation command so the old mode/policy can issue referentially correct Cancels before
 the deployment changes. Configuration changes must never silently orphan an issued warning.
 
-### D4 — One CAP incident per station, not one message per threshold row
+### D4 — One CAP incident per station, parameter and direction
 
-The current alert checker normally raises every exceeded local level, so one station can have
-several active `alerts` rows. The CAP reconciler produces one incident per station across the two
-policy-eligible hydrological sources (`forecast`, `observation`):
+The alert checker may raise several candidate levels for a station. The CAP reconciler keys one
+incident by the Plan 342 human-warning incident identity `(station_id, parameter, direction)`, so
+simultaneous high/low or discharge/water-level warnings keep separate chains. Within each key it
+selects from human-published, currently valid decisions across the two policy-eligible sources
+(`forecast`, `observation`):
 
-1. select the active alert with the greatest `DangerLevelDefinition.display_order`;
+1. select the current human-published warning with the greatest
+   `DangerLevelDefinition.display_order`;
 2. on a tie, prefer observation evidence over forecast evidence;
 3. if no open CAP incident exists, emit `msgType=Alert`;
 4. if the selected CAP semantic state differs from the open incident, emit `msgType=Update` and
    reference its immediately preceding CAP message;
-5. if no hydrological alert remains active, emit `msgType=Cancel`, reference the preceding message
-   and close the incident;
+5. if no human-published warning remains current after audited withdrawal, replacement or expiry,
+   emit `msgType=Cancel`, reference the preceding message and close the incident;
 6. if the semantic state is unchanged, emit nothing.
 
-The semantic fingerprint includes the selected level, mapped CAP codes, authority/policy version,
-message text and affected area. It excludes internal timestamps, UUIDs and numeric probability
-movement that does not change CAP certainty. Thus a 0.61→0.64 forecast is a no-op, while a local
-level change, `Possible`→`Likely`, area/text policy change, or observed evidence taking precedence
-is an Update.
+The semantic fingerprint includes parameter/direction, selected level, mapped CAP codes,
+authority/policy version, message text, affected area and the human-approved `effective`/`expires`
+window. It excludes internal processing timestamps, UUIDs and numeric probability movement that
+does not change CAP certainty. Thus a 0.61→0.64 forecast is a no-op, while a local level change,
+same-level validity renewal, `Possible`→`Likely`, area/text policy change, or observed evidence
+taking precedence is an Update. A delayed expiry reconciler cannot make an expired warning current
+again; consumers see the stored `<expires>` time even before a later Cancel arrives.
 
 ### D5 — Explicit, typed CAP semantics; no name guessing
 
@@ -164,8 +173,10 @@ Deployment policy is keyed by tenant because the host is multi-tenant. The deplo
 provides the canonical external source base URL used in feed links; `ACTUAL` requires HTTPS, while
 `TEST` permits HTTP only for a loopback host. An enabled tenant policy provides a globally unique
 sender, sender name, policy version, restriction, event text, message text, urgency-by-source and
-an explicit non-empty set of candidate sources plus an exhaustive mapping from every configured
-local danger level to CAP severity. Configuration loading converts Pydantic boundary models into
+an explicit non-empty set of eligible published-warning sources, hazard-specific
+`(parameter, direction)` event/text/area mappings for both ABOVE and BELOW, plus an exhaustive
+mapping from every configured local danger level to CAP severity. Missing high- or low-flow
+hazard mappings fail closed. Configuration loading converts Pydantic boundary models into
 frozen domain values; `pipeline` is never a legal CAP candidate source.
 
 The initial mapping rules are:
@@ -179,12 +190,13 @@ The initial mapping rules are:
 | `msgType` | incident transition: `Alert`, `Update`, `Cancel` |
 | `scope` / `restriction` | fixed `Restricted` plus configured restriction text |
 | `category` | configured CAP category; hydrological default/example is `Met` |
-| `event` | configured authority text; hydrological default/example is `Flood` |
+| `event` | configured authority text for the warning parameter/direction; `Flood` is an ABOVE example only |
 | `urgency` | explicit configured mapping for forecast and observation evidence |
 | `severity` | exhaustive local danger-level mapping; never inferred from the level name or colour |
 | `certainty` | observation → `Observed`; forecast `p > 0.5` → `Likely`; `0 < p <= 0.5` → `Possible`; missing/out-of-range forecast probability is an error |
-| `headline`, `description`, `instruction` | fixed application formatting over configured policy text and station identity; no Jinja/general template engine |
-| `area` | explicit station warning-area policy from D6 |
+| `headline`, `description`, `instruction` | fixed application formatting over configured parameter/direction policy text and station identity; no Jinja/general template engine |
+| `effective` / `expires` | human warning publication time / immutable `valid_through`, in CAP time format; no expiry inferred from a later reconciliation run |
+| `area` | explicit station and parameter/direction warning-area policy from D6 |
 | `references` | previous stored CAP message's `(sender, identifier, sent)` triple for Update/Cancel |
 | `note` | configured automatic-cancellation text or a bounded operator reason for an administrative Cancel |
 
@@ -194,17 +206,18 @@ danger level fails closed before any message is issued.
 
 ### D6 — Warning areas are explicit authority data
 
-The CAP-enabled station set is exactly the area-policy entries keyed by
-`(tenant_code, network, station_code)`. Publication preflight resolves every entry to exactly one
-live station owned by that tenant; a missing, ambiguous or cross-tenant match blocks the enabled
-policy. Each entry contains a non-empty `areaDesc` and may additionally provide an authority
+The CAP-enabled warning-hazard set is exactly the area-policy entries keyed by
+`(tenant_code, network, station_code, parameter, direction)`. Publication preflight resolves every
+entry to exactly one live station and configured parameter/direction owned by that tenant; a
+missing, ambiguous or cross-tenant match blocks the enabled policy. Each entry contains a
+non-empty `areaDesc` and may additionally provide an authority
 geocode as a typed `(valueName, value)` pair and/or a WGS84 polygon. Polygon parsing occurs once at
 the configuration boundary and enforces the CAP ring rules (at least four coordinate pairs, closed
 ring, latitude then longitude on output).
 
 There is deliberately no automatic fallback to `stations.location` or `basins.geometry`. A gauge
 point is not an affected area, and an upstream catchment is generally the opposite side of the
-station from the downstream flood-warning area. Alerts for stations outside the explicit set stay
+station from the downstream flood-warning area. Warnings for station/hazard keys outside the explicit set stay
 internal and are counted/logged as outside CAP scope; an invalid entry in either Test or Actual
 mode fails closed rather than issuing a geographically misleading warning.
 
@@ -212,9 +225,10 @@ mode fails closed rather than issuing a geographically misleading warning.
 
 Use two new tables:
 
-- `cap_incidents`: one current lifecycle projection per incident, with station/tenant, open/closed
-  state, policy sender/version, last semantic fingerprint, opened/closed timestamps and monotonic
-  sequence. A partial unique index permits at most one open incident per station.
+- `cap_incidents`: one current lifecycle projection per warning incident, with
+  station/tenant/parameter/direction, open/closed state, policy sender/version, last semantic
+  fingerprint, opened/closed timestamps and monotonic sequence. A partial unique index permits at
+  most one open incident per `(station_id, parameter, direction)`.
 - `cap_messages`: append-only issued messages, with incident + sequence, CAP identifier/sender/sent,
   status/type/scope, previous-message reference, exact `payload_xml` bytes, SHA-256, and creation
   time.
@@ -222,11 +236,13 @@ Use two new tables:
 
 `cap_messages` has role-independent UPDATE/DELETE/TRUNCATE rejection triggers, mirroring
 `audit_log`. It has no FK to `alerts`: resolved internal alerts are deleted after 90 days, while CAP
-publication history is permanent. It may store the selected internal alert UUID as non-FK
-provenance. Station and tenant relationships remain enforced through `cap_incidents`.
+publication history is permanent. It stores the durable Plan 342 warning-publication decision ID
+and source evaluation ID as provenance; an internal alert UUID may be auxiliary only. Station and
+tenant relationships remain enforced through `cap_incidents`.
 
-Reconciliation locks the station row, reads current hydrological alerts and the open incident, then
-updates/inserts the incident and appends its message in one real PostgreSQL transaction. Production
+Reconciliation locks the warning-incident key, reads current human-published warning decisions and
+that key's open CAP incident, then updates/inserts the incident and appends its message in one real
+PostgreSQL transaction. Production
 flows currently hold AUTOCOMMIT store connections, so this must use a transaction-owning writer
 (`engine.begin()`), not two writes through the existing store connection. A failed message append
 must leave no opened, advanced or closed incident. Injected fake writers cover pure flow tests; a
@@ -288,9 +304,10 @@ alert enablement defaults or tenant ownership. No raw polygon string past the Py
 
 **Verification.** `uv run pytest tests/unit/types/test_cap.py tests/unit/config/test_cap_config.py`
 proves disabled-by-default backward compatibility, exact enum/value conversion, exhaustive
-danger-level coverage, tenant/station-key uniqueness, restriction/text requirements, sender token
-rules, canonical-source URL rules, polygon closure/order, rejection of `pipeline`, and that Actual
-cannot be constructed from a partial policy or with forecast CAP eligibility.
+danger-level and high/low hazard mapping coverage, tenant/station/hazard-key uniqueness,
+restriction/text requirements, sender token rules, canonical-source URL rules, polygon
+closure/order, rejection of `pipeline`, rejection of Actual for unpublished/unrechecked forecast
+evidence, and acceptance of a human-approved selected-forecast warning in Actual mode.
 
 **Pre-change.** RED: loading an otherwise valid `[cap]` policy cannot produce a typed CAP policy
 because no field/domain type exists; specifically assert the enabled policy accessor and its
@@ -338,7 +355,7 @@ plan may take it first.
 
 **Verification.** Focused integration tests prove:
 
-- at most one open incident per station and monotonic unique sequences;
+- at most one open incident per station/parameter/direction and monotonic unique sequences;
 - Update/Cancel require a preceding message in the same incident and produce the correct stored
   reference triple;
 - `payload_xml` readback and SHA-256 match exactly;
@@ -356,7 +373,8 @@ table exists; an alert row cannot retain an immutable CAP update/cancel chain.
 
 ### T4 — Idempotent CAP reconciliation and issuance
 
-**Outcome.** A typed CAP publication service implements D4–D8, selects one station warning state,
+**Outcome.** A typed CAP publication service implements D4–D8, selects one warning state per
+station/parameter/direction,
 maps it through the tenant policy, serializes it, and atomically publishes Alert/Update/Cancel or a
 no-op. A narrowly scoped operator command can cancel named/all open incidents under the still-active
 policy before a guarded configuration transition. All clocks and ID factories are injected.
@@ -372,45 +390,46 @@ only the minimum store Protocol additions needed by this service.
 publication of pipeline alerts; no mutation of source alerts.
 
 **Verification.** `uv run pytest tests/unit/services/test_cap_publication.py
-tests/integration/services/test_cap_publication.py` covers initial warning, unchanged retry,
-level escalation/de-escalation, forecast certainty boundary, observation tie precedence,
-Update/Cancel references, close then later new incident, policy-fingerprint update, missing area or
+tests/integration/services/test_cap_publication.py` covers initial human-published warning, unchanged retry,
+level escalation/de-escalation, simultaneous high/low and discharge/water-level chains, approved
+hazard-specific text/area, forecast certainty boundary, observation tie precedence,
+Update/Cancel references, same-level validity renewal, expiry in stored XML even when Cancel is
+delayed, close then later new incident, policy-fingerprint update, missing area or
 mapping fail-closed, zero/ambiguous/cross-tenant station-policy resolution, sender/mode change during
 an open chain rejected, guarded disable/scope removal, operator cancellation without changing the
-internal alert, authorized-and-audited CLI use, concurrent reconciliation serialized per station,
+internal warning publication, authorized-and-audited CLI use, concurrent reconciliation serialized per station,
 and transaction rollback/retry without duplicate messages.
 
-**Pre-change.** RED: with an active hydrological alert and a complete CAP policy, no CAP incident or
-message is created today. The first test asserts the absent publication, not merely the absent
-service symbol.
+**Pre-change.** RED: with a human-published hydrological warning and a complete CAP policy, no CAP
+incident or message is created today. The first test asserts the absent publication, not merely
+the absent service symbol.
 
-### T5 — Forecast and observation flow integration
+### T5 — Human warning publication integration
 
-**Outcome.** After a successful hydrological alert-check batch, Flow 1 and Flow 2 reconcile CAP for
-the intersection of the evaluated stations and the explicit CAP-enabled station set. Flow 1 can
-publish only in `TEST`; `ACTUAL` reconciliation admits only Flow-2 observation candidates. Existing
-behavior is identical when disabled.
+**Outcome.** After a committed human warning publish, replacement or withdrawal decision, reconcile
+CAP for the affected enabled station/parameter/direction keys. A bounded expiry reconciliation closes incidents whose
+published warning has expired. Both forecast- and observation-sourced decisions require the same
+human gate; existing alert-check flow behavior is identical when CAP is disabled.
 
-**In.** `src/sapphire_flow/flows/run_forecast_cycle.py`, `flows/ingest_observations.py`, production
-writer wiring in `flows/_db.py`, their focused unit tests, and any typed flow injection aliases.
+**In.** Plan 342's publication decision/event store, transaction-owning CAP writer, bounded expiry
+reconciliation deployment or task, and focused unit/integration tests.
 
-**Out.** Do not publish CAP before the alert batch finishes. Do not make CAP responsible for
+**Out.** Do not publish CAP before the human decision commits. Do not make CAP responsible for
 raising/resolving internal alerts. Do not turn a CAP failure into rollback of stored observations,
-forecasts or alerts. No new schedule or Prefect deployment: publication is part of the already
-running alert phases.
+forecasts or alert decisions. CAP is downstream of the warning-publication ledger, not the raw
+forecast/observation check phases.
 
 **Failure contract.** A CAP failure is logged as `cap.publication_failed` with station/tenant and a
-sanitized reason, and is surfaced in the enclosing flow's existing error/failure result rather than
-reported as success. The next run retries idempotently. It never emits a pipeline CAP message.
+sanitized reason, and leaves a retryable publication event or expiry task visibly failed rather
+than reporting success. Retry is idempotent. It never emits a pipeline CAP message.
 
-**Verification.** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py
-tests/unit/flows/test_ingest_observations.py` proves enabled Alert/Update/Cancel and retry paths,
-that out-of-scope stations stay internal, that Actual forecast issuance is rejected by preflight,
-and that disabled mode produces the same alert rows/result counts with zero CAP writer calls.
-Existing direct injection tests must not acquire a database dependency.
+**Verification.** Focused service/flow tests prove enabled Alert/Update/Cancel and retry paths from
+human warning decisions and expiry, that out-of-scope station/hazard keys stay internal, that raw forecast and
+observation candidates cannot issue Actual CAP, and that disabled mode produces the same alert
+rows/result counts with zero CAP writer calls. Existing direct injection tests must not acquire a
+database dependency.
 
-**Pre-change.** RED: enabling a complete CAP policy around a threshold transition still produces
-only the internal `alerts` row; no CAP writer is called.
+**Pre-change.** RED: a committed human warning decision has no CAP publication consumer today.
 
 ### T6 — Scoped CAP message endpoint and RSS feed
 
@@ -459,8 +478,9 @@ as evidence and contain this enablement checklist:
 4. deployment runs in `TEST` and a real intended consumer validates Alert→Update→Cancel;
 5. security owner confirms restricted-feed recipients and token scopes;
 6. operational owner confirms feed monitoring and failure response;
-7. owner confirms that `ACTUAL` uses observation candidates only until Flow 3 or a separately
-   reviewed forecast-publication decision exists; only then may the deployment change to `ACTUAL`;
+7. owner confirms that `ACTUAL` consumes only human-published warning decisions from Plan 342,
+   with selected-forecast provenance, approved high/low hazard mappings, stored validity,
+   audited cancellation and no raw observation bypass;
 8. WMO Register submission/public dissemination is tracked externally if the authority chooses it.
 
 The operations documentation also gives the only supported shutdown/policy-removal sequence: pause

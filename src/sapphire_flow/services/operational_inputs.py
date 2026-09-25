@@ -29,6 +29,7 @@ from sapphire_flow.types.enums import (
     ObservationQcCoverage,
     WarmUpSource,
 )
+from sapphire_flow.types.forecast_evidence import StationSourceEvidence
 from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
@@ -584,6 +585,7 @@ def fill_past_forcing_tail(
     window_end: UtcDatetime,
     time_step: timedelta,
     aggregation_methods: dict[str, AggregationMethod],
+    source_records: list[WeatherForecastRecord] | None = None,
 ) -> pl.DataFrame:
     """Extend each past-forcing series to the end of the aligned lookback
     window using stored NWP forecasts (Plan 261 T1).
@@ -663,6 +665,8 @@ def fill_past_forcing_tail(
         parameters=list(last_measured),
         member_ids=_CONTROL_MEMBER_IDS,
     )
+    if source_records is not None:
+        source_records.extend(records)
     if not records:
         log.info(
             "operational_inputs.past_forcing_tail_unfilled",
@@ -890,7 +894,7 @@ def assemble_station_operational_inputs(
 
     # --- past_targets ---
     target_parameters = list(reqs.target_parameters)
-    all_observations: list = []
+    all_observations: list[Observation] = []
     for parameter in target_parameters:
         obs = obs_store.fetch_observations(
             station_id=station_id,
@@ -994,6 +998,8 @@ def assemble_station_operational_inputs(
 
     # --- past_dynamic ---
     past_dynamic_features = list(reqs.past_dynamic_features)
+    raw_forcing: list[RawHistoricalForcing] = []
+    tail_records: list[WeatherForecastRecord] = []
     if past_dynamic_features:
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
@@ -1041,6 +1047,7 @@ def assemble_station_operational_inputs(
                 window_end=past_targets_end,
                 time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
+                source_records=tail_records,
             )
     else:
         past_dynamic = pl.DataFrame()
@@ -1167,6 +1174,13 @@ def assemble_station_operational_inputs(
         # `future_steps` (`models/nwp_regression.py`: over-delivery "is
         # tolerated and forecast in full").
         forcing_route=ForcingRoute.LEGACY_SUPERSET,
+        source_evidence=StationSourceEvidence(
+            observations=tuple(all_observations),
+            freshness_observations=tuple(freshness_observations),
+            historical_forcing=tuple(raw_forcing),
+            future_weather=tuple(nwp_records),
+            tail_weather=tuple(tail_records),
+        ),
     )
     metadata = OperationalInputMetadata(
         warm_up_source=warm_up_source,

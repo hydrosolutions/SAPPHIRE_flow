@@ -169,6 +169,7 @@ GRANT INSERT, UPDATE ON observations TO sapphire_worker;
 GRANT INSERT ON observation_versions TO sapphire_worker;
 GRANT INSERT, UPDATE ON forecasts TO sapphire_worker;
 GRANT INSERT ON forecast_values TO sapphire_worker;
+GRANT INSERT ON forecast_evidence_blobs, forecast_evidence TO sapphire_worker;
 GRANT INSERT, UPDATE ON alerts TO sapphire_worker;
 GRANT INSERT ON weather_forecasts TO sapphire_worker;
 GRANT INSERT, UPDATE ON model_artifacts TO sapphire_worker;

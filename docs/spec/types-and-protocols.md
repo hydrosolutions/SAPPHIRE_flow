@@ -1849,11 +1849,30 @@ class OperationalForecast:
     combination_strategy: str | None = None        # NULL for individual; "pooled"|"bma"|"consensus" for combined
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
     rating_curve_id: RatingCurveId | None = None   # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4)
+    evidence: ForecastEvidence | None = None        # Plan 340 T1; None for earlier in-memory callers
 
     @property
     def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
         ...
 ```
+
+**As-used evidence (Plan 340 T1).** `ForecastEvidence` is `complete` or
+`evidence_incomplete` with a cause. The forecast cycle binds its pre-fetched
+station thresholds before storage; direct store callers without them are marked
+incomplete. The snapshot also captures effective forecast QC rules, overrides,
+baselines and datum. A supplied runtime digest without retained image bytes is
+marked incomplete; Plan 340 T2 can add separate append-only preservation proof,
+without rewriting the capture-time status.
+FI snapshots name the wrapped model class and config hash when supplied.
+Combined forecasts additionally require persisted contributor evidence; BMA
+snapshots record global eligibility order and sample counts even when a model
+contributes only another parameter.
+`PgForecastStore.store_forecast()` commits forecast, values, blob
+payloads and one evidence row atomically. `PgForecastStore.fetch_evidence(id)`
+returns the immutable manifest, threshold JSON and verified compressed input
+and artifact bytes; `None` means no such forecast ID, while an older forecast
+without a row returns `pre_capture_forecast`. This capture slice adds no public
+API route.
 
 ### HindcastForecast
 

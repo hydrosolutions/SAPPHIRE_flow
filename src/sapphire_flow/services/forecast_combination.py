@@ -7,6 +7,7 @@ import numpy as np
 import polars as pl
 import structlog
 
+from sapphire_flow.services.forecast_evidence import capture_combined_evidence
 from sapphire_flow.services.qc_datum import (
     add_forecast_datum_details,
     forecast_skipped_rules,
@@ -224,22 +225,9 @@ def combine_ensembles_bma(
     for param_map in eligible.values():
         all_params.update(param_map.keys())
 
-    # Compute per-model sample counts
-    eligible_weights = {mid: weights[mid] for mid in eligible}
-    total_weight = sum(eligible_weights.values())
-    if total_weight == 0.0:
+    counts = _bma_sampling_counts(eligible, weights)
+    if not counts:
         return {}
-    normalised = {mid: w / total_weight for mid, w in eligible_weights.items()}
-
-    raw_counts = {mid: round(w * _BMA_TARGET_MEMBERS) for mid, w in normalised.items()}
-    # Ensure at least 1 per model
-    counts = {mid: max(1, c) for mid, c in raw_counts.items()}
-
-    # Adjust total to exactly _BMA_TARGET_MEMBERS (add/remove from highest-weight model)
-    total = sum(counts.values())
-    if total != _BMA_TARGET_MEMBERS:
-        heaviest = max(eligible_weights, key=lambda m: eligible_weights[m])
-        counts[heaviest] += _BMA_TARGET_MEMBERS - total
 
     result: dict[str, ForecastEnsemble] = {}
     for param in all_params:
@@ -284,6 +272,37 @@ def combine_ensembles_bma(
         )
 
     return result
+
+
+def _bma_sampling_counts(
+    ensembles: dict[ModelId, dict[str, ForecastEnsemble]],
+    weights: dict[ModelId, float],
+) -> dict[ModelId, int]:
+    eligible_weights = {
+        mid: weights[mid]
+        for mid, param_map in ensembles.items()
+        if weights.get(mid, 0.0) > 0.0
+        and any(
+            ens.representation == EnsembleRepresentation.MEMBERS
+            for ens in param_map.values()
+        )
+    }
+    total_weight = sum(eligible_weights.values())
+    if total_weight == 0.0:
+        return {}
+    normalised = {mid: w / total_weight for mid, w in eligible_weights.items()}
+
+    raw_counts = {mid: round(w * _BMA_TARGET_MEMBERS) for mid, w in normalised.items()}
+    # Ensure at least 1 per model
+    counts = {mid: max(1, c) for mid, c in raw_counts.items()}
+
+    # Adjust total to exactly _BMA_TARGET_MEMBERS (add/remove from highest-weight model)
+    total = sum(counts.values())
+    if total != _BMA_TARGET_MEMBERS:
+        heaviest = max(eligible_weights, key=lambda m: eligible_weights[m])
+        counts[heaviest] += _BMA_TARGET_MEMBERS - total
+
+    return counts
 
 
 def _derive_uniform_time_step(ensemble: ForecastEnsemble) -> timedelta | None:
@@ -521,6 +540,31 @@ def build_combined_forecasts(
                 strategy=combination_strategy_label,
             )
 
+        contributors = tuple(
+            fc
+            for model_id, result in combinable_results.items()
+            if result.ensembles.get(param) is not None
+            and result.ensembles[param].representation == EnsembleRepresentation.MEMBERS
+            and (weights is None or weights.get(model_id, 0.0) > 0.0)
+            for fc in result.forecasts
+            if fc.ensemble.parameter == param
+        )
+        evidence = capture_combined_evidence(
+            model_id=combined_model_id,
+            strategy=combination_strategy_label,
+            contributors=contributors,
+            weights=weights,
+            bma_sampling_counts=(
+                _bma_sampling_counts(ensembles_by_model, weights or {})
+                if strategy == ModelCombinationStrategy.BMA
+                else None
+            ),
+            qc_rules=qc_rules,
+            qc_overrides=qc_overrides,
+            baselines=baselines,
+            water_level_datum_masl=water_level_datum_masl,
+        )
+
         forecast = OperationalForecast(
             id=ForecastId(uuid_factory()),
             station_id=station_id,
@@ -544,6 +588,7 @@ def build_combined_forecasts(
             input_quality_flags=input_quality_flags,
             combination_strategy=combination_strategy_label,
             source_model_ids=source_model_ids,
+            evidence=evidence,
         )
         forecasts.append(forecast)
 

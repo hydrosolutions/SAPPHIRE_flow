@@ -16,6 +16,7 @@ from sapphire_flow.services.ensemble_fanout import (
     reject_prior_state_for_fanout,
     reject_stateful_ensemble_states,
 )
+from sapphire_flow.services.forecast_evidence import capture_station_evidence
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import (
     assess_input_quality,
@@ -475,6 +476,27 @@ def _run_single_model(
     )
 
     ensemble_member_states: list[bytes | None] | None = None
+    rng_state = rng.getstate()
+    evidence = capture_station_evidence(
+        inputs=context.inputs,
+        model=model,
+        model_id=assignment.model_id,
+        artifact_bytes=artifact_bytes,
+        prior_state=context.prior_state,
+        rng_state=rng_state,
+        config=config,
+        qc_rules=qc_rules,
+        qc_overrides=qc_overrides,
+        baselines=baselines,
+        water_level_datum_masl=water_level_datum_masl,
+        fanout_features=(
+            forcing_contract.future_dynamic_features
+            if forcing_contract is not None
+            else model.data_requirements.future_dynamic_features
+        )
+        if is_ensemble
+        else None,
+    )
     try:
         artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
         if is_ensemble:
@@ -622,6 +644,7 @@ def _run_single_model(
             qc_flags=tuple(flags),
             input_quality=input_quality,
             input_quality_flags=input_quality_flags,
+            evidence=evidence,
         )
         forecasts.append(forecast)
 

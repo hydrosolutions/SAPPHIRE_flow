@@ -14,6 +14,7 @@ from sqlalchemy.exc import DisconnectionError
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services import run_group_forecast as service
+from sapphire_flow.services.forecast_evidence import restore_frame, restore_snapshot
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.operational_inputs import OperationalInputMetadata
 from sapphire_flow.services.training_data import expected_past_buckets
@@ -366,6 +367,7 @@ class _BatchGroupModel:
         self.exc = exc
         self.deserialize_calls: list[bytes] = []
         self.predict_calls = 0
+        self.predict_inputs: GroupModelInputs | None = None
 
     def deserialize_artifact(self, raw: bytes) -> bytes:
         self.deserialize_calls.append(raw)
@@ -378,6 +380,7 @@ class _BatchGroupModel:
         rng: random.Random,
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         self.predict_calls += 1
+        self.predict_inputs = inputs
         if self.exc is not None:
             raise self.exc
         return self.batch_result
@@ -730,6 +733,17 @@ def test_run_group_forecast_returns_station_results() -> None:
     assert set(results) == {sid_a, sid_b}
     assert model.deserialize_calls == [b"group-artifact"]
     assert model.predict_calls == 1
+    assert model.predict_inputs is not None
+    evidence = results[sid_a].forecasts[0].evidence
+    assert evidence is not None
+    assert evidence.snapshot is not None
+    captured_frames = restore_snapshot(evidence.snapshot)["frames"]
+    assert restore_frame(captured_frames["past_targets"]).equals(
+        model.predict_inputs.past_targets
+    )
+    assert restore_frame(captured_frames["future_dynamic"]).equals(
+        model.predict_inputs.future_dynamic
+    )
     for sid, expected_state in [(sid_a, b"state-a"), (sid_b, b"state-b")]:
         station_result = results[sid]
         assert station_result.station_id == sid
