@@ -73,6 +73,7 @@ def _forecast_lab_stores(stores: dict[str, Any]) -> ForecastLabStores:
         artifact_store=stores["artifact_store"],
         provenance_store=stores["provenance_store"],
         basin_store=stores["basin_store"],
+        group_store=stores["group_store"],
     )
 
 

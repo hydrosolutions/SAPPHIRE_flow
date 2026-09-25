@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -38,9 +38,19 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 from sapphire_flow.types.forecast import OperationalForecast
-from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    ArtifactId,
+    ForecastId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
 from sapphire_flow.types.model import ModelArtifactProvenance
-from sapphire_flow.types.station import ModelAssignment
+from sapphire_flow.types.station import (
+    GroupModelAssignment,
+    ModelAssignment,
+    StationGroup,
+)
 from tests.conftest import make_forecast_ensemble, make_observation, make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
@@ -49,6 +59,7 @@ from tests.fakes.fake_stores import (
     FakeModelArtifactStore,
     FakeModelStore,
     FakeObservationStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -62,6 +73,7 @@ def _make_stores(
     artifact_store: FakeModelArtifactStore | None = None,
     provenance_store: FakeArtifactProvenanceStore | None = None,
     forecast_store: FakeForecastStore | None = None,
+    group_store: FakeStationGroupStore | None = None,
 ) -> ForecastLabStores:
     return ForecastLabStores(
         station_store=station_store or FakeStationStore(),
@@ -71,6 +83,7 @@ def _make_stores(
         artifact_store=artifact_store or FakeModelArtifactStore(),
         provenance_store=provenance_store or FakeArtifactProvenanceStore(),
         basin_store=basin_store or FakeBasinStore(),
+        group_store=group_store or FakeStationGroupStore(),
     )
 
 
@@ -244,6 +257,248 @@ class TestActiveModelAssignments:
             ModelId("high_priority"),
             ModelId("low_priority"),
         ]
+
+
+class TestGroupModelAssignments:
+    """Plan 329 — the snapshot enumerated only a station's OWN assignments,
+    so a model assigned to a station GROUP was structurally invisible."""
+
+    @staticmethod
+    def _station_assignment(
+        station_id: StationId,
+        model_id: str,
+        priority: int,
+        status: ModelAssignmentStatus = ModelAssignmentStatus.ACTIVE,
+        time_step: timedelta = timedelta(days=1),
+    ) -> ModelAssignment:
+        return ModelAssignment(
+            station_id=station_id,
+            model_id=ModelId(model_id),
+            time_step=time_step,
+            status=status,
+            priority=priority,
+            created_at=_EPOCH,
+        )
+
+    @staticmethod
+    def _group(
+        station_id: StationId, name: str, group_id: StationGroupId | None = None
+    ) -> StationGroup:
+        return StationGroup(
+            id=group_id or StationGroupId(uuid4()),
+            name=name,
+            station_ids=frozenset({station_id}),
+            created_at=_EPOCH,
+        )
+
+    @staticmethod
+    def _seed_group_assignment(
+        group_store: FakeStationGroupStore,
+        group: StationGroup,
+        model_id: str,
+        priority: int,
+        status: ModelAssignmentStatus = ModelAssignmentStatus.ACTIVE,
+        time_step: timedelta = timedelta(days=1),
+    ) -> None:
+        group_store.store_group(group)
+        group_store.seed_group_model_assignment(
+            group.id,
+            ModelId(model_id),
+            GroupModelAssignment(
+                group_id=group.id,
+                model_id=ModelId(model_id),
+                time_step=time_step,
+                status=status,
+                priority=priority,
+                created_at=_EPOCH,
+            ),
+        )
+
+    def test_a_group_only_assignment_is_enumerated(self) -> None:
+        """The plan's premise: a model assigned ONLY via a group appears."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        group_store = FakeStationGroupStore()
+        self._seed_group_assignment(
+            group_store, self._group(station.id, "pilot"), "cmal_small", 50
+        )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store, group_store=group_store),
+            station.id,
+        )
+
+        assert [a.model_id for a in result] == [ModelId("cmal_small")]
+        # The projection carries the ENUMERATING loop's station_id — a
+        # GroupModelAssignment has none of its own.
+        assert result[0].station_id == station.id
+
+    def test_an_inactive_group_assignment_is_excluded(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        group_store = FakeStationGroupStore()
+        self._seed_group_assignment(
+            group_store,
+            self._group(station.id, "pilot"),
+            "cmal_small",
+            50,
+            status=ModelAssignmentStatus.INACTIVE,
+        )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store, group_store=group_store),
+            station.id,
+        )
+
+        assert result == []
+
+    def test_a_station_in_no_group_is_unaffected(self) -> None:
+        """The common case must acquire no new behaviour."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            self._station_assignment(station.id, "nwp_regression", 10)
+        )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store), station.id
+        )
+
+        assert [a.model_id for a in result] == [ModelId("nwp_regression")]
+
+    def test_dedup_takes_the_minimum_priority_across_every_overlapping_group(
+        self,
+    ) -> None:
+        """Plan 329 T1 — the case that distinguishes the specified algorithm
+        from station-first (yields 90), first-group-only (yields 50) and
+        filter-AFTER-dedup (yields the INACTIVE 0, then drops X).
+
+        The station is a member of A, B AND C: `fetch_groups_for_station`
+        returns groups BY MEMBERSHIP, so a non-member C would never enumerate
+        the INACTIVE row and the case would stop discriminating."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            self._station_assignment(station.id, "model_x", 90)
+        )
+        station_store.store_model_assignment(
+            self._station_assignment(station.id, "model_y", 10)
+        )
+        group_store = FakeStationGroupStore()
+        for name, priority, status in (
+            ("group_a", 50, ModelAssignmentStatus.ACTIVE),
+            ("group_b", 5, ModelAssignmentStatus.ACTIVE),
+            ("group_c", 0, ModelAssignmentStatus.INACTIVE),
+        ):
+            self._seed_group_assignment(
+                group_store,
+                self._group(station.id, name),
+                "model_x",
+                priority,
+                status=status,
+            )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store, group_store=group_store),
+            station.id,
+        )
+
+        # X ONCE, at the minimum of the ACTIVE candidates, before Y.
+        assert [a.model_id for a in result] == [
+            ModelId("model_x"),
+            ModelId("model_y"),
+        ]
+        # Pin the PRIORITY, not just the position: min{90,50,5,0} = 0, and
+        # X@0 still sorts before Y@10 — only 5 proves ACTIVE was filtered
+        # BEFORE the minimum was taken.
+        assert result[0].priority == 5
+
+    def test_at_an_equal_minimum_the_station_assignment_wins(self) -> None:
+        """Plan 329 § 11 — neither underlying query is ordered, so the tie
+        needs a defined winner. Asserted on `time_step`, which is the only
+        field that can differ between two otherwise-identical candidates."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            self._station_assignment(
+                station.id, "model_x", 20, time_step=timedelta(hours=6)
+            )
+        )
+        group_store = FakeStationGroupStore()
+        self._seed_group_assignment(
+            group_store,
+            self._group(station.id, "pilot"),
+            "model_x",
+            20,
+            time_step=timedelta(days=1),
+        )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store, group_store=group_store),
+            station.id,
+        )
+
+        assert len(result) == 1
+        assert result[0].time_step == timedelta(hours=6)
+
+    def test_at_an_equal_minimum_between_groups_the_lowest_group_id_wins(
+        self,
+    ) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        lower = StationGroupId(UUID(int=1))
+        higher = StationGroupId(UUID(int=2))
+        group_store = FakeStationGroupStore()
+        # Seeded highest-id FIRST, so a first-wins implementation fails.
+        self._seed_group_assignment(
+            group_store,
+            self._group(station.id, "group_high", group_id=higher),
+            "model_x",
+            20,
+            time_step=timedelta(days=1),
+        )
+        self._seed_group_assignment(
+            group_store,
+            self._group(station.id, "group_low", group_id=lower),
+            "model_x",
+            20,
+            time_step=timedelta(hours=6),
+        )
+
+        result = fetch_active_model_assignments(
+            _make_stores(station_store=station_store, group_store=group_store),
+            station.id,
+        )
+
+        assert len(result) == 1
+        assert result[0].time_step == timedelta(hours=6)
+
+    def test_a_group_store_failure_propagates(self) -> None:
+        """Plan 329 T1 — a station in NO group now incurs a group lookup.
+        "No new failure mode" means no new SWALLOWED one: a store error must
+        still reach the caller, not be absorbed into an empty list."""
+
+        class _ExplodingGroupStore(FakeStationGroupStore):
+            def fetch_groups_for_station(
+                self, station_id: StationId
+            ) -> list[StationGroup]:
+                raise RuntimeError("group lookup failed")
+
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stores = _make_stores(
+            station_store=station_store, group_store=_ExplodingGroupStore()
+        )
+
+        with pytest.raises(RuntimeError, match="group lookup failed"):
+            fetch_active_model_assignments(stores, station.id)
 
 
 class TestObservationWindow:

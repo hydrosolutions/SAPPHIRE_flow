@@ -55,9 +55,14 @@ from sapphire_flow.types.ids import (
     POOLED_MODEL_ID,
     ForecastId,
     ModelId,
+    StationGroupId,
     StationId,
 )
-from sapphire_flow.types.station import ModelAssignment
+from sapphire_flow.types.station import (
+    GroupModelAssignment,
+    ModelAssignment,
+    StationGroup,
+)
 from tests.conftest import make_observation, make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
@@ -66,6 +71,7 @@ from tests.fakes.fake_stores import (
     FakeModelArtifactStore,
     FakeModelStore,
     FakeObservationStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -103,6 +109,7 @@ def _stores(
     station_store: FakeStationStore | None = None,
     observation_store: FakeObservationStore | None = None,
     forecast_store: FakeForecastStore | None = None,
+    group_store: FakeStationGroupStore | None = None,
     seed_default_cycle: bool = True,
 ) -> ForecastLabStores:
     # Plan 222 fixer round — every existing combined-forecast fixture in
@@ -123,6 +130,7 @@ def _stores(
         artifact_store=FakeModelArtifactStore(),
         provenance_store=FakeArtifactProvenanceStore(),
         basin_store=FakeBasinStore(),
+        group_store=group_store or FakeStationGroupStore(),
     )
 
 
@@ -2127,6 +2135,7 @@ class TestPublicationCycleMarkerUsesForecastRowsNotHeartbeat:
             artifact_store=FakeModelArtifactStore(),
             provenance_store=FakeArtifactProvenanceStore(),
             basin_store=FakeBasinStore(),
+            group_store=FakeStationGroupStore(),
         )
 
         snapshot = build_snapshot(
@@ -2661,3 +2670,283 @@ class TestTheSnapshotRendersTheReplacementNotTheOriginal:
         superseded = forecast_store.fetch_forecast(original.id)
         assert superseded is not None
         assert superseded.status is ForecastStatus.SUPERSEDED
+
+
+class TestGroupAssignedModelsInTheSnapshot:
+    """Plan 329 — a group-assigned model was structurally invisible to the
+    snapshot, so the `cmal_small` pilot never reached the map."""
+
+    @staticmethod
+    def _group_with(
+        station_id: StationId, model_id: str, priority: int
+    ) -> FakeStationGroupStore:
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="pilot",
+            station_ids=frozenset({station_id}),
+            created_at=_EPOCH,
+        )
+        group_store.store_group(group)
+        group_store.seed_group_model_assignment(
+            group.id,
+            ModelId(model_id),
+            GroupModelAssignment(
+                group_id=group.id,
+                model_id=ModelId(model_id),
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=priority,
+                created_at=_EPOCH,
+            ),
+        )
+        return group_store
+
+    def test_a_group_assigned_model_appears_with_its_forecast(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("cmal_small"),
+                ensemble=_members_ensemble(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rng=random.Random(1),
+                    model_id=ModelId("cmal_small"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            group_store=self._group_with(station.id, "cmal_small", 50),
+        )
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        entries = snapshot.stations[0].sapphire_forecasts
+        assert [e.model.key for e in entries] == ["cmal_small"]
+        assert isinstance(entries[0], SapphireForecastAvailableSchema)
+
+    def test_a_member_with_no_forecast_gains_an_unavailable_entry(self) -> None:
+        """137 of the pilot's 139 members on 2026-09-25 — this is what the
+        map actually sees first."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stores = _stores(
+            station_store=station_store,
+            group_store=self._group_with(station.id, "cmal_small", 50),
+        )
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        entries = snapshot.stations[0].sapphire_forecasts
+        assert len(entries) == 1
+        assert entries[0].model.key == "cmal_small"
+        assert not isinstance(entries[0], SapphireForecastAvailableSchema)
+        assert entries[0].reason == "no_forecast"
+
+    def test_a_non_member_station_payload_is_unchanged(self) -> None:
+        """The whole fleet before the pilot, and every non-member after it."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                ensemble=_members_ensemble(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rng=random.Random(1),
+                    model_id=ModelId("nwp_regression"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        # A group exists, but this station is NOT a member of it.
+        group_store = FakeStationGroupStore()
+        other = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="pilot",
+            station_ids=frozenset({StationId(uuid4())}),
+            created_at=_EPOCH,
+        )
+        group_store.store_group(other)
+        group_store.seed_group_model_assignment(
+            other.id,
+            ModelId("cmal_small"),
+            GroupModelAssignment(
+                group_id=other.id,
+                model_id=ModelId("cmal_small"),
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=50,
+                created_at=_EPOCH,
+            ),
+        )
+
+        without = build_snapshot(
+            _stores(station_store=station_store, forecast_store=forecast_store),
+            stations=[station],
+            archive_base_path=None,
+            clock=_frozen_clock(),
+        )
+        with_group = build_snapshot(
+            _stores(
+                station_store=station_store,
+                forecast_store=forecast_store,
+                group_store=group_store,
+            ),
+            stations=[station],
+            archive_base_path=None,
+            clock=_frozen_clock(),
+        )
+
+        assert with_group.stations[0] == without.stations[0]
+
+    def test_a_group_model_does_not_displace_a_renderable_higher_priority(
+        self,
+    ) -> None:
+        """D2 direction (i) — the pilot must not take the headline from a
+        model that actually has a forecast."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        forecast_store = FakeForecastStore()
+        for model_id in ("nwp_regression", "cmal_small"):
+            forecast_store.store_forecast(
+                _forecast(
+                    station_id=station.id,
+                    model_id=ModelId(model_id),
+                    ensemble=_members_ensemble(
+                        station.id,
+                        issued_at=_EPOCH,
+                        rng=random.Random(1),
+                        model_id=ModelId(model_id),
+                    ),
+                    issued_at=_EPOCH,
+                )
+            )
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            group_store=self._group_with(station.id, "cmal_small", 50),
+        )
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        primaries = [
+            e
+            for e in snapshot.stations[0].sapphire_forecasts
+            if isinstance(e, SapphireForecastAvailableSchema) and e.model.is_primary
+        ]
+        assert len(primaries) == 1
+        assert primaries[0].model.key == "nwp_regression"
+
+    def test_a_group_model_becomes_primary_when_the_established_models_cannot_render(
+        self,
+    ) -> None:
+        """D2 direction (ii), which the owner approved — a group model MAY
+        headline a station whose established models are silent.
+
+        The 90/100 fallbacks are seeded RENDERABLE, or this degenerates into
+        'the only renderable entry wins' and proves nothing about
+        displacement. The higher priorities are made unrenderable by BOTH
+        routes: no forecast at all, and a deficient quantile set."""
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        for model_id, priority in (
+            ("nwp_regression", 10),
+            ("seasonal_precip_runoff_regression", 12),
+            ("nwp_rainfall_runoff", 20),
+            ("linear_regression_daily", 30),
+            ("persistence_fallback", 90),
+            ("climatology_fallback", 100),
+        ):
+            station_store.store_model_assignment(
+                _active_assignment(station.id, ModelId(model_id), priority=priority)
+            )
+        forecast_store = FakeForecastStore()
+        # Route A to unrenderable: a DEFICIENT quantile set (9 levels, not the
+        # recognised 7). Route B: no forecast row at all, for the other two.
+        for model_id in ("nwp_regression", "seasonal_precip_runoff_regression"):
+            forecast_store.store_forecast(
+                _forecast(
+                    station_id=station.id,
+                    model_id=ModelId(model_id),
+                    ensemble=_quantiles_ensemble_from_rows(
+                        station.id,
+                        issued_at=_EPOCH,
+                        rows=[
+                            {"valid_time": vt, "quantile": q, "value": 1.0}
+                            for q in (
+                                0.02,
+                                0.05,
+                                0.10,
+                                0.25,
+                                0.50,
+                                0.75,
+                                0.90,
+                                0.95,
+                                0.98,
+                            )
+                        ],
+                        model_id=ModelId(model_id),
+                    ),
+                    issued_at=_EPOCH,
+                )
+            )
+        # The group model and BOTH fallbacks are renderable.
+        for model_id in ("cmal_small", "persistence_fallback", "climatology_fallback"):
+            forecast_store.store_forecast(
+                _forecast(
+                    station_id=station.id,
+                    model_id=ModelId(model_id),
+                    ensemble=_members_ensemble(
+                        station.id,
+                        issued_at=_EPOCH,
+                        rng=random.Random(1),
+                        model_id=ModelId(model_id),
+                    ),
+                    issued_at=_EPOCH,
+                )
+            )
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            group_store=self._group_with(station.id, "cmal_small", 50),
+        )
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        primaries = [
+            e
+            for e in snapshot.stations[0].sapphire_forecasts
+            if isinstance(e, SapphireForecastAvailableSchema) and e.model.is_primary
+        ]
+        assert len(primaries) == 1
+        # Displacement, not 'only candidate': the 90/100 fallbacks render too.
+        assert primaries[0].model.key == "cmal_small"

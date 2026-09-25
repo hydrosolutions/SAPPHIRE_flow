@@ -331,8 +331,10 @@ def _display_name(stores: ForecastLabStores, model_id: ModelId) -> str:
 def _sapphire_entries(
     stores: ForecastLabStores, station: StationConfig
 ) -> list[SapphireForecastEntry]:
-    """D12/D17b/D19/D5/D20, extended by Plan 204 T2 — one entry per ACTIVE
-    assignment, pre-sorted `(priority asc, model_id asc)` by
+    """D12/D17b/D19/D5/D20, extended by Plan 204 T2 and Plan 329 — one entry
+    per ACTIVE assignment, whether assigned to the STATION or to a GROUP the
+    station belongs to (deduplicated by model at the minimum priority),
+    pre-sorted `(priority asc, model_id asc)` by
     `fetch_active_model_assignments`. The first entry this builder actually
     RENDERS (`_is_renderable` — members, or a recognised quantile set) wins
     `is_primary`; a model that cannot be rendered or has no forecast can

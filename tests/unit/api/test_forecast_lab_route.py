@@ -11,7 +11,7 @@ excluded, indistinguishable from a typo).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -23,12 +23,20 @@ from sapphire_flow.api.routes.forecast_lab import (
     get_forecast_combination_strategy,
 )
 from sapphire_flow.api.security import Principal, require_principal
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AccessTokenRole,
+    ModelAssignmentStatus,
     ModelCombinationStrategy,
     StationKind,
 )
-from sapphire_flow.types.ids import AccessTokenId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    AccessTokenId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
+from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
@@ -274,3 +282,51 @@ class TestCombinationStrategyPropagation:
         body = resp.json()
         assert body["stations"][0]["combined_forecast"]["available"] is True
         assert body["stations"][0]["combined_forecast"]["model_key"] == "_pooled"
+
+
+class TestGroupMembershipDoesNotExpandScope:
+    """Plan 329 T1 — principal scoping is resolved BEFORE the group lookup.
+    Group membership must never pull an out-of-scope station into the
+    response. `build_snapshot` performs no authorization, so this can only
+    be proven at the route."""
+
+    def test_an_out_of_scope_group_member_is_not_returned(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        in_scope = make_station_config(code="2009", station_id=StationId(UUID(int=1)))
+        out_of_scope = make_station_config(
+            code="2091", station_id=StationId(UUID(int=2))
+        )
+        fake_stores["station_store"].store_station(in_scope)
+        fake_stores["station_store"].store_station(out_of_scope)
+        # BOTH are members of one group carrying an ACTIVE assignment.
+        group = StationGroup(
+            id=StationGroupId(UUID(int=9)),
+            name="pilot",
+            station_ids=frozenset({in_scope.id, out_of_scope.id}),
+            created_at=ensure_utc(datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC)),
+        )
+        fake_stores["group_store"].store_group(group)
+        fake_stores["group_store"].seed_group_model_assignment(
+            group.id,
+            ModelId("cmal_small"),
+            GroupModelAssignment(
+                group_id=group.id,
+                model_id=ModelId("cmal_small"),
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=50,
+                created_at=ensure_utc(datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC)),
+            ),
+        )
+        _set_principal(_consumer_principal(frozenset({in_scope.id})))
+
+        resp = client.get("/api/v1/forecast-lab/snapshot")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [s["station"]["code"] for s in body["stations"]] == ["2009"]
+        # …and the in-scope member DOES carry the group model.
+        assert [
+            e["model"]["key"] for e in body["stations"][0]["sapphire_forecasts"]
+        ] == ["cmal_small"]
