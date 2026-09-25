@@ -1892,8 +1892,13 @@ environment value produces an explicit `evidence_incomplete` reason, including
 for forecasts written before this capture existed. Existing Compose workers do
 not set that value automatically. A syntactically valid digest alone still
 marks `runtime_image_bytes_unpinned`: the capture cannot prove that the running
-image bytes were retained. Plan 340 T2 supplies protected backup/restore and the
-publication activation gate. Plan 344 supplies later cold archive and replay.
+image bytes were retained. Plan 340 T2 adds append-only restoration attestations:
+the capture status never changes, while `effective_preservation_status` becomes
+complete only when an attestation matches the capture manifest, snapshot,
+artifact, image and a verified protected backup. Backup freshness is a separate
+live publication gate. The host `assess` command exposes both statuses and reasons;
+Plan 341 will determine the authenticated API presentation. Plan 344 supplies
+later cold archive and replay.
 
 **`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
 
@@ -3023,12 +3028,19 @@ All time-series data follows a unified tiered lifecycle: **hot (PostgreSQL / obj
 | Extracted NWP values | `weather_hot_days` (180) | Parquet | `max_retention_days` | `weather_forecasts` |
 | Raw gridded NWP | `nwp_grid_retention_days` (3) | — (no cold tier) | pruned by age at `nwp_grid_retention_days` | `/data/nwp_grids/` (Plan 095) |
 | Runoff forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `forecasts` + `forecast_values` |
+| Evidence-linked operational forecasts | Held in PostgreSQL until Plan 344 restore proof | Not yet | No deletion in Plan 340 T2 | `forecasts`, `forecast_values`, `forecast_evidence`, blobs and attestations |
 | Hindcast forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `hindcast_forecasts` + `hindcast_values` |
 | Daily aggregates | **permanent** (PostgreSQL) | — | **never** | in-place |
 | Pipeline health | `pipeline_health_retention_days` (30) | — | `pipeline_health_retention_days` | `pipeline_health` |
 | Resolved alerts | `alerts_retention_days` (90) | — | `alerts_retention_days` | `alerts` (resolved only) |
 
 Constraint: `max_retention_days` must be > `forecast_hot_days` (validated at config load time).
+`evidence_retention_days` is separately configurable with a 2,192-day floor
+after forecast valid time. It is a future archive floor, not permission to
+delete evidence now. Database triggers reject cleanup of evidence-linked
+outputs and artifact metadata; the evidence blobs and attestations are
+append-only. The planned hot-to-cold sweep must exclude this chain until Plan
+344 proves linked restoration.
 
 **Raw gridded NWP (Plan 095):** the raw grid-cube zarrs are disposable auxiliary data — the **permanent** NWP archive is the extracted basin-average values in `weather_forecasts` (row above). Their hot window is capped independently at `nwp_grid_retention_days` (default 3), **not** at `weather_hot_days`, and old cycles are pruned **by age** (cycle_time older than the window); there is no cold tier for raw cubes (re-derivable by STAC re-fetch). Constraint: `nwp_grid_retention_days >= ceil(nwp_max_fallback_age_hours / 24) + 1` (validated at config load time). Trade-off: reprocessing with new station geometry beyond `nwp_grid_retention_days` days requires re-fetching from STAC rather than re-reading a cold cube; operators for whom long-window reprocessing matters more than disk may raise `nwp_grid_retention_days`.
 
@@ -3080,6 +3092,20 @@ Current scope: disaster recovery (DR), not high availability (HA).
 Backup automation is shipped as part of SAPPHIRE Flow (Prefect scheduled tasks), not delegated to the deployment team's infrastructure. This ensures consistent, tested backup procedures across all deployments (Switzerland, Nepal, future sites) without depending on each team's backup tooling or practices. The deployment team provides storage targets and physical connectivity; SAPPHIRE handles scheduling, execution, encryption, retention, and automated restore rehearsal.
 
 ### DR plan
+
+**Interim CHWRR evidence protection (Plan 340 T2).** A host-side backup command
+uses the dedicated read-only backup worker to produce a full custom-format
+database dump, stores Docker image archives by immutable image ID on a separate
+mounted volume, restores the dump into a disposable PostgreSQL container, checks
+an evidence/output/artifact chain, loads and checks each archived image, then
+publishes a hashed manifest. A worker with INSERT-only access records a separate
+attestation for the checked forecast. The host command retains earlier protected
+bundles while Plan 344 is absent so an older attestation remains verifiable.
+Daily host scheduling and a freshness probe are deployment requirements. The
+Mac mini test deployment has no separate volume and therefore fails the CHWRR
+publication gate. The DHM backup volume path and capacity are set at deployment.
+This interim mechanism precedes the restic-based v1 design below; it does not
+implement cold archive or six-year-old replay.
 
 1. **Backup system** (automated, daily at 02:00 UTC via Prefect scheduled task)
 

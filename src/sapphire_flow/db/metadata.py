@@ -1270,6 +1270,41 @@ forecast_evidence = sa.Table(
     ),
 )
 
+forecast_preservation_attestations = sa.Table(
+    "forecast_preservation_attestations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "forecast_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("forecast_evidence.forecast_id"),
+        nullable=False,
+    ),
+    sa.Column("backup_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("capture_manifest_sha256", sa.Text, nullable=False),
+    sa.Column("snapshot_sha256", sa.Text, nullable=False),
+    sa.Column("forecast_values_sha256", sa.Text, nullable=False),
+    sa.Column("artifact_sha256", sa.Text, nullable=True),
+    sa.Column("runtime_image_digest", sa.Text, nullable=False),
+    sa.Column("backup_manifest_sha256", sa.Text, nullable=False),
+    sa.Column("database_dump_sha256", sa.Text, nullable=False),
+    sa.Column("image_archive_sha256", sa.Text, nullable=False),
+    sa.Column("restored_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.UniqueConstraint(
+        "forecast_id", "backup_id", name="uq_forecast_preservation_forecast_backup"
+    ),
+    sa.CheckConstraint(
+        "runtime_image_digest ~ '^sha256:[0-9a-f]{64}$'",
+        name="ck_forecast_preservation_image_digest",
+    ),
+)
+
 # Index on forecast_values
 sa.Index(
     "ix_forecast_values_forecast_valid_time",

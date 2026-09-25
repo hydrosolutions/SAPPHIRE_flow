@@ -208,6 +208,11 @@ fx = json.load(open(FIXTURE))
 a = sys.argv[1:]
 def out(lines):
     sys.stdout.write("".join(l + "\\n" for l in lines))
+if a[:1] == ["compose"]:
+    if fx.get("evidence_inventory_fails"):
+        sys.exit(1)
+    out(["yes" if fx.get("has_evidence") else "no"])
+    sys.exit(0)
 if a[:1] == ["ps"]:
     if fx.get("ps_fails"):
         sys.exit(1)
@@ -340,6 +345,17 @@ class TestPruneDockerRollbackProtection:
     def test_unreferenced_non_anchor_is_removed(self, tmp_path: Path) -> None:
         _, removed = self._run(tmp_path, self._base())
         assert removed == ["sapphire-flow:0.1.653"], f"removed={removed}"
+
+    def test_forecast_evidence_disables_image_prune(self, tmp_path: Path) -> None:
+        result, removed = self._run(tmp_path, self._base(has_evidence=True))
+        assert result.returncode == 0
+        assert removed == []
+        assert "forecast evidence exists" in result.stdout
+
+    def test_unreadable_evidence_inventory_fails_closed(self, tmp_path: Path) -> None:
+        result, removed = self._run(tmp_path, self._base(evidence_inventory_fails=True))
+        assert result.returncode != 0
+        assert removed == []
 
     def test_image_pinned_only_by_an_exited_container_is_kept(
         self, tmp_path: Path

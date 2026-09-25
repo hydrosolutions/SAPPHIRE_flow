@@ -8,7 +8,7 @@ blocks: [341, 342, 343, 344]
 related: [035, 147, 317]
 reviews: []
 open_decisions:
-  - CHWRR will set evidence retention to at least six years after forecast valid time. Confirm the protected backup target and capacity before CHWRR publication is activated; Plan 344 adds the longer-term cold archive and diagnostic replay.
+  - CHWRR will set evidence retention to at least six years after forecast valid time. The Mac mini test deployment has no separate backup volume, so its publication gate stays closed. DHM will configure a separate volume; confirm its path, encryption and capacity before CHWRR publication is activated. Plan 344 adds the longer-term cold archive and diagnostic replay.
 source: 2026-09-24 owner — retain the as-used evidence from the first Nepal forecast runs so later errors can be diagnosed.
 ---
 

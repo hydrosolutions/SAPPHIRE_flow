@@ -10,8 +10,10 @@
 # Invoked weekly by launchd (ch.hydrosolutions.sapphire-docker-prune.plist).
 # Never run automatically from inside any container.
 #
-# Stack-up guard: this script removes ALL images not referenced by a
-# container, matching `docker image prune -a` semantics. Removing only
+# Stack-up guard: before forecast evidence exists, this script removes images
+# not referenced by a container, matching `docker image prune -a` semantics.
+# Once evidence exists, Plan 340 T2 skips image pruning to retain runtime
+# bytes until the protected archive is proved. Removing only
 # dangling/untagged images would reclaim nothing from old tagged
 # `sapphire-flow:0.1.xxx` images — the primary ~15 GB offender. Tags matching
 # PROTECT_RE (rollback anchors) are the one exception; see
@@ -114,7 +116,8 @@ print(total)
 
 log "images reclaimable: ${IMAGES_GB} GB  |  build-cache reclaimable: ${CACHE_GB} GB"
 
-# Gate each prune independently on ≥ 1 GB reclaimable.
+# Gate each prune independently on ≥ 1 GB reclaimable. Image pruning has an
+# additional fail-closed evidence-inventory gate below.
 # Images attached to NO container (running or exited) are removed, including
 # old tagged `sapphire-flow:0.1.xxx` images. The deployed stack's images are
 # protected because their containers reference them.
@@ -225,10 +228,22 @@ prune_unreferenced_images() {
 }
 
 if python3 -c "import sys; sys.exit(0 if float('${IMAGES_GB}') >= ${PRUNE_THRESHOLD} else 1)"; then
-    log "pruning images (${IMAGES_GB} GB reclaimable >= ${PRUNE_THRESHOLD} GB threshold)"
-    # Never abort here: the build-cache gate below is independent and must
-    # still run. The failure is remembered and surfaced in the exit status.
-    prune_unreferenced_images || IMAGE_PRUNE_FAILED=1
+    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    evidence_present=""
+    if ! evidence_present=$("${DOCKER}" compose -f "${REPO_ROOT}/docker-compose.yml" \
+        exec -T prefect-worker-backup /entrypoint.sh python -m \
+        sapphire_flow.ops.evidence_backup_worker has-evidence 2>/dev/null); then
+        log "evidence inventory unavailable — skipping image prune"
+        IMAGE_PRUNE_FAILED=1
+    elif [ "${evidence_present}" = "yes" ]; then
+        log "forecast evidence exists — skipping image prune until protected retention is proved"
+    elif [ "${evidence_present}" = "no" ]; then
+        log "pruning images (${IMAGES_GB} GB reclaimable >= ${PRUNE_THRESHOLD} GB threshold)"
+        prune_unreferenced_images || IMAGE_PRUNE_FAILED=1
+    else
+        log "evidence inventory unreadable — skipping image prune"
+        IMAGE_PRUNE_FAILED=1
+    fi
 else
     log "images reclaimable ${IMAGES_GB} GB < ${PRUNE_THRESHOLD} GB — skipping image prune"
 fi

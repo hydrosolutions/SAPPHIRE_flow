@@ -144,7 +144,12 @@ CHECKS_DONE="access_tokens row count, alembic_version, pipeline_health_id_seq"
 count="$(psql_exec "SELECT count(*) FROM access_tokens" "${DB_NAME}")" \
     || fail "access_tokens query failed (table missing from restore?)"
 [[ "${count}" =~ ^[0-9]+$ ]] || fail "access_tokens row count unreadable: '${count}'"
-[[ "${count}" -gt 0 ]] || fail "access_tokens has zero rows after restore"
+# Before Plan 341's human/API-key publication path, a Nepal test database may
+# have no access tokens yet. In Plan 340's evidence mode, the content chain
+# checked below is the non-empty restore proof instead.
+if [[ -z "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
+    [[ "${count}" -gt 0 ]] || fail "access_tokens has zero rows after restore"
+fi
 
 version="$(psql_exec "SELECT version_num FROM alembic_version" "${DB_NAME}")" \
     || fail "alembic_version query failed"
@@ -210,5 +215,56 @@ fi
 # Postgres (backend-only), and comparing against a live source that has
 # moved on is semantically wrong for a historical dump anyway.
 echo "note: no source-database comparison — content assertions plus alembic_version only" >&2
+
+# Plan 340 T2: an operator-supplied evidence forecast ID turns this into a
+# content restore proof for the snapshot, artifact, output and image identity.
+if [[ -n "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
+    evidence_id="${SAPPHIRE_EVIDENCE_FORECAST_ID}"
+    expected_manifest="${SAPPHIRE_EVIDENCE_CAPTURE_MANIFEST_SHA256:?}"
+    expected_snapshot="${SAPPHIRE_EVIDENCE_SNAPSHOT_SHA256:?}"
+    expected_artifact="${SAPPHIRE_EVIDENCE_ARTIFACT_SHA256:?}"
+    expected_values="${SAPPHIRE_EVIDENCE_FORECAST_VALUES_SHA256:?}"
+    expected_image="${SAPPHIRE_EVIDENCE_RUNTIME_IMAGE_DIGEST:?}"
+    [[ "${evidence_id}" =~ ^[0-9a-f-]{36}$ \
+        && "${expected_manifest}" =~ ^[0-9a-f]{64}$ \
+        && "${expected_snapshot}" =~ ^[0-9a-f]{64}$ \
+        && "${expected_artifact}" =~ ^[0-9a-f]{64}$ \
+        && "${expected_values}" =~ ^[0-9a-f]{64}$ \
+        && "${expected_image}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || fail "invalid evidence restore-check identifier or digest"
+    evidence_row="$(psql_exec "
+        SELECT encode(sha256(convert_to(e.manifest_json, 'UTF8')), 'hex')
+            || '|' || e.snapshot_sha256
+            || '|' || encode(sha256(s.payload), 'hex')
+            || '|' || e.artifact_sha256
+            || '|' || encode(sha256(a.payload), 'hex')
+        || '|' || (e.manifest_json::jsonb ->> 'runtime_image_digest')
+        || '|' || (SELECT count(*) FROM forecast_values v
+                        WHERE v.forecast_id = e.forecast_id)
+        || '|' || (SELECT encode(sha256(convert_to(
+                         COALESCE(jsonb_agg(jsonb_build_array(v.id, v.issued_at,
+                           v.valid_time, v.lead_time_hours, v.member_id,
+                           v.quantile, v.value) ORDER BY v.id)::text, '[]'),
+                         'UTF8')), 'hex')
+                   FROM forecast_values v WHERE v.forecast_id = e.forecast_id)
+        FROM forecast_evidence e
+        JOIN forecast_evidence_blobs s ON s.sha256 = e.snapshot_sha256
+        JOIN forecast_evidence_blobs a ON a.sha256 = e.artifact_sha256
+        JOIN forecasts f ON f.id = e.forecast_id
+        WHERE e.forecast_id = '${evidence_id}'
+    " "${DB_NAME}")" || fail "restored evidence chain query failed"
+    IFS='|' read -r got_manifest got_snapshot got_snapshot_bytes \
+        got_artifact got_artifact_bytes got_image output_count got_values <<< "${evidence_row}"
+    [[ "${got_manifest}" == "${expected_manifest}" \
+        && "${got_snapshot}" == "${expected_snapshot}" \
+        && "${got_snapshot_bytes}" == "${expected_snapshot}" \
+        && "${got_artifact}" == "${expected_artifact}" \
+        && "${got_artifact_bytes}" == "${expected_artifact}" \
+        && "${got_image}" == "${expected_image}" \
+        && "${output_count}" =~ ^[1-9][0-9]*$ \
+        && "${got_values}" == "${expected_values}" ]] \
+        || fail "restored forecast evidence/output chain does not match capture"
+    CHECKS_DONE="${CHECKS_DONE}, forecast evidence/output/artifact/image identity"
+fi
 
 PASS=1

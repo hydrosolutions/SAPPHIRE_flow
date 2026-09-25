@@ -109,6 +109,9 @@ services:
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
+      # Plan 340 T2: set to this worker image's immutable Docker image ID at
+      # deploy time. An empty value keeps the evidence visibly incomplete.
+      SAPPHIRE_IMAGE_DIGEST: ${SAPPHIRE_IMAGE_DIGEST:-}
       # Plan 307 T1: the operator staging root for artifact imports. The BASE
       # declares only the NAME; the BIND is supplied by each deployment's
       # overlay, because the base has no portable host path — exactly as with

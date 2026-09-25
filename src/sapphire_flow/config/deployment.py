@@ -86,6 +86,11 @@ class DeploymentConfig(BaseModel):
     weather_hot_days: int = 180
     forecast_hot_days: int = 548
     max_retention_days: int
+    # Evidence-linked forecasts are held in the live database until Plan 344
+    # proves a restorable cold archive. This is the CHWRR-configurable floor for
+    # that later archive; it does not enable any deletion in this release.
+    evidence_retention_days: int = Field(default=2192, ge=2192)
+    protected_backup_max_age_hours: int = Field(default=36, gt=0)
 
     # Plan 095: hot window (days) for the raw NWP grid-cube zarrs under
     # nwp_grid_archive_base_path. Supersedes weather_hot_days for the raw-grid

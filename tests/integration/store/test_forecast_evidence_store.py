@@ -14,13 +14,20 @@ from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.db.metadata import (
     forecast_evidence,
     forecast_evidence_blobs,
+    forecast_preservation_attestations,
+    forecast_values,
     forecasts,
+    model_artifacts,
     station_thresholds,
 )
 from sapphire_flow.services.forecast_evidence import (
     capture_combined_evidence,
     capture_station_evidence,
     restore_snapshot,
+)
+from sapphire_flow.services.forecast_preservation import assess_effective_preservation
+from sapphire_flow.store.forecast_preservation_store import (
+    PgForecastPreservationStore,
 )
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.observation_store import PgObservationStore
@@ -32,6 +39,12 @@ from sapphire_flow.types.forecast_evidence import (
     EvidenceStatus,
     ForecastEvidence,
     StationSourceEvidence,
+)
+from sapphire_flow.types.forecast_preservation import (
+    BackupProof,
+    BackupProofStatus,
+    PreservationAttestation,
+    PreservationStatus,
 )
 from tests.conftest import make_observation
 from tests.integration.store.test_forecast_store import (
@@ -365,7 +378,8 @@ class TestForecastEvidenceStore:
         db_connection.execute(sa.text(f"CREATE ROLE {role}"))
         db_connection.execute(
             sa.text(
-                f"GRANT ALL ON forecast_evidence, forecast_evidence_blobs TO {role}"
+                f"GRANT ALL ON forecast_evidence, forecast_evidence_blobs, "
+                f"forecast_preservation_attestations TO {role}"
             )
         )
         statement = {
@@ -379,3 +393,225 @@ class TestForecastEvidenceStore:
         ):
             db_connection.execute(sa.text(f"SET ROLE {role}"))
             db_connection.execute(sa.text(statement))
+
+
+class TestForecastPreservation:
+    def test_legacy_output_update_keeps_new_value(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        forecast_id = uuid4()
+        issued_at = datetime(2026, 9, 25, tzinfo=UTC)
+        db_connection.execute(
+            sa.insert(forecasts).values(
+                id=forecast_id,
+                station_id=sid,
+                model_id=mid,
+                issued_at=issued_at,
+                representation="members",
+                parameter="discharge",
+                units="m3/s",
+            )
+        )
+        db_connection.execute(
+            sa.insert(forecast_values).values(
+                id=uuid4(),
+                forecast_id=forecast_id,
+                issued_at=issued_at,
+                valid_time=issued_at,
+                lead_time_hours=0,
+                member_id=0,
+                value=1.0,
+            )
+        )
+        db_connection.execute(
+            sa.update(forecast_values)
+            .where(forecast_values.c.forecast_id == forecast_id)
+            .values(value=999.0)
+        )
+        values = db_connection.scalars(
+            sa.select(forecast_values.c.value).where(
+                forecast_values.c.forecast_id == forecast_id
+            )
+        ).all()
+        assert values and set(values) == {999.0}
+        db_connection.execute(
+            sa.delete(forecast_values).where(
+                forecast_values.c.forecast_id == forecast_id
+            )
+        )
+        db_connection.execute(sa.delete(forecasts).where(forecasts.c.id == forecast_id))
+        assert (
+            db_connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(forecasts)
+                .where(forecasts.c.id == forecast_id)
+            )
+            == 0
+        )
+
+    def test_evidence_linked_output_and_artifact_survive_cleanup(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        forecast = replace(_make_forecast(sid, mid, aid), evidence=_evidence())
+        PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        ).store_forecast(forecast)
+        for statement in (
+            sa.delete(forecast_values).where(
+                forecast_values.c.forecast_id == forecast.id
+            ),
+            sa.update(forecast_values)
+            .where(forecast_values.c.forecast_id == forecast.id)
+            .values(value=999.0),
+            sa.insert(forecast_values).values(
+                id=uuid4(),
+                forecast_id=forecast.id,
+                issued_at=datetime(2026, 9, 25, tzinfo=UTC),
+                valid_time=datetime(2026, 9, 26, tzinfo=UTC),
+                lead_time_hours=24,
+                member_id=0,
+                value=999.0,
+            ),
+            sa.delete(forecasts).where(forecasts.c.id == forecast.id),
+            sa.update(forecasts)
+            .where(forecasts.c.id == forecast.id)
+            .values(parameter="water_level"),
+            sa.delete(model_artifacts).where(model_artifacts.c.id == aid),
+            sa.text("TRUNCATE forecast_values CASCADE"),
+        ):
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="evidence-linked"),
+                db_connection.begin_nested(),
+            ):
+                db_connection.execute(statement)
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == forecast.id)
+            .values(status="reviewed", version=2)
+        )
+        assert (
+            db_connection.scalar(
+                sa.select(forecasts.c.status).where(forecasts.c.id == forecast.id)
+            )
+            == "reviewed"
+        )
+        assert (
+            db_connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(forecast_values)
+                .where(forecast_values.c.forecast_id == forecast.id)
+            )
+            > 0
+        )
+
+    def test_attestation_keeps_capture_status_and_is_append_only(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        image = "sha256:" + "a" * 64
+        source = replace(
+            _evidence(),
+            status=EvidenceStatus.INCOMPLETE,
+            manifest_json=json.dumps({"runtime_image_digest": image}),
+            reason="runtime_image_bytes_unpinned",
+        )
+        forecast = replace(_make_forecast(sid, mid, aid), evidence=source)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        store.store_forecast(forecast)
+        saved = store.fetch_evidence(forecast.id)
+        assert saved is not None
+        values_hash = db_connection.scalar(
+            sa.text(
+                "SELECT encode(sha256(convert_to("
+                "COALESCE(jsonb_agg(jsonb_build_array(id, issued_at, "
+                "valid_time, lead_time_hours, member_id, quantile, value) "
+                "ORDER BY id)::text, '[]'), 'UTF8')), 'hex') "
+                "FROM forecast_values WHERE forecast_id = :forecast_id"
+            ),
+            {"forecast_id": forecast.id},
+        )
+        attestation = PreservationAttestation(
+            id=uuid4(),
+            forecast_id=forecast.id,
+            backup_id=uuid4(),
+            capture_manifest_sha256=hashlib.sha256(
+                saved.manifest_json.encode()
+            ).hexdigest(),
+            snapshot_sha256=saved.snapshot_sha256 or "",
+            forecast_values_sha256=values_hash,
+            artifact_sha256=saved.artifact_sha256,
+            runtime_image_digest=image,
+            backup_manifest_sha256="b" * 64,
+            database_dump_sha256="c" * 64,
+            image_archive_sha256="d" * 64,
+            restored_at=datetime(2026, 9, 25, tzinfo=UTC),
+        )
+        preservation = PgForecastPreservationStore(db_connection)
+        with pytest.raises(ValueError, match="live forecast chain"):
+            preservation.append(
+                replace(
+                    attestation,
+                    id=uuid4(),
+                    backup_id=uuid4(),
+                    forecast_values_sha256="0" * 64,
+                )
+            )
+        preservation.append(attestation)
+        preservation.append(replace(attestation, id=uuid4()))
+        assert (
+            db_connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(forecast_preservation_attestations)
+                .where(forecast_preservation_attestations.c.forecast_id == forecast.id)
+            )
+            == 1
+        )
+        with pytest.raises(ValueError, match="conflicts with existing proof"):
+            preservation.append(
+                replace(attestation, id=uuid4(), image_archive_sha256="9" * 64)
+            )
+
+        assert saved.status is EvidenceStatus.INCOMPLETE
+        assert (
+            assess_effective_preservation(
+                forecast.id,
+                saved,
+                preservation.latest(forecast.id),
+                BackupProof(
+                    status=BackupProofStatus.VERIFIED,
+                    backup_id=attestation.backup_id,
+                    manifest_sha256=attestation.backup_manifest_sha256,
+                    database_dump_sha256=attestation.database_dump_sha256,
+                    image_archives=((image, attestation.image_archive_sha256),),
+                    sample_forecast_id=forecast.id,
+                    capture_manifest_sha256=attestation.capture_manifest_sha256,
+                    snapshot_sha256=attestation.snapshot_sha256,
+                    forecast_values_sha256=attestation.forecast_values_sha256,
+                    artifact_sha256=attestation.artifact_sha256,
+                    runtime_image_digest=image,
+                    restored_at=attestation.restored_at,
+                ),
+            ).effective_status
+            is PreservationStatus.COMPLETE
+        )
+        for statement in (
+            sa.update(forecast_preservation_attestations).values(
+                restored_at=datetime(2026, 9, 26, tzinfo=UTC)
+            ),
+            sa.delete(forecast_preservation_attestations),
+            sa.text("TRUNCATE forecast_preservation_attestations"),
+        ):
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="append-only"),
+                db_connection.begin_nested(),
+            ):
+                db_connection.execute(statement)
