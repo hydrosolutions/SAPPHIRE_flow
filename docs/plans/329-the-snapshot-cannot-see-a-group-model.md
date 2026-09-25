@@ -7,7 +7,7 @@ scope: Make the Forecast Lab snapshot enumerate GROUP model assignments alongsid
 depends_on: []
 blocks: []
 related: [262, 273, 326]
-open_decisions: [D1, D2]
+open_decisions: []   # both closed by the owner 2026-09-25
 source: 2026-09-25 — the Flow Map session reported that `cmal_small` forecasts do not appear in the document we prepare for the map. Measured against `origin/main` the same day; the cause is on our side.
 ---
 
@@ -80,19 +80,23 @@ is simply blind to one of the two ways a model can be assigned.
 
 ## Owner decisions
 
-### D1 — does the snapshot SAY a model is group-assigned? **OPEN.**
+### D1 — does the snapshot SAY a model is group-assigned? **⚖️ CLOSED — owner, 2026-09-25: NO.**
 
 | | option | cost |
 |---|---|---|
 | **(a)** ⭐ | **Project group assignments into the same list; the entry looks like any other model.** | Smallest change, and no map-side work — a model is a model. ⚠️ A map reader cannot tell that one model's forecast came from a pooled, group-trained artifact. |
 | (b) | Carry a flag (e.g. `scope: group`) on the entry. | Honest, and lets the map label it. ⛔ *An earlier version called this "the map's schema, which the map repo owns". **Wrong.*** The authoritative export is **`forecast-lab-snapshot/v2`**, OUR contract, its JSON Schema generated from OUR Pydantic models — and it **forbids unknown fields** (`docs/spec/forecast-lab-snapshot.md:31-43`). ⇒ (b) is **local schema + model + test changes AND consumer coordination**. Consumer tolerance alone cannot carry it. |
 
-**Recommendation: (a) now, and ASK the map session whether they want (b).** ⭐ *(a) makes the pilot
-visible this week.* ⚠️ **(b) is more work than the draft implied** — our schema forbids unknown
-fields, so it is a versioned contract change on our side *and* a consumer conversation. It should
-not block (a).
+**⚖️ CLOSED on (a).** Owner: *"the map does not care if a model is group-scoped or not."*
 
-### D2 — should a group model be eligible to be PRIMARY? **OPEN — § (8) is why.**
+⇒ **A group-assigned model is projected into the list as an ordinary entry, and NOTHING marks it as
+group-scoped.** ⛔ *No `scope` field, no versioned change to `forecast-lab-snapshot/v2`, no consumer
+negotiation.* ⭐ *This is the smallest possible fix, and the owner's answer removes the only reason
+it might not have been.*
+
+⚠️ **T2 no longer asks the map anything** — it tells them what is coming.
+
+### D2 — should a group model be eligible to be PRIMARY? **⚖️ CLOSED — owner, 2026-09-25: YES.**
 
 ⛔ **The draft's premise was wrong** (§ 8): it is not simply "50 > 30, so no". `is_primary` goes to
 the first **renderable** entry, so a priority-50 group model **becomes primary wherever the
@@ -104,8 +108,17 @@ today, on real stations.
 | **(a)** ⭐ | **Treat priority uniformly** — a group model competes like any other, including winning primary when everything above it is unrenderable. *Simple, and consistent with how every other model is ranked.* ⚠️ Accept that the pilot can headline a station whose established models are silent. |
 | (b) | Never let a group model be primary. ⛔ *Rejected in drafting unless the owner wants it: it would hard-code a pilot's caution into the general mechanism, and a future group model may deserve to be primary.* |
 
-⚠️ **Either way, state it.** *A reader of the snapshot should not have to infer from a priority number
-whether a group model can lead.*
+**⚖️ CLOSED on (a) — treat priority uniformly.** Owner: *"yes, the group model can be a station's
+headline forecast."*
+
+⇒ **A group model competes exactly like any other**, including winning `is_primary` when everything
+above it has no renderable forecast. ⛔ *No special case, no guard, no exception for group scope.*
+
+🔴 **This makes § (8)'s correction load-bearing rather than academic.** *The behaviour the owner just
+approved is the one I had wrongly described as impossible — so the verification must assert it
+HAPPENS, not merely that it does not happen in the easy case.* ⇒ **Both directions are tested**: a
+group model does not displace a renderable higher-priority model, **and** it does become primary
+when those are unrenderable. ⛔ *Testing only the first would certify the protection I invented.*
 
 ## Tasks
 
@@ -163,11 +176,12 @@ forecast, for every member", which ignores eligibility and the members that have
 
 ### T2 — Tell the map session what changed (D1)
 
-**Outcome.** The map knows a new model will appear, and whether it can tell it apart.
+**Outcome.** The map knows a new model will appear, how many entries it brings, and that it can
+lead a station. ⛔ *Not "whether it can tell it apart" — D1 closed: it does not need to.*
 
 **In.** A short note to the Flow Map side:
-- `cmal_small` will appear as an ordinary model entry, and D1's answer on whether a `scope` flag is
-  coming.
+- `cmal_small` appears as an **ordinary model entry**. ⛔ *Nothing marks it group-scoped — D1,
+  closed: the map does not care, so no schema change is coming.*
 - 🔴 **On the day this ships they will see ~137 NEW entries carrying `reason="no_forecast"`** — the
   group's members that have not yet accumulated 30 unbroken days (§ 9). ⛔ *That is correct and
   expected; told, not discovered.* They convert to real forecasts through early October.
@@ -229,3 +243,8 @@ And two things I had not thought through:
 ⭐ **The lesson that keeps recurring, in a new dress:** *I reasoned "50 > 30, therefore not primary"
 from a number instead of reading the selection rule. The rule is "first renderable", and the
 protection I described does not exist.*
+- **2026-09-25** — ⚖️ **D1 and D2 CLOSED by the owner.** D1 on (a): *"the map does not care if a
+  model is group-scoped or not"* ⇒ no `scope` field and no change to `forecast-lab-snapshot/v2`.
+  D2 on (a): *"the group model can be a station's headline forecast"* ⇒ priority is uniform, and
+  T1's verification asserts **both** directions of § (8) because the approved behaviour is the one
+  the first draft wrongly called impossible. `open_decisions` now empty.
