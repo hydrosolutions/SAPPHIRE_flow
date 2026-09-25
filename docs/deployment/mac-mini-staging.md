@@ -294,8 +294,8 @@ Groups), complete Docker Desktop setup, then demote if desired.
 `scripts/launchd/docker-endpoint.sh` (Plan 199 T2, salvaged from the
 never-merged Plan 158 D8/T4) is the single source of truth for the Docker CLI
 binary and daemon socket, **sourced** — not executed — by every launchd
-wrapper: `start-sapphire.sh`, `prune-docker.sh`, `run-recap-probe.sh`, and
-`run-nepal-forcing.sh`. It defines `DOCKER_BIN` (default
+wrapper: `start-sapphire.sh`, `prune-docker.sh`, `run-recap-probe.sh`,
+`run-nepal-forcing.sh`, and `run-pilot-midnight-cycle.sh`. It defines `DOCKER_BIN` (default
 `/usr/local/bin/docker`, the path Docker Desktop symlinks its CLI to) and
 exports `DOCKER_HOST` (default `unix:///var/run/docker.sock`). Each wrapper
 resolves its own `DOCKER` variable as `${DOCKER_CMD:-${DOCKER_BIN}}` —
@@ -845,6 +845,30 @@ secrets, LaunchAgent plist files and all data volumes in place.
 | Project | Brought down with | What it is |
 |---|---|---|
 | `sapphire_flow` (default) | `-f docker-compose.yml -f docker-compose.macmini.yml down` | the Swiss stack |
+### ⏸️ `ch.hydrosolutions.sapphire-pilot-midnight-cycle` — a TEMPORARY scaffold
+
+Triggers one forecast cycle a day with the issue time pinned to exactly `00:00:00Z`, so the
+`cmal_small` group pilot can be observed. ⛔ **Not installed by `install-launchd.sh`** — like the
+nepal-forcing and recap-probe agents it is loaded by hand, deliberately: a host rebuild should
+*lose* a scaffold rather than silently keep running it.
+
+**Why it exists:** the scheduled cycles stamp themselves a few seconds past the hour
+(`_resolve_cycle_time` returns the wall clock), and the future window's `valid_time >= issue_time`
+rule then drops the issue-day bucket a daily model needs. Measured 2026-09-25: three days of
+scheduled cycles produced **zero** pilot forecasts; one hand-pinned run produced them immediately.
+
+🔑 **Delete this agent, the script and its plist when Plan 326 lands** — 326 is the real fix (a
+per-model issue-hour restriction, and whether a forecast carries a logical issue time distinct from
+its run time). ⚠️ It runs a FULL cycle, every model, because the cycle is all-or-nothing; that
+duplicate daily run is the accepted cost of observing the pilot.
+
+Install / remove:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-pilot-midnight-cycle.plist
+launchctl bootout   gui/$(id -u)/ch.hydrosolutions.sapphire-pilot-midnight-cycle
+```
+
 | `sapphire-nepal` | `-p sapphire-nepal down` | the standing Postgres for the Nepal 12300 gateway-forcing feed (`docs/operations/nepal-forcing-runbook.md`) |
 
 `--uninstall` boots out `ch.hydrosolutions.sapphire-nepal-forcing`, so it

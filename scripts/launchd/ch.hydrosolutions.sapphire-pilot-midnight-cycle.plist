@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.hydrosolutions.sapphire-pilot-midnight-cycle</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/sapphire/SAPPHIRE_flow/scripts/launchd/run-pilot-midnight-cycle.sh</string>
+    </array>
+    <!-- 02:15 LOCAL = 00:15 UTC. Shortly AFTER midnight UTC, deliberately:
+         the script pins the issue time to exactly 00:00:00Z, and running
+         close to it keeps the inputs genuinely fresh. A run back-dated by
+         several hours still assembles correct windows (they are bounded by
+         the issue time, so there is no look-ahead) but reports misleading
+         input quality: the 2026-09-25 07:21Z trial was flagged
+         `observation partial - 8.0h stale` and `nwp degraded - 13.8h stale`
+         purely because the clock had moved on since the pinned instant.
+         At 00:15Z the prior 18:00Z NWP cycle is ~6h old, inside the 11h
+         threshold, so the run should NOT be flagged degraded on that count.
+
+         ⚠️ OPEN, and worth checking after a few days: the SCHEDULED 00:00:0xZ
+         cycle produces only 3 models while a 07:21Z run produced 7. If this
+         job's runs also come back thin, data availability at 00:15Z is the
+         reason and a later slot is the answer - measure, do not assume.
+
+         launchd uses LOCAL time, so this becomes 01:15 UTC after the October
+         DST change. Harmless: the script derives the cycle date with
+         `date -u`, so the pinned instant stays today's 00:00:00Z either way. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>2</integer>
+        <key>Minute</key><integer>15</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>UserName</key>
+    <string>sapphire</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/sapphire/SAPPHIRE_flow/scripts/launchd</string>
+    <key>StandardOutPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-pilot-midnight-cycle.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-pilot-midnight-cycle.log</string>
+</dict>
+</plist>
