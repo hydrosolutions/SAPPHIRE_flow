@@ -25,9 +25,25 @@
 # cycle is all-or-nothing. That is the cost of a daily extra run, accepted
 # deliberately while the pilot is observed.
 #
-# 🔑 No collision with the scheduled cycle: this run's `issued_at` is exactly
+# 🔑 No collision with the SCHEDULED cycle: this run's `issued_at` is exactly
 # 00:00:00Z while the scheduled one is 00:00:0xZ, and forecast uniqueness is
 # (station, model, issued_at, parameter). They coexist.
+#
+# 🔴 BUT THERE IS NO SAME-DAY RETRY. Demonstrated 2026-09-25: triggering this
+# twice in one day fails the SECOND run outright —
+#   psycopg.errors.UniqueViolation: uq_forecasts_station_model_issued_param
+#   Key (station_id, model_id, issued_at, parameter)=(…, cmal_small,
+#   2026-09-25 00:00:00+00, discharge) already exists
+# The whole flow run goes to Failed. ⭐ Nothing is corrupted and nothing partial
+# is written — the constraint refuses the duplicate and the failure is loud,
+# which is the behaviour we want — but it means **a cycle that fails halfway
+# cannot simply be re-run**: whatever it already wrote will collide.
+#
+# ⇒ If a day's run fails, DELETE that day's rows for the affected models before
+# retrying, or accept the gap. ⛔ Do not add a retry loop to this script; the
+# real answer is Plan 326's question of whether a forecast carries a logical
+# issue time distinct from its run time. This scaffold is where that question
+# stopped being hypothetical.
 set -uo pipefail
 
 # shellcheck source=scripts/launchd/docker-endpoint.sh
