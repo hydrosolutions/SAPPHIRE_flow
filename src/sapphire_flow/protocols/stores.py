@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         HindcastForecast,
         OperationalForecast,
     )
+    from sapphire_flow.types.forecast_evidence import PersistedForecastEvidence
     from sapphire_flow.types.forecast_summary import ForecastSummaryRow
     from sapphire_flow.types.historical_forcing import (
         HistoricalForcingRecord,
@@ -163,6 +164,17 @@ class ForecastStore(Protocol):
         raise NotImplementedError
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
+        raise NotImplementedError
+
+    def fetch_evidence(
+        self, forecast_id: ForecastId
+    ) -> PersistedForecastEvidence | None:
+        """The PERSISTED evidence for a stored forecast. ⛔ Fetching the
+        forecast does NOT hydrate it — Plan 327's resume path must fetch it
+        deliberately, because a combination's evidence is checked against the
+        persisted contributor evidence, not the in-memory copy. ``None`` means
+        no such forecast; a forecast predating migration ``0057`` yields a
+        synthetic ``pre_capture_forecast`` marker rather than ``None``."""
         raise NotImplementedError
 
     def fetch_latest_forecast(

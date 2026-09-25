@@ -17,7 +17,13 @@ from sapphire_flow.exceptions import (
     ArtifactIntegrityError,
     ConfigurationError,
     ConflictError,
+    ForecastRetryConflictError,
     StoreError,
+)
+from sapphire_flow.services.forecast_retry import (
+    ForecastRetryRow,
+    classify_forecast_retry,
+    describe_difference,
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
@@ -56,6 +62,11 @@ from sapphire_flow.types.forecast import (  # noqa: TC001
     ForeignForecast,
     HindcastForecast,
     OperationalForecast,
+)
+from sapphire_flow.types.forecast_evidence import (
+    EvidenceStatus,
+    PersistedForecastEvidence,
+    incomplete_evidence,
 )
 from sapphire_flow.types.forecast_summary import ForecastSummaryRow  # noqa: TC001
 from sapphire_flow.types.historical_forcing import (
@@ -262,15 +273,107 @@ class FakeObservationStore:
 
 
 class FakeForecastStore:
+    """Models `uq_forecasts_station_model_issued_param` and Plan 327's retry
+    decision table, because a fake that silently overwrites on the natural key
+    cannot exercise EITHER half of the behaviour the real store has: the
+    duplicate it refuses, or the identical re-run it resumes.
+
+    ⚠️ Evidence fidelity stops there, deliberately. Like `PgForecastStore`,
+    every stored forecast gets an evidence record (`evidence=None` becomes
+    `prediction_capture_unavailable`, matching the real store) — historical
+    absence is reached ONLY through `seed_pre_capture_forecast`, never by
+    passing `evidence=None`. This fake does NOT run the combined-contributor
+    gap check, so persistence fidelity for a combination's evidence can only
+    be proven against Postgres
+    (`tests/integration/store/test_forecast_store_retry.py`,
+    `tests/integration/flows/test_forecast_cycle_resume_pg.py`)."""
+
     def __init__(self) -> None:
         self._forecasts: dict[ForecastId, OperationalForecast] = {}
+        self._by_key: dict[tuple[StationId, ModelId, UtcDatetime, str], ForecastId] = {}
+        # A forecast MISSING from this map has no evidence row: the
+        # pre-migration-0057 historical case, which `fetch_evidence` reports as
+        # a synthetic `pre_capture_forecast` marker rather than `None`.
+        self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        key = (
+            forecast.station_id,
+            forecast.model_id,
+            forecast.issued_at,
+            forecast.ensemble.parameter,
+        )
+        existing_id = self._by_key.get(key)
+        if existing_id is not None:
+            stored = self._forecasts[existing_id]
+            row = classify_forecast_retry(stored=stored, recomputed=forecast)
+            if row is not ForecastRetryRow.IDENTICAL:
+                raise ForecastRetryConflictError(
+                    f"Forecast {existing_id} already exists for {key} and the "
+                    f"re-run is not identical — "
+                    f"{describe_difference(row, stored=stored, recomputed=forecast)}",
+                    row=row,
+                    forecast_id=existing_id,
+                    station_id=forecast.station_id,
+                    model_id=forecast.model_id,
+                    issued_at=forecast.issued_at,
+                    parameter=forecast.ensemble.parameter,
+                )
+            return existing_id
         self._forecasts[forecast.id] = forecast
+        self._by_key[key] = forecast.id
+        evidence = forecast.evidence or incomplete_evidence(
+            "prediction_capture_unavailable"
+        )
+        self._evidence[forecast.id] = PersistedForecastEvidence(
+            status=evidence.status,
+            manifest_json=evidence.manifest_json,
+            snapshot=evidence.snapshot,
+            snapshot_sha256=evidence.snapshot_sha256,
+            artifact=evidence.artifact,
+            artifact_sha256=evidence.artifact_sha256,
+            thresholds_json=None,
+            reason=evidence.reason,
+        )
+        return forecast.id
+
+    def seed_pre_capture_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        """Write a forecast with NO evidence record — the pre-migration-0057
+        historical case. `store_forecast` cannot produce this (neither can the
+        real store), so it is seeded explicitly rather than by handing
+        `store_forecast` an `evidence=None` forecast."""
+        self._forecasts[forecast.id] = forecast
+        self._by_key[
+            (
+                forecast.station_id,
+                forecast.model_id,
+                forecast.issued_at,
+                forecast.ensemble.parameter,
+            )
+        ] = forecast.id
         return forecast.id
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
         return self._forecasts.get(forecast_id)
+
+    def fetch_evidence(
+        self, forecast_id: ForecastId
+    ) -> PersistedForecastEvidence | None:
+        persisted = self._evidence.get(forecast_id)
+        if persisted is not None:
+            return persisted
+        if forecast_id not in self._forecasts:
+            return None
+        return PersistedForecastEvidence(
+            status=EvidenceStatus.INCOMPLETE,
+            manifest_json="{}",
+            snapshot=None,
+            snapshot_sha256=None,
+            artifact=None,
+            artifact_sha256=None,
+            thresholds_json=None,
+            reason="pre_capture_forecast",
+        )
 
     def fetch_latest_forecast(
         self,

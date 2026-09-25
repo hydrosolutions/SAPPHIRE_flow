@@ -76,24 +76,26 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 
 #### Steps
 
-| # | Step | Grain | Layer | Input | Output |
-|---|------|-------|-------|-------|--------|
-| 1.1 | Fetch NWP forcing | per NWP source | `adapters/` | NWP source config, cycle time | `GriddedForecast` or `dict[StationId, WeatherForecastResult]` |
-| 1.2 | Archive gridded NWP | per NWP source | `store/` | `GriddedForecast` | Persisted raw gridded data (Zarr) to named volume (`/data/nwp_grids/`) |
-| 1.3 | Extract spatial averages | per NWP source (bulk) | `preprocessing/` | Raw grid + all station geometries | `dict[StationId, BasinAverageForecast \| ElevationBandForecast]` |
-| 1.4 | Archive NWP extractions | per NWP source (bulk) | `store/` | All extractions for this source | Persisted to `weather_forecasts` |
-| 1.5 | Post-process NWP | per NWP source (bulk) | `flows/` → `services/` + `preprocessing/` | Full dict + historical archive | Bias-corrected / calibrated `dict[StationId, ...]` |
-| 1.6 | Fetch latest observations | batch | `store/` | Station configs, lookback window | Recent QC'd river + meteo observations |
-| 1.7 | Prepare model inputs | per (model, group\|station) | `services/` | Post-processed NWP dict, observations, station configs | Group: `GroupModelInputs` (stacked DataFrame). Station: individual `StationModelInputs`. |
-| 1.8 | Run forecast models | per (model, group\|station) | `models/` | Input bundles, model artifacts | Ensemble forecast values |
-| 1.9 | Post-process forecasts | per station | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
-| 1.10 | Forecast QC | per (model, group\|station) | `services/` | Forecast ensembles (post bias-correction), QC rule set, overrides, baselines | QC flags per ensemble; `QC_FAILED` behaves differently per result kind: a STATION result routes to the next model by priority; a GROUP result is DROPPED with no forecast written and no fallback (`services/run_group_forecast.py:274-305`); a COMBINED (`_pooled`/`_bma`) result is STORED marked `QC_FAILED` (Plan 253 OD-1) and excluded from the Forecast Lab (OD-1a) |
-| 1.11 | Store forecast results | batch | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
-| 1.12 | Check alert thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
-| 1.13 | Raise / resolve alerts | per station | `services/` | Exceedance flags, existing alerts | New/updated alert records |
-| 1.14 | Notify | batch | `services/` | New/changed alerts | Notifications dispatched |
+| # | Step | Grain | Layer | Input | Output | Re-run? |
+|---|------|-------|-------|-------|--------|---------|
+| 1.1 | Fetch NWP forcing | per NWP source | `adapters/` | NWP source config, cycle time | `GriddedForecast` or `dict[StationId, WeatherForecastResult]` | — |
+| 1.2 | Archive gridded NWP | per NWP source | `store/` | `GriddedForecast` | Persisted raw gridded data (Zarr) to named volume (`/data/nwp_grids/`) | — |
+| 1.3 | Extract spatial averages | per NWP source (bulk) | `preprocessing/` | Raw grid + all station geometries | `dict[StationId, BasinAverageForecast \| ElevationBandForecast]` | — |
+| 1.4 | Archive NWP extractions | per NWP source (bulk) | `store/` | All extractions for this source | Persisted to `weather_forecasts` | — |
+| 1.5 | Post-process NWP | per NWP source (bulk) | `flows/` → `services/` + `preprocessing/` | Full dict + historical archive | Bias-corrected / calibrated `dict[StationId, ...]` | — |
+| 1.6 | Fetch latest observations | batch | `store/` | Station configs, lookback window | Recent QC'd river + meteo observations | — |
+| 1.7 | Prepare model inputs | per (model, group\|station) | `services/` | Post-processed NWP dict, observations, station configs | Group: `GroupModelInputs` (stacked DataFrame). Station: individual `StationModelInputs`. | — |
+| 1.8 | Run forecast models | per (model, group\|station) | `models/` | Input bundles, model artifacts | Ensemble forecast values | — |
+| 1.9 | Post-process forecasts | per station | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles | — |
+| 1.10 | Forecast QC | per (model, group\|station) | `services/` | Forecast ensembles (post bias-correction), QC rule set, overrides, baselines | QC flags per ensemble; `QC_FAILED` behaves differently per result kind: a STATION result routes to the next model by priority; a GROUP result is DROPPED with no forecast written and no fallback (`services/run_group_forecast.py:274-305`); a COMBINED (`_pooled`/`_bma`) result is STORED marked `QC_FAILED` (Plan 253 OD-1) and excluded from the Forecast Lab (OD-1a) | — |
+| 1.11 | Store forecast results | batch | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) | **Identical only** — see note |
+| 1.12 | Check alert thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level | — |
+| 1.13 | Raise / resolve alerts | per station | `services/` | Exceedance flags, existing alerts | New/updated alert records | — |
+| 1.14 | Notify | batch | `services/` | New/changed alerts | Notifications dispatched | — |
 
 Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
+
+**Re-run?** answers *"may this step be run a second time for the same cycle?"*. `—` means **NOT ASSESSED** — only step 1.11 has been measured (Plan 327). A dash is not a claim that the step is safe to re-run, nor that it is unsafe.
 
 #### Notes
 
@@ -112,7 +114,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 - **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `GroupModelInputs`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them. ML models wrapped via `ForecastInterface` go through the `ForecastInterfaceAdapter` at this step — the adapter translates inputs and outputs between SAPPHIRE Flow's internal types and FI's contract. FI-wrapped models are stateless; the adapter returns `None` for state bytes.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
 - **1.10**: Forecast output QC. Runs `ForecastQualityChecker.check()` on each `ForecastEnsemble` per (station, model, parameter). `aggregate_qc_status()` derives the aggregate status. Three distinct outcomes by result shape (Plan 253 correction -- the prior single rule here did not hold for two of the three): **STATION** result -- `QC_PASSED`/`QC_SUSPECT` store the forecast with its `qc_status`/`qc_flags`; `QC_FAILED` returns an `AssignmentFailure` and the flow tries the next model by priority (same fallback path as runtime model failure), nothing is stored for that assignment. **GROUP** result -- `QC_FAILED` on any parameter returns `None` from `_run_group_forecast` (`services/run_group_forecast.py`); no per-station fallback within the batch, and nothing is stored for that assignment (the doc previously claimed QC-failed group results ARE stored -- false, corrected here). **COMBINED** (`_pooled`/`_bma`) result -- has no next candidate to fall through to, so `QC_FAILED` is STORED marked failed rather than dropped (Plan 253 OD-1), and excluded from the Forecast Lab snapshot rather than surfaced (OD-1a; Plan 251 is what would surface it). QC rule set and overrides are batch pre-fetched at flow start; `ClimBaseline` records are batch pre-fetched alongside observation fetch (step 1.6). Always-on (not conditional). Active in v0.
-- **1.11**: Each forecast record links to the model artifact version that produced it.
+- **1.11**: Each forecast record links to the model artifact version that produced it. **Re-running a cycle for an issue time that already has forecasts is supported, and only for an IDENTICAL recomputation** — see *Re-running a forecast cycle* below.
 - **1.12**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
 - **1.13**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue. **v0**: `DangerLevelDefinition` fields exist (`trigger_probability`, `resolve_probability`, `min_trigger_duration`, `min_resolve_duration`); alert service does not enforce duration-based hysteresis — triggers and resolves within a single cycle. v1 adds cross-cycle state tracking.
 
@@ -136,6 +138,35 @@ Cascading fallback: `bma` → `pooled` → `primary` (if weights missing or sing
 - **1.12–1.14** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_forecast_alerts`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.14) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
 - **1.14**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.11 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
+
+#### Re-running a forecast cycle
+
+A cycle that dies partway (an NWP outage mid-run, a crashed worker, a killed container) leaves whole, correctly-written forecasts for the stations it reached and nothing for the rest — a single forecast is atomic, so a header without its values cannot occur (`store/forecast_store.py` opens one transaction per `store_forecast`, proven by `tests/integration/store/test_forecast_store.py::test_values_insert_failure_rolls_back_header`). **Resume granularity is therefore the CYCLE, not the forecast.**
+
+Three different things get called *"retry"*, and they are not variants of one feature (Plan 327 D1):
+
+| | meaning | supported? |
+|---|---|---|
+| **(a)** | **Resume** a cycle that died halfway — same inputs, same issue time, finish the job | ✅ **Yes.** The forecasts already written stand; the rest complete; nothing is rewritten |
+| **(b)** | **Re-issue a corrected forecast** for an issue time already answered — a bad input was fixed, a model was repaired | ⛔ **Refused today.** Replacing a forecast (supersession, the old row kept and marked) is **Plan 328**; until it lands, a differing re-run is refused |
+| **(c)** | **Overwrite silently**, newest wins | ⛔ **Forbidden — permanently, not "until the lifecycle is live".** Alerts fire on the freshly computed in-memory ensemble while the table would keep the old row, so a silent overwrite makes what we KEEP and what we ACT ON diverge with no trace. A published forecast raises the stakes; it is not what creates the problem |
+
+**Same key does not mean same content.** `(station_id, model_id, issued_at, parameter)` says nothing about the inputs, the artifact, the configuration or the output — a re-run after a model repair produces a *different* forecast under the *same* key. `ON CONFLICT DO NOTHING` would therefore silently conceal the repair. A re-run that meets an existing forecast is classified by the table below, **evaluated in order, first match wins** (`services/forecast_retry.py::classify_forecast_retry`):
+
+| # | condition | outcome |
+|---|---|---|
+| 1 | the **values** differ (aligned by valid time and quantile/member) | **REFUSED** — replaceable in principle; Plan 328 turns this into a supersession |
+| 2 | values equal, the **model artifact identity** differs | **REFUSED** — replaceable in principle; Plan 328 turns this into a supersession. *The same numbers from a different model version are not the same forecast* |
+| 3 | values and artifact equal, the **QC verdict** differs | **REFUSED, permanently.** Equal values should give equal QC unless the RULES changed, which is a real difference nobody has decided how to treat. Plan 328 does not take this row |
+| 4 | otherwise | **IDENTICAL** ⟹ succeed, write nothing, return the stored identity |
+
+**The answer does not depend on the forecast's lifecycle status.** `raw`, `reviewed` and `published` are classified identically: an identical re-run of a PUBLISHED forecast succeeds and writes nothing; a differing re-run of a `raw` forecast is refused just as a published one is. Correcting a forecast a human or a downstream consumer has already read is case (b) above and needs no review machinery — it is simply not built yet.
+
+⛔ **Evidence state (`forecast_evidence.status` / `reason`) plays NO part in this classification.** Every operational forecast carries an incomplete-evidence marker (`services/forecast_evidence.py` appends a reason on every capture branch), and a forecast predating migration `0057` has no evidence row at all; refusing on either would refuse every resume.
+
+A refusal reaches the caller as a `ForecastRetryConflictError` (a domain error) naming which row matched and what differed; **an unrelated storage failure still propagates as a raw SQLAlchemy exception** (Plan 038 D5 — store writes are deliberately not wrapped). A refused forecast is **excluded from alert selection**: the store's return value is otherwise discarded and alerting consumes the in-memory ensemble, so a store-level refusal alone would still leave the cycle alerting on content the store would not keep. A refused *individual model* is dropped from the cycle's ensembles; a refused *combination* is never in them (alerting rebuilds the pool from the contributors), so it instead forces that station/parameter's alert strategy down to `primary`.
+
+⚠️ **Not examined:** Flows 2 (observation ingest), 6 (training), 7 (hindcast) and 8 (skill scoring) were **not assessed** by this work. Their silence here records that they are unchecked — not that they are safe to re-run.
 
 #### Resolved: ML model lookback window forcing source
 

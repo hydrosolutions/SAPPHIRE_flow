@@ -458,15 +458,28 @@ class TestListForecastsInputQuality:
         station = make_station_config(rng=random.Random(1))
         fake_stores["station_store"].store_station(station)
 
+        # Plan 327: three forecasts for ONE station/model/parameter need three
+        # DISTINCT issue times — `uq_forecasts_station_model_issued_param`
+        # admits only one per issue time, and the fake now models that.
         unknown = _make_operational_forecast(
-            station_id=station.id, rng=random.Random(2)
+            station_id=station.id,
+            issued_at=_EPOCH,
+            rng=random.Random(2),
         )
         full = dataclasses.replace(
-            _make_operational_forecast(station_id=station.id, rng=random.Random(3)),
+            _make_operational_forecast(
+                station_id=station.id,
+                issued_at=ensure_utc(_EPOCH + timedelta(hours=6)),
+                rng=random.Random(3),
+            ),
             input_quality=InputQualityLevel.FULL,
         )
         degraded = dataclasses.replace(
-            _make_operational_forecast(station_id=station.id, rng=random.Random(4)),
+            _make_operational_forecast(
+                station_id=station.id,
+                issued_at=ensure_utc(_EPOCH + timedelta(hours=12)),
+                rng=random.Random(4),
+            ),
             input_quality=InputQualityLevel.DEGRADED,
             input_quality_flags=self._FLAGS,
         )

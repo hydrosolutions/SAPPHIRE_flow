@@ -40,6 +40,7 @@ from sapphire_flow.exceptions import (
     DiskHardLimitError,
     DiskSoftLimitError,
     ForecastCycleAbortedError,
+    ForecastRetryConflictError,
     NoCycleAvailableError,
     StoreError,
 )
@@ -66,9 +67,13 @@ from sapphire_flow.types.forcing_track import (
     ForcingResolutionPolicy,
     StationUnavailableReason,
 )
-from sapphire_flow.types.forecast_evidence import incomplete_evidence
+from sapphire_flow.types.forecast_evidence import (
+    ForecastEvidence,
+    incomplete_evidence,
+)
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
+    COMBINED_MODEL_IDS,
     FALLBACK_MODEL_IDS,
     FALLBACK_PRIORITY_THRESHOLD,
     ModelId,
@@ -165,6 +170,152 @@ def _bind_rating_curve(
         rating_curve_id=str(curve.id),
     )
     return replace(fc, rating_curve_id=curve.id)
+
+
+def _persist_forecast(
+    forecast_store: ForecastStore,
+    fc: OperationalForecast,
+) -> OperationalForecast:
+    """Store ``fc`` and return it AS THE STORE NOW HOLDS IT (Plan 327 T2).
+
+    On a resume (decision-table row 4) the store keeps the forecast an earlier
+    attempt wrote and returns ITS id, not this attempt's. The in-memory object
+    must then be rebound to that identity **and to the PERSISTED evidence
+    reference** before it can serve as a combination contributor: a
+    combination's evidence carries each contributor's ``forecast_id`` AND its
+    ``evidence_sha256`` (``services/forecast_evidence.py::
+    capture_combined_evidence``), and the store checks BOTH against persisted
+    evidence (``store/forecast_store.py::_combined_contributor_gap``).
+    Correcting only the id would trade an immutable
+    ``contributor_evidence_not_persisted`` record for an immutable
+    ``contributor_evidence_mismatch`` one. Fetching the forecast does not
+    hydrate its evidence, so it is fetched deliberately.
+
+    ⛔ Honest historical absence is preserved, not suppressed: a contributor
+    predating evidence capture has no evidence row, ``fetch_evidence`` returns
+    the synthetic ``pre_capture_forecast`` marker with no snapshot digest, and
+    the combination check still (correctly) reports
+    ``contributor_evidence_not_persisted``.
+    """
+    stored_id = forecast_store.store_forecast(fc)
+    if stored_id == fc.id:
+        return fc
+    persisted = forecast_store.fetch_evidence(stored_id)
+    log.info(
+        "forecast_cycle.forecast_resumed",
+        station_id=str(fc.station_id),
+        model_id=str(fc.model_id),
+        parameter=fc.ensemble.parameter,
+        stored_forecast_id=str(stored_id),
+        recomputed_forecast_id=str(fc.id),
+        evidence_reason=None if persisted is None else persisted.reason,
+    )
+    if persisted is None:
+        return replace(fc, id=stored_id)
+    return replace(
+        fc,
+        id=stored_id,
+        evidence=ForecastEvidence(
+            status=persisted.status,
+            manifest_json=persisted.manifest_json,
+            snapshot=persisted.snapshot,
+            snapshot_sha256=persisted.snapshot_sha256,
+            artifact=persisted.artifact,
+            artifact_sha256=persisted.artifact_sha256,
+            reason=persisted.reason,
+            thresholds=fc.evidence.thresholds if fc.evidence is not None else None,
+        ),
+    )
+
+
+def _store_station_forecasts(
+    forecast_store: ForecastStore,
+    forecasts: Iterable[OperationalForecast],
+    *,
+    station_id: StationId,
+    active_curves: dict[StationId, RatingCurve] | None,
+    thresholds: dict[StationId, list[StationThreshold]] | None,
+    errors: list[str],
+    refused: set[tuple[StationId, ModelId, str]],
+) -> tuple[list[OperationalForecast], int]:
+    """Bind and store one result's forecasts on the STATION path, where a
+    store failure is tolerated (logged + recorded, the cycle continues) —
+    unlike the GROUP path, which treats it as fatal.
+
+    Returns one forecast per input — as the store holds it where the write
+    succeeded (so a RESUMED contributor carries its stored identity and
+    persisted evidence reference into the combination), and the bound original
+    where it did not, leaving combination provenance exactly as it is today.
+    The second element is how many calls the store accepted.
+
+    A Plan 327 REFUSAL (rows 1-3) additionally records
+    ``(station, model, parameter)`` in ``refused``, because the store's return
+    value is otherwise discarded and alerting consumes the in-memory ensemble:
+    without this the cycle would still alert on content the store would not
+    keep.
+    """
+    resolved: list[OperationalForecast] = []
+    stored = 0
+    for raw in forecasts:
+        fc = _bind_rating_curve(raw, active_curves, thresholds)
+        try:
+            resolved.append(_persist_forecast(forecast_store, fc))
+            stored += 1
+            continue
+        except ForecastRetryConflictError as exc:
+            log.error(
+                "forecast_cycle.forecast_retry_conflict",
+                station_id=str(station_id),
+                model_id=str(fc.model_id),
+                parameter=fc.ensemble.parameter,
+                decision_row=exc.row.value,
+                error=str(exc),
+            )
+            refused.add((station_id, fc.model_id, fc.ensemble.parameter))
+            errors.append(f"Retry conflict for {station_id}: {exc}")
+        except Exception as exc:
+            log.warning("forecast_cycle.store_forecast_failed", error=str(exc))
+            errors.append(f"Store failed for {station_id}: {exc}")
+        resolved.append(fc)
+    return resolved, stored
+
+
+def _drop_refused_ensembles(
+    all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]],
+    refused: set[tuple[StationId, ModelId, str]],
+) -> None:
+    """Plan 327 T2 — a REFUSED INDIVIDUAL model must not be alerted on.
+
+    ``store_forecast``'s return value is discarded and Phase C consumes the
+    freshly computed in-memory ensembles, so a store-level refusal alone still
+    leaves the caller free to alert on content the store would not keep.
+
+    🔴 This reaches individual models ONLY. A combination (`_pooled`/`_bma`) is
+    stored as its own forecast row but is NEVER a key in ``all_ensembles``,
+    which holds the contributors; the pooled alert strategy rebuilds the pool
+    from them. Deleting a combined model id here would silently do nothing, so
+    a refused COMBINATION is handled separately, at alert strategy selection
+    (`services/alert_checker.py::check_station_alerts`'s
+    ``refused_combinations``).
+    """
+    for station_id, model_id, parameter in sorted(
+        (item for item in refused if item[1] not in COMBINED_MODEL_IDS),
+        key=lambda item: (str(item[0]), str(item[1]), item[2]),
+    ):
+        param_ensembles = all_ensembles.get(station_id, {}).get(model_id)
+        if param_ensembles is None or parameter not in param_ensembles:
+            continue
+        del param_ensembles[parameter]
+        log.warning(
+            "alert.suppressed_retry_conflict",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            parameter=parameter,
+        )
+        if not param_ensembles:
+            del all_ensembles[station_id][model_id]
+        if not all_ensembles[station_id]:
+            del all_ensembles[station_id]
 
 
 # = MeteoSwissNwpAdapter.NWP_SOURCE. Used only by the grid-staleness check
@@ -2856,6 +3007,9 @@ def run_forecast_cycle_flow(
 
         # Accumulate for Phase C
         all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = {}
+        # Plan 327 T2 — (station, model, parameter) triples the store REFUSED
+        # (decision-table rows 1-3). Withheld from alert selection below.
+        refused_forecasts: set[tuple[StationId, ModelId, str]] = set()
 
         for station in operational:
             sid = station.id
@@ -2946,19 +3100,16 @@ def run_forecast_cycle_flow(
                         primary_result = multi_result.results[
                             multi_result.primary_model_id
                         ]
-                        for fc in primary_result.forecasts:
-                            fc = _bind_rating_curve(
-                                fc, active_rating_curves, all_thresholds
-                            )
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                        _, n_stored = _store_station_forecasts(
+                            forecast_store,  # type: ignore[arg-type]
+                            primary_result.forecasts,
+                            station_id=sid,
+                            active_curves=active_rating_curves,
+                            thresholds=all_thresholds,
+                            errors=errors,
+                            refused=refused_forecasts,
+                        )
+                        forecasts_stored += n_stored
                         if primary_result.new_state is not None:
                             try:
                                 model_state_store.store_state(  # type: ignore[union-attr]
@@ -2977,20 +3128,26 @@ def run_forecast_cycle_flow(
                             )
                         }
                     else:
+                        # Plan 327 T2: a RESUMED contributor must carry the
+                        # STORED identity and its PERSISTED evidence reference
+                        # into the combination below, or the combination's
+                        # evidence records an immutable
+                        # `contributor_evidence_not_persisted` /
+                        # `contributor_evidence_mismatch` for a contributor
+                        # that IS persisted.
+                        resolved_results: dict[ModelId, StationForecastResult] = {}
                         for mid, mresult in multi_result.results.items():
-                            for fc in mresult.forecasts:
-                                fc = _bind_rating_curve(
-                                    fc, active_rating_curves, all_thresholds
-                                )
-                                try:
-                                    forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                    forecasts_stored += 1
-                                except Exception as exc:
-                                    log.warning(
-                                        "forecast_cycle.store_forecast_failed",
-                                        error=str(exc),
-                                    )
-                                    errors.append(f"Store failed for {sid}: {exc}")
+                            resolved, n_stored = _store_station_forecasts(
+                                forecast_store,  # type: ignore[arg-type]
+                                mresult.forecasts,
+                                station_id=sid,
+                                active_curves=active_rating_curves,
+                                thresholds=all_thresholds,
+                                errors=errors,
+                                refused=refused_forecasts,
+                            )
+                            forecasts_stored += n_stored
+                            resolved_results[mid] = replace(mresult, forecasts=resolved)
                             if (
                                 mid == multi_result.primary_model_id
                                 and mresult.new_state is not None
@@ -3008,6 +3165,7 @@ def run_forecast_cycle_flow(
                                         error=str(exc),
                                     )
 
+                        multi_result = replace(multi_result, results=resolved_results)
                         combined_cycle = cycle_check
                         combined_source = _nwp_cycle_source_for_combined(
                             combined_cycle, multi_result.combinable_results
@@ -3027,19 +3185,16 @@ def run_forecast_cycle_flow(
                             water_level_datum_masl=water_level_datums_masl.get(sid),
                         )
                         if combined_forecasts:
-                            for fc in combined_forecasts:
-                                fc = _bind_rating_curve(
-                                    fc, active_rating_curves, all_thresholds
-                                )
-                                try:
-                                    forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                    forecasts_stored += 1
-                                except Exception as exc:
-                                    log.warning(
-                                        "forecast_cycle.store_forecast_failed",
-                                        error=str(exc),
-                                    )
-                                    errors.append(f"Store failed for {sid}: {exc}")
+                            _, n_stored = _store_station_forecasts(
+                                forecast_store,  # type: ignore[arg-type]
+                                combined_forecasts,
+                                station_id=sid,
+                                active_curves=active_rating_curves,
+                                thresholds=all_thresholds,
+                                errors=errors,
+                                refused=refused_forecasts,
+                            )
+                            forecasts_stored += n_stored
                             log.info(
                                 "forecast_cycle.combined_forecast_stored",
                                 n_models=len(multi_result.combinable_results),
@@ -3240,18 +3395,16 @@ def run_forecast_cycle_flow(
                         structlog.contextvars.unbind_contextvars("station_id")
                         continue
 
-                    for fc in fc_result.forecasts:
-                        fc = _bind_rating_curve(
-                            fc, active_rating_curves, all_thresholds
-                        )
-                        try:
-                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                            forecasts_stored += 1
-                        except Exception as exc:
-                            log.warning(
-                                "forecast_cycle.store_forecast_failed", error=str(exc)
-                            )
-                            errors.append(f"Store failed for {sid}: {exc}")
+                    _, n_stored = _store_station_forecasts(
+                        forecast_store,  # type: ignore[arg-type]
+                        fc_result.forecasts,
+                        station_id=sid,
+                        active_curves=active_rating_curves,
+                        thresholds=all_thresholds,
+                        errors=errors,
+                        refused=refused_forecasts,
+                    )
+                    forecasts_stored += n_stored
 
                     if fc_result.new_state is not None:
                         try:
@@ -3314,21 +3467,22 @@ def run_forecast_cycle_flow(
                         structlog.contextvars.unbind_contextvars("station_id")
                         continue
 
-                    # Store all individual model forecasts
+                    # Store all individual model forecasts. Plan 327 T2: a
+                    # RESUMED contributor carries the STORED identity and its
+                    # PERSISTED evidence reference into the combination below.
+                    resolved_results = {}
                     for mid, result in multi_result.results.items():
-                        for fc in result.forecasts:
-                            fc = _bind_rating_curve(
-                                fc, active_rating_curves, all_thresholds
-                            )
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                        resolved, n_stored = _store_station_forecasts(
+                            forecast_store,  # type: ignore[arg-type]
+                            result.forecasts,
+                            station_id=sid,
+                            active_curves=active_rating_curves,
+                            thresholds=all_thresholds,
+                            errors=errors,
+                            refused=refused_forecasts,
+                        )
+                        forecasts_stored += n_stored
+                        resolved_results[mid] = replace(result, forecasts=resolved)
 
                         # Persist warm-up state for primary model only
                         if (
@@ -3347,6 +3501,8 @@ def run_forecast_cycle_flow(
                                     "forecast_cycle.store_state_failed", error=str(exc)
                                 )
 
+                    multi_result = replace(multi_result, results=resolved_results)
+
                     # Build and store combined forecast
                     combined_forecasts = build_combined_forecasts(
                         station_id=sid,
@@ -3363,19 +3519,16 @@ def run_forecast_cycle_flow(
                         water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
                     if combined_forecasts:
-                        for fc in combined_forecasts:
-                            fc = _bind_rating_curve(
-                                fc, active_rating_curves, all_thresholds
-                            )
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                        _, n_stored = _store_station_forecasts(
+                            forecast_store,  # type: ignore[arg-type]
+                            combined_forecasts,
+                            station_id=sid,
+                            active_curves=active_rating_curves,
+                            thresholds=all_thresholds,
+                            errors=errors,
+                            refused=refused_forecasts,
+                        )
+                        forecasts_stored += n_stored
                         log.info(
                             "forecast_cycle.combined_forecast_stored",
                             n_models=len(multi_result.combinable_results),
@@ -3580,6 +3733,14 @@ def run_forecast_cycle_flow(
                     )
 
                     for sid, result in group_results.items():
+                        # Plan 327 T2: the GROUP path is deliberately NOT the
+                        # station path. An IDENTICAL re-run (decision-table
+                        # row 4) now returns the stored identity and no longer
+                        # collides here — that is what makes a group cycle
+                        # resumable at all. A REFUSAL (rows 1-3) is an
+                        # exception like any other store failure and stays
+                        # FATAL below: the cycle dies before Phase C, so no
+                        # alert can consume refused content.
                         for fc in result.forecasts:
                             fc = _bind_rating_curve(
                                 fc, active_rating_curves, all_thresholds
@@ -3678,6 +3839,19 @@ def run_forecast_cycle_flow(
                 finally:
                     structlog.contextvars.unbind_contextvars("group_id", "model_id")
 
+        # Plan 327 T2 — a REFUSED forecast must not be alerted on. The store
+        # rejected this content, so the cycle may not act on it either. TWO
+        # mechanisms, because a combination is not reachable by the first:
+        # an individual model is dropped from the ensemble dict, while a
+        # refused COMBINATION (`_pooled`/`_bma`) is never a key there and is
+        # instead propagated into alert STRATEGY selection below.
+        _drop_refused_ensembles(all_ensembles, refused_forecasts)
+        refused_combinations = frozenset(
+            (station_id, parameter)
+            for station_id, model_id, parameter in refused_forecasts
+            if model_id in COMBINED_MODEL_IDS
+        )
+
         alert_eligible_ensembles, alert_suppressed = (
             _partition_alert_eligible_ensembles(
                 all_ensembles,
@@ -3705,6 +3879,7 @@ def run_forecast_cycle_flow(
                     config=config,
                     alert_store=alert_store,  # type: ignore[arg-type]
                     clock=clock,
+                    refused_combinations=refused_combinations,
                 )
                 alerts_checked = True
             except Exception as exc:

@@ -20,10 +20,15 @@ from sapphire_flow.db.metadata import (
     forecast_values,
     forecasts,
 )
-from sapphire_flow.exceptions import ConflictError
+from sapphire_flow.exceptions import ConflictError, ForecastRetryConflictError
 from sapphire_flow.services.forecast_evidence import (
     restore_snapshot,
     serialize_thresholds,
+)
+from sapphire_flow.services.forecast_retry import (
+    ForecastRetryRow,
+    classify_forecast_retry,
+    describe_difference,
 )
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
@@ -117,6 +122,28 @@ class PgForecastStore:
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         with self._begin() as txn:
+            # Plan 327 — a cycle that died partway is re-runnable. An
+            # IDENTICAL recomputation (decision-table row 4) returns the
+            # stored identity and writes nothing; rows 1, 2 and 3 REFUSE.
+            # The lookup mirrors `uq_forecasts_station_model_issued_param`'s
+            # partial predicate, so a row Plan 328 later marks `superseded`
+            # drops out of both at once.
+            #
+            # A CONCURRENT duplicate can still slip between this SELECT and
+            # the INSERT below; it then raises an unwrapped SQLAlchemy
+            # `IntegrityError`, exactly as it does today (Plan 038 D5).
+            existing_id = txn.execute(
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.station_id == forecast.station_id)
+                .where(forecasts.c.model_id == forecast.model_id)
+                .where(forecasts.c.issued_at == forecast.issued_at)
+                .where(forecasts.c.parameter == forecast.ensemble.parameter)
+                .where(forecasts.c.status != "superseded")
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                resumed = _resolve_retry(txn, ForecastId(existing_id), forecast)
+                if resumed is not None:
+                    return resumed
             txn.execute(
                 sa.insert(forecasts).values(
                     id=forecast.id,
@@ -349,22 +376,7 @@ class PgForecastStore:
         )
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
-        rows = (
-            self._conn.execute(
-                sa.select(forecasts, forecast_values)
-                .join(
-                    forecast_values,
-                    forecast_values.c.forecast_id == forecasts.c.id,
-                )
-                .where(forecasts.c.id == forecast_id)
-                .order_by(forecast_values.c.valid_time)
-            )
-            .mappings()
-            .all()
-        )
-        if not rows:
-            return None
-        return _rows_to_domain(rows)
+        return _fetch_forecast(self._conn, forecast_id)
 
     def fetch_latest_forecast(
         self,
@@ -522,6 +534,89 @@ class PgForecastStore:
         for row in rows:
             grouped[ForecastId(row["id"])].append(row)
         return [_rows_to_domain(group) for group in grouped.values()]
+
+
+def _fetch_forecast(
+    conn: sa.Connection, forecast_id: ForecastId
+) -> OperationalForecast | None:
+    rows = (
+        conn.execute(
+            sa.select(forecasts, forecast_values)
+            .join(
+                forecast_values,
+                forecast_values.c.forecast_id == forecasts.c.id,
+            )
+            .where(forecasts.c.id == forecast_id)
+            .order_by(forecast_values.c.valid_time)
+        )
+        .mappings()
+        .all()
+    )
+    if not rows:
+        return None
+    return _rows_to_domain(rows)
+
+
+def _resolve_retry(
+    txn: sa.Connection,
+    existing_id: ForecastId,
+    forecast: OperationalForecast,
+) -> ForecastId | None:
+    """Plan 327 § D1 — classify a re-run against the forecast already stored
+    under its natural key. Row 4 resumes (returns the stored id); rows 1, 2
+    and 3 refuse. ``None`` means the retry could not be classified at all and
+    the caller should proceed as it did before this plan.
+    """
+    stored = _fetch_forecast(txn, existing_id)
+    if stored is None:
+        # Unreachable through this store: header and values share ONE
+        # transaction, so a header without its values cannot be committed
+        # (proven by `test_values_insert_failure_rolls_back_header`). If it
+        # ever happens there is no stored content to compare against, so
+        # rather than invent a decision row, fall through to the INSERT — the
+        # unique constraint then refuses it with a raw `IntegrityError`,
+        # exactly as it does today.
+        log.error(
+            "forecast_store.retry_unclassifiable",
+            forecast_id=str(existing_id),
+            station_id=str(forecast.station_id),
+            reason="stored forecast has no values",
+        )
+        return None
+    row = classify_forecast_retry(stored=stored, recomputed=forecast)
+    if row is ForecastRetryRow.IDENTICAL:
+        log.info(
+            "forecast_store.retry_identical",
+            forecast_id=str(existing_id),
+            station_id=str(forecast.station_id),
+            model_id=str(forecast.model_id),
+            issued_at=forecast.issued_at.isoformat(),
+            parameter=forecast.ensemble.parameter,
+        )
+        return existing_id
+    detail = describe_difference(row, stored=stored, recomputed=forecast)
+    log.error(
+        "forecast_store.retry_conflict",
+        forecast_id=str(existing_id),
+        station_id=str(forecast.station_id),
+        model_id=str(forecast.model_id),
+        issued_at=forecast.issued_at.isoformat(),
+        parameter=forecast.ensemble.parameter,
+        decision_row=row.value,
+        detail=detail,
+    )
+    raise ForecastRetryConflictError(
+        f"Forecast {existing_id} already exists for "
+        f"({forecast.station_id}, {forecast.model_id}, "
+        f"{forecast.issued_at.isoformat()}, {forecast.ensemble.parameter}) "
+        f"and the re-run is not identical — {detail}",
+        row=row,
+        forecast_id=existing_id,
+        station_id=forecast.station_id,
+        model_id=forecast.model_id,
+        issued_at=forecast.issued_at,
+        parameter=forecast.ensemble.parameter,
+    )
 
 
 def _build_value_rows(forecast: OperationalForecast) -> list[dict]:  # type: ignore[type-arg]

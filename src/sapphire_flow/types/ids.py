@@ -21,6 +21,13 @@ ModelId = NewType("ModelId", str)
 POOLED_MODEL_ID = ModelId("_pooled")
 BMA_MODEL_ID = ModelId("_bma")
 CONSENSUS_MODEL_ID = ModelId("_consensus")
+#: The sentinel ids a COMBINED forecast is stored under (Plan 327). A
+#: combination is never a key in the cycle's per-model ensemble dict — alerting
+#: rebuilds the pool from the contributors — so a refused combination has to be
+#: propagated into alert STRATEGY selection, not into that dict.
+COMBINED_MODEL_IDS: frozenset[ModelId] = frozenset(
+    {POOLED_MODEL_ID, BMA_MODEL_ID, CONSENSUS_MODEL_ID}
+)
 FALLBACK_PRIORITY_THRESHOLD: int = 90
 LINEAR_REGRESSION_DAILY_MODEL_ID = ModelId("linear_regression_daily")
 NWP_REGRESSION_MODEL_ID = ModelId("nwp_regression")
