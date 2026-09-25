@@ -190,8 +190,10 @@ reclassify a case.**
 plan a NO-OP.** ⛔ *That version refused when the stored row carried an incomplete-evidence marker.
 Measured: `services/forecast_evidence.py:133-145` appends a reason on **every branch** — including
 the one where the image digest is present and valid (`runtime_image_bytes_unpinned`) — so
-`EvidenceStatus` is **always `INCOMPLETE`** today. Every stored forecast would have met the
-refusal condition, and no resume would ever have succeeded.*
+**no COMPLETE capture path exists** — all three capture functions use that helper and the exception
+fallbacks also return `INCOMPLETE`. ⚠️ *Manually constructed COMPLETE evidence CAN be persisted, as
+integration fixtures do — which is precisely why a test built on those fixtures would have passed
+while every real resume refused.*
 
 ⇒ **Evidence state plays no part in classifying a retry.** A missing evidence row (a forecast
 predating migration 0057) and an incomplete marker are both **irrelevant** to whether the
@@ -263,8 +265,12 @@ state.
   evidence hash**, which the store checks against persisted evidence — so correcting only the ids
   trades an immutable `contributor_evidence_not_persisted` record for an immutable
   `contributor_evidence_mismatch` one. ⛔ *And fetching the forecast does not hydrate its evidence,
-  so the reference must be fetched deliberately.* ⇒ **A resume test must assert COMPLETE evidence,
-  not merely the absence of the first marker.**
+  so the reference must be fetched deliberately.* ⇒ **A resume test asserts that the persisted references AGREE and that no
+  RETRY-INDUCED reason was added** — ⛔ *NOT that the evidence is `COMPLETE`. There is no COMPLETE
+  capture path (§ 9), so demanding one is unsatisfiable, and an earlier version of this line did
+  exactly that: it corrected the table and left the verification asking for the impossible.*
+  ⇒ The ordinary incompleteness reasons are **expected and permitted**; what must be absent are
+  `contributor_evidence_not_persisted` and `contributor_evidence_mismatch`.
 - An **equivalent** retry leaves the existing evidence and blobs in place — ⛔ *it may not rewrite
   them; 0057 rejects `UPDATE`/`DELETE`.*
 - 🔴 **A stored forecast carrying the ordinary incomplete-evidence marker is still classified by the
@@ -464,3 +470,15 @@ alert on content the store would not keep.
 ⭐ **The lesson: a conservative default is not automatically safe.** *"Refuse when unsure" read as
 prudent and would have disabled the feature, silently, while every test on synthetic complete
 evidence passed.*
+
+**2026-09-25 — re-review: 1 major, and it was my own twin.** The table was confirmed FIXED and
+genuinely partitioning (rows 1-4 select exactly one outcome each), and the evidence classifier was
+confirmed removed. But **T2's verification still demanded `COMPLETE` evidence** — unsatisfiable,
+since § (9) says no COMPLETE capture path exists. ⛔ *I corrected the classification and left the
+check asking for the impossible.* ⇒ It now asserts the persisted references **agree** and that no
+**retry-induced** reason was added; the ordinary incompleteness reasons are expected and permitted.
+
+⚠️ **Also qualified:** "every stored forecast is INCOMPLETE" is imprecise — **no COMPLETE capture
+path exists**, but manually constructed COMPLETE evidence *can* be persisted, as integration
+fixtures do. ⭐ *That is exactly why a test on those fixtures would have passed while every real
+resume refused.*

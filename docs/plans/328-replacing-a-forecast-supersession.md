@@ -137,11 +137,20 @@ the replacement, in one transaction.
 **In.**
 - The transition and the replacement insert, **atomic together**.
 - 🔴 **The original's evidence and blobs are KEPT** (§ 4) — the replacement gets its own.
-- 🔑 **The trigger is Plan 327's DECISION TABLE, consumed as written.** ⛔ **This plan may not
-  reclassify a case.** *A review of the split warned that two plans each deciding "what counts as
-  different" is how they drift.* Specifically: 327 classifies **values differ** and **values equal
-  but artifact differs** as REPLACEABLE — both come here. It classifies **QC-differs** and
-  **evidence-missing** as REFUSE — ⛔ *those do NOT come here, and turning one into a replacement
+- 🔑 **The trigger is Plan 327's DECISION TABLE, consumed BY ROW NUMBER.** ⛔ **This plan states no
+  classification of its own** — ⚠️ *two earlier versions restated it in their own words and both
+  drifted: one said "evidence-missing is REFUSE" after evidence had been removed from the table
+  entirely, and excluded "QC-differs" without restricting it to equal values and artifact, so a
+  re-run with changed values AND changed QC satisfied both the replacement and the exclusion.*
+
+  | 327 table row | reaches this task? |
+  |---|---|
+  | **1** values differ | ✅ **yes** — supersede and replace |
+  | **2** values equal, artifact differs | ✅ **yes** — supersede and replace |
+  | **3** values and artifact equal, QC differs | ⛔ **no** — 327 refuses |
+  | **4** otherwise | ⛔ **no** — 327 resumes |
+
+  ⚠️ **Evidence state does not classify anything** (327 § 9). ⛔ *Widening row 3 into a replacement
   means amending 327's table first.*
 
 **Out.** ⛔ Deleting or mutating any evidence row or blob (§ 4 — the migration forbids it anyway;
@@ -260,3 +269,17 @@ one key expecting `IntegrityError`, so **T2's red test genuinely fails today**.
 | **shared major** — the classification still contradicted 327's | 327's table is now **ordered, first match wins**, and T2 consumes it by row number rather than restating it. ⚠️ Evidence is no longer a classifier at all — it would have made 327 a no-op |
 | 🔴 **the red test was STILL tie-dependent** — third attempt | ⛔ *The first two changed the ASSERTION; the tie stayed. `forecast_store.py:380` returns an arbitrary one of two rows sharing an `issued_at`, so even "the id returned is not the superseded one" can pass by luck.* ⇒ the **FIXTURE** now makes it deterministic: the only eligible candidate is superseded, and the reader must return `None` |
 | **the architecture handoff was dropped** | 327 D3 assigned it here and no task required it. **T4 is new**, and sequenced LAST — ⛔ *never document a behaviour before it ships* |
+
+**2026-09-25 — re-review: 1 major. The classification clause had drifted AGAIN.** The fixture fix
+and the architecture handoff (T4) were both confirmed FIXED. But T2 still **restated** 327's
+classification instead of consuming it, and the restatement was wrong twice: it said
+*"evidence-missing is REFUSE"* after evidence had been removed from the table entirely, and it
+excluded *"QC-differs"* without restricting that to equal values and artifact — so a re-run with
+**changed values AND changed QC** satisfied both the replacement instruction and the exclusion.
+
+⛔ *My changelog had claimed T2 consumed the table by row number. It did not.* ⇒ T2 now carries a
+**row-number table** and states no classification of its own.
+
+⭐ **The pattern, for whoever reads this next: every time this clause was rewritten in prose it
+drifted.** *Referencing rows by number is the fix — prose restatements of another document's
+decision cannot be kept in sync by care alone.*
