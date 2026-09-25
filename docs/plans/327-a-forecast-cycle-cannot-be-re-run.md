@@ -166,17 +166,24 @@ that actually matters operationally.*
 called that out: it is the hinge, and an error in the "identical" direction silently discards the
 correction the re-run existed to deliver.*
 
-**Compared:** the forecast's **values**, aligned by valid time and quantile/member, and the
-**model artifact identity** it was produced from.
-
 ⛔ **NOT compared** — these differ on every re-run by construction and must not make a retry look
 different: the row id, `created_at`/`updated_at`, and the flow-run identity.
 
-⚠️ **Unresolved cases named rather than glossed**, and each must be settled in T2 before it is
-built: values match but the **artifact differs**; values match but the **QC verdict** differs;
-values match but the stored row has an **incomplete-evidence marker** or, being historical, **no
-evidence row at all** (§ 9). ⇒ *Each is "different" or "identical" by decision, not by accident —
-and the safe default when undecided is **refuse**, which is this plan's existing behaviour.*
+🔑 **THE DECISION TABLE. This is the single classification; Plan 328 CONSUMES it and may not
+reclassify a case independently.** ⛔ *A review of the split warned that two plans each deciding
+"what counts as different" is how they drift apart.*
+
+| stored vs recomputed | outcome | who acts |
+|---|---|---|
+| values equal **and** artifact identity equal | **IDENTICAL** ⟹ succeed, write nothing, return the stored identity | **this plan** |
+| values differ | **REPLACEABLE DIFFERENCE** ⟹ supersede and replace | **Plan 328** |
+| values equal, **artifact differs** | **REPLACEABLE DIFFERENCE** — ⭐ *the same numbers from a different model version are not the same forecast, and this is the case a re-run after a repair actually produces* | **Plan 328** |
+| values equal, artifact equal, **QC verdict differs** | 🔒 **UNCLASSIFIED ⟹ REFUSE** | this plan, until someone decides |
+| stored row has an **incomplete-evidence marker**, or is historical with **no evidence row** (§ 9) | 🔒 **UNCLASSIFIED ⟹ REFUSE** | this plan, until someone decides |
+
+⚠️ **The two refusals are deliberate and are not gaps.** *Refusing is today's behaviour, so nothing
+regresses; and a wrong guess in the "identical" direction silently discards the correction the
+re-run existed to deliver.* ⇒ **Whoever wants either case handled amends THIS table**, not 328.
 
 ### D2 — the dead predicate. **⚖️ CLOSED — owner: make it work. 🔑 MOVED TO PLAN 328.**
 
@@ -193,8 +200,10 @@ records the trap (§ 1) and does not touch it.
 Owner: *"it should be specified in the architecture that we do retries of forecasts."*
 
 ⇒ Flow 1's step table gains what Flow 0 already has, and **1.11 Store forecast results** states
-plainly what re-running does — including D1's replace-and-mark answer, so a reader learns the
-behaviour where they meet the step.
+plainly what re-running does **as shipped by this plan**: an identical re-run succeeds, a differing
+one is refused. ⚠️ **The replace-and-mark behaviour is Plan 328's, and 328 owns the follow-up
+architecture edit** — ⛔ *documenting a behaviour before it exists is how this repo previously
+carried five months of false compliance.*
 
 ⚖️ **The sub-question closed by the orchestrator: Flows 2, 6, 7 and 8 are NAMED AS UNEXAMINED, not
 assessed.** ⛔ *Measuring four more flows to answer a question nobody asked would widen this plan
@@ -229,9 +238,14 @@ written stand, the rest complete. ⛔ **NO orphan-repair work** — § (4) prove
 values cannot occur, and the first draft's requirement to handle one was building for an impossible
 state.
 🔴 **Evidence requirements, from § (9) — obligations, not observations:**
-- A resumed cycle **resolves contributor identities from the STORE before building a combination's
-  evidence**, so it cannot write an immutable `contributor_evidence_not_persisted` record for
-  contributors that are in fact persisted.
+- A resumed cycle **resolves contributor identities AND their persisted evidence references from
+  the STORE before building a combination's evidence.**
+  🔴 **IDs alone are not enough.** `services/forecast_evidence.py:350` also copies the **in-memory
+  evidence hash**, which the store checks against persisted evidence — so correcting only the ids
+  trades an immutable `contributor_evidence_not_persisted` record for an immutable
+  `contributor_evidence_mismatch` one. ⛔ *And fetching the forecast does not hydrate its evidence,
+  so the reference must be fetched deliberately.* ⇒ **A resume test must assert COMPLETE evidence,
+  not merely the absence of the first marker.**
 - An **equivalent** retry leaves the existing evidence and blobs in place — ⛔ *it may not rewrite
   them; 0057 rejects `UPDATE`/`DELETE`.*
 - Comparison **tolerates an incomplete-evidence marker and a legacy forecast with no evidence row**.
@@ -244,9 +258,8 @@ alerted on** — that is this plan's, because the divergence exists the moment r
 ⚠️ *What a SUPERSEDED forecast means for alert selection is Plan 328's.*
 
 **Out.** ⛔ Silent overwrite (D1c) — forbidden outright, not only after publication.
-⛔ **Silently** replacing any row, whatever its status — a supersession leaves the original marked
-and readable (T4). ⚠️ *D1 closed on replace-and-mark, so "do not touch it" is no longer the rule;
-"never without a trace" is.*
+⛔ **Replacing any row** — that is Plan 328 entirely. ⚠️ *This plan REFUSES the differing case; it
+neither overwrites nor supersedes.*
 ⛔ **Translating every `IntegrityError` into a domain error.** § (3): Plan 038 D5 deliberately leaves
 store writes unwrapped, and that stands. **Only a semantic retry conflict becomes a domain error**;
 an unrelated storage failure keeps propagating raw.
@@ -303,7 +316,7 @@ attempts to state:
   consumer has already read needs no review machinery. It is simply someone else's work.
 - **Hindcast dedup** — Plan 040 solved the twin with `hindcast_run_id`.
 - **The pinned-midnight scaffold** — Plan 326. ⚠️ *It is the thing that exposed this, and its own
-  "no same-day retry" hazard note is closed by T3.*
+  "no same-day retry" hazard note is closed by **T2**.*
 - **Flows 2, 6, 7 and 8** — named in T1 as unexamined, deliberately not assessed.
 
 ```json

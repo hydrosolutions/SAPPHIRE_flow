@@ -58,8 +58,10 @@ set; repeated here are only the claims THIS plan rests on.*
    change. `fetch_latest_forecast()` and `fetch_forecasts_for_cycle()`
    (`store/forecast_store.py:369-398`) apply **no status exclusion**, and the Forecast Lab uses
    both, taking the first matching candidate (`services/forecast_lab/db_sources.py:206-220`).
-   ⇒ **After supersession these would serve the OLD row.** ⛔ *A plan that only filtered
-   "status-filtering consumers" would have missed exactly the readers that matter.*
+   ⇒ **After supersession these CAN serve the old row** — ⚠️ *"can", not "would": both rows share an
+   `issued_at`, so which is returned depends on ordering. That makes it intermittent, which is
+   worse than deterministic.* ⛔ *A plan that only filtered "status-filtering consumers" would have
+   missed exactly the readers that matter.*
 6. **A superseded forecast must stay reachable by id.** § (4) keeps its evidence; discarding the
    ability to read it back would make that evidence unreachable, which defeats its purpose.
 
@@ -104,10 +106,12 @@ the replacement, in one transaction.
 **In.**
 - The transition and the replacement insert, **atomic together**.
 - 🔴 **The original's evidence and blobs are KEPT** (§ 4) — the replacement gets its own.
-- The trigger is **Plan 327's comparison**: identical ⟹ 327 succeeds and this never runs; different
-  ⟹ this replaces. ⚠️ *327 also names the cases it could not classify — artifact-differs,
-  QC-differs, evidence-missing — and its safe default is refuse. **This plan may not widen that
-  default silently**: each case it handles, it handles deliberately.*
+- 🔑 **The trigger is Plan 327's DECISION TABLE, consumed as written.** ⛔ **This plan may not
+  reclassify a case.** *A review of the split warned that two plans each deciding "what counts as
+  different" is how they drift.* Specifically: 327 classifies **values differ** and **values equal
+  but artifact differs** as REPLACEABLE — both come here. It classifies **QC-differs** and
+  **evidence-missing** as REFUSE — ⛔ *those do NOT come here, and turning one into a replacement
+  means amending 327's table first.*
 
 **Out.** ⛔ Deleting or mutating any evidence row or blob (§ 4 — the migration forbids it anyway;
 stated so nobody tries). ⛔ Superseding on an **identical** re-run. ⛔ A supersession that is not
@@ -143,8 +147,12 @@ already shows a differing same-key forecast raising `IntegrityError`.*
 **Out.** ⛔ Changing what any reader returns for forecasts that are not superseded. ⛔ Hiding a
 superseded forecast from by-id reads.
 
-**Pre-change.** A RED test: **after a supersession, `fetch_latest_forecast()` returns the
-replacement, not the original.** Fails today — it has no status filter.
+**Pre-change.** A RED test that is **deterministically** red. ⛔ *"`fetch_latest_forecast()`
+returns the replacement" is NOT reliable: the original and the replacement share an `issued_at`, so
+the ordering permits either and the test could pass by luck.* ⇒ Assert **exclusion by identity**:
+`fetch_forecasts_for_cycle()` does not contain the superseded row's id. Cover the latest-reader
+separately, asserting the superseded id is absent rather than relying on which of a tie is
+returned.
 
 **Verification.**
 - Each reader in the inventory, asserted individually. ⛔ *A single "consumers exclude it" test would
@@ -173,3 +181,20 @@ replacement, not the original.** Fails today — it has no status filter.
   ]
 }
 ```
+
+## Changelog
+
+**2026-09-25 — created by splitting Plan 327**, then corrected by a review of the split
+(327: 2 major + 1 minor, 328: 1 major + 1 minor).
+
+| finding | effect here |
+|---|---|
+| **Shared major — the two plans could drift** on what counts as "different" | 327 now carries **one decision table** with three outcomes (identical / replaceable / refused); T2 **consumes** it and is explicitly forbidden from reclassifying a case |
+| **Minor — T3's red test was not reliably red** | the original and replacement share an `issued_at`, so "latest returns the replacement" could pass by luck. Now asserts **exclusion by identity** |
+| **Q3 qualification** | § (5) said the unfiltered readers *would* serve the old row; corrected to **can** — ordering decides, which makes it intermittent and therefore worse |
+
+✅ **Verified by the reviewer against the code:** neither `fetch_latest_forecast` nor
+`fetch_forecasts_for_cycle` filters status and the Forecast Lab calls both
+(`forecast_lab/db_sources.py:155,206`); migration 0057's triggers reject `UPDATE`/`DELETE`/
+`TRUNCATE` on both evidence tables; and `test_forecast_store.py:720` seeds differing values under
+one key expecting `IntegrityError`, so **T2's red test genuinely fails today**.
