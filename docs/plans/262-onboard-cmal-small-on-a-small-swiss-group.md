@@ -1201,3 +1201,62 @@ Whether the output is good enough to continue with — **a hydrologist's judgeme
 two questions: is the forecast in a plausible range for these rivers, and does its shape follow what
 the observations are actually doing? ⇒ Only a *yes* makes the unattended-scheduling work (Plan 326)
 worth its cost.
+
+---
+
+## ✅ T5 COMPLETE — 2026-09-25. The first `cmal_small` forecast exists.
+
+Run `sweet-carp` (`3aa0dc45-40f9-44e5-9fae-d9963506f103`), hand-triggered on staging v0.1.965 with
+`cycle_time` pinned to `2026-09-25T00:00:00Z`. **State `Completed`.**
+
+⭐ **Nothing was changed to make it pass.** The retry was the whole intervention: Plan 312's GROUP
+`station_code_resolver` (#296, v0.1.957) had been live since before this run and nobody had tried.
+
+### Preconditions, verified not assumed
+
+| check | result |
+|---|---|
+| resolver in the RUNNING worker | ✅ present in-container, v0.1.965 |
+| assignment live | ✅ `cmal_small` / `swiss-cmal-small-pilot`, `active`, priority 50, 2 members |
+| 30-day discharge window | ✅ **30/30 days, zero missing**, both stations, 08-26 → 09-24 |
+| 30-day forcing window | ✅ 29 stored + the **tail** (09-24) filled in memory by Plan 261 — ⛔ *not a hole; a stored count always understates by the tail* |
+| NWP | ✅ cycles through 09-25T00:00Z, 148 stations, valid to 09-30 |
+
+### Against the criteria written BEFORE the run
+
+1. ✅ **Rows exist for BOTH stations** — `forecasts` ×2, `issued_at = 2026-09-25 00:00:00+00` (the
+   pin held exactly), `representation=quantiles`, 7 quantiles × 5 days = 35 values each.
+2. ✅ **Values are physically plausible. ⛔ No sign of the 142× aggregation defect.**
+
+   | | observed daily means, 09-20 → 09-25 | forecast day 1 | forecast day 5 |
+   |---|---|---|---|
+   | **2009** Porte du Scex | 115.9 → 157.1 → 166.0 → 170.7 → 185.4 → **186.9** (rising) | **143.6 – 244.7** ⇒ brackets the observation | 117.5 – 513.2 |
+   | **2091** Rheinfelden | 352.5, 351.2, 344.8, 361.9, 342.7, **353.6** (flat) | **282.8 – 346.9** ⇒ ⚠️ tops out ~2% BELOW observed | 279.7 – 348.5 |
+
+   ⭐ The band widens with lead time at 2009 and stays narrow at 2091, which is the right shape for
+   a river that is rising versus one that is flat.
+3. ✅ **`input_quality` recorded, not NULL** — `degraded` on both.
+
+### ⚠️ Two findings, neither a blocker
+
+**(a) 2091 runs slightly LOW — and it is the in-sample station.** Its forecast band tops out at
+~347 against a steady observed ~353. Small, one cycle, not a trend. 🪤 *2091 is IN cmal_small's
+training basin list and 2009 is genuine zero-shot — so the station the model has seen is the one
+biased low. Worth watching; ⛔ do not read one cycle as a skill result.*
+
+**(b) `degraded` is partly an ARTEFACT of back-dating the run**, not three data problems:
+
+| flag | reading |
+|---|---|
+| `observation` **partial** — *"8.0h stale (threshold 6.0h)"* | measured against the pinned 00:00Z issue time while the run executed at 07:21Z. A scheduled 00:00Z run would see fresher data. |
+| `nwp` **degraded** — *"13.8h stale, fallback cycle (threshold 11.0h)"* | the documented fallback (00:00Z NWP reads `age=0` against `min_age=210`, so 09-24T18:00Z is used). ⚠️ **13.8h is wall-clock minus cycle, not issue-time minus cycle (which is 6h)** — staleness and issue time disagree about "now". Worth a look; not today's problem. |
+| `warm_up` **degraded** — *"Cold start (no warm-up snapshot)"* | first ever run of this model. **Resolves on the second run.** |
+
+### ▶ What this unblocks
+
+- **T6** — record what the pilot proved and what it did not. The numbers above are its input.
+- **Plan 326** (unattended scheduling) has met its revival trigger *if* the owner judges the output
+  good enough to run this regularly. ⛔ *That judgement is the owner's — one cycle is evidence the
+  pipeline works end to end, not evidence the model is skilful.*
+- The modeller's question — what a one-day seam elision costs a 30-day-lookback CMAL — is now
+  answerable from real output, ⚠️ though not while the run is pinned to midnight (Plan 311).
