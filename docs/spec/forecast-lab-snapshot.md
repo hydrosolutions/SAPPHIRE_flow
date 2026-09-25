@@ -110,14 +110,6 @@ or a recognised quantile set), never merely the first assignment with any
 forecast at all. A higher-priority candidate the builder renders unavailable
 can never win `is_primary`.
 
-## Combined forecast (`combined_forecast`) — Plan 204, current-cycle fetch by Plan 222 T7
-
-A sibling block on each station entry, **always present, discriminated on
-`available`** (mirrors the `bafu_forecast` union) — **not** a
-`sapphire_forecasts[]` entry, because that array is contractually "one entry
-per assigned model" and the deployment's combined (`_pooled`/`_bma`)
-forecast has no assignment row at all.
-
 ⚠️ **Plan 329 — "assigned" means assigned to the STATION *or* to a GROUP the
 station belongs to.** An entry can therefore exist for a model with **no row
 in `model_assignments` for that station**: the group's assignment is projected
@@ -127,6 +119,16 @@ the map does not need to distinguish them), so this paragraph is the only
 place that distinction is recorded.* ⚠️ A group model competes for
 `is_primary` exactly like any other (D2), so it **can** become a station's
 primary where the higher-priority models have no renderable forecast.
+
+## Combined forecast (`combined_forecast`) — Plan 204, current-cycle fetch by Plan 222 T7
+
+A sibling block on each station entry, **always present, discriminated on
+`available`** (mirrors the `bafu_forecast` union) — **not** a
+`sapphire_forecasts[]` entry, because that array is contractually "one entry
+per assigned model" and the deployment's combined (`_pooled`/`_bma`)
+forecast has no assignment row at all. ⚠️ *"Assigned" there covers group
+assignments too since Plan 329 — see the `sapphire_forecasts` section above;
+the combined forecast has no assignment of EITHER kind.*
 
 **Strategy-gated, never fetched unconditionally.** The block reflects the
 deployment's *currently configured* `forecast_combination_strategy`
