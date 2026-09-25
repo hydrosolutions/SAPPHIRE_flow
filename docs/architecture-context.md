@@ -178,8 +178,9 @@ A **row 3** refusal reaches the caller as a `ForecastRetryConflictError` (a doma
 | generic table browser + row counts (`api/routes/tables.py`) | a raw table view; filtering it would misreport what the table holds |
 | dashboard forecast **count** and **latest `issued_at`** (`api/routes/dashboard.py`) | ⚠️ these two are totals over ALL rows, **distinct from** the `GROUP BY status` breakdown beside them — a superseded row is counted, and shows separately in the breakdown |
 | `scripts/plan100_forecast_feed_resilience.py` (diagnostic export) | a forensic dump; hiding replaced rows is the opposite of what it is for |
+| `tools/standing_snapshot.py` forecast **count** and **latest `issued_at`** | totals over the table; filtering would make the snapshot disagree with the database it reports on |
 
-**A new reader of `forecasts` must state which side of this line it is on.** ⛔ Its evidence and blobs are never rewritten or removed: migration `0057` rejects `UPDATE`, `DELETE` and `TRUNCATE` on both evidence tables, so retention is an obligation, not a policy choice. Superseded forecasts and their evidence are therefore permanent; a retention answer for them does not exist yet.
+**A new reader of `forecasts` must state which side of this line it is on** — and say so in a test, not only here. Every served reader above carries a behavioural assertion (`tests/integration/api/test_dashboard_forecasts.py`); the two developer tools carry source-level ones (`tests/unit/tools/test_forecast_readers_stay_historical.py`), because standing an ssh target or a live date range up in a test would prove less than the query check does. ⛔ Its evidence and blobs are never rewritten or removed: migration `0057` rejects `UPDATE`, `DELETE` and `TRUNCATE` on both evidence tables, so retention is an obligation, not a policy choice. Superseded forecasts and their evidence are therefore permanent; a retention answer for them does not exist yet.
 
 ⚠️ **Not examined:** Flows 2 (observation ingest), 6 (training), 7 (hindcast) and 8 (skill scoring) were **not assessed** by this work. Their silence here records that they are unchecked — not that they are safe to re-run.
 

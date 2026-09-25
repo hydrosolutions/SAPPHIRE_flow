@@ -56,19 +56,24 @@ def _seed_forecast(
     conn: sa.Connection,
     *,
     representation: str,
+    status: str = "raw",
+    station_id: StationId | None = None,
+    model_id: str | None = None,
+    issued_at: object | None = None,
 ) -> str:
-    station_id = _seed_station(conn)
-    model_id = _seed_model(conn)
+    station_id = station_id if station_id is not None else _seed_station(conn)
+    model_id = model_id if model_id is not None else _seed_model(conn)
     forecast_id = uuid4()
+    issued = issued_at if issued_at is not None else _ISSUED_AT
     conn.execute(
         sa.insert(forecasts).values(
             id=forecast_id,
             station_id=station_id,
             model_id=model_id,
             model_artifact_id=None,
-            issued_at=_ISSUED_AT,
+            issued_at=issued,
             representation=representation,
-            status="raw",
+            status=status,
             parameter="discharge",
             units="m³/s",
             qc_status="raw",
@@ -204,3 +209,140 @@ def app_overrides_clear() -> None:
 
     app.dependency_overrides.pop(get_connection, None)
     app.dependency_overrides.pop(require_admin, None)
+
+
+class TestSupersededForecastsOnTheAdminSurfaces:
+    """Plan 328 T3 — the HISTORICAL readers, asserted individually.
+
+    ⛔ A disposition recorded in a document is a claim, not a test. Each
+    reader below is one the inventory says keeps superseded rows; if any of
+    them silently started filtering, a replaced forecast — and the permanent
+    evidence attached to it — would stop being reachable through the surface
+    an operator actually uses.
+    """
+
+    def _seed_pair(self, conn: sa.Connection) -> tuple[str, str]:
+        """A superseded row and a current one, under DISTINCT natural keys so
+        the partial unique index admits both (the pair a real supersession
+        leaves shares a key; here the point is what the READERS show)."""
+        station_id = _seed_station(conn)
+        superseded = _seed_forecast(
+            conn,
+            representation="members",
+            status="superseded",
+            station_id=station_id,
+            model_id=_seed_model(conn, "linreg_superseded"),
+        )
+        current = _seed_forecast(
+            conn,
+            representation="members",
+            status="raw",
+            station_id=station_id,
+            model_id=_seed_model(conn, "linreg_current"),
+        )
+        return superseded, current
+
+    def test_the_admin_list_shows_the_superseded_row_with_its_status(
+        self, db_connection: sa.Connection
+    ) -> None:
+        superseded, current = self._seed_pair(db_connection)
+        client = _client(db_connection)
+        try:
+            resp = client.get("/forecasts/")
+        finally:
+            app_overrides_clear()
+
+        assert resp.status_code == 200
+        assert superseded in resp.text, "the operator's record browser must show it"
+        assert current in resp.text
+        assert "superseded" in resp.text, "and must render its status"
+
+    def test_the_admin_detail_page_serves_a_superseded_forecast(
+        self, db_connection: sa.Connection
+    ) -> None:
+        superseded, _ = self._seed_pair(db_connection)
+        client = _client(db_connection)
+        try:
+            resp = client.get(f"/forecasts/{superseded}/")
+        finally:
+            app_overrides_clear()
+
+        assert resp.status_code == 200
+        assert "superseded" in resp.text
+
+    def test_data_json_still_serves_a_superseded_forecasts_values(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Its values are what the retained evidence is evidence OF."""
+        superseded, _ = self._seed_pair(db_connection)
+        client = _client(db_connection)
+        try:
+            resp = client.get(f"/api/v1/forecasts/{superseded}/data.json")
+        finally:
+            app_overrides_clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["members"], "a superseded forecast keeps its values"
+
+    def test_the_generic_table_browser_counts_and_lists_it(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """`api/routes/tables.py` is a RAW table view — filtering it would
+        misreport what the table holds."""
+        superseded, _ = self._seed_pair(db_connection)
+        client = _client(db_connection)
+        try:
+            resp = client.get("/tables/forecasts/")
+        finally:
+            app_overrides_clear()
+
+        assert resp.status_code == 200
+        assert superseded in resp.text
+        assert "superseded" in resp.text
+
+    def test_the_dashboard_totals_count_it_and_the_breakdown_separates_it(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """⚠️ TWO distinct readers in one page, and this asserts BOTH: the
+        total count and the latest `issued_at` run over ALL rows, while the
+        `GROUP BY status` breakdown gives superseded rows their own bucket.
+
+        🔑 The counts are deliberately asymmetric (3 superseded, 1 current) so
+        no assertion can pass on the wrong bucket, and the LATEST row is a
+        superseded one — a filtered total would report the earlier time.
+        """
+        station_id = _seed_station(db_connection)
+        later = ensure_utc(_ISSUED_AT + timedelta(days=1))
+        for index in range(3):
+            _seed_forecast(
+                db_connection,
+                representation="members",
+                status="superseded",
+                station_id=station_id,
+                model_id=_seed_model(db_connection, f"linreg_old_{index}"),
+                # The newest row overall is a SUPERSEDED one.
+                issued_at=later if index == 0 else _ISSUED_AT,
+            )
+        _seed_forecast(
+            db_connection,
+            representation="members",
+            status="raw",
+            station_id=station_id,
+            model_id=_seed_model(db_connection, "linreg_live"),
+        )
+
+        client = _client(db_connection)
+        try:
+            resp = client.get("/")
+        finally:
+            app_overrides_clear()
+
+        assert resp.status_code == 200
+        html = resp.text
+        # The GROUP BY status breakdown: its own bucket, its own count.
+        assert "superseded: 3" in html
+        assert "raw: 1" in html
+        # The TOTAL is over all rows — 4, not the 1 a filtered reader gives.
+        assert '<p style="font-size:2rem; margin:0;">4</p>' in html
+        # ...and so is the latest issue time.
+        assert f"latest: {later.strftime('%Y-%m-%d %H:%M')}" in html
