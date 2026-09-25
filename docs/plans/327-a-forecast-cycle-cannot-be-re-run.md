@@ -90,7 +90,16 @@ live database.
    `forecast_cycle.store_forecast_failed` and appended to `errors` (`:2945-2950`). ⚠️ *The GROUP
    path differs and treats it as fatal, which is why the measured run failed outright. Retry
    semantics must not assume one behaviour for both.*
-9. **Machinery already exists and is unused for this.** `forecasts.version` plus
+9. 🔴 **NEW, landed 2026-09-25 while this plan was being written (Plan 340 T1, #306): every
+   operational forecast now writes a `forecast_evidence` row IN THE SAME TRANSACTION** as the
+   forecast and its values, with `forecast_id` a foreign key to `forecasts.id`
+   (`alembic/versions/0057_forecast_evidence.py:40-42`), and blob hashes verified on read.
+   ⇒ **Retry is now a THREE-write question, not two**, and D1's options each gain an obligation:
+   a resumed cycle must not orphan or duplicate evidence, and **supersession (D1b) must decide what
+   happens to a superseded forecast's evidence** — discarding it would destroy the as-used record
+   that plan exists to keep. ⚠️ *Re-measured at the moment of acting; this landed after the first
+   review and changes the shape of the answer.*
+10. **Machinery already exists and is unused for this.** `forecasts.version` plus
    `transition_status` is the **only** optimistic-locking path in the stores (the sole
    `ConflictError` caller, `touchpoint-maps.md:756`).
 
@@ -102,9 +111,9 @@ Three different needs hide under one word, and they need different machinery:
 
 | | need | shape |
 |---|---|---|
-| **(a)** | **Resume a cycle that died halfway.** Same inputs, same issue time, finish the job. | Wants *insert-if-absent*, plus § (4)'s header-without-values case |
-| **(b)** | **Re-issue a corrected forecast** for an issue time we already published — a bad input was fixed, a model was repaired. | Wants **supersession**: the old row kept, marked, and a new one written. This is what the partial index was clearly built for. |
-| **(c)** | **Overwrite silently**, newest wins. | ⛔ **Must NOT be allowed once § (2)'s lifecycle is live.** A `PUBLISHED` forecast someone acted on cannot be replaced without trace. |
+| **(a)** | **Resume a cycle that died halfway.** Same inputs, same issue time, finish the job. | Wants *insert-if-absent* at CYCLE granularity — the stations already written stand, the rest complete. ⛔ *No orphan repair: § (4) shows a half-written forecast cannot occur.* |
+| **(b)** | **Re-issue a corrected forecast** for an issue time we have already ANSWERED — a bad input was fixed, a model was repaired. ⛔ *Not "published": a `RAW` or `REVIEWED` forecast a consumer has already read needs correcting too.* | Wants **supersession**: the old row kept, marked, and a new one written. This is what the partial index was clearly built for. |
+| **(c)** | **Overwrite silently**, newest wins. | ⛔ **Must NOT be allowed — now, not "once the lifecycle is live".** § (7): alerts already fire on the in-memory ensemble, so a silent overwrite makes what we kept and what we acted on diverge with no trace. Publication raises the stakes; it is not what creates the problem. |
 
 ⚠️ **(a) and (b) are not variants of one feature.** (a) is about completing work; (b) is about
 correcting a claim we have already made, and carries an audit obligation (a) does not.
@@ -122,16 +131,16 @@ computation* (a true retry — succeed, return the existing identity) or *a diff
 conflict — refuse, or supersede under (b))? ⛔ *Without this, "retry" is undefined for the only case
 that actually matters operationally.*
 
-**Recommendation: build (a) now, specify (b), forbid (c).** ⭐ *(a) is the operational pain today
-and is safe while every row is `raw`. (b) becomes REQUIRED the moment a forecast is published, and
-§ (2) says that has never happened — so it can be specified now and built when the review flow
-lands, which is honest sequencing rather than a deferral.*
+**Recommendation: build (a) now, specify (b), forbid (c) outright.** ⭐ *(a) is the operational
+pain today. (b) needs the supersession mechanism D2 discusses and a review lifecycle that § (2)
+shows has never run, so it is specified now and built when that lands — honest sequencing, not a
+deferral.* ⚠️ **(c) is forbidden from today**, not from first publication — see its row.
 
 ### D2 — fix the dead predicate, or remove it? **OPEN.**
 
 | | option | cost |
 |---|---|---|
-| **(a)** ⭐ | **Add `SUPERSEDED` to `ForecastStatus`** and make the predicate live, implementing D1(b). | Makes the schema's evident intent real. Needs the status threaded through every reader that filters on status — and § (2) means no data migration is required today. |
+| **(a)** ⭐ | **Add `SUPERSEDED` to `ForecastStatus`** and to the DB CHECK (`metadata.py:1130`), making the predicate REACHABLE. ⛔ *This does NOT implement D1(b)* — the transition, who may perform it and what happens to `forecast_values` are D1(b)'s, which this plan specifies and does not build. | Makes the schema's evident intent reachable. Needs the status threaded through every reader that filters on status. ⚠️ **A schema migration is required; what § (2) removes is the need for a status BACKFILL, not the migration.** |
 | (b) | **Drop the predicate**, making the index plainly full. | Honest and smaller, but throws away the design the schema already encodes, and D1(b) would have to re-add it later. |
 | (c) | Leave it. | ⛔ **Rejected.** A predicate excluding an impossible value is a trap for the next reader — see § (1). |
 
@@ -190,36 +199,59 @@ predicate passes vacuously and would prove nothing.
 
 **Out.** ⛔ Changing the key columns `(station_id, model_id, issued_at, parameter)` — they are
 correct and they caught a real duplicate. ⛔ Backfilling status on existing rows (§ 2: all `raw`).
+⚠️ *"No backfill" is not "no migration" — the deployed index must be replaced either way.*
+⛔ Implementing supersession (D1b) — D2(a) makes the predicate REACHABLE, nothing more.
 
-**Pre-change.** A RED test asserting the DESIRED behaviour: **every value in the index predicate is
-a member of `ForecastStatus`**, which fails today because `superseded` is not.
+**Pre-change.** 🔴 **Branches by D2 — the two options need OPPOSITE tests**, and the first draft
+prescribed only the first:
+- **D2(a)** — a RED test asserting **every value in the index predicate is a member of
+  `ForecastStatus`** (the metadata predicate's `right.value` against
+  `{st.value for st in ForecastStatus}`). Fails today, because `superseded` is not.
+- **D2(b)** — ⛔ *there is no predicate left to compare.* The test asserts its **ABSENCE**
+  explicitly. ⚠️ **A comparison over an empty predicate passes vacuously** and would prove nothing,
+  which is how this defect survived in the first place.
 
-**Verification.** The predicate and the enum are asserted against each other, in one test, by value.
+**Verification.** Per D2's branch: either the predicate and the enum agree by value, or the index
+carries no predicate at all — **asserted against the MIGRATED schema**, not only the model, since
+the model is what was right while the deployed index was the problem.
 
 ### T3 — Make a half-finished cycle re-runnable (D1a)
 
 **Outcome.** Re-running a cycle that died partway completes it instead of failing on what it
 already wrote.
 
-**In.** D1(a)'s mechanism at the store boundary, and 🔴 **§ (4)'s header-without-values case
-handled explicitly** — a forecast header whose values never committed is *not* a completed write and
-must not be treated as one.
+**In.** D1(a)'s mechanism at the store boundary, at **CYCLE granularity**: the stations already
+written stand, the rest complete. ⛔ **NO orphan-repair work** — § (4) proves a header without its
+values cannot occur, and the first draft's requirement to handle one was building for an impossible
+state.
+🔴 **The conflict resolution must reach ALERT SELECTION, not stop at the store.** § (7): the stored
+identity is discarded and alerts consume the in-memory ensemble, so a store-level rejection still
+leaves the caller free to alert on the rejected content. What the caller receives, and what alerting
+is allowed to consume, are part of this task.
 
-**Out.** ⛔ Silent overwrite (D1c). ⛔ Touching a `REVIEWED` or `PUBLISHED` row — that is D1(b), and
-until the review flow exists there is nothing to protect, but the guard belongs here so the
-behaviour cannot regress into (c) later. ⛔ Swallowing the `IntegrityError` without deciding what it
-meant.
+**Out.** ⛔ Silent overwrite (D1c) — forbidden outright, not only after publication.
+⛔ **Correcting** a `REVIEWED` or `PUBLISHED` row — that is D1(b), specified not built. ⚠️ *The
+REFUSAL to touch one belongs here, so the behaviour cannot regress into (c) later.*
+⛔ **Translating every `IntegrityError` into a domain error.** § (3): Plan 038 D5 deliberately leaves
+store writes unwrapped, and that stands. **Only a semantic retry conflict becomes a domain error**;
+an unrelated storage failure keeps propagating raw.
 
-**Pre-change.** A RED test reproducing the measured failure: **a second run for the same issue time
-fails today**, and must complete after the change.
-⛔ **NOT the interruption test the first draft proposed.** *A single interrupted forecast already
-rolls back and re-inserts cleanly (§ 4), so that test passes before the change and proves nothing —
-red for the wrong reason.* ⇒ The discriminating shape is at CYCLE granularity: **commit station A,
-interrupt at station B, re-run, and assert A is untouched while B completes.**
+**Pre-change.** A RED test that **fails today for the reason the defect exists**, which took two
+attempts to state:
+- ⛔ *The first draft asked for an interrupted single forecast. It rolls back and re-inserts cleanly
+  (§ 4) — passes today.*
+- ⛔ *The second asked for "commit A, interrupt at B, re-run, A unchanged and B completes". **Also
+  passes today on the STATION path**, because A's duplicate error is caught and logged (§ 8) and B
+  proceeds regardless.*
+- ✅ **The discriminating shape: the re-run must complete with NO error recorded.** Today A's
+  collision is caught and appended to `errors`, so the cycle reports a failure it should not have.
+  Assert the run is clean, not merely that B exists. ⭐ **Or exercise the GROUP path, where the same
+  collision is fatal** (§ 8) — that one fails visibly today.
 
 **Verification.**
-- A cycle interrupted between stations, then re-run: the stations already written are **unchanged**
-  and the rest complete. ⛔ *Not "the orphan is repaired" — orphans cannot occur (§ 4).*
+- A cycle interrupted between stations, then re-run: the stations already written are **unchanged**,
+  the rest complete, and 🔴 **no error is recorded for the ones that were already there.**
+  ⛔ *Not "the orphan is repaired" — orphans cannot occur (§ 4).*
 - 🔴 **A retry whose recomputed forecast DIFFERS from the stored one does not silently do nothing**
   (§ 7 + D1's equivalence policy). It resolves per that policy, and what the caller receives is
   asserted — not only what the table holds.
@@ -232,7 +264,11 @@ interrupt at station B, re-run, and assert A is untouched while B completes.**
 - 🔴 **A genuine duplicate — same issue time, same model, already complete — still does NOT write a
   second row.** ⭐ *The constraint's protective half must survive; this plan removes an obstacle, it
   does not remove the guard.*
-- The failure a caller sees is a domain error, not a raw SQLAlchemy exception (§ 3).
+- 🔴 **Alerting cannot consume content the store refused** — asserted end to end, because § (7)
+  means a store-level guard alone does not achieve this.
+- A **semantic retry conflict** reaches the caller as a domain error, while an **unrelated storage
+  failure still propagates raw** (§ 3, preserving Plan 038 D5). ⛔ *Both halves asserted — wrapping
+  everything is the regression this clause exists to prevent.*
 
 ## Explicitly out of scope
 
@@ -272,3 +308,21 @@ including `forcing_type`, with approved atomic full replacement.
 ⭐ **The lesson worth keeping: I sourced two claims from `touchpoint-maps.md` rather than the store,
 and one of them was stale.** A map of the code is not the code — the same class of error this plan
 exists to fix, committed while writing it.
+
+**2026-09-25 — round 2 on the fold: NEEDS CHANGES again, 4 major, all PARTIAL.** ⛔ *I corrected the
+measured CLAIMS and left the DECISIONS and TASKS saying the old thing — the precise failure mode
+this project has already booked, committed twice in one plan.* What the operative text now says:
+
+| was still wrong | now |
+|---|---|
+| D1(a) and T3's In still required the **impossible orphan** case | removed; resume is at CYCLE granularity |
+| The revised red test **also passed today** — A's collision is caught on the station path and B proceeds anyway | the discriminating assertion is *no error recorded*, or the GROUP path where it is fatal |
+| D1(b)/(c) still framed around **publication** | (b) is "already answered", (c) is forbidden **from today** — § (7) means the divergence exists before anything is published |
+| D2(a) still claimed to **implement** D1(b) | it makes the predicate REACHABLE; the transition is D1(b)'s, specified not built |
+| T2's test prescribed a predicate comparison **unconditionally**, though D2(b) deletes the predicate | branches by option; absence asserted explicitly, because an empty comparison passes vacuously |
+| T3 still demanded a domain error **for everything** | only a semantic retry conflict; unrelated storage failures stay raw, preserving Plan 038 D5 |
+| Conflict resolution stopped at the **store** | it must reach alert selection — § (7): a store-level refusal still leaves the caller alerting on rejected content |
+
+✅ **Verified clean in round 2:** no renumbering errors from inserting claims 7 and 8, and all three
+newly added claims confirmed against the code — the discarded return and in-memory alert input, the
+station-tolerates / group-fatal asymmetry, and the hindcast six-column key with atomic replacement.
