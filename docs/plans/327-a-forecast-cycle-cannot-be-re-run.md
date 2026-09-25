@@ -101,8 +101,12 @@ live database.
    makes `forecast_id` both PK and FK and REJECTS `UPDATE`, `DELETE` and `TRUNCATE` on evidence and
    blobs.** *An earlier version of this claim said supersession "must decide what happens to the
    evidence" — it does not get to decide; it must keep it.*
-   ⚠️ Missing capture writes an **incomplete-evidence marker**, and historical forecasts need not
-   have an evidence row at all — so any comparison must tolerate both.
+   🔴 **`EvidenceStatus` is ALWAYS `INCOMPLETE` today** — `services/forecast_evidence.py:133-145`
+   appends a reason on **every** branch, including the one where the image digest is present and
+   valid (`runtime_image_bytes_unpinned`). ⇒ *Incomplete evidence is the NORMAL state, not an
+   anomaly*, and historical forecasts need not have an evidence row at all. ⛔ **Neither may be a
+   refusal trigger** — see the decision table, where an earlier version made exactly that mistake
+   and would have refused every resume.
    🔴 **And resume has a hazard of its own:** combined forecasts build their evidence from
    contributor IDs and hashes held in memory (`services/forecast_combination.py:543`), which the
    store checks against **persisted** evidence (`forecast_store.py:59`). A cycle resumed after the
@@ -169,21 +173,36 @@ correction the re-run existed to deliver.*
 ⛔ **NOT compared** — these differ on every re-run by construction and must not make a retry look
 different: the row id, `created_at`/`updated_at`, and the flow-run identity.
 
-🔑 **THE DECISION TABLE. This is the single classification; Plan 328 CONSUMES it and may not
-reclassify a case independently.** ⛔ *A review of the split warned that two plans each deciding
-"what counts as different" is how they drift apart.*
+🔑 **THE DECISION TABLE — evaluated IN ORDER, first match wins.** ⛔ *An earlier version listed
+overlapping conditions with no precedence: equal values/artifact satisfied both IDENTICAL and a
+QC-differs refusal, and an evidence condition cut across every row. Ordered evaluation makes the
+outcomes mutually exclusive by construction.* **Plan 328 CONSUMES this table and may not
+reclassify a case.**
 
-| stored vs recomputed | outcome | who acts |
-|---|---|---|
-| values equal **and** artifact identity equal | **IDENTICAL** ⟹ succeed, write nothing, return the stored identity | **this plan** |
-| values differ | **REPLACEABLE DIFFERENCE** ⟹ supersede and replace | **Plan 328** |
-| values equal, **artifact differs** | **REPLACEABLE DIFFERENCE** — ⭐ *the same numbers from a different model version are not the same forecast, and this is the case a re-run after a repair actually produces* | **Plan 328** |
-| values equal, artifact equal, **QC verdict differs** | 🔒 **UNCLASSIFIED ⟹ REFUSE** | this plan, until someone decides |
-| stored row has an **incomplete-evidence marker**, or is historical with **no evidence row** (§ 9) | 🔒 **UNCLASSIFIED ⟹ REFUSE** | this plan, until someone decides |
+| # | condition | outcome | who acts |
+|---|---|---|---|
+| 1 | the **values** differ (aligned by valid time and quantile/member) | **REPLACEABLE** ⟹ supersede | **Plan 328** |
+| 2 | values equal, the **model artifact identity** differs | **REPLACEABLE** ⟹ supersede — ⭐ *the same numbers from a different model version are not the same forecast, and this is what a re-run after a repair produces* | **Plan 328** |
+| 3 | values and artifact equal, the **QC verdict** differs | 🔒 **REFUSE** — unclassified. *Equal values should give equal QC unless the RULES changed, which is a real difference nobody has decided how to treat* | this plan |
+| 4 | otherwise | **IDENTICAL** ⟹ succeed, write nothing, return the stored identity | this plan |
 
-⚠️ **The two refusals are deliberate and are not gaps.** *Refusing is today's behaviour, so nothing
-regresses; and a wrong guess in the "identical" direction silently discards the correction the
-re-run existed to deliver.* ⇒ **Whoever wants either case handled amends THIS table**, not 328.
+🔴 **EVIDENCE IS NOT IN THE TABLE, and an earlier version putting it there would have made this
+plan a NO-OP.** ⛔ *That version refused when the stored row carried an incomplete-evidence marker.
+Measured: `services/forecast_evidence.py:133-145` appends a reason on **every branch** — including
+the one where the image digest is present and valid (`runtime_image_bytes_unpinned`) — so
+`EvidenceStatus` is **always `INCOMPLETE`** today. Every stored forecast would have met the
+refusal condition, and no resume would ever have succeeded.*
+
+⇒ **Evidence state plays no part in classifying a retry.** A missing evidence row (a forecast
+predating migration 0057) and an incomplete marker are both **irrelevant** to whether the
+recomputation matches. ⚠️ *The evidence OBLIGATIONS in T2 are unchanged and remain — they are about
+what a resume must not destroy or misreport, not about what counts as identical.*
+
+⛔ **NOT compared** — these differ on every re-run by construction and must not make a retry look
+different: the row id, `created_at`/`updated_at`, and the flow-run identity.
+
+⚠️ **Row 3 is the only refusal, and it is deliberate.** *Refusing is today's behaviour, so nothing
+regresses.* ⇒ **Whoever wants it handled amends THIS table**, not 328.
 
 ### D2 — the dead predicate. **⚖️ CLOSED — owner: make it work. 🔑 MOVED TO PLAN 328.**
 
@@ -248,7 +267,9 @@ state.
   not merely the absence of the first marker.**
 - An **equivalent** retry leaves the existing evidence and blobs in place — ⛔ *it may not rewrite
   them; 0057 rejects `UPDATE`/`DELETE`.*
-- Comparison **tolerates an incomplete-evidence marker and a legacy forecast with no evidence row**.
+- 🔴 **A stored forecast carrying the ordinary incomplete-evidence marker is still classified by the
+  table** — i.e. an identical re-run of one **succeeds**. ⛔ *Every forecast has that marker (§ 9);
+  a test that only covers synthetic complete evidence proves nothing about the real path.*
 - The whole set still rolls back atomically on failure.
 
 🔴 **The REFUSAL must reach ALERT SELECTION, not stop at the store.** § (7): the stored identity is
@@ -431,3 +452,15 @@ build it.
 an identical retry raises **nothing** rather than a semantic conflict; and the refusal must reach
 **alert selection**, because § (7) means a store-level refusal alone still leaves the caller free to
 alert on content the store would not keep.
+
+**2026-09-25 — post-split review: 2 major. The first would have made this plan do NOTHING.**
+
+| finding | effect |
+|---|---|
+| 🔴 **The evidence refusal made the plan a no-op** | My table refused when the stored row carried an incomplete-evidence marker. `forecast_evidence.py:133-145` appends a reason on **every** branch — including the valid-digest one — so **every forecast is `INCOMPLETE`**. Every resume would have refused. ⇒ **Evidence is removed from the table entirely**; its obligations stay in T2, where they belong |
+| **The table's conditions overlapped** | equal values/artifact satisfied both IDENTICAL and the QC refusal, and the evidence condition cut across every row with no precedence. ⇒ **Ordered evaluation, first match wins** — mutually exclusive by construction |
+| *Q3 qualification* | ids alone **can** produce `contributor_evidence_mismatch`, not inevitably — only when the hashes disagree. Intermittent, which is worse |
+
+⭐ **The lesson: a conservative default is not automatically safe.** *"Refuse when unsure" read as
+prudent and would have disabled the feature, silently, while every test on synthetic complete
+evidence passed.*

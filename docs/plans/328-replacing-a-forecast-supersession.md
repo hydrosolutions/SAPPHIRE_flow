@@ -178,18 +178,39 @@ already shows a differing same-key forecast raising `IntegrityError`.*
 **Out.** ⛔ Changing what any reader returns for forecasts that are not superseded. ⛔ Hiding a
 superseded forecast from by-id reads.
 
-**Pre-change.** A RED test that is **deterministically** red. ⛔ *"`fetch_latest_forecast()`
-returns the replacement" is NOT reliable: the original and the replacement share an `issued_at`, so
-the ordering permits either and the test could pass by luck.* ⇒ Assert **exclusion by identity**:
-`fetch_forecasts_for_cycle()` does not contain the superseded row's id. Cover the latest-reader
-separately, asserting the superseded id is absent rather than relying on which of a tie is
-returned.
+**Pre-change.** A RED test that is **deterministically** red — ⛔ *and it is the FIXTURE that makes
+it so, not the assertion. Two earlier attempts changed only the assertion and stayed tie-dependent:
+with an original and a replacement sharing an `issued_at`, the reader (`forecast_store.py:380`)
+returns an arbitrary one of the two, so even "the returned id is not the superseded id" can pass
+today by luck.*
+⇒ **Seed a fixture whose ONLY eligible candidate is superseded, and assert the latest-reader returns
+`None`.** Cover replacement-selection as a separate case, and assert `fetch_forecasts_for_cycle()`
+**excludes the superseded id** by identity.
 
 **Verification.**
 - Each reader in the inventory, asserted individually. ⛔ *A single "consumers exclude it" test would
   pass on one reader and prove nothing about the rest.*
 - The Forecast Lab shows the replacement, and the published series does not show the original.
 - By-id access to the superseded row still works, and it is distinguishable from a current one.
+
+### T4 — Update the architecture (handed over by Plan 327 D3)
+
+**Outcome.** Flow 1 § 1.11 states the replace-and-mark behaviour, once it exists.
+
+⚠️ **Plan 327 D3 assigns this here and 327 does NOT do it** — it documents only what it ships
+(identical succeeds, differing refuses). ⛔ *Without this task the handoff is dropped, and a reader
+of the architecture would never learn that a differing re-run replaces.*
+
+**In.** The § 1.11 statement extended: a differing re-run **supersedes and replaces**, the original
+stays on record marked, and its evidence is retained.
+
+**Out.** ⛔ Writing it before T2 ships. *Documenting a behaviour before it exists is how this repo
+carried five months of false compliance.*
+
+**Pre-change.** N/A — documentation.
+
+**Verification.** A reader can answer *"what happens if I re-run a day and the numbers differ?"*
+from the architecture alone.
 
 ## Explicitly out of scope
 
@@ -208,7 +229,9 @@ returned.
     {"phase": 1, "tasks": ["T1"], "parallel": false, "note": "the state must exist before anything sets it"},
     {"phase": 2, "tasks": ["T2"], "parallel": false, "note": "supersede + replace, atomically"},
     {"phase": 3, "tasks": ["T3"], "parallel": false,
-     "note": "readers last — they cannot be verified until a superseded row can exist"}
+     "note": "readers — they cannot be verified until a superseded row can exist"},
+    {"phase": 4, "tasks": ["T4"], "parallel": false,
+     "note": "architecture LAST — never document a behaviour before it ships"}
   ]
 }
 ```
@@ -229,3 +252,11 @@ returned.
 (`forecast_lab/db_sources.py:155,206`); migration 0057's triggers reject `UPDATE`/`DELETE`/
 `TRUNCATE` on both evidence tables; and `test_forecast_store.py:720` seeds differing values under
 one key expecting `IntegrityError`, so **T2's red test genuinely fails today**.
+
+**2026-09-25 — post-split review: 1 major, 2 minor.**
+
+| finding | effect |
+|---|---|
+| **shared major** — the classification still contradicted 327's | 327's table is now **ordered, first match wins**, and T2 consumes it by row number rather than restating it. ⚠️ Evidence is no longer a classifier at all — it would have made 327 a no-op |
+| 🔴 **the red test was STILL tie-dependent** — third attempt | ⛔ *The first two changed the ASSERTION; the tie stayed. `forecast_store.py:380` returns an arbitrary one of two rows sharing an `issued_at`, so even "the id returned is not the superseded one" can pass by luck.* ⇒ the **FIXTURE** now makes it deterministic: the only eligible candidate is superseded, and the reader must return `None` |
+| **the architecture handoff was dropped** | 327 D3 assigned it here and no task required it. **T4 is new**, and sequenced LAST — ⛔ *never document a behaviour before it ships* |
