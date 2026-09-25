@@ -511,6 +511,16 @@ class TestPostgresParity:
         assert survivor is not None
         assert survivor.ensemble.values.equals(original.ensemble.values)
         assert store.fetch_evidence(original_id) == evidence_before
+        # The SAME four facts the fake is held to: status, version, still
+        # current, and a later re-run resumes rather than colliding.
+        assert survivor.status is ForecastStatus.RAW
+        assert survivor.version == original.version
+        latest = store.fetch_latest_forecast(sid, mid, "discharge")
+        assert latest is not None
+        assert latest.id == original_id
+        assert store.store_forecast(replace(original, id=ForecastId(uuid4()))) == (
+            original_id
+        )
 
     def test_resubmitting_the_very_same_forecast_still_resumes(
         self, db_connection: sa.Connection

@@ -330,6 +330,7 @@ class FakeForecastStore:
             forecast.issued_at,
             forecast.ensemble.parameter,
         )
+        superseding: ForecastId | None = None
         existing_id = self._current_id_for_key(key)
         if existing_id is not None:
             stored = self._forecasts[existing_id]
@@ -348,20 +349,17 @@ class FakeForecastStore:
                     issued_at=forecast.issued_at,
                     parameter=forecast.ensemble.parameter,
                 )
-            # Plan 328 T2 — mark, then write the replacement. The original's
-            # evidence record is NOT touched (the real store cannot touch it:
-            # migration 0057 rejects UPDATE/DELETE on it).
-            self._forecasts[existing_id] = replace(
-                stored,
-                status=ForecastStatus.SUPERSEDED,
-                version=stored.version + 1,
-            )
-        # `forecasts.id` is the PRIMARY KEY, and this is the INSERT — checked
-        # HERE, after the resume/refuse branches, exactly where Postgres hits
-        # it. A row-4 resume never reaches the insert, so re-submitting the
-        # very same forecast object still resumes rather than colliding.
-        # ⛔ Without this the fake silently overwrites the row AND its evidence
-        # where Postgres rejects the write and rolls the mark back with it.
+            superseding = existing_id
+        # `forecasts.id` is the PRIMARY KEY. This guard sits AFTER the
+        # resume/refuse branches — a row-4 resume never reaches the INSERT, so
+        # re-submitting the very same forecast object still resumes — but
+        # BEFORE any mutation, because this fake has no transaction to roll
+        # back. Postgres marks, hits the PK violation on the INSERT, and
+        # rolls the mark back with it; the only way to end in the same state
+        # here is to refuse before touching anything.
+        # ⛔ Raising AFTER the mark leaves the original SUPERSEDED and
+        # therefore invisible to every current read, where Postgres leaves it
+        # untouched and a later re-submission resumes it cleanly.
         if forecast.id in self._forecasts:
             raise IntegrityError(
                 "INSERT INTO forecasts",
@@ -370,6 +368,16 @@ class FakeForecastStore:
                     f"duplicate key value violates unique constraint "
                     f'"forecasts_pkey" (id={forecast.id})'
                 ),
+            )
+        if superseding is not None:
+            # Plan 328 T2 — mark, then write the replacement. The original's
+            # evidence record is NOT touched (the real store cannot touch it:
+            # migration 0057 rejects UPDATE/DELETE on it).
+            superseded = self._forecasts[superseding]
+            self._forecasts[superseding] = replace(
+                superseded,
+                status=ForecastStatus.SUPERSEDED,
+                version=superseded.version + 1,
             )
         self._forecasts[forecast.id] = forecast
         self._by_key[key] = forecast.id

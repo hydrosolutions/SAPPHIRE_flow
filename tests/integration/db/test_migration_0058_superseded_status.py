@@ -110,6 +110,14 @@ def test_the_downgrades_collision_condition_is_what_the_migration_claims(
     superseded row with no sibling under its natural key downgrades cleanly —
     which ``store_forecast`` never produces, since it writes the replacement
     in the same transaction as the mark.
+
+    ⚠️ **This exercises an EQUIVALENT probe table carrying the same partial
+    unique index, not a populated real downgrade.** It pins the index
+    behaviour the migration's note depends on; it is NOT an end-to-end
+    rehearsal of `downgrade()` against seeded `forecasts` rows, and nobody
+    should read it as one. Building that would mean seeding the whole
+    station/model/artifact/evidence FK graph twice over to assert a property
+    of one index.
     """
     engine, url = migration_engine
     command.upgrade(_config(url), "0058")

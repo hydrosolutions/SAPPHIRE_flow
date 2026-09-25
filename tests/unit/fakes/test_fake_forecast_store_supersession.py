@@ -106,7 +106,14 @@ class TestTheIdIsAPrimaryKey:
     def test_a_row_1_rerun_reusing_the_original_id_is_rejected(self) -> None:
         """⛔ Postgres rejects the PK collision and rolls the mark back with
         it. Overwriting instead would destroy the original AND its evidence —
-        the append-only guarantee migration 0057 enforces."""
+        the append-only guarantee migration 0057 enforces.
+
+        🔴 Checking values and evidence alone is what let the first version of
+        this fix through: a guard raising AFTER the mark leaves those intact
+        while the original is already SUPERSEDED, and therefore gone from
+        every current read. STATUS, VERSION and current-visibility are the
+        assertions that see it.
+        """
         store = FakeForecastStore()
         original = _forecast(seed=1)
         store.store_forecast(original)
@@ -120,6 +127,26 @@ class TestTheIdIsAPrimaryKey:
         assert survivor is not None
         assert survivor.ensemble.values.equals(original.ensemble.values)
         assert store.fetch_evidence(original.id) == evidence_before
+        # ⛔ The state the failed write must NOT have moved.
+        assert survivor.status is ForecastStatus.RAW
+        assert survivor.version == original.version
+        current = store.fetch_latest_forecast(_STATION)
+        assert current is not None
+        assert current.id == original.id, "the original must still be CURRENT"
+
+    def test_after_a_rejected_replacement_the_original_still_resumes(self) -> None:
+        """The consequence of leaving it marked: a later re-run of the
+        ORIGINAL would collide instead of resuming."""
+        store = FakeForecastStore()
+        original = _forecast(seed=1)
+        store.store_forecast(original)
+
+        with pytest.raises(IntegrityError, match="forecasts_pkey"):
+            store.store_forecast(_forecast(seed=2, forecast_id=original.id))
+
+        # Same computation, new row id — an ordinary resume.
+        resumed = store.store_forecast(replace(original, id=ForecastId(uuid4())))
+        assert resumed == original.id
 
     def test_resubmitting_the_very_same_forecast_still_resumes(self) -> None:
         """A row-4 resume never reaches the INSERT, so the PK guard must not
