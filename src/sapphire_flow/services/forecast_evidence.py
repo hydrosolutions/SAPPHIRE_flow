@@ -174,7 +174,17 @@ def capture_station_evidence(
             "kind": "station",
             "station_id": str(inputs.station_id),
             "model_id": str(model_id),
-            "model_class": f"{type(model).__module__}.{type(model).__qualname__}",
+            "model_class": (
+                model.wrapped_model_class
+                if isinstance(model, ForecastInterfaceAdapter)
+                else f"{type(model).__module__}.{type(model).__qualname__}"
+            ),
+            "adapter_class": (
+                f"{type(model).__module__}.{type(model).__qualname__}"
+                if isinstance(model, ForecastInterfaceAdapter)
+                else None
+            ),
+            "model_config_hash": getattr(model, "config_hash", None),
             "issue_time": inputs.issue_time,
             "time_step_seconds": inputs.time_step.total_seconds(),
             "forecast_horizon_steps": inputs.forecast_horizon_steps,
@@ -265,7 +275,17 @@ def capture_group_evidence(
             "group_id": str(inputs.group_id),
             "station_ids": [str(station_id) for station_id in inputs.station_ids],
             "model_id": str(model_id),
-            "model_class": f"{type(model).__module__}.{type(model).__qualname__}",
+            "model_class": (
+                model.wrapped_model_class
+                if isinstance(model, ForecastInterfaceAdapter)
+                else f"{type(model).__module__}.{type(model).__qualname__}"
+            ),
+            "adapter_class": (
+                f"{type(model).__module__}.{type(model).__qualname__}"
+                if isinstance(model, ForecastInterfaceAdapter)
+                else None
+            ),
+            "model_config_hash": getattr(model, "config_hash", None),
             "issue_time": inputs.issue_time,
             "time_step_seconds": inputs.time_step.total_seconds(),
             "forecast_horizon_steps": inputs.forecast_horizon_steps,
@@ -317,6 +337,7 @@ def capture_combined_evidence(
     qc_overrides: list[StationForecastQcOverride],
     baselines: list[ClimBaseline],
     water_level_datum_masl: float | None,
+    bma_sampling_counts: dict[ModelId, int] | None = None,
 ) -> ForecastEvidence:
     try:
         payload: dict[str, object] = {
@@ -338,6 +359,16 @@ def capture_combined_evidence(
                 for fc in contributors
             ],
             "weights": {str(key): value for key, value in (weights or {}).items()},
+            "bma_eligible_model_order": (
+                [str(mid) for mid in bma_sampling_counts]
+                if bma_sampling_counts is not None
+                else None
+            ),
+            "bma_sampling_counts": (
+                {str(mid): count for mid, count in bma_sampling_counts.items()}
+                if bma_sampling_counts is not None
+                else None
+            ),
             "forecast_qc_rules": qc_rules,
             "forecast_qc_overrides": qc_overrides,
             "forecast_qc_baselines": baselines,

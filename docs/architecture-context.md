@@ -1829,10 +1829,14 @@ state, RNG state and deployment configuration. Ensemble fan-out snapshots also
 retain the per-member frames passed to prediction. FI-adapted forecasts additionally
 capture the exact FI input hierarchy after adapter selection and slicing;
 group snapshots identify every member and the stations delivered to FI.
+For FI models, the snapshot names the wrapped model class and its available
+model configuration hash as well as the adapter class.
 Effective forecast QC rules, station overrides, baselines and water-level datum
 are captured as used. Combined forecasts retain contributor forecast IDs,
-evidence hashes and weights; storage checks that those contributors were
-persisted and marks missing or mismatched references incomplete.
+evidence hashes and weights; BMA snapshots also retain the ordered global
+eligible-model cohort and sample counts used across parameters. Storage checks
+that contributors were persisted and marks missing or mismatched references
+incomplete.
 The manifest binds the forecast ID, model/artifact, weather cycle, QC and input
 quality, rating curve and as-used threshold hash. Threshold values are stored
 beside it. `PgForecastStore.fetch_evidence(id)` verifies blob hashes on read.

@@ -18,6 +18,7 @@ from sapphire_flow.services.forecast_combination import (
     combine_ensembles_bma,
     combine_ensembles_pooled,
 )
+from sapphire_flow.services.forecast_evidence import restore_snapshot
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
     MultiModelForecastResult,
@@ -934,6 +935,73 @@ class TestBuildCombinedForecasts:
         assert fc.combination_strategy == "bma"
         assert fc.model_id == BMA_MODEL_ID
         assert fc.ensemble.member_count == _BMA_TARGET_MEMBERS
+
+    def test_bma_evidence_keeps_global_sampling_cohort_across_parameters(
+        self,
+    ) -> None:
+        def result(model_id: ModelId, parameter: str) -> StationForecastResult:
+            ensemble = make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                n_members=5,
+                n_steps=10,
+                parameter=parameter,
+                model_id=model_id,
+            )
+            return _result_with_ensemble(
+                model_id,
+                ensemble,
+                parameter,
+                input_quality=InputQualityLevel.FULL,
+            )
+
+        multi = _make_multi(
+            {
+                _MODEL_A: result(_MODEL_A, "discharge"),
+                _MODEL_B: result(_MODEL_B, "discharge"),
+                _MODEL_C: result(_MODEL_C, "water_level"),
+            }
+        )
+        rules = ForecastQcRuleSet(
+            version="1.0",
+            rules=(
+                *_discharge_range_qc_rules().rules,
+                *_water_level_range_qc_rules().rules,
+            ),
+        )
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.BMA,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=rules,
+            qc_overrides=[],
+            baselines=[],
+            weights={_MODEL_A: 0.4, _MODEL_B: 0.4, _MODEL_C: 0.2},
+        )
+        discharge = next(fc for fc in forecasts if fc.ensemble.parameter == "discharge")
+        assert discharge.ensemble.member_count == 80
+        assert discharge.evidence is not None
+        assert discharge.evidence.snapshot is not None
+        snapshot = restore_snapshot(discharge.evidence.snapshot)
+        assert snapshot["bma_eligible_model_order"] == [
+            str(_MODEL_A),
+            str(_MODEL_B),
+            str(_MODEL_C),
+        ]
+        assert snapshot["bma_sampling_counts"] == {
+            str(_MODEL_A): 40,
+            str(_MODEL_B): 40,
+            str(_MODEL_C): 20,
+        }
+        assert [item["model_id"] for item in snapshot["contributors"]] == [
+            str(_MODEL_A),
+            str(_MODEL_B),
+        ]
 
     def test_bma_without_weights_raises(self) -> None:
         result_a = _make_result(_MODEL_A)

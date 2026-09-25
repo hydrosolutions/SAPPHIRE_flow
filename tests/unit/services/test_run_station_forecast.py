@@ -12,6 +12,7 @@ from structlog.testing import capture_logs
 import sapphire_flow.services.run_station_forecast as rsf_module
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError
+from sapphire_flow.services.forecast_evidence import restore_frame, restore_snapshot
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
     MultiModelForecastResult,
@@ -225,16 +226,32 @@ def _sequential_id_gen() -> object:
     return gen
 
 
+class _RecordingStationModel(FakeStationForecastModel):
+    delivered_inputs: StationModelInputs | None = None
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        self.delivered_inputs = inputs
+        return super().predict(artifact, inputs, rng, prior_state)
+
+
 class TestHappyPath:
     def test_single_model_returns_result(self) -> None:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
-        model = FakeStationForecastModel()
+        model = _RecordingStationModel()
 
         result = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
-            input_metadata=_make_metadata(),
+            input_metadata=_make_metadata(
+                observation_qc_coverage=ObservationQcCoverage.CONTAINS_UNCHECKED
+            ),
             assignments=[_make_assignment(_MODEL_ID_A)],
             models={_MODEL_ID_A: model},  # type: ignore[dict-item]
             artifact_store=store,
@@ -257,6 +274,15 @@ class TestHappyPath:
         assert result.model_id == _MODEL_ID_A
         assert len(result.forecasts) == 1
         assert "discharge" in result.ensembles
+        assert model.delivered_inputs is not None
+        forecast = result.forecasts[0]
+        assert forecast.input_quality is InputQualityLevel.DEGRADED
+        assert forecast.evidence is not None
+        assert forecast.evidence.snapshot is not None
+        snapshot = restore_snapshot(forecast.evidence.snapshot)
+        assert restore_frame(snapshot["frames"]["past_targets"]).equals(
+            model.delivered_inputs.data.past_targets
+        )
 
     def test_forecast_fields_populated(self) -> None:
         store = FakeModelArtifactStore()

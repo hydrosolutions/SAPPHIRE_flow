@@ -1863,7 +1863,10 @@ incomplete. The snapshot also captures effective forecast QC rules, overrides,
 baselines and datum. A supplied runtime digest without retained image bytes is
 marked incomplete; Plan 340 T2 can add separate append-only preservation proof,
 without rewriting the capture-time status.
-Combined forecasts additionally require persisted contributor evidence.
+FI snapshots name the wrapped model class and config hash when supplied.
+Combined forecasts additionally require persisted contributor evidence; BMA
+snapshots record global eligibility order and sample counts even when a model
+contributes only another parameter.
 `PgForecastStore.store_forecast()` commits forecast, values, blob
 payloads and one evidence row atomically. `PgForecastStore.fetch_evidence(id)`
 returns the immutable manifest, threshold JSON and verified compressed input

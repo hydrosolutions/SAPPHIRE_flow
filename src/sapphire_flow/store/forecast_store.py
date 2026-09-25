@@ -268,6 +268,18 @@ class PgForecastStore:
                     .values(sha256=digest, payload=payload, byte_length=len(payload))
                     .on_conflict_do_nothing(index_elements=["sha256"])
                 )
+                retained = txn.execute(
+                    sa.select(
+                        forecast_evidence_blobs.c.payload,
+                        forecast_evidence_blobs.c.byte_length,
+                    ).where(forecast_evidence_blobs.c.sha256 == digest)
+                ).one()
+                if (
+                    retained.payload != payload
+                    or retained.byte_length != len(retained.payload)
+                    or hashlib.sha256(retained.payload).hexdigest() != digest
+                ):
+                    raise ValueError("retained forecast evidence blob mismatch")
             txn.execute(
                 sa.insert(forecast_evidence).values(
                     forecast_id=forecast.id,

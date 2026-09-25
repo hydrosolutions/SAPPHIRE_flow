@@ -247,7 +247,39 @@ class TestForecastEvidenceStore:
             == 0
         )
 
-    def test_pre_capture_forecast_is_marked_incomplete(
+    def test_corrupt_deduplicated_blob_rolls_back_forecast(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        evidence = _evidence()
+        assert evidence.snapshot_sha256 is not None
+        db_connection.execute(
+            sa.insert(forecast_evidence_blobs).values(
+                sha256=evidence.snapshot_sha256,
+                payload=b"corrupt",
+                byte_length=len(b"corrupt"),
+            )
+        )
+        forecast = replace(_make_forecast(sid, mid, aid), evidence=evidence)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        with pytest.raises(
+            ValueError, match="retained forecast evidence blob mismatch"
+        ):
+            store.store_forecast(forecast)
+        assert (
+            db_connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(forecasts)
+                .where(forecasts.c.id == forecast.id)
+            )
+            == 0
+        )
+
+    def test_new_forecast_without_capture_is_marked_incomplete(
         self, db_connection: sa.Connection
     ) -> None:
         sid = _seed_station(db_connection)
@@ -262,6 +294,33 @@ class TestForecastEvidenceStore:
         assert saved is not None
         assert saved.status is EvidenceStatus.INCOMPLETE
         assert "prediction_capture_unavailable" in (saved.reason or "")
+
+    def test_pre_capture_forecast_is_marked_incomplete(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        forecast = _make_forecast(sid, mid, aid)
+        db_connection.execute(
+            sa.insert(forecasts).values(
+                id=forecast.id,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                issued_at=forecast.issued_at,
+                representation=forecast.representation.value,
+                parameter=forecast.ensemble.parameter,
+                units=forecast.ensemble.units,
+            )
+        )
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        saved = store.fetch_evidence(forecast.id)
+        assert saved is not None
+        assert saved.status is EvidenceStatus.INCOMPLETE
+        assert saved.reason == "pre_capture_forecast"
 
     @pytest.mark.parametrize("table", (forecast_evidence, forecast_evidence_blobs))
     @pytest.mark.parametrize("action", ("update", "delete", "truncate"))
@@ -288,9 +347,10 @@ class TestForecastEvidenceStore:
         ):
             db_connection.execute(statement)
 
+    @pytest.mark.parametrize("table", (forecast_evidence, forecast_evidence_blobs))
     @pytest.mark.parametrize("action", ("update", "delete", "truncate"))
     def test_privileged_nonowner_cannot_mutate_evidence(
-        self, db_connection: sa.Connection, action: str
+        self, db_connection: sa.Connection, table: sa.Table, action: str
     ) -> None:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
@@ -303,11 +363,15 @@ class TestForecastEvidenceStore:
         )
         role = f"evidence_reviewer_{uuid4().hex[:8]}"
         db_connection.execute(sa.text(f"CREATE ROLE {role}"))
-        db_connection.execute(sa.text(f"GRANT ALL ON forecast_evidence TO {role}"))
+        db_connection.execute(
+            sa.text(
+                f"GRANT ALL ON forecast_evidence, forecast_evidence_blobs TO {role}"
+            )
+        )
         statement = {
-            "update": "UPDATE forecast_evidence SET created_at = now()",
-            "delete": "DELETE FROM forecast_evidence",
-            "truncate": "TRUNCATE forecast_evidence CASCADE",
+            "update": f"UPDATE {table.name} SET created_at = now()",
+            "delete": f"DELETE FROM {table.name}",
+            "truncate": f"TRUNCATE {table.name} CASCADE",
         }[action]
         with (
             pytest.raises(sa.exc.DBAPIError, match="append-only"),

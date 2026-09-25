@@ -501,6 +501,11 @@ class ForecastInterfaceAdapter:
         wrapped model declares, disabling the drift check entirely."""
         return getattr(self._model, "config_hash", None)
 
+    @property
+    def wrapped_model_class(self) -> str:
+        model_type = type(self._model)
+        return f"{model_type.__module__}.{model_type.__qualname__}"
+
     def _future_forced_time_steps(self, req: InputRequirement) -> tuple[timedelta, ...]:
         # Iterates req.dynamic directly (NOT _iter_dynamic_specs, which
         # discards the time_step key) so each branch's future_known-ness can

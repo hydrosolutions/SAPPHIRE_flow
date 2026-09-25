@@ -392,9 +392,19 @@ class TestForecastEvidenceRoleGrants:
         statement = (
             f"UPDATE {table} SET created_at = now()"
             if action == "UPDATE"
-            else f"{action} {table}"
+            else f"DELETE FROM {table}"
+            if action == "DELETE"
+            else f"TRUNCATE {table}"
         )
-        assert bootstrapped.denied(url, statement)
+        engine = sa.create_engine(url)
+        try:
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                engine.begin() as conn,
+            ):
+                conn.execute(sa.text(statement))
+        finally:
+            engine.dispose()
 
 
 class TestPerTableGrantsAreNotBlanket:

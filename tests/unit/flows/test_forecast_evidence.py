@@ -162,6 +162,7 @@ class TestForecastEvidenceCapture:
                 {"station": {"discharge": _success_variable([1.0, 2.0, 3.0])}}
             )
         )
+        model.config_hash = "fixture-config-v1"
         rng = random.Random(42)
         evidence = capture_station_evidence(
             inputs=inputs,
@@ -182,6 +183,10 @@ class TestForecastEvidenceCapture:
         assert evidence.snapshot is not None
         assert model.predict_inputs is not None
         captured = restore_snapshot(evidence.snapshot)["fi_model_inputs"]
+        snapshot = restore_snapshot(evidence.snapshot)
+        assert snapshot["model_class"].endswith(".FakeFIForecastModel")
+        assert snapshot["model_config_hash"] == "fixture-config-v1"
+        assert snapshot["adapter_class"].endswith(".ForecastInterfaceAdapter")
         dynamic = captured["stations"]["station"]["dynamic"]["3600.0"]["data"]
         spatial = next(iter(dynamic.values()))
         series = spatial["past_known"]["obs"]["discharge"]["data"]
