@@ -498,3 +498,39 @@ class TestListForecastsInputQuality:
         body = resp.json()
         assert body["total"] == 1
         assert body["items"][0]["id"] == str(degraded.id)
+
+
+class TestSupersededForecastsInTheStationListing:
+    """Plan 328 T3 — `GET /stations/{id}/forecasts` is a HISTORICAL reader.
+
+    ⛔ It keeps superseded rows deliberately: it is the record, and each row
+    carries its own `status`. This pins that disposition rather than leaving
+    it to a table in a document.
+    """
+
+    def test_the_listing_shows_both_rows_and_distinguishes_them(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+
+        original = _make_operational_forecast(
+            station_id=station.id, issued_at=_EPOCH, rng=random.Random(41)
+        )
+        fake_stores["forecast_store"].store_forecast(original)
+        replacement = _make_operational_forecast(
+            station_id=station.id, issued_at=_EPOCH, rng=random.Random(42)
+        )
+        fake_stores["forecast_store"].store_forecast(replacement)
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forecasts",
+            params={"start": "2024-12-31T00:00:00Z", "end": "2025-01-02T00:00:00Z"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        by_id = {item["id"]: item["status"] for item in body["items"]}
+        assert body["total"] == 2
+        assert by_id[str(original.id)] == ForecastStatus.SUPERSEDED.value
+        assert by_id[str(replacement.id)] == ForecastStatus.RAW.value

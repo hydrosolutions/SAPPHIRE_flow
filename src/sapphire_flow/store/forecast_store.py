@@ -26,6 +26,7 @@ from sapphire_flow.services.forecast_evidence import (
     serialize_thresholds,
 )
 from sapphire_flow.services.forecast_retry import (
+    SUPERSEDING_ROWS,
     ForecastRetryRow,
     classify_forecast_retry,
     describe_difference,
@@ -59,6 +60,17 @@ from sapphire_flow.types.ids import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+def _is_current() -> sa.ColumnElement[bool]:
+    """Plan 328 T3 — exclude a forecast that has been replaced.
+
+    ⛔ NOT a status whitelist: a whitelist would silently drop any status added
+    later (Plan 341's `withdrawn`, for one) from every current read. The
+    predicate names only the not-current state, exactly as
+    `uq_forecasts_station_model_issued_param` does.
+    """
+    return forecasts.c.status != ForecastStatus.SUPERSEDED.value
 
 
 def _combined_contributor_gap(
@@ -124,10 +136,14 @@ class PgForecastStore:
         with self._begin() as txn:
             # Plan 327 — a cycle that died partway is re-runnable. An
             # IDENTICAL recomputation (decision-table row 4) returns the
-            # stored identity and writes nothing; rows 1, 2 and 3 REFUSE.
+            # stored identity and writes nothing. Plan 328 T2 — a row 1 or
+            # row 2 re-run MARKS the stored forecast superseded and falls
+            # through to the INSERT below, in this same transaction; row 3
+            # REFUSES.
             # The lookup mirrors `uq_forecasts_station_model_issued_param`'s
-            # partial predicate, so a row Plan 328 later marks `superseded`
-            # drops out of both at once.
+            # partial predicate, so a row marked `superseded` drops out of
+            # both at once — which is what lets the replacement occupy the
+            # natural key the original held.
             #
             # A CONCURRENT duplicate can still slip between this SELECT and
             # the INSERT below; it then raises an unwrapped SQLAlchemy
@@ -144,66 +160,7 @@ class PgForecastStore:
                 resumed = _resolve_retry(txn, ForecastId(existing_id), forecast)
                 if resumed is not None:
                     return resumed
-            txn.execute(
-                sa.insert(forecasts).values(
-                    id=forecast.id,
-                    station_id=forecast.station_id,
-                    model_id=forecast.model_id,
-                    model_artifact_id=forecast.model_artifact_id,
-                    issued_at=forecast.issued_at,
-                    time_step_seconds=int(forecast.ensemble.time_step.total_seconds()),
-                    nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
-                    nwp_cycle_source=forecast.nwp_cycle_source.value,
-                    representation=forecast.representation.value,
-                    status=forecast.status.value,
-                    version=forecast.version,
-                    warm_up_source=(
-                        forecast.warm_up_source.value
-                        if forecast.warm_up_source is not None
-                        else None
-                    ),
-                    warm_up_state_age_hours=forecast.warm_up_state_age_hours,
-                    observation_staleness_hours=forecast.observation_staleness_hours,
-                    parameter=forecast.ensemble.parameter,
-                    units=forecast.ensemble.units,
-                    created_at=forecast.created_at,
-                    updated_at=forecast.updated_at,
-                    qc_status=forecast.qc_status.value,
-                    qc_flags=[
-                        {
-                            "rule_id": f.rule_id,
-                            "rule_version": f.rule_version,
-                            "status": f.status.value,
-                            "detail": f.detail,
-                        }
-                        for f in forecast.qc_flags
-                    ],
-                    input_quality=(
-                        forecast.input_quality.value
-                        if forecast.input_quality is not None
-                        else None
-                    ),
-                    input_quality_flags=(
-                        [
-                            {
-                                "category": f.category.value,
-                                "level": f.level.value,
-                                "detail": f.detail,
-                            }
-                            for f in forecast.input_quality_flags
-                        ]
-                        if forecast.input_quality is not None
-                        else None
-                    ),
-                    combination_strategy=forecast.combination_strategy,
-                    source_model_ids=(
-                        [str(mid) for mid in forecast.source_model_ids]
-                        if forecast.source_model_ids is not None
-                        else None
-                    ),
-                    rating_curve_id=forecast.rating_curve_id,
-                )
-            )
+            txn.execute(sa.insert(forecasts).values(**_forecast_row(forecast)))
             rows = _build_value_rows(forecast)
             if rows:
                 txn.execute(sa.insert(forecast_values), rows)
@@ -376,6 +333,10 @@ class PgForecastStore:
         )
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
+        # Plan 328 T3 — BY-ID access is PRESERVED for a superseded forecast.
+        # Its evidence is permanent (migration 0057 forbids removing it), and
+        # evidence nobody can read back defeats its own purpose. The returned
+        # `status` is what distinguishes it from a current forecast.
         return _fetch_forecast(self._conn, forecast_id)
 
     def fetch_latest_forecast(
@@ -384,7 +345,15 @@ class PgForecastStore:
         model_id: ModelId | None = None,
         parameter: str | None = None,
     ) -> OperationalForecast | None:
-        sub = sa.select(forecasts.c.id).where(forecasts.c.station_id == station_id)
+        # Plan 328 T3 — CURRENT only. This reader had NO status filter at
+        # all, and a superseded forecast shares its replacement's `issued_at`,
+        # so `ORDER BY issued_at DESC LIMIT 1` would return an arbitrary one
+        # of the two: intermittently the forecast we replaced.
+        sub = (
+            sa.select(forecasts.c.id)
+            .where(forecasts.c.station_id == station_id)
+            .where(_is_current())
+        )
         if model_id is not None:
             sub = sub.where(forecasts.c.model_id == model_id)
         if parameter is not None:
@@ -401,7 +370,13 @@ class PgForecastStore:
         station_id: StationId | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]:
-        stmt = sa.select(forecasts.c.id).where(forecasts.c.issued_at == issued_at)
+        # Plan 328 T3 — CURRENT only; see `fetch_latest_forecast`. The
+        # Forecast Lab takes the first candidate this returns.
+        stmt = (
+            sa.select(forecasts.c.id)
+            .where(forecasts.c.issued_at == issued_at)
+            .where(_is_current())
+        )
         if station_id is not None:
             stmt = stmt.where(forecasts.c.station_id == station_id)
         if parameter is not None:
@@ -448,6 +423,11 @@ class PgForecastStore:
             stmt = stmt.where(forecasts.c.model_id == model_id)
         if status is not None:
             stmt = stmt.where(forecasts.c.status == status.value)
+        else:
+            # Plan 328 T3 — an UNFILTERED range read is a read of what is
+            # current. A caller that wants the replaced rows asks for them:
+            # `status=ForecastStatus.SUPERSEDED` still returns them.
+            stmt = stmt.where(_is_current())
         if parameter is not None:
             stmt = stmt.where(forecasts.c.parameter == parameter)
         fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
@@ -465,6 +445,14 @@ class PgForecastStore:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]:
+        # Plan 328 T3 — DELIBERATELY UNFILTERED. This is the record listing:
+        # it answers "what forecasts exist for this station over this window",
+        # not "what is current", and `ForecastSummaryRow.status` carries each
+        # row's state so a superseded forecast reads as superseded. Filtering
+        # here would make the totals disagree with the table.
+        # ⛔ NOT because it is the only way to find a superseded id — it is
+        # not: the admin `/forecasts/` list and the generic `/tables/` browser
+        # expose it too.
         filters = [
             forecasts.c.station_id == station_id,
             forecasts.c.issued_at >= start,
@@ -506,10 +494,15 @@ class PgForecastStore:
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
     ) -> UtcDatetime | None:
+        # Plan 328 T3 — CURRENT only. A supersession always writes its
+        # replacement in the same transaction, so this MAX does not move in
+        # practice; filtering keeps the marker a statement about what is
+        # served rather than about what was ever written.
         stmt = (
             sa.select(sa.func.max(forecasts.c.issued_at))
             .where(forecasts.c.combination_strategy.is_(None))
             .where(forecasts.c.issued_at <= cutoff)
+            .where(_is_current())
         )
         result = self._conn.execute(stmt).scalar_one_or_none()
         return utc_or_none(result)
@@ -563,9 +556,17 @@ def _resolve_retry(
     forecast: OperationalForecast,
 ) -> ForecastId | None:
     """Plan 327 § D1 — classify a re-run against the forecast already stored
-    under its natural key. Row 4 resumes (returns the stored id); rows 1, 2
-    and 3 refuse. ``None`` means the retry could not be classified at all and
-    the caller should proceed as it did before this plan.
+    under its natural key, and act on the row.
+
+    Row 4 resumes (returns the stored id). Plan 328 T2: a row in
+    ``SUPERSEDING_ROWS`` marks the stored forecast superseded and returns
+    ``None``, so the caller's INSERT — in the SAME transaction — writes the
+    replacement. ⛔ **Everything else raises**, which is the safe direction: a
+    row added to Plan 327's table later refuses until someone deliberately
+    lists it in ``SUPERSEDING_ROWS``.
+
+    ``None`` therefore means "proceed to the INSERT", which is also what an
+    unclassifiable retry gets.
     """
     stored = _fetch_forecast(txn, existing_id)
     if stored is None:
@@ -595,6 +596,20 @@ def _resolve_retry(
         )
         return existing_id
     detail = describe_difference(row, stored=stored, recomputed=forecast)
+    if row in SUPERSEDING_ROWS:
+        _mark_superseded(txn, existing_id)
+        log.warning(
+            "forecast_store.forecast_superseded",
+            superseded_forecast_id=str(existing_id),
+            replacement_forecast_id=str(forecast.id),
+            station_id=str(forecast.station_id),
+            model_id=str(forecast.model_id),
+            issued_at=forecast.issued_at.isoformat(),
+            parameter=forecast.ensemble.parameter,
+            decision_row=row.value,
+            detail=detail,
+        )
+        return None
     log.error(
         "forecast_store.retry_conflict",
         forecast_id=str(existing_id),
@@ -616,6 +631,102 @@ def _resolve_retry(
         model_id=forecast.model_id,
         issued_at=forecast.issued_at,
         parameter=forecast.ensemble.parameter,
+    )
+
+
+def _mark_superseded(txn: sa.Connection, existing_id: ForecastId) -> None:
+    """Plan 328 T2 — mark the stored forecast superseded, in the caller's
+    transaction, immediately before the replacement is inserted.
+
+    🔴 The forecast's VALUES, its evidence row and its evidence blobs are
+    untouched. That is not a courtesy: migration 0057 rejects ``UPDATE``,
+    ``DELETE`` and ``TRUNCATE`` on ``forecast_evidence`` and
+    ``forecast_evidence_blobs``, so a superseded forecast keeps its evidence
+    whether or not anyone wants it to.
+
+    ``version`` advances like any other status transition, so a reader holding
+    the pre-supersession version loses its optimistic lock rather than writing
+    over a forecast that is no longer current.
+    """
+    result = txn.execute(
+        sa.update(forecasts)
+        .where(forecasts.c.id == existing_id)
+        .where(forecasts.c.status != ForecastStatus.SUPERSEDED.value)
+        .values(
+            status=ForecastStatus.SUPERSEDED.value,
+            version=forecasts.c.version + 1,
+            updated_at=sa.func.now(),
+        )
+    )
+    if result.rowcount != 1:
+        raise ConflictError(
+            f"Forecast {existing_id} could not be marked superseded "
+            f"({result.rowcount} rows matched)"
+        )
+
+
+def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
+    """The `forecasts` header row, as a plain mapping.
+
+    Extracted so a test can interrupt `store_forecast` BETWEEN the Plan 328
+    supersession mark and the replacement insert — the one window where a
+    non-atomic implementation would lose the original.
+    """
+    return dict(
+        id=forecast.id,
+        station_id=forecast.station_id,
+        model_id=forecast.model_id,
+        model_artifact_id=forecast.model_artifact_id,
+        issued_at=forecast.issued_at,
+        time_step_seconds=int(forecast.ensemble.time_step.total_seconds()),
+        nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
+        nwp_cycle_source=forecast.nwp_cycle_source.value,
+        representation=forecast.representation.value,
+        status=forecast.status.value,
+        version=forecast.version,
+        warm_up_source=(
+            forecast.warm_up_source.value
+            if forecast.warm_up_source is not None
+            else None
+        ),
+        warm_up_state_age_hours=forecast.warm_up_state_age_hours,
+        observation_staleness_hours=forecast.observation_staleness_hours,
+        parameter=forecast.ensemble.parameter,
+        units=forecast.ensemble.units,
+        created_at=forecast.created_at,
+        updated_at=forecast.updated_at,
+        qc_status=forecast.qc_status.value,
+        qc_flags=[
+            {
+                "rule_id": f.rule_id,
+                "rule_version": f.rule_version,
+                "status": f.status.value,
+                "detail": f.detail,
+            }
+            for f in forecast.qc_flags
+        ],
+        input_quality=(
+            forecast.input_quality.value if forecast.input_quality is not None else None
+        ),
+        input_quality_flags=(
+            [
+                {
+                    "category": f.category.value,
+                    "level": f.level.value,
+                    "detail": f.detail,
+                }
+                for f in forecast.input_quality_flags
+            ]
+            if forecast.input_quality is not None
+            else None
+        ),
+        combination_strategy=forecast.combination_strategy,
+        source_model_ids=(
+            [str(mid) for mid in forecast.source_model_ids]
+            if forecast.source_model_ids is not None
+            else None
+        ),
+        rating_curve_id=forecast.rating_curve_id,
     )
 
 

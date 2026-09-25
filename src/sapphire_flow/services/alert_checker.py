@@ -52,7 +52,8 @@ def check_station_alerts(
     refused_combinations: frozenset[tuple[StationId, str]] = frozenset(),
 ) -> None:
     """``refused_combinations`` names the ``(station_id, parameter)`` pairs whose
-    COMBINED forecast the store refused (Plan 327 decision-table rows 1-3).
+    COMBINED forecast the store refused (decision-table ROW 3; ⛔ rows 1 and 2
+    supersede and replace, so they never reach here).
 
     🔴 Dropping the combination from ``all_ensembles`` would do nothing: a
     combination is never a key there — ``_pooled``/``_bma`` are stored as their

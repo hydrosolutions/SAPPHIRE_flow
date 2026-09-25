@@ -1127,7 +1127,10 @@ forecasts = sa.Table(
     sa.Column(
         "status",
         sa.Text,
-        sa.CheckConstraint("status IN ('raw', 'reviewed', 'published')"),
+        sa.CheckConstraint(
+            "status IN ('raw', 'reviewed', 'published', 'superseded')",
+            name="ck_forecasts_status",
+        ),
         nullable=False,
         server_default="raw",
     ),

@@ -161,6 +161,13 @@ class ObservationStore(Protocol):
 @runtime_checkable
 class ForecastStore(Protocol):
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        """Plan 327/328 — a re-run meeting an existing forecast under the
+        natural key is classified by ``services/forecast_retry.py``'s ordered
+        decision table. Row 4 returns the STORED id and writes nothing; rows 1
+        and 2 mark the stored row ``SUPERSEDED`` and insert the replacement in
+        the SAME transaction (returning the replacement's id, the original
+        keeping its values and evidence); ⛔ row 3 raises
+        ``ForecastRetryConflictError``."""
         raise NotImplementedError
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
@@ -183,6 +190,8 @@ class ForecastStore(Protocol):
         model_id: ModelId | None = None,
         parameter: str | None = None,
     ) -> OperationalForecast | None:
+        """⛔ Plan 328 T3 — CURRENT only: a ``SUPERSEDED`` forecast is never
+        returned here. Read one back by id with ``fetch_forecast``."""
         raise NotImplementedError
 
     def fetch_forecasts_for_cycle(
@@ -191,6 +200,7 @@ class ForecastStore(Protocol):
         station_id: StationId | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]:
+        """⛔ Plan 328 T3 — CURRENT only; see ``fetch_latest_forecast``."""
         raise NotImplementedError
 
     def transition_status(
@@ -210,6 +220,8 @@ class ForecastStore(Protocol):
         status: ForecastStatus | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]:
+        """Plan 328 T3 — ``status=None`` means CURRENT only. Pass
+        ``ForecastStatus.SUPERSEDED`` to read the replaced rows back."""
         raise NotImplementedError
 
     def fetch_forecast_summaries(

@@ -12,8 +12,7 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 
 from sapphire_flow.db.metadata import forecast_values, model_artifacts, models
-from sapphire_flow.exceptions import ConflictError, ForecastRetryConflictError
-from sapphire_flow.services.forecast_retry import ForecastRetryRow
+from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
@@ -718,13 +717,13 @@ class TestParameterFilter:
         results = store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)
         assert len(results) == 2
 
-    def test_unique_constraint_rejects_duplicate_param(
+    def test_unique_constraint_admits_one_current_row_per_param(
         self, db_connection: sa.Connection
     ) -> None:
-        """Plan 327: a DIFFERING re-run under the same natural key is still
-        refused — but now with a domain error naming the decision-table row,
-        not an unwrapped ``IntegrityError``. The protective half of the
-        constraint is unchanged: nothing is written."""
+        """Plan 328: a DIFFERING re-run under the same natural key no longer
+        collides — it supersedes and replaces. The protective half of the
+        constraint is unchanged: exactly ONE current row exists under the key,
+        never two."""
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
@@ -748,13 +747,15 @@ class TestParameterFilter:
             parameter="discharge",
             rng=random.Random(25),
         )
-        store.store_forecast(fc_first)
+        first_id = store.store_forecast(fc_first)
+        store.store_forecast(fc_duplicate)
 
-        with pytest.raises(ForecastRetryConflictError) as excinfo:
-            store.store_forecast(fc_duplicate)
-
-        assert excinfo.value.row is ForecastRetryRow.VALUES_DIFFER
-        assert len(store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)) == 1
+        current = store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)
+        assert [f.id for f in current] == [fc_duplicate.id]
+        assert first_id not in {f.id for f in current}
+        superseded = store.fetch_forecast(first_id)
+        assert superseded is not None
+        assert superseded.status is ForecastStatus.SUPERSEDED
 
 
 class TestRunoffOnlyProvenanceRoundTrip:

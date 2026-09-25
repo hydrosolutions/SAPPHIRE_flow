@@ -27,12 +27,15 @@ from sapphire_flow.flows.run_forecast_cycle import (
 )
 from sapphire_flow.services.forecast_retry import ForecastRetryRow
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     AlertSource,
+    ForecastStatus,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
+    QcStatus,
 )
 from sapphire_flow.types.forecast_evidence import EvidenceStatus, ForecastEvidence
 from sapphire_flow.types.ids import (
@@ -219,8 +222,14 @@ class TestResumeStationPath:
         assert after_second[0].id == after_first[0].id
 
 
-class TestRefusal:
-    def test_a_differing_rerun_is_refused_and_names_what_differed(self) -> None:
+class TestSupersedeStationPath:
+    """Plan 328 T2 — a re-run matching ROW 1 or ROW 2 replaces what is stored.
+
+    ⛔ ROW 3 is not this plan's and stays refused; ``TestRefusal`` below keeps
+    that half.
+    """
+
+    def test_a_differing_rerun_supersedes_and_replaces(self) -> None:
         sid = StationId(uuid4())
         stores = _stores()
         _build_station_and_stores(
@@ -243,15 +252,27 @@ class TestRefusal:
             stores, forecast_store, models={_MODEL_ID: _SmallFakeModel()}, seed=99
         )
 
-        assert second.forecasts_stored == 0
-        assert len(second.errors) == 1
-        assert "Retry conflict" in second.errors[0]
-        assert "row 1" in second.errors[0]
-        # ⛔ Not written, not silently skipped: the stored row still holds run 1.
-        kept = forecast_store.fetch_latest_forecast(sid)
+        assert list(second.errors) == []
+        assert second.forecasts_stored == 1
+
+        # The replacement is what a current read returns...
+        current = forecast_store.fetch_latest_forecast(sid)
+        assert current is not None
+        assert current.id != original.id
+        assert not current.ensemble.values.equals(original.ensemble.values)
+        assert current.status is ForecastStatus.RAW
+
+        # ...and the original stays on record, marked, by id.
+        kept = forecast_store.fetch_forecast(original.id)
         assert kept is not None
-        assert kept.id == original.id
+        assert kept.status is ForecastStatus.SUPERSEDED
         assert kept.ensemble.values.equals(original.ensemble.values)
+
+
+class TestRefusal:
+    """⛔ ROW 3 only. Plan 328 turned rows 1 and 2 into replacements; row 3 is
+    refused permanently by Plan 327 and the suppression machinery below is
+    what keeps a refused forecast out of alerting."""
 
     def test_a_refused_forecast_is_not_alerted_on(self) -> None:
         """🔴 ``store_forecast``'s return is discarded and alerting consumes the
@@ -272,9 +293,11 @@ class TestRefusal:
         forecast_store = FakeForecastStore()
         alerting = _make_alerting_config()
 
+        # Run 1 stores a QC verdict the honest re-run will not reproduce, so
+        # run 2 classifies as ROW 3 against a real stored row.
         first = _run(
             stores,
-            forecast_store,
+            _MutateStoredQcStore(forecast_store),
             models={_MODEL_ID: _SmallFakeModel()},
             config=alerting,
         )
@@ -288,11 +311,11 @@ class TestRefusal:
             stores,
             forecast_store,
             models={_MODEL_ID: _SmallFakeModel()},
-            seed=99,
             config=alerting,
         )
 
         assert any("Retry conflict" in err for err in second.errors)
+        assert any("row 3" in err for err in second.errors)
         assert second.alerts_checked is False
         assert (
             len(
@@ -356,13 +379,51 @@ class TestResumeGroupPath:
         assert list(second.errors) == []
         assert second.forecasts_stored == 2
 
-    def test_a_differing_group_rerun_stays_fatal(self) -> None:
+    def test_a_differing_group_rerun_supersedes_and_replaces(self) -> None:
+        """Plan 328 T2 — ROW 1 no longer kills the group cycle; it replaces."""
+        stores, group_store, group_model_id = self._seed()
+        forecast_store = FakeForecastStore()
+
+        first = _run(
+            stores,
+            forecast_store,
+            models={group_model_id: _SmallFakeGroupModel()},
+            group_store=group_store,
+        )
+        originals = {
+            f.station_id: f
+            for f in forecast_store.fetch_forecasts_for_cycle(_NOW)  # type: ignore[arg-type]
+        }
+        assert first.forecasts_stored == 2
+
+        second = _run(
+            stores,
+            forecast_store,
+            models={group_model_id: _SmallFakeGroupModel()},
+            group_store=group_store,
+            seed=99,
+        )
+
+        assert list(second.errors) == []
+        assert second.forecasts_stored == 2
+        for station_id, original in originals.items():
+            kept = forecast_store.fetch_forecast(original.id)
+            assert kept is not None
+            assert kept.status is ForecastStatus.SUPERSEDED
+            current = forecast_store.fetch_latest_forecast(station_id)
+            assert current is not None
+            assert current.id != original.id
+
+    def test_a_row_3_group_rerun_stays_fatal(self) -> None:
+        """⛔ The GROUP path is deliberately NOT the station path: a refusal is
+        an exception like any other store failure and kills the cycle. Row 3 is
+        the only refusal left."""
         stores, group_store, group_model_id = self._seed()
         forecast_store = FakeForecastStore()
 
         _run(
             stores,
-            forecast_store,
+            _MutateStoredQcStore(forecast_store),
             models={group_model_id: _SmallFakeGroupModel()},
             group_store=group_store,
         )
@@ -373,10 +434,9 @@ class TestResumeGroupPath:
                 forecast_store,
                 models={group_model_id: _SmallFakeGroupModel()},
                 group_store=group_store,
-                seed=99,
             )
 
-        assert excinfo.value.row is ForecastRetryRow.VALUES_DIFFER
+        assert excinfo.value.row is ForecastRetryRow.QC_VERDICT_DIFFERS
 
 
 class TestPersistForecastEvidenceRebinding:
@@ -463,6 +523,42 @@ class TestPersistForecastEvidenceRebinding:
         # No snapshot digest to agree on — the combination check downstream
         # still (correctly) reports the contributor as not persisted.
         assert resolved.evidence.snapshot_sha256 is None
+
+
+class _MutateStoredQcStore:
+    """Stores forecasts with a DIFFERENT QC verdict and everything else
+    verbatim — values, artifact, provenance, evidence.
+
+    Used for the FIRST run only, so the second run's honest recomputation
+    classifies as decision-table ROW 3 against a real stored row: the one row
+    Plan 328 does NOT take, refused permanently by Plan 327. The refusal is
+    produced by the production classifier, not by the test.
+    """
+
+    def __init__(
+        self, inner: FakeForecastStore, *, combined_only: bool = False
+    ) -> None:
+        self._inner = inner
+        self._combined_only = combined_only
+
+    def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        if not self._combined_only or forecast.model_id in COMBINED_MODEL_IDS:
+            forecast = replace(
+                forecast,
+                qc_status=QcStatus.QC_SUSPECT,
+                qc_flags=(
+                    QcFlag(
+                        rule_id="plan_328_row_3_probe",
+                        rule_version="1.0",
+                        status=QcStatus.QC_SUSPECT,
+                        detail="a QC verdict the re-run will not reproduce",
+                    ),
+                ),
+            )
+        return self._inner.store_forecast(forecast)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
 
 
 class _MutateCombinedForecastStore:
@@ -561,7 +657,7 @@ class TestRefusedCombinationDoesNotReachAlerting:
 
         first = _run(
             stores,
-            _MutateCombinedForecastStore(forecast_store),
+            _MutateStoredQcStore(forecast_store, combined_only=True),
             models=models,
             config=config,
             qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
@@ -582,7 +678,7 @@ class TestRefusedCombinationDoesNotReachAlerting:
                 qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
             )
 
-        # The members resumed; only the COMBINATION was refused (row 1).
+        # The members resumed; only the COMBINATION was refused (row 3).
         assert [err for err in second.errors if "Retry conflict" in err] == [
             err for err in second.errors
         ]
@@ -598,6 +694,68 @@ class TestRefusedCombinationDoesNotReachAlerting:
         assert after[0].alert_model_strategy is ModelCombinationStrategy.PRIMARY
         assert after[0].model_ids == (model_a,)
         assert any(
+            entry.get("event") == "alert.strategy_degraded"
+            and entry.get("reason") == "combination_refused"
+            for entry in logs
+        )
+
+    def test_a_differing_pooled_combination_supersedes_and_still_alerts_pooled(
+        self,
+    ) -> None:
+        """Plan 328 T2 — a ROW 1 combination is REPLACED, not refused, so
+        alerting keeps the pooled strategy. ⛔ The degradation above must fire
+        for row 3 only; firing it here would suppress a combination the store
+        happily kept."""
+        stores, sid, model_a, model_b = self._seed_two_models()
+        forecast_store = FakeForecastStore()
+        models = {model_a: _SmallFakeModel(), model_b: _SmallFakeModel()}
+        config = _make_config(
+            enable_forecast_alerts=True,
+            alert_model_strategy=ModelCombinationStrategy.POOLED,
+            forecast_combination_strategy=ModelCombinationStrategy.POOLED,
+            danger_levels=[
+                {
+                    "name": "DL1",
+                    "level": 1,
+                    "color": "#facc15",
+                    "trigger_probability": 0.1,
+                    "resolve_probability": 0.05,
+                }
+            ],
+        )
+
+        _run(
+            stores,
+            _MutateCombinedForecastStore(forecast_store),
+            models=models,
+            config=config,
+            qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
+        )
+        superseded = next(
+            f
+            for f in forecast_store.fetch_forecasts_for_cycle(_NOW)  # type: ignore[arg-type]
+            if f.model_id == POOLED_MODEL_ID
+        )
+
+        with capture_logs() as logs:
+            second = _run(
+                stores,
+                forecast_store,
+                models=models,
+                config=config,
+                qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
+            )
+
+        assert list(second.errors) == []
+        kept = forecast_store.fetch_forecast(superseded.id)
+        assert kept is not None
+        assert kept.status is ForecastStatus.SUPERSEDED
+
+        after = stores["alert_store"].fetch_active_alerts(source=AlertSource.FORECAST)  # type: ignore[union-attr]
+        assert len(after) == 1
+        assert after[0].alert_model_strategy is ModelCombinationStrategy.POOLED
+        assert set(after[0].model_ids) == {model_a, model_b}
+        assert not any(
             entry.get("event") == "alert.strategy_degraded"
             and entry.get("reason") == "combination_refused"
             for entry in logs
