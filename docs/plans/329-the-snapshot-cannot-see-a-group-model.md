@@ -55,13 +55,15 @@ is simply blind to one of the two ways a model can be assigned.
    BOTH independent reviews caught it surviving here after the correction had been folded into T1.*
    `grep -rn 'ForecastLabStores(' src tests` returns exactly seven, all passing every field by
    keyword — so a required new field breaks all seven:
-   | site | |
-   |---|---|
-   | `cli/export_forecast_lab.py:76` | production |
-   | `api/routes/forecast_lab.py:68` | production |
-   | `tests/unit/cli/test_export_forecast_lab.py:37, :296` | test |
-   | `tests/unit/services/forecast_lab/test_snapshot.py:118, :2122` | test |
-   | `tests/unit/services/forecast_lab/test_db_sources.py:66` | test |
+   ⚠️ *Five rows, SEVEN sites — two files construct the bundle twice:*
+   | site | | n |
+   |---|---|---|
+   | `cli/export_forecast_lab.py:76` | production | 1 |
+   | `api/routes/forecast_lab.py:68` | production | 1 |
+   | `tests/unit/cli/test_export_forecast_lab.py:37, :296` | test | 2 |
+   | `tests/unit/services/forecast_lab/test_snapshot.py:118, :2122` | test | 2 |
+   | `tests/unit/services/forecast_lab/test_db_sources.py:66` | test | 1 |
+   | | | **7** |
    ⚠️ **An eighth edit site is NOT a constructor:** `tests/unit/api/conftest.py:69` is a plain dict
    and lacks `group_store`. ⭐ **Production `api/deps.py:74` ALREADY supplies it** — the route change
    is one line and `deps.py` needs nothing. ⛔ *An implementer who does not know that may add a
