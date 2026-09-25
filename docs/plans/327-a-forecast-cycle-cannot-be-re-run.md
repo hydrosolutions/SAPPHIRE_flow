@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-25
 plan: 327
 title: A forecast cycle that died partway cannot be resumed
-scope: RESUMING a forecast cycle that died partway — specify it in the architecture (Flow 1 says nothing about idempotency today) and make an identical re-run succeed instead of failing on what it already wrote. ⛔ NOT supersession: replacing a forecast whose recomputation DIFFERS is Plan 328, split out 2026-09-25 because the two entangled this plan's phase order. NOT the review/publish lifecycle itself, NOT hindcast dedup (Plan 040, shipped), NOT the pinned-midnight scaffold's existence (Plan 326 owns that), NOT retry of anything other than the forecast cycle.
+scope: RESUMING a forecast cycle that died partway — specify it in the architecture (Flow 1 says nothing about idempotency today) and make an identical re-run succeed instead of failing on what it already wrote. ⛔ NOT supersession: replacing a forecast that matches ROW 1 or 2 of this plan's decision table (values differ; or values equal but the model artifact differs) is Plan 328. ⛔ Row 3 (values and artifact equal, QC verdict differs) is refused here PERMANENTLY and is nobody's to replace. Split out 2026-09-25 because the two entangled this plan's phase order. NOT the review/publish lifecycle itself, NOT hindcast dedup (Plan 040, shipped), NOT the pinned-midnight scaffold's existence (Plan 326 owns that), NOT retry of anything other than the forecast cycle.
 depends_on: []
 blocks: []
 related: [328]
@@ -162,7 +162,7 @@ that actually matters operationally.*
 | a re-run meets an existing forecast and the recomputation is… | this plan |
 |---|---|
 | **identical** | ✅ **succeed, write nothing, return the stored identity** — the resume case |
-| **different** | 🔒 **refuse, loudly and specifically** — ⭐ *that is today's behaviour, so no regression, and it hands a named conflict to Plan 328 instead of guessing* |
+| **different** | 🔒 **refuse, loudly and specifically** — ⭐ *that is today's behaviour, so no regression.* ⚠️ **Rows 1 and 2 hand a named conflict to Plan 328; row 3 stays refused here permanently** (see the decision table below) |
 
 ### 🔑 What "identical" MEANS — the comparison, defined
 
@@ -364,7 +364,7 @@ attempts to state:
   "phases": [
     {"phase": 1, "tasks": ["T1"], "parallel": false, "note": "specify before building"},
     {"phase": 2, "tasks": ["T2"], "parallel": false,
-     "note": "resume only — the differing case REFUSES here and is built by Plan 328"}
+     "note": "resume only — rows 1, 2 and 3 all REFUSE here; Plan 328 later replaces rows 1 and 2, row 3 stays refused"}
   ]
 }
 ```
@@ -458,7 +458,7 @@ supersession were entangled, and the split dissolves it rather than patching the
 |---|---|
 | the architecture specification (T1) | the CHECK-constraint migration and the `SUPERSEDED` status (was T2 / D2) |
 | resuming an **identical** re-run (T2) | the supersession mechanism (was T4) |
-| **refusing** a differing re-run — today's behaviour, no regression | turning that refusal into a replacement |
+| **refusing** rows 1, 2 and 3 — today's behaviour, no regression | turning the **row 1 and 2** refusals into replacements (⛔ row 3 stays refused) |
 | what "identical" MEANS — now defined, not deferred to an unnamed policy | the consumer work: who may serve a superseded row |
 
 ⭐ **The split also fixes a contradiction the review flagged three times**: this plan kept saying
@@ -507,3 +507,16 @@ resume refused.*
 leaving its twins. This round I grepped both plans for the CONCEPT ("differing", "differs", "this
 refusal") and fixed every hit — thirteen across the two files. Referencing table ROWS rather than
 describing them in prose is what stops it recurring.*
+
+
+**2026-09-25 — the sweep missed four, and the reason is worth more than the fix.** 328 came back
+**READY, no findings**; 327 had four surviving sites — the scope line, the summary table, the
+**phase graph** and the split changelog — all still implying row 3 is handed to 328.
+
+⛔ **My "sweep by pattern" was undermined by its own filter.** *I grepped both plans for the
+concept, then excluded a LINE RANGE to skip the changelog — and that range swallowed the phase
+graph, which is operative text. A filter meant to remove history removed live content with it.*
+
+⭐ **The lesson, which is now the third variant of the same one:** *grep for the concept, and then
+read what the filter REMOVED before trusting the result. Excluding by line number excludes whatever
+happens to live there.*
