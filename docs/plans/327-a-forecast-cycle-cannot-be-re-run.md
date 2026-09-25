@@ -2,10 +2,11 @@
 status: DRAFT
 created: 2026-09-25
 plan: 327
-title: A forecast cycle cannot be re-run — and the escape hatch the schema appears to offer is dead
-scope: Decide and specify what re-running a forecast cycle MEANS, and make the decided behaviour real — in the architecture (Flow 1 says nothing about idempotency today), in the store boundary, and in whatever mechanism the decision picks. NOT the review/publish lifecycle itself, NOT hindcast dedup (Plan 040, shipped), NOT the pinned-midnight scaffold's existence (Plan 326 owns that), NOT retry of anything other than the forecast cycle.
+title: A forecast cycle that died partway cannot be resumed
+scope: RESUMING a forecast cycle that died partway — specify it in the architecture (Flow 1 says nothing about idempotency today) and make an identical re-run succeed instead of failing on what it already wrote. ⛔ NOT supersession: replacing a forecast whose recomputation DIFFERS is Plan 328, split out 2026-09-25 because the two entangled this plan's phase order. NOT the review/publish lifecycle itself, NOT hindcast dedup (Plan 040, shipped), NOT the pinned-midnight scaffold's existence (Plan 326 owns that), NOT retry of anything other than the forecast cycle.
 depends_on: []
 blocks: []
+related: [328]
 open_decisions: []   # all three closed by the owner 2026-09-25; D1(2) enlarged the plan — supersession is now BUILT, not specified
 source: 2026-09-25 — the owner, after the midnight scaffold's second same-day run failed on a duplicate key: *"plan in the same-day retry. check if there is already a plan for it. it should be specified in the architecture that we do retries of forecasts."* No plan owns it. Every claim below was measured against `origin/main` and the live staging database that day.
 ---
@@ -141,51 +142,51 @@ computation* (a true retry — succeed, return the existing identity) or *a diff
 conflict — refuse, or supersede under (b))? ⛔ *Without this, "retry" is undefined for the only case
 that actually matters operationally.*
 
-**⚖️ OWNER, 2026-09-25 — all three answered, and they enlarge this plan:**
+**⚖️ OWNER, 2026-09-25 — all three answered:**
 
 1. **A failed day MUST be re-runnable.** *"A missing day is a real gap: skill scoring, verification
-   and anything looking back at our record will have a hole in it."* ⇒ (a) is confirmed, and the
-   cheaper alternative — accept the gap, tomorrow covers it — is **rejected**.
-2. 🔴 **When a re-run's numbers DIFFER: replace, and keep the old one marked.** ⇒ **(b) moves from
-   SPECIFIED to BUILT.** ⛔ *Two earlier drafts deferred (b); the owner's answer to the equivalence
-   question makes it the ordinary conflict path, not a future refinement. Scope is larger than the
-   plan assumed — stated rather than absorbed quietly.*
-3. **(c) stays forbidden outright.**
+   and anything looking back at our record will have a hole in it."* ⇒ the cheaper alternative —
+   accept the gap, tomorrow covers it — is **rejected**.
+2. **When a re-run's numbers DIFFER: replace, keeping the old one marked.** ⇒ 🔑 **That is
+   Plan 328's**, split out because it is a mechanism in its own right and its entanglement with
+   resume made this plan's phase order unexecutable (a resume task cannot verify a replacement that
+   a later task builds).
+3. **Silent overwrite stays forbidden.**
 
-⇒ **The equivalence policy is therefore:** identical recomputation ⟹ succeed, write nothing new,
-return the stored identity. Different recomputation ⟹ **supersede**: mark the stored row, write the
-new one. ⚠️ *So the comparison in § D1 is not optional plumbing — it is what selects between the
-two paths, and getting it wrong in the "identical" direction silently discards a correction.*
+⇒ **This plan owns the IDENTICAL case and the boundary between them:**
 
-⛔ **(b) is deferred as a SCOPE CHOICE, not because it waits on anything.** *Two earlier versions of
-this line said it "becomes required once a forecast is published" and then that it "needs a review
-lifecycle". Both are wrong: correcting a `RAW` forecast a consumer has already read needs no review
-machinery at all.* What (b) actually needs is D2's supersession mechanism and the evidence
-obligations in § (9) — and this plan chooses not to build that in the same pass as (a). ⇒ **A
-deliberate deferral, with nothing external gating it.**
+| a re-run meets an existing forecast and the recomputation is… | this plan |
+|---|---|
+| **identical** | ✅ **succeed, write nothing, return the stored identity** — the resume case |
+| **different** | 🔒 **refuse, loudly and specifically** — ⭐ *that is today's behaviour, so no regression, and it hands a named conflict to Plan 328 instead of guessing* |
 
-### D2 — fix the dead predicate, or remove it? **⚖️ CLOSED — owner, 2026-09-25: (a), make it work.**
+### 🔑 What "identical" MEANS — the comparison, defined
 
-| | option | cost |
-|---|---|---|
-| **(a)** ⭐ | **Add `SUPERSEDED` to `ForecastStatus`** and to the DB CHECK (`metadata.py:1130`), making the predicate REACHABLE. ⛔ *This does NOT implement D1(b)* — the transition, who may perform it and what happens to `forecast_values` are D1(b)'s, which this plan specifies and does not build. | Makes the schema's evident intent reachable. Needs the status threaded through every reader that filters on status. ⚠️ **A schema migration is required; what § (2) removes is the need for a status BACKFILL, not the migration.** |
-| (b) | **Drop the predicate**, making the index plainly full. | Honest and smaller, but throws away the design the schema already encodes, and D1(b) would have to re-add it later. |
-| (c) | Leave it. | ⛔ **Rejected.** A predicate excluding an impossible value is a trap for the next reader — see § (1). |
+⛔ *An earlier draft left this to "the equivalence policy" without saying what is compared. A review
+called that out: it is the hinge, and an error in the "identical" direction silently discards the
+correction the re-run existed to deliver.*
 
-⚠️ **Both options need a migration** — (b) must replace the deployed index, not merely edit the
-model. And (a) needs **more than the enum**: the DB CHECK constraint at `db/metadata.py:1130` must
-admit the value too. 🔴 **Adding a status member is not supersession** — the transition, who may
-perform it, and what it does to `forecast_values` are D1(b)'s, which this plan SPECIFIES and does
-not build. ⇒ *(a) here means "make the predicate reachable", not "ship supersession"; the draft blurred
-those and the reviewer was right to catch it.*
+**Compared:** the forecast's **values**, aligned by valid time and quantile/member, and the
+**model artifact identity** it was produced from.
 
-**⚖️ CLOSED on (a).** Owner: *"keeps the door open for replacing a forecast later, and matches what
-whoever designed this clearly intended."* ⭐ *And D1 has since made it more than a door: supersession
-is now the built conflict path, so the predicate must be reachable for D1(2) to work at all.*
+⛔ **NOT compared** — these differ on every re-run by construction and must not make a retry look
+different: the row id, `created_at`/`updated_at`, and the flow-run identity.
 
-⇒ T2 takes the **CHECK-constraint migration** branch. ⛔ *The index predicate itself is unchanged —
-it becomes reachable rather than replaced, which is why D2(b)'s index-replacement branch and its
-absence-assertion no longer apply.*
+⚠️ **Unresolved cases named rather than glossed**, and each must be settled in T2 before it is
+built: values match but the **artifact differs**; values match but the **QC verdict** differs;
+values match but the stored row has an **incomplete-evidence marker** or, being historical, **no
+evidence row at all** (§ 9). ⇒ *Each is "different" or "identical" by decision, not by accident —
+and the safe default when undecided is **refuse**, which is this plan's existing behaviour.*
+
+### D2 — the dead predicate. **⚖️ CLOSED — owner: make it work. 🔑 MOVED TO PLAN 328.**
+
+The unique index is partial on `status <> 'superseded'` while `ForecastStatus` has no such member
+(§ 1), so the predicate excludes an impossible value. The owner chose to **make it reachable** by
+adding the status.
+
+⇒ **That belongs with the mechanism that uses it — Plan 328.** ⛔ *Adding a status nothing sets, in
+the plan that does not set it, would leave a second dead thing where there was one.* This plan
+records the trap (§ 1) and does not touch it.
 
 ### D3 — where does "we may re-run a forecast" get SPECIFIED? **⚖️ CLOSED — owner: in the architecture.**
 
@@ -218,41 +219,7 @@ why. The idempotency statement for step 1.11 at minimum. ⚠️ **A note naming 
 **Verification.** A reader can answer *"may I re-run yesterday's cycle?"* from the architecture
 alone, including the answer for a published forecast.
 
-### T2 — Make the dead predicate honest (D2)
-
-**Outcome.** The unique index and the domain type agree.
-
-**In.** D2's choice, **with a migration either way** (§ D2) — and for (a) the DB CHECK at
-`db/metadata.py:1130` as well as the enum. 🔴 **A test comparing the index predicate against
-`ForecastStatus` by VALUE** — the metadata predicate's `right.value` against
-`{s.value for s in ForecastStatus}`. ⛔ *The defect this plan found is precisely a predicate no test
-ever compared against the enum.*
-⚠️ **If D2 is (b), assert the predicate's ABSENCE explicitly** — a comparison over an empty
-predicate passes vacuously and would prove nothing.
-- **The stale touchpoint-map line** (§ 4): `touchpoint-maps.md`'s AUTOCOMMIT statement is wrong for
-  `PgForecastStore`, which uses `engine.begin`. ⛔ *It misled this plan's own first draft — correct
-  it in place.*
-
-**Out.** ⛔ Changing the key columns `(station_id, model_id, issued_at, parameter)` — they are
-correct and they caught a real duplicate. ⛔ Backfilling status on existing rows (§ 2: all `raw`).
-⚠️ *"No backfill" is not "no migration".* **D2(a) migrates the CHECK constraint
-(`db/metadata.py:1130`) and leaves the index predicate untouched** — it becomes reachable rather
-than replaced.
-⛔ Implementing supersession (D1b) — D2(a) makes the predicate REACHABLE, nothing more.
-
-**Pre-change.** D2 closed on (a), so the branch is settled: a RED test asserting **every value in
-the index predicate is a member of `ForecastStatus`** — the metadata predicate's `right.value`
-against `{st.value for st in ForecastStatus}`. **Fails today**, because `superseded` is not.
-⛔ *The absence-assertion the earlier draft carried for D2(b) does not apply and is dropped; keeping
-a branch for a rejected option is how a plan grows contradictions.*
-
-**Verification.** Per D2's branch: either the predicate and the enum agree by value, or the index
-carries no predicate at all — **asserted against the MIGRATED schema** as well as the model. ⛔ *An earlier line said the model
-was right and only the deployment wrong — false: `db/metadata.py` carries the same unreachable
-predicate. Both are wrong in the same way, which is why the test must compare a VALUE and not
-merely diff the two.*
-
-### T3 — Make a half-finished cycle re-runnable (D1a)
+### T2 — Make a half-finished cycle re-runnable
 
 **Outcome.** Re-running a cycle that died partway completes it instead of failing on what it
 already wrote.
@@ -270,10 +237,11 @@ state.
 - Comparison **tolerates an incomplete-evidence marker and a legacy forecast with no evidence row**.
 - The whole set still rolls back atomically on failure.
 
-🔴 **The conflict resolution must reach ALERT SELECTION, not stop at the store.** § (7): the stored
-identity is discarded and alerts consume the in-memory ensemble, so a store-level rejection still
-leaves the caller free to alert on the rejected content. What the caller receives, and what alerting
-is allowed to consume, are part of this task.
+🔴 **The REFUSAL must reach ALERT SELECTION, not stop at the store.** § (7): the stored identity is
+discarded and alerts consume the in-memory ensemble, so a store-level rejection still leaves the
+caller free to alert on content the store would not keep. ⇒ **A refused forecast must not be
+alerted on** — that is this plan's, because the divergence exists the moment refusal does.
+⚠️ *What a SUPERSEDED forecast means for alert selection is Plan 328's.*
 
 **Out.** ⛔ Silent overwrite (D1c) — forbidden outright, not only after publication.
 ⛔ **Silently** replacing any row, whatever its status — a supersession leaves the original marked
@@ -296,8 +264,10 @@ attempts to state:
   collision is fatal** (§ 8) — that one fails visibly today.
 
 **Verification.**
-- A cycle interrupted between stations, then re-run: the stations already written are **unchanged**,
-  the rest complete, and 🔴 **no error is recorded for the ones that were already there.**
+- A cycle interrupted between stations, then re-run **with an identical recomputation**: the
+  stations already written are **unchanged**, the rest complete, and 🔴 **no error is recorded for
+  the ones that were already there.** ⚠️ *The qualifier matters — "unchanged" is the right outcome
+  only when the content matches; when it differs this plan REFUSES (D1).*
   ⛔ *Not "the orphan is repaired" — orphans cannot occur (§ 4).*
 - 🔴 **A retry whose recomputed forecast DIFFERS from the stored one does not silently do nothing**
   (§ 7 + D1's equivalence policy). It resolves per that policy, and what the caller receives is
@@ -308,9 +278,12 @@ attempts to state:
   including `hindcast_run_id` AND `forcing_type`, with approved atomic full replacement
   (`store/hindcast_store.py:87`). *Generalising either store across both is how this change would
   break Plan 040's settled behaviour.*
-- 🔴 **A genuine duplicate — same issue time, same model, already complete — still does NOT write a
-  second row.** ⭐ *The constraint's protective half must survive; this plan removes an obstacle, it
-  does not remove the guard.*
+- 🔴 **An identical duplicate — same issue time, same model, same values and artifact, already
+  complete — still does NOT write a second row.** ⭐ *The constraint's protective half must survive;
+  this plan removes an obstacle, it does not remove the guard.*
+- 🔴 **A DIFFERING recomputation is REFUSED with a conflict that names what differed** — not
+  written, not silently skipped. ⛔ *Plan 328 turns this refusal into a replacement; until it lands,
+  refusing is correct and is what happens today.*
 - 🔴 **A cycle resumed between the contributors and their combination does NOT produce a
   `contributor_evidence_not_persisted` record** — asserted, because that record is immutable once
   written and this is the resume path's own failure mode.
@@ -319,50 +292,15 @@ attempts to state:
 - A **semantic retry conflict** reaches the caller as a domain error, while an **unrelated storage
   failure still propagates raw** (§ 3, preserving Plan 038 D5). ⛔ *Both halves asserted — wrapping
   everything is the regression this clause exists to prevent.*
-
-### T4 — Build supersession (D1(2))
-
-**Outcome.** A re-run whose numbers differ replaces the stored forecast and leaves the original on
-record, marked.
-
-⚠️ **This task exists because the owner's D1 answer moved supersession from *specified* to *built*.**
-⛔ *Two earlier drafts deferred it; do not re-defer it.*
-
-**In.**
-- The transition that marks a stored forecast superseded, and the insert of its replacement — in
-  **one transaction**, so a half-done supersession cannot exist.
-- 🔴 **The original's evidence and blobs are KEPT** — § (9): migration 0057 rejects `UPDATE`,
-  `DELETE` and `TRUNCATE` on them, so this is an obligation, not a choice. The replacement gets its
-  own evidence row.
-- Who may perform it, and what a reader sees: ⚠️ **a superseded forecast must stay readable and be
-  distinguishable from a current one** in every consumer that filters on status — the Forecast Lab,
-  the published series, alert selection.
-- The equivalence comparison D1 defines, since it is what decides between "succeed, change nothing"
-  and "supersede".
-
-**Out.** ⛔ Deleting or mutating any evidence row or blob. ⛔ Superseding on a retry whose
-recomputation is **identical** — that path writes nothing. ⛔ A supersession that is not atomic with
-its replacement. ⛔ Extending supersession to hindcasts (their store already does approved atomic
-replacement on a six-column key).
-
-**Pre-change.** A RED test asserting the DESIRED behaviour: **a re-run with differing numbers leaves
-the original readable and marked, and the new one current.** Fails today — there is no such status
-and the write is refused outright.
-
-**Verification.**
-- The original is readable, marked, and its evidence intact; the replacement is current with its own
-  evidence.
-- 🔴 **Every status-filtering consumer excludes the superseded row** — asserted per consumer, not
-  assumed. ⛔ *A superseded forecast surfacing in the published series is the failure this whole
-  mechanism exists to prevent.*
-- An identical re-run supersedes **nothing**.
-- Interrupting between the mark and the insert leaves neither.
+  ⚠️ **An IDENTICAL retry is not a conflict and raises nothing** — it succeeds quietly. *The error is
+  for the differing case only; Plan 328 replaces that error with a replacement.*
 
 ## Explicitly out of scope
 
-- **Building the review/publish lifecycle itself.** ⛔ *Not because D1(b) depends on it — it does not.* Correction
-  is needed for any forecast a consumer has already read, `RAW` included. The lifecycle is simply
-  someone else's work, and (b) is deferred by this plan's own choice (see D1's recommendation).
+- 🔑 **Supersession — replacing a forecast whose recomputation differs — is PLAN 328.** This plan
+  refuses that case, which is what happens today, so nothing regresses while 328 is built.
+- **The review/publish lifecycle.** ⛔ *Not a prerequisite for either plan* — correcting a forecast a
+  consumer has already read needs no review machinery. It is simply someone else's work.
 - **Hindcast dedup** — Plan 040 solved the twin with `hindcast_run_id`.
 - **The pinned-midnight scaffold** — Plan 326. ⚠️ *It is the thing that exposed this, and its own
   "no same-day retry" hazard note is closed by T3.*
@@ -371,10 +309,9 @@ and the write is refused outright.
 ```json
 {
   "phases": [
-    {"phase": 1, "tasks": ["T1"], "parallel": false, "note": "semantics first — T2 and T3 both depend on D1"},
-    {"phase": 2, "tasks": ["T2"], "parallel": false, "note": "the CHECK migration makes the predicate reachable — T4 depends on it"},
-    {"phase": 3, "tasks": ["T3", "T4"], "parallel": false,
-     "note": "T3 resume, then T4 supersession — T3's conflict path calls into T4's mechanism"}
+    {"phase": 1, "tasks": ["T1"], "parallel": false, "note": "specify before building"},
+    {"phase": 2, "tasks": ["T2"], "parallel": false,
+     "note": "resume only — the differing case REFUSES here and is built by Plan 328"}
   ]
 }
 ```
@@ -458,3 +395,26 @@ accident instead of by design.
 
 ⛔ **Dropped, not carried:** T2's absence-assertion branch for D2(b). *Keeping a test for a rejected
 option is how a plan accumulates contradictions — this one had two phase graphs at one point.*
+
+**2026-09-25 — SPLIT, at the owner's direction.** A fourth review found the plan not executable and
+its minor finding named why: *"phase-level ordering is right; task completion ordering is not — T3
+is scheduled before T4 while T3's differing-content verification requires T4."* ⇒ **Resume and
+supersession were entangled, and the split dissolves it rather than patching the schedule.**
+
+| stays here (327) | moves to **328** |
+|---|---|
+| the architecture specification (T1) | the CHECK-constraint migration and the `SUPERSEDED` status (was T2 / D2) |
+| resuming an **identical** re-run (T2) | the supersession mechanism (was T4) |
+| **refusing** a differing re-run — today's behaviour, no regression | turning that refusal into a replacement |
+| what "identical" MEANS — now defined, not deferred to an unnamed policy | the consumer work: who may serve a superseded row |
+
+⭐ **The split also fixes a contradiction the review flagged three times**: this plan kept saying
+supersession was "deferred" and "specified, not built" while the owner had chosen to build it. Both
+are now true statements — it is not deferred, it is **Plan 328's**, and this plan genuinely does not
+build it.
+
+⚠️ **Also folded from round 4 before splitting:** "unchanged" and "no second row" now carry an
+**equivalent-content** qualifier (they were unconditional, which contradicted the differing case);
+an identical retry raises **nothing** rather than a semantic conflict; and the refusal must reach
+**alert selection**, because § (7) means a store-level refusal alone still leaves the caller free to
+alert on content the store would not keep.
