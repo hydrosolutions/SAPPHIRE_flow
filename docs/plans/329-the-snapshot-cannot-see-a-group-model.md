@@ -52,16 +52,31 @@ is simply blind to one of the two ways a model can be assigned.
    `time_step`, `status`, `priority`, `created_at`. ⇒ Merging is a projection, not a translation.
 6. **Two construction sites**, and both must be updated or the two surfaces disagree:
    `cli/export_forecast_lab.py:76` and `api/routes/forecast_lab.py:68`.
-7. **Confirmed on the live staging database:** stations 2009 and 2091 each list **six** station-level
-   assignments — `nwp_regression`, `seasonal_precip_runoff_regression`, `nwp_rainfall_runoff`,
+7. **Measured on the live staging database 2026-09-25** ⚠️ *(not verifiable from this repo — a
+   reviewer can check the code claims but not the data ones)*: stations 2009 and 2091 each list
+   **six** station-level assignments — `nwp_regression`, `seasonal_precip_runoff_regression`, `nwp_rainfall_runoff`,
    `linear_regression_daily`, `persistence_fallback`, `climatology_fallback`. ⛔ **`cmal_small` is
    not among them**, and the pilot group holds **139** members.
-8. ⚠️ **`is_primary` is decided by priority order.** `_sapphire_entries` takes the first entry it can
-   actually RENDER as primary. `cmal_small`'s group assignment is **priority 50**, against the
-   station models' 10/12/20/30 and the fallbacks' 90/100. ⇒ **It would slot fifth and NOT become
-   primary** — which is what Plan 262 intended ("produces forecasts without displacing production").
-   ⛔ *But that is a consequence of one number, not of any guard. A future group model at priority 5
-   would silently become the map's primary.*
+8. 🔴 **`is_primary` goes to the first RENDERABLE entry — NOT simply the lowest priority.**
+   `services/forecast_lab/snapshot.py:345` skips entries with no forecast or an unrenderable one.
+   ⛔ *An earlier version of this claim concluded that `cmal_small` at priority 50 therefore "would
+   NOT become primary". **That is false.*** It cannot displace a **renderable** priority-10 model —
+   but it **can and will become primary when 10/12/20/30 are all unavailable**, displacing the
+   90/100 fallbacks. ⇒ On a station whose NWP models have no forecast today, a group model becomes
+   the map's headline forecast **immediately**, with no rule having decided that. D2 is live, not
+   theoretical.
+9. 🔴 **Enumerating group assignments changes what 137 stations SHOW, not just two.** The group
+   already holds 139 members; only 2 have forecasts (the rest lack 30 unbroken days until early
+   October). Under the proposed enumeration a member with no forecast gains a
+   `reason="no_forecast"` **unavailable entry** (`snapshot.py:353`). ⇒ **Three distinct outcomes**,
+   which an earlier draft collapsed into "137 stations have no group":
+   | | station | after this change |
+   |---|---|---|
+   | actual non-member | not in the pilot group | **payload unchanged** |
+   | member, no forecast yet | 137 today | **NEW unavailable entry** appears |
+   | member with a renderable forecast | 2 today, ~136 by October | available entry |
+   ⚠️ **The map will see 137 new "no forecast" entries the day this ships.** That is correct
+   behaviour and must be *told to them*, not discovered.
 
 ## Owner decisions
 
@@ -70,19 +85,23 @@ is simply blind to one of the two ways a model can be assigned.
 | | option | cost |
 |---|---|---|
 | **(a)** ⭐ | **Project group assignments into the same list; the entry looks like any other model.** | Smallest change, and no map-side work — a model is a model. ⚠️ A map reader cannot tell that one model's forecast came from a pooled, group-trained artifact. |
-| (b) | Carry a flag (e.g. `scope: group`) on the entry. | Honest, and lets the map label it. ⛔ **Touches the map's `forecast-snapshot-v2` schema, which the map repo owns** — a cross-repo change and a conversation, not a one-sided edit. |
+| (b) | Carry a flag (e.g. `scope: group`) on the entry. | Honest, and lets the map label it. ⛔ *An earlier version called this "the map's schema, which the map repo owns". **Wrong.*** The authoritative export is **`forecast-lab-snapshot/v2`**, OUR contract, its JSON Schema generated from OUR Pydantic models — and it **forbids unknown fields** (`docs/spec/forecast-lab-snapshot.md:31-43`). ⇒ (b) is **local schema + model + test changes AND consumer coordination**. Consumer tolerance alone cannot carry it. |
 
 **Recommendation: (a) now, and ASK the map session whether they want (b).** ⭐ *(a) makes the pilot
-visible this week; (b) is a schema negotiation that should not block it.* ⚠️ *If the map already
-renders an unknown field tolerantly, (b) is cheap later.*
+visible this week.* ⚠️ **(b) is more work than the draft implied** — our schema forbids unknown
+fields, so it is a versioned contract change on our side *and* a consumer conversation. It should
+not block (a).
 
 ### D2 — should a group model be eligible to be PRIMARY? **OPEN — § (8) is why.**
 
-Today it would not be, because 50 > 30. But nothing *enforces* that.
+⛔ **The draft's premise was wrong** (§ 8): it is not simply "50 > 30, so no". `is_primary` goes to
+the first **renderable** entry, so a priority-50 group model **becomes primary wherever the
+priority-10/12/20/30 models have no renderable forecast** — displacing the fallbacks. That happens
+today, on real stations.
 
 | | option |
 |---|---|
-| **(a)** ⭐ | **Treat priority uniformly** — a group model competes like any other, and today's ordering keeps it fifth. *Simple, and the existing rule already expresses the intent.* |
+| **(a)** ⭐ | **Treat priority uniformly** — a group model competes like any other, including winning primary when everything above it is unrenderable. *Simple, and consistent with how every other model is ranked.* ⚠️ Accept that the pilot can headline a station whose established models are silent. |
 | (b) | Never let a group model be primary. ⛔ *Rejected in drafting unless the owner wants it: it would hard-code a pilot's caution into the general mechanism, and a future group model may deserve to be primary.* |
 
 ⚠️ **Either way, state it.** *A reader of the snapshot should not have to infer from a priority number
@@ -96,39 +115,64 @@ whether a group model can lead.*
 appears in the snapshot.
 
 **In.**
-- A group store on `ForecastLabStores`, and **both** construction sites updated (§ 6).
-- `fetch_active_model_assignments` extended: station assignments **plus** the ACTIVE assignments of
-  every group the station belongs to (`fetch_groups_for_station` → `fetch_groups_for_model`'s
-  sibling lookup), merged and sorted by the existing `(priority, model_id)` rule.
-- 🔴 **A station in NO group, and a group with no model, both still work** — the common case must
-  not acquire a new failure mode.
-- ⚠️ **Deduplicate.** A model assigned BOTH per-station and via a group must appear **once**. State
-  which wins; the safe reading is the lower priority number, and it must be tested.
+- A group store on `ForecastLabStores`, and 🔴 **SEVEN construction sites**, not two: the CLI
+  (`cli/export_forecast_lab.py:76`), the route (`api/routes/forecast_lab.py:68`) **and five test
+  constructors**. ⛔ *`tests/unit/api/conftest.py:68` has no `group_store` either — updating the
+  route alone makes existing route tests fail on a missing fixture key, which reads as an unrelated
+  breakage.*
+- `fetch_active_model_assignments` extended: station assignments **plus** the group ones, via
+  `fetch_groups_for_station` → **`fetch_group_model_assignments`**. ⚠️ **That returns assignments of
+  BOTH statuses — filter ACTIVE explicitly**, and filter **before** deduplicating.
+- **Deduplicate by `model_id` across station assignments and ALL overlapping groups, taking the
+  MINIMUM priority.** Then sort `(priority, model_id)`. ⚠️ *Assignment precedence selects DISPLAY
+  priority only — retrieval still returns the latest station/model forecast either way.*
+- 🔴 **Eligibility and principal scoping stay BEFORE the group lookup.** ⛔ **Group membership must
+  never expand the exported station set** — a member that is not an eligible station does not enter
+  the snapshot.
+- ⚠️ *Tenant consistency needs no new work: the composite membership foreign key enforces it
+  (`db/metadata.py:475`). A group has no inactive status, and an empty group cannot match a
+  membership lookup — so only inactive ASSIGNMENTS need excluding.*
 
-**Out.** ⛔ The map's schema or rendering — different repo (D1b). ⛔ Changing any priority or
-assignment. ⛔ The operational forecast path — group forecasts are already written correctly.
-⛔ The map's operational/threshold mode, which is a different product entirely.
+**Out.** ⛔ The map's rendering. ⛔ Adding a field to `forecast-lab-snapshot/v2` — that is D1(b),
+a versioned change to OUR contract. ⛔ Changing any priority or assignment. ⛔ The operational
+forecast path. ⛔ The map's operational/threshold mode.
 
 **Pre-change.** A RED test asserting the DESIRED behaviour: **a station whose only assignment for a
-model is via a GROUP lists that model in the snapshot, with its forecast.** ⚠️ It must fail because
-the model is absent — not because a fixture lacks a group store.
+model is via a GROUP lists that model in the snapshot, with its forecast.**
+⚠️ **Prepare the bundle and fake wiring FIRST, then measure red** — otherwise it fails on a missing
+fixture key rather than on the model's absence, which is red for the wrong reason.
+⭐ **Assert direct retrieval succeeds first**, then snapshot inclusion — that separates "the
+enumeration is blind" from "the forecast cannot be found", which is the whole premise (§ 3).
 
-**Verification.**
-- A group-assigned model appears, with its forecast, for every member station.
-- 🔴 **A station with no group is byte-identical to before** — asserted, because that is 137 of 139
-  stations today and the whole fleet before the pilot.
-- A model assigned both ways appears **once**, at the stated priority.
-- `is_primary` follows D2's answer, asserted — ⛔ *not left to the accident of `cmal_small` being 50.*
-- ⭐ **On staging: the pilot's two stations show `cmal_small` in the exported snapshot.** The unit
-  tests prove the mechanism; only this proves the map gets it.
+**Verification.** ⛔ *An earlier draft named neither test nodes nor commands and said "with its
+forecast, for every member", which ignores eligibility and the members that have no forecast.*
+- A group-assigned model appears **with its forecast** for a member that HAS a renderable one.
+- 🔴 **A member with NO forecast gains an unavailable entry** with `reason="no_forecast"` (§ 9) —
+  asserted, because that is 137 of 139 stations today and it is what the map will actually see.
+- 🔴 **An actual NON-member's station payload is byte-identical** — clock frozen for the comparison,
+  and compared at the STATION level. ⚠️ *Snapshot-wide status may legitimately change; asserting the
+  whole document unchanged would be wrong.*
+- A model assigned **both** ways appears **once**, at the minimum priority — tested with an
+  ACTIVE/INACTIVE duplicate pair and with reversed insertion order.
+- 🔴 **`is_primary` per D2, asserted BOTH ways** (§ 8): a group model does **not** displace a
+  renderable priority-10 model, **and** it **does** become primary when 10/12/20/30 are all
+  unrenderable. ⛔ *Testing only the first case would certify a protection that does not exist.*
+- ⚠️ **"No new failure mode" cannot mean "no database outage"** — a non-member now incurs a group
+  lookup. Existing error propagation is preserved, not swallowed.
+- ⭐ **On staging: the pilot's two stations show `cmal_small` in the exported snapshot.**
 
 ### T2 — Tell the map session what changed (D1)
 
 **Outcome.** The map knows a new model will appear, and whether it can tell it apart.
 
-**In.** A short note to the Flow Map side: `cmal_small` will appear as an ordinary model entry;
-D1's answer on whether a `scope` flag is coming; and that member count grows from 2 to ~139 over
-early October, so the map should expect the entry on many more stations.
+**In.** A short note to the Flow Map side:
+- `cmal_small` will appear as an ordinary model entry, and D1's answer on whether a `scope` flag is
+  coming.
+- 🔴 **On the day this ships they will see ~137 NEW entries carrying `reason="no_forecast"`** — the
+  group's members that have not yet accumulated 30 unbroken days (§ 9). ⛔ *That is correct and
+  expected; told, not discovered.* They convert to real forecasts through early October.
+- ⚠️ That a group model **can become a station's primary** where the established models are silent
+  (§ 8, D2).
 
 **Out.** ⛔ Editing the map repo or its schema.
 
@@ -154,3 +198,34 @@ someone on the other side knows.*
   ]
 }
 ```
+
+## Changelog
+
+**2026-09-25 — created, then corrected by review: 3 medium, 1 low.** ⭐ **The central diagnosis held
+under an explicit attempt to falsify it:** group execution writes per-station `OperationalForecast`
+records through the ordinary store, and retrieval filters station/model/parameter and **never checks
+assignment or artifact scope** — so there is no group-specific retrieval barrier. The fix really is
+the enumeration.
+
+Two things I asserted were wrong:
+
+| | what I claimed | measured |
+|---|---|---|
+| **§ 8** | priority 50 means the pilot "would NOT become primary" | **False.** `is_primary` goes to the first **RENDERABLE** entry, so it displaces the 90/100 fallbacks wherever 10/12/20/30 have no renderable forecast — **today, on real stations.** D2 is live, not theoretical |
+| **D1** | a `scope` flag "touches the map's schema, which the map repo owns" | **Wrong owner.** `forecast-lab-snapshot/v2` is OUR contract, generated from OUR Pydantic models, and **forbids unknown fields** — so (b) is a versioned change here *plus* a consumer conversation |
+
+And two things I had not thought through:
+
+- **Enumerating group models changes 137 stations, not 2.** A member with no forecast gains a
+  `reason="no_forecast"` entry. The map sees 137 of those the day this ships — correct behaviour,
+  and now in T2's handoff so they are told rather than surprised.
+- **T1's verification was not executable.** Seven construction sites, not two (five are test
+  constructors, and `tests/unit/api/conftest.py:68` lacks `group_store`, so touching the route alone
+  breaks route tests on a missing fixture). `fetch_group_model_assignments` returns **both**
+  statuses. Deduplication must take the **minimum** priority across all overlapping groups. And the
+  byte-identical check must be per-STATION with a frozen clock — snapshot-wide status may
+  legitimately change.
+
+⭐ **The lesson that keeps recurring, in a new dress:** *I reasoned "50 > 30, therefore not primary"
+from a number instead of reading the selection rule. The rule is "first renderable", and the
+protection I described does not exist.*
