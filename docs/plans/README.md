@@ -668,6 +668,21 @@ exit criteria — Plan 212 owns that deeper screening.
   value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
+- **330** — [SAP3 never calls the warm-start retrain both sides already implement](330-wire-warm-start-retrain.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`. `cmal_small` was trained on ERA5-Land
+  and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
+  rather than onboard ERA5-Land.
+  ⭐ **Asks for NO new capability.** FI already defines `RetrainableModel.retrain()`,
+  aquacast already implements it with an identical signature, and
+  `assemble_group_training_data` already reads the same reanalysis binding the
+  operational path uses. 🔴 **SAP3 is the only side that does not participate** — no
+  call site anywhere, and the passthrough is missing at all four of our layers.
+  🔴 D3 is load-bearing: `params` is hardcoded `{}`, so there is no model-config
+  channel AT ALL — nothing can select a fine-tuning strategy until one exists.
+  ⚠️ D2 deliberately diverges from FI's suggested fall-back to `train`: silently
+  retraining from scratch would discard the global pre-training that motivates the
+  whole approach. **Related:** `docs/fi-issues/004` (neither item blocks this).
+
 - **329** — [The Forecast Lab snapshot cannot see a group-assigned model](329-the-snapshot-cannot-see-a-group-model.md)
   — `READY`, **no open decisions** (both closed by the owner 2026-09-25; 4 review rounds). Raised by the Flow Map session:
   `cmal_small` forecasts do not appear in the document the map consumes.
