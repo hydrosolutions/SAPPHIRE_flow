@@ -659,6 +659,15 @@ exit criteria — Plan 212 owns that deeper screening.
   sweep is bounded, because two independent counts of the same claim already
   disagree.
 
+- 🔴 **COLLISION, 2026-09-25 — Plans 328 and 341 are independently inventing the same mechanism.**
+  328 adds a `SUPERSEDED` forecast status; **341 adds `WITHDRAWN`, described in the same words** —
+  *"removes it from current consumer reads"*. Same enum, same DB CHECK, same unfiltered readers
+  (`fetch_latest_forecast`, `fetch_forecasts_for_cycle`). ⛔ **341 does not know the unique index's
+  predicate is dead**, so a withdrawn forecast would still occupy the slot and no replacement could
+  be published at that key. ⇒ **The predicate should exclude any not-current state, not one named
+  value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
+  before either builds the status change. Neither plan's frontmatter mentions the other.
+
 - **328** — [Replacing a forecast — supersession, and the readers that would still serve the old one](328-replacing-a-forecast-supersession.md)
   — `DRAFT`, `depends_on: [327]`, no open decisions. Split out of 327 on
   2026-09-25 because resume and supersession were entangled: a review found 327

@@ -65,6 +65,37 @@ set; repeated here are only the claims THIS plan rests on.*
 6. **A superseded forecast must stay reachable by id.** § (4) keeps its evidence; discarding the
    ability to read it back would make that evidence unreachable, which defeats its purpose.
 
+## 🔴 UNDECLARED COLLISION WITH PLAN 341 — found 2026-09-25, owned by nobody
+
+**Plan 341 (CHWRR forecast review and publication API) is independently inventing the same
+mechanism**, and neither plan's frontmatter mentions the other. Measured from `341`'s own text:
+
+| | this plan (328) | Plan 341 |
+|---|---|---|
+| new `ForecastStatus` member | `SUPERSEDED` | **`WITHDRAWN`** (`341:34`) |
+| what it does | removes a forecast from current reads, keeps it on record | *"Withdrawal removes it from current consumer reads"* — **the same sentence** |
+| the DB CHECK on `forecasts.status` | must admit the new value | must admit **its** new value — **the same constraint, two migrations** |
+
+🔴 **Three concrete ways they collide:**
+
+1. **The enum and the CHECK constraint.** Two plans adding a member to `ForecastStatus` and to
+   `metadata.py:1130`. Whichever lands second rebases onto the first — survivable, but only if
+   someone knows.
+2. ⛔ **341 does not know the predicate is dead.** It never mentions `superseded` or
+   `uq_forecasts_station_model_issued_param`. ⇒ **A `withdrawn` forecast would still occupy the
+   unique slot**, so a replacement could not be published at the same key — 341 walks into the very
+   trap § (1) documents. ⚠️ *And if this plan makes the predicate reachable for `superseded` ONLY,
+   341 inherits the trap with a different value.* ⇒ **The predicate should exclude any
+   not-current state, not one named value.**
+3. **Both do the same reader work.** T3 here stops the unfiltered readers serving a superseded row;
+   341 needs exactly that for withdrawn ones. § (5) shows `fetch_latest_forecast()` and
+   `fetch_forecasts_for_cycle()` have **no status filter**, and 341 shows no sign of knowing.
+
+⚠️ **Not urgent: 341 is `DRAFT — not implementable`, flagged high-risk pending security and
+authorization work.** ⇒ **This is a sequencing note, not a blocker.** ⛔ *Recorded rather than
+resolved: renumbering or re-scoping another session's plan is not this one's to do. The owner
+should put the two sides in contact before either builds the status change.*
+
 ## Owner decisions
 
 ⚖️ **Both closed 2026-09-25, before this plan was split out of 327:**
