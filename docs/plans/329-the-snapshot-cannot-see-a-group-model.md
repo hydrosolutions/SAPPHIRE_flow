@@ -61,16 +61,28 @@ is simply blind to one of the two ways a model can be assigned.
    | `api/routes/forecast_lab.py:68` | production |
    | `tests/unit/cli/test_export_forecast_lab.py:37, :296` | test |
    | `tests/unit/services/forecast_lab/test_snapshot.py:118, :2122` | test |
-   | `tests/unit/services/forecast_lab/test_db_sources.py:64` | test |
+   | `tests/unit/services/forecast_lab/test_db_sources.py:66` | test |
    ⚠️ **An eighth edit site is NOT a constructor:** `tests/unit/api/conftest.py:69` is a plain dict
-   and lacks `group_store`. ⭐ **Production `api/deps.py:72` ALREADY supplies it** — the route change
+   and lacks `group_store`. ⭐ **Production `api/deps.py:74` ALREADY supplies it** — the route change
    is one line and `deps.py` needs nothing. ⛔ *An implementer who does not know that may add a
    duplicate key.*
+   ⚠️ **But the CLI site is NOT one line.** `cli/export_forecast_lab.py:65-84` constructs its `Pg*`
+   stores directly, with local imports ⇒ it needs a new `PgStationGroupStore` import **and** the
+   construction. ⛔ *§ 6's "one line" applies to the route ALONE.*
+   🔑 **Name the field: `group_store: StationGroupStore`.** *Every bundle field is spelled `*_store`,
+   but `observation_store` is fed from a dict key spelled `obs_store` (`api/deps.py`) — the
+   precedent for divergence is right there, so leaving the name implicit invites a mismatch.*
 7. **Measured on the live staging database 2026-09-25** ⚠️ *(not verifiable from this repo — a
    reviewer can check the code claims but not the data ones)*: stations 2009 and 2091 each list
    **six** station-level assignments — `nwp_regression`, `seasonal_precip_runoff_regression`, `nwp_rainfall_runoff`,
    `linear_regression_daily`, `persistence_fallback`, `climatology_fallback`. ⛔ **`cmal_small` is
    not among them**, and the pilot group holds **139** members.
+   **Their priorities, measured the same day** (⛔ *an earlier version quoted 10/12/20/30/90/100
+   without sourcing them*): `nwp_regression` **10**, `seasonal_precip_runoff_regression` **12**,
+   `nwp_rainfall_runoff` **20**, `linear_regression_daily` **30**, `persistence_fallback` **90**,
+   `climatology_fallback` **100** — all ACTIVE; the group's `cmal_small` assignment is **50**,
+   ACTIVE. ⭐ *`types/ids.py:31` `FALLBACK_PRIORITY_THRESHOLD = 90` corroborates the fallback end
+   from the repo.*
 8. 🔴 **`is_primary` goes to the first RENDERABLE entry — NOT simply the lowest priority.**
    `services/forecast_lab/snapshot.py:345` skips entries with no forecast or an unrenderable one.
    ⛔ *An earlier version of this claim concluded that `cmal_small` at priority 50 therefore "would
@@ -79,7 +91,8 @@ is simply blind to one of the two ways a model can be assigned.
    90/100 fallbacks. ⇒ On a station whose NWP models have no forecast today, a group model becomes
    the map's headline forecast **immediately**, with no rule having decided that. D2 is live, not
    theoretical.
-9. 🔴 **Enumerating group assignments changes what 137 stations SHOW, not just two.** The group
+9. 🔴 **Enumerating group assignments changes what MOST members SHOW, not just the two with
+   forecasts** (137 of them as measured below, a number that falls daily). The group
    already holds 139 members; only 2 have forecasts (the rest lack 30 unbroken days until early
    October). Under the proposed enumeration a member with no forecast gains a
    `reason="no_forecast"` **unavailable entry** (`snapshot.py:353`). ⇒ **Three distinct outcomes**,
@@ -97,18 +110,21 @@ is simply blind to one of the two ways a model can be assigned.
    ⚠️ *"No forecast" means no non-superseded `discharge` forecast returned by retrieval at all —
    **not** "nothing from the latest cycle". An older stored forecast still counts and still renders.*
 
-10. ⭐ **This exact union already exists in merged code.** `services/basin_importer.py:220-231`
-    takes ACTIVE station assignments ∪ ACTIVE group assignments via `fetch_groups_for_station` +
-    `fetch_group_model_assignments`. ⇒ **T1 is not inventing a pattern**, and an implementer and
-    reviewer get a free consistency check. Likewise `StationGroupStore` is already a Protocol
-    (`protocols/stores.py:660-701`) and `FakeStationGroupStore` already has
-    `seed_group_model_assignment` (`tests/fakes/fake_stores.py:1447-1514`) — no new store code, and
+10. ⭐ **The UNION already exists in merged code — the RANKING does not.**
+    `services/basin_importer.py:221-231` takes ACTIVE station assignments ∪ ACTIVE group
+    assignments via `fetch_groups_for_station` + `fetch_group_model_assignments`. ⚠️ *It unions
+    `model_id`s into a `set[ModelId]` and carries **no priority at all**.* ⇒ **T1 is not inventing
+    the enumeration** — but the minimum-priority dedup and the tiebreak are genuinely new, and the
+    free consistency check covers only the union half. Likewise `StationGroupStore` is already a Protocol
+    (`protocols/stores.py:686-730`) and `FakeStationGroupStore` already has
+    `seed_group_model_assignment` (`tests/fakes/fake_stores.py:1630-1697`) — no new store code, and
     no new fake.
 11. ⚠️ **Neither group query has an `ORDER BY`.** `fetch_groups_for_station`
     (`station_group_store.py:130-142`) and `fetch_group_model_assignments` (`:216-229`) both
-    `SELECT` unordered. ⇒ **A tie at the minimum priority has no defined winner**, and the
-    verification bullet that reverses insertion order is precisely the test that trips on it.
-    T1 defines the tiebreak.
+    `SELECT` unordered. ⇒ **A tie at the minimum priority has no defined winner.** T1 defines the
+    tiebreak **and tests it with an EQUAL-minimum pair.** ⛔ *An earlier version claimed the
+    reversed-insertion-order dedup case covered this. It does not: those priorities (90/50/5) have
+    a UNIQUE minimum, so reversing them tests minimum SELECTION, not tie RESOLUTION.*
 
 ## Owner decisions
 
@@ -186,14 +202,17 @@ appears in the snapshot.
   rows are built and discarded per export, plus one extra round-trip for every non-member station.
   ⛔ *Not a blocker — but silence here is how a measured cost becomes a surprise.*
 - 🔴 **Documentation, which an earlier draft omitted entirely** (⛔ *`CLAUDE.md`: "every code change
-  updates affected docs — no exceptions"*). Four places state something this change falsifies:
+  updates affected docs — no exceptions"*). ⛔ *An earlier version of this line said "**Four
+  places**" above a table of **five**. **That is the round-2 blocker's shape exactly** — the count
+  in the introducing sentence kept the old value while the table was corrected.* **FIVE surfaces
+  state something this change falsifies:**
   | file | what it says now |
   |---|---|
   | `services/forecast_lab/db_sources.py:3-6` | *"no new store code, no new query surface (D14)"* — a group store IS a new query surface; reconcile or record the amendment |
   | `services/forecast_lab/db_sources.py:11-12` | *"Model assignments are filtered to ACTIVE (D17b)"* — must say station **and group** |
   | `services/forecast_lab/snapshot.py:334` | *"one entry per ACTIVE assignment"* |
   | `docs/spec/forecast-lab-snapshot.md:117-119` | *"one entry per assigned model"* — 🔴 **because D1 closed on "nothing marks it group-scoped", this spec is the ONLY place a map developer could ever learn an entry can exist for a model with no station assignment row.** Leaving it makes D1(a) undocumented rather than merely unlabelled |
-  | `docs/touchpoint-maps.md:697` | records the exact composition of `ForecastLabStores` (it documents Plan 222 *removing* a field) — a field addition belongs there by the same precedent |
+  | `docs/touchpoint-maps.md:718` | documents Plan 222 **removing** `pipeline_health_store` from `ForecastLabStores`. ⛔ *An earlier version said it "records the exact composition" — it does not.* A field addition belongs there by that same precedent |
 - 🔴 **Eligibility and principal scoping stay BEFORE the group lookup.** ⛔ **Group membership must
   never expand the exported station set** — a member that is not an eligible station does not enter
   the snapshot. **The boundary lives at `api/routes/forecast_lab.py:94-118` (`_resolve_requested_stations`
@@ -215,15 +234,19 @@ fixture key rather than on the model's absence, which is red for the wrong reaso
 ⭐ **Assert direct retrieval succeeds first**, then snapshot inclusion — that separates "the
 enumeration is blind" from "the forecast cannot be found", which is the whole premise (§ 3).
 
-**Verification.** ⛔ *An earlier draft named no test files or command at all — and then said so in
-its own prose without supplying them.*
+**Verification.** ⛔ *An earlier draft named no test files or command at all. Its replacement named
+`tests/unit/api/test_forecast_lab.py`, **which does not exist** — pytest errors on the path and the
+whole command fails before running anything. The API tests live in `test_forecast_lab_route.py` and
+`test_forecast_lab_schema.py`.* 🔑 **The route file is where the scoping assertion (b) below and the
+`conftest` fixture-key breakage (§ 6) must be exercised.**
 
 **Command:**
 ```
 uv run pytest tests/unit/services/forecast_lab/test_db_sources.py \
               tests/unit/services/forecast_lab/test_snapshot.py \
               tests/unit/cli/test_export_forecast_lab.py \
-              tests/unit/api/test_forecast_lab.py
+              tests/unit/api/test_forecast_lab_route.py \
+              tests/unit/api/test_forecast_lab_schema.py
 ```
 
 - A group-assigned model appears **with its forecast** for a member that HAS a renderable one.
@@ -231,12 +254,26 @@ uv run pytest tests/unit/services/forecast_lab/test_db_sources.py \
 - 🔴 **An actual NON-member's station payload is byte-identical** — clock frozen for the comparison,
   and compared at the STATION level. ⚠️ *Snapshot-wide status may legitimately change; asserting the
   whole document unchanged would be wrong.*
-- 🔴 **Dedup, with more than one ACTIVE candidate.** ⛔ *An earlier draft tested only an
-  ACTIVE/INACTIVE pair — which leaves ONE candidate standing and therefore proves nothing about
-  taking the minimum.* The case: model X at station priority **90**, group A **50**, group B **5**,
-  plus an INACTIVE X at **0**; model Y at **10**. Expect **X once, before Y**, regardless of group
-  or insertion order. ⭐ *This is what distinguishes the specified algorithm from station-first,
-  first-group-only, and filter-AFTER-dedup.*
+- 🔴 **Dedup, with more than one ACTIVE candidate — asserted against `fetch_active_model_assignments`,
+  NOT against the snapshot.** 🔑 *`SapphireModelSchema` (`api/forecast_lab_schemas.py:232-238`) has
+  no `priority` field at all, so the exported document cannot express what this case must prove.
+  It belongs in `test_db_sources.py`.*
+  ⛔ *An earlier draft tested only an ACTIVE/INACTIVE pair — which leaves ONE candidate standing and
+  therefore proves nothing about taking the minimum.*
+  **The fixture:** model X ACTIVE at station priority **90**, in group A at **50**, in group B at
+  **5**; an INACTIVE X at **0** **in a THIRD group C**; model Y ACTIVE at **10**.
+  🔴 **C is not optional.** *`model_assignments` is keyed `(station_id, model_id)`
+  (`db/metadata.py:1024`) and `group_model_assignments` `(group_id, model_id)` (`:1051`) — and both
+  fakes upsert on exactly those keys (`fake_stores.py:1549-1558`, `:1637-1643`). Seeding the INACTIVE
+  X at station level or into A or B **silently REPLACES the ACTIVE X there**, and the wrong fixture
+  still satisfies a position-only assertion — so nobody notices.*
+  **The assertion:** X appears **once, at priority 5**, before Y. 🔴 **Pin the PRIORITY, not just the
+  position.** ⛔ *An earlier draft claimed position alone distinguishes filter-AFTER-dedup. It does
+  not: min{90,50,5,0} = 0, and X at 0 still sorts before Y at 10 — the same ORDER the correct
+  implementation produces. Only pinning 5 catches it.*
+- 🔴 **The tiebreak, with an EQUAL minimum** (§ 11): a station assignment and a group assignment
+  both at the minimum, and two groups both at the minimum — asserted deterministically, because
+  neither underlying query is ordered.
 - 🔴 **`is_primary` per D2, asserted BOTH ways** (§ 8): a group model does **not** displace a
   renderable priority-10 model, **and** it **does** become primary when 10/12/20/30 are all
   unrenderable. ⛔ *Testing only the first case would certify a protection that does not exist.*
@@ -283,8 +320,8 @@ and close T2 — do not hold the plan open indefinitely.*
 - **The map's operational / threshold-risk mode.** A different product, blocked on a licence
   question about BAFU-derived threshold values — see the Flow Map notes. This plan serves the
   **research comparison** view only.
-- **Why 137 of 139 stations have no forecast yet** — they lack 30 unbroken days; they qualify on
-  their own by early October.
+- **Why most members have no forecast yet** (137 of 139 on 2026-09-25) — they lack 30 unbroken
+  days; they qualify on their own by early October.
 - **The `_pooled` combination.** ⛔ *An earlier version called it "a station-level model". **That is
   false.*** It has **no assignment row at all** and is exported through the sibling
   `combined_forecast` block, not through assignment enumeration
@@ -317,11 +354,13 @@ Two things I asserted were wrong:
 
 And two things I had not thought through:
 
-- **Enumerating group models changes 137 stations, not 2.** A member with no forecast gains a
-  `reason="no_forecast"` entry. The map sees 137 of those the day this ships — correct behaviour,
-  and now in T2's handoff so they are told rather than surprised.
+- **Enumerating group models changes far more stations than 2.** A member with no forecast gains a
+  `reason="no_forecast"` entry. ⛔ *This entry originally read "The map sees 137 of those the day
+  this ships". **SUPERSEDED by round 3** — see § 9: 137 was a measurement taken 2026-09-25, not a
+  property of shipping day, and the number falls every day as members qualify. T2 re-measures at
+  handoff.*
 - **T1's verification was not executable.** Seven construction sites, not two (five are test
-  constructors, and `tests/unit/api/conftest.py:68` lacks `group_store`, so touching the route alone
+  constructors, and `tests/unit/api/conftest.py:69` lacks `group_store`, so touching the route alone
   breaks route tests on a missing fixture). `fetch_group_model_assignments` returns **both**
   statuses. Deduplication must take the **minimum** priority across all overlapping groups. And the
   byte-identical check must be per-STATION with a frozen clock — snapshot-wide status may
@@ -360,3 +399,29 @@ protection I described does not exist.*
   - Added: the tiebreak (neither group query is ordered), how a group assignment is materialised,
     the per-snapshot query cost, a timebox on T2's external acknowledgement, the named test command,
     and § 10 — ⭐ **`services/basin_importer.py:220-231` is merged code doing exactly this union.**
+- **2026-09-25 — round 3, two more independent reviews, both NEEDS CHANGES.** ⛔ **The same failure
+  mode, a FOURTH time, in a new place each round.** Every claim re-verified before folding.
+  - 🔴 **The corrected "137 the day this ships" promise was still LIVE in the round-1 changelog
+    entry**, present tense, unmarked — while § 9 and T2 both ban it. ⭐ **A changelog entry is not
+    exempt from the sweep.** *Recording what I got wrong is fine; an old entry still ASSERTING it is
+    the contradiction, and it is the one place a sweep of "the body" never reaches.*
+  - 🔴 **"Four places" stood above a table of FIVE** — the introducing sentence kept the old count
+    after the table was corrected. Same shape as round 2's blocker.
+  - 🔴 **The verification command was not runnable.** It named `tests/unit/api/test_forecast_lab.py`,
+    which does not exist; pytest errors on the path and nothing runs. ⛔ *The previous round's
+    finding was "no command was given" — the replacement was broken, which is worse, because it
+    looks satisfied.*
+  - 🔴 **The new dedup case could not be BUILT and would not DISCRIMINATE.** Both fakes upsert on
+    the same keys as the real tables, so the INACTIVE duplicate silently replaced the ACTIVE
+    candidate — and a wrong fixture still passed the position-only assertion. It needs a third
+    group, and it must pin the resulting **priority**, not the position: min{90,50,5,0} = 0, and 0
+    still sorts before 10. ⭐ **And it cannot run at snapshot level at all** — the exported schema
+    has no `priority` field.
+  - **§ 11's tie claim did not match its own test** — 90/50/5 has a unique minimum, so reversing
+    insertion order tests selection, not tie resolution. An equal-minimum case added.
+  - **The CLI site is not "one line"** — it constructs its `Pg*` stores directly and needs a new
+    import; only the route is trivial. The new field's NAME is now stated.
+  - **§ 10 overstated the precedent** — the merged code unions `model_id`s with no priority, so it
+    precedents the enumeration, not the ranking.
+  - **The 10/12/20/30/90/100 priorities were asserted unsourced.** Measured on staging and recorded.
+  - Five line citations in the newest section were wrong, three pointing at unrelated code. Fixed.
