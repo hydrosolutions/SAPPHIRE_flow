@@ -654,6 +654,22 @@ exit criteria — Plan 212 owns that deeper screening.
   sweep is bounded, because two independent counts of the same claim already
   disagree.
 
+- **327** — [A forecast cycle cannot be re-run](327-a-forecast-cycle-cannot-be-re-run.md)
+  — `DRAFT`, `open_decisions: [D1, D2, D3]`. Demonstrated 2026-09-25, not
+  predicted: a second run for the same pinned issue time fails on
+  `uq_forecasts_station_model_issued_param` and the whole flow goes to Failed.
+  ⭐ Nothing is corrupted — 653 rows before and after — and that protective half
+  must survive. But a cycle that dies halfway cannot be re-run.
+  🔴 **The escape hatch the schema appears to offer is DEAD**: the index is
+  partial, `WHERE status <> 'superseded'`, and `ForecastStatus` has no such
+  member (RAW/REVIEWED/PUBLISHED) — the only `SUPERSEDED` belongs to
+  `ModelArtifactStatus`. The predicate excludes an impossible value, so the
+  index is effectively full, and a reader of `metadata.py` would conclude
+  otherwise. ⚠️ `touchpoint-maps.md:757` documented this and said *"confirm this
+  is intended"*; nobody did. 🔑 D1 separates three things called "retry" —
+  resume a half-done cycle, re-issue a corrected forecast, and silent overwrite,
+  which must be forbidden once anything is published.
+
 - **326** — [Nothing records the hours at which a model may be issued](326-honour-the-declared-issue-hours.md)
   — `DRAFT`, `open_decisions: [D1, D2, D3]`, **`blocks: [262]`**. Plan 311's
   closure needs an ENFORCED midnight restriction and there is nowhere to put one.
