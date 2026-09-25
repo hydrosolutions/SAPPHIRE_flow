@@ -669,7 +669,7 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **329** — [The Forecast Lab snapshot cannot see a group-assigned model](329-the-snapshot-cannot-see-a-group-model.md)
-  — `DRAFT`, `open_decisions: [D1, D2]`. Raised by the Flow Map session:
+  — `DRAFT`, **no open decisions** (both closed by the owner 2026-09-25). Raised by the Flow Map session:
   `cmal_small` forecasts do not appear in the document the map consumes.
   ⭐ **The cause is ours, and it is the ENUMERATION, not the retrieval.**
   `fetch_active_model_assignments` asks only `station_store.fetch_model_assignments`,
@@ -677,10 +677,15 @@ exit criteria — Plan 212 owns that deeper screening.
   **structurally cannot** see a group assignment. Once the model appears in
   the list, the existing per-station lookup finds its forecast unchanged.
   🔑 Small by construction: `fetch_groups_for_station` already exists, and
-  `ModelAssignment` vs `GroupModelAssignment` differ by ONE field. ⚠️ D1 is a
-  cross-repo question (does the entry say it is group-scoped? that is the map's
-  schema); D2 asks whether a group model may be PRIMARY — today ours is not,
-  but only because its priority is 50, not because of any rule.
+  `ModelAssignment` vs `GroupModelAssignment` differ by ONE field.
+  ⚖️ **D1 closed: the entry does NOT say it is group-scoped** — the map does not care, so no
+  `scope` field and no change to `forecast-lab-snapshot/v2`. ⛔ *An earlier version of this entry
+  called that "the map's schema" — **wrong owner**: the export contract is OURS, generated from our
+  own models, and it forbids unknown fields.*
+  ⚖️ **D2 closed: a group model MAY be a station's headline forecast.** ⛔ *An earlier version said
+  "today ours is not, but only because its priority is 50" — **false**. `is_primary` goes to the
+  first RENDERABLE entry, so a priority-50 group model becomes primary wherever the 10/12/20/30
+  models have no renderable forecast. That happens today, on real stations.*
 
 - **328** — [Replacing a forecast — supersession, and the readers that would still serve the old one](328-replacing-a-forecast-supersession.md)
   — **`READY`** (final review: no findings), `depends_on: [327]`, no open decisions. Split out of 327 on

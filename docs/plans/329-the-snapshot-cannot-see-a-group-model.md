@@ -97,7 +97,7 @@ is simply blind to one of the two ways a model can be assigned.
    forecasts** (137 of them as measured below, a number that falls daily). The group
    already holds 139 members; only 2 have forecasts (the rest lack 30 unbroken days until early
    October). Under the proposed enumeration a member with no forecast gains a
-   `reason="no_forecast"` **unavailable entry** (`snapshot.py:353`). ⇒ **Three distinct outcomes**,
+   `reason="no_forecast"` **unavailable entry** (`snapshot.py:357`). ⇒ **Three distinct outcomes**,
    which an earlier draft collapsed into "137 stations have no group":
    | | station | after this change |
    |---|---|---|
@@ -218,7 +218,7 @@ appears in the snapshot.
 - 🔴 **Eligibility and principal scoping stay BEFORE the group lookup.** ⛔ **Group membership must
   never expand the exported station set** — a member that is not an eligible station does not enter
   the snapshot. **The boundary lives at `api/routes/forecast_lab.py:94-118` (`_resolve_requested_stations`
-  — eligibility AND principal scope) and `cli/export_forecast_lab.py:88` (`_resolve_stations` —
+  — eligibility AND principal scope) and `cli/export_forecast_lab.py:87` (`_resolve_stations` —
   eligibility; the CLI has no principal).** ⚠️ *`build_snapshot` (`snapshot.py:729`) takes an
   already-resolved list and filters NEITHER — so a direct builder test cannot prove this boundary.*
 - ⚠️ *Tenant consistency needs no new work: the composite membership foreign key enforces it
@@ -264,8 +264,12 @@ uv run pytest tests/unit/services/forecast_lab/test_db_sources.py \
   therefore proves nothing about taking the minimum.*
   **The fixture:** model X ACTIVE at station priority **90**, in group A at **50**, in group B at
   **5**; an INACTIVE X at **0** **in a THIRD group C**; model Y ACTIVE at **10**.
+  🔴 **The station is a member of A, B AND C.** ⛔ *`fetch_groups_for_station` returns groups BY
+  MEMBERSHIP (`fake_stores.py:1663-1664`). If C does not contain the station, the INACTIVE X is
+  never enumerated — and then the correct implementation AND filter-after-dedup both yield 5, so
+  the case silently stops discriminating and pinning the priority does not rescue it.*
   🔴 **C is not optional.** *`model_assignments` is keyed `(station_id, model_id)`
-  (`db/metadata.py:1024`) and `group_model_assignments` `(group_id, model_id)` (`:1051`) — and both
+  (`db/metadata.py:1024`) and `group_model_assignments` `(group_id, model_id)` (`:1052`) — and both
   fakes upsert on exactly those keys (`fake_stores.py:1549-1558`, `:1637-1643`). Seeding the INACTIVE
   X at station level or into A or B **silently REPLACES the ACTIVE X there**, and the wrong fixture
   still satisfies a position-only assertion — so nobody notices.*
@@ -276,6 +280,13 @@ uv run pytest tests/unit/services/forecast_lab/test_db_sources.py \
 - 🔴 **The tiebreak, with an EQUAL minimum** (§ 11): a station assignment and a group assignment
   both at the minimum, and two groups both at the minimum — asserted deterministically, because
   neither underlying query is ordered.
+  🔑 **Assert on `time_step` or `created_at`.** *After the projection, two tied candidates are
+  identical in `station_id`, `model_id`, `status` and `priority` — those two fields are the ONLY
+  ones that can differ, so they are the only available observable.* ⚠️ *This is why T1 cannot also
+  take the "every other field is don't-care" escape above: the tiebreak needs a field to witness it.
+  Pick one — either the tiebreak is tested on `time_step`/`created_at`, or there is no tiebreak and
+  the minimum-priority reduction is documented as order-independent because nothing downstream reads
+  the surviving object. ⛔ Not both.*
 - 🔴 **`is_primary` per D2, asserted BOTH ways** (§ 8): a group model does **not** displace a
   renderable priority-10 model, **and** it **does** become primary when 10/12/20/30 are all
   unrenderable. ⛔ *Testing only the first case would certify a protection that does not exist.*
@@ -400,7 +411,7 @@ protection I described does not exist.*
     forecast still renders.
   - Added: the tiebreak (neither group query is ordered), how a group assignment is materialised,
     the per-snapshot query cost, a timebox on T2's external acknowledgement, the named test command,
-    and § 10 — ⭐ **`services/basin_importer.py:220-231` is merged code doing exactly this union.**
+    and § 10 — ⭐ **`services/basin_importer.py:221-231` is merged code doing exactly this union.**
 - **2026-09-25 — round 3, two more independent reviews, both NEEDS CHANGES.** ⛔ **The same failure
   mode, a FOURTH time, in a new place each round.** Every claim re-verified before folding.
   - 🔴 **The corrected "137 the day this ships" promise was still LIVE in the round-1 changelog
