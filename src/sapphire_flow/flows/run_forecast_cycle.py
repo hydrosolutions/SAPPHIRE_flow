@@ -248,7 +248,7 @@ def _store_station_forecasts(
     where it did not, leaving combination provenance exactly as it is today.
     The second element is how many calls the store accepted.
 
-    A Plan 327 REFUSAL (rows 1-3) additionally records
+    A REFUSAL (⛔ row 3 only — Plan 328 supersedes on rows 1 and 2) records
     ``(station, model, parameter)`` in ``refused``, because the store's return
     value is otherwise discarded and alerting consumes the in-memory ensemble:
     without this the cycle would still alert on content the store would not
@@ -3008,7 +3008,7 @@ def run_forecast_cycle_flow(
         # Accumulate for Phase C
         all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = {}
         # Plan 327 T2 — (station, model, parameter) triples the store REFUSED
-        # (decision-table rows 1-3). Withheld from alert selection below.
+        # (decision-table row 3). Withheld from alert selection below.
         refused_forecasts: set[tuple[StationId, ModelId, str]] = set()
 
         for station in operational:
@@ -3737,7 +3737,7 @@ def run_forecast_cycle_flow(
                         # station path. An IDENTICAL re-run (decision-table
                         # row 4) now returns the stored identity and no longer
                         # collides here — that is what makes a group cycle
-                        # resumable at all. A REFUSAL (rows 1-3) is an
+                        # resumable at all. A REFUSAL (row 3) is an
                         # exception like any other store failure and stays
                         # FATAL below: the cycle dies before Phase C, so no
                         # alert can consume refused content.

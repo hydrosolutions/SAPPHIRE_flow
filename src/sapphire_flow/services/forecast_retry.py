@@ -27,13 +27,16 @@ class ForecastRetryRow(Enum):
     IDENTICAL = 4
 
 
-#: Rows 1-3 refuse. Plan 328 later turns rows 1 and 2 into supersessions;
-#: ⛔ row 3 stays refused permanently and is nobody's to replace.
-REFUSING_ROWS = (
+#: Plan 328 T2 — the rows whose re-run SUPERSEDES the stored forecast and
+#: writes the replacement.
+SUPERSEDING_ROWS = (
     ForecastRetryRow.VALUES_DIFFER,
     ForecastRetryRow.ARTIFACT_DIFFERS,
-    ForecastRetryRow.QC_VERDICT_DIFFERS,
 )
+
+#: ⛔ Row 3 stays refused permanently and is nobody's to replace. Widening it
+#: means amending Plan 327's table first.
+REFUSING_ROWS = (ForecastRetryRow.QC_VERDICT_DIFFERS,)
 
 
 def classify_forecast_retry(

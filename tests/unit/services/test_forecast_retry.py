@@ -10,6 +10,8 @@ from uuid import uuid4
 import polars as pl
 
 from sapphire_flow.services.forecast_retry import (
+    REFUSING_ROWS,
+    SUPERSEDING_ROWS,
     ForecastRetryRow,
     classify_forecast_retry,
     describe_difference,
@@ -260,3 +262,24 @@ class TestDescribeDifference:
 
         assert "row 3" in detail
         assert QcStatus.QC_SUSPECT.value in detail
+
+
+class TestRowPartition:
+    """Plan 328 — the decision table is split in two, and the split must stay
+    TOTAL and DISJOINT.
+
+    ⛔ Without this, a row added to Plan 327's table later would land silently
+    on the refusing side of ``_resolve_retry``'s fall-through and nobody would
+    be told which side it belongs on.
+    """
+
+    def test_superseding_and_refusing_rows_are_disjoint(self) -> None:
+        assert not set(SUPERSEDING_ROWS) & set(REFUSING_ROWS)
+
+    def test_every_non_identical_row_is_classified_exactly_once(self) -> None:
+        acted_on = set(SUPERSEDING_ROWS) | set(REFUSING_ROWS)
+        assert acted_on == set(ForecastRetryRow) - {ForecastRetryRow.IDENTICAL}
+
+    def test_row_3_is_the_only_refusal(self) -> None:
+        """⛔ Row 3 is the one Plan 328 does NOT take."""
+        assert set(REFUSING_ROWS) == {ForecastRetryRow.QC_VERDICT_DIFFERS}

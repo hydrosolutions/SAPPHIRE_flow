@@ -20,8 +20,10 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
     fetch_artifact_info,
     fetch_basin_area_km2,
+    fetch_combined_forecast_for_cycle,
     fetch_eligible_station_by_code,
     fetch_eligible_stations,
+    fetch_latest_forecast_for_model,
     fetch_latest_publication_cycle_time,
     fetch_observation_window,
 )
@@ -541,3 +543,91 @@ class TestGeoCoordRejectsNonFinite:
                 GeoCoord(lon=bad, lat=46.0)
             with pytest.raises(ValueError, match="out of range"):
                 GeoCoord(lon=6.89, lat=bad)
+
+
+class TestSupersededForecastsAreNotServed:
+    """Plan 328 T3 — the Forecast Lab calls BOTH unfiltered readers and takes
+    the first candidate either way, so a superseded forecast could be served
+    as current. Each reader is asserted individually: one "consumers exclude
+    it" test would pass on one and prove nothing about the rest.
+    """
+
+    def _current_and_superseded(
+        self, station_id: StationId, model_id: ModelId
+    ) -> tuple[OperationalForecast, OperationalForecast]:
+        """A replacement and the row it replaced, sharing an `issued_at` —
+        which is why these tests never rely on ordering to decide."""
+        superseded = replace(
+            _ordinary_forecast_at(_EPOCH, station_id=station_id),
+            model_id=model_id,
+            status=ForecastStatus.SUPERSEDED,
+        )
+        current = replace(
+            _ordinary_forecast_at(_EPOCH, station_id=station_id),
+            model_id=model_id,
+            status=ForecastStatus.RAW,
+        )
+        return current, superseded
+
+    def _seeded(self, *forecasts: OperationalForecast) -> FakeForecastStore:
+        store = FakeForecastStore()
+        for forecast in forecasts:
+            store.seed_pre_capture_forecast(forecast)
+        return store
+
+    def test_latest_forecast_for_model_is_none_when_the_only_row_is_superseded(
+        self,
+    ) -> None:
+        """🔑 Deterministic by FIXTURE: the only eligible candidate is
+        superseded, so there is no tie to be decided by ordering."""
+        sid = StationId(uuid4())
+        mid = ModelId("nwp_regression")
+        _, superseded = self._current_and_superseded(sid, mid)
+        stores = _make_stores(forecast_store=self._seeded(superseded))
+
+        assert fetch_latest_forecast_for_model(stores, sid, mid) is None
+
+    def test_latest_forecast_for_model_returns_the_replacement(self) -> None:
+        sid = StationId(uuid4())
+        mid = ModelId("nwp_regression")
+        current, superseded = self._current_and_superseded(sid, mid)
+        stores = _make_stores(forecast_store=self._seeded(superseded, current))
+
+        result = fetch_latest_forecast_for_model(stores, sid, mid)
+
+        assert result is not None
+        assert result.id == current.id
+
+    def test_combined_forecast_for_cycle_excludes_the_superseded_id(self) -> None:
+        sid = StationId(uuid4())
+        mid = ModelId("_pooled")
+        current, superseded = self._current_and_superseded(sid, mid)
+        stores = _make_stores(forecast_store=self._seeded(superseded, current))
+
+        result = fetch_combined_forecast_for_cycle(stores, sid, mid, _EPOCH)
+
+        assert result is not None
+        assert result.id != superseded.id
+        assert result.id == current.id
+
+    def test_combined_forecast_for_cycle_is_none_when_the_only_row_is_superseded(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        mid = ModelId("_pooled")
+        _, superseded = self._current_and_superseded(sid, mid)
+        stores = _make_stores(forecast_store=self._seeded(superseded))
+
+        assert fetch_combined_forecast_for_cycle(stores, sid, mid, _EPOCH) is None
+
+    def test_publication_cycle_time_ignores_a_superseded_row(self) -> None:
+        sid = StationId(uuid4())
+        _, superseded = self._current_and_superseded(sid, ModelId("nwp_regression"))
+        stores = _make_stores(forecast_store=self._seeded(superseded))
+
+        assert (
+            fetch_latest_publication_cycle_time(
+                stores, data_cutoff_at=ensure_utc(_EPOCH + timedelta(hours=12))
+            )
+            is None
+        )

@@ -17,6 +17,12 @@ class ForecastStatus(Enum):
     RAW = "raw"
     REVIEWED = "reviewed"
     PUBLISHED = "published"
+    # Plan 328 T1: the forecast this one replaced. It stays on record with its
+    # values and its evidence; it is no longer the current answer for its
+    # natural key. `uq_forecasts_station_model_issued_param` is PARTIAL on
+    # `status <> 'superseded'` and has been since migration 0017 — adding this
+    # member is what finally makes that predicate reachable.
+    SUPERSEDED = "superseded"
 
 
 class EnsembleRepresentation(Enum):

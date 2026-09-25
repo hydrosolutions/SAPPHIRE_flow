@@ -1,8 +1,11 @@
 """Plan 327 T2 — the store boundary: resume an identical re-run, refuse the rest.
 
 The decision table (§ D1) is evaluated IN ORDER, first match wins. Row 4 resumes
-(returns the stored identity, writes nothing, raises nothing); rows 1, 2 and 3
-refuse with a `ForecastRetryConflictError`. ⛔ Evidence state is NOT a classifier
+(returns the stored identity, writes nothing, raises nothing); ⛔ ROW 3 refuses
+with a `ForecastRetryConflictError`. Rows 1 and 2 SUPERSEDE AND REPLACE since
+Plan 328 — their behaviour is pinned in `test_forecast_supersession.py`.
+
+⛔ Evidence state is NOT a classifier
 — every operational forecast carries an incomplete-evidence marker, so a rule
 keyed on it would refuse every real resume.
 """
@@ -33,7 +36,7 @@ from sapphire_flow.types.forecast_evidence import (
     ForecastEvidence,
     incomplete_evidence,
 )
-from sapphire_flow.types.ids import POOLED_MODEL_ID, ArtifactId, ForecastId
+from sapphire_flow.types.ids import POOLED_MODEL_ID, ForecastId
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
     _make_forecast,
@@ -135,48 +138,9 @@ class TestRow4Identical:
 
 
 class TestRefusals:
-    def test_row_1_values_differ(self, db_connection: sa.Connection) -> None:
-        sid = _seed_station(db_connection)
-        mid = _seed_model(db_connection)
-        aid = _seed_artifact(db_connection, sid, mid)
-        store = _store(db_connection)
-
-        first = _make_forecast(sid, mid, aid, rng=random.Random(21))
-        first_id = store.store_forecast(first)
-        before = _count_rows(db_connection)
-
-        differing = _make_forecast(sid, mid, aid, rng=random.Random(22))
-        with pytest.raises(ForecastRetryConflictError) as excinfo:
-            store.store_forecast(differing)
-
-        assert excinfo.value.row is ForecastRetryRow.VALUES_DIFFER
-        assert excinfo.value.forecast_id == first_id
-        assert "row 1" in str(excinfo.value)
-        # Not written, not silently skipped.
-        assert _count_rows(db_connection) == before
-        kept = store.fetch_forecast(first_id)
-        assert kept is not None
-        assert kept.ensemble.values.equals(first.ensemble.values)
-
-    def test_row_2_model_artifact_differs(self, db_connection: sa.Connection) -> None:
-        sid = _seed_station(db_connection)
-        mid = _seed_model(db_connection)
-        aid = _seed_artifact(db_connection, sid, mid)
-        other_model = _seed_model(db_connection, "linreg_v2")
-        other_aid = _seed_artifact(db_connection, sid, other_model)
-        store = _store(db_connection)
-
-        first = _make_forecast(sid, mid, aid, rng=random.Random(23))
-        store.store_forecast(first)
-
-        # Same numbers, different model version — NOT the same forecast.
-        with pytest.raises(ForecastRetryConflictError) as excinfo:
-            store.store_forecast(
-                replace(first, id=ForecastId(uuid4()), model_artifact_id=other_aid)
-            )
-
-        assert excinfo.value.row is ForecastRetryRow.ARTIFACT_DIFFERS
-        assert "row 2" in str(excinfo.value)
+    """⛔ ROW 3 ONLY. Plan 328 turned rows 1 and 2 into supersessions —
+    `test_forecast_supersession.py` pins those; a refusal test for them here
+    would assert behaviour the store no longer has."""
 
     def test_row_3_qc_verdict_differs_is_refused_permanently(
         self, db_connection: sa.Connection
@@ -494,19 +458,20 @@ class TestUnrelatedKeysStillInsert:
     def test_a_different_artifact_id_alone_does_not_bypass_the_key(
         self, db_connection: sa.Connection
     ) -> None:
+        """`model_artifact_id` is NOT part of the natural key, so a re-run
+        carrying a new one replaces rather than coexisting: exactly ONE
+        current row survives under the key (Plan 328, decision-table row 2)."""
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
+        other_aid = _seed_artifact(db_connection, sid, _seed_model(db_connection, "v2"))
         store = _store(db_connection)
 
         fc = _make_forecast(sid, mid, aid, rng=random.Random(43))
-        store.store_forecast(fc)
+        first_id = store.store_forecast(fc)
+        replacement = replace(fc, id=ForecastId(uuid4()), model_artifact_id=other_aid)
+        store.store_forecast(replacement)
 
-        with pytest.raises(ForecastRetryConflictError):
-            store.store_forecast(
-                replace(
-                    fc,
-                    id=ForecastId(uuid4()),
-                    model_artifact_id=ArtifactId(uuid4()),
-                )
-            )
+        current = store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)
+        assert [f.id for f in current] == [replacement.id]
+        assert first_id not in {f.id for f in current}
