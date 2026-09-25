@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import random
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import polars as pl
 import pytest
+from structlog.testing import capture_logs
 
 from sapphire_flow.exceptions import ForecastRetryConflictError, StoreError
 from sapphire_flow.flows.run_forecast_cycle import (
@@ -23,9 +26,23 @@ from sapphire_flow.flows.run_forecast_cycle import (
     run_forecast_cycle_flow,
 )
 from sapphire_flow.services.forecast_retry import ForecastRetryRow
-from sapphire_flow.types.enums import AlertSource
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.ensemble import ForecastEnsemble
+from sapphire_flow.types.enums import (
+    AlertSource,
+    ModelArtifactStatus,
+    ModelAssignmentStatus,
+    ModelCombinationStrategy,
+)
 from sapphire_flow.types.forecast_evidence import EvidenceStatus, ForecastEvidence
-from sapphire_flow.types.ids import ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    COMBINED_MODEL_IDS,
+    POOLED_MODEL_ID,
+    ForecastId,
+    ModelId,
+    StationId,
+)
+from sapphire_flow.types.station import ModelAssignment
 from tests.fakes.fake_adapters import FakeWeatherForecastSource
 from tests.fakes.fake_stores import (
     FakeAlertStore,
@@ -43,9 +60,11 @@ from tests.fakes.fake_stores import (
 )
 from tests.unit.flows.test_run_forecast_cycle import (
     _MODEL_ID,
+    _NOW,
     _build_station_and_stores,
     _clock,
     _empty_qc_rules,
+    _hourly_discharge_qc_rules_covering_the_step,
     _make_alerting_config,
     _make_config,
     _make_forecast_threshold,
@@ -99,6 +118,7 @@ def _run(
     config: object | None = None,
     group_store: object | None = None,
     pipeline_health_store: object | None = None,
+    qc_rules: object | None = None,
 ):  # type: ignore[no-untyped-def]
     return run_forecast_cycle_flow(
         station_store=stores["station_store"],  # type: ignore[arg-type]
@@ -116,7 +136,7 @@ def _run(
         adapter=FakeWeatherForecastSource(result={}),
         models=models,  # type: ignore[arg-type]
         config=config if config is not None else _make_config(),
-        qc_rules=_empty_qc_rules(),
+        qc_rules=qc_rules if qc_rules is not None else _empty_qc_rules(),  # type: ignore[arg-type]
         clock=_clock,
         rng=random.Random(seed),
     )
@@ -429,7 +449,10 @@ class TestPersistForecastEvidenceRebinding:
             station_id=sid,
             evidence=None,
         )
-        forecast_store.store_forecast(pre_capture)
+        # ⚠️ NOT `store_forecast(evidence=None)` — that writes
+        # `prediction_capture_unavailable` evidence, exactly as Postgres does.
+        # Historical absence has to be seeded explicitly.
+        forecast_store.seed_pre_capture_forecast(pre_capture)
 
         recomputed = replace(pre_capture, id=ForecastId(uuid4()))
         resolved = _persist_forecast(forecast_store, recomputed)  # type: ignore[arg-type]
@@ -440,3 +463,142 @@ class TestPersistForecastEvidenceRebinding:
         # No snapshot digest to agree on — the combination check downstream
         # still (correctly) reports the contributor as not persisted.
         assert resolved.evidence.snapshot_sha256 is None
+
+
+class _MutateCombinedForecastStore:
+    """Stores the COMBINATION with shifted values and everything else verbatim.
+
+    Used for the FIRST run only, so that the second run's honest recomputation
+    of the same combination classifies as decision-table row 1 against a real
+    stored row — the refusal is produced by the production classifier, not by
+    the test.
+    """
+
+    def __init__(self, inner: FakeForecastStore) -> None:
+        self._inner = inner
+
+    def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        if forecast.model_id in COMBINED_MODEL_IDS:
+            ensemble = forecast.ensemble
+            forecast = replace(
+                forecast,
+                ensemble=ForecastEnsemble.from_members(
+                    station_id=ensemble.station_id,
+                    issued_at=ensemble.issued_at,
+                    parameter=ensemble.parameter,
+                    units=ensemble.units,
+                    time_step=ensemble.time_step,
+                    values=ensemble.values.with_columns(pl.col("value") + 1000.0),
+                ),
+            )
+        return self._inner.store_forecast(forecast)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+class TestRefusedCombinationDoesNotReachAlerting:
+    """🔴 A combination is NEVER a key in ``all_ensembles`` — that dict holds the
+    contributors, and the pooled alert strategy rebuilds the pool from them. So
+    dropping ``_pooled`` from it is a no-op, and a refused combination has to
+    reach alert STRATEGY selection or the cycle alerts on exactly the pooled
+    content the store refused."""
+
+    def _seed_two_models(self) -> tuple[dict[str, object], StationId, ModelId, ModelId]:
+        sid = StationId(uuid4())
+        model_a = ModelId("fake_model_a")
+        model_b = ModelId("fake_model_b")
+        stores = _stores()
+        _build_station_and_stores(
+            sid,
+            model_a,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+        )
+        stores["station_store"].store_model_assignment(  # type: ignore[union-attr]
+            ModelAssignment(
+                station_id=sid,
+                model_id=model_b,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=2,
+                created_at=_NOW,
+            )
+        )
+        stores["artifact_store"].store_artifact(  # type: ignore[union-attr]
+            model_id=model_b,
+            artifact_bytes=b"fake_artifact_b",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+        stores["station_store"].store_thresholds([_make_forecast_threshold(sid)])  # type: ignore[union-attr]
+        return stores, sid, model_a, model_b
+
+    def test_a_refused_pooled_combination_degrades_alerting_to_primary(self) -> None:
+        stores, sid, model_a, model_b = self._seed_two_models()
+        forecast_store = FakeForecastStore()
+        models = {model_a: _SmallFakeModel(), model_b: _SmallFakeModel()}
+        config = _make_config(
+            enable_forecast_alerts=True,
+            alert_model_strategy=ModelCombinationStrategy.POOLED,
+            forecast_combination_strategy=ModelCombinationStrategy.POOLED,
+            danger_levels=[
+                {
+                    "name": "DL1",
+                    "level": 1,
+                    "color": "#facc15",
+                    "trigger_probability": 0.1,
+                    "resolve_probability": 0.05,
+                }
+            ],
+        )
+
+        first = _run(
+            stores,
+            _MutateCombinedForecastStore(forecast_store),
+            models=models,
+            config=config,
+            qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
+        )
+        assert first.alerts_checked is True
+        raised = stores["alert_store"].fetch_active_alerts(source=AlertSource.FORECAST)  # type: ignore[union-attr]
+        assert len(raised) == 1
+        # The pooled combination WAS the alert basis on the first run.
+        assert raised[0].alert_model_strategy is ModelCombinationStrategy.POOLED
+        assert set(raised[0].model_ids) == {model_a, model_b}
+
+        with capture_logs() as logs:
+            second = _run(
+                stores,
+                forecast_store,
+                models=models,
+                config=config,
+                qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
+            )
+
+        # The members resumed; only the COMBINATION was refused (row 1).
+        assert [err for err in second.errors if "Retry conflict" in err] == [
+            err for err in second.errors
+        ]
+        assert any(
+            "Retry conflict" in err and str(POOLED_MODEL_ID) in err
+            for err in second.errors
+        )
+
+        after = stores["alert_store"].fetch_active_alerts(source=AlertSource.FORECAST)  # type: ignore[union-attr]
+        assert len(after) == 1
+        # ⛔ THE DEFECT: without the fix this alert is still POOLED — the cycle
+        # acted on exactly the combined content the store refused to keep.
+        assert after[0].alert_model_strategy is ModelCombinationStrategy.PRIMARY
+        assert after[0].model_ids == (model_a,)
+        assert any(
+            entry.get("event") == "alert.strategy_degraded"
+            and entry.get("reason") == "combination_refused"
+            for entry in logs
+        )

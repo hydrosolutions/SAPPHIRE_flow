@@ -49,7 +49,18 @@ def check_station_alerts(
     config: DeploymentConfig,
     alert_store: AlertStore,
     clock: Callable[[], UtcDatetime],
+    refused_combinations: frozenset[tuple[StationId, str]] = frozenset(),
 ) -> None:
+    """``refused_combinations`` names the ``(station_id, parameter)`` pairs whose
+    COMBINED forecast the store refused (Plan 327 decision-table rows 1-3).
+
+    🔴 Dropping the combination from ``all_ensembles`` would do nothing: a
+    combination is never a key there — ``_pooled``/``_bma`` are stored as their
+    own forecast rows while this dict holds the INDIVIDUAL models, and the
+    pooled strategy below rebuilds the pool from those contributors. So a
+    refused combination has to reach STRATEGY selection, or the cycle alerts on
+    exactly the pooled content the store would not keep.
+    """
     if not config.enable_forecast_alerts:
         return
 
@@ -84,6 +95,11 @@ def check_station_alerts(
                 config,
                 alert_store,
                 clock,
+                refused_parameters=frozenset(
+                    parameter
+                    for refused_station, parameter in refused_combinations
+                    if refused_station == station_id
+                ),
             )
     log.info(
         "alert.completed",
@@ -107,6 +123,7 @@ def _check_station(
     config: DeploymentConfig,
     alert_store: AlertStore,
     clock: Callable[[], UtcDatetime],
+    refused_parameters: frozenset[str] = frozenset(),
 ) -> None:
     all_results: list[ExceedanceResult] = []
     evaluated_parameters: set[ForecastParameter] = set()
@@ -131,6 +148,8 @@ def _check_station(
             param_ensembles=param_ensembles,
             representations=representations,
             priorities=priorities,
+            combination_refused=raw_parameter in refused_parameters,
+            station_id=station_id,
         )
 
         if not _ensemble_size_adequate(
@@ -203,6 +222,8 @@ def _resolve_strategy_and_filter(
     param_ensembles: dict[ModelId, ForecastEnsemble],
     representations: set[EnsembleRepresentation],
     priorities: dict[ModelId, int],
+    combination_refused: bool = False,
+    station_id: StationId | None = None,
 ) -> tuple[
     PrimaryModelStrategy | PooledEnsembleStrategy,
     dict[ModelId, ForecastEnsemble],
@@ -220,6 +241,22 @@ def _resolve_strategy_and_filter(
             key=lambda mid: (priorities.get(mid, 999), str(mid)),
         )
         return {primary_id: param_ensembles[primary_id]}
+
+    if combination_refused:
+        # Plan 327: the store refused this station/parameter's COMBINED
+        # forecast, and every pooling strategy below would rebuild exactly
+        # that content from the contributors. Fall back to the single primary
+        # model — whose own forecast the store DID accept (a refused member is
+        # already absent from `param_ensembles`) — rather than alert on
+        # content the store would not keep.
+        log.warning(
+            "alert.strategy_degraded",
+            preferred=preferred.value,
+            actual="primary",
+            reason="combination_refused",
+            station_id=None if station_id is None else str(station_id),
+        )
+        return PrimaryModelStrategy(), _select_primary_ensemble()
 
     match preferred:
         case ModelCombinationStrategy.BMA:

@@ -18,11 +18,12 @@ import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
 
+from sapphire_flow.db.metadata import forecast_values
 from sapphire_flow.db.metadata import forecasts as forecasts_table
 from sapphire_flow.exceptions import ForecastRetryConflictError, SapphireError
 from sapphire_flow.services.forecast_evidence import capture_combined_evidence
 from sapphire_flow.services.forecast_retry import ForecastRetryRow
-from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.store.forecast_store import PgForecastStore, _build_value_rows
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.types.domain import ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.enums import QcStatus
@@ -360,8 +361,11 @@ class TestCombinedContributorEvidence:
         pre_capture = _make_forecast(
             sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(33)
         )
-        # A pre-0057 row: header + values, no evidence row. Written directly,
-        # because the store cannot produce one any more.
+        # A pre-0057 row: header AND ITS VALUES, no evidence row. Written
+        # directly, because the store cannot produce one any more. 🔴 The
+        # values are not decoration — without them a retry of this row is
+        # UNCLASSIFIABLE (`_fetch_forecast` returns None), so a header-only
+        # fixture would silently not be the historical case it claims to be.
         db_connection.execute(
             sa.insert(forecasts_table).values(
                 id=pre_capture.id,
@@ -369,6 +373,7 @@ class TestCombinedContributorEvidence:
                 model_id=mid,
                 model_artifact_id=aid,
                 issued_at=pre_capture.issued_at,
+                time_step_seconds=int(pre_capture.ensemble.time_step.total_seconds()),
                 nwp_cycle_reference_time=pre_capture.nwp_cycle_reference_time,
                 nwp_cycle_source=pre_capture.nwp_cycle_source.value,
                 representation=pre_capture.representation.value,
@@ -379,12 +384,24 @@ class TestCombinedContributorEvidence:
                 created_at=pre_capture.created_at,
                 updated_at=pre_capture.updated_at,
                 qc_status=pre_capture.qc_status.value,
+                qc_flags=[],
             )
+        )
+        db_connection.execute(
+            sa.insert(forecast_values), _build_value_rows(pre_capture)
         )
 
         marker = store.fetch_evidence(pre_capture.id)
         assert marker is not None
         assert marker.reason == "pre_capture_forecast"
+
+        # It is a real, classifiable row: an identical retry of it RESUMES
+        # (row 4) and still writes no evidence record for it.
+        assert (
+            store.store_forecast(replace(pre_capture, id=ForecastId(uuid4())))
+            == pre_capture.id
+        )
+        assert store.fetch_evidence(pre_capture.id).reason == "pre_capture_forecast"  # type: ignore[union-attr]
 
         rebound = replace(
             pre_capture,

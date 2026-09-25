@@ -66,6 +66,7 @@ from sapphire_flow.types.forecast import (  # noqa: TC001
 from sapphire_flow.types.forecast_evidence import (
     EvidenceStatus,
     PersistedForecastEvidence,
+    incomplete_evidence,
 )
 from sapphire_flow.types.forecast_summary import ForecastSummaryRow  # noqa: TC001
 from sapphire_flow.types.historical_forcing import (
@@ -275,14 +276,24 @@ class FakeForecastStore:
     """Models `uq_forecasts_station_model_issued_param` and Plan 327's retry
     decision table, because a fake that silently overwrites on the natural key
     cannot exercise EITHER half of the behaviour the real store has: the
-    duplicate it refuses, or the identical re-run it resumes."""
+    duplicate it refuses, or the identical re-run it resumes.
+
+    ⚠️ Evidence fidelity stops there, deliberately. Like `PgForecastStore`,
+    every stored forecast gets an evidence record (`evidence=None` becomes
+    `prediction_capture_unavailable`, matching the real store) — historical
+    absence is reached ONLY through `seed_pre_capture_forecast`, never by
+    passing `evidence=None`. This fake does NOT run the combined-contributor
+    gap check, so persistence fidelity for a combination's evidence can only
+    be proven against Postgres
+    (`tests/integration/store/test_forecast_store_retry.py`,
+    `tests/integration/flows/test_forecast_cycle_resume_pg.py`)."""
 
     def __init__(self) -> None:
         self._forecasts: dict[ForecastId, OperationalForecast] = {}
         self._by_key: dict[tuple[StationId, ModelId, UtcDatetime, str], ForecastId] = {}
-        # Forecasts written WITHOUT an evidence row — the pre-migration-0057
-        # historical case, which `fetch_evidence` reports as a synthetic
-        # `pre_capture_forecast` marker rather than `None`.
+        # A forecast MISSING from this map has no evidence row: the
+        # pre-migration-0057 historical case, which `fetch_evidence` reports as
+        # a synthetic `pre_capture_forecast` marker rather than `None`.
         self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
@@ -311,17 +322,35 @@ class FakeForecastStore:
             return existing_id
         self._forecasts[forecast.id] = forecast
         self._by_key[key] = forecast.id
-        if forecast.evidence is not None:
-            self._evidence[forecast.id] = PersistedForecastEvidence(
-                status=forecast.evidence.status,
-                manifest_json=forecast.evidence.manifest_json,
-                snapshot=forecast.evidence.snapshot,
-                snapshot_sha256=forecast.evidence.snapshot_sha256,
-                artifact=forecast.evidence.artifact,
-                artifact_sha256=forecast.evidence.artifact_sha256,
-                thresholds_json=None,
-                reason=forecast.evidence.reason,
+        evidence = forecast.evidence or incomplete_evidence(
+            "prediction_capture_unavailable"
+        )
+        self._evidence[forecast.id] = PersistedForecastEvidence(
+            status=evidence.status,
+            manifest_json=evidence.manifest_json,
+            snapshot=evidence.snapshot,
+            snapshot_sha256=evidence.snapshot_sha256,
+            artifact=evidence.artifact,
+            artifact_sha256=evidence.artifact_sha256,
+            thresholds_json=None,
+            reason=evidence.reason,
+        )
+        return forecast.id
+
+    def seed_pre_capture_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        """Write a forecast with NO evidence record — the pre-migration-0057
+        historical case. `store_forecast` cannot produce this (neither can the
+        real store), so it is seeded explicitly rather than by handing
+        `store_forecast` an `evidence=None` forecast."""
+        self._forecasts[forecast.id] = forecast
+        self._by_key[
+            (
+                forecast.station_id,
+                forecast.model_id,
+                forecast.issued_at,
+                forecast.ensemble.parameter,
             )
+        ] = forecast.id
         return forecast.id
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:

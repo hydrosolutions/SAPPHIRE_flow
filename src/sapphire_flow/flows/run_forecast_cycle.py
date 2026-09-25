@@ -73,6 +73,7 @@ from sapphire_flow.types.forecast_evidence import (
 )
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
+    COMBINED_MODEL_IDS,
     FALLBACK_MODEL_IDS,
     FALLBACK_PRIORITY_THRESHOLD,
     ModelId,
@@ -283,15 +284,23 @@ def _drop_refused_ensembles(
     all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]],
     refused: set[tuple[StationId, ModelId, str]],
 ) -> None:
-    """Plan 327 T2 — a REFUSED forecast must not be alerted on.
+    """Plan 327 T2 — a REFUSED INDIVIDUAL model must not be alerted on.
 
     ``store_forecast``'s return value is discarded and Phase C consumes the
     freshly computed in-memory ensembles, so a store-level refusal alone still
-    leaves the caller free to alert on content the store would not keep. This
-    is the one choke point before alert selection.
+    leaves the caller free to alert on content the store would not keep.
+
+    🔴 This reaches individual models ONLY. A combination (`_pooled`/`_bma`) is
+    stored as its own forecast row but is NEVER a key in ``all_ensembles``,
+    which holds the contributors; the pooled alert strategy rebuilds the pool
+    from them. Deleting a combined model id here would silently do nothing, so
+    a refused COMBINATION is handled separately, at alert strategy selection
+    (`services/alert_checker.py::check_station_alerts`'s
+    ``refused_combinations``).
     """
     for station_id, model_id, parameter in sorted(
-        refused, key=lambda item: (str(item[0]), str(item[1]), item[2])
+        (item for item in refused if item[1] not in COMBINED_MODEL_IDS),
+        key=lambda item: (str(item[0]), str(item[1]), item[2]),
     ):
         param_ensembles = all_ensembles.get(station_id, {}).get(model_id)
         if param_ensembles is None or parameter not in param_ensembles:
@@ -3831,8 +3840,17 @@ def run_forecast_cycle_flow(
                     structlog.contextvars.unbind_contextvars("group_id", "model_id")
 
         # Plan 327 T2 — a REFUSED forecast must not be alerted on. The store
-        # rejected this content, so the cycle may not act on it either.
+        # rejected this content, so the cycle may not act on it either. TWO
+        # mechanisms, because a combination is not reachable by the first:
+        # an individual model is dropped from the ensemble dict, while a
+        # refused COMBINATION (`_pooled`/`_bma`) is never a key there and is
+        # instead propagated into alert STRATEGY selection below.
         _drop_refused_ensembles(all_ensembles, refused_forecasts)
+        refused_combinations = frozenset(
+            (station_id, parameter)
+            for station_id, model_id, parameter in refused_forecasts
+            if model_id in COMBINED_MODEL_IDS
+        )
 
         alert_eligible_ensembles, alert_suppressed = (
             _partition_alert_eligible_ensembles(
@@ -3861,6 +3879,7 @@ def run_forecast_cycle_flow(
                     config=config,
                     alert_store=alert_store,  # type: ignore[arg-type]
                     clock=clock,
+                    refused_combinations=refused_combinations,
                 )
                 alerts_checked = True
             except Exception as exc:
