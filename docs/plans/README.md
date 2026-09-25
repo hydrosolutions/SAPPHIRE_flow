@@ -669,7 +669,7 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **328** — [Replacing a forecast — supersession, and the readers that would still serve the old one](328-replacing-a-forecast-supersession.md)
-  — `DRAFT`, `depends_on: [327]`, no open decisions. Split out of 327 on
+  — **`READY`** (final review: no findings), `depends_on: [327]`, no open decisions. Split out of 327 on
   2026-09-25 because resume and supersession were entangled: a review found 327
   scheduled its resume task before the supersession task that its own
   verification required. ⚖️ Owner: *"replace, keep the old marked"*, and make the
@@ -682,7 +682,7 @@ exit criteria — Plan 212 owns that deeper screening.
   UPDATE/DELETE/TRUNCATE), so superseded forecasts are permanent — a retention
   question, named not answered.
 
-- **327** — [A forecast cycle that died partway cannot be resumed](327-a-forecast-cycle-cannot-be-re-run.md)
+- **327** — [A forecast cycle that died partway cannot be resumed](327-a-forecast-cycle-cannot-be-re-run.md) — **`READY`**
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. Demonstrated 2026-09-25, not
   predicted: a second run for the same pinned issue time fails on
   `uq_forecasts_station_model_issued_param` and the whole flow goes to Failed.

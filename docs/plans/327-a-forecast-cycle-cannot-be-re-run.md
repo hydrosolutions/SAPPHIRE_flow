@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 327
 title: A forecast cycle that died partway cannot be resumed
@@ -7,7 +7,7 @@ scope: RESUMING a forecast cycle that died partway — specify it in the archite
 depends_on: []
 blocks: []
 related: [328]
-open_decisions: []   # all three closed by the owner 2026-09-25; D1(2) enlarged the plan — supersession is now BUILT, not specified
+open_decisions: []   # all three closed by the owner 2026-09-25. D1(2) chose replace-and-mark, which is BUILT BY PLAN 328 — this plan refuses rows 1/2/3 and builds none of it.
 source: 2026-09-25 — the owner, after the midnight scaffold's second same-day run failed on a duplicate key: *"plan in the same-day retry. check if there is already a plan for it. it should be specified in the architecture that we do retries of forecasts."* No plan owns it. Every claim below was measured against `origin/main` and the live staging database that day.
 ---
 
@@ -17,7 +17,9 @@ source: 2026-09-25 — the owner, after the midnight scaffold's second same-day 
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip. **D1 is a semantics
+**READY** — set by the orchestrator 2026-09-25, after **seven** independent review rounds on this
+plan and its predecessor. ⚠️ *The substance settled early; the rounds went on making every site say
+the same thing — which is the failure that let the dead index predicate sit unnoticed for months.* ⛔ No implementation until an independent review and a READY flip. **D1 is a semantics
 question and must be answered before anything is built** — the three things people mean by "retry"
 need different machinery, and one of them must not be allowed at all.
 

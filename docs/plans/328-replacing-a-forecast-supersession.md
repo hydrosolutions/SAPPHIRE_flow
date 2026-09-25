@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 328
 title: Replacing a forecast — supersession, and the readers that would still serve the old one
@@ -17,7 +17,7 @@ source: 2026-09-25 — split out of Plan 327 at the owner's direction. A fourth 
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip. **Depends on Plan 327**
+**READY** — set by the orchestrator 2026-09-25; the final review returned **no findings**. ⛔ No implementation until an independent review and a READY flip. **Depends on Plan 327**
 — 327 defines the decision table and refuses rows 1, 2 and 3; this plan turns the **row 1 and 2**
 refusals into replacements. ⛔ *Row 3 stays refused.*
 
