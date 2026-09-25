@@ -76,13 +76,14 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (append-only operational forecast evidence) onto 0056. Plan 328 T1 then chains
 # 0058 (widen the `forecasts.status` CHECK so `superseded` is reachable — the
 # partial unique index has excluded that value since 0017 while no status could
-# produce it) onto 0057 — advancing the pinned head to 0058.
+# produce it) onto 0057. Plan 340 T2 then chains 0059 (preservation attestations
+# and no-cleanup guards) onto 0058 — advancing the pinned head to 0059.
 #
 # Three of these were authored in parallel branches and renumbered on merge:
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0058"
+_RELEASE_B_HEAD = "0059"
 
 
 def _down_revisions() -> dict[str, str | None]:

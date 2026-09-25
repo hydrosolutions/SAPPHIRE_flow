@@ -1314,3 +1314,30 @@ than one); which downstream consumers (watchdog, health API, fixture recorder, l
 test) are affected or explicitly not; which contracts are at risk (especially the
 process-local-pacing and D5-scaling-ceiling caveats); and which focused tests will
 prove the change.
+
+## Plan 340 T2 — forecast-evidence preservation touchpoints
+
+- `alembic/versions/0059_forecast_preservation.py`, `db/metadata.py` and
+  `docker/bootstrap-roles.sql` add append-only preservation attestations and block
+  cleanup of evidence-linked forecasts, values and model artifact metadata. The
+  worker can insert attestations; the API cannot.
+- `ops/evidence_backup_host.py` runs on the host against a distinct protected
+  volume; `ops/evidence_backup_worker.py` uses the existing backup read role for
+  describe/dump/assessment input and the worker role for attestation.
+  `scripts/restore-rehearsal.sh` verifies the restored evidence chain, including
+  output-value digest, in a disposable PostgreSQL instance. The host `assess`
+  command exposes immutable capture and derived preservation status to operators;
+  `reconcile` restores the newest dump's own attestation after disaster recovery.
+- `ops/protected_evidence_backup.py` verifies backup and image hashes, freshness,
+  device separation and the publication gate. `services/forecast_preservation.py`
+  derives effective status from immutable capture status plus a matching verified
+  attestation; backup freshness is a separate live condition.
+- `docker-compose.yml` passes `SAPPHIRE_IMAGE_DIGEST` to the forecast worker.
+  Operators must set it to the running image ID. `config.toml` sets the six-year
+  evidence floor and 36-hour backup freshness limit. See `standards/cicd.md`
+  § Protected forecast-evidence backup for the host procedure and open DHM
+  deployment inputs.
+- `scripts/launchd/prune-docker.sh` asks the backup worker whether evidence
+  exists and then skips all image pruning once it does; an unreadable inventory
+  fails closed. Build-cache pruning remains enabled. This protects the Mac mini's
+  captured image bytes until a separate backup target exists.

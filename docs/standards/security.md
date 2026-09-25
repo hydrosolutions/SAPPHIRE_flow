@@ -396,6 +396,20 @@ These use the existing notification infrastructure (webhook channel, notificatio
 
 > **v1-only** (v0-scope.md §A10): v0 uses simple pg_dump backups. restic encryption is deferred to v1.
 
+Plan 340 T2's interim CHWRR evidence bundle is a host-side operation. It does
+not mount the Docker socket or the broad-read backup credential into a model
+worker. The backup worker reads the database; the forecast worker has only
+INSERT on the append-only attestation table. The host operator exports Docker
+images and must place the bundle on a separately mounted, access-restricted,
+encrypted backup volume before publication is enabled. Dumps and manifests are
+created with owner-only file permissions. The Mac mini has no such volume, so
+its CHWRR publication gate remains closed. The DHM target and encryption setup
+must be verified during deployment; this interim bundle does not claim restic
+encryption.
+The host `assess` read path uses the backup role and validates hashes on the
+protected volume. That volume is not mounted into the API; Plan 341 may expose
+only the derived status through an authenticated route.
+
 ## Backup encryption
 
 Handled by `restic` — encrypts all backup data at rest with AES-256-CTR. The repository password (`backup_repo_password`) is available on the VM at runtime as a Docker secret (mounted in-memory via tmpfs, never on disk inside containers) — restic needs it for every backup and restore operation.

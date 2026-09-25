@@ -5,6 +5,8 @@
 weather_hot_days = 180
 forecast_hot_days = 548
 max_retention_days = 3650
+evidence_retention_days = 2192
+protected_backup_max_age_hours = 36
 
 # Observation staleness
 observation_staleness_warning_hours = 6.0

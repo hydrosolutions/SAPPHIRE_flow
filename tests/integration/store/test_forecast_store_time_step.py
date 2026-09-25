@@ -16,15 +16,17 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import polars as pl
 import sqlalchemy as sa
 import structlog
 
-from sapphire_flow.db.metadata import forecasts
+from sapphire_flow.db.metadata import forecast_values, forecasts
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
+from sapphire_flow.types.ids import ForecastId
 from tests.integration.store.test_forecast_store import (
     _make_forecast,
     _seed_artifact,
@@ -112,9 +114,9 @@ class TestLegacyNullRowsKeepTodaysBehaviour:
     """0053 is nullable-first and backfills nothing, so pre-migration rows read
     through the inference path. It must behave EXACTLY as it did before T4."""
 
-    def _store_then_null_the_cadence(
+    def _store_legacy_without_evidence(
         self, db_connection: sa.Connection, ensemble: ForecastEnsemble
-    ) -> tuple[PgForecastStore, object]:
+    ) -> tuple[PgForecastStore, ForecastId]:
         sid = ensemble.station_id
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
@@ -123,22 +125,33 @@ class TestLegacyNullRowsKeepTodaysBehaviour:
         )
         fc = dataclasses.replace(_make_forecast(sid, mid, aid), ensemble=ensemble)
         store.store_forecast(fc)
-        # Simulate a row written before 0053: the column is NULL.
-        db_connection.execute(
-            sa.update(forecasts)
-            .where(forecasts.c.id == fc.id)
-            .values(time_step_seconds=None)
+        # A pre-0053 row has no evidence. Clone one without mutating the
+        # evidence-linked current forecast, which Plan 340 now protects.
+        legacy_id = ForecastId(uuid4())
+        header = dict(
+            db_connection.execute(sa.select(forecasts).where(forecasts.c.id == fc.id))
+            .mappings()
+            .one()
         )
-        return store, fc.id
+        header.update(id=legacy_id, status="superseded", time_step_seconds=None)
+        db_connection.execute(sa.insert(forecasts).values(**header))
+        values = db_connection.execute(
+            sa.select(forecast_values).where(forecast_values.c.forecast_id == fc.id)
+        ).mappings()
+        db_connection.execute(
+            sa.insert(forecast_values),
+            [dict(row, id=uuid4(), forecast_id=legacy_id) for row in values],
+        )
+        return store, legacy_id
 
     def test_legacy_multi_step_row_still_infers_its_cadence(
         self, db_connection: sa.Connection
     ) -> None:
         sid = _seed_station(db_connection)
         ensemble = _ensemble(sid, n_steps=4, time_step=timedelta(hours=6))
-        store, fid = self._store_then_null_the_cadence(db_connection, ensemble)
+        store, fid = self._store_legacy_without_evidence(db_connection, ensemble)
 
-        fetched = store.fetch_forecast(fid)  # type: ignore[arg-type]
+        fetched = store.fetch_forecast(fid)
         assert fetched is not None
         assert fetched.ensemble.time_step == timedelta(hours=6)
 
@@ -154,10 +167,10 @@ class TestLegacyNullRowsKeepTodaysBehaviour:
         """
         sid = _seed_station(db_connection)
         ensemble = _ensemble(sid, n_steps=1, time_step=timedelta(days=1))
-        store, fid = self._store_then_null_the_cadence(db_connection, ensemble)
+        store, fid = self._store_legacy_without_evidence(db_connection, ensemble)
 
         with structlog.testing.capture_logs() as captured:
-            fetched = store.fetch_forecast(fid)  # type: ignore[arg-type]
+            fetched = store.fetch_forecast(fid)
         assert fetched is not None
         assert fetched.ensemble.time_step == timedelta(hours=1)
 

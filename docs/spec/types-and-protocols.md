@@ -1869,6 +1869,21 @@ baselines and datum. A supplied runtime digest without retained image bytes is
 marked incomplete; Plan 340 T2 can add separate append-only preservation proof,
 without rewriting the capture-time status.
 FI snapshots name the wrapped model class and config hash when supplied.
+
+**Interim preservation (Plan 340 T2).** `PreservationAttestation` binds a
+forecast ID, the exact capture-manifest/snapshot/artifact hashes, runtime image
+ID, the digest of restored forecast output values, protected backup ID and
+manifest/dump/image hashes, and restore time. The
+database rejects UPDATE/DELETE/TRUNCATE. `assess_effective_preservation` returns
+the immutable `capture_status` and a separate `effective_status` with remaining
+reasons and attestation ID. It covers only the
+`runtime_image_bytes_unpinned` gap when the exact referenced backup is still
+verifiable; another capture gap or a mismatched backup remains incomplete.
+`BackupProofStatus` is `verified`, `missing`, `stale` or `invalid`. A fresh
+latest backup and the configured six-year retention floor are separate
+publication-activation requirements. The host `assess --forecast-id` read path
+computes this view against the retained backup manifest; the authenticated
+forecast API presentation is deferred to Plan 341.
 Combined forecasts additionally require persisted contributor evidence; BMA
 snapshots record global eligibility order and sample counts even when a model
 contributes only another parameter.

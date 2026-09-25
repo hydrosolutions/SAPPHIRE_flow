@@ -244,6 +244,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 | Event | Level | Notes |
 |---|---|---|
 | `forecast_evidence.capture_failed` | WARNING | Plan 340 T1: snapshot serialization failed; the forecast remains available but stores `evidence_incomplete` with the exception class. `error` records the failure detail; never log the observation or artifact payload. |
+| `evidence_backup.protected` | INFO | Plan 340 T2: a restored protected bundle and its append-only attestation were committed; record only `backup_id`, never payloads or credentials. |
 | `model.onboarding_started` | INFO | Flow entry; bind `model_id` at this point |
 | `model.onboarding_unit_started` | INFO | Per-unit; with `station_id` (station-scoped) or `group_id` (group-scoped) |
 | `model.onboarding_unit_completed` | INFO | Per-unit timing summary |

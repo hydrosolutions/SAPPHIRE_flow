@@ -65,6 +65,37 @@ def test_migration_upgrade_and_downgrade(
         )
         assert len(triggers) == 4
 
+    command.upgrade(config, "0059")
+    with engine.connect() as connection:
+        assert (
+            "forecast_preservation_attestations"
+            in sa.inspect(connection).get_table_names()
+        )
+        guard_count = connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM pg_trigger WHERE tgname LIKE "
+                "'trg_%_evidence_no_%'"
+            )
+        )
+        assert guard_count == 8
+        assert (
+            connection.scalar(
+                sa.text(
+                    "SELECT count(*) FROM pg_trigger WHERE tgname = "
+                    "'trg_forecasts_evidence_immutable_identity'"
+                )
+            )
+            == 1
+        )
+
+    command.downgrade(config, "0058")
+    with engine.connect() as connection:
+        assert (
+            "forecast_preservation_attestations"
+            not in sa.inspect(connection).get_table_names()
+        )
+
+    command.downgrade(config, "0057")
     command.downgrade(config, "0056")
     with engine.connect() as connection:
         assert "forecast_evidence" not in sa.inspect(connection).get_table_names()

@@ -1183,3 +1183,77 @@ The roles/grants are additive and safe to leave in place — rolling back to a p
 `sapphire_api`/`sapphire_worker`; the previous image's `entrypoint.sh` simply falls back to the
 pre-Slice-D default secret path (`DB_PASSWORD_SECRET` unset → `/run/secrets/db_password`) and
 connects as the owner again, same as before this slice.
+
+## Protected forecast-evidence backup (Plan 340 T2)
+
+The existing seven-copy `backup-database` Prefect flow remains the short-term operational
+backup. It does not prove preservation of forecast evidence or runtime image bytes. For
+CHWRR publication, run the host-side `uv run python -m sapphire_flow.ops.evidence_backup_host`
+on a daily host schedule with `backup --target <protected-directory>
+--database-volume <host-postgres-volume-path>` from the deployed checkout. The target
+and active PostgreSQL volume paths must already exist on different filesystem devices.
+Use a separately mounted, access-controlled, encrypted target; the code checks device
+separation, hashes and restore, while encryption and volume capacity require operator
+verification. `--compose-file`, `--config` and `--rehearsal-script` can override their
+checkout defaults. Backups use a host lock, a full custom-format `pg_dump`, immutable
+Docker image IDs, and a disposable database restore. Each successful bundle has a
+`backup-<UUID>.dump` and matching `.json` manifest, plus content-verified image archives
+in `images/`. The restore checks a representative forecast, hashed output values, snapshot and
+artifact bytes; Docker loads each pinned image archive and checks its image ID. A
+preservation attestation is appended for that earlier forecast only after these checks.
+The manifest becomes visible to the health check only after attestation succeeds.
+
+Before starting a forecast worker, build its final image, obtain its immutable image ID
+with `docker image inspect`, set that value in `SAPPHIRE_IMAGE_DIGEST`, and recreate the
+worker so its environment matches the running image. An empty or mismatched value yields
+`evidence_incomplete` and stops the protected backup. Retain each referenced image archive
+and every protected dump and manifest until Plan 344 supplies a tested archival and
+supersession procedure. The T2 implementation does not prune protected bundles.
+Forecast evidence, linked outputs and artifact metadata are likewise protected by
+database guards; `evidence_retention_days` has a 2,192-day floor and does not authorize
+deletion at that age.
+
+Run the same command with `health` after each scheduled backup and monitor its exit code
+and JSON `status` (`verified`, `missing`, `stale`, `invalid`). It verifies the latest
+manifest, dump and image hashes, the distinct device, and the configured
+`protected_backup_max_age_hours` (36 by default). A failed run or unhealthy result must
+alert operations. Plans 341/342 must call the fail-closed publication gate before
+enabling a CHWRR publish path; T2 ships the gate but no publication API. This is separate
+from the existing generic backup watchdog.
+Use `assess --forecast-id <UUID>` with the same target and database-volume arguments
+to read a forecast's immutable capture status, derived effective preservation status,
+attestation ID and remaining reasons. This is a host operator read path; Plan 341
+will decide how to surface it through the authenticated forecast API. Assessment
+checks retained attestations newest first and uses the newest verifiable proof;
+a damaged newer bundle does not invalidate an older intact one.
+
+A protected dump is taken before its own attestation is appended. After disaster
+recovery from that dump, run `reconcile --backup-id <UUID>` with the same target,
+database-volume and Compose arguments after restoring PostgreSQL and bootstrapping
+the scoped roles. This rechecks the manifest, bytes, disposable restore and pinned
+image load, then verifies the live database's snapshot, artifact and output-value
+digests before re-appending the missing attestation. Repeating it is safe when the
+existing proof matches; a conflicting proof fails. Run `assess --forecast-id` to
+confirm the effective status, then `health` to check live freshness. A new scheduled
+backup is still needed if the retained bundle is older than the configured maximum.
+
+The weekly `scripts/launchd/prune-docker.sh` now asks the backup worker whether any
+forecast evidence exists. Once evidence exists, it skips image pruning entirely,
+including dangling images; an unreadable inventory also skips and reports failure.
+Build-cache pruning continues. This preserves image bytes on the Mac mini even though
+its protected backup cannot run, at the cost of image-disk growth until Plan 344.
+
+Capacity sign-off must use a measured full dump and six-station daily growth. The
+`estimate_six_year_bytes` helper counts live evidence, every unpruned daily full dump
+over the interim period, and pinned images; this is deliberately a conservative estimate
+until Plan 344 replaces the interim retention strategy. Record the protected target path,
+encryption, free capacity, backup duration, restore duration and monitored schedule in
+the deployment record before publication activation. The Mac mini test host has no
+separate protected volume, so its CHWRR publication gate stays closed. The DHM server's
+separate target path and capacity remain deployment inputs.
+The T1 synthetic six-station capture measured 302,653 bytes per cycle. At four cycles
+per day, a 1 GiB starting dump and 2,192 unpruned daily full dumps imply roughly
+5.27 TB before image archives and other database growth. This is an illustrative
+lower-bound scenario, not a Nepal capacity measurement. The clean-volume test restore
+uses a tiny seeded database and took about 15 seconds locally; a Nepal-sized restore
+duration remains to be measured on the DHM target.

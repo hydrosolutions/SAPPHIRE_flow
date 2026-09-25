@@ -483,3 +483,15 @@ class TestValidateRetention:
     def test_valid_when_max_retention_greater_than_forecast_hot_days(self) -> None:
         config = make_deployment_config(forecast_hot_days=548, max_retention_days=549)
         assert config.max_retention_days == 549
+
+    def test_evidence_retention_has_six_year_floor(self) -> None:
+        with pytest.raises(pydantic.ValidationError, match="evidence_retention_days"):
+            make_deployment_config(evidence_retention_days=2191)
+        config = make_deployment_config(evidence_retention_days=2500)
+        assert config.evidence_retention_days == 2500
+
+    def test_backup_freshness_must_be_positive(self) -> None:
+        with pytest.raises(
+            pydantic.ValidationError, match="protected_backup_max_age_hours"
+        ):
+            make_deployment_config(protected_backup_max_age_hours=0)
