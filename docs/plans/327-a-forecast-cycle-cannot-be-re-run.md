@@ -6,7 +6,7 @@ title: A forecast cycle cannot be re-run — and the escape hatch the schema app
 scope: Decide and specify what re-running a forecast cycle MEANS, and make the decided behaviour real — in the architecture (Flow 1 says nothing about idempotency today), in the store boundary, and in whatever mechanism the decision picks. NOT the review/publish lifecycle itself, NOT hindcast dedup (Plan 040, shipped), NOT the pinned-midnight scaffold's existence (Plan 326 owns that), NOT retry of anything other than the forecast cycle.
 depends_on: []
 blocks: []
-open_decisions: [D1, D2, D3]
+open_decisions: []   # all three closed by the owner 2026-09-25; D1(2) enlarged the plan — supersession is now BUILT, not specified
 source: 2026-09-25 — the owner, after the midnight scaffold's second same-day run failed on a duplicate key: *"plan in the same-day retry. check if there is already a plan for it. it should be specified in the architecture that we do retries of forecasts."* No plan owns it. Every claim below was measured against `origin/main` and the live staging database that day.
 ---
 
@@ -115,7 +115,7 @@ live database.
 
 ## Owner decisions
 
-### D1 — what does "retry" MEAN? **OPEN — answer before anything is built.**
+### D1 — what does "retry" MEAN? **⚖️ CLOSED — owner, 2026-09-25.**
 
 Three different needs hide under one word, and they need different machinery:
 
@@ -141,8 +141,21 @@ computation* (a true retry — succeed, return the existing identity) or *a diff
 conflict — refuse, or supersede under (b))? ⛔ *Without this, "retry" is undefined for the only case
 that actually matters operationally.*
 
-**Recommendation: build (a) now, specify (b), forbid (c) outright.** ⭐ *(a) is the operational
-pain today.* ⚠️ **(c) is forbidden from today**, not from first publication — see its row.
+**⚖️ OWNER, 2026-09-25 — all three answered, and they enlarge this plan:**
+
+1. **A failed day MUST be re-runnable.** *"A missing day is a real gap: skill scoring, verification
+   and anything looking back at our record will have a hole in it."* ⇒ (a) is confirmed, and the
+   cheaper alternative — accept the gap, tomorrow covers it — is **rejected**.
+2. 🔴 **When a re-run's numbers DIFFER: replace, and keep the old one marked.** ⇒ **(b) moves from
+   SPECIFIED to BUILT.** ⛔ *Two earlier drafts deferred (b); the owner's answer to the equivalence
+   question makes it the ordinary conflict path, not a future refinement. Scope is larger than the
+   plan assumed — stated rather than absorbed quietly.*
+3. **(c) stays forbidden outright.**
+
+⇒ **The equivalence policy is therefore:** identical recomputation ⟹ succeed, write nothing new,
+return the stored identity. Different recomputation ⟹ **supersede**: mark the stored row, write the
+new one. ⚠️ *So the comparison in § D1 is not optional plumbing — it is what selects between the
+two paths, and getting it wrong in the "identical" direction silently discards a correction.*
 
 ⛔ **(b) is deferred as a SCOPE CHOICE, not because it waits on anything.** *Two earlier versions of
 this line said it "becomes required once a forecast is published" and then that it "needs a review
@@ -151,7 +164,7 @@ machinery at all.* What (b) actually needs is D2's supersession mechanism and th
 obligations in § (9) — and this plan chooses not to build that in the same pass as (a). ⇒ **A
 deliberate deferral, with nothing external gating it.**
 
-### D2 — fix the dead predicate, or remove it? **OPEN.**
+### D2 — fix the dead predicate, or remove it? **⚖️ CLOSED — owner, 2026-09-25: (a), make it work.**
 
 | | option | cost |
 |---|---|---|
@@ -166,18 +179,26 @@ perform it, and what it does to `forecast_values` are D1(b)'s, which this plan S
 not build. ⇒ *(a) here means "make the predicate reachable", not "ship supersession"; the draft blurred
 those and the reviewer was right to catch it.*
 
-**Recommendation: (a) if D1 includes (b); otherwise (b).** ⛔ *Whichever — it must not stay as it
-is.*
+**⚖️ CLOSED on (a).** Owner: *"keeps the door open for replacing a forecast later, and matches what
+whoever designed this clearly intended."* ⭐ *And D1 has since made it more than a door: supersession
+is now the built conflict path, so the predicate must be reachable for D1(2) to work at all.*
 
-### D3 — where does "we may re-run a forecast" get SPECIFIED? **OPEN — the owner asked for this explicitly.**
+⇒ T2 takes the **CHECK-constraint migration** branch. ⛔ *The index predicate itself is unchanged —
+it becomes reachable rather than replaced, which is why D2(b)'s index-replacement branch and its
+absence-assertion no longer apply.*
+
+### D3 — where does "we may re-run a forecast" get SPECIFIED? **⚖️ CLOSED — owner: in the architecture.**
 
 Owner: *"it should be specified in the architecture that we do retries of forecasts."*
 
-⇒ At minimum, Flow 1's step table gains what Flow 0 already has: an idempotency statement per step,
-and **1.11 Store forecast results** says plainly what re-running does. The question is whether that
-is a column on the table, a paragraph beside it, or a named subsection — ⚠️ *and whether the same
-statement is owed for Flows 2, 6, 7 and 8, which were not examined here and must not be silently
-assumed idempotent.*
+⇒ Flow 1's step table gains what Flow 0 already has, and **1.11 Store forecast results** states
+plainly what re-running does — including D1's replace-and-mark answer, so a reader learns the
+behaviour where they meet the step.
+
+⚖️ **The sub-question closed by the orchestrator: Flows 2, 6, 7 and 8 are NAMED AS UNEXAMINED, not
+assessed.** ⛔ *Measuring four more flows to answer a question nobody asked would widen this plan
+past its subject; recording their silence as unchecked costs one line and prevents the far worse
+outcome of a reader assuming they are safe.*
 
 ## Tasks
 
@@ -214,20 +235,16 @@ predicate passes vacuously and would prove nothing.
 
 **Out.** ⛔ Changing the key columns `(station_id, model_id, issued_at, parameter)` — they are
 correct and they caught a real duplicate. ⛔ Backfilling status on existing rows (§ 2: all `raw`).
-⚠️ *"No backfill" is not "no migration".* ⛔ *But the two options need DIFFERENT migrations, which
-an earlier line flattened into "the index must be replaced either way": **D2(a) migrates the CHECK
-constraint** and leaves the predicate as it is (it becomes reachable), while **D2(b) replaces the
-index** to drop the predicate.*
+⚠️ *"No backfill" is not "no migration".* **D2(a) migrates the CHECK constraint
+(`db/metadata.py:1130`) and leaves the index predicate untouched** — it becomes reachable rather
+than replaced.
 ⛔ Implementing supersession (D1b) — D2(a) makes the predicate REACHABLE, nothing more.
 
-**Pre-change.** 🔴 **Branches by D2 — the two options need OPPOSITE tests**, and the first draft
-prescribed only the first:
-- **D2(a)** — a RED test asserting **every value in the index predicate is a member of
-  `ForecastStatus`** (the metadata predicate's `right.value` against
-  `{st.value for st in ForecastStatus}`). Fails today, because `superseded` is not.
-- **D2(b)** — ⛔ *there is no predicate left to compare.* The test asserts its **ABSENCE**
-  explicitly. ⚠️ **A comparison over an empty predicate passes vacuously** and would prove nothing,
-  which is how this defect survived in the first place.
+**Pre-change.** D2 closed on (a), so the branch is settled: a RED test asserting **every value in
+the index predicate is a member of `ForecastStatus`** — the metadata predicate's `right.value`
+against `{st.value for st in ForecastStatus}`. **Fails today**, because `superseded` is not.
+⛔ *The absence-assertion the earlier draft carried for D2(b) does not apply and is dropped; keeping
+a branch for a rejected option is how a plan grows contradictions.*
 
 **Verification.** Per D2's branch: either the predicate and the enum agree by value, or the index
 carries no predicate at all — **asserted against the MIGRATED schema** as well as the model. ⛔ *An earlier line said the model
@@ -259,8 +276,9 @@ leaves the caller free to alert on the rejected content. What the caller receive
 is allowed to consume, are part of this task.
 
 **Out.** ⛔ Silent overwrite (D1c) — forbidden outright, not only after publication.
-⛔ **Correcting** a `REVIEWED` or `PUBLISHED` row — that is D1(b), specified not built. ⚠️ *The
-REFUSAL to touch one belongs here, so the behaviour cannot regress into (c) later.*
+⛔ **Silently** replacing any row, whatever its status — a supersession leaves the original marked
+and readable (T4). ⚠️ *D1 closed on replace-and-mark, so "do not touch it" is no longer the rule;
+"never without a trace" is.*
 ⛔ **Translating every `IntegrityError` into a domain error.** § (3): Plan 038 D5 deliberately leaves
 store writes unwrapped, and that stands. **Only a semantic retry conflict becomes a domain error**;
 an unrelated storage failure keeps propagating raw.
@@ -302,9 +320,47 @@ attempts to state:
   failure still propagates raw** (§ 3, preserving Plan 038 D5). ⛔ *Both halves asserted — wrapping
   everything is the regression this clause exists to prevent.*
 
+### T4 — Build supersession (D1(2))
+
+**Outcome.** A re-run whose numbers differ replaces the stored forecast and leaves the original on
+record, marked.
+
+⚠️ **This task exists because the owner's D1 answer moved supersession from *specified* to *built*.**
+⛔ *Two earlier drafts deferred it; do not re-defer it.*
+
+**In.**
+- The transition that marks a stored forecast superseded, and the insert of its replacement — in
+  **one transaction**, so a half-done supersession cannot exist.
+- 🔴 **The original's evidence and blobs are KEPT** — § (9): migration 0057 rejects `UPDATE`,
+  `DELETE` and `TRUNCATE` on them, so this is an obligation, not a choice. The replacement gets its
+  own evidence row.
+- Who may perform it, and what a reader sees: ⚠️ **a superseded forecast must stay readable and be
+  distinguishable from a current one** in every consumer that filters on status — the Forecast Lab,
+  the published series, alert selection.
+- The equivalence comparison D1 defines, since it is what decides between "succeed, change nothing"
+  and "supersede".
+
+**Out.** ⛔ Deleting or mutating any evidence row or blob. ⛔ Superseding on a retry whose
+recomputation is **identical** — that path writes nothing. ⛔ A supersession that is not atomic with
+its replacement. ⛔ Extending supersession to hindcasts (their store already does approved atomic
+replacement on a six-column key).
+
+**Pre-change.** A RED test asserting the DESIRED behaviour: **a re-run with differing numbers leaves
+the original readable and marked, and the new one current.** Fails today — there is no such status
+and the write is refused outright.
+
+**Verification.**
+- The original is readable, marked, and its evidence intact; the replacement is current with its own
+  evidence.
+- 🔴 **Every status-filtering consumer excludes the superseded row** — asserted per consumer, not
+  assumed. ⛔ *A superseded forecast surfacing in the published series is the failure this whole
+  mechanism exists to prevent.*
+- An identical re-run supersedes **nothing**.
+- Interrupting between the mark and the insert leaves neither.
+
 ## Explicitly out of scope
 
-- **The review/publish lifecycle.** ⛔ *Not because D1(b) depends on it — it does not.* Correction
+- **Building the review/publish lifecycle itself.** ⛔ *Not because D1(b) depends on it — it does not.* Correction
   is needed for any forecast a consumer has already read, `RAW` included. The lifecycle is simply
   someone else's work, and (b) is deferred by this plan's own choice (see D1's recommendation).
 - **Hindcast dedup** — Plan 040 solved the twin with `hindcast_run_id`.
@@ -316,7 +372,9 @@ attempts to state:
 {
   "phases": [
     {"phase": 1, "tasks": ["T1"], "parallel": false, "note": "semantics first — T2 and T3 both depend on D1"},
-    {"phase": 2, "tasks": ["T2", "T3"], "parallel": true, "decision": "D1, D2, D3 CLOSED"}
+    {"phase": 2, "tasks": ["T2"], "parallel": false, "note": "the CHECK migration makes the predicate reachable — T4 depends on it"},
+    {"phase": 3, "tasks": ["T3", "T4"], "parallel": false,
+     "note": "T3 resume, then T4 supersession — T3's conflict path calls into T4's mechanism"}
   ]
 }
 ```
@@ -379,3 +437,24 @@ the old 9 to 10.
 ⚠️ **Still not executable, and deliberately so:** D1, D2 and D3 are OPEN. They are implementation
 gates — equivalence policy, concrete conflict behaviour, and the schema branch — ⛔ *not things an
 implementer may infer.*
+
+**2026-09-25 — all three decisions CLOSED by the owner, and the plan GREW.**
+
+| decision | answer |
+|---|---|
+| **D1** | A failed day **must** be re-runnable (the cheap alternative — accept the gap, tomorrow covers it — was rejected: *"skill scoring, verification and anything looking back at our record will have a hole in it"*). On differing numbers: **replace, keep the old marked**. Silent overwrite stays forbidden. |
+| **D2** | **(a) — make the dead exception work.** Add the status so the predicate becomes reachable. |
+| **D3** | In the architecture, at Flow 1 step 1.11. Flows 2/6/7/8 named as **unexamined**, not assessed. |
+
+🔴 **The scope consequence, stated rather than absorbed:** D1's second answer moves supersession
+from *specified* to **BUILT** — it is the ordinary conflict path now, not a future refinement. Two
+earlier drafts deferred it. **T4 is new**, and the phase graph is resequenced: the CHECK migration
+(T2) must land before the mechanism that needs it (T4), and T3's conflict path calls into T4.
+
+⚠️ **What the owner's answers make load-bearing:** the equivalence comparison. It selects between
+*"succeed, change nothing"* and *"supersede"*, so an error in the "identical" direction silently
+discards the correction the re-run existed to deliver — the exact failure D1(c) forbids, reached by
+accident instead of by design.
+
+⛔ **Dropped, not carried:** T2's absence-assertion branch for D2(b). *Keeping a test for a rejected
+option is how a plan accumulates contradictions — this one had two phase graphs at one point.*
