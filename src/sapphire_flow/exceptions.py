@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from sapphire_flow.services.forecast_retry import ForecastRetryRow
+    from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.ids import ForecastId, ModelId, StationId
 
 
 class SapphireError(Exception):
@@ -29,6 +34,43 @@ class ModelOutputError(SapphireError):
 
 class ConflictError(SapphireError):
     """Optimistic locking detected a concurrent modification."""
+
+
+class ForecastRetryConflictError(SapphireError):
+    """Plan 327 — a forecast cycle re-run met an existing forecast under the
+    same natural key ``(station_id, model_id, issued_at, parameter)`` and the
+    recomputation is NOT identical to it: decision-table row 1 (values
+    differ), row 2 (values equal, model artifact identity differs) or row 3
+    (values and artifact equal, QC verdict differs).
+
+    This is the ONLY store-write failure translated into a domain error —
+    Plan 038 D5 stands (Pg store writes are deliberately not wrapped), so an
+    unrelated storage failure still propagates as a raw SQLAlchemy exception.
+    A row-4 (identical) retry is not a conflict and raises nothing: it
+    succeeds quietly and returns the stored identity.
+
+    Plan 328 later turns rows 1 and 2 into supersessions; ⛔ row 3 stays
+    refused permanently.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        row: ForecastRetryRow,
+        forecast_id: ForecastId,
+        station_id: StationId,
+        model_id: ModelId,
+        issued_at: UtcDatetime,
+        parameter: str,
+    ) -> None:
+        super().__init__(message)
+        self.row = row
+        self.forecast_id = forecast_id
+        self.station_id = station_id
+        self.model_id = model_id
+        self.issued_at = issued_at
+        self.parameter = parameter
 
 
 class AdapterError(SapphireError):

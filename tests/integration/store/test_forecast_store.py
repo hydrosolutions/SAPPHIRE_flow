@@ -12,7 +12,8 @@ import sqlalchemy as sa
 import sqlalchemy.exc
 
 from sapphire_flow.db.metadata import forecast_values, model_artifacts, models
-from sapphire_flow.exceptions import ConflictError
+from sapphire_flow.exceptions import ConflictError, ForecastRetryConflictError
+from sapphire_flow.services.forecast_retry import ForecastRetryRow
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
@@ -720,6 +721,10 @@ class TestParameterFilter:
     def test_unique_constraint_rejects_duplicate_param(
         self, db_connection: sa.Connection
     ) -> None:
+        """Plan 327: a DIFFERING re-run under the same natural key is still
+        refused — but now with a domain error naming the decision-table row,
+        not an unwrapped ``IntegrityError``. The protective half of the
+        constraint is unchanged: nothing is written."""
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
@@ -745,8 +750,11 @@ class TestParameterFilter:
         )
         store.store_forecast(fc_first)
 
-        with pytest.raises(sqlalchemy.exc.IntegrityError):
+        with pytest.raises(ForecastRetryConflictError) as excinfo:
             store.store_forecast(fc_duplicate)
+
+        assert excinfo.value.row is ForecastRetryRow.VALUES_DIFFER
+        assert len(store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)) == 1
 
 
 class TestRunoffOnlyProvenanceRoundTrip:

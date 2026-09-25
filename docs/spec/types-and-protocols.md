@@ -2659,7 +2659,18 @@ class ObservationStore(Protocol):
 ```python
 class ForecastStore(Protocol):
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId: ...
+        # Plan 327: a re-run whose natural key (station_id, model_id, issued_at,
+        # parameter) already exists is classified by the decision table
+        # (services/forecast_retry.py). Row 4 (IDENTICAL) returns the STORED id,
+        # writes nothing and raises nothing — that is what makes a cycle that
+        # died partway re-runnable. Rows 1-3 raise ForecastRetryConflictError.
+        # Every other storage failure still propagates raw (Plan 038 D5).
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None: ...
+    def fetch_evidence(self, forecast_id: ForecastId) -> PersistedForecastEvidence | None: ...
+        # PERSISTED evidence. Fetching the forecast does NOT hydrate it, so the
+        # resume path fetches it deliberately before rebinding a combination
+        # contributor. None = no such forecast; a pre-0057 forecast yields a
+        # synthetic `pre_capture_forecast` marker instead of None.
     def fetch_latest_forecast(
         self,
         station_id: StationId,
