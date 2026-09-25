@@ -21,7 +21,7 @@ import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
@@ -35,11 +35,15 @@ from sapphire_flow.db.metadata import (
 )
 from sapphire_flow.exceptions import StoreError
 from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
+from sapphire_flow.services.forecast_evidence import restore_snapshot
 from sapphire_flow.store.forecast_store import PgForecastStore, _build_value_rows
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelCombinationStrategy
-from sapphire_flow.types.ids import POOLED_MODEL_ID, ModelId, StationId
+from sapphire_flow.types.forecast_evidence import (  # noqa: TC001
+    PersistedForecastEvidence,
+)
+from sapphire_flow.types.ids import POOLED_MODEL_ID, ForecastId, ModelId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.fakes.fake_adapters import FakeWeatherForecastSource
 from tests.fakes.fake_stores import (
@@ -69,7 +73,6 @@ from tests.unit.flows.test_run_forecast_cycle import (
 
 if TYPE_CHECKING:
     from sapphire_flow.types.forecast import OperationalForecast
-    from sapphire_flow.types.ids import ForecastId
 
 _NOW = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 
@@ -452,9 +455,9 @@ class TestCombinationEvidenceThroughARealResume:
         store = PgForecastStore(conn, transaction_factory=savepoint_factory(conn))
         return fakes, sid, model_a, model_b, store
 
-    def _combined_evidence_reason(
+    def _combined_evidence(
         self, conn: sa.Connection, store: PgForecastStore, station_id: StationId
-    ) -> str:
+    ) -> PersistedForecastEvidence:
         row = conn.execute(
             sa.select(forecasts_table.c.id)
             .where(forecasts_table.c.station_id == station_id)
@@ -462,7 +465,43 @@ class TestCombinationEvidenceThroughARealResume:
         ).scalar_one()
         evidence = store.fetch_evidence(row)
         assert evidence is not None
-        return evidence.reason or ""
+        return evidence
+
+    def _assert_every_contributor_reference_agrees(
+        self, store: PgForecastStore, evidence: PersistedForecastEvidence
+    ) -> int:
+        """🔴 Decode the snapshot and check EVERY contributor, because a clean
+        reason string does not mean the references agree.
+
+        ``_combined_contributor_gap`` (`store/forecast_store.py`) returns on the
+        FIRST contributor it finds a problem with — and with real evidence the
+        first one is always `contributor_evidence_incomplete`, so the loop never
+        reaches the rest. A stale id or hash on a LATER contributor therefore
+        produces no reason at all and would slip past an assertion that only
+        reads the reason. T2 requires the persisted references to AGREE, not
+        merely that nothing complained.
+        """
+        assert evidence.snapshot is not None
+        references = restore_snapshot(evidence.snapshot)["contributors"]
+        assert isinstance(references, list)
+        assert len(references) >= 2, (
+            "a one-contributor snapshot cannot exercise a LATER-contributor "
+            "divergence, which is the case this assertion exists for"
+        )
+        for position, reference in enumerate(references):
+            forecast_id = ForecastId(UUID(reference["forecast_id"]))
+            assert store.fetch_forecast(forecast_id) is not None, (
+                f"contributor {position} references forecast {forecast_id}, "
+                f"which is not persisted"
+            )
+            persisted = store.fetch_evidence(forecast_id)
+            assert persisted is not None
+            assert persisted.snapshot_sha256 == reference["evidence_sha256"], (
+                f"contributor {position} ({forecast_id}) carries evidence hash "
+                f"{reference['evidence_sha256']!r} but the persisted evidence "
+                f"is {persisted.snapshot_sha256!r}"
+            )
+        return len(references)
 
     def test_resuming_between_contributors_and_combination_records_no_gap(
         self, db_connection: sa.Connection
@@ -499,13 +538,16 @@ class TestCombinationEvidenceThroughARealResume:
         )
 
         assert list(second.errors) == []
-        reason = self._combined_evidence_reason(db_connection, store, sid)
+        evidence = self._combined_evidence(db_connection, store, sid)
+        reason = evidence.reason or ""
         # ⛔ NOT "the evidence is COMPLETE" — no COMPLETE capture path exists,
         # so the ordinary incompleteness reasons are expected and permitted.
         # What must be absent are the RETRY-INDUCED ones.
         assert "contributor_evidence_not_persisted" not in reason
         assert "contributor_evidence_mismatch" not in reason
         assert reason, "a real capture always records at least one reason"
+        # The reason covers the FIRST contributor only; check them all.
+        assert self._assert_every_contributor_reference_agrees(store, evidence) == 2
 
     def test_a_pre_capture_contributor_still_reports_honest_absence(
         self, db_connection: sa.Connection
@@ -549,5 +591,9 @@ class TestCombinationEvidenceThroughARealResume:
         )
 
         assert list(second.errors) == []
-        reason = self._combined_evidence_reason(db_connection, store, sid)
-        assert "contributor_evidence_not_persisted" in reason
+        evidence = self._combined_evidence(db_connection, store, sid)
+        assert "contributor_evidence_not_persisted" in (evidence.reason or "")
+        # The references must still AGREE — honest absence means both sides say
+        # "no evidence" (the synthetic marker carries no digest), not that the
+        # resume quietly pointed the combination at the wrong row.
+        assert self._assert_every_contributor_reference_agrees(store, evidence) == 2

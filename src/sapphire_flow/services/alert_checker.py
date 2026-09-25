@@ -246,9 +246,14 @@ def _resolve_strategy_and_filter(
         # Plan 327: the store refused this station/parameter's COMBINED
         # forecast, and every pooling strategy below would rebuild exactly
         # that content from the contributors. Fall back to the single primary
-        # model — whose own forecast the store DID accept (a refused member is
-        # already absent from `param_ensembles`) — rather than alert on
-        # content the store would not keep.
+        # model rather than alert on content the store would not keep.
+        #
+        # 🔑 What makes that safe rather than a loophole is the ORDERING: the
+        # cycle drops every refused INDIVIDUAL model from `all_ensembles`
+        # (`run_forecast_cycle.py::_drop_refused_ensembles`) BEFORE alert
+        # eligibility filtering and before this call, so a refused member is
+        # already absent from `param_ensembles` and the primary selected here
+        # cannot itself be a forecast the store refused.
         log.warning(
             "alert.strategy_degraded",
             preferred=preferred.value,
