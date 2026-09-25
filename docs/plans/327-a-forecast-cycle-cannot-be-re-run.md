@@ -94,11 +94,21 @@ live database.
    operational forecast now writes a `forecast_evidence` row IN THE SAME TRANSACTION** as the
    forecast and its values, with `forecast_id` a foreign key to `forecasts.id`
    (`alembic/versions/0057_forecast_evidence.py:40-42`), and blob hashes verified on read.
-   ⇒ **Retry is now a THREE-write question, not two**, and D1's options each gain an obligation:
-   a resumed cycle must not orphan or duplicate evidence, and **supersession (D1b) must decide what
-   happens to a superseded forecast's evidence** — discarding it would destroy the as-used record
-   that plan exists to keep. ⚠️ *Re-measured at the moment of acting; this landed after the first
-   review and changes the shape of the answer.*
+   ⇒ **Retry now carries an evidence obligation** (⚠️ *"three writes" is shorthand — the store
+   writes forecast, values, evidence and any content-addressed blobs in one transaction,
+   `store/forecast_store.py:118`*). ⛔ **Evidence disposal is NOT an open option: migration 0057
+   makes `forecast_id` both PK and FK and REJECTS `UPDATE`, `DELETE` and `TRUNCATE` on evidence and
+   blobs.** *An earlier version of this claim said supersession "must decide what happens to the
+   evidence" — it does not get to decide; it must keep it.*
+   ⚠️ Missing capture writes an **incomplete-evidence marker**, and historical forecasts need not
+   have an evidence row at all — so any comparison must tolerate both.
+   🔴 **And resume has a hazard of its own:** combined forecasts build their evidence from
+   contributor IDs and hashes held in memory (`services/forecast_combination.py:543`), which the
+   store checks against **persisted** evidence (`forecast_store.py:59`). A cycle resumed after the
+   contributors committed but before their combination can therefore write an **immutable**
+   `contributor_evidence_not_persisted` record. ⛔ *Correct alert selection does not fix this; the
+   contributor identities must be resolved from the store BEFORE the combination's evidence is
+   built.* ⚠️ *Re-measured at the moment of acting; this landed after the first review.*
 10. **Machinery already exists and is unused for this.** `forecasts.version` plus
    `transition_status` is the **only** optimistic-locking path in the stores (the sole
    `ConflictError` caller, `touchpoint-maps.md:756`).
@@ -132,9 +142,14 @@ conflict — refuse, or supersede under (b))? ⛔ *Without this, "retry" is unde
 that actually matters operationally.*
 
 **Recommendation: build (a) now, specify (b), forbid (c) outright.** ⭐ *(a) is the operational
-pain today. (b) needs the supersession mechanism D2 discusses and a review lifecycle that § (2)
-shows has never run, so it is specified now and built when that lands — honest sequencing, not a
-deferral.* ⚠️ **(c) is forbidden from today**, not from first publication — see its row.
+pain today.* ⚠️ **(c) is forbidden from today**, not from first publication — see its row.
+
+⛔ **(b) is deferred as a SCOPE CHOICE, not because it waits on anything.** *Two earlier versions of
+this line said it "becomes required once a forecast is published" and then that it "needs a review
+lifecycle". Both are wrong: correcting a `RAW` forecast a consumer has already read needs no review
+machinery at all.* What (b) actually needs is D2's supersession mechanism and the evidence
+obligations in § (9) — and this plan chooses not to build that in the same pass as (a). ⇒ **A
+deliberate deferral, with nothing external gating it.**
 
 ### D2 — fix the dead predicate, or remove it? **OPEN.**
 
@@ -199,7 +214,10 @@ predicate passes vacuously and would prove nothing.
 
 **Out.** ⛔ Changing the key columns `(station_id, model_id, issued_at, parameter)` — they are
 correct and they caught a real duplicate. ⛔ Backfilling status on existing rows (§ 2: all `raw`).
-⚠️ *"No backfill" is not "no migration" — the deployed index must be replaced either way.*
+⚠️ *"No backfill" is not "no migration".* ⛔ *But the two options need DIFFERENT migrations, which
+an earlier line flattened into "the index must be replaced either way": **D2(a) migrates the CHECK
+constraint** and leaves the predicate as it is (it becomes reachable), while **D2(b) replaces the
+index** to drop the predicate.*
 ⛔ Implementing supersession (D1b) — D2(a) makes the predicate REACHABLE, nothing more.
 
 **Pre-change.** 🔴 **Branches by D2 — the two options need OPPOSITE tests**, and the first draft
@@ -212,8 +230,10 @@ prescribed only the first:
   which is how this defect survived in the first place.
 
 **Verification.** Per D2's branch: either the predicate and the enum agree by value, or the index
-carries no predicate at all — **asserted against the MIGRATED schema**, not only the model, since
-the model is what was right while the deployed index was the problem.
+carries no predicate at all — **asserted against the MIGRATED schema** as well as the model. ⛔ *An earlier line said the model
+was right and only the deployment wrong — false: `db/metadata.py` carries the same unreachable
+predicate. Both are wrong in the same way, which is why the test must compare a VALUE and not
+merely diff the two.*
 
 ### T3 — Make a half-finished cycle re-runnable (D1a)
 
@@ -224,6 +244,15 @@ already wrote.
 written stand, the rest complete. ⛔ **NO orphan-repair work** — § (4) proves a header without its
 values cannot occur, and the first draft's requirement to handle one was building for an impossible
 state.
+🔴 **Evidence requirements, from § (9) — obligations, not observations:**
+- A resumed cycle **resolves contributor identities from the STORE before building a combination's
+  evidence**, so it cannot write an immutable `contributor_evidence_not_persisted` record for
+  contributors that are in fact persisted.
+- An **equivalent** retry leaves the existing evidence and blobs in place — ⛔ *it may not rewrite
+  them; 0057 rejects `UPDATE`/`DELETE`.*
+- Comparison **tolerates an incomplete-evidence marker and a legacy forecast with no evidence row**.
+- The whole set still rolls back atomically on failure.
+
 🔴 **The conflict resolution must reach ALERT SELECTION, not stop at the store.** § (7): the stored
 identity is discarded and alerts consume the in-memory ensemble, so a store-level rejection still
 leaves the caller free to alert on the rejected content. What the caller receives, and what alerting
@@ -264,6 +293,9 @@ attempts to state:
 - 🔴 **A genuine duplicate — same issue time, same model, already complete — still does NOT write a
   second row.** ⭐ *The constraint's protective half must survive; this plan removes an obstacle, it
   does not remove the guard.*
+- 🔴 **A cycle resumed between the contributors and their combination does NOT produce a
+  `contributor_evidence_not_persisted` record** — asserted, because that record is immutable once
+  written and this is the resume path's own failure mode.
 - 🔴 **Alerting cannot consume content the store refused** — asserted end to end, because § (7)
   means a store-level guard alone does not achieve this.
 - A **semantic retry conflict** reaches the caller as a domain error, while an **unrelated storage
@@ -272,8 +304,9 @@ attempts to state:
 
 ## Explicitly out of scope
 
-- **The review/publish lifecycle** — D1(b) depends on it and specifies against it; building it is
-  not this plan's.
+- **The review/publish lifecycle.** ⛔ *Not because D1(b) depends on it — it does not.* Correction
+  is needed for any forecast a consumer has already read, `RAW` included. The lifecycle is simply
+  someone else's work, and (b) is deferred by this plan's own choice (see D1's recommendation).
 - **Hindcast dedup** — Plan 040 solved the twin with `hindcast_run_id`.
 - **The pinned-midnight scaffold** — Plan 326. ⚠️ *It is the thing that exposed this, and its own
   "no same-day retry" hazard note is closed by T3.*
@@ -326,3 +359,23 @@ this project has already booked, committed twice in one plan.* What the operativ
 ✅ **Verified clean in round 2:** no renumbering errors from inserting claims 7 and 8, and all three
 newly added claims confirmed against the code — the discarded return and in-memory alert input, the
 station-tolerates / group-fatal asymmetry, and the hindcast six-column key with atomic replacement.
+
+**2026-09-25 — round 3: 2 major + 1 minor, and 4 of 6 round-2 items confirmed FIXED.** ⭐ *The
+reviewer verified from source that the corrected red test now genuinely fails today — station
+collisions append to `errors` (`run_forecast_cycle.py:2961`, `:3254`) and GROUP collisions re-raise
+(`:3627`) and escape (`:3670`).* What changed this round:
+
+| finding | now |
+|---|---|
+| **The lifecycle dependency survived the last fold** — the option rows were corrected while the RECOMMENDATION still said (b) "needs a review lifecycle", and § Explicitly out of scope repeated it | Both corrected. **(b) is deferred by this plan's CHOICE, gated by nothing external** — correcting a `RAW` forecast a consumer has read needs no review machinery |
+| **Evidence disposal is not an open question** — I wrote that supersession "must decide" what happens to a superseded forecast's evidence | ⛔ It does not decide: **migration 0057 rejects `UPDATE`, `DELETE` and `TRUNCATE`** on evidence and blobs. It must keep it |
+| **The evidence consequences sat in the measured claim, not the contract** | T3's In now carries them as requirements, with verification |
+| 🔴 **A resume-specific hazard I had not drawn out** | A combination builds its evidence from **in-memory** contributor IDs, which the store checks against **persisted** evidence. Resuming after contributors committed but before their combination writes an **immutable** `contributor_evidence_not_persisted` record. Contributor identities must be resolved from the store first |
+| **T2's schema prose was wrong twice** | The options need *different* migrations — (a) the CHECK, (b) the index — and `metadata.py` carries the same unreachable predicate, so it is not "model right, deployment wrong" |
+
+✅ **Verified again: every `§ (n)` reference still resolves** after inserting claim 9 and renumbering
+the old 9 to 10.
+
+⚠️ **Still not executable, and deliberately so:** D1, D2 and D3 are OPEN. They are implementation
+gates — equivalence policy, concrete conflict behaviour, and the schema branch — ⛔ *not things an
+implementer may infer.*
