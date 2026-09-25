@@ -21,6 +21,7 @@ from sapphire_flow.exceptions import (
     StoreError,
 )
 from sapphire_flow.services.forecast_retry import (
+    SUPERSEDING_ROWS,
     ForecastRetryRow,
     classify_forecast_retry,
     describe_difference,
@@ -278,6 +279,12 @@ class FakeForecastStore:
     cannot exercise EITHER half of the behaviour the real store has: the
     duplicate it refuses, or the identical re-run it resumes.
 
+    Plan 328: it also models supersession — a row 1 or 2 re-run marks the
+    stored forecast `SUPERSEDED` and writes the replacement, the natural-key
+    map follows the replacement, and every CURRENT reader excludes the
+    superseded row while by-id access keeps it. ⚠️ If this drifts from
+    `PgForecastStore` the flow tests built on it prove nothing.
+
     ⚠️ Evidence fidelity stops there, deliberately. Like `PgForecastStore`,
     every stored forecast gets an evidence record (`evidence=None` becomes
     `prediction_capture_unavailable`, matching the real store) — historical
@@ -307,7 +314,9 @@ class FakeForecastStore:
         if existing_id is not None:
             stored = self._forecasts[existing_id]
             row = classify_forecast_retry(stored=stored, recomputed=forecast)
-            if row is not ForecastRetryRow.IDENTICAL:
+            if row is ForecastRetryRow.IDENTICAL:
+                return existing_id
+            if row not in SUPERSEDING_ROWS:
                 raise ForecastRetryConflictError(
                     f"Forecast {existing_id} already exists for {key} and the "
                     f"re-run is not identical — "
@@ -319,7 +328,14 @@ class FakeForecastStore:
                     issued_at=forecast.issued_at,
                     parameter=forecast.ensemble.parameter,
                 )
-            return existing_id
+            # Plan 328 T2 — mark, then write the replacement. The original's
+            # evidence record is NOT touched (the real store cannot touch it:
+            # migration 0057 rejects UPDATE/DELETE on it).
+            self._forecasts[existing_id] = replace(
+                stored,
+                status=ForecastStatus.SUPERSEDED,
+                version=stored.version + 1,
+            )
         self._forecasts[forecast.id] = forecast
         self._by_key[key] = forecast.id
         evidence = forecast.evidence or incomplete_evidence(
@@ -385,6 +401,7 @@ class FakeForecastStore:
             f
             for f in self._forecasts.values()
             if f.station_id == station_id
+            and f.status is not ForecastStatus.SUPERSEDED
             and (model_id is None or f.model_id == model_id)
             and (parameter is None or f.ensemble.parameter == parameter)
         ]
@@ -400,6 +417,7 @@ class FakeForecastStore:
             f
             for f in self._forecasts.values()
             if f.issued_at == issued_at
+            and f.status is not ForecastStatus.SUPERSEDED
             and (station_id is None or f.station_id == station_id)
             and (parameter is None or f.ensemble.parameter == parameter)
         ]
@@ -438,7 +456,11 @@ class FakeForecastStore:
             if f.station_id == station_id
             and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
-            and (status is None or f.status == status)
+            and (
+                f.status == status
+                if status is not None
+                else f.status is not ForecastStatus.SUPERSEDED
+            )
             and (parameter is None or f.ensemble.parameter == parameter)
         ]
 
@@ -490,7 +512,9 @@ class FakeForecastStore:
         matches = [
             f.issued_at
             for f in self._forecasts.values()
-            if f.combination_strategy is None and f.issued_at <= cutoff
+            if f.combination_strategy is None
+            and f.issued_at <= cutoff
+            and f.status is not ForecastStatus.SUPERSEDED
         ]
         return max(matches) if matches else None
 

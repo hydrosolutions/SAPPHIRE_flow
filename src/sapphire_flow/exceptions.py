@@ -39,9 +39,8 @@ class ConflictError(SapphireError):
 class ForecastRetryConflictError(SapphireError):
     """Plan 327 — a forecast cycle re-run met an existing forecast under the
     same natural key ``(station_id, model_id, issued_at, parameter)`` and the
-    recomputation is NOT identical to it: decision-table row 1 (values
-    differ), row 2 (values equal, model artifact identity differs) or row 3
-    (values and artifact equal, QC verdict differs).
+    recomputation matched decision-table ROW 3 (values and artifact equal, QC
+    verdict differs): the one row nobody has decided how to treat.
 
     This is the ONLY store-write failure translated into a domain error —
     Plan 038 D5 stands (Pg store writes are deliberately not wrapped), so an
@@ -49,8 +48,9 @@ class ForecastRetryConflictError(SapphireError):
     A row-4 (identical) retry is not a conflict and raises nothing: it
     succeeds quietly and returns the stored identity.
 
-    Plan 328 later turns rows 1 and 2 into supersessions; ⛔ row 3 stays
-    refused permanently.
+    ⛔ Rows 1 and 2 do NOT raise this: Plan 328 supersedes and replaces there.
+    Row 3 stays refused permanently — widening it means amending Plan 327's
+    table first.
     """
 
     def __init__(
