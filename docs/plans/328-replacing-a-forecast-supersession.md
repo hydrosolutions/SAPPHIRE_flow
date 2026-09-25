@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-25
 plan: 328
 title: Replacing a forecast — supersession, and the readers that would still serve the old one
-scope: Build supersession: a re-run whose recomputation DIFFERS replaces the stored forecast and leaves the original on record, marked. Includes the schema work that makes the state reachable and the reader work that stops a superseded forecast being served. NOT resuming an identical re-run (Plan 327), NOT the review/publish lifecycle, NOT hindcasts (their store already does approved atomic replacement on a six-column key).
+scope: Build supersession: a re-run matching row 1 or 2 of Plan 327's decision table (values differ; or values equal but the model artifact differs) replaces the stored forecast and leaves the original on record, marked. ⛔ NOT row 3 (QC verdict differs), which 327 refuses permanently. Includes the schema work that makes the state reachable and the reader work that stops a superseded forecast being served. NOT resuming an identical re-run (Plan 327), NOT the review/publish lifecycle, NOT hindcasts (their store already does approved atomic replacement on a six-column key).
 depends_on: [327]
 blocks: []
 related: [327, 340]
@@ -18,8 +18,8 @@ source: 2026-09-25 — split out of Plan 327 at the owner's direction. A fourth 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review and a READY flip. **Depends on Plan 327**
-— 327 defines what "identical" means and refuses the differing case; this plan turns that refusal
-into a replacement.
+— 327 defines the decision table and refuses rows 1, 2 and 3; this plan turns the **row 1 and 2**
+refusals into replacements. ⛔ *Row 3 stays refused.*
 
 ## Why this plan exists
 
@@ -131,8 +131,8 @@ index, so diffing the two would prove nothing — compare against the ENUM.*
 
 ### T2 — Supersede and replace, atomically
 
-**Outcome.** A re-run whose recomputation differs marks the stored forecast superseded and writes
-the replacement, in one transaction.
+**Outcome.** A re-run matching **table row 1 or 2** marks the stored forecast superseded and writes
+the replacement, in one transaction. ⛔ *Row 3 is not this plan's and stays refused by 327.*
 
 **In.**
 - The transition and the replacement insert, **atomic together**.
@@ -208,10 +208,12 @@ today by luck.*
 
 ⚠️ **Plan 327 D3 assigns this here and 327 does NOT do it** — it documents only what it ships
 (identical succeeds, differing refuses). ⛔ *Without this task the handoff is dropped, and a reader
-of the architecture would never learn that a differing re-run replaces.*
+of the architecture would never learn that a row 1 or 2 re-run replaces.*
 
-**In.** The § 1.11 statement extended: a differing re-run **supersedes and replaces**, the original
-stays on record marked, and its evidence is retained.
+**In.** The § 1.11 statement extended: a re-run matching **row 1 or 2** of Plan 327's table
+**supersedes and replaces**, the original stays on record marked, and its evidence is retained.
+⛔ **Do NOT write "any differing re-run replaces"** — that would include **row 3**, which 327 refuses
+permanently. ⚠️ *Three earlier versions of this plan drifted on exactly that phrasing.*
 
 **Out.** ⛔ Writing it before T2 ships. *Documenting a behaviour before it exists is how this repo
 carried five months of false compliance.*

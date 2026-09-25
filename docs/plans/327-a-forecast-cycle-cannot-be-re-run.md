@@ -203,8 +203,11 @@ what a resume must not destroy or misreport, not about what counts as identical.
 ⛔ **NOT compared** — these differ on every re-run by construction and must not make a retry look
 different: the row id, `created_at`/`updated_at`, and the flow-run identity.
 
-⚠️ **Row 3 is the only refusal, and it is deliberate.** *Refusing is today's behaviour, so nothing
-regresses.* ⇒ **Whoever wants it handled amends THIS table**, not 328.
+⚠️ **THIS PLAN REFUSES ROWS 1, 2 AND 3.** ⛔ *An earlier line said "row 3 is the only refusal",
+which is wrong in a way that matters: rows 1 and 2 are refused **until Plan 328 lands**, and then
+become replacements. **Row 3 is refused PERMANENTLY** — it is the only one 328 does not take.*
+⇒ **327 refuses 1/2/3 · 328 replaces only 1/2 · row 3 stays refused.** *Refusing is today's
+behaviour, so nothing regresses.* ⇒ **Whoever wants it handled amends THIS table**, not 328.
 
 ### D2 — the dead predicate. **⚖️ CLOSED — owner: make it work. 🔑 MOVED TO PLAN 328.**
 
@@ -269,8 +272,14 @@ state.
   RETRY-INDUCED reason was added** — ⛔ *NOT that the evidence is `COMPLETE`. There is no COMPLETE
   capture path (§ 9), so demanding one is unsatisfiable, and an earlier version of this line did
   exactly that: it corrected the table and left the verification asking for the impossible.*
-  ⇒ The ordinary incompleteness reasons are **expected and permitted**; what must be absent are
-  `contributor_evidence_not_persisted` and `contributor_evidence_mismatch`.
+  ⇒ The ordinary incompleteness reasons are **expected and permitted**, and so is **honest
+  historical absence**: a contributor predating evidence capture has no physical evidence row, so
+  `fetch_evidence()` returns a synthetic `pre_capture_forecast` marker while the combination check
+  (`store/forecast_store.py:86`) still produces `contributor_evidence_not_persisted`. ⛔ *Forbidding
+  that reason unconditionally would make a branch this plan explicitly supports unsatisfiable.*
+  ⇒ **What must be absent are RETRY-INDUCED gaps and mismatches** — a contributor that IS persisted
+  being reported as not, or a hash disagreeing after a resume. **Honest historical absence is
+  permitted and must be TESTED as such.**
 - An **equivalent** retry leaves the existing evidence and blobs in place — ⛔ *it may not rewrite
   them; 0057 rejects `UPDATE`/`DELETE`.*
 - 🔴 **A stored forecast carrying the ordinary incomplete-evidence marker is still classified by the
@@ -285,8 +294,7 @@ alerted on** — that is this plan's, because the divergence exists the moment r
 ⚠️ *What a SUPERSEDED forecast means for alert selection is Plan 328's.*
 
 **Out.** ⛔ Silent overwrite (D1c) — forbidden outright, not only after publication.
-⛔ **Replacing any row** — that is Plan 328 entirely. ⚠️ *This plan REFUSES the differing case; it
-neither overwrites nor supersedes.*
+⛔ **Replacing any row** — that is Plan 328 entirely. ⚠️ *This plan REFUSES rows 1, 2 and 3; it neither overwrites nor supersedes.*
 ⛔ **Translating every `IntegrityError` into a domain error.** § (3): Plan 038 D5 deliberately leaves
 store writes unwrapped, and that stands. **Only a semantic retry conflict becomes a domain error**;
 an unrelated storage failure keeps propagating raw.
@@ -307,9 +315,9 @@ attempts to state:
 - A cycle interrupted between stations, then re-run **with an identical recomputation**: the
   stations already written are **unchanged**, the rest complete, and 🔴 **no error is recorded for
   the ones that were already there.** ⚠️ *The qualifier matters — "unchanged" is the right outcome
-  only when the content matches; when it differs this plan REFUSES (D1).*
+  only for row 4; rows 1-3 are REFUSED by this plan.*
   ⛔ *Not "the orphan is repaired" — orphans cannot occur (§ 4).*
-- 🔴 **A retry whose recomputed forecast DIFFERS from the stored one does not silently do nothing**
+- 🔴 **A retry matching row 1 or 2 does not silently do nothing**
   (§ 7 + D1's equivalence policy). It resolves per that policy, and what the caller receives is
   asserted — not only what the table holds.
 - **The station path and the GROUP path are both covered** (§ 8): one tolerates a store failure, the
@@ -322,23 +330,28 @@ attempts to state:
   complete — still does NOT write a second row.** ⭐ *The constraint's protective half must survive;
   this plan removes an obstacle, it does not remove the guard.*
 - 🔴 **A DIFFERING recomputation is REFUSED with a conflict that names what differed** — not
-  written, not silently skipped. ⛔ *Plan 328 turns this refusal into a replacement; until it lands,
-  refusing is correct and is what happens today.*
-- 🔴 **A cycle resumed between the contributors and their combination does NOT produce a
-  `contributor_evidence_not_persisted` record** — asserted, because that record is immutable once
-  written and this is the resume path's own failure mode.
+  written, not silently skipped. ⛔ *Plan 328 turns the **row 1 and 2** refusals into replacements;
+  **row 3 stays refused**. Until 328 lands, refusing all three is correct and is what happens
+  today.*
+- 🔴 **A cycle resumed between the contributors and their combination does not produce a
+  `contributor_evidence_not_persisted` record FOR A CONTRIBUTOR THAT IS PERSISTED** — asserted,
+  because that record is immutable once written and this is the resume path's own failure mode.
+  ⚠️ **And the honest case is asserted too:** a contributor predating evidence capture still yields
+  that reason, correctly, and the resume must not suppress it. ⛔ *An unconditional "never produces
+  it" would forbid a branch this plan supports.*
 - 🔴 **Alerting cannot consume content the store refused** — asserted end to end, because § (7)
   means a store-level guard alone does not achieve this.
 - A **semantic retry conflict** reaches the caller as a domain error, while an **unrelated storage
   failure still propagates raw** (§ 3, preserving Plan 038 D5). ⛔ *Both halves asserted — wrapping
   everything is the regression this clause exists to prevent.*
-  ⚠️ **An IDENTICAL retry is not a conflict and raises nothing** — it succeeds quietly. *The error is
-  for the differing case only; Plan 328 replaces that error with a replacement.*
+  ⚠️ **A row 4 (identical) retry is not a conflict and raises nothing** — it succeeds quietly. *The
+  error is for rows 1-3; Plan 328 replaces it for rows 1 and 2 only.*
 
 ## Explicitly out of scope
 
-- 🔑 **Supersession — replacing a forecast whose recomputation differs — is PLAN 328.** This plan
-  refuses that case, which is what happens today, so nothing regresses while 328 is built.
+- 🔑 **Supersession — replacing a forecast matching table rows 1 or 2 — is PLAN 328.** This plan
+  refuses those, which is what happens today, so nothing regresses while 328 is built. ⛔ *Row 3 is
+  not 328's and stays refused.*
 - **The review/publish lifecycle.** ⛔ *Not a prerequisite for either plan* — correcting a forecast a
   consumer has already read needs no review machinery. It is simply someone else's work.
 - **Hindcast dedup** — Plan 040 solved the twin with `hindcast_run_id`.
@@ -482,3 +495,15 @@ check asking for the impossible.* ⇒ It now asserts the persisted references **
 path exists**, but manually constructed COMPLETE evidence *can* be persisted, as integration
 fixtures do. ⭐ *That is exactly why a test on those fixtures would have passed while every real
 resume refused.*
+
+**2026-09-25 — 2 major, and this time I swept by PATTERN instead of by line.**
+
+| finding | fix |
+|---|---|
+| **The handoff included every refusal.** *"328 turns this refusal into a replacement"* covered **row 3**, which 328 does not take; and *"row 3 is the only refusal"* was wrong the other way — 327 refuses rows 1 and 2 too, **until 328 lands** | ⇒ stated once, plainly: **327 refuses 1/2/3 · 328 replaces only 1/2 · row 3 stays refused permanently**. **Eight** sites carried the loose phrasing; a fix of the two the reviewer named would have left six |
+| **The evidence assertion was overbroad.** It forbade `contributor_evidence_not_persisted` unconditionally, while the plan explicitly supports forecasts predating evidence capture — for those, `fetch_evidence()` returns a synthetic `pre_capture_forecast` marker and the combination check (`forecast_store.py:86`) produces that very reason | ⇒ **retry-induced** gaps forbidden; **honest historical absence permitted and TESTED**. ⛔ *The unconditional version made a supported branch unsatisfiable* |
+
+⭐ **The method changed, not just the text.** *Five rounds were spent fixing the named line and
+leaving its twins. This round I grepped both plans for the CONCEPT ("differing", "differs", "this
+refusal") and fixed every hit — thirteen across the two files. Referencing table ROWS rather than
+describing them in prose is what stops it recurring.*
