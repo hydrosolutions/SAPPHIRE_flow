@@ -4,6 +4,11 @@ Maintained by hand — update whenever a plan's status changes, a new plan is ad
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
 - ⚠️ **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — `status: COMPLETE` **but NOT MERGED** — `feat/nepal-demo-export` is still unmerged into `main` (verified 2026-09-24), so it stays OUT of `archive/`. ⛔ *A plan reading COMPLETE for work that is not on `main` is the same hazard as one reading READY after merge, in the other direction.* Original note: reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
+- **340** — [Immutable forecast evidence capture](340-forecast-evidence-capture.md) — `DRAFT`; as-used input snapshots first, then protected interim backup. T1 has a reviewed implementation on `feat/340-evidence-capture`; T2 preservation remains open.
+- **341** — [CHWRR forecast review and publication API](341-chwrr-forecast-publication-api.md) — `DRAFT`; attributed per-forecast publication and withdrawal, published-only consumer API. Depends on 340 and CHWRR identity-provider input.
+- **342** — [Alert evaluations and CHWRR warning decisions](342-chwrr-alert-evaluation-and-decisions.md) — `DRAFT`; high/low-flow evaluation ledger and human warning publish/dismiss history. Depends on 340 and 341.
+- **343** — [Operational post-event verification](343-operational-post-event-verification.md) — `DRAFT`; preliminary scoring, revisions, cases and corrective actions. Depends on 340, 341 and 342.
+- **344** — [Six-year evidence archive and replay](344-chwrr-evidence-archive-and-replay.md) — `DRAFT`; cold archive and diagnostic replay. Depends on 340–343; not required for first guarded CHWRR testing.
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
