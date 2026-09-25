@@ -100,6 +100,11 @@ class ForecastStatus(Enum):
     RAW = "raw"
     REVIEWED = "reviewed"
     PUBLISHED = "published"
+    # Plan 328 T1 — replaced by a later forecast under the same natural key.
+    # Kept on record with its values and evidence; excluded from every CURRENT
+    # read, still reachable by id. Makes `uq_forecasts_station_model_issued_param`'s
+    # `status <> 'superseded'` predicate reachable (migration 0058).
+    SUPERSEDED = "superseded"
 
 class EnsembleRepresentation(Enum):
     MEMBERS = "members"
@@ -2663,7 +2668,10 @@ class ForecastStore(Protocol):
         # parameter) already exists is classified by the decision table
         # (services/forecast_retry.py). Row 4 (IDENTICAL) returns the STORED id,
         # writes nothing and raises nothing — that is what makes a cycle that
-        # died partway re-runnable. Rows 1-3 raise ForecastRetryConflictError.
+        # died partway re-runnable. Plan 328: rows 1 and 2 mark the stored row
+        # SUPERSEDED and insert the replacement in the SAME transaction,
+        # returning the replacement's id; the original keeps its values and its
+        # evidence. Row 3 raises ForecastRetryConflictError.
         # Every other storage failure still propagates raw (Plan 038 D5).
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None: ...
     def fetch_evidence(self, forecast_id: ForecastId) -> PersistedForecastEvidence | None: ...
@@ -2677,12 +2685,14 @@ class ForecastStore(Protocol):
         model_id: ModelId | None = None,  # None = any model
         parameter: str | None = None,
     ) -> OperationalForecast | None: ...
+        # Plan 328 T3: CURRENT only — a SUPERSEDED forecast is never returned.
     def fetch_forecasts_for_cycle(
         self,
         issued_at: UtcDatetime,
         station_id: StationId | None = None,  # None = all stations
         parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
+        # Plan 328 T3: CURRENT only — a SUPERSEDED forecast is never returned.
     def transition_status(
         self,
         forecast_id: ForecastId,
@@ -2699,6 +2709,8 @@ class ForecastStore(Protocol):
         status: ForecastStatus | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
+        # Plan 328 T3: status=None means CURRENT only. Pass
+        # status=ForecastStatus.SUPERSEDED to read the replaced rows back.
     def fetch_forecast_summaries(
         self,
         station_id: StationId,
@@ -2711,6 +2723,9 @@ class ForecastStore(Protocol):
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]: ...
+        # Plan 328 T3: DELIBERATELY UNFILTERED — this is the record listing and
+        # each row carries its own status. It is also how a SUPERSEDED
+        # forecast's id is discovered for by-id access.
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
     ) -> UtcDatetime | None: ...
@@ -2720,6 +2735,7 @@ class ForecastStore(Protocol):
         # publication-cycle marker: forecast rows are the authoritative
         # record of what was published, unlike the best-effort
         # FORECAST_FRESHNESS heartbeat.
+        # Plan 328 T3: CURRENT only — a SUPERSEDED row never sets the marker.
 ```
 
 #### HindcastStore
