@@ -669,7 +669,7 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **329** — [The Forecast Lab snapshot cannot see a group-assigned model](329-the-snapshot-cannot-see-a-group-model.md)
-  — `DRAFT`, **no open decisions** (both closed by the owner 2026-09-25). Raised by the Flow Map session:
+  — `READY`, **no open decisions** (both closed by the owner 2026-09-25; 4 review rounds). Raised by the Flow Map session:
   `cmal_small` forecasts do not appear in the document the map consumes.
   ⭐ **The cause is ours, and it is the ENUMERATION, not the retrieval.**
   `fetch_active_model_assignments` asks only `station_store.fetch_model_assignments`,

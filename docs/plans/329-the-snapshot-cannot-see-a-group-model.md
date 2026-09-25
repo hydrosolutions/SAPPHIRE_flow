@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 329
 title: The Forecast Lab snapshot cannot see a group-assigned model, so the pilot is invisible to the map
@@ -17,7 +17,12 @@ source: 2026-09-25 — the Flow Map session reported that `cmal_small` forecasts
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip.
+**READY** — flipped by the orchestrator 2026-09-25 on the owner's instruction, after **four review
+rounds / eight independent reviews**. ⭐ *Round 4: one reviewer returned READY-ABLE with a single
+citation nit; the other named exactly three edits as its exit condition ("three edits, then this is
+READY-able without another structural round") — the stale index entry, the group-C membership
+clause, and the tiebreak's observable. Those three were made, plus the citation drifts it listed as
+optional, and nothing else.*
 
 ## Why this plan exists
 
