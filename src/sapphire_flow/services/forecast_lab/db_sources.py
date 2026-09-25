@@ -3,10 +3,19 @@
 Thin, pure query functions over the EXISTING store Protocols
 (`protocols/stores.py`) — no new store code and no migration. ⚠️ Plan 329
 amended D14's "no new query surface": the bundle now carries a
-`StationGroupStore`, and `fetch_active_model_assignments` issues a
-station→groups lookup plus one assignment query per group. No new store CODE
-(the Protocol and both implementations already existed), but it is a new
-query surface and a per-station query cost.
+`StationGroupStore`, and `fetch_active_model_assignments` issues, PER
+ELIGIBLE STATION, one station→groups lookup plus — for each group returned —
+one member-set query (inside `_build_group`) and one assignment query. That is
+`1 + 2g` queries per station, and the member-set query materialises the FULL
+membership of every matching group: for the 139-member pilot group that is
+~139 × 139 ≈ 19k membership rows built and discarded per export, plus one
+extra round-trip for every station in no group at all.
+
+⚖️ **Measured, named and ACCEPTED** rather than optimised: the export is an
+offline batch document over ~148 stations, not a request-path query. No new
+store CODE (the Protocol and both implementations already existed). ⛔ If the
+station count or the group size grows by an order of magnitude, resolve
+station→groups→assignments ONCE per snapshot instead of once per station.
 
 `build_snapshot()` (T3) constructs a `ForecastLabStores` bundle once per
 invocation and passes it down.

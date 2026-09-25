@@ -38,7 +38,10 @@ from sapphire_flow.api.forecast_lab_schemas import (
     SapphireForecastQuantilesSchema,
     SapphireForecastUnavailableSchema,
 )
-from sapphire_flow.services.forecast_lab.db_sources import ForecastLabStores
+from sapphire_flow.services.forecast_lab.db_sources import (
+    ForecastLabStores,
+    fetch_latest_forecast_for_model,
+)
 from sapphire_flow.services.forecast_lab.snapshot import build_snapshot
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -2726,6 +2729,13 @@ class TestGroupAssignedModelsInTheSnapshot:
             group_store=self._group_with(station.id, "cmal_small", 50),
         )
 
+        # Direct retrieval FIRST: this separates "the enumeration is blind"
+        # from "the forecast cannot be found", which is the plan's premise.
+        assert (
+            fetch_latest_forecast_for_model(stores, station.id, ModelId("cmal_small"))
+            is not None
+        )
+
         snapshot = build_snapshot(
             stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
         )
@@ -2816,7 +2826,12 @@ class TestGroupAssignedModelsInTheSnapshot:
             clock=_frozen_clock(),
         )
 
-        assert with_group.stations[0] == without.stations[0]
+        # BYTE-identical, not merely object-equal — the export is a
+        # serialized document and that is what the map consumes.
+        assert (
+            with_group.stations[0].model_dump_json()
+            == without.stations[0].model_dump_json()
+        )
 
     def test_a_group_model_does_not_displace_a_renderable_higher_priority(
         self,
@@ -2950,3 +2965,14 @@ class TestGroupAssignedModelsInTheSnapshot:
         assert len(primaries) == 1
         # Displacement, not 'only candidate': the 90/100 fallbacks render too.
         assert primaries[0].model.key == "cmal_small"
+        # …and they are STILL THERE, available and not primary. Without this
+        # an implementation that simply dropped them would also pass.
+        fallbacks = {
+            e.model.key: e
+            for e in snapshot.stations[0].sapphire_forecasts
+            if e.model.key in {"persistence_fallback", "climatology_fallback"}
+        }
+        assert set(fallbacks) == {"persistence_fallback", "climatology_fallback"}
+        for entry in fallbacks.values():
+            assert isinstance(entry, SapphireForecastAvailableSchema)
+            assert not entry.model.is_primary

@@ -388,34 +388,38 @@ class TestGroupModelAssignments:
         station_store.store_model_assignment(
             self._station_assignment(station.id, "model_y", 10)
         )
-        group_store = FakeStationGroupStore()
-        for name, priority, status in (
+        seeds = (
             ("group_a", 50, ModelAssignmentStatus.ACTIVE),
             ("group_b", 5, ModelAssignmentStatus.ACTIVE),
             ("group_c", 0, ModelAssignmentStatus.INACTIVE),
-        ):
-            self._seed_group_assignment(
-                group_store,
-                self._group(station.id, name),
-                "model_x",
-                priority,
-                status=status,
+        )
+        # BOTH insertion orders: with 90/50/5 descending, a "last ACTIVE
+        # candidate wins" reduction would pass the ascending order by luck.
+        for ordered in (seeds, tuple(reversed(seeds))):
+            group_store = FakeStationGroupStore()
+            for name, priority, status in ordered:
+                self._seed_group_assignment(
+                    group_store,
+                    self._group(station.id, name),
+                    "model_x",
+                    priority,
+                    status=status,
+                )
+
+            result = fetch_active_model_assignments(
+                _make_stores(station_store=station_store, group_store=group_store),
+                station.id,
             )
 
-        result = fetch_active_model_assignments(
-            _make_stores(station_store=station_store, group_store=group_store),
-            station.id,
-        )
-
-        # X ONCE, at the minimum of the ACTIVE candidates, before Y.
-        assert [a.model_id for a in result] == [
-            ModelId("model_x"),
-            ModelId("model_y"),
-        ]
-        # Pin the PRIORITY, not just the position: min{90,50,5,0} = 0, and
-        # X@0 still sorts before Y@10 — only 5 proves ACTIVE was filtered
-        # BEFORE the minimum was taken.
-        assert result[0].priority == 5
+            # X ONCE, at the minimum of the ACTIVE candidates, before Y.
+            assert [a.model_id for a in result] == [
+                ModelId("model_x"),
+                ModelId("model_y"),
+            ]
+            # Pin the PRIORITY, not just the position: min{90,50,5,0} = 0,
+            # and X@0 still sorts before Y@10 — only 5 proves ACTIVE was
+            # filtered BEFORE the minimum was taken.
+            assert result[0].priority == 5
 
     def test_at_an_equal_minimum_the_station_assignment_wins(self) -> None:
         """Plan 329 § 11 — neither underlying query is ordered, so the tie
@@ -454,30 +458,29 @@ class TestGroupModelAssignments:
         station_store.store_station(station)
         lower = StationGroupId(UUID(int=1))
         higher = StationGroupId(UUID(int=2))
-        group_store = FakeStationGroupStore()
-        # Seeded highest-id FIRST, so a first-wins implementation fails.
-        self._seed_group_assignment(
-            group_store,
-            self._group(station.id, "group_high", group_id=higher),
-            "model_x",
-            20,
-            time_step=timedelta(days=1),
-        )
-        self._seed_group_assignment(
-            group_store,
-            self._group(station.id, "group_low", group_id=lower),
-            "model_x",
-            20,
-            time_step=timedelta(hours=6),
-        )
+        low = ("group_low", lower, timedelta(hours=6))
+        high = ("group_high", higher, timedelta(days=1))
+        # BOTH insertion orders — seeding only one lets a first-wins OR a
+        # last-wins implementation pass, and neither is the specified rule.
+        for ordered in ((high, low), (low, high)):
+            group_store = FakeStationGroupStore()
+            for name, gid, step in ordered:
+                self._seed_group_assignment(
+                    group_store,
+                    self._group(station.id, name, group_id=gid),
+                    "model_x",
+                    20,
+                    time_step=step,
+                )
 
-        result = fetch_active_model_assignments(
-            _make_stores(station_store=station_store, group_store=group_store),
-            station.id,
-        )
+            result = fetch_active_model_assignments(
+                _make_stores(station_store=station_store, group_store=group_store),
+                station.id,
+            )
 
-        assert len(result) == 1
-        assert result[0].time_step == timedelta(hours=6)
+            assert len(result) == 1
+            # The LOWER group_id's assignment survives, either way round.
+            assert result[0].time_step == timedelta(hours=6)
 
     def test_a_group_store_failure_propagates(self) -> None:
         """Plan 329 T1 — a station in NO group now incurs a group lookup.
