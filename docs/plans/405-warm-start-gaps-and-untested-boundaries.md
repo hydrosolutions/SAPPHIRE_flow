@@ -632,3 +632,30 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     is now asserted, as the retrain one already was.
   🔬 The round-2 mutation counts were independently RE-MEASURED by monkeypatching from a scratchpad
   plugin (no repo edit) and hold: one failing test each, failing for the reason the defect exists.
+- **2026-09-26 — T2 round 4: the count was wrong AGAIN, so here is the enumeration.** ⛔ *Third
+  consecutive round with a bad number in my own message. "All NINE resolution outcomes are pinned"
+  is false: there are **TEN**, and two were unpinned.* 🔑 **The fix is not "count more carefully" —
+  it is to publish the enumeration so the number is CHECKABLE instead of asserted.**
+  `resolve_donor_config`'s exits, and the test pinning each:
+
+  | # | donor | condition | outcome | test |
+  |---|---|---|---|---|
+  | 1 | imported | installed hash differs | REFUSE | `..._refused_naming_both_hashes`, `..._refused_even_with_no_installed_path` |
+  | 2 | imported | no installed path | NULL + "no installed config path was supplied" | `..._with_no_installed_path_says_what_is_missing` ⭐ **added this round** |
+  | 3 | imported | path, but no installed hash | NULL + "could not be VERIFIED" | `test_no_installed_hash_is_not_a_refusal_and_records_no_path` |
+  | 4 | imported | hashes match | installed path recorded | `test_matching_hashes_return_the_path_and_owe_no_reason` |
+  | 5 | retrain | record self-contradictory (path AND reason) | NULL + contradiction named | `..._does_not_become_verified_looking` |
+  | 6 | retrain, verified | installed hash differs | REFUSE | `..._verified_retrained_donor_is_refused_on_a_changed_template` |
+  | 7 | retrain, verified | match, or no installed hash | carried path forward | `..._passes_when_the_template_matches`, `..._with_a_config_path_inherits_it_and_owes_no_reason` |
+  | 8 | retrain | record has NULL path | NULL + "produced by SAP3" | `..._with_a_null_path_is_not_refused`, and the gen-2/gen-3 chain |
+  | 9 | fallback | warm-start row exists, no hash in it | NULL + "carries no config hash" | `..._says_so_rather_than_denying_the_record` |
+  | 10 | fallback | no warm-start row (± a provenance row without a hash) | NULL + "no provenance row exists, or one exists without a hash" | `test_an_unknown_donor_hash_is_not_a_refusal`, `..._falls_through_without_a_false_reason` ⭐ **added this round** |
+
+  - 🔴 **Exit 2 was unpinned** because the existing no-path test supplies a MISMATCHING hash and so
+    lands on exit 1 — *two tests can look like they cover two cases while covering one twice.*
+  - 🔴 **Exit 10's provenance-row-without-a-hash shape was unpinned** although round 3 wrote TEXT for
+    it. ⛔ *Writing a sentence about a case incurs the obligation to pin it; it is reachable by direct
+    insert even though `import_external_artifact` refuses it.*
+  - 🔴 **"so it pre-dates Plan 399 T4" was FALSE.** An artifact SAP3 trained from scratch has neither
+    row *after* T4 and reaches exit 10 — the reason inferred an era it cannot know. Now it names both
+    shapes and infers nothing.

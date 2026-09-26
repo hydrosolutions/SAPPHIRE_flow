@@ -722,3 +722,57 @@ class TestComparingTheInstalledTemplate:
             "this donor HAS a warm-start record — denying it describes a "
             "different artifact"
         )
+
+    def test_an_imported_donor_with_no_installed_path_says_what_is_missing(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """The imported branch's no-path exit — UNPINNED until now.
+
+        ⚠️ Found by enumerating the resolver's exits rather than trusting a count:
+        the existing no-path test supplies a MISMATCHING hash, so it lands on the
+        refusal and never reaches this return. With nothing to pair the donor's
+        hash against, the path stays NULL and the reason says which half is absent.
+        """
+        donor = self._imported_donor(
+            db_connection, tmp_path, config_hash=self._DONOR_HASH
+        )
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection, donor, installed_config_path=None
+        )
+
+        assert path is None
+        assert sha256 == self._DONOR_HASH
+        assert reason is not None
+        assert "no installed config path was supplied" in reason
+        assert "provenance stores no path of its own" in reason
+
+    def test_a_provenance_row_with_no_hash_falls_through_without_a_false_reason(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """The fallback reached via a NULL provenance `config_hash`.
+
+        ⚠️ Unreachable through `import_external_artifact` (it refuses a model that
+        declares no hash) but the column is nullable, so the row is writable — and
+        this task wrote TEXT describing the case, which means it owes a test.
+        ⛔ The reason must not claim there is no provenance row: there is one.
+        """
+        donor = self._imported_donor(db_connection, tmp_path, config_hash=None)
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._DONOR_HASH,
+        )
+
+        assert path is None
+        assert sha256 is None
+        assert reason is not None
+        assert "no provenance row exists, or one exists without a hash" in reason
+        # ⛔ And it must not infer an era it cannot know.
+        assert "pre-dates Plan 399 T4" in reason, "the import case is still named"
+        assert "trained from scratch" in reason, (
+            "a freshly trained SAP3 artifact has neither row AFTER T4, so the "
+            "reason must not imply the donor is old"
+        )

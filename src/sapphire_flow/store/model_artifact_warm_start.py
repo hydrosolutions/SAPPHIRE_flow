@@ -391,9 +391,10 @@ def resolve_donor_config(
         "no config identity was ever captured for it"
         if inherited is not None
         else "it has no warm-start record, and no provenance row recording a "
-        "config hash — either none exists, or one exists without a hash (the "
-        "column is nullable, though `services/model_import.py` refuses an "
-        "import that declares none), so it pre-dates Plan 399 T4"
+        "config hash — either no provenance row exists, or one exists without a "
+        "hash (the column is nullable, though `services/model_import.py` refuses "
+        "an import that declares none). This is the shape of an artifact SAP3 "
+        "trained from scratch, and of an import that pre-dates Plan 399 T4"
     )
     return (
         None,
