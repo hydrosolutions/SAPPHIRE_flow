@@ -699,10 +699,15 @@ class TestCreateReviewerToken:
         ]
 
     def test_refuses_without_a_tenant(
-        self, cli_on_test_connection: sa.Connection
+        self,
+        cli_on_test_connection: sa.Connection,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         with pytest.raises(SystemExit):
             main(["create-reviewer", "--name", "no-tenant"])
+        assert "the following arguments are required: --tenant" in (
+            capsys.readouterr().err
+        )
         assert list_tokens(cli_on_test_connection) == []
 
 
