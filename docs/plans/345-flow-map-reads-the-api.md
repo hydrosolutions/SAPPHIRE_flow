@@ -3,15 +3,15 @@ status: DRAFT
 created: 2026-09-25
 plan: 345
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
-scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using an admin token — an admin-only endpoint serving the observation AND forecast QC rule sets, an admin-only per-station skill endpoint, two additive fields on existing responses, and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
+scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-scoped reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses, and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
 risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
-depends_on: []
+depends_on: [401]
 blocks: []
 related: [143, 147, 198, 235, 251, 264, 269, 272, 303, 323, 324, 329, 341]
 open_decisions: [D9]
-closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D11]   # D2-D4 2026-09-25; D1, D5-D7, D10, D11 2026-09-26
-superseded_decisions: [D8]
-source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepal DHM: see which readings QC rejected and why, judge the thresholds, compare models' skill). 2026-09-26 — owner: the map reads the API with an admin token, not an extended snapshot. Measured on origin/main and the staging database.
+closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D12]   # D2-D4 2026-09-25; D1, D5-D7, D10, D12 2026-09-26
+superseded_decisions: [D8, D11]
+source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepal DHM: see which readings QC rejected and why, judge the thresholds, compare models' skill). 2026-09-26 — owner: the map reads the API, not an extended snapshot; then, instead of an admin token, a dedicated reviewer token per dashboard (Plan 401). Measured on origin/main and the staging database.
 ---
 
 # Plan 345 — the flow map reads the /api/v1 interface
@@ -23,7 +23,8 @@ API contract is a high-risk trigger (`docs/workflow.md` § High-risk work), so i
 ordinary Claude + Codex pair the owner commissions **one more independent review before READY and
 again before the implementation PR**. The first Claude and Codex passes (2026-09-26, on
 `f71fb951`) found 17 issues, all verified; the owner decided D10 and D11 and had the rest folded.
-The corrected plan has had no review. One decision is open (D9, a follow-on).
+The owner then replaced D11's admin token with a reviewer token (D12), so this plan **depends on
+Plan 401**. The corrected plan has had no review. One decision is open (D9, a follow-on).
 
 ## Why this exists
 
@@ -132,9 +133,11 @@ whose `eval_period_end` is after the request time is not served.
 
 The observations endpoint already serves `detail` verbatim; this plan changes nothing there.
 ⚠️ **Carried forward, not decided here:** the Nepal region-bundle draft forbids copying `detail`
-verbatim for restricted DHM data, and under D11 the map's admin token reads every station the
-moment it is onboarded. So **before DHM observations are ingested on an instance the map reads**,
-the owner decides whether `detail` is stripped for that network. T6 records this in Plan 143 (DHM
+verbatim for restricted DHM data. Under D12 the Swiss dashboard cannot see Nepal stations at all,
+and the Nepal dashboard sees its own client's data. The exposure left is the **existing**
+observations route, which any Nepal-scoped token — third-party consumers included — can read. So
+**before DHM observations are readable by a Nepal consumer token**, the owner decides whether
+`detail` is stripped for consumers on that network. T6 records this in Plan 143 (DHM
 onboarding), where it will be seen.
 
 ### D7 — all skill breakdowns. **⚖️ CLOSED — owner, 2026-09-26.**
@@ -160,7 +163,7 @@ The map reviews forecast products, and forecast flags cannot be judged against o
 (`range_check` exists in both sets; the other six forecast kinds would match nothing). The rules
 endpoint serves both sets, each labelled, and the consumer page states the matching rule (D4).
 
-### D11 — the map uses an admin token. **⚖️ CLOSED — owner, 2026-09-26.**
+### D11 — the map uses an admin token. **SUPERSEDED by D12, 2026-09-26.** Kept for the record.
 
 The map reads with an admin token, so **nothing a consumer token can read changes**: the two new
 routes are **admin-only**, like the existing skill chart, and the consumer surface in
@@ -170,10 +173,20 @@ routes are **admin-only**, like the existing skill chart, and the consumer surfa
 - Station scope does not filter an admin token: the map sees every station, Nepal included once
   onboarded (hence D6's carry-forward).
 
+### D12 — each dashboard uses a reviewer token (Plan 401). **⚖️ CLOSED — owner, 2026-09-26.**
+
+The owner asked for a dedicated identity per dashboard (BAFU/Swiss, Nepal) instead of an admin
+token. Plan 401 adds a `reviewer` role: GET-only, bound to one tenant, scoped exactly like a
+consumer, plus the routes gated REVIEW. The two new routes are gated with `require_reviewer`:
+reviewer and admin tokens pass, a consumer gets 403. **Nothing a consumer can read changes.** The
+Swiss dashboard's token sees only Swiss stations. The token still stays server-side in the map.
+This plan waits for Plan 401.
+
 ## Endpoint contract
 
-Both new routes are `GET`, read-only, registered on a router gated with `Depends(require_admin)`.
-A consumer token receives 403. Timestamps follow the API's existing UTC convention.
+Both new routes are `GET`, read-only, registered on a router gated with `Depends(require_reviewer)`
+(Plan 401). A consumer token receives 403; a reviewer token is station-scoped as on every other
+route (the rule sets carry no station data). Timestamps follow the API's existing UTC convention.
 
 **`GET /api/v1/qc/rules`** — both QC rule sets as the serving process resolves them:
 
@@ -225,7 +238,7 @@ Row selection:
 Sorted by `(model_id, time_step_seconds, lead_time_hours, season, flow_regime, metric)`, nulls
 first. `evaluated_on`: eval window inside the training period → `training_period`; disjoint →
 `outside_training_period`; otherwise `overlaps_training_period`. Empty `rows` when nothing
-qualifies (the baselines today). Unknown station → 404.
+qualifies (the baselines today). Unknown or out-of-scope station → 404.
 
 **Additive fields on existing responses:** `ObservationResponse.qc_rule_version` (nullable, the
 stored value); `ForecastSummary.qc_flags` (the stored forecast QC flags, same four keys; `[]` when
@@ -234,7 +247,7 @@ none) — inherited by `ForecastDetail`.
 ## Tasks
 
 Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate). Every new route
-is added to `tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive` as ADMIN.
+is added to `tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive` as REVIEW (Plan 401).
 
 ### T1 — `GET /api/v1/qc/rules`
 
@@ -249,19 +262,19 @@ with a code-derived severity per rule and a truthful `source`.
   call them (behaviour-preserving; the onboard copy is removed).
 - `services/qc.py` and `services/forecast_qc.py` — a severity constant keyed by `QcRuleId` /
   `ForecastQcRuleId`, covering every kind.
-- A new admin-gated route module (e.g. `api/routes/api_review.py`, holding T2's route too),
+- A new reviewer-gated route module (e.g. `api/routes/api_review.py`, holding T2's route too),
   response models in `api/schemas.py`, registration in `api/__init__.py` with
-  `Depends(require_admin)`, and the router comment there (`:62-67`) naming the new admin-only routes.
+  `Depends(require_reviewer)`, and the router comment there (`:62-67`) naming the new REVIEW routes.
 
 **Out:** editing any rule function, threshold, rule version or selection; publishing a path; any
-consumer-token access.
+consumer-token access; the reviewer role itself (Plan 401).
 
 **Pre-change:** (1) per set, a test running each rule kind against a violating input and asserting
 the emitted status equals the severity constant fails on the missing constant, then passes unchanged
 once it exists — the constant describes the code, it does not change it; (2) a request to the route
 returns 404.
 
-**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. The three flows' loaded sets are unchanged in every case. Admin token → 200; consumer token → 403; no token → 401.
+**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. The three flows' loaded sets are unchanged in every case. Reviewer and admin tokens → 200; consumer token → 403; no token → 401.
 
 ### T2 — `GET /api/v1/stations/{id}/skill`
 
@@ -280,7 +293,7 @@ or comparability judgement; any change to what the snapshot exports.
 groups that both assign the same model at different priorities, whose result carries no group
 identity; (2) a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/services/forecast_lab/ tests/unit/api/` plus the new test file(s), named in the PR — superseded-artifact rows excluded; a model assigned both directly and through a group uses the winning scope's active artifact; two groups assigning the same model resolve to the group with the smaller `priority` value, then the lower `group_id` on a tie; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present; `evaluated_on` takes each of its three values; `?model_id=` filters; unknown station → 404; the existing snapshot tests pass unchanged.
+**Verification:** `uv run pytest tests/unit/services/forecast_lab/ tests/unit/api/` plus the new test file(s), named in the PR — superseded-artifact rows excluded; a model assigned both directly and through a group uses the winning scope's active artifact; two groups assigning the same model resolve to the group with the smaller `priority` value, then the lower `group_id` on a tie; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present; `evaluated_on` takes each of its three values; `?model_id=` filters; unknown station → 404; a reviewer token for another tenant's station → 404; the existing snapshot tests pass unchanged.
 
 ### T3 — additive QC fields on existing responses
 
@@ -315,8 +328,8 @@ committed, and a test fails when it drifts (the snapshot schema's mechanism, Pla
   (`"1.2"`, `"1.2-datum"`, `"1.2-datum-skip"`) are code generations, not rule-set versions, and
   `-datum-skip` means two rules were skipped; forecast flag versions; `evaluated_on`; the token must
   stay server-side.
-- `docs/standards/security.md` — one sentence adding the two admin-only routes to the admin-gated
-  list (the consumer surface is unchanged); the `docs/touchpoint-maps.md` API paragraph (new routes,
+- `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces (the consumer
+  surface is unchanged); the `docs/touchpoint-maps.md` API paragraph (new routes,
   the contract file).
 
 **Out:** serving the schema; versioning the path (`/api/v2`).
@@ -328,8 +341,10 @@ and watching it fail.
 
 ### T5 — route classification for Plan 341
 
-**Outcome:** Plan 341's route-classification list names the two new routes as **admin-only internal
-diagnostic** and notes they carry no forecast values, so its publication gate does not apply to them.
+**Outcome:** Plan 341's route-classification list names the two new routes as **REVIEW-class internal
+diagnostic** and notes they carry no forecast values, so its publication gate does not apply to
+them; and records that Plan 401's reviewer role is the natural holder of 341's internal-diagnostic
+read access to unpublished forecasts — 341 decides.
 
 **In:** a note in `docs/plans/341-chwrr-forecast-publication-api.md`.
 
@@ -345,11 +360,12 @@ diagnostic** and notes they carry no forecast values, so its publication gate do
 what changed, in the repository and not only in a message.
 
 **In:**
-- A reply to the map session: endpoints, `docs/spec/api-v1-map.openapi.json`, the admin token and
-  that it must stay server-side, matching by rule set and `rule_id`, the `time_step_seconds`
+- A reply to the map session: endpoints, `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
+  `access-tokens create-reviewer`) and that it must stay server-side, matching by rule set and `rule_id`, the `time_step_seconds`
   correction, the in-sample label, and that the snapshot stays v2 for archived BAFU forecasts.
-- **Plan 143** (DHM onboarding): the D6 precondition — before DHM observations are ingested on an
-  instance the map reads, the owner decides whether flag `detail` is stripped for that network.
+- **Plan 143** (DHM onboarding): the D6 precondition — before DHM observations are readable by a
+  Nepal consumer token, the owner decides whether flag `detail` is stripped for consumers on that
+  network.
 - A note to the region-bundle v3 draft's owning session that QC and skill are station-level
   `/api/v1` endpoints, plus the D6 carry-forward.
 - A status note in Plan 251 recording D1's supersession; the `docs/plans/README.md` entry.
@@ -378,7 +394,8 @@ After staging deploy (orchestrator), before the map is told:
    not prove equal rules (overlays and bind-mounted file contents also decide).
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and no row
    belongs to a superseded artifact.
-3. Admin token → 200 on both new routes; a consumer token → 403.
+3. A Swiss reviewer token → 200 on both new routes and 404 on a non-Swiss station's `/skill`; a
+   consumer token → 403.
 
 ## Explicitly out of scope
 
@@ -402,6 +419,9 @@ After staging deploy (orchestrator), before the map is told:
   non-null training period and lead time, three `evaluated_on` values; T3's real files and
   per-gap failing tests; consumer page semantics; skill-chart premise corrected; D6 precondition
   recorded in Plan 143; D8 moved to `superseded_decisions`; marked high-risk.
+- 2026-09-26 — owner replaced the admin token with a reviewer token per dashboard (D12, Plan 401);
+  D11 superseded; the new routes are REVIEW-gated; D6's carry-forward narrowed to consumer tokens;
+  depends on Plan 401.
 
 ## Dependency graph
 
