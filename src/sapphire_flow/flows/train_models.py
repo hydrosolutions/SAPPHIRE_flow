@@ -51,7 +51,11 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.model import ModelParams
+    from sapphire_flow.types.model import (
+        GroupTrainingData,
+        ModelParams,
+        StationTrainingData,
+    )
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
@@ -253,17 +257,17 @@ def _train_model_task(
     if base_artifact is not None:
         if unit.station_id is not None:
             return retrain_station_model(
-                model=model,
+                model=cast("StationForecastModel", model),
                 base_artifact=base_artifact,
-                data=data,
+                data=cast("StationTrainingData", data),
                 params=params,
                 rng=rng,
                 model_id=str(unit.model_id),
             )
         return retrain_group_model(
-            model=model,
+            model=cast("GroupForecastModel", model),
             base_artifact=base_artifact,
-            data=data,
+            data=cast("GroupTrainingData", data),
             params=params,
             rng=rng,
             model_id=str(unit.model_id),
