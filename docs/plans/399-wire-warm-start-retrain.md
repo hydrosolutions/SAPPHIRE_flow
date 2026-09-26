@@ -144,6 +144,24 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     model. ⛔ *And if T1 does NOT give the adapter a `retrain`, no FI model is ever retrainable.*
     ⇒ **Support must be interrogated on the INNER model and surfaced through an explicit proxy**,
     following the `config_hash:492` precedent.
+    ⚠️ **Which protocol matters, and the draft was imprecise.** *Against **FI's** `RetrainableModel`
+    the adapter fails the structural check anyway — FI's protocol extends `ForecastModel` and so
+    requires `input_requirement`, which the adapter does not expose (it exposes `data_requirements`,
+    `adapters/forecast_interface.py:473`). The false-positive danger is real for a **SAP3-side**
+    retrain protocol declaring only `retrain`, which is what T1 would naturally add.* ⛔ *Either way
+    the conclusion stands — read support off the inner model — but T1 must say which protocol it is
+    checking against, because the two behave differently.*
+
+13. 🔑 **THE DONOR'S OWN CONFIG IDENTITY IS ALREADY RECORDED — and today's installed file is the
+    WRONG place to read it.** `_shim.py:598-600` computes `config_hash` from
+    `_config_path(type(self).CONFIG_FILENAME).read_bytes()` — **the currently installed template**.
+    The DONOR's hash was captured separately at import
+    (`services/model_import.py:461`, `config_hash=declared_config_hash`) and is readable back through
+    `store/model_artifact_provenance.py`.
+    ⇒ 🔴 **If the vendored template changes after import, recording its new path and hash would
+    satisfy a naive "the hash matches the file it names" check while MISIDENTIFYING the donor's
+    configuration.** ⛔ *T4 must resolve the donor's recorded provenance and compare, not hash
+    whatever is on disk now.*
 
 ## Owner decisions
 
@@ -167,8 +185,8 @@ have its base config so that can also be stored (I mean the paths to params and 
 | | what | why it is recoverable |
 |---|---|---|
 | the base **artifact id** | which weights were fine-tuned | chosen by the caller (D1) — known at the call |
-| the path to the base **config** | the model template the donor was built from | `model_artifacts.artifact_path` already exists; the vendored config path is derivable from the model |
-| the path to the base **params** | the configuration the donor was trained with | D3's channel, once it exists — ⚠️ *for the CURRENT `cmal_small` this is genuinely absent (§ 5: nothing has ever received params), so the field is nullable and the first retrain records none* |
+| the path to the base **config** | the model template the donor was built from | 🔑 **Resolved from the DONOR's own provenance, not from today's installed file** — `model_artifact_provenance` records the `config_hash` captured at import (`services/model_import.py:461`) and `store/model_artifact_provenance.py` reads it back. ⛔ *An earlier version said "derivable from the model", which would record the CURRENTLY installed template — see § 13* |
+| the path to the base **params** | the configuration the donor was trained with | D3's channel, once it exists. ⚠️ **For `cmal_small` this is UNKNOWN, not known-absent** (§ 5a) — the field is nullable, and T4 must INSPECT the donor's provenance rather than assume. ⛔ *An earlier version of this cell asserted it "is genuinely absent … the first retrain records none". That is the invalid inference § 5a corrects, left standing here.* |
 
 ⚠️ **A path alone is weak provenance — pin it with the hash that already exists.** *`_shim.py`'s
 `config_hash` (SHA-256 of the vendored config's bytes) is already computed and already used by
@@ -254,6 +272,12 @@ which a stub satisfies.*
 - 🔴 **A model WITHOUT retrain is REFUSED with a typed error naming it** (D2), asserted.
   ⛔ *Explicitly assert that `train` is NOT called — "an error was raised" would also pass on an
   implementation that trained from scratch and then failed for some other reason.*
+- 🔴 **A NON-DEFAULT config supplied by the caller arrives at the INNER model through `retrain`** —
+  asserted at BOTH boundaries it crosses (`adapters/forecast_interface.py:1070`'s
+  `config=params` and `_shim.py:609`'s `config=config` have retrain equivalents).
+  ⛔ *T2 delegated this to T1 ("T1 covers retrain's own config arrival") and an earlier version of T1
+  did NOT cover it — so nothing verified it. Without this, an implementation can pass T2's
+  ordinary-training config tests, hardcode a fine-tuning strategy, and still look correct.*
 - 🔴 **An FI model WITHOUT `retrain`, WRAPPED IN THE ADAPTER, is refused with the typed error**
   (§ 12) — ⛔ *this is the case a bare structural `isinstance` would silently pass, so testing the
   inner model alone proves nothing.*
@@ -308,6 +332,9 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
 - ⚠️ **A path that does NOT auto-promote.** `flows/train_models.py:208` calls
   `store_and_promote_artifact()`; the retrain path must store WITHOUT promoting.
 - 🔴 **One real run on staging**, since § 10/§ 11 show this path has never worked here.
+- 🔴 **The config SUPPLIED, the config the model RECEIVED, and the config RECORDED against the
+  artifact are all the same** — asserted at the flow level on the real run. ⛔ *Three separate values
+  today; checking only that "a config was recorded" would pass while recording something else.*
 - 🔴 **T3 must actually CALL T4's recorder.** ⛔ *T4 ships a helper and a migration; nothing else in
   the plan forces the retrain path to pass the parent through — so the plan could end with a lineage
   recorder nobody calls, which is § 3's defect all over again.*
@@ -368,11 +395,17 @@ none.**
 - **Parent id recorded on EVERY retrain; base config path recorded; base params path recorded ONLY
   when the base has one** — and **all three absent on a fresh train**, asserted both ways.
   ⛔ *An earlier version said "all three recorded on retrain", which an implementer would write as
-  "all three non-null" — and that FAILS on `cmal_small`, the only candidate base (§ 5a).*
+  "all three non-null". ⚠️ Whether that holds for `cmal_small` is a T4 MEASUREMENT — its donor params
+  are UNKNOWN, not known-absent (§ 5a). Do not encode either answer as an assumption.*
 - The parent is resolvable to a real artifact row.
 - 🔴 **A base whose params are UNKNOWN still retrains, and stores a NULL params path with a reason**
   — asserted (§ 5a). ⚠️ *Whether `cmal_small` is that case is a T4 measurement, not an assumption.*
-- Each stored path carries its hash where one exists, and the hash matches the file it names.
+- 🔴 **The donor's config is identified from ITS OWN recorded provenance and compared with the
+  donor's import-time hash** (§ 13) — ⛔ *"the hash matches the file it names" is NOT sufficient: it
+  passes while recording today's template.*
+- 🔴 **A CHANGED-TEMPLATE case**: the vendored config differs from the donor's recorded hash ⇒ the
+  mismatch is rejected, or the donor's actual configuration is preserved. ⛔ *Matching today's file
+  alone must not pass.*
 - 🔴 **Deleting or superseding a parent does not orphan the child's record** — ⚠️ *state the intended
   behaviour rather than discovering it; supersession already exists (Plan 328).*
 
@@ -435,8 +468,10 @@ none.**
     **cannot**, not merely because nobody ran it. New § 11; T3 now owns the wiring, and its RED test
     moved to the FLOW level — ⛔ *the draft's "T1/T2's tests cover the mechanism" was false: those
     exercise the adapter directly and never reach the missing resolver.*
-  - 🔴 **I inferred a fact I had not measured.** From "run params are an empty dict" I concluded
-    "`cmal_small` has no training params, so the first retrain records none". **Invalid** — it was
+  - 🔴 **I inferred a fact I had not measured.** ⚖️ *(Round 3 found this correction had NOT reached
+    D1's table or T4's verification — see the 2026-09-26 round-3 entry.)* From "run params are an
+    empty dict" I concluded "`cmal_small` has no training params, so the first retrain records none".
+    **Invalid** — it was
     IMPORTED, not trained here, so our empty params say nothing about its external training. New
     § 5a separates three kinds of config (vendored template / run params / the donor's own), and T4
     must now INSPECT the donor rather than assume NULL.
@@ -499,3 +534,30 @@ none.**
   the phase-1 note, a changelog line asserting D3 open in the present tense, and the index entry's
   machine field plus its prose. The index is the corpus entry point and `open_decisions` reads as a
   gate — exactly the failure recorded against plan 329 two days ago, repeated.*
+- **2026-09-26 — THIRD review round: NEEDS CHANGES, three majors. Every finding verified.**
+  ⛔ *Two of the three are faults in the PREVIOUS fold, not gaps in the original draft.*
+  - 🔴 **The donor-params correction reached § 5a and nowhere else.** D1's table still asserted the
+    params were *"genuinely absent … the first retrain records none"*, and T4's verification still
+    said requiring non-null *"FAILS on `cmal_small`"*. ⛔ **Third round running, third instance of
+    the same failure mode: correct one site, leave the others.** Both fixed, and the earlier
+    changelog entry now cross-references this one so it cannot be read as still current.
+  - 🔑 **A genuine improvement I had missed: the donor's config identity is ALREADY RECORDED.** The
+    import path captures the donor's `config_hash` and provenance reads it back — so we can identify
+    the donor's actual configuration. ⛔ *My "derivable from the model" would instead have hashed
+    TODAY's installed template, which satisfies a naive "hash matches the file" check while
+    misidentifying the donor if the template has changed since import.* New § 13; T4 now resolves the
+    donor's recorded provenance and must handle a changed-template case.
+  - 🔴 **The previous fold removed a check and promised a replacement that did not exist.** T2's RED
+    test was narrowed to `train` with the note *"T1 covers retrain's own config arrival"* — and T1
+    did not. ⇒ Nothing verified that a caller's config reaches the model on the retrain path. T1 now
+    asserts it at BOTH boundaries, and T3 asserts that the config SUPPLIED, RECEIVED and RECORDED are
+    the same value — ⚠️ *three distinct things today; "a config was recorded" would pass while
+    recording something else.*
+  - **§ 12's explanation was imprecise about WHICH protocol.** Against FI's own `RetrainableModel` the
+    adapter fails the structural check regardless, because that protocol also requires
+    `input_requirement`, which the adapter does not expose. The false-positive danger is real for a
+    SAP3-side protocol declaring only `retrain` — which is what T1 would naturally add. The
+    conclusion is unchanged; T1 must now name the protocol it checks against.
+  - ⭐ **Confirmed unchanged by this round:** the seven config sites, the missing resolver, the
+    adapter's absent `__getattr__` and its quoted warning, the narrowed forcing claim, both corrected
+    citations, the index entry, and the T2→T1→T4→T3 ordering.
