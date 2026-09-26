@@ -49,13 +49,22 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
    | layer | file | has `retrain`? |
    |---|---|---|
    | our model Protocols | `protocols/forecast_model.py` | ❌ `train` / `predict` only |
-   | the FI adapter | `adapters/forecast_interface.py:1058` | ❌ `train` only |
+   | the FI adapter | `adapters/forecast_interface.py:1062` | ❌ `train` only |
    | the aquacast shim | `models/aquacast/_shim.py:606` | ❌ `train` / `predict` only |
    | the training service | `services/training.py:37,47` | ❌ both call `model.train(...)` |
-5. 🔴 **THERE IS NO CALLER-SUPPLIED CONFIG CHANNEL.** `flows/train_models.py:170` hardcodes
-   **`params: dict = {}`**, which flows unchanged to `services/training.py:43,53` →
-   `adapters/forecast_interface.py:1070` (`config=params`) → `_shim.py:609` (`config=config`).
-   ⇒ **No caller can supply training configuration.** Fine-tuning cannot work without one: the
+5. 🔴 **THERE IS NO CALLER-SUPPLIED CONFIG CHANNEL, AT SEVEN SITES.**
+   `flows/train_models.py:170` hardcodes **`params: dict = {}`**, which flows unchanged to
+   `services/training.py:43,53` → `adapters/forecast_interface.py:1070` (`config=params`) →
+   `_shim.py:609` (`config=config`). ⛔ *An earlier version named only that one site.* Measured, the
+   empty mapping is hardcoded at **seven**:
+   | file | lines |
+   |---|---|
+   | `flows/train_models.py` | `:170` |
+   | `flows/onboard_model.py` | `:368`, `:375` |
+   | `services/model_onboarding.py` | `:552`, `:585`, `:1453`, `:1457` |
+   ⇒ **No caller can supply training configuration, on any path** — ⚠️ *including onboarding, so
+   "every current model trains through THIS path" was also wrong: a newly onboarded model trains
+   through the onboarding path.* Fine-tuning cannot work without one: the
    strategy alone is a required choice (§ 7). ⇒ **D3.**
    ⛔ *An earlier version of this item said "no model receives ANY configuration". **That
    overstates it**, and the overstatement propagated into a false conclusion (§ 5a). Three distinct
@@ -75,7 +84,7 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
    is known to be absent.** T4 must not mandate NULL for this donor without inspecting its
    provenance first.
 6. ✅ **The group assembler reads the operational REANALYSIS binding** —
-   `services/training_data.py:630` `assemble_group_training_data` delegates per station
+   `services/training_data.py:620` `assemble_group_training_data` delegates per station
    (`:639-650`) and station assembly reads `station_store.fetch_reanalysis_bindings(...)` (`:460-469`),
    the same binding `operational_inputs.py:1004-1006` uses.
    🔴 **But forcing parity is PARTIAL, and an earlier version of this item overstated it.**
@@ -122,6 +131,21 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     ⭐ *`services/model_registry.py:30` `build_station_code_resolver()` already exists; it is simply
     not wired into the training flow.* ⛔ *Mirroring `train` for `retrain` would faithfully
     reproduce this failure, which is why T3 owns it.*
+
+12. 🔴 **A STRUCTURAL `isinstance` ON THE ADAPTER WOULD SILENTLY DEFEAT D2.**
+    `ForecastInterfaceAdapter` (`adapters/forecast_interface.py:463`) wraps `self._model` and has
+    **no `__getattr__` passthrough** — the repo already learned this and warns in-code at
+    `:492-502`, where `config_hash` needs an explicit proxy because otherwise *"every real FI model
+    reaches `import_external_artifact` wrapped, and `getattr(model, 'config_hash', None)` silently
+    returns `None` regardless of what the wrapped model declares, disabling the drift check
+    entirely."*
+    ⇒ **The same trap, with teeth:** if T1 gives the adapter an unconditional `retrain` method, a
+    `runtime_checkable` structural `isinstance` passes for **every** FI model — *including ones with
+    no `retrain`* — so **D2's refusal never fires for the exact case it exists for**, and the failure
+    surfaces as an `AttributeError` deep inside the adapter instead of a typed error naming the
+    model. ⛔ *And if T1 does NOT give the adapter a `retrain`, no FI model is ever retrainable.*
+    ⇒ **Support must be interrogated on the INNER model and surfaced through an explicit proxy**,
+    following the `config_hash:492` precedent.
 
 ## Owner decisions
 
@@ -201,9 +225,12 @@ does not.
 - The passthrough in `adapters/forecast_interface.py` and `models/aquacast/_shim.py` (§ 4).
 - `retrain_station_model` / `retrain_group_model` in `services/training.py`, mirroring the existing
   pair.
-- **The capability check** — `isinstance(model, RetrainableModel)` — and, per **D2 (closed:
-  REFUSE)**, a typed error naming the model when it is false. ⛔ *No fall-back to `train` at any
-  layer.*
+- 🔴 **The capability check, interrogated on the INNER FI model and surfaced through an EXPLICIT
+  PROXY** (§ 12) — following the `config_hash` precedent at `adapters/forecast_interface.py:492-502`.
+  ⛔ *NOT a bare `isinstance(adapter, RetrainableModel)`: the adapter has no `__getattr__`, so an
+  unconditional `retrain` on it makes the structural check pass for EVERY FI model and D2's refusal
+  never fires for the one case it exists for.* Per **D2 (closed: REFUSE)**, a typed error naming the
+  model when support is absent. ⛔ *No fall-back to `train` at any layer.*
 - ⚠️ **A note in `docs/fi-issues/004` recording the divergence** — FI's own comment says SAP3 falls
   back to `train`; we refuse. ⭐ *One paragraph, not a new issue.*
 
@@ -220,6 +247,9 @@ which a stub satisfies.*
 - 🔴 **A model WITHOUT retrain is REFUSED with a typed error naming it** (D2), asserted.
   ⛔ *Explicitly assert that `train` is NOT called — "an error was raised" would also pass on an
   implementation that trained from scratch and then failed for some other reason.*
+- 🔴 **An FI model WITHOUT `retrain`, WRAPPED IN THE ADAPTER, is refused with the typed error**
+  (§ 12) — ⛔ *this is the case a bare structural `isinstance` would silently pass, so testing the
+  inner model alone proves nothing.*
 - 🔴 **Every existing model still trains unchanged** — the Swiss statistical models do not implement
   retrain and must be untouched.
 
@@ -229,6 +259,17 @@ which a stub satisfies.*
 
 **In.** D3's channel, replacing `flows/train_models.py:170`'s hardcoded `{}` (§ 5), and **the config
 recorded against the produced artifact**.
+
+- 🔴 **Say WHERE the recorded config lives, and own its migration.** ⛔ *An earlier version required
+  "the config recorded against the produced artifact" while declaring no schema change — leaving two
+  migrations (T2's and T4's) in the same provenance area with no statement of which owns what.*
+  ⚠️ **Decide column-vs-side-table explicitly**: § 9 frames the gap as a missing *column*, but T4
+  follows `model_artifact_lineage.py`'s side-table precedent, and `db/metadata.py:176-182` argues for
+  the latter — *"A join table (not a singular FK on `model_artifacts`) … `model_artifacts` itself
+  gains no new column."* ⇒ **One decision, stated once, and ONE task owns each migration.**
+- ⚠️ **The other six `{}` sites (§ 5)**: either bring them into this task or state explicitly, with
+  the reason, that onboarding keeps `{}` for now. ⛔ *Completeness against the In-list is the gate
+  this project checks; silence reads as an omission.*
 
 **Out.** ⛔ Validating or typing the fine-tuning strategy — owner: opaque for v1 (§ 7). ⛔ Changing
 what any model does with config it already ignores.
@@ -260,6 +301,12 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
 - ⚠️ **A path that does NOT auto-promote.** `flows/train_models.py:208` calls
   `store_and_promote_artifact()`; the retrain path must store WITHOUT promoting.
 - 🔴 **One real run on staging**, since § 10/§ 11 show this path has never worked here.
+- 🔴 **T3 must actually CALL T4's recorder.** ⛔ *T4 ships a helper and a migration; nothing else in
+  the plan forces the retrain path to pass the parent through — so the plan could end with a lineage
+  recorder nobody calls, which is § 3's defect all over again.*
+- ⚠️ **Run preconditions, stated before the run**: which base artifact id, expected runtime and
+  hardware, and what distinguishes "failed for an environmental reason" from "T1/T2 are wrong".
+  ⭐ *§ 10 warns this path has never worked; without this an implementer blind-retries.*
 
 **Out.** ⛔ Promoting the result, assigning it, or letting it serve a forecast — that is a separate,
 owner-gated act. ⛔ Judging whether it is any good (skill comparison, outside this plan).
@@ -271,7 +318,13 @@ group training from ever running.* The test must fail with the resolver error to
 
 **Verification.**
 - An artifact is produced, stored, and deserializes back to a working model.
-- 🔴 **A run that names no base artifact does NOT silently train from scratch** — asserted (D1).
+- 🔴 **A run that ASKS FOR A RETRAIN but names no base artifact is refused, and does NOT fall
+  through to `train`** — asserted (D1).
+  ⛔ *An earlier version of this bullet said "a run that names no base artifact does NOT silently
+  train from scratch". **That was wrong and dangerous**: an ORDINARY training run names no base
+  artifact and MUST train from scratch — that is the existing flow every Swiss statistical model uses
+  (§ 5). As worded it could be satisfied by breaking ordinary training, and it contradicted T1's
+  "every existing model still trains unchanged" and T2's "no config supplied → behaviour unchanged".*
 - 🔴 **It is NOT promoted and NOT assigned** — asserted, not assumed, and note that the existing
   store step promotes by default (`flows/train_models.py:208`). ⭐ *`cmal_small`'s current artifact
   keeps serving until a human decides otherwise.*
@@ -305,8 +358,10 @@ already records those.
 none.**
 
 **Verification.**
-- Parent id, base config path and base params path recorded on retrain; **all three absent on a
-  fresh train**, asserted both ways.
+- **Parent id recorded on EVERY retrain; base config path recorded; base params path recorded ONLY
+  when the base has one** — and **all three absent on a fresh train**, asserted both ways.
+  ⛔ *An earlier version said "all three recorded on retrain", which an implementer would write as
+  "all three non-null" — and that FAILS on `cmal_small`, the only candidate base (§ 5a).*
 - The parent is resolvable to a real artifact row.
 - 🔴 **A base whose params are UNKNOWN still retrains, and stores a NULL params path with a reason**
   — asserted (§ 5a). ⚠️ *Whether `cmal_small` is that case is a T4 measurement, not an assumption.*
