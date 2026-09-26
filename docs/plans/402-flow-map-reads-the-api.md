@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
@@ -18,10 +18,12 @@ source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepa
 
 ## Status
 
-**DRAFT — HIGH RISK — review corrections folded, not re-reviewed.** An external-facing API
-contract is a high-risk trigger (`docs/workflow.md` § High-risk work): the ordinary Claude + Codex
-pair on the current text, plus one owner-commissioned review before READY and again before the
-implementation PR. One decision is open (D9, a follow-on). This plan **depends on Plan 401**.
+**READY — HIGH RISK.** Set 2026-09-26 by the orchestrator session on the owner's instruction,
+after the ordinary Claude + Codex rounds, the owner-commissioned API-contract review, and a final
+check of the exact text (Claude and Codex both clean on `296f20a6`). High risk (an external-facing
+API contract, `docs/workflow.md` § High-risk work): the implementation PR needs one more
+owner-commissioned review before it is opened. D9 (a QC what-if dry run) stays open as a separate
+follow-on and does not block this plan. This plan **depends on Plan 401**, which is built first.
 
 ## Why this exists
 
