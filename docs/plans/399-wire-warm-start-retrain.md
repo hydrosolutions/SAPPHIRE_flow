@@ -25,7 +25,8 @@ plan asserts that did NOT ship, THREE verification bullets never written (an ear
 CRASHES. The status is corrected below rather than quietly amended, because this plan is now the
 record of what exists.*
 
-🔴 **WHAT REMAINS — SEVEN items, not one.**
+🔴 **WHAT REMAINS — EIGHT items, not one.** ⛔ *An earlier version said SEVEN, counting only two
+unwritten verification bullets. There are THREE — B3 below was in no table at all.*
 
 **A. Four CODE gaps the plan asserts as done:**
 | # | the plan says | what shipped |
@@ -41,11 +42,12 @@ record of what exists.*
 ⛔ **It raises AFTER the new artifact has been stored**, so a second-generation fine-tune leaves a
 saved model with no provenance and an error.
 
-**B. Two verification bullets never written:**
+**B. THREE verification bullets never written:**
 | # | the bullet | reality |
 |---|---|---|
 | B1 | T1: a non-default config *"asserted at BOTH boundaries"*, and an FI model without retrain *"WRAPPED IN THE ADAPTER"* refused | 🔴 **No test touches `ForecastInterfaceAdapter.retrain` or the shim's `retrain`.** The wrapped-adapter test uses a local stand-in that **re-implements the capability check in its own body** — ⛔ *verbatim the anti-pattern this plan's own changelog claims was deleted.* |
 | B2 | T2: *"Assert the no-config case on BOTH"* — the training flow AND the four onboarding sites | 🔴 **Only the training-flow half shipped.** ⚠️ *Which is precisely the divergence the bullet was written to prevent, and it had already been re-litigated three times.* |
+| B3 | T3 Pre-change: *"A RED test at the FLOW level, through `discover_models()` / `adapt_if_fi` … must fail with the resolver error today"* | 🔴 **Never written.** Every retrain test injects a station-scoped fake straight into the flow; deleting the resolver wiring fails no test. ⛔ *This bullet was in NO item table until now — the count said "two" while three were missing, so the one covering THIS plan's headline blocker went unlisted.* |
 
 **C. And the staging run, unchanged:**
 > T3: *"One real run on staging"* — ⛔ **not done.** The host has been unreachable all session
@@ -843,7 +845,7 @@ none.**
     after the FIRST time, hours earlier.*
   - 🔴 **"T1, T2 and T4 are complete" and "WHAT REMAINS — exactly one thing" were FALSE.** Seven items
     remain, now tabulated in Status: four code gaps (A1-A4), two unwritten verification bullets
-    (B1-B2), and the staging run.
+    (B1-B3), and the staging run.
   - 🔴 **A shipped branch CRASHES.** A retrain-of-a-retrain — which D1 explicitly permits — drops the
     inherited NULL-path reason, so `WarmStartRecord` raises **after the new artifact is stored**.
     Demonstrated by execution, not argued.
@@ -862,5 +864,5 @@ none.**
     being called with a byte-identical `run_config`; § 14's side table with a genuine `RESTRICT`; § 15's
     seven dispositions; all four documentation targets; the phase graph; the index entry; and every
     pre-merge verification claim except the mutation sentence above.
-  ⇒ **Follow-on: Plan 405** carries A1-A4 and B1-B2. ⛔ *Drafted as 400, which was already the
+  ⇒ **Follow-on: Plan 405** carries A1-A4 and B1-B3 — **seven** items; the staging run stays here, making EIGHT. ⛔ *Drafted as 400, which was already the
   owner-granted cadence plan; renumbered.* ⛔ *This plan is NOT complete and its status says so.*
