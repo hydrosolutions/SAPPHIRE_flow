@@ -28,6 +28,15 @@ Flow 8 (skill):    S.1 → S.2 + S.3 → S.4 → S.6
 
 Steps T.6–T.8 (retraining comparison/approval) and S.5 (cross-station aggregation) are deferred.
 
+⚠️ **Plan 399 — WARM-START retrain is now wired, and it is NOT T.6–T.8.** Naming a
+`base_artifact_id` on `train_models_flow` fine-tunes from that artifact instead of training
+from scratch: the donor is loaded from the store's own bytes, the model's `retrain` is called
+with the caller's `training_params`, and the result is **stored WITHOUT being promoted** —
+the current artifact keeps serving. What remains deferred is exactly what T.6–T.8 describe:
+**comparing** a retrained artifact against the incumbent and **approving** it. A model that
+does not support warm-start is REFUSED (`WarmStartUnsupportedError`), never silently trained
+from scratch. Provenance of what a retrain came from lands in `model_artifact_warm_start`.
+
 ```mermaid
 flowchart TD
     trigger["Manual trigger<br/>(model admin)"]

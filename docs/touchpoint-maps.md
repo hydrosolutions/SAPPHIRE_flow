@@ -59,6 +59,19 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**Plan 399 — warm-start retrain crosses this boundary.** `ForecastInterfaceAdapter` gained
+`retrain()` and a `supports_warm_start` property. ⛔ **Never decide warm-start support with a
+structural `isinstance` on the adapter**: it has no `__getattr__` passthrough and defines
+`retrain` unconditionally, so such a check is `True` for EVERY FI model — including one whose
+inner model cannot retrain — and the refusal SAP3 owes (Plan 399 D2) would never fire for the
+only case it exists for. Ask `services/training.py::supports_warm_start()`, which reads the
+INNER model through the adapter's proxy — the same precedent as the adapter's `config_hash`
+property, which exists for exactly this reason. ⚠️ The shim also defines `retrain`
+unconditionally, so the adapter's `isinstance(self._model, FIRetrainableModel)` backstop does
+NOT catch an aquacast model whose inner model lacks it; the service-layer refusal is what
+holds. Touch `adapters/forecast_interface.py`'s retrain/`supports_warm_start` and re-run
+`tests/unit/services/test_training.py` + `tests/unit/flows/test_train_models.py`.
+
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,
 prediction input assembly, model execution, or ModelFailure semantics. For
@@ -894,9 +907,14 @@ When this map applies, name: which touch trigger (Prefect-layer, image/compose-l
 now takes a `training_params` run parameter, threaded to `_train_model_task` and on to
 `model.train`/`model.retrain`. ⛔ *Before this it was a hardcoded `{}`, so NO model could
 receive configuration at all — the same empty mapping is STILL hardcoded at the four
-onboarding sites (`flows/onboard_model.py`, `services/model_onboarding.py`) and at the two
-synthetic smoke-test calls, deliberately: onboarding trains at import time, where no
-caller config applies.* Retrain support is read off the INNER model via
+ONBOARDING sites (`flows/onboard_model.py:368,375`, `services/model_onboarding.py:1453,1457` —
+Flow 12's `# Step 3: Train`) and at the two synthetic smoke-test calls
+(`model_onboarding.py:552,585`), deliberately: onboarding trains a NEW model as part of
+onboarding it, where no caller supplies a fine-tuning config, and the smoke tests train on
+synthetic data with no caller at all. ⛔ **NOT "at import time" — the IMPORT path
+(`services/model_import.py`) never calls `train` (`:401-402`).** That distinction is
+load-bearing: an IMPORTED artifact's external training params are unrecoverable here, which
+is why warm-start provenance models them as UNKNOWN rather than absent.* Retrain support is read off the INNER model via
 `services/training.py::supports_warm_start()` — never a structural `isinstance` on the
 adapter, which defines `retrain` unconditionally. A refusal raises
 `WarmStartUnsupportedError`; there is no fall-back to `train`. Provenance lands in

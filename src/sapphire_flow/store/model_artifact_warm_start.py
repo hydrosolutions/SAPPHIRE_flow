@@ -144,8 +144,23 @@ def resolve_donor_config(
 
     provenance = fetch_artifact_provenance(conn, base_artifact_id)
     if provenance is not None and provenance.config_hash:
-        # An imported donor: its hash is recorded. The path is the vendored
-        # config's, but the HASH is the donor's own — the caller compares them.
+        # An imported donor: its HASH is recorded, but provenance stores no
+        # PATH (`model_artifact_provenance` carries source_repository,
+        # source_commit, config_hash, imported_at, imported_by, notes). So the
+        # only available path is the installed one, and it is meaningful ONLY
+        # while the hashes match — which the caller checks.
+        if installed_config_path is None:
+            # ⛔ Do NOT return a NULL path with no reason: `WarmStartRecord`
+            # rejects that, and rightly — an unexplained NULL is indis-
+            # tinguishable from a lost one. The donor's identity IS known here,
+            # so say what is missing.
+            return (
+                None,
+                provenance.config_hash,
+                "donor's config hash is recorded in its provenance, but no "
+                "installed config path was supplied to pair with it; "
+                "provenance stores no path of its own",
+            )
         return installed_config_path, provenance.config_hash, None
 
     inherited = fetch_warm_start(conn, base_artifact_id)
@@ -164,3 +179,34 @@ def resolve_donor_config(
         "Plan 399 T4. Not inferred from the installed template — that would name "
         "a configuration the donor may never have used.",
     )
+
+
+class PgWarmStartWriter:
+    """Thin flow-facing adapter around `record_warm_start` — the
+    ``warm_start_writer`` object `train_models_flow` calls right after storing a
+    RETRAINED artifact.
+
+    Mirrors `store/model_artifact_lineage.py::PgArtifactLineageWriter`
+    deliberately: production wiring only, and tests inject a fake with the same
+    `.record(...)` shape. Not a widening of the `ModelArtifactStore` Protocol.
+    """
+
+    def __init__(self, conn: sa.Connection) -> None:
+        self._conn = conn
+
+    def record(self, record: WarmStartRecord) -> None:
+        record_warm_start(self._conn, record)
+
+    def resolve_donor_config(
+        self,
+        base_artifact_id: ArtifactId,
+        *,
+        installed_config_path: str | None = None,
+        installed_config_sha256: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        return resolve_donor_config(
+            self._conn,
+            base_artifact_id,
+            installed_config_path=installed_config_path,
+            installed_config_sha256=installed_config_sha256,
+        )
