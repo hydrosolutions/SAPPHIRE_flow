@@ -52,18 +52,36 @@ class WarmStartRecord:
     base_params_unknown_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.base_config_path is None and not self.base_config_unknown_reason:
-            raise ValueError(
-                "base_config_path is NULL without a reason — record WHY it is "
-                "unknown (Plan 399 § 13); an unexplained NULL is how provenance "
-                "becomes unrecoverable"
-            )
-        if self.base_params_path is None and not self.base_params_unknown_reason:
-            raise ValueError(
-                "base_params_path is NULL without a reason — record WHY it is "
-                "unknown (Plan 399 § 5a); UNKNOWN and known-absent are "
-                "different states"
-            )
+        check_config_provenance(self.base_config_path, self.base_config_unknown_reason)
+        check_params_provenance(self.base_params_path, self.base_params_unknown_reason)
+
+
+def check_config_provenance(path: str | None, reason: str | None) -> None:
+    """The config half of `WarmStartRecord`'s invariant, callable on its own.
+
+    Plan 405 T1 — the flow validates a RESOLVED `(path, sha, reason)` triple
+    BEFORE training, when no artifact has been stored yet and raising costs
+    nothing. It must apply the SAME rule the record enforces, so this is the one
+    definition both use: ⛔ a hand-rolled copy in the flow would drift from
+    `__post_init__`, and the drift would only surface as a crash after a
+    successful train.
+    """
+    if path is None and not reason:
+        raise ValueError(
+            "base_config_path is NULL without a reason — record WHY it is "
+            "unknown (Plan 399 § 13); an unexplained NULL is how provenance "
+            "becomes unrecoverable"
+        )
+
+
+def check_params_provenance(path: str | None, reason: str | None) -> None:
+    """The params half of the same invariant. See `check_config_provenance`."""
+    if path is None and not reason:
+        raise ValueError(
+            "base_params_path is NULL without a reason — record WHY it is "
+            "unknown (Plan 399 § 5a); UNKNOWN and known-absent are "
+            "different states"
+        )
 
 
 def record_warm_start(conn: sa.Connection, record: WarmStartRecord) -> None:
@@ -187,9 +205,11 @@ def resolve_donor_config(
             inherited.base_config_sha256,
             (
                 "donor was produced by SAP3 (a retrain) and its own warm-start "
-                "record carries no config path, so none can be inherited; its "
-                "config HASH is known and recorded here. Not inferred from the "
-                "installed template — that would name a configuration this donor "
+                "record carries no config path, so none can be inherited. The "
+                "hash recorded alongside is the one CARRIED FORWARD through that "
+                "record — it identifies the config of the donor's own ancestor, "
+                "not a hash computed for this donor. Not inferred from the "
+                "installed template, which would name a configuration this donor "
                 "may never have used."
             ),
         )

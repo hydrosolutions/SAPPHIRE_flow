@@ -252,6 +252,11 @@ class TestRetrainOfARetrain:
             "gen 1 has no provenance row; inheriting the imported ancestor's "
             "sentence verbatim states something false about the immediate donor"
         )
+        # 🔴 POSITIVE content — ⛔ a placeholder like "unknown" or "TODO" must NOT
+        # pass. The reason has to say what is actually true of THIS donor: that it
+        # is SAP3-produced and its own record carries no path.
+        assert "produced by SAP3" in reason
+        assert "carries no config path" in reason
 
     def test_generation_two_record_is_constructable(
         self, db_connection: sa.Connection, tmp_path: Path
@@ -307,6 +312,10 @@ class TestRetrainOfARetrain:
             )
             assert reason, f"a NULL path with no reason at {child} <- {donor}"
             assert "recorded in its provenance" not in reason
+            # 🔴 POSITIVE, per generation — a placeholder must not survive here
+            # either, which is what "completes" alone would have allowed.
+            assert "produced by SAP3" in reason
+            assert "carries no config path" in reason
             record_warm_start(
                 db_connection,
                 WarmStartRecord(
@@ -325,3 +334,41 @@ class TestRetrainOfARetrain:
         assert got is not None
         assert got.base_artifact_id == gen2
         assert got.base_config_unknown_reason
+
+    def test_a_donor_with_a_config_path_inherits_it_and_owes_no_reason(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The other half of "only when the inherited path is NULL".
+
+        ⚠️ T2 makes this the production-NORMAL branch (it starts recording a real
+        installed path), so leaving it untested would mean the untested branch is
+        the common one exactly when it starts mattering. A record must never carry
+        BOTH a path and an "unknown" reason — `__post_init__` does not catch that.
+        """
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        gen0 = _seed_artifact(db_connection, tmp_path, mid, sid)
+        gen1 = _seed_artifact(db_connection, tmp_path, mid, sid)
+        record_warm_start(
+            db_connection,
+            WarmStartRecord(
+                artifact_id=gen1,
+                base_artifact_id=gen0,
+                run_config={},
+                base_config_path="models/aquacast/configs/cmal_small.yaml",
+                base_config_sha256="b" * 64,
+                base_params_path=None,
+                base_params_unknown_reason="donor was imported",
+            ),
+        )
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection, gen1, installed_config_path=None
+        )
+
+        assert path == "models/aquacast/configs/cmal_small.yaml"
+        assert sha256 == "b" * 64
+        assert reason is None, (
+            "nothing is missing, so no reason is owed — a path AND an 'unknown' "
+            "reason together is a record the invariant cannot catch"
+        )

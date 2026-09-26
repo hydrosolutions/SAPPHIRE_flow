@@ -167,23 +167,31 @@ def _assemble_data_task(
         )
 
 
-def _record_warm_start_provenance(
+def _resolve_donor_config_or_refuse(
     *,
     warm_start_writer: object,
-    artifact_id: ArtifactId,
     base_artifact_id: ArtifactId,
     model: object,
-    run_config: dict,
-) -> None:
-    """Plan 399 T3/T4 — record what this artifact was fine-tuned FROM.
+) -> tuple[str | None, str | None, str | None]:
+    """Plan 405 T1 — resolve the donor's config BEFORE training, and refuse here.
+
+    ⭐ **Why before.** The resolved triple has to satisfy `WarmStartRecord`'s
+    invariant, and that was previously discovered by CONSTRUCTING the record —
+    after a successful train and a stored artifact. A `ValueError` there costs
+    the whole training run and leaves an artifact whose provenance was refused.
+    Validating the same triple up front means the raise cannot happen late: at
+    this point nothing is trained and nothing is stored.
+
+    ⛔ Not by constructing the record — `artifact_id` does not exist yet. It is
+    the shared invariant that is applied (`check_config_provenance`), never a
+    hand-rolled copy of it.
 
     The donor's config identity comes from the DONOR's own provenance, never
     from hashing whatever template is installed now (§ 13). The installed path
     and hash are passed in only so the resolver can PAIR them with the donor's
-    recorded hash — a mismatch is the caller's refusal, not something papered
-    over here.
+    recorded hash — a mismatch is a refusal made HERE, not papered over below.
     """
-    from sapphire_flow.store.model_artifact_warm_start import WarmStartRecord
+    from sapphire_flow.store.model_artifact_warm_start import check_config_provenance
 
     installed_hash = getattr(model, "config_hash", None)
     path, sha256, reason = warm_start_writer.resolve_donor_config(  # type: ignore[attr-defined]
@@ -191,6 +199,28 @@ def _record_warm_start_provenance(
         installed_config_path=None,
         installed_config_sha256=installed_hash,
     )
+    check_config_provenance(path, reason)
+    return path, sha256, reason
+
+
+def _record_warm_start_provenance(
+    *,
+    warm_start_writer: object,
+    artifact_id: ArtifactId,
+    base_artifact_id: ArtifactId,
+    donor_config: tuple[str | None, str | None, str | None],
+    run_config: dict,
+) -> None:
+    """Plan 399 T3/T4 — record what this artifact was fine-tuned FROM.
+
+    ⛔ Plan 405 T1 — `donor_config` is the triple ALREADY resolved and validated
+    before training. It is threaded in, never re-resolved: re-resolving here
+    would move the raise rather than remove it, and the record would be built
+    from a second read that is not the one the refusal decision was made on.
+    """
+    from sapphire_flow.store.model_artifact_warm_start import WarmStartRecord
+
+    path, sha256, reason = donor_config
     warm_start_writer.record(  # type: ignore[attr-defined]
         WarmStartRecord(
             artifact_id=artifact_id,
@@ -719,6 +749,20 @@ def train_models_flow(
             )
             continue
 
+        # Plan 405 T1 — resolve the donor's config and REFUSE here, before any
+        # training happens and before anything is stored. Deliberately OUTSIDE
+        # the per-unit guard below: an unresolvable or contradictory donor
+        # provenance is an integrity failure like the SHA-256 mismatch further
+        # down, not a per-unit data shortfall, so it must abort the run loudly
+        # rather than be recorded as one failed unit and continued past.
+        donor_config: tuple[str | None, str | None, str | None] | None = None
+        if typed_base_artifact_id is not None and warm_start_writer is not None:
+            donor_config = _resolve_donor_config_or_refuse(
+                warm_start_writer=warm_start_writer,
+                base_artifact_id=typed_base_artifact_id,
+                model=model_instance,
+            )
+
         # T.3: train the model artifact. Wrapped so a raise from THIS call (the
         # reanalysis-tail missing-value crash class, or the existing
         # insufficient-data ValueError) is recorded as a failed unit and the
@@ -778,12 +822,12 @@ def train_models_flow(
         # Plan 399 T3/T4 — warm-start provenance, right after the store, on the
         # same pattern as basin lineage below. Only for a RETRAIN: a freshly
         # trained artifact has no donor and records nothing (T4).
-        if typed_base_artifact_id is not None and warm_start_writer is not None:
+        if donor_config is not None and warm_start_writer is not None:
             _record_warm_start_provenance(
                 warm_start_writer=warm_start_writer,
                 artifact_id=cast("ArtifactId", artifact_id),
-                base_artifact_id=typed_base_artifact_id,
-                model=model_instance,
+                base_artifact_id=cast("ArtifactId", typed_base_artifact_id),
+                donor_config=donor_config,
                 run_config=training_params or {},
             )
 

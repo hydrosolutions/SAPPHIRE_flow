@@ -924,6 +924,23 @@ resolver** (`services/model_registry.py::build_station_code_resolver`) to every 
 model that accepts one — without it the adapter raises for EVERY group train/predict, which
 is why group training had never produced an artifact.
 
+**Plan 405 T1 — the warm-start ORDERING is load-bearing.** Resolving the donor's config and
+REFUSING happen **before training** (`_resolve_donor_config_or_refuse`), the row is written
+**after the store** (`_record_warm_start_provenance`), and the resolved `(path, sha, reason)`
+triple is **threaded** from the first to the second. ⛔ **Do not re-resolve at the record
+site**: the record's invariant would then be discovered after a successful train and a stored
+artifact, which is the crash Plan 405 § 5 fixed — a `ValueError` costing the whole run and
+leaving a saved model whose provenance was refused. ⛔ **Do not move the row earlier either**:
+`model_artifact_warm_start.model_artifact_id` is both PK and FK to `model_artifacts.id`
+(`0060:30-37`), so no warm-start row can precede its artifact. The pre-training check applies
+the SHARED invariant — `check_config_provenance` / `check_params_provenance`, the same
+functions `WarmStartRecord.__post_init__` calls — never a hand-rolled copy, which would drift
+and surface only as a late crash. ⚠️ The refusal sits **outside** the per-unit training guard
+deliberately: unresolvable donor provenance is an integrity failure like the SHA-256 mismatch,
+so it aborts the run loudly rather than being recorded as one failed unit and continued past.
+⚠️ **Atomicity is NOT claimed** — `PgWarmStartWriter` holds its own connection and the store is
+a separate Prefect task; moving the refusal earlier removes the failure mode without it.
+
 
 Use this map when a task touches the **offline model lifecycle** — training-data assembly, model training + artifact creation / registration / promotion, hindcast generation, skill computation, or retraining / recomputation. For the model boundary (`train` / `serialize_artifact` / `predict`, `ModelDataRequirements`) and for `_assemble_hindcast_inputs` + `resample_to_time_step`, use the **ForecastInterface / model execution** map — this map does not re-derive them. For the *write semantics* of `store_artifact` / `store_hindcast` / `register_model`, use the **Persistence / API write path** map. Verification-metric definitions are normative in `docs/standards/wmo.md` — cite it, do not restate it. **Aspirational-vs-real is a core hazard here** (several lifecycle automations are manual-trigger-only or DRAFT) — flagged below; verify before depending on one.
 
