@@ -187,9 +187,15 @@ def _resolve_donor_config_or_refuse(
     hand-rolled copy of it.
 
     The donor's config identity comes from the DONOR's own provenance, never
-    from hashing whatever template is installed now (§ 13). The installed path
-    and hash are passed in only so the resolver can PAIR them with the donor's
-    recorded hash — a mismatch is a refusal made HERE, not papered over below.
+    from hashing whatever template is installed now (§ 13).
+
+    ⛔ **The installed hash is passed through but NOT yet compared.** The only
+    refusal this function makes today is the shared invariant below. Comparing
+    the installed template's hash against the donor's recorded one — and refusing
+    a changed template — is T2's work, and T2 is also what starts supplying a
+    real `installed_config_path` instead of the `None` hardcoded here. ⚠️ *Said
+    explicitly because Plan 405 § 1 charges exactly this defect against 399: a
+    docstring that promised a comparison the code never made.*
     """
     from sapphire_flow.store.model_artifact_warm_start import check_config_provenance
 

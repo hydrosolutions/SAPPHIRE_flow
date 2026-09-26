@@ -932,7 +932,7 @@ site**: the record's invariant would then be discovered after a successful train
 artifact, which is the crash Plan 405 § 5 fixed — a `ValueError` costing the whole run and
 leaving a saved model whose provenance was refused. ⛔ **Do not move the row earlier either**:
 `model_artifact_warm_start.model_artifact_id` is both PK and FK to `model_artifacts.id`
-(`0060:30-37`), so no warm-start row can precede its artifact. The pre-training check applies
+(`alembic/versions/0060_model_artifact_warm_start.py:31-36`), so no warm-start row can precede its artifact. The pre-training check applies
 the SHARED invariant — `check_config_provenance` / `check_params_provenance`, the same
 functions `WarmStartRecord.__post_init__` calls — never a hand-rolled copy, which would drift
 and surface only as a late crash. ⚠️ The refusal sits **outside** the per-unit training guard

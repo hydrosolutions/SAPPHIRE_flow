@@ -303,7 +303,8 @@ does.*
 
 **Outcome.** What a donor was trained with is recorded accurately, or its absence is explained truly.
 
-**In.** D1's answer, replacing the constant reason at `flows/train_models.py:202-208`. ⛔ *Whatever
+**In.** D1's answer, replacing the constant reason at
+`flows/train_models.py:239-243` (⚠️ *T1 moved it — it was `:202-208` when this plan was written*). ⛔ *Whatever
 D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is already false.*
 - 🔴 **THREE donor classes, not two** — and the third is the one D1 flags: imported; a retrain whose
   `run_config` has content; **a retrain whose `run_config` is `{}`**. ⛔ *An earlier version of this task
@@ -313,6 +314,13 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
 - ⚖️ **Per D1(b): the path stays NULL with a per-class reason**, plus the note that the donor's own
   configuration is reachable via `base_artifact_id`. ⛔ *No migration and no schema change in this task —
   (a) was not taken.*
+- 🔴 **Every class must yield a NON-EMPTY reason, or extend T1's pre-training check to the params
+  half.** ⚠️ *Raised by T1's cross-check.* T1 validates only the resolved CONFIG triple before
+  training (`check_config_provenance`); the params reason is built at the RECORD site, after the
+  artifact is stored. That is safe **only** while the reason is the hardcoded non-empty constant this
+  task removes. ⇒ If any of the three classes can produce `""` or `None`, the late crash T1 fixed
+  comes back through the params column — `check_params_provenance` exists and is callable, so the fix
+  is one line either way. ⛔ *Decide which, do not leave it implicit.*
 - 🔴 **The reason must NOT claim the configuration "is retrievable" when the donor's row holds `{}`.**
   *It IS retrievable, and it is empty — a different sentence. ⚠️ That is the known-empty vs
   unknown-effective distinction D1 settles; getting it wrong here relabels a known fact as unknown,

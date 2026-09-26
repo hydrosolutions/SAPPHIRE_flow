@@ -117,6 +117,30 @@ class TestRetrainOfARetrainThroughTheFlow:
             warm_start_writer=writer,
         )
 
+    def _retrain(
+        self,
+        conn: sa.Connection,
+        tmp_path: Path,
+        *,
+        model_id: ModelId,
+        station_id: StationId,
+        donor: ArtifactId,
+        writer: object,
+    ) -> ArtifactId:
+        """One more generation through the REAL flow."""
+        results = self._run(
+            conn,
+            tmp_path,
+            model_id=model_id,
+            station_id=station_id,
+            base_artifact_id=donor,
+            writer=writer,
+        )
+        assert results[0].error is None, results[0].error
+        aid = results[0].artifact_id
+        assert aid is not None
+        return aid
+
     def _chain_to_generation_one(
         self, conn: sa.Connection, tmp_path: Path
     ) -> tuple[ModelId, StationId, ArtifactId, PgWarmStartWriter]:
@@ -246,3 +270,56 @@ class TestRetrainOfARetrainThroughTheFlow:
         ).scalar_one()
         assert after == before, "a refused retrain stored an artifact anyway"
         assert type(model).seen_base is None, "training ran despite the refusal"
+
+    def test_generation_three_through_the_flow_carries_a_reason_true_of_two(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """T1's Verification: "generation 3 completes AND its reason is true of 2".
+
+        ⚠️ One reviewer read the gen-3 bullet as satisfied by the store-level test
+        and another read "completes" as requiring a flow run, as the gen-2 bullet
+        plainly does. Running the chain one generation further costs one flow call
+        and settles it, instead of arguing the reading.
+
+        🔑 Generation 2's own row needs NO pin: the inherited branch already leaves
+        its `base_config_path` NULL, which the assertion below states rather than
+        assumes.
+        """
+        model_id, station_id, gen1, writer = self._chain_to_generation_one(
+            db_connection, tmp_path
+        )
+
+        gen2 = self._retrain(
+            db_connection,
+            tmp_path,
+            model_id=model_id,
+            station_id=station_id,
+            donor=gen1,
+            writer=writer,
+        )
+        gen2_row = fetch_warm_start(db_connection, gen2)
+        assert gen2_row is not None
+        assert gen2_row.base_config_path is None, (
+            "generation 2 is expected to carry a NULL path via the inherited "
+            "branch — if this ever holds a path, the generation-3 case below is "
+            "no longer the branch this test exists for"
+        )
+
+        gen3 = self._retrain(
+            db_connection,
+            tmp_path,
+            model_id=model_id,
+            station_id=station_id,
+            donor=gen2,
+            writer=writer,
+        )
+
+        got = fetch_warm_start(db_connection, gen3)
+        assert got is not None
+        assert got.base_artifact_id == gen2
+        reason = got.base_config_unknown_reason
+        assert reason
+        # 🔴 TRUE OF GENERATION 2 — itself SAP3-produced, with no provenance row.
+        assert "produced by SAP3" in reason
+        assert "carries no config path" in reason
+        assert "recorded in its provenance" not in reason
