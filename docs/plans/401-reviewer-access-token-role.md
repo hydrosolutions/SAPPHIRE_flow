@@ -6,8 +6,8 @@ title: A reviewer access token for the review dashboards — read everything a r
 scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do.
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
-blocks: [402]
-related: [042, 147, 215, 268, 341, 402]
+blocks: [402, 404]
+related: [042, 147, 215, 268, 341, 402, 404]
 open_decisions: []
 closed_decisions: [D1, D2, D3, D4]   # owner, 2026-09-26
 source: 2026-09-26 — owner, while reviewing Plan 402: "could we have a special user for the BAFU dashboard and the Nepal dashboard?" — to replace the admin token Plan 402 D11 had the map use.
@@ -37,9 +37,9 @@ is in the single seeded tenant `sapphire` (`alembic/versions/0041_tenants_table.
 *new* stations; it moves no existing station, so any Nepal station already in `sapphire` stays there.
 The rule is therefore not "after 268" but: a dashboard token may use `tenant` mode **only when every station in its tenant belongs to that
 dashboard's client**. A token is bound to one tenant for life and cannot span two — `grant` refuses
-a station from another tenant (`store/access_token_store.py:90-95`) — so when a dashboard's
-stations move to their own tenant, its token is re-issued with `create-reviewer --tenant <new>`.
-Until then, a dashboard token uses `scope_mode = stations` with an explicit station list.
+a station from another tenant (`store/access_token_store.py:90-95`). So a dashboard token sees only
+its own tenant's stations, and until the rule above holds it uses `scope_mode = stations` with an
+explicit station list. Which tenant each dashboard's token binds to is D4.
 
 The Nepal deployment needs three kinds of access; this plan supplies exactly one of them:
 
@@ -111,8 +111,8 @@ A reviewer token is tenant-bound, uses the consumer's scope rules unchanged (bot
 additionally reaches routes gated REVIEW. It never reaches an ADMIN route. No existing route is
 reclassified; Plan 402 adds the first two REVIEW routes.
 
-**A reviewer token gets no access to unpublished forecasts.** Where Plan 341's publication gate is
-active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes. The default
+**Where Plan 341's publication gate is active, a reviewer token gets no access to unpublished
+forecasts.** (Where it is not, reviewers — like consumers — read forecasts as today.) There, a reviewer is gated exactly like a consumer on the forecast routes. The default
 is **no**; only Plan 341 may change it, by an explicit, recorded decision. Plan 341 already records
 this (PR #313): the reviewer token "sees only published values on ordinary forecast routes and cannot
 read this plan's unpublished candidates" (`341:28,30,48`), and its tests cover reviewer/consumer
@@ -135,6 +135,11 @@ no tenant and names none. Tenant mode for a dashboard token follows the rule in 
 in particular, the `sapphire`-tenant (Swiss) dashboard token stays in `stations` mode for as long as
 any non-Swiss station remains in `sapphire`. Plan 402 D12 states the same rule.
 
+**The Nepal dashboard's token binds to the DHM tenant only** (owner, 2026-09-26). A Nepal station
+left in `sapphire` — e.g. test basin 12300 seeded by Plan 192, if it exists on the instance — is not
+visible to that token. Moving such a station into the DHM tenant is a Nepal-onboarding step, not
+this plan's; if it is moved, the Nepal token needs no change.
+
 ## Tasks
 
 Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate).
@@ -152,7 +157,8 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
   other plans are adding migrations): `ck_access_tokens_role` → `role IN ('consumer','reviewer','admin')`;
   `ck_access_tokens_role_tenant` → admin has no tenant, consumer and reviewer have one;
   `ck_access_tokens_tenant_mode_is_consumer` **keeps its name** and its predicate becomes
-  `scope_mode = 'stations' OR role <> 'admin'` (so no test or doc that matches the name breaks).
+  `scope_mode = 'stations' OR role IN ('consumer', 'reviewer')` — roles named explicitly, like the
+  other role constraints (so no test or doc that matches the name breaks).
 - The migration's **downgrade refuses while any `reviewer` row exists, revoked or not**, naming the
   step: delete the token's `access_token_stations` rows, then its `access_tokens` row (no cascade;
   the API's database role has only INSERT and UPDATE on `access_tokens` —
@@ -166,6 +172,9 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
   run as the database owner: `docker compose exec -T postgres psql -U ${DB_USER:-sapphire} -d sapphire`
   (the owner role of `docker/bootstrap-roles.sql:3`).
 - `tests/unit/db/test_alembic_head_release_b.py` — the head pin moves to the new revision.
+- Tests: `tests/unit/types/test_auth.py`, `tests/integration/store/test_access_token_store.py` (the
+  cross-tenant cases parameterized), and the new
+  `tests/integration/db/test_migration_<rev>_reviewer_role.py`.
 - `store/access_token_store.py` — no logic change (it refuses only admin scopes); the comment at
   `:67-73` stops saying a scope belongs only to a consumer.
 - `docs/standards/cicd.md` § Rollback — **before redeploying an image older than this plan, delete
@@ -197,6 +206,7 @@ reviewer tokens behave exactly like consumers on every existing route.
 `station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW;
 `TestRouteAuthMatrixExhaustive` gains a reviewer dimension. No REVIEW route exists until Plan 402,
 so the dependency is also exercised on a test-only app.
+`tests/integration/api/test_access_token_auth.py` — the cross-tenant HTTP cases parameterized.
 
 **Out:** gating or reclassifying any existing route.
 
@@ -236,8 +246,10 @@ roles, with GET-only unchanged.
   held server-side by its dashboard; the consumer-surface sentence (`:48`); the scope rules worded
   for consumers only (`:57-59`); the CLI summary (`:204`); the REVIEW class, stating that every
   REVIEW route serving station data applies the principal's station scope (404 on detail routes,
-  filtering on collections); and the D4 tenant-mode rule (tenant mode only when every station in
-  the tenant belongs to that dashboard's client; tokens cannot span or change tenants).
+  filtering on collections), and that a REVIEW route serving forecast values applies Plan 341's
+  publication gate to reviewer tokens where it is active (Plan 404 D4); and the D4 tenant-mode rule (tenant mode only when every station in
+  the tenant belongs to that dashboard's client; tokens cannot span or change tenants; the Nepal
+  token binds to the DHM tenant).
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
   add `create-reviewer`); § Station scope management (`grant`, `revoke-station`, `set-scope-mode`
   act on reviewer tokens too, and its "when to reach for tenant mode" guidance carries the D4
@@ -292,7 +304,7 @@ downgrade and rollback only, and would also delete any dashboard tokens already 
 ## Changelog
 
 - 2026-09-26 — drafted at the owner's request. Decisions: D1 (a third role, `reviewer`), D2 (a
-  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (confirms Plan 268 D11: the DHM gauges get their own tenant).
+  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (confirms Plan 268 D11: the DHM gauges get their own tenant; the Nepal dashboard's token binds to it only).
 
 ## Dependency graph
 

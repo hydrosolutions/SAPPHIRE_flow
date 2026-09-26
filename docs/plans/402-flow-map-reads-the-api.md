@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-25
 plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
-scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-scoped reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
+scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-bound reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
 risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
 depends_on: [401]
 blocks: [404]
@@ -417,12 +417,18 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   response cannot show it; forecast flag versions; `evaluated_on`; the token must stay server-side;
   **on a tenant where Plan 341's publication gate is active, the reviewer token sees only published
   forecasts, and a `qc_failed` forecast is never published — so forecast QC failures are not visible
-  through the forecast routes there** (Plan 404's route shows which rule rejected them).
+  through the forecast routes there**. Once Plan 404 lands, rejected **member and group** forecasts
+  appear on its own route (the rejecting rule only, on a gated tenant); a rejected **combined**
+  forecast is visible on a gated tenant only through Plan 341's human review routes, never to a
+  reviewer token; for a station in several groups that each hold an active artifact of one model,
+  the skill rows served are one of those artifacts' and may not be the one the forecast used.
 - `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, D13's
   visibility decision beside § Input-quality visibility, and D6's precondition next to it (before
   DHM observations are readable by a Nepal consumer token, the owner decides whether flag `detail` is
   stripped for consumers on that network); the `docs/touchpoint-maps.md` API
-  paragraph (new routes, the contract file); `docs/conventions.md` § API routes (`:40-65`, the route
+  paragraph (new routes, the contract file); `docs/architecture-context.md:2331` and
+  `docs/spec/types-and-protocols.md:879`, which call `qc_rule_version` a rule-set version — reworded
+  to "code-generation label; see `docs/spec/api-v1-review.md`"; `docs/conventions.md` § API routes (`:40-65`, the route
   list `security.md:3` points to) — both routes, marked REVIEW (reviewer or admin token).
 - **If Plan 341's route inventory (its T3) exists on the base branch:** classify
   `GET /api/v1/qc/rules` and `GET /api/v1/stations/{id}/skill` there as REVIEW diagnostics with no
@@ -440,13 +446,6 @@ the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragra
 classified in Plan 341's route inventory if it exists; and that Plan 341 still states, by content:
 the REVIEW-diagnostic classification, reviewer tokens see published values only, the contract's
 creation order, and the gating of `qc_flags[].detail`.
-
-### T5 — (removed)
-
-Plan 341 already records the cross-plan facts (PR #313, 2026-09-26): the two new routes are
-REVIEW-class diagnostics with no forecast values; the reviewer token sees only published values;
-the map contract's creation order; and the gating of `qc_flags[].detail`. The one remaining duty —
-classifying the two routes in 341's route inventory if 341 lands first — moved to T4.
 
 ### T6 — hand-over and durable records
 
@@ -483,10 +482,13 @@ After staging deploy (orchestrator), before the map is told:
 1. Run T1's two resolution functions inside `api`, `prefect-worker-ingest` (observation ingest) and
    `prefect-worker` (onboarding's observation QC and the forecast cycle, both on the default pool —
    `cli/register_deployments.py`) and compare the returned sets — equal environment variables do
-   not prove equal rules (overlays and bind-mounted file contents also decide).
+   not prove equal rules (overlays and bind-mounted file contents also decide). **Pass:** the
+   observation sets from all three are equal, and the forecast sets from `api` and `prefect-worker`
+   are equal. Otherwise stop before step 4 and escalate.
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and every
    row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
-   that row's model.
+   that row's model — choosing a station that is not in several groups holding an active artifact of
+   the same model (there the pick is arbitrary).
 3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
    that station, and 404 on `/skill` for another **existing** station; a temporary consumer token
    created for this check → 403. Then **delete both tokens by id** (Plan 401's single-token
@@ -529,7 +531,9 @@ After staging deploy (orchestrator), before the map is told:
 - 2026-09-26 — rewritten for the `/api/v1` interface (D1); file renamed from
   `345-forecast-lab-snapshot-v3-qc-and-skill.md`. Decisions D5–D7, D10, D12 (reviewer token,
   Plan 401; D11's admin token superseded), D13 (T3's fields visible to every role); D8 superseded.
-  Nepal stations get their own tenant (Plan 401 D4).
+  The DHM gauges get their own tenant (Plan 401 D4).
+  T5 removed: Plan 341 already records its cross-plan facts (PR #313); its one remaining duty moved
+  to T4.
   QC-rejected member and group forecasts are not stored; surfacing them is Plan 404
   (owner, 2026-09-26).
 
