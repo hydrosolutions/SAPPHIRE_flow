@@ -676,7 +676,7 @@ exit criteria — Plan 212 owns that deeper screening.
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
   — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
   earlier version of this entry said "T1/T2/T4 complete, ONE thing remains" — **false**; a post-merge
-  review against the shipped code found four requirements that never shipped and two verification
+  review against the shipped code found four requirements that never shipped and THREE verification
   bullets never written.* 🔴 **SEVEN items remain** — see the plan's Status table; **Plan 405** carries
   the six code/test ones, the staging run stays here. 🔴 *A retrain-of-a-retrain currently CRASHES after
   storing the artifact.* ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land

@@ -20,7 +20,8 @@ source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` o
 ⚖️ **MERGED 2026-09-26 as PR #314** (`dd75a963` on `main`, version 0.1.994, migration **0060**).
 ⛔ **An earlier version of this block said "T1, T2 and T4 are complete" and "WHAT REMAINS — exactly
 one thing". BOTH ARE FALSE.** *Two independent reviews of the merged code found four requirements this
-plan asserts that did NOT ship, two verification bullets never written, and one shipped branch that
+plan asserts that did NOT ship, THREE verification bullets never written (an earlier version said two
+— 399's own flow-level resolver red is a third), and one shipped branch that
 CRASHES. The status is corrected below rather than quietly amended, because this plan is now the
 record of what exists.*
 
