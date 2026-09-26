@@ -950,16 +950,33 @@ a separate Prefect task; moving the refusal earlier removes the failure mode wit
 `config_path` alongside `config_hash` off the model and passes BOTH; `resolve_donor_config`
 compares the installed hash with the donor's recorded one and raises `ConfigurationError`
 naming both when they differ. ⇒ Two refusals now happen before training: the mismatch and the
-shared invariant. ⛔ **The comparison applies ONLY to an IMPORTED donor.** A SAP3-retrained
-donor's recorded hash is *carried forward from its ancestor* and does not describe that donor's
-own config, so comparing against it would refuse on a hash belonging to a different artifact —
-for that donor the own-config hash is genuinely UNKNOWN, which is a NULL-with-reason, not a
-mismatch. ⛔ **An unverifiable path is NOT recorded**: if the model declares no hash, the path
-stays NULL with a reason, because recording it would name a configuration the donor may never
-have used (399 § 13's trap). ⚠️ `config_path` must keep naming the same file `config_hash`
-digests — both derive from one `_config_path(CONFIG_FILENAME)` call in
-`models/aquacast/_shim.py`, and `tests/unit/models/test_aquacast_shim_translation.py` asserts
-they cannot drift.
+shared invariant, and 🔴 **the comparison is made BEFORE deciding what to record** — placed
+after, a mismatch escaped whenever no path was supplied, because the refusal then depended on an
+unrelated argument.
+
+🔑 **WHICH donors are comparable** — the distinction is load-bearing and was first got wrong in
+the PERMISSIVE direction:
+- **imported** — its provenance `config_hash` is its own config's. Comparable.
+- **a SAP3 retrain whose own record was VERIFIED** (`base_config_path` set, `base_config_unknown_reason`
+  NULL) — comparable too, ⭐ *because this very check refused ITS retrain unless the template
+  matched, so the carried-forward hash necessarily describes the config it was built with.*
+- **a SAP3 retrain with a NULL path** (pre-T2, or never verifiable) — ⛔ NOT comparable: the
+  carried hash describes an ANCESTOR, so refusing on it would refuse on evidence about a
+  different artifact. Genuinely UNKNOWN ⇒ NULL-with-reason.
+
+⛔ *Exempting the middle case — on the premise that a carried hash never describes its own donor,
+which is true only of the last case — left a changed template unrefused from generation 2 onward
+while the row still read as verified: a path, a hash the file no longer produces, and
+`reason=None` meaning "nothing is missing".*
+
+⛔ **An unverifiable path is NOT recorded**: if the model declares no hash, the path stays NULL
+with a reason, because recording it would name a configuration the donor may never have used
+(399 § 13's trap). ⚠️ `config_path` must keep naming the same file `config_hash` digests — both
+evaluate the same `_config_path(type(self).CONFIG_FILENAME)` expression in
+`models/aquacast/_shim.py` (two call sites, one expression), and
+`tests/unit/models/test_aquacast_shim_translation.py` asserts they cannot drift. ⚠️ What
+production records is an ABSOLUTE, environment-specific path (`/app/...` in the container);
+every test uses a relative literal, so the shape of the stored value is unasserted.
 
 
 Use this map when a task touches the **offline model lifecycle** — training-data assembly, model training + artifact creation / registration / promotion, hindcast generation, skill computation, or retraining / recomputation. For the model boundary (`train` / `serialize_artifact` / `predict`, `ModelDataRequirements`) and for `_assemble_hindcast_inputs` + `resample_to_time_step`, use the **ForecastInterface / model execution** map — this map does not re-derive them. For the *write semantics* of `store_artifact` / `store_hindcast` / `register_model`, use the **Persistence / API write path** map. Verification-metric definitions are normative in `docs/standards/wmo.md` — cite it, do not restate it. **Aspirational-vs-real is a core hazard here** (several lifecycle automations are manual-trigger-only or DRAFT) — flagged below; verify before depending on one.

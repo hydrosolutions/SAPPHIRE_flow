@@ -394,7 +394,10 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     to make my preferred option look necessary.** Recommendation flipped to (b), and (a)'s missing
     migration — a mapping cannot go in a `Text` column — is now named rather than footnoted.
   - 🔴 **D1 had Plan 257's hole**: a donor's `run_config` can be `{}`, and recording that as "the
-    donor's params" is indistinguishable from unknown. Now explicitly UNKNOWN-with-a-reason.
+    donor's params" is indistinguishable from unknown. Now explicitly recorded with a reason.
+    ⛔ *This line originally said `{}` is "UNKNOWN-with-a-reason", which the round-2 entry below
+    and D1's closed body both REVERSE — `{}` is KNOWN-EMPTY. Corrected here rather than left to
+    contradict them, because T6's implementer reads this entry.*
   - 🔴 **T4 declined a red test as "N/A — this asserts existing behaviour". That was the excuse**: T3
     and T5 both derive a red from a source mutation and the same tool applies. Now a per-site mutation,
     plus an assertion that the call HAPPENED — ⛔ *"every captured call passed `{}`" is vacuously true
@@ -522,3 +525,36 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   new one. ⚠️ *That is a real pattern worth naming rather than iterating on: the code reached a reviewed,
   green state at `87f1101b`, and everything after it is record-keeping. Further rounds on prose about
   prose are churn, and the remaining risk is zero-behaviour by construction.*
+- **2026-09-26 — T2 IMPLEMENTED (`887b3b9c`), and its first review round found the central
+  judgement WRONG.** ⭐ *I flagged the decision for scrutiny in advance and both reviewers returned
+  INCOMPLETE on it — which is the round working as intended, not a surprise.*
+  - 🔴 **The comparison was exempted for ALL retrained donors, on a premise true of only SOME.**
+    The premise: a retrained donor's recorded hash is carried forward from its ancestor, so it does
+    not describe that donor's own config. ⛔ **T2's own refusal makes that FALSE for a donor produced
+    THROUGH T2** — its retrain was refused unless the template matched, so its carried hash
+    *necessarily* describes the config it was built with. ⇒ The exemption left a changed template
+    unrefused from **generation 2 onward**, writing a row that read as verified: a path, a hash the
+    file no longer produces, and `reason=None` meaning "nothing is missing". 🔑 **The discriminator
+    is in the data**: `base_config_path` set **and** `base_config_unknown_reason` NULL ⟹ verified at
+    its own time ⟹ comparable. A NULL path still is not.
+    ⚠️ *And the test I wrote for the decision covered only the NULL-path sub-case while being NAMED
+    "never refused on its ancestor's hash" — a name that asserted the general claim the code got
+    wrong. Renamed and rescoped.*
+  - 🔴 **A known mismatch escaped whenever no installed path was supplied** — the comparison sat
+    AFTER the path-presence checks, so the refusal depended on an unrelated argument. *A missing path
+    does not make two known hashes unknown.* Moved to the top of the branch.
+  - 🔴 **The changed file's own comment block was left FALSE** — "NOBODY CHECKS THAT YET", "the
+    PATH-CARRYING RETURN is DEAD", "no caller anywhere passes a non-None path" — all untrue the
+    moment T2 landed. ⛔ *Four T1 commits and four review rounds exist only to make that block
+    truthful, and one of those sentences was a reviewer-supplied measurement this task invalidated
+    and left standing.* Also repaired a docstring the edit had truncated mid-sentence.
+  - ⚠️ **Doc claims corrected**: the spec stated the match-before-record rule UNQUALIFIED (false for
+    the inherited branch); the touchpoint map said path and hash "derive from one call" (two call
+    sites, one expression); and the map's own scoping paragraph carried the wrong exemption. The
+    absolute, environment-specific shape of the recorded path (`/app/...`) is now noted as
+    unasserted — every test uses a relative literal.
+  - 🧹 Round 1's changelog line calling `{}` "UNKNOWN-with-a-reason" contradicted D1's closed body
+    and the round-2 entry (KNOWN-empty); corrected, because **T6's implementer reads it**.
+  🔬 Mutation-checked, five ways across both rounds: deleting either refusal, reverting the flow to a
+  hardcoded NULL path, repointing `config_path` at a different config, and re-adding the
+  path-dependency to the comparison each fail exactly one intended test.

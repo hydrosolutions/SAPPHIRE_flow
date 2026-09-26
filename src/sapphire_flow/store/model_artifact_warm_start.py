@@ -20,7 +20,7 @@ Two things this records that nothing else can:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import sqlalchemy as sa
 import structlog
@@ -134,6 +134,34 @@ def fetch_warm_start(
     )
 
 
+def _refuse_changed_template(
+    *,
+    base_artifact_id: ArtifactId,
+    donor_kind: str,
+    recorded_hash: str,
+    installed_hash: str,
+    installed_path: str | None,
+) -> NoReturn:
+    """Plan 405 T2's refusal, shared by both comparable donor classes.
+
+    ⛔ One message, two call sites: a second copy would drift, and T2 requires
+    BOTH hashes named — an operator who cannot see which side moved cannot tell
+    whether the template or the donor is the surprise.
+    """
+    where = (
+        installed_path
+        if installed_path is not None
+        else "the installed config template (no path supplied)"
+    )
+    raise ConfigurationError(
+        "refusing to retrain: the installed config template does not match the "
+        f"one this donor was built from. donor artifact {base_artifact_id} "
+        f"({donor_kind}) recorded config hash {recorded_hash}, while {where} "
+        f"hashes to {installed_hash}. Fine-tuning across a changed template "
+        "would mix two configurations without recording that it happened."
+    )
+
+
 def resolve_donor_config(
     conn: sa.Connection,
     base_artifact_id: ArtifactId,
@@ -155,18 +183,34 @@ def resolve_donor_config(
     Hashing whatever template is on disk today satisfies a naive "the hash
     matches the file it names" check while naming the WRONG configuration
     whenever the template has changed since the donor was built. The installed
-    ⭐ **Plan 405 T2 — the installed values are now COMPARED, here, and a changed
-    template is REFUSED** with `ConfigurationError` naming both hashes. *399
-    promised this comparison in a docstring and never made it; 405 § 1 charges
-    that, and this is where the promise is kept.*
+    values are therefore only ever COMPARED against a hash the donor itself
+    recorded — never adopted as the donor's identity.
 
-    ⛔ **The comparison applies ONLY to an imported donor.** Its
-    `model_artifact_provenance.config_hash` is the hash of ITS OWN config. A
-    SAP3-retrained donor's recorded hash is *carried forward* from its ancestor
-    (see the inherited branch below), so it does NOT describe that donor's own
-    configuration — refusing on it would refuse on a hash belonging to a
-    different artifact. ⇒ For that donor the own-config hash is genuinely
-    UNKNOWN, which T2 states is a NULL-with-reason and not a mismatch.
+    ⭐ **Plan 405 T2 — a changed template is REFUSED** with `ConfigurationError`
+    naming both hashes. *399 promised this comparison in a docstring and never
+    made it; 405 § 1 charges that, and this is where the promise is kept.*
+
+    **WHEN the comparison is valid** — load-bearing, and an earlier version of
+    this function got it wrong in the PERMISSIVE direction:
+
+    * **imported donor** — `model_artifact_provenance.config_hash` IS its own
+      config's hash. Comparable.
+    * **SAP3 retrain whose own record was VERIFIED** (`base_config_path` set and
+      `base_config_unknown_reason` NULL) — comparable too. ⭐ *Because THIS check
+      refused its retrain unless the template matched, its carried-forward hash
+      necessarily describes the config it was actually built with.*
+    * **SAP3 retrain with a NULL path** (pre-T2, or never verifiable) — ⛔ NOT
+      comparable: the carried hash describes an ANCESTOR, so refusing on it would
+      refuse on evidence about a different artifact. Genuinely UNKNOWN ⇒
+      NULL-with-reason, which is T2's "Out" bullet.
+
+    ⛔ *The middle case was initially exempted as well, on the premise that a
+    carried hash never describes its own donor. That premise holds only for the
+    last case: T2's own refusal makes it FALSE for a donor produced THROUGH T2 —
+    and that is exactly the donor whose path is non-NULL. Exempting it left a
+    changed template unrefused from generation 2 onward, writing a path, a hash
+    the file no longer produces, and `reason=None` meaning "nothing is missing" —
+    a verified-looking lie. Caught by both T2 cross-checks.*
     """
     from sapphire_flow.store.model_artifact_provenance import fetch_artifact_provenance
 
@@ -176,15 +220,23 @@ def resolve_donor_config(
         # PATH (`model_artifact_provenance` carries source_repository,
         # source_commit, config_hash, imported_at, imported_by, notes). So the
         # only available path is the installed one, and it is meaningful ONLY
-        # while the hashes match. ⛔ NOBODY CHECKS THAT YET — T2 adds it.
+        # while the hashes match — which is now CHECKED, immediately below.
         #
-        # ⚠️ Until then the PATH-CARRYING RETURN at the bottom of this block is
-        # DEAD — not the `installed_config_path is None` branch just below, which
-        # is the one every caller takes. *Worded positionally at first ("this
-        # branch"), which bound it to the next statement and so stated the
-        # opposite; caught in review.* Measured dead repo-wide, not merely in the
-        # flow: no caller anywhere passes a non-None `installed_config_path` — the
-        # flow hardcodes `None`, and every test call and fake defaults to it.
+        # 🔴 THE COMPARISON COMES FIRST, before any question of what to record.
+        # ⛔ It was originally placed after the path checks, so a donor whose hash
+        # DIFFERED escaped the refusal whenever no path was supplied — a missing
+        # path does not make two known hashes unknown. Caught by a T2 cross-check.
+        if (
+            installed_config_sha256 is not None
+            and installed_config_sha256 != provenance.config_hash
+        ):
+            _refuse_changed_template(
+                base_artifact_id=base_artifact_id,
+                donor_kind="imported",
+                recorded_hash=provenance.config_hash,
+                installed_hash=installed_config_sha256,
+                installed_path=installed_config_path,
+            )
         if installed_config_path is None:
             # ⛔ Do NOT return a NULL path with no reason: `WarmStartRecord`
             # rejects that, and rightly — an unexplained NULL is indis-
@@ -211,30 +263,31 @@ def resolve_donor_config(
                 "configuration; recording it unverified would name a config "
                 "this donor may never have used",
             )
-        if installed_config_sha256 != provenance.config_hash:
-            # 🔴 THE REFUSAL. The template on disk is not the one this donor was
-            # built from, so fine-tuning it would silently mix two
-            # configurations. Raised rather than returned: the caller resolves
-            # BEFORE training (Plan 405 T1), so this aborts while nothing has
-            # been trained and nothing stored.
-            raise ConfigurationError(
-                "refusing to retrain: the installed config template does not "
-                "match the one this donor was built from. "
-                f"donor artifact {base_artifact_id} recorded config hash "
-                f"{provenance.config_hash}, the installed "
-                f"{installed_config_path} hashes to {installed_config_sha256}. "
-                "Fine-tuning across a changed template would mix two "
-                "configurations without recording that it happened."
-            )
+        # Hashes agree (both known, compared above): the installed path is the
+        # donor's config path, verified.
         return installed_config_path, provenance.config_hash, None
 
-    # ⛔ NO COMPARISON BELOW, deliberately — see this function's docstring: a
-    # retrained donor's recorded hash identifies its ANCESTOR's config, not its
-    # own, so `installed_config_sha256` has nothing here it can validly be
-    # checked against.
     inherited = fetch_warm_start(conn, base_artifact_id)
     if inherited is not None and inherited.base_config_sha256:
         if inherited.base_config_path is not None:
+            # 🔴 A donor whose OWN record was verified at its own time — a path,
+            # and no "unknown" reason. ⭐ Its retrain was itself refused unless
+            # the template matched, so this carried-forward hash DOES describe
+            # the config it was built with, and comparing against it is valid.
+            # ⛔ Without this, a changed template passed unrefused from
+            # generation 2 onward while the row still read as verified.
+            if (
+                inherited.base_config_unknown_reason is None
+                and installed_config_sha256 is not None
+                and installed_config_sha256 != inherited.base_config_sha256
+            ):
+                _refuse_changed_template(
+                    base_artifact_id=base_artifact_id,
+                    donor_kind="a SAP3 retrain, verified when it was produced",
+                    recorded_hash=inherited.base_config_sha256,
+                    installed_hash=installed_config_sha256,
+                    installed_path=installed_config_path,
+                )
             # The donor has a real path: it carries forward with its hash, and no
             # reason is owed because nothing is missing.
             return (

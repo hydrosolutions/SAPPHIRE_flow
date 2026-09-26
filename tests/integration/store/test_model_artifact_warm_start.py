@@ -492,16 +492,19 @@ class TestComparingTheInstalledTemplate:
         assert reason is not None
         assert "no recorded config identity" in reason
 
-    def test_a_retrained_donor_is_never_refused_on_its_ancestors_hash(
+    def test_a_retrained_donor_with_a_null_path_is_not_refused(
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:
-        """🔴 THE DESIGN DECISION, asserted so it cannot be "simplified" away.
+        """The donor whose own record carries NO path — pre-T2, or never verifiable.
 
-        A SAP3-retrained donor's recorded hash is CARRIED FORWARD from its
-        ancestor — it does not describe that donor's own configuration. ⛔ So
-        comparing the installed template against it would refuse on a hash
-        belonging to a DIFFERENT artifact. T2's own "Out" bullet covers this: the
-        donor's own hash is genuinely unknown, which is a NULL-with-reason.
+        Its carried-forward hash describes an ANCESTOR, so comparing the installed
+        template against it would refuse on evidence about a DIFFERENT artifact.
+        T2's "Out" bullet covers exactly this: genuinely unknown ⇒ NULL-with-reason.
+
+        ⚠️ **Scope matters here.** An earlier version of this test was named "never
+        refused on its ancestor's hash" and read as covering EVERY retrained donor.
+        It does not — it pins only the NULL-path case, and the exemption was wrong
+        for the verified case (see the test below), which this name once implied.
         """
         mid = _seed_model(db_connection)
         sid = _seed_station(db_connection)
@@ -524,4 +527,95 @@ class TestComparingTheInstalledTemplate:
         assert "produced by SAP3" in reason, (
             "a retrained donor must resolve through the inherited branch, not be "
             "refused on a hash that belongs to its ancestor"
+        )
+
+    def test_a_verified_retrained_donor_is_refused_on_a_changed_template(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The case an earlier version of this task wrongly exempted.
+
+        A donor whose own warm-start record carries a path AND no "unknown" reason
+        was VERIFIED when it was produced — this very check refused its retrain
+        unless the template matched. ⇒ Its carried-forward hash necessarily
+        describes the config it was built with, so it IS comparable.
+
+        ⛔ Exempting it meant a changed template passed unrefused from generation 2
+        onward, while the row still read as verified: a path, a hash the file no
+        longer produces, and `reason=None` meaning "nothing is missing".
+        """
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        ancestor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        # `_record` writes a VERIFIED record: a real path, no config reason.
+        verified = _record(donor, ancestor)
+        assert verified.base_config_path is not None
+        assert verified.base_config_unknown_reason is None
+        record_warm_start(db_connection, verified)
+
+        with pytest.raises(ConfigurationError) as exc:
+            resolve_donor_config(
+                db_connection,
+                donor,
+                installed_config_path=self._INSTALLED,
+                installed_config_sha256=self._CHANGED,
+            )
+
+        message = str(exc.value)
+        assert verified.base_config_sha256 in message
+        assert self._CHANGED in message
+        assert "SAP3 retrain" in message, (
+            "the refusal should say WHICH donor class it refused on — an operator "
+            "reading 'imported' for a retrain would look in the wrong place"
+        )
+
+    def test_a_verified_retrained_donor_passes_when_the_template_matches(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """⛔ The comparison must not refuse the NORMAL case — the carried path
+        and hash still come forward untouched when today's template agrees."""
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        ancestor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        verified = _record(donor, ancestor)
+        record_warm_start(db_connection, verified)
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=verified.base_config_sha256,
+        )
+
+        assert path == verified.base_config_path
+        assert sha256 == verified.base_config_sha256
+        assert reason is None
+
+    def test_a_mismatch_is_refused_even_with_no_installed_path(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The ordering bug: a missing path does not make two hashes unknown.
+
+        ⛔ The comparison was originally placed AFTER the path checks, so a donor
+        whose recorded hash DIFFERED escaped the refusal entirely whenever no path
+        was supplied — the refusal silently depended on an unrelated argument.
+        """
+        donor = self._imported_donor(
+            db_connection, tmp_path, config_hash=self._DONOR_HASH
+        )
+
+        with pytest.raises(ConfigurationError) as exc:
+            resolve_donor_config(
+                db_connection,
+                donor,
+                installed_config_path=None,
+                installed_config_sha256=self._CHANGED,
+            )
+
+        message = str(exc.value)
+        assert self._DONOR_HASH in message
+        assert self._CHANGED in message
+        assert "no path supplied" in message, (
+            "with no path the message must still say what was hashed"
         )
