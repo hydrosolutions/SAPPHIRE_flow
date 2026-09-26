@@ -131,6 +131,11 @@ class Principal:
     def is_admin(self) -> bool:
         return self.role is AccessTokenRole.ADMIN
 
+    @property
+    def can_review(self) -> bool:
+        """Plan 401 D2: REVIEW routes admit reviewer and admin tokens."""
+        return self.role in (AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN)
+
     def station_in_scope(self, station_id: StationId | None) -> bool:
         """G4/R2: admin sees everything; a consumer sees only its scoped
         stations — a null (stationless) station_id is NEVER in a consumer's
@@ -224,6 +229,14 @@ def require_principal(
 def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
     if not principal.is_admin:
         raise HTTPException(status_code=403, detail="admin role required")
+    return principal
+
+
+def require_reviewer(principal: Principal = Depends(require_principal)) -> Principal:
+    """Plan 401 D2: gate for REVIEW routes. It checks the role only — a REVIEW
+    route serving station data still applies the principal's station scope."""
+    if not principal.can_review:
+        raise HTTPException(status_code=403, detail="reviewer role required")
     return principal
 
 
