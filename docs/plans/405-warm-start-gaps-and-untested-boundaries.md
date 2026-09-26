@@ -634,22 +634,26 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   plugin (no repo edit) and hold: one failing test each, failing for the reason the defect exists.
 - **2026-09-26 — T2 round 4: the count was wrong AGAIN, so here is the enumeration.** ⛔ *Third
   consecutive round with a bad number in my own message. "All NINE resolution outcomes are pinned"
-  is false: there are **TEN**, and two were unpinned.* 🔑 **The fix is not "count more carefully" —
-  it is to publish the enumeration so the number is CHECKABLE instead of asserted.**
-  `resolve_donor_config`'s exits, and the test pinning each:
+  is false.* 🔑 **The fix is not "count more carefully" — it is to publish the enumeration so the
+  number is CHECKABLE instead of asserted.** ⛔ *And publishing it immediately caught two more of my
+  own errors: there are **TEN OUTCOMES but NINE exit statements** (the fallback `return` carries two
+  reason variants), so "ten exits" was the wrong NOUN; and **only ONE exit (2) was unpinned** — the
+  second new test pins a further SHAPE within exit 10, which already had a test.*
+  `resolve_donor_config`'s outcomes, and the test pinning each. ⚠️ **Each row's condition assumes the
+  rows above it did not fire** — they are branch arms in order, not standalone rules:
 
   | # | donor | condition | outcome | test |
   |---|---|---|---|---|
   | 1 | imported | installed hash differs | REFUSE | `..._refused_naming_both_hashes`, `..._refused_even_with_no_installed_path` |
-  | 2 | imported | no installed path | NULL + "no installed config path was supplied" | `..._with_no_installed_path_says_what_is_missing` ⭐ **added this round** |
+  | 2 | imported | no installed path (and no mismatch above) | NULL + "no installed config path was supplied" | `..._with_no_installed_path_says_what_is_missing` ⭐ **added this round** |
   | 3 | imported | path, but no installed hash | NULL + "could not be VERIFIED" | `test_no_installed_hash_is_not_a_refusal_and_records_no_path` |
-  | 4 | imported | hashes match | installed path recorded | `test_matching_hashes_return_the_path_and_owe_no_reason` |
+  | 4 | imported | path supplied AND hashes match | installed path recorded | `test_matching_hashes_return_the_path_and_owe_no_reason` |
   | 5 | retrain | record self-contradictory (path AND reason) | NULL + contradiction named | `..._does_not_become_verified_looking` |
   | 6 | retrain, verified | installed hash differs | REFUSE | `..._verified_retrained_donor_is_refused_on_a_changed_template` |
   | 7 | retrain, verified | match, or no installed hash | carried path forward | `..._passes_when_the_template_matches`, `..._with_a_config_path_inherits_it_and_owes_no_reason` |
-  | 8 | retrain | record has NULL path | NULL + "produced by SAP3" | `..._with_a_null_path_is_not_refused`, and the gen-2/gen-3 chain |
+  | 8 | retrain | record has a hash AND a NULL path | NULL + "produced by SAP3" | `..._with_a_null_path_is_not_refused`, and the gen-2/gen-3 chain |
   | 9 | fallback | warm-start row exists, no hash in it | NULL + "carries no config hash" | `..._says_so_rather_than_denying_the_record` |
-  | 10 | fallback | no warm-start row (± a provenance row without a hash) | NULL + "no provenance row exists, or one exists without a hash" | `test_an_unknown_donor_hash_is_not_a_refusal`, `..._falls_through_without_a_false_reason` ⭐ **added this round** |
+  | 10 | fallback | no warm-start row, and no provenance hash | NULL + "no provenance row exists, or one exists whose hash is absent or empty" | `test_an_unknown_donor_hash_is_not_a_refusal`; second shape by `..._falls_through_without_a_false_reason` ⭐ **added this round** |
 
   - 🔴 **Exit 2 was unpinned** because the existing no-path test supplies a MISMATCHING hash and so
     lands on exit 1 — *two tests can look like they cover two cases while covering one twice.*
@@ -659,3 +663,24 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   - 🔴 **"so it pre-dates Plan 399 T4" was FALSE.** An artifact SAP3 trained from scratch has neither
     row *after* T4 and reaches exit 10 — the reason inferred an era it cannot know. Now it names both
     shapes and infers nothing.
+- **2026-09-26 — T2 round 5: the era inference was not removed, it was MOVED.** ⛔ *Fourth consecutive
+  round finding no defect in the mechanism and a false statement in my prose about it.*
+  - 🔴 **Round 4's headline fix was itself false.** Dropping "so it pre-dates Plan 399 T4" from one
+    clause, I re-attached it as "…and of an import that pre-dates Plan 399 T4". 🔑 **Measured** (by a
+    reviewer, then verified independently): `import_external_artifact` has required a non-NULL declared
+    `config_hash` and written it into provenance since Plan 157 — `fff634fa`, **the same commit that
+    created the table** via migration 0048 — and is the only production writer of it. ⇒ **No import of
+    any era reaches exit 10.** The reason now names what is actually reachable (a from-scratch SAP3
+    artifact; a directly written row) and infers no era at all.
+  - 🔴 **The same inference sat unswept THREE LINES ABOVE, inside the hunk I was editing** — the
+    comment "no warm-start row at all (pre-dates Plan 399 T4)". *The diff's own context window showed
+    it.* Eleventh occurrence.
+  - 🔴 **My new test PINNED THE FALSE CLAUSE instead of the absence of the inference**: it asserted
+    "pre-dates Plan 399 T4" was PRESENT, under a comment saying the reason must not infer an era. ⛔ *A
+    rewrite appending a true clause to the false one would have passed all four assertions.* Now
+    asserts `"pre-dates" not in reason`, and **mutation-verified against exactly that rewrite** —
+    restoring the inference alongside the true clause fails it. *[[feedback_red_first_must_prove_the_fault]]:
+    an assertion that pins the bug's text is not a test for the bug's absence.*
+  - ⚠️ **The reachability claim had an empty-string hole**: the import guard tests `is None`, so a model
+    declaring `config_hash=""` passes and writes `""`, which this resolver treats as absent. Named in
+    the test docstring rather than left as an overstatement.

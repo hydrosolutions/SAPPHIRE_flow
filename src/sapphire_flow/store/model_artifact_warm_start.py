@@ -383,18 +383,28 @@ def resolve_donor_config(
         )
 
     # ⛔ TWO different donors reach here and the reason must not describe the
-    # wrong one: no warm-start row at all (pre-dates Plan 399 T4), OR a row whose
-    # `base_config_sha256` is NULL. Saying "nor produced with a warm-start record"
-    # to the second is false — it HAS one, it just records no config hash.
+    # wrong one: no warm-start row at all, OR a row whose `base_config_sha256` is
+    # NULL. Saying "nor produced with a warm-start record" to the second is false —
+    # it HAS one, it just records no config hash.
+    #
+    # ⛔ NEITHER reason INFERS AN ERA, and two successive attempts got that wrong.
+    # "pre-dates Plan 399 T4" is false of the commonest donor here — an artifact
+    # SAP3 trained from scratch has neither row TODAY. Re-attaching it to the
+    # import case was equally false: `import_external_artifact` has required a
+    # declared config hash since Plan 157 (`fff634fa`, the SAME commit that created
+    # `model_artifact_provenance` via migration 0048) and is the only production
+    # writer of that table, so NO import of any era lands here. *Measured, after a
+    # reviewer disproved the second attempt.*
     why = (
         "it has a warm-start record, but that record carries no config hash, so "
         "no config identity was ever captured for it"
         if inherited is not None
         else "it has no warm-start record, and no provenance row recording a "
-        "config hash — either no provenance row exists, or one exists without a "
-        "hash (the column is nullable, though `services/model_import.py` refuses "
-        "an import that declares none). This is the shape of an artifact SAP3 "
-        "trained from scratch, and of an import that pre-dates Plan 399 T4"
+        "config hash: either no provenance row exists, or one exists whose hash "
+        "is absent or empty. That is the shape of an artifact SAP3 trained from "
+        "scratch, or of a provenance row written directly rather than through the "
+        "import path, which has required a declared config hash since the table "
+        "was created"
     )
     return (
         None,

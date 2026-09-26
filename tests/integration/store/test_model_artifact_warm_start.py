@@ -752,9 +752,13 @@ class TestComparingTheInstalledTemplate:
     ) -> None:
         """The fallback reached via a NULL provenance `config_hash`.
 
-        ⚠️ Unreachable through `import_external_artifact` (it refuses a model that
-        declares no hash) but the column is nullable, so the row is writable — and
-        this task wrote TEXT describing the case, which means it owes a test.
+        ⚠️ Not reachable through an ordinary import: `import_external_artifact` has
+        required a declared config hash since the same commit that created this
+        table, and it is the only production writer of it. *One hole: the guard
+        tests `is None`, so a model declaring `config_hash=""` passes and writes an
+        empty string, which this resolver treats as absent.* The column is nullable
+        either way, so the row is writable directly — and this task wrote TEXT
+        describing the case, which means it owes a test.
         ⛔ The reason must not claim there is no provenance row: there is one.
         """
         donor = self._imported_donor(db_connection, tmp_path, config_hash=None)
@@ -769,10 +773,18 @@ class TestComparingTheInstalledTemplate:
         assert path is None
         assert sha256 is None
         assert reason is not None
-        assert "no provenance row exists, or one exists without a hash" in reason
-        # ⛔ And it must not infer an era it cannot know.
-        assert "pre-dates Plan 399 T4" in reason, "the import case is still named"
+        assert "no provenance row exists, or one exists whose hash is absent" in reason
         assert "trained from scratch" in reason, (
-            "a freshly trained SAP3 artifact has neither row AFTER T4, so the "
-            "reason must not imply the donor is old"
+            "the commonest donor reaching here is an artifact SAP3 trained from "
+            "scratch, and it must be named"
+        )
+        assert "written directly" in reason
+        # 🔴 THE BITING ASSERTION. ⛔ An earlier version asserted that
+        # "pre-dates Plan 399 T4" was PRESENT — so it pinned the false clause and
+        # would have passed on any rewrite that merely appended a true one. The
+        # reason must infer NO era at all: a from-scratch artifact has neither row
+        # today, and no import of any era reaches here.
+        assert "pre-dates" not in reason, (
+            "the era inference is back — twice now it has been wrong, once about "
+            "the from-scratch donor and once about the import case"
         )
