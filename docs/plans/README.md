@@ -681,7 +681,7 @@ exit criteria — Plan 212 owns that deeper screening.
   call site anywhere, and the passthrough is missing at all four of our layers.
   🔴 **Two blockers the review found**: the empty config mapping is hardcoded at
   SEVEN sites, so there is no model-config channel at all (⚖️ D3 closed: supplied as
-  a run parameter, and T2 must RECORD what was used); and **group training is broken
+  a run parameter; the channel is T2's, the RECORD is T4's); and **group training is broken
   today** — the flow attaches no station-code resolver, so the adapter raises before
   the model is reached, which is why no group artifact has ever been produced here.
   ⚠️ ⚖️ D2 (closed: REFUSE) deliberately diverges from FI's suggested fall-back to

@@ -158,12 +158,26 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     WRONG place to read it.** `_shim.py:598-600` computes `config_hash` from
     `_config_path(type(self).CONFIG_FILENAME).read_bytes()` — **the currently installed template**.
     The DONOR's hash was captured separately at import
-    (`services/model_import.py:461`, `config_hash=declared_config_hash`) and is readable back through
+    (`services/model_import.py:460`, `config_hash=declared_config_hash`) and is readable back through
     `store/model_artifact_provenance.py`.
     ⇒ 🔴 **If the vendored template changes after import, recording its new path and hash would
     satisfy a naive "the hash matches the file it names" check while MISIDENTIFYING the donor's
     configuration.** ⛔ *T4 must resolve the donor's recorded provenance and compare, not hash
     whatever is on disk now.*
+    🔴 **BUT provenance exists ONLY for an IMPORTED donor**, and `fetch_artifact_provenance` returns
+    `| None`. `store/model_artifact_provenance.py:1-8` says so outright: it *"records that a
+    `model_artifacts` row was **EXTERNALLY IMPORTED**, not trained by SAP3 … only ever called from the
+    import path"*, and it has exactly one caller. ⇒ **A donor SAP3 trained itself has NO recorded
+    config hash** — and D1 permits such a donor, because the caller names any base it likes (a retrain
+    of a retrain).
+    ⚖️ **DECIDED, so an implementer does not guess:**
+    | donor | where its config identity comes from |
+    |---|---|
+    | imported | its provenance row's `config_hash` |
+    | produced by SAP3 **after T4** | the record T4 wrote when SAP3 produced it |
+    | produced by SAP3 **before T4** | **NULL, with the reason recorded** — the same discipline § 5a applies to the params path |
+    ⛔ **Never fall back to hashing today's installed template.** *That is this section's own trap, and
+    it would pass a naive check while naming the wrong configuration.*
 
 14. ⚖️ **STORAGE SHAPE — DECIDED HERE, once: a SIDE TABLE, and `model_artifacts` gains no column.**
     The repo states the precedent explicitly at `db/metadata.py:177-182`:
@@ -181,7 +195,7 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     |---|---|
     | `flows/train_models.py:170` | ✅ **IN** — the operational training path, and the one retrain uses |
     | `services/model_onboarding.py:552`, `:585` | ⛔ **OUT, by nature** — these are SMOKE TESTS on synthetic data (`_make_synthetic_group_training_data`, `ModelSmokeTestError`) proving a model can train at all. There is no caller and no config to supply |
-    | `flows/onboard_model.py:368`, `:375`; `services/model_onboarding.py:1453`, `:1457` | ⛔ **OUT, deliberately** — real training, but at IMPORT time. Fine-tuning is a later act with an explicitly named base (D1); no closed decision needs onboarding to accept config. ⚠️ **T2 must ASSERT these are unchanged** |
+    | `flows/onboard_model.py:368`, `:375`; `services/model_onboarding.py:1453`, `:1457` | ⛔ **OUT, deliberately** — real training, on the **ONBOARDING** path (Flow 12, `model_onboarding.py:1448` `# Step 3: Train`). ⚠️ *An earlier version called this "IMPORT time" — wrong, and it works against § 5a's whole argument: the IMPORT path (`services/model_import.py`) never trains at all.* Fine-tuning is a later act with an explicitly named base (D1); no closed decision needs onboarding to accept config. ⚠️ **T2 must ASSERT these are unchanged** |
     ⛔ *An earlier version said "either bring them into this task or state explicitly … that
     onboarding keeps `{}`" — an instruction to choose, not a choice.*
 
@@ -207,7 +221,7 @@ have its base config so that can also be stored (I mean the paths to params and 
 | | what | why it is recoverable |
 |---|---|---|
 | the base **artifact id** | which weights were fine-tuned | chosen by the caller (D1) — known at the call |
-| the path to the base **config** | the model template the donor was built from | 🔑 **Resolved from the DONOR's own provenance, not from today's installed file** — `model_artifact_provenance` records the `config_hash` captured at import (`services/model_import.py:461`) and `store/model_artifact_provenance.py` reads it back. ⛔ *An earlier version said "derivable from the model", which would record the CURRENTLY installed template — see § 13* |
+| the path to the base **config** | the model template the donor was built from | 🔑 **Resolved from the DONOR's own provenance, not from today's installed file** — `model_artifact_provenance` records the `config_hash` captured at import (`services/model_import.py:460`) and `store/model_artifact_provenance.py` reads it back. ⛔ *An earlier version said "derivable from the model", which would record the CURRENTLY installed template — see § 13* |
 | the path to the base **params** | the configuration the donor was trained with | D3's channel, once it exists. ⚠️ **For `cmal_small` this is UNKNOWN, not known-absent** (§ 5a) — the field is nullable, and T4 must INSPECT the donor's provenance rather than assume. ⛔ *An earlier version of this cell asserted it "is genuinely absent … the first retrain records none". That is the invalid inference § 5a corrects, left standing here.* |
 
 ⚠️ **A path alone is weak provenance — pin it with the hash that already exists.** *`_shim.py`'s
@@ -251,7 +265,8 @@ database surface (b), no vendored file (c).*
 🔑 **The condition travels with it: the exact config used is RECORDED against the artifact it
 produced.** ⚠️ *Without that, § 7's "opaque for v1" becomes "unknowable forever" — which is the
 failure already on record for this very model, whose training revision is
-"genuinely unrecoverable".* ⇒ T2 owns both halves: the channel **and** the recording.
+"genuinely unrecoverable".* ⇒ **T2 ships the CHANNEL; T4 ships the RECORD** (§ 14). ⛔ *An earlier
+version said "T2 owns both halves" — the recording moved to T4 so one task owns the whole record.*
 
 ⚠️ **This widens slightly beyond fine-tuning, deliberately.** *It is the same path all training uses
 (§ 5's seven sites), so opening it touches ordinary training too. Nothing changes behaviour — no
@@ -278,8 +293,10 @@ does not.
   unconditional `retrain` on it makes the structural check pass for EVERY FI model and D2's refusal
   never fires for the one case it exists for.* Per **D2 (closed: REFUSE)**, a typed error naming the
   model when support is absent. ⛔ *No fall-back to `train` at any layer.*
-- ⚠️ **A note in `docs/fi-issues/004` recording the divergence** — FI's own comment says SAP3 falls
-  back to `train`; we refuse. ⭐ *One paragraph, not a new issue.*
+- ✅ **The `docs/fi-issues/004` divergence note is ALREADY WRITTEN** — § 3 of that draft, carrying the
+  owner's decision and the ask that the contract COMMENT be amended. ⛔ *An earlier version of this
+  bullet asked for it as if outstanding.* ⇒ **Nothing to do here; T1 only re-checks it still matches
+  the implemented refusal.*
 - 🔴 **DOCUMENTATION, which the plan had NONE of** (⛔ *`CLAUDE.md`: "every code change updates
   affected docs — no exceptions"; the fi-issue paragraph was the plan's only doc deliverable*):
   | file | why |
@@ -318,19 +335,24 @@ which a stub satisfies.*
 
 ### T2 — Give model config a route (D3)
 
-**Outcome.** A caller can supply model configuration, and what was used is recoverable afterwards.
+**Outcome.** A caller can supply model configuration. ⛔ *Recoverability is **T4's** outcome, not this
+one (§ 14) — an earlier version claimed both here.*
 
-**In.** D3's channel, replacing `flows/train_models.py:170`'s hardcoded `{}` (§ 5), and **the config
-recorded against the produced artifact**.
+**In.** D3's channel, replacing `flows/train_models.py:170`'s hardcoded `{}` (§ 5). ⛔ *An earlier
+version also required "the config recorded against the produced artifact" — which contradicted the
+very next bullet ("NO storage and NO migration here") and is T4's (§ 14).*
 
 - 🔑 **The CHANNEL only — `flows/train_models.py:170` (§ 15). NO storage and NO migration here**
   (§ 14: one side table, one migration, owned by T4). ⛔ *An earlier version of this task also
   required "the config recorded against the produced artifact" while declaring no schema change,
   which left two migrations in the same area with no owner.*
-- 🔑 **Name the flow entry point and how the parameter threads through.** ⚠️ *`:170` sits inside a
-  task helper whose parameters are `model`/`data`/`unit`/`rng` — nothing there names the flow
-  parameter or how it survives the task fan-out.* ⛔ **Read `docs/standards/orchestration.md` first**
-  — it is mandatory for flow work and this plan cited no standards document.
+- ⚖️ **The entry point, DECIDED: a parameter on the EXISTING `train_models_flow`**
+  (`flows/train_models.py:267`), threaded to `_train_model_task` at `:559` — which is called directly,
+  not through `.map`, so no fan-out serialisation is involved. ⛔ *NOT a separate flow.* ⚠️ *An earlier
+  version said "name the flow entry point", leaving it to the implementer — but the answer constrains
+  this task's parameter shape three phases before T3 needs it.*
+  ⛔ **Read `docs/standards/orchestration.md` first** — mandatory for flow work, and this plan cited no
+  standards document until now.
 - 🔴 **Documentation** (⛔ *`CLAUDE.md`: "every code change updates affected docs — no exceptions"*):
   `docs/standards/orchestration.md`'s flow-parameter conventions if this adds one.
 
@@ -350,7 +372,10 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
   no-config case on BOTH**: `flows/train_models.py` AND the four real onboarding sites (§ 15), which
   stay at `{}` by decision. ⚠️ *Asserting only the training flow is how onboarding silently diverges
   while the suite stays green.*
-- The config used is readable back from the artifact record afterwards.
+⛔ *An earlier version also asserted "the config used is readable back from the artifact record".
+**Removed — it was UNSATISFIABLE at this phase**: T4's side table does not exist until phase 3. That
+is the same defect class round 1 caught in this task's RED test, reintroduced by the § 14 fold.
+T4 verifies readback.*
 
 ### T3 — Select a base artifact and run a retrain end to end (D1)
 
@@ -365,7 +390,7 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
   failure.* ⭐ *It also explains § 10 — group training never ran because it cannot.*
 - Loading the donor via `fetch_artifact`, **deserializing the FETCHED bytes**, and **rejecting a
   missing donor explicitly** — `None` is a real return value (§ 8).
-- ⚠️ **A path that does NOT auto-promote.** `flows/train_models.py:208` calls
+- ⚠️ **A path that does NOT auto-promote.** `flows/train_models.py:207` calls
   `store_and_promote_artifact()`; the retrain path must store WITHOUT promoting.
 - 🔴 **One real run on staging**, since § 10/§ 11 show this path has never worked here.
 - 🔴 **The config SUPPLIED, the config the model RECEIVED, and the config RECORDED against the
@@ -380,9 +405,17 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
     records the id it used rather than the plan naming it now*;
   - **expected runtime and hardware** — the aquacast worker image on the staging host, the only
     place this model runs;
-  - **the abort criterion** — ⛔ *the resolver error of § 11 or a missing donor (§ 8) means T1/T3 are
-    wrong; anything raised INSIDE the model after inputs are accepted is environmental and is retried
-    once, then escalated.*
+  - **the abort criterion** — ⛔ *an earlier version said "anything raised INSIDE the model after
+    inputs are accepted is environmental and is retried once". **That is wrong**: a model raises
+    DETERMINISTICALLY for a missing fine-tuning config and for a feature-manifest mismatch (the very
+    refusal fi-issue 004 § 1 exists about). Retrying those wastes a run and, worse, labels OUR
+    configuration bug as flaky infrastructure.*
+    | failure | action |
+    |---|---|
+    | the § 11 resolver error, or a missing donor (§ 8) | **STOP** — T1/T3 are wrong |
+    | a deterministic model refusal (no fine-tuning config, feature-manifest mismatch) | **STOP and report** — ours to fix |
+    | an identified transient failure | retry **once**, then escalate |
+    | anything else | **STOP and preserve it for diagnosis** — ⛔ *do not retry an exception you cannot classify* |
 - ⛔ **The staging run is ORCHESTRATOR-GATED.** *`CLAUDE.md`: staging deploys are the orchestrator's;
   the owner keeps production. This task does not self-authorise the run.*
 
@@ -404,7 +437,7 @@ group training from ever running.* The test must fail with the resolver error to
   (§ 5). As worded it could be satisfied by breaking ordinary training, and it contradicted T1's
   "every existing model still trains unchanged" and T2's "no config supplied → behaviour unchanged".*
 - 🔴 **It is NOT promoted and NOT assigned** — asserted, not assumed, and note that the existing
-  store step promotes by default (`flows/train_models.py:208`). ⭐ *`cmal_small`'s current artifact
+  store step promotes by default (`flows/train_models.py:207`). ⭐ *`cmal_small`'s current artifact
   keeps serving until a human decides otherwise.*
 - ⚠️ **The PAST-leg forcing it trained on is the same reanalysis binding the operational path reads**
   (§ 6) — recorded from the run, because a plausible failure is quietly assembling something else.
@@ -451,11 +484,19 @@ none.**
 - 🔴 **The donor's config is identified from ITS OWN recorded provenance and compared with the
   donor's import-time hash** (§ 13) — ⛔ *"the hash matches the file it names" is NOT sufficient: it
   passes while recording today's template.*
-- 🔴 **A CHANGED-TEMPLATE case**: the vendored config differs from the donor's recorded hash ⇒ the
-  mismatch is rejected, or the donor's actual configuration is preserved. ⛔ *Matching today's file
-  alone must not pass.*
-- 🔴 **Deleting or superseding a parent does not orphan the child's record** — ⚠️ *state the intended
-  behaviour rather than discovering it; supersession already exists (Plan 328).*
+- 🔴 **A CHANGED-TEMPLATE case, with ONE required outcome**: the vendored config differs from the
+  donor's recorded hash ⇒ **the retrain is REFUSED**, naming both hashes. ⛔ *An earlier version
+  offered "rejected, OR the donor's configuration preserved" — an either/or that two different
+  implementations both satisfy.* ⭐ *Refusing is consistent with D2: we would rather stop than
+  fine-tune from something we cannot identify.* ⛔ *Matching today's file alone must not pass.*
+- ⚖️ **Parent retention, DECIDED — and it must be written into T4's migration as FK semantics.**
+  ⛔ *An earlier version said "state the intended behaviour rather than discovering it", which is an
+  instruction to decide, not a decision.*
+  | event | behaviour |
+  |---|---|
+  | **deleting** a referenced parent | **REFUSED** — `RESTRICT`, not `CASCADE` and not `SET NULL`. ⛔ *`CASCADE` would delete the child's provenance row, which passes a naive "no orphan remains" test while destroying the answer to "what was this fine-tuned from?"* |
+  | **superseding** a parent | **the lineage survives untouched** — supersession marks (`services/training.py:127`), it does not delete (Plan 328) |
+  ⇒ **Assert the child's record still exists AND still resolves after the parent is superseded.**
 
 ## Explicitly out of scope
 
@@ -475,7 +516,7 @@ none.**
 {
   "phases": [
     {"phase": 1, "tasks": ["T2"], "parallel": false, "decision": "D3 CLOSED",
-     "note": "the config channel first — D3 (closed: a run parameter) gates everything downstream; nothing can select a strategy without the channel, and T2 also owns RECORDING the config used"},
+     "note": "the config channel first — D3 (closed: a run parameter) gates everything downstream; nothing can select a strategy without the channel. RECORDING belongs to T4 (see 14), not here"},
     {"phase": 2, "tasks": ["T1"], "parallel": false, "decision": "D2 CLOSED",
      "note": "T1 is NOT technically blocked by T2 — the services and the FI boundary already accept a config argument, so the passthrough is independently testable. T2 first is a sequencing PREFERENCE (D3 gates the real run), not a dependency"},
     {"phase": 3, "tasks": ["T4"], "parallel": false,
@@ -504,8 +545,10 @@ none.**
   - ⚠️ **Two consequences the owner's requirement surfaced, folded rather than discovered later:**
     a bare path is weak provenance, so each is stored with the hash that pins it (`config_hash`
     already exists and is already used to refuse an artifact/config mismatch); and the **params path
-    must be NULLABLE**, because § 5 measured that no model has ever received params — so
-    `cmal_small`, the very first base, has none to point at.
+    must be NULLABLE**. ⚖️ *SUPERSEDED in part — the REASON given here ("no model has ever received
+    params, so `cmal_small` has none to point at") is the invalid inference § 5a retracts: it was
+    IMPORTED, not trained here, so our empty run params say nothing about its external training.
+    Nullable stands; "known to have none" does not.*
   - ⛔ **D3 remained open at that point and still gated everything**, declared as a machine-readable
     gate on phase 1 rather than only noted in prose. ⚖️ *SUPERSEDED 2026-09-26 — D3 is now closed.*
 - **2026-09-26** — **independent review: NEEDS CHANGES. Every finding verified against the code
@@ -642,3 +685,42 @@ none.**
     paragraph, all seven config sites, § 11's resolver gap, § 5a/§ 6's consistency, both citations,
     the index entry, fi-issue 004, and that **this round's predecessor introduced no new defect** —
     the round-1 bullet that could have been satisfied by breaking ordinary training is properly scoped.
+- **2026-09-26 — FIFTH review round, TWO reviewers on ONE clean committed state (`b8465e6c`).**
+  ⭐ **Both independently confirmed the file did not move under them** (one checked its md5 at start and
+  end) — so unlike round 4, this round can gate. **Verdict: NEEDS CHANGES.** Both found the same major.
+  - 🔴 **§ 14's own refinement reached two sections and left SIX others stale.** *"T2 ships the channel,
+    T4 ships the record"* landed in § 14 and T4, while T2's Outcome, T2's In, T2's verification, D3's
+    text, the **JSON phase graph** and the **index entry** all still said T2 records it. ⛔ **Fifth
+    round, fifth instance of the same failure mode** — and the two surfaces that went stale are the two
+    the round-3 entry already named as repeat offenders. Fixed by sweeping for the VALUE across the
+    plan *and* the index, not by re-reading what I had just edited.
+  - 🔴 **One of those stale sites was UNSATISFIABLE, not merely wrong.** T2's verification asked that
+    the config be "readable back from the artifact record" — in phase 1, against a side table that does
+    not exist until phase 3. ⛔ *That is exactly the defect class round 1 caught in this same task's RED
+    test, reintroduced by my own § 14 fold.*
+  - 🔴 **NEW major: the donor's config can only be resolved for an IMPORTED donor.** Provenance is
+    written on the import path ONLY — the module says so outright — and the fetch returns `None`
+    otherwise. ⇒ A donor SAP3 trained itself (a retrain of a retrain, which D1 permits) has no recorded
+    config hash, and my rule assumed one always exists. ⛔ *The natural fallback — hash today's
+    installed template — is § 13's own trap.* **Now decided in a table**: imported ⇒ its provenance
+    row; SAP3-produced after T4 ⇒ T4's own record; SAP3-produced before T4 ⇒ **NULL with the reason**,
+    the same discipline § 5a applies to the params path. Never today's file.
+  - 🔴 **My staging abort rule misclassified deterministic refusals as environmental.** It said anything
+    raised inside the model is retried once — but a missing fine-tuning config and a feature-manifest
+    mismatch are deterministic, and retrying them labels OUR bug as flaky infrastructure. Replaced with
+    a four-row table, including *"anything you cannot classify: STOP and preserve it"*.
+  - **Two more parked decisions, now made**: the changed-template case had an either/or (two
+    implementations could both pass) ⇒ **REFUSE, naming both hashes**; and parent retention ⇒
+    **`RESTRICT`, not `CASCADE`** — ⛔ *cascade would delete the child's provenance row, passing a naive
+    "no orphan remains" test while destroying the very answer T4 exists to give.* Supersession
+    preserves the lineage, since it marks rather than deletes.
+  - **Smaller:** T1 asked for a fi-issue paragraph that was already written (now marked done); the
+    retrain entry point is now NAMED (a parameter on the existing training flow, threaded to a task
+    that is called directly, not mapped) rather than left to the implementer; the 2026-09-25 changelog
+    entry's retracted params reasoning is cross-referenced; "IMPORT time" corrected to the ONBOARDING
+    path (the import path never trains); two off-by-one citations fixed.
+  - ⭐ **Confirmed correct and not to be re-litigated:** § 14's precedent quoted verbatim, all seven
+    `{}` sites exact, § 15's dispositions true to the code, T1's four documentation targets exact,
+    T4's internal consistency, T2's two-surface no-config assertion, and that **round 4's fold
+    introduced no new defect** — the bullet that could once have been satisfied by breaking ordinary
+    training is properly scoped.
