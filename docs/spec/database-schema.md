@@ -1072,8 +1072,8 @@ erDiagram
         TEXT token_hash UK "HMAC-SHA-256 + access_token_pepper, R1"
         TEXT key_prefix "indexed lookup"
         TEXT name
-        TEXT role "consumer | admin"
-        UUID tenant_id FK "NULL = unscoped global-admin"
+        TEXT role "consumer | reviewer | admin — reviewer: Plan 401, migration 0061"
+        UUID tenant_id FK "NULL = unscoped global-admin; consumer and reviewer always set"
         SMALLINT pepper_version "default 1 — v1.x dual-pepper rotation hook"
         TIMESTAMPTZ expires_at
         TIMESTAMPTZ disabled_at "NULL"

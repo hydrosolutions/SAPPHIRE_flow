@@ -14,9 +14,11 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
 §Authentication (v1) — OAuth2 sessions, TOTP MFA, JWT/refresh tokens, dashboard user management, the
 5-role human matrix — remains the **v1.x target** and is not yet built.
 
-- **Two roles only**: `consumer` (read, station-scoped — the scope resolved in one of two
-  `scope_mode`s, below) and `admin` (read, unscoped + CLI
-  token/tenant management). No session roles, no `operator`/`forecaster` role, no third HTTP role.
+- **Three HTTP roles**: `consumer` (read, station-scoped — the scope resolved in one of two
+  `scope_mode`s, below), `reviewer` (read, scoped exactly like a consumer, plus the REVIEW routes —
+  § Reviewer tokens below) and `admin` (read, unscoped + CLI token/tenant management). Plan 147 G4
+  had *two* roles; Plan 401 D1 (owner, 2026-09-26) amends G4's **role list only** — GET-only (next
+  bullet) stands for every token. No session roles, no `operator`/`forecaster` role.
 - **Access tokens are strictly GET-only** — no bearer key of any role may POST/PATCH/DELETE. The
   sole state-changing v0/v1.0 route, `POST /alerts/{id}/acknowledge`, is removed from the v1.0 surface
   (returns `501`); it returns with the Flow 3 dashboard + session tokens in v1.x.
@@ -46,7 +48,8 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   `/models/`, the dashboard). The legacy HTML/browser routers and the `.json` exports that share a
   router module with them are **admin-gated in full** (R3) rather than individually scope-filtered —
   the modern `/api/v1/stations|forecasts|alerts` JSON API is the one surface a `consumer` token
-  reaches, with per-endpoint station-scope filtering.
+  reaches, with per-endpoint station-scope filtering. A `reviewer` token reaches that same surface,
+  identically scoped, plus the REVIEW routes; never an admin-gated route.
 - **Scope contract narrowed to the station axis only for v1.0.** § API key lifecycle below documents
   a 3-axis scope (station + parameter + geographic boundary) as the full v1 design; v1.0 implements
   **only** the station axis, resolved in one of two `scope_mode`s (Plan 215 D2.1): `'stations'` (the
@@ -54,18 +57,21 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   `stations.tenant_id` at load time instead — no materialised rows, so a station added to the tenant
   after the token is in scope immediately, at the cost of being unfiltered by network/station kind
   (`cicd.md` § access-token runbook). Parameter and geographic scoping are **deferred to v1.x**.
-  Empty scope = a consumer sees nothing (fail-closed); out-of-scope station ids return 404 (not 403 —
-  do not reveal existence); a null (stationless)
-  `station_id` (e.g. some `alerts` rows) is never in a consumer's scope either.
+  The same rules apply to consumer and reviewer tokens: empty scope = the token sees nothing
+  (fail-closed); out-of-scope station ids return 404 (not 403 — do not reveal existence), and so does
+  an out-of-scope forecast id, with the same body as an absent one; a null (stationless)
+  `station_id` (e.g. some `alerts` rows) is never in their scope either.
 - **CORS**: `SAPPHIRE_CORS_ORIGINS="*"` is rejected at API startup once auth is enforced (a wildcard
   origin would let any site's JS ride a browser-held bearer token). Unset = no CORS middleware
   (same-origin only); set an explicit comma-separated origin list for a browser-based consumer.
-- **`create-admin` / `create` / `list` / `revoke` / `show` / `grant` / `revoke-station` /
-  `set-scope-mode` CLI** — see § Initial deployment bootstrap below and `cicd.md` § access-token
-  runbook. The last four are Plan 215 (T1/T2/T6): a token's station scope now has a supported edit
-  path, so scope-edit is **no longer** deferred to v1.x. In-place key **rotation** is still deferred;
-  v1.0 rotation = `revoke` + `create` (re-materializing the token's scope rows, or re-running
-  `set-scope-mode` for a `'tenant'`-mode token).
+- **`create-admin` / `create` / `create-reviewer` / `list` / `revoke` / `show` / `grant` /
+  `revoke-station` / `set-scope-mode` CLI** — see § Initial deployment bootstrap below and `cicd.md`
+  § access-token runbook. `show`/`grant`/`revoke-station`/`set-scope-mode` are Plan 215 (T1/T2/T6): a
+  token's station scope now has a supported edit path, so scope-edit is **no longer** deferred to
+  v1.x; they act on consumer and reviewer tokens alike. `create-reviewer` is Plan 401. In-place key
+  **rotation** is still deferred; v1.0 rotation = `revoke` + `create`/`create-reviewer`
+  (re-materializing the token's scope rows, or re-running `set-scope-mode` for a `'tenant'`-mode
+  token).
 - **Least-privilege DB roles are REALIZED** (Plan 147 Slice D — see § Least-privilege DB roles below):
   the app runs as scoped `sapphire_api`/`sapphire_worker` roles (never the owner/migration superuser),
   each with its own credential, per-table grants (not blanket `UPDATE`/`DELETE`), and no
@@ -81,11 +87,41 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   session limits, account lockout, per-request `api_key_request` audit logging, parameter/geographic
   scope axes, in-place token rotation, and a distinct scoped `sapphire_prefect` role.
 
+### Reviewer tokens (v1.0, Plan 401)
+
+A `reviewer` token is the identity of one review dashboard (the Swiss/BAFU dashboard, the Nepal
+dashboard) — one token per dashboard deployment, **held server-side by that dashboard**, never shipped
+to a browser.
+
+- **A consumer plus the REVIEW routes** (Plan 401 D2). A reviewer token is GET-only and tenant-bound,
+  uses the consumer's scope rules unchanged (both `scope_mode`s, 404 for an out-of-scope station),
+  reaches every PRINCIPAL route exactly as a consumer does, and additionally reaches routes gated
+  **REVIEW** (`api/security.py::require_reviewer`, which admits `reviewer` and `admin` and refuses a
+  `consumer` with 403). It never reaches an ADMIN route. No existing route was reclassified; the first
+  two REVIEW routes arrive with Plan 402 (`GET /api/v1/qc/rules`, `GET /api/v1/stations/{id}/skill`).
+- **The REVIEW class.** `require_reviewer` checks the role only. Every REVIEW route serving station
+  data applies the principal's station scope itself — 404 on detail routes, filtering on collections.
+  A REVIEW route serving forecast values withholds those values and the flag `detail` from reviewer
+  tokens where Plan 341's publication gate is active, still returning the rule fields (Plan 404 D4);
+  admins keep full access there (Plan 341).
+- **No unpublished forecasts, no writes.** Where Plan 341's gate is active a reviewer token is gated
+  exactly like a consumer on the forecast routes; only Plan 341 may change that default. Publishing
+  and withdrawal are a named, signed-in person's act (Plan 341), never a token's (Plan 401 D3).
+- **Tenant binding (Plan 401 D4, confirming Plan 268 D11).** A token is bound to one tenant for life
+  and cannot span or change tenants — `grant` refuses a station from another tenant. A dashboard token
+  may use `scope_mode = tenant` **only when every station in its tenant belongs to that dashboard's
+  client**; until then it uses `scope_mode = stations` with an explicit station list. The Swiss
+  dashboard's token (tenant `sapphire`) therefore stays in `stations` mode while any non-Swiss station
+  remains in `sapphire`. The Nepal dashboard's token binds to the DHM tenant only. Admin tokens stay
+  global (no tenant, no station scope).
+- **Rollback.** An image older than Plan 401 cannot parse the role: `cicd.md` § Rollback deletes every
+  reviewer token before such an image starts; migration `0061`'s downgrade refuses while one exists.
+
 ### Tenant write-isolation (v1.0, Plan 147 Slice E)
 
 Write authority on the flow/CLI write paths (onboarding, group creation and group/model assignment, model promotion) is
 **config-declared, never derived from the target row and never from a read-only access token** (G3/G6).
-A third principal kind — distinct from the two HTTP read roles above.
+A separate principal kind — distinct from the three HTTP read roles above.
 
 - **`[deployment]` config block** (`config.toml`): `writable_tenants = ["<code>", ...]` (one or more
   tenant codes this host may write to) OR `global_admin = true` (an unscoped host — mutually exclusive
@@ -201,8 +237,8 @@ Prints the raw bearer key once (never persisted/logged) and writes exactly one `
 `audit_log` row (`actor_type='system'`) in the same transaction as the token insert. Same trust
 model as above: requires shell access to the production VM (`docker compose exec`), which already
 implies reading `/run/secrets/` directly (including `access_token_pepper`). Ongoing token management
-(`create` for scoped consumer tokens, `list`, `revoke`) uses the same module — see § API key
-lifecycle management below.
+(`create` for scoped consumer tokens, `create-reviewer` for review-dashboard tokens, `list`,
+`revoke`, and the scope verbs) uses the same module — see § API key lifecycle management below.
 
 ### User onboarding (post-bootstrap)
 
@@ -251,54 +287,57 @@ The org admin (a hydromet staff member) manages all user accounts through the da
 
 > **v1-only**: The entire authorization matrix applies from v1. v0 has no authentication or authorization.
 >
-> **v1.0 headless REALIZED status (Plan 147 Slice C):** only the **API consumer** column (renamed
-> `consumer` in code, plus an unscoped `admin` role not shown as a separate column below) is
-> implemented. Every `Org admin`/`IT admin`/`Model admin`/`Forecaster` column, and every row that is
+> **v1.0 headless REALIZED status (Plan 147 Slice C, Plan 401):** only the **API consumer** column
+> (renamed `consumer` in code) and the **Reviewer token** column (`reviewer`, Plan 401) are
+> implemented, plus an unscoped `admin` role not shown as a separate column below. Every `Org admin`/`IT admin`/`Model admin`/`Forecaster` column, and every row that is
 > exclusively a human-session route (`POST /forecasts/{id}/adjust`, `PATCH /forecasts/{id}/status`,
 > the flow-trigger/model-artifact-status routes, all `/users`/`/access-tokens` HTTP management routes),
-> is the **v1.x target** — v1.0 access-token CLI (`create`/`list`/`revoke`/`create-admin`) replaces the
-> `/access-tokens` HTTP surface for now. `POST /alerts/{id}/acknowledge` is unreachable in v1.0 (501)
+> is the **v1.x target** — v1.0 access-token CLI (`create`/`create-reviewer`/`list`/`revoke`/
+> `create-admin`) replaces the `/access-tokens` HTTP surface for now. `POST /alerts/{id}/acknowledge` is unreachable in v1.0 (501)
 > regardless of role. `GET /api/v1/health/detail` is `admin`-only in v1.0 (not IT-admin-only as drawn
 > below — there is no IT-admin role yet).
 
 Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(require_role(...))`), not frontend visibility.
 
-| Endpoint pattern | Org admin | IT admin | Model admin | Forecaster | API consumer |
-|---|---|---|---|---|---|
-| `GET /api/v1/stations` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `GET /api/v1/stations/{id}/forecasts` (published) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `GET /api/v1/stations/{id}/forecasts` (all statuses) | ✓ | ✓ | ✓ | ✓ | — |
-| `GET /api/v1/stations/{id}/observations` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `GET /api/v1/alerts` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `POST /api/v1/forecasts/{id}/adjust` | — | — | — | ✓ | — |
-| `PATCH /api/v1/forecasts/{id}/status` | — | — | — | ✓ | — |
-| `POST /api/v1/alerts/{id}/acknowledge` | — | — | ✓ | ✓ | — |
-| `POST /api/v1/flows/ingest/trigger` | — | ✓ | ✓ | — | — |
-| `POST /api/v1/flows/train/trigger` | — | — | ✓ | — | — |
-| `PATCH /api/v1/model-artifacts/{id}/status` | — | — | ✓ | — | — |
-| `GET /api/v1/health` (public) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `GET /api/v1/health/detail` | ✓ | ✓ | — | — | — |
-| `POST /api/v1/users` | ✓ | — | — | — | — |
-| `GET /api/v1/users` | ✓ | — | — | — | — |
-| `PATCH /api/v1/users/{id}` | ✓ | — | — | — | — |
-| `POST /api/v1/access-tokens` | ✓ | — | — | — | — |
-| `GET /api/v1/access-tokens` | ✓ | — | — | — | — |
-| `DELETE /api/v1/access-tokens/{id}` | ✓ | — | — | — | — |
-| `POST /api/v1/access-tokens/{id}/regenerate` | ✓ | — | — | — | — |
-| `PATCH /api/v1/users/me/password` | ✓ | ✓ | ✓ | ✓ | — |
+| Endpoint pattern | Org admin | IT admin | Model admin | Forecaster | API consumer | Reviewer token |
+|---|---|---|---|---|---|---|
+| `GET /api/v1/stations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /api/v1/stations/{id}/forecasts` (published) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /api/v1/stations/{id}/forecasts` (all statuses) | ✓ | ✓ | ✓ | ✓ | — | — |
+| `GET /api/v1/stations/{id}/observations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /api/v1/alerts` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| REVIEW routes (Plan 402: `GET /api/v1/qc/rules`, `GET /api/v1/stations/{id}/skill`) | v1.x | v1.x | v1.x | v1.x | — | ✓ |
+| `POST /api/v1/forecasts/{id}/adjust` | — | — | — | ✓ | — | — |
+| `PATCH /api/v1/forecasts/{id}/status` | — | — | — | ✓ | — | — |
+| `POST /api/v1/alerts/{id}/acknowledge` | — | — | ✓ | ✓ | — | — |
+| `POST /api/v1/flows/ingest/trigger` | — | ✓ | ✓ | — | — | — |
+| `POST /api/v1/flows/train/trigger` | — | — | ✓ | — | — | — |
+| `PATCH /api/v1/model-artifacts/{id}/status` | — | — | ✓ | — | — | — |
+| `GET /api/v1/health` (public) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /api/v1/health/detail` | ✓ | ✓ | — | — | — | — |
+| `POST /api/v1/users` | ✓ | — | — | — | — | — |
+| `GET /api/v1/users` | ✓ | — | — | — | — | — |
+| `PATCH /api/v1/users/{id}` | ✓ | — | — | — | — | — |
+| `POST /api/v1/access-tokens` | ✓ | — | — | — | — | — |
+| `GET /api/v1/access-tokens` | ✓ | — | — | — | — | — |
+| `DELETE /api/v1/access-tokens/{id}` | ✓ | — | — | — | — | — |
+| `POST /api/v1/access-tokens/{id}/regenerate` | ✓ | — | — | — | — | — |
+| `PATCH /api/v1/users/me/password` | ✓ | ✓ | ✓ | ✓ | — | — |
 
-**API consumer scope filtering**: A `✓` for an API consumer means the endpoint is accessible, not that the consumer sees all data. Responses are filtered server-side by the token's `scope` (see `access_tokens.scope` in architecture-context.md § Authentication schemas). A consumer scoped to specific stations receives only those stations from `GET /api/v1/stations`, only their forecasts, observations, and alerts. Requests for out-of-scope station IDs return 404. Human roles (org admin through forecaster) are unscoped — they see all data.
+**Reviewer token column (Plan 401):** a reviewer gets exactly the consumer's access on every existing route, plus the REVIEW class; an admin token also reaches REVIEW routes; human-role access to them (`v1.x`) is decided with the session stack. "All statuses" stays `—` for a reviewer where Plan 341's publication gate is active (§ Reviewer tokens).
+
+**API consumer scope filtering**: A `✓` for an API consumer (or a reviewer token, scoped identically) means the endpoint is accessible, not that the consumer sees all data. Responses are filtered server-side by the token's `scope` (see `access_tokens.scope` in architecture-context.md § Authentication schemas). A consumer scoped to specific stations receives only those stations from `GET /api/v1/stations`, only their forecasts, observations, and alerts. Requests for out-of-scope station IDs return 404. Human roles (org admin through forecaster) are unscoped — they see all data.
 
 ### Input-quality visibility (Plan 253 OD-2 — supersedes Plan 023:128-143)
 
 Plan 023 required the threshold-bearing `input_quality`/`input_quality_flags` detail to be
 role-filtered once authorization existed, on the assumption a `forecaster`/`operator` role would
-exist to filter *to*. Only `consumer` and `admin` were ever built (v1.0 headless subset above), and
-there is no forecaster/operator role. The owner decided (2026-09-04) the thresholds are not
+exist to filter *to*. Only the HTTP token roles `consumer`, `reviewer` (Plan 401) and `admin` were
+built (v1.0 headless subset above), and there is no forecaster/operator role. The owner decided (2026-09-04) the thresholds are not
 sensitive and that a forecaster looking at a degraded forecast needs to see why: `input_quality` and
 `input_quality_flags` are visible, unfiltered, to **every authenticated role** —
 `GET /api/v1/stations/{id}/forecasts` and `GET /api/v1/forecasts/{id}` both expose them to
-`consumer` and `admin` alike. This knowingly supersedes 023:128-143 — record it here so the next
+`consumer`, `reviewer` and `admin` alike. This knowingly supersedes 023:128-143 — record it here so the next
 reader does not mistake the dropped prerequisite for an oversight.
 
 ## Secrets management
@@ -337,8 +376,8 @@ Alternatively, `.env` files can supply secrets as environment variables for loca
 ### Rotation
 
 - `secret_key`: rotated annually and after any suspected compromise. Rotation procedure: generate new key, deploy, old JWTs expire naturally (30 min).
-- API keys: rotated per consumer's request or when compromise is suspected. Org admin regenerates via dashboard (v1.x); v1.0 = `revoke` + `create` CLI, re-materializing scope.
-- `access_token_pepper` (Plan 147 Slice C, REALIZED): v1.0 rotation is **all-token-reissue** — the key set is tiny (a handful of Nepal/Swiss consumer + admin keys). Deploy the new pepper, then `revoke` + `create` every existing key (re-materializing each key's station scope). The `pepper_version` column is the forward hook for v1.x zero-downtime dual-pepper rotation (validate against `{current, previous}`, then lazily re-hash) — not implemented in v0/v1.0. Runbook: `cicd.md` § Access-token pepper + probe-token rotation.
+- API keys: rotated per consumer's request or when compromise is suspected. Org admin regenerates via dashboard (v1.x); v1.0 = `revoke` + `create` (or `create-reviewer`) CLI, re-materializing scope.
+- `access_token_pepper` (Plan 147 Slice C, REALIZED): v1.0 rotation is **all-token-reissue** — the key set is tiny (a handful of Nepal/Swiss consumer, reviewer and admin keys). Deploy the new pepper, then `revoke` + `create`/`create-reviewer`/`create-admin` every existing key, by its role (re-materializing each key's station scope). The `pepper_version` column is the forward hook for v1.x zero-downtime dual-pepper rotation (validate against `{current, previous}`, then lazily re-hash) — not implemented in v0/v1.0. Runbook: `cicd.md` § Access-token pepper + probe-token rotation.
 - `db_password`: rotated annually. Requires coordinated restart of all application containers.
 - `totp_encryption_key`: rotated rarely (requires re-encrypting all `users.totp_secret` values). Rotation procedure: generate new key, run migration script to decrypt-with-old / encrypt-with-new, deploy new key, verify TOTP login works.
 - External API keys (`sapphire_dg_api_key`): rotated per provider schedule.

@@ -1,9 +1,11 @@
 # pyright: reportUnknownMemberType=false
-"""Plan 147 Slice C + Plan 215: access-token CLI management (`042:69`,
-`create`/`list`/`revoke` + a `create-admin` bootstrap, plus Plan 215's
-`grant`/`revoke-station`/`show`/`set-scope-mode` — a token's station scope
-now has a supported lifecycle; in-place edit is no longer deferred to v1.x.
-In-place `rotate` (key rotation) is still deferred to v1.x.
+"""Plan 147 Slice C + Plan 215 + Plan 401: access-token CLI management
+(`042:69`, `create`/`list`/`revoke` + a `create-admin` bootstrap, plus Plan
+215's `grant`/`revoke-station`/`show`/`set-scope-mode` — a token's station
+scope now has a supported lifecycle; in-place edit is no longer deferred to
+v1.x — and Plan 401's `create-reviewer` for review-dashboard tokens; the
+scope verbs act on consumer and reviewer tokens alike). In-place `rotate`
+(key rotation) is still deferred to v1.x.
 
 Run via (note the `/entrypoint.sh` wrapper — REQUIRED):
 
@@ -15,9 +17,10 @@ Run via (note the `/entrypoint.sh` wrapper — REQUIRED):
 and the CLI raises `KeyError: 'DATABASE_URL'`. The access_token_pepper secret is
 mounted into the same `api` service, per `security.md` bootstrap.
 
-Every write subcommand (create/revoke/grant/revoke-station/set-scope-mode) and
-its `audit_log` insert share ONE RW transaction (Slice B atomicity rule) — a
-failed audit insert rolls back the whole change.
+Every write subcommand (create/create-reviewer/create-admin/revoke/grant/
+revoke-station/set-scope-mode) and its `audit_log` insert share ONE RW
+transaction (Slice B atomicity rule) — a failed audit insert rolls back the
+whole change.
 """
 
 from __future__ import annotations
