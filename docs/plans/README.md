@@ -671,7 +671,7 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
-  — `DRAFT`, **no open decisions** (D1/D2 closed 2026-09-25, D3 2026-09-26). `cmal_small` was trained on ERA5-Land
+  — `READY` (owner instruction 2026-09-26; 5 review rounds — ⚠️ the final fold is checked AFTER implementation, per the owner), **no open decisions**. `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
   rather than onboard ERA5-Land.
   ⭐ **Asks for NO new capability.** FI already defines `RetrainableModel.retrain()`,

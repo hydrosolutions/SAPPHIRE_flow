@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 399
 title: SAP3 never calls the warm-start retrain both sides already implement
@@ -17,8 +17,16 @@ source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` o
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review of THIS state and a READY flip.
-⚖️ **All three decisions closed by the owner** — D1 and D2 on 2026-09-25, D3 on 2026-09-26.
+**READY** — flipped by the orchestrator 2026-09-26 on the owner's explicit instruction
+(*"ok, flip ready and implement"*). ⚖️ **All three decisions closed by the owner** — D1 and D2 on
+2026-09-25, D3 on 2026-09-26. **Five review rounds, nine independent reviews.**
+
+⚠️ **Stated plainly: the round-5 fold itself is UNREVIEWED.** *The two round-5 reviewers read
+`b8465e6c`; this state adds that fold — including four newly-MADE decisions (the donor-config
+resolution table, the changed-template refusal, `RESTRICT` parent retention, and the four-row abort
+rule).* ⇒ 🔑 **The owner directed that the plan AND the diff be independently checked AFTER
+implementation instead of before.** *That is the mitigation, and it is deliberate — recorded here so
+the sequencing is not mistaken for a skipped gate.*
 
 ## Why this plan exists
 
