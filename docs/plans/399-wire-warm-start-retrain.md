@@ -453,3 +453,32 @@ none.**
     caller's — ⚠️ *documenting it locally does not reconcile it.*
   - **Phase note added:** T1 is not technically blocked by T2; T2-first is a preference, not a
     dependency.
+- **2026-09-26 — SECOND independent review: NEEDS CHANGES, four majors, all different from the
+  first.** Every finding verified before folding.
+  - 🔴 **A bare structural `isinstance` would have silently defeated D2** — the owner's refusal
+    decision. The adapter has no `__getattr__`, so an unconditional `retrain` on it makes the check
+    pass for **every** FI model including non-retrainable ones, and the refusal never fires for the
+    one case it exists for. ⭐ *The repo already warns about exactly this trap in-code, where
+    `config_hash` needs an explicit proxy.* New § 12; T1 now interrogates the INNER model through a
+    proxy, and a new verification bullet covers the WRAPPED case — the one a naive test would pass.
+  - 🔴 **I introduced a wrong, dangerous bullet in the PREVIOUS fold.** I wrote *"a run that names no
+    base artifact does NOT silently train from scratch"*. An ordinary training run names no base
+    artifact and **must** train from scratch — so as worded it could be satisfied by breaking every
+    Swiss statistical model, and it contradicted T1's and T2's own "unchanged" bullets. Rewritten to
+    scope it to a run that ASKS for a retrain. ⛔ *A fold that adds a defect is worse than the gap it
+    closed.*
+  - 🔴 **The hardcoded empty-config mapping is at SEVEN sites, not one** — `onboard_model.py` ×2 and
+    `model_onboarding.py` ×4 as well. So "every current model trains through THIS path" was also
+    wrong: a newly onboarded model trains through the onboarding path. T2 must either cover them or
+    say why not.
+  - 🔴 **T2 required provenance storage it never declared**, leaving two migrations in the same area
+    with no owner, and the plan was internally split on column-vs-side-table (§ 9 implies a column;
+    T4 cites a side-table precedent, and the repo's own metadata comment argues for that). Now one
+    decision, one owner per migration.
+  - **T4's first verification bullet contradicted its third** for the only base that exists: "all
+    three recorded" would be written as "all three non-null" and fail on `cmal_small`.
+  - **T4 would have shipped a recorder nobody calls** — T3 now must demonstrably pass the parent
+    through, else the plan reproduces § 3's defect. Run preconditions added too.
+  - Citation drifts fixed (adapter `train` at `:1062`, `assemble_group_training_data` at `:620`), and
+    fi-issue 004 gained the D2-divergence section, asking for the contract COMMENT to be amended and
+    noting the divergence is documented only inside SAP3 until filed.

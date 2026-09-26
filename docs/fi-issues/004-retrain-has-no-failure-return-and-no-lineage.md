@@ -112,6 +112,22 @@ guarantee that the model embeds the parent id in its own serialized bytes and ex
 deserialize — we can consume either. The requirement is that the answer exists, not that it lives in
 a particular place.*
 
+### 3. Is a caller allowed to REFUSE rather than fall back?
+
+`RetrainableModel`'s comment says SAP3 *"falls back to `train`"* when warm-start is unsupported.
+
+⚖️ **SAP3 owner, 2026-09-25: we will REFUSE instead.** *"agreed to refuse to fall back to training
+from start."* ⇒ Asking to fine-tune and silently getting a from-scratch retrain would discard the
+global pre-training that motivates the whole exercise, and the resulting artifact would be
+indistinguishable from a fine-tuned one in our records.
+
+⇒ **We are not asking FI to change the behaviour — we are asking the CONTRACT COMMENT ITSELF to be
+amended**, so it says the fall-back is one permitted choice and refusing is another, rather than
+stating what SAP3 does. ⛔ *No signature change.*
+
+🔴 **Until this is filed, the divergence is documented ONLY inside SAP3** — sufficient as a record,
+not yet as communication.
+
 ## Explicitly NOT part of this issue
 
 - **The fine-tuning strategy surface.** aquacast's `FineTuningConfig` carries `strategy` (seven
