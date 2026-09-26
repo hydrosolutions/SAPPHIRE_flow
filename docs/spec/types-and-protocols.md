@@ -1894,6 +1894,17 @@ and artifact bytes; `None` means no such forecast ID, while an older forecast
 without a row returns `pre_capture_forecast`. This capture slice adds no public
 API route.
 
+For operators, these are three distinct questions: `capture_status` is the
+unchanging result at forecast creation; `effective_status` says whether later
+verified retained material closes the image-byte gap; `BackupProofStatus` on
+an attestation checks that particular retained bundle without an age limit.
+The separate latest-backup `health` check enforces freshness. A complete
+capture or effective assessment alone does not open a publication route.
+`assess --forecast-id` is host-only in Plan 340; a missing evidence row on a
+pre-0057 forecast is not inferred to be complete from current observation or
+weather tables. This contract supports diagnosis of as-used inputs, not an
+implemented model replay or outcome-verification service.
+
 ### HindcastForecast
 
 Wraps `hindcast_forecasts` + `hindcast_values`. No publication lifecycle.

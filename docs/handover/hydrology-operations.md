@@ -162,36 +162,54 @@ Skill scores are computed by running the trained model over archived historical 
 
 ### Forecast status
 
-```
-Model output (raw) ──→ Forecaster review & editing ──→ Published ──→ Bulletin
-```
+Plan 340 captures forecast evidence but does not yet provide the CHWRR
+hydrologist review or publication API. Plan 341 proposes a separate, attributed
+publish decision for one selected forecast ID; an automatic retry or a change
+to the forecast's generation status cannot make that decision. Published
+history and audited withdrawal are part of that later work. The older
+`raw → reviewed → published` status sketch describes the intended workflow,
+not an active CHWRR release gate.
 
-| Status | Meaning | Visible to external consumers? |
-|--------|---------|-------------------------------|
-| Raw | Automated model output; no human interaction | No |
-| Reviewed | Forecaster has examined the forecast and optionally adjusted values | No |
-| Published | Forecaster has approved for release | Yes — via API |
+### Evidence for investigating a forecast
+
+For new operational forecasts, SAPPHIRE records the forecast values and an
+immutable evidence record of the model-ready observations, their QC flags,
+weather forcing, model/artifact identity, and thresholds and configuration as
+used. If capture could not account for part of a run, the record says
+`evidence_incomplete` and gives a reason. Forecasts created before this
+capture was introduced have no equivalent snapshot.
+
+An operator can check a forecast ID with the protected-backup host `assess`
+command. Its capture status never changes; a later verified restore can make
+the effective preservation status complete when the only original gap was
+unretained runtime image bytes. A complete assessment means the recorded chain
+is retained and checked. Running the old model again and comparing forecast
+accuracy with later observations are separate future capabilities (Plans
+344 and 343). This evidence is not yet shown by a CHWRR review API or dashboard.
 
 ### From forecast to bulletin
 
 In a typical operational workflow, the forecaster needs to:
 
 1. **View** the raw model output (ensemble spread, exceedance probabilities, multi-model comparison)
-2. **Approve** the forecast for publication (change status from raw → published)
-3. **Produce a bulletin** from the published forecast for distribution
+2. **Approve** one chosen forecast for publication through the proposed Plan 341 API
+3. **Produce a bulletin** from the approved forecast through a later bulletin workflow
 
 ### Dashboard
 
-SAPPHIRE Flow includes a minimal forecast review dashboard intended for development. In the initial deployment, this dashboard supports:
+SAPPHIRE Flow has a development forecast-lab view for inspecting model output.
+It supports:
 
 - **Viewing** model inputs and outputs, ensemble spread, forecast skill metrics, and alert status (all tables contents)
 - **Link** to the Prefect flow dashboard for monitoring of the individual data flows.
 
-This dashboard is not optimized for operational forecasting use but for visual validation of code and model development. Forecast value editing (shift, scale, cap, floor adjustments with audit trail).
+This view is for model and code validation. It does not make CHWRR
+publication decisions or edit forecast values.
 
-DHM has its own forecast dashboard under development or recently completed. DHM's dashboard can call the SAPPHIRE API to change a forecast's status (raw → published) after review of the forecasts. Only reviewed, i.e. published forecasts can be made available to other government institutions or downstream forecast users.
-
-**Open question — forecast review workflow**: Can DHM's existing dashboard support the forecast approval/publication step (i.e. call the SAPPHIRE API to publish a forecast)? If no, what would it entail in terms of costs to support this?
+The separate `sapphire-flow-map` MVP dashboard may demonstrate a forecast
+selection and Publish control, but Plan 340 provides neither that control nor
+its backend endpoint. Plan 341 must enforce selected-hydrologist permission and
+the consumer API gate before CHWRR publication is enabled.
 
 ### Alert timing
 

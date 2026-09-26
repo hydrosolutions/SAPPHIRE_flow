@@ -180,7 +180,7 @@ Alert delivery is webhook-only; email and SMS integrations are out of scope for 
 | `secret_key` | JWT signing key (session tokens) |
 | `totp_encryption_key` | Encryption key for two-factor authentication seeds |
 | `sapphire_dg_api_key` | Sapphire Data Gateway API key |
-| `backup_repo_password` | Backup encryption password (see §7) |
+| `backup_repo_password` | Planned restic repository password; not used by the interim Plan 340 protected evidence bundle (see §7) |
 
 **Secret rotation schedule**: `db_password` and `secret_key` annually, or immediately if compromise is suspected. Rotation requires a coordinated restart of all containers. The SAPPHIRE team coordinates rotation with DHM IT.
 
@@ -364,92 +364,75 @@ On first login, the org admin must change the temporary password.
 
 ## 7. Backup & Disaster Recovery
 
-### Responsibility split
+### Current forecast-evidence protection (Plan 340)
 
-Backup automation is built into SAPPHIRE Flow itself — it is not something the IT team needs to set up or script. The application runs its own daily backup job and monthly restore rehearsal internally. This ensures consistent, tested backups across all deployments.
+New operational forecasts store their original output and an immutable evidence
+record of the inputs, QC and configuration used. A capture gap is recorded as
+`evidence_incomplete`; forecasts from before migration 0057 have no such record.
+This lets the team diagnose what a run received after source observations or
+rating curves change. It does not yet provide automatic model replay or
+post-event accuracy scoring.
 
-**SAPPHIRE Flow handles**: scheduling, running `pg_dump`, collecting files, encrypting and deduplicating with `restic`, enforcing retention policy, running monthly restore rehearsals, alerting on backup failure.
+The existing Prefect database backup keeps seven recent copies for operational
+recovery. A separate **host-side protected evidence backup** now makes a full
+PostgreSQL dump, retains referenced Docker image bytes, verifies hashes, and
+restores a representative forecast/evidence chain in a disposable database.
+It records an attestation only after that check passes. The host command must
+be scheduled and monitored daily at deployment; it is not the future restic
+service or an automatic monthly whole-system restore. The current check proves
+one representative forecast per bundle, not every forecast in that bundle.
 
-**DHM IT provides**: the backup storage targets (external disk and/or SFTP server), physical connectivity to those targets, and secure offline storage of the backup encryption password.
+**DHM IT and the deployment team must provide and record** a protected target
+on a different filesystem device from the active PostgreSQL volume, encryption
+and access controls for that target, its path and capacity, the daily host
+schedule, and an operations alert when `health` is not `verified`. SAPPHIRE
+Flow supplies the backup, restore, hash-check and status commands. Use
+`docs/standards/cicd.md` § Protected forecast-evidence backup for their exact
+arguments and the restore/reconciliation procedure. The Mac mini test host has
+no separate target, so CHWRR publication remains disabled there. The DHM
+target path, encryption and Nepal-sized capacity/restore time still need
+deployment measurements.
 
-### Schedule
+From the deployed checkout, use the host command with the configured target
+and active PostgreSQL volume paths:
 
-Automated daily backups run at 02:00 UTC. The backup tool is `restic`, which handles encryption, deduplication, and retention automatically.
+```text
+uv run python -m sapphire_flow.ops.evidence_backup_host backup --target <protected-directory> --database-volume <host-postgres-volume-path>
+uv run python -m sapphire_flow.ops.evidence_backup_host health --target <protected-directory> --database-volume <host-postgres-volume-path>
+uv run python -m sapphire_flow.ops.evidence_backup_host assess --forecast-id <forecast-UUID> --target <protected-directory> --database-volume <host-postgres-volume-path>
+```
 
-### What Is Backed Up
+`assess` reports immutable `capture_status`, derived
+`effective_preservation_status`, attestation ID and remaining reasons.
+`evidence_incomplete` at capture time remains in history even if a later
+verified backup closes an image-byte-only gap. Monitor the daily backup exit
+code and `health` JSON status (`verified`, `missing`, `stale`, `invalid`). A
+missing or stale protected backup closes the future CHWRR publication gate;
+the evidence capture itself can continue.
 
-| Data | Backup method |
-|---|---|
-| PostgreSQL database (forecasts, observations, alerts, users, audit log) | `pg_dump` — consistent snapshot |
-| Trained model files (`/data/artifacts/`) | File copy |
-| Long-term data archive (`/data/cold/`) | File copy |
-| Prefect scheduler state | **Not backed up** — reconstructible from flow definitions |
+No cleanup may delete evidence-linked forecast values, snapshots, artifact
+metadata or retained image bytes while the longer-term archive in Plan 344 is
+unproved. `evidence_retention_days` has a minimum of 2,192 days after forecast
+valid time but does **not** authorize deletion at that age. Protected bundles
+also remain unpruned for now. Size the target from measured full dumps, daily
+growth and image archives; the earlier 500 GB–1 TB restic estimate is not a
+capacity sign-off for this interim method.
 
-### Backup Storage
+For recovery on a fresh volume, use the detailed four-step procedure in
+`docs/standards/cicd.md` § Protected forecast-evidence backup. It selects and
+validates a completed `backup-<UUID>.json`/`.dump` pair, loads and checks the
+manifest's pinned image archives, restores the dump into a fresh PostgreSQL
+database, bootstraps the scoped roles, then runs host
+`reconcile --backup-id <UUID>`. Reconciliation verifies live rows and restores
+the attestation created after the dump. Check `assess --forecast-id` and
+`health` before restarting forecast workers or consumer routes; make a new
+backup if the restored one is beyond the freshness limit. Verify the pipeline
+separately before resuming operational use.
 
-Two copies, stored separately:
-
-| Copy | Storage target | Managed by |
-|---|---|---|
-| Copy 1 | Local external disk attached to the VM | DHM IT |
-| Copy 2 | SFTP on a second server (or equivalent off-site target) | DHM IT or SAPPHIRE team |
-
-**Storage sizing**: The backup tool (restic) uses deduplication — daily backups share most data, so the repository grows slowly. Estimated backup storage after 18 months of operation at Nepal scale:
-
-| What | Size |
-|---|---|
-| Database snapshot (compressed) | ~20–70 GB |
-| Model files | < 1 GB |
-| Long-term data archive (Parquet) | ~50–150 GB |
-| **Total repository (all snapshots, deduplicated)** | **~100–400 GB** |
-
-**Recommendation**: Each backup target (external disk and SFTP server) should provide at least **500 GB**, ideally **1 TB**. Reviewed quarterly alongside primary disk utilization.
-
-Backup storage target is configured in `config.toml` during deployment.
-
-### Encryption
-
-All backups are encrypted with AES-256 by `restic`. The backup repository password (`backup_repo_password`) is available on the VM at runtime as a Docker secret (mounted in-memory, never written to disk inside containers) — restic needs it to perform each backup.
-
-In addition to the runtime copy, **a recovery copy of the password must be stored separately from the VM** so that backups can be decrypted if the VM is lost:
-- One copy with the DHM IT administrator (printed and stored offline, or in a password manager)
-- One copy with the SAPPHIRE project team
-
-### Retention Policy
-
-| Snapshot type | How many kept |
-|---|---|
-| Daily snapshots | 7 (last week) |
-| Weekly snapshots | 4 (last month) |
-| Monthly snapshots | 12 (last year) |
-
-Older snapshots are pruned automatically.
-
-### Restore Testing
-
-A monthly automated restore rehearsal runs as a scheduled job:
-1. Restores the latest backup to a temporary location
-2. Starts a temporary database instance from the dump
-3. Verifies the schema and that recent forecasts and model files are present
-4. Records the result — visible in `/api/v1/health/detail`
-5. Sends a critical alert if the restore test fails
-
-**DHM IT should also perform a manual restore test** at least once per year to verify the full recovery procedure works end to end.
-
-### Full Recovery Procedure (fresh VM)
-
-Use this procedure if the VM is lost and must be rebuilt from scratch:
-
-1. Provision a fresh Ubuntu VM with Docker and Docker Compose installed
-2. Copy the deployment package to the new VM
-3. Restore secrets from secure backup to `/opt/sapphire/secrets/`
-4. Restore model artifacts from restic: `restic restore latest --target /data/artifacts/`
-5. Restore cold storage from restic: `restic restore latest --target /data/cold/`
-6. Start PostgreSQL only: `docker compose up postgres -d` — wait for healthy
-7. Restore the database: `pg_restore` the backed-up database dump
-8. Start all services: `docker compose up -d`
-9. Verify: `curl https://localhost/api/v1/health` returns `{"status": "ok"}`
-10. Wait 30 minutes for the next pipeline run and confirm no stale-data alerts appear
+The broader design for encrypted, deduplicated restic backups, off-site copies,
+cold Parquet storage and six-year-old replay remains future work in
+`docs/architecture-context.md` and Plan 344. Do not treat those design details
+as an active backup schedule or completed preservation proof.
 
 ---
 
@@ -475,7 +458,7 @@ We need to understand DHM's connectivity situation: (a) How frequent are interne
 
 **2. Recovery time objective (RTO) — accepted downtime after hardware failure**
 
-If the VM's hardware fails (disk failure, motherboard failure, etc.), the full recovery procedure (section 7) requires provisioning a new VM, restoring from backup, and restarting all services. Estimated recovery time: **60 minutes** minimum, assuming a trained IT administrator is available and backups are accessible.
+If the VM's hardware fails (disk failure, motherboard failure, etc.), recovery requires provisioning a new VM, restoring from backup, reconciling forecast-evidence attestations and restarting services (section 7). The recovery time for a Nepal-sized protected bundle has not yet been measured on the DHM target.
 
 During this recovery window, no forecasts are produced, no alerts are raised, and no API data is served. Questions: (a) Is 60 minutes of downtime acceptable during monsoon season? (b) If not: does DHM have the infrastructure to run a second standby VM (warm spare) that can be activated quickly? A warm spare significantly reduces recovery time but requires a second server and additional configuration.
 
@@ -499,7 +482,7 @@ Does DHM have existing monitoring tools (such as Grafana, Nagios, Zabbix, or sim
 
 **6. Backup storage — second server**
 
-Is a second server or a dedicated external disk available for off-site backup storage? Backups should not be stored on the same physical machine as the live data.
+Is a separately mounted, encrypted backup volume available on a different filesystem device from the live database volume? An off-site second copy is part of the longer-term backup design; can DHM also provide a second server or equivalent target for that stage?
 
 **7. Network bandwidth**
 

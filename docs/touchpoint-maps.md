@@ -1341,3 +1341,14 @@ prove the change.
   exists and then skips all image pruning once it does; an unreadable inventory
   fails closed. Build-cache pruning remains enabled. This protects the Mac mini's
   captured image bytes until a separate backup target exists.
+
+## Plan 340 T3 — evidence handoff touchpoints
+
+- `architecture-context.md` and `spec/types-and-protocols.md` separate the
+  immutable capture result, later preservation assessment and live backup
+  health; none is a hydrologist publication decision or a completed replay.
+- `standards/security.md`, `standards/logging.md` and `standards/cicd.md` define
+  the host-only protected target, safe status/health reporting and activation
+  check. `handover/it-operations.md` names the deployment inputs and recovery
+  steps; `handover/hydrology-operations.md` explains what evidence a reviewer
+  can inspect and which review/API steps remain future work.
