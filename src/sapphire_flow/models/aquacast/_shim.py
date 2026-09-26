@@ -609,11 +609,13 @@ class AquacastShim:
         identical "there is no second source to keep in step" argument
         `config_hash` makes above.
 
-        Warm-start provenance records this as the donor's config path, but ONLY
-        once the hash has been checked against the donor's recorded one
+        Warm-start provenance records this as an IMPORTED donor's config path
+        only once the hash has been checked against the donor's recorded one
         (`store/model_artifact_warm_start.py::resolve_donor_config`). ⛔ An
         unverified path would name a configuration the donor may never have
-        used, which is the trap Plan 399 § 13 exists to avoid.
+        used, which is the trap Plan 399 § 13 exists to avoid. ⚠️ *Scoped to
+        "imported": a verified retrain's path is carried forward from its own
+        row, not taken from here.*
         """
         return str(_config_path(type(self).CONFIG_FILENAME))
 

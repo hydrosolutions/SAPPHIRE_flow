@@ -969,9 +969,13 @@ which is true only of the last case — left a changed template unrefused from g
 while the row still read as verified: a path, a hash the file no longer produces, and
 `reason=None` meaning "nothing is missing".*
 
-⛔ **An unverifiable path is NOT recorded**: if the model declares no hash, the path stays NULL
-with a reason, because recording it would name a configuration the donor may never have used
-(399 § 13's trap). ⚠️ `config_path` must keep naming the same file `config_hash` digests — both
+⛔ **An unverifiable path is NOT recorded — for an IMPORTED donor.** If the model declares no
+hash, that donor's path stays NULL with a reason, because recording it would name a configuration
+the donor may never have used (399 § 13's trap). ⚠️ **A VERIFIED RETRAIN differs**: its path was
+already verified when its own row was written, so it carries forward even when the model declares
+no hash to compare now. *Stated unqualified at first — false for that class, and the tenth
+occurrence of [[feedback_sweep_by_value_not_by_site]] in this plan, in a file an earlier fold had
+already opened to correct two other sentences in this same paragraph.* ⚠️ `config_path` must keep naming the same file `config_hash` digests — both
 evaluate the same `_config_path(type(self).CONFIG_FILENAME)` expression in
 `models/aquacast/_shim.py` (two call sites, one expression), and
 `tests/unit/models/test_aquacast_shim_translation.py` asserts they cannot drift. ⚠️ What

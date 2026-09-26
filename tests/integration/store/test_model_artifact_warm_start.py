@@ -351,6 +351,13 @@ class TestRetrainOfARetrain:
         installed path), so leaving it untested would mean the untested branch is
         the common one exactly when it starts mattering. A record must never carry
         BOTH a path and an "unknown" reason — `__post_init__` does not catch that.
+
+        🔑 **Since T2 this also pins the sixth resolution case**: a VERIFIED
+        retrain with NO installed hash to compare. Both installed values are None
+        here, so the carried path comes forward uncompared — which is exactly why
+        "the path is recorded only on a match" is too strong, a sentence the spec
+        needed two attempts to state correctly. *Named because the test predates
+        T2 and its own name does not advertise the case.*
         """
         mid = _seed_model(db_connection)
         sid = _seed_station(db_connection)
@@ -450,6 +457,10 @@ class TestComparingTheInstalledTemplate:
         assert self._DONOR_HASH in message, "the donor's recorded hash is unnamed"
         assert self._CHANGED in message, "the installed hash is unnamed"
         assert self._INSTALLED in message, "which file was hashed is unnamed"
+        # The donor CLASS, asserted like the retrain case below it — the two
+        # prose values are the only thing distinguishing the two refusals, and
+        # only one of them was pinned.
+        assert "(imported)" in message
 
     def test_no_installed_hash_is_not_a_refusal_and_records_no_path(
         self, db_connection: sa.Connection, tmp_path: Path

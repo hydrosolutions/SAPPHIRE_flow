@@ -20,7 +20,7 @@ Two things this records that nothing else can:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, assert_never
 
 import sqlalchemy as sa
 import structlog
@@ -134,16 +134,32 @@ def fetch_warm_start(
     )
 
 
-_DONOR_KIND_PROSE: Final[dict[str, str]] = {
-    "imported": "imported",
-    "verified_retrain": "a SAP3 retrain, verified when it was produced",
-}
+_DonorKind = Literal["imported", "verified_retrain"]
+
+
+def _donor_kind_prose(kind: _DonorKind) -> str:
+    """Prose for a donor class, EXHAUSTIVELY — `assert_never` is the point.
+
+    ⛔ A `dict[_DonorKind, str]` does NOT give this: a dict literal missing a
+    member is still a well-typed `dict`, so pyright reports nothing and the gap
+    surfaces as a runtime `KeyError` inside a `NoReturn` helper — while composing
+    a refusal message, the worst possible moment. *Measured: adding a third member
+    to `_DonorKind` left the dict version at "0 errors". The `match` +
+    `assert_never` form fails type-checking instead, which is what the comment
+    claimed and the dict did not deliver.*
+    """
+    match kind:
+        case "imported":
+            return "imported"
+        case "verified_retrain":
+            return "a SAP3 retrain, verified when it was produced"
+    assert_never(kind)
 
 
 def _refuse_changed_template(
     *,
     base_artifact_id: ArtifactId,
-    donor_kind: Literal["imported", "verified_retrain"],
+    donor_kind: _DonorKind,
     recorded_hash: str,
     installed_hash: str,
     installed_path: str | None,
@@ -154,7 +170,7 @@ def _refuse_changed_template(
     BOTH hashes named — an operator who cannot see which side moved cannot tell
     whether the template or the donor is the surprise.
     """
-    kind = _DONOR_KIND_PROSE[donor_kind]
+    kind = _donor_kind_prose(donor_kind)
     where = (
         installed_path
         if installed_path is not None
@@ -190,7 +206,7 @@ def resolve_donor_config(
     Hashing whatever template is on disk today satisfies a naive "the hash
     matches the file it names" check while naming the WRONG configuration
     whenever the template has changed since the donor was built. The installed
-    installed HASH is therefore only ever COMPARED against one the donor itself
+    HASH is therefore only ever COMPARED against one the donor itself
     recorded — never adopted as the donor's identity. ⚠️ *The installed PATH is a
     different matter: on a verified match it IS recorded as the donor's config
     path, because that is the only path available (provenance stores none). An
@@ -285,9 +301,19 @@ def resolve_donor_config(
             and inherited.base_config_unknown_reason is not None
         ):
             # 🔴 A CONTRADICTORY record: a path AND a reason saying the config is
-            # unknown. ⛔ Not producible by any writer today (this resolver returns
-            # either a path with no reason or a NULL with one) and no DB CHECK
-            # forbids it — so it is unreachable, not impossible.
+            # unknown.
+            #
+            # ⛔ **No PRODUCTION path produces it.** `record_warm_start`'s only
+            # production caller is `PgWarmStartWriter.record`, reached solely from
+            # the flow, which writes verbatim the triple this resolver returned —
+            # and every exit here returns `(path, sha, None)` or `(None, sha,
+            # reason)`, never both. ⚠️ *But the store API ACCEPTS the shape and a
+            # test writes it deliberately, which is how the branch below is
+            # pinned; `check_config_provenance` only rejects NULL-WITHOUT-reason,
+            # and no DB CHECK covers the pair. Unreachable in production, not
+            # impossible — the two T2 reviewers split on the earlier wording "not
+            # producible by any writer", one reading it as production-only and one
+            # literally. Both readings are satisfied by saying which.*
             #
             # Handled explicitly because the alternative is the exact failure this
             # task was fixing: skipping the comparison AND carrying the path
@@ -364,8 +390,10 @@ def resolve_donor_config(
         "it has a warm-start record, but that record carries no config hash, so "
         "no config identity was ever captured for it"
         if inherited is not None
-        else "it was neither imported (no provenance row) nor produced with a "
-        "warm-start record, so it pre-dates Plan 399 T4"
+        else "it has no warm-start record, and no provenance row recording a "
+        "config hash — either none exists, or one exists without a hash (the "
+        "column is nullable, though `services/model_import.py` refuses an "
+        "import that declares none), so it pre-dates Plan 399 T4"
     )
     return (
         None,

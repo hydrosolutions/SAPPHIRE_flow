@@ -593,3 +593,42 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     — Always"; the refusal message is unchanged.
   🔬 Two further mutations: dropping the contradictory-record branch, and reverting the derived final
   reason, each fail exactly the one test written for them.
+- **2026-09-26 — T2 round 3 (on `7e7bed88`): no code defect; the reviewers DISAGREED twice and both
+  were right about different things.** ⭐ *First round where the behaviour was affirmed by both with
+  nothing to change in it.*
+  - ⚖️ **Disagreement 1 — "no writer produces the contradictory shape".** One reviewer: FALSE, the
+    store API accepts it and this fold's own test writes it. The other: TRUE, the only production
+    caller writes verbatim what the resolver returned and the resolver never returns that triple.
+    🔑 **Measured**: `record_warm_start` has exactly ONE non-test caller (`PgWarmStartWriter.record`,
+    reached only from the flow). ⇒ Both readings are correct; the sentence was ambiguous between
+    "production path" and "any caller". Now says which — *and admits that a test writes the shape
+    deliberately, which is how the branch is pinned.*
+  - ⚖️ **Disagreement 2 — the final reason's "no provenance row".** One reviewer: false for a
+    provenance row with a NULL `config_hash`, which the schema permits. The other: unreachable,
+    because `services/model_import.py` refuses an import declaring no hash. 🔑 **Both verified**
+    (`0048:45` and `metadata.py:1061` are `nullable=True`; `model_import.py:386-391` refuses). ⇒ Text
+    made not-false either way, for consistency with the contradictory shape handled one branch over —
+    ⛔ *having explicitly handled one unreachable shape, leaving a false sentence about another is an
+    asymmetry with no argument behind it.*
+  - 🔴 **TENTH occurrence of the sweep failure, and this time the commit message's claim was the
+    thing falsified.** `7e7bed88` said "Swept properly this round: `grep -rn` per phrase across src/,
+    tests/ and docs/; the only surviving hits are the correction notes themselves." ⛔ **False.**
+    `docs/touchpoint-maps.md` still stated "an unverifiable path is NOT recorded" unqualified — false
+    for the verified-retrain class — *in a file an earlier fold had already opened to correct two other
+    sentences in the same paragraph.* A fourth spelling of the same claim also survived in `_shim.py`.
+    🔑 **Why the grep missed them: I swept the PHRASES I had written, not the CONCEPT.** The claim
+    "a path is recorded only after verification" had at least four distinct wordings across four
+    files. ⇒ The procedure that actually works is to enumerate the CASES first (imported ±hash,
+    verified retrain ±hash, NULL-path retrain, contradictory record) and check every document states
+    them — not to grep the words I happen to have used.
+  - 🔬 **I wrote a claim and my own mutation test disproved it, before it shipped.** Keying the prose
+    lookup as `dict[_DonorKind, str]` was said to make a missing member "a pyright error rather than a
+    runtime `KeyError`". ⛔ **Measured: it does not** — a dict literal missing a member is still a
+    well-typed `dict`, and adding a third member left pyright at *0 errors*. Replaced with `match` +
+    `assert_never`, which fails type-checking as claimed (*measured: 2 errors, "Cases within match
+    statement do not exhaustively handle all values"*). ⭐ *The claim was checkable in thirty seconds
+    and I only checked it because the last three rounds were all false statements about correct code.*
+  - 🧹 Also: a duplicated word in the sentence round 2 rewrote, and the `(imported)` donor-class prose
+    is now asserted, as the retrain one already was.
+  🔬 The round-2 mutation counts were independently RE-MEASURED by monkeypatching from a scratchpad
+  plugin (no repo edit) and hold: one failing test each, failing for the reason the defect exists.
