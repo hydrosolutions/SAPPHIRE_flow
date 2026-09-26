@@ -5,7 +5,7 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 
 - ⚠️ **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — `status: COMPLETE` **but NOT MERGED** — `feat/nepal-demo-export` is still unmerged into `main` (verified 2026-09-24), so it stays OUT of `archive/`. ⛔ *A plan reading COMPLETE for work that is not on `main` is the same hazard as one reading READY after merge, in the other direction.* Original note: reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
 - **340** — [Immutable forecast evidence capture](340-forecast-evidence-capture.md) — `PARTIAL`; T1 capture, T2 backup/restore tooling and T3 handoff merged in PRs #306, #311 and #312. DHM protected-target configuration and Nepal-sized backup/restore proof remain open; CHWRR publication stays disabled.
-- **341** — [CHWRR forecast review and publication API](341-chwrr-forecast-publication-api.md) — `DRAFT`; attributed per-forecast publication and withdrawal, published-only consumer API. Plan 340's software dependency has landed; its DHM target proof and the real CHWRR identity-provider details are activation inputs.
+- **341** — [CHWRR forecast review and publication API](341-chwrr-forecast-publication-api.md) — `READY` for implementation; attributed per-forecast publication and withdrawal, published-only consumer API. Plan 340's software dependency has landed. Keep CHWRR publication disabled until Plan 341's own proof and API gates, Plan 340's DHM protected-target proof, the real CHWRR identity provider, and Plan 342's warning path pass their activation checks.
 - **342** — [Alert evaluations and CHWRR warning decisions](342-chwrr-alert-evaluation-and-decisions.md) — `DRAFT`; high/low-flow evaluation ledger and human warning publish/dismiss history. Depends on 340 and 341.
 - **343** — [Operational post-event verification](343-operational-post-event-verification.md) — `DRAFT`; preliminary scoring, revisions, cases and corrective actions. Depends on 340, 341 and 342.
 - **344** — [Six-year evidence archive and replay](344-chwrr-evidence-archive-and-replay.md) — `DRAFT`; cold archive and diagnostic replay. Depends on 340–343; not required for first guarded CHWRR testing.
@@ -652,14 +652,12 @@ exit criteria — Plan 212 owns that deeper screening.
   sweep is bounded, because two independent counts of the same claim already
   disagree.
 
-- 🔴 **COLLISION, 2026-09-25 — Plans 328 and 341 are independently inventing the same mechanism.**
-  328 adds a `SUPERSEDED` forecast status; **341 adds `WITHDRAWN`, described in the same words** —
-  *"removes it from current consumer reads"*. Same enum, same DB CHECK, same unfiltered readers
-  (`fetch_latest_forecast`, `fetch_forecasts_for_cycle`). ⛔ **341 does not know the unique index's
-  predicate is dead**, so a withdrawn forecast would still occupy the slot and no replacement could
-  be published at that key. ⇒ **The predicate should exclude any not-current state, not one named
-  value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
-  before either builds the status change. Neither plan's frontmatter mentions the other.
+- **Plans 328 and 341 — boundary resolved 2026-09-26.** Plan 328 owns automatic
+  `ForecastStatus.SUPERSEDED`, the forecast-row constraint/index, and generation-current readers.
+  READY Plan 341 uses a separate human publication ledger and selection projection; it does not
+  add `ForecastStatus.WITHDRAWN` or change Plan 328's index predicate. A human-selected forecast
+  remains published until a human replaces or withdraws it, even if automatic retry supersedes
+  its generation row. See Plan 328 § Resolved boundary with Plan 341.
 
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](405-warm-start-gaps-and-untested-boundaries.md)
   — `DRAFT`, `open_decisions: [D1]`, **`depends_on: [399]`**. Drafted from two independent post-merge
@@ -717,19 +715,12 @@ exit criteria — Plan 212 owns that deeper screening.
   first RENDERABLE entry, so a priority-50 group model becomes primary wherever the 10/12/20/30
   models have no renderable forecast. That happens today, on real stations.*
 
-- **328** — [Replacing a forecast — supersession, and the readers that would still serve the old one](328-replacing-a-forecast-supersession.md)
-  — **`READY`** (final review: no findings), `depends_on: [327]`, no open decisions. Split out of 327 on
-  2026-09-25 because resume and supersession were entangled: a review found 327
-  scheduled its resume task before the supersession task that its own
-  verification required. ⚖️ Owner: *"replace, keep the old marked"*, and make the
-  dead predicate work rather than delete it. 🔴 **The finding that makes this more
-  than a schema change: `fetch_latest_forecast()` and `fetch_forecasts_for_cycle()`
-  have NO status filter**, and the Forecast Lab uses both — so after a
-  supersession they would serve the OLD row. ⛔ A plan scoped to
-  "status-filtering consumers" would have missed exactly the two readers that
-  matter. ⚠️ Evidence cannot be discarded (migration 0057 rejects
-  UPDATE/DELETE/TRUNCATE), so superseded forecasts are permanent — a retention
-  question, named not answered.
+- **328** — [Replacing a forecast — supersession, and the readers that would still serve the old one](archive/328-replacing-a-forecast-supersession.md)
+  — **`COMPLETE`**, merged in PR #309. Migration `0058` makes `SUPERSEDED` reachable;
+  rows 1 and 2 of Plan 327's decision table now atomically replace the generated
+  forecast while retaining the original and its evidence. Generation-current readers
+  exclude the superseded row; by-ID and record-history readers retain it. The
+  Plan 341 human publication selection remains separate from that generation status.
 
 - **327** — [A forecast cycle that died partway cannot be resumed](327-a-forecast-cycle-cannot-be-re-run.md) — **`READY`**
   — `DRAFT`, `open_decisions: [D1, D2, D3]`. Demonstrated 2026-09-25, not
