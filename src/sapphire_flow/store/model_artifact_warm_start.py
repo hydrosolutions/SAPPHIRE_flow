@@ -393,18 +393,22 @@ def resolve_donor_config(
     # import case was equally false: `import_external_artifact` has required a
     # declared config hash since Plan 157 (`fff634fa`, the SAME commit that created
     # `model_artifact_provenance` via migration 0048) and is the only production
-    # writer of that table, so NO import of any era lands here. *Measured, after a
-    # reviewer disproved the second attempt.*
+    # writer of that table.
+    #
+    # ⛔ But NOT "no import of any era lands here" — that absolute was stated in
+    # the same commit that documented its own counterexample, and both reviewers
+    # caught it. The guard tests `is None` while this resolver gates on TRUTHINESS,
+    # so an import declaring `config_hash=""` writes `""` and DOES land here. What
+    # is true: no import declaring a NON-EMPTY hash reaches this point.
     why = (
         "it has a warm-start record, but that record carries no config hash, so "
         "no config identity was ever captured for it"
         if inherited is not None
         else "it has no warm-start record, and no provenance row recording a "
-        "config hash: either no provenance row exists, or one exists whose hash "
-        "is absent or empty. That is the shape of an artifact SAP3 trained from "
-        "scratch, or of a provenance row written directly rather than through the "
-        "import path, which has required a declared config hash since the table "
-        "was created"
+        "usable config hash: either no provenance row exists, or one exists whose "
+        "hash is absent or empty. An artifact SAP3 trained from scratch has "
+        "neither row; a provenance row written directly, or an import that "
+        "declared an EMPTY config hash, can also reach this point"
     )
     return (
         None,

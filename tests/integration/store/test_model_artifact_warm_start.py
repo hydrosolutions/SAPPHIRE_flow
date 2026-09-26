@@ -490,7 +490,14 @@ class TestComparingTheInstalledTemplate:
     def test_an_unknown_donor_hash_is_not_a_refusal(
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:
-        """A donor with no provenance and no warm-start row pre-dates all of this."""
+        """A donor with no provenance row and no warm-start row.
+
+        ⛔ Not "pre-dates all of this", which is what this docstring said until the
+        sixth review round: an artifact SAP3 trains from scratch TODAY has neither
+        row — a warm-start row is written only when a donor existed, and a
+        provenance row only on import. *A live era inference sitting 290 lines
+        above the `assert "pre-dates" not in reason` added to forbid exactly it.*
+        """
         mid = _seed_model(db_connection)
         sid = _seed_station(db_connection)
         donor = _seed_artifact(db_connection, tmp_path, mid, sid)
@@ -774,10 +781,7 @@ class TestComparingTheInstalledTemplate:
         assert sha256 is None
         assert reason is not None
         assert "no provenance row exists, or one exists whose hash is absent" in reason
-        assert "trained from scratch" in reason, (
-            "the commonest donor reaching here is an artifact SAP3 trained from "
-            "scratch, and it must be named"
-        )
+        assert "trained from scratch" in reason
         assert "written directly" in reason
         # 🔴 THE BITING ASSERTION. ⛔ An earlier version asserted that
         # "pre-dates Plan 399 T4" was PRESENT — so it pinned the false clause and
@@ -788,3 +792,33 @@ class TestComparingTheInstalledTemplate:
             "the era inference is back — twice now it has been wrong, once about "
             "the from-scratch donor and once about the import case"
         )
+
+    def test_an_import_declaring_an_empty_hash_also_reaches_the_fallback(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The counterexample that made "no import of any era" false.
+
+        `import_external_artifact` refuses `config_hash is None`, but an empty
+        STRING passes that guard and is written verbatim — and this resolver gates
+        on truthiness, so it lands in the fallback exactly as a NULL would.
+        ⛔ Documented as prose in round 5 while the source comment still asserted
+        the absolute; pinned here so the claim and the code cannot drift again.
+        """
+        donor = self._imported_donor(db_connection, tmp_path, config_hash="")
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._DONOR_HASH,
+        )
+
+        assert path is None, "an empty recorded hash must not be treated as a match"
+        assert sha256 is None
+        assert reason is not None
+        assert "absent or empty" in reason
+        assert "declared an EMPTY config hash" in reason, (
+            "the reason must name this donor's actual shape — it was neither "
+            "trained from scratch nor written directly"
+        )
+        assert "pre-dates" not in reason

@@ -669,9 +669,9 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     clause, I re-attached it as "…and of an import that pre-dates Plan 399 T4". 🔑 **Measured** (by a
     reviewer, then verified independently): `import_external_artifact` has required a non-NULL declared
     `config_hash` and written it into provenance since Plan 157 — `fff634fa`, **the same commit that
-    created the table** via migration 0048 — and is the only production writer of it. ⇒ **No import of
-    any era reaches exit 10.** The reason now names what is actually reachable (a from-scratch SAP3
-    artifact; a directly written row) and infers no era at all.
+    created the table** via migration 0048 — and is the only production writer of it. ⇒ **No import declaring a
+    NON-EMPTY hash reaches exit 10.** The reason names what is actually reachable — a from-scratch SAP3
+    artifact, a directly written row, or an import that declared an EMPTY hash — and infers no era.
   - 🔴 **The same inference sat unswept THREE LINES ABOVE, inside the hunk I was editing** — the
     comment "no warm-start row at all (pre-dates Plan 399 T4)". *The diff's own context window showed
     it.* Eleventh occurrence.
@@ -682,5 +682,35 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     restoring the inference alongside the true clause fails it. *[[feedback_red_first_must_prove_the_fault]]:
     an assertion that pins the bug's text is not a test for the bug's absence.*
   - ⚠️ **The reachability claim had an empty-string hole**: the import guard tests `is None`, so a model
-    declaring `config_hash=""` passes and writes `""`, which this resolver treats as absent. Named in
-    the test docstring rather than left as an overstatement.
+    declaring `config_hash=""` passes and writes `""`, which this resolver treats as absent.
+- **2026-09-26 — T2 round 6: an absolute and its own counterexample, in one commit.** ⭐ *Both
+  reviewers independently found the SAME single defect; everything else in round 5 verified true,
+  including the counts, the four table qualifications, the biting assertion (re-measured by mutation),
+  and every gate number.*
+  - 🔴 **"So NO import of any era lands here" was FALSE — and round 5 documented the counterexample
+    itself, 350 lines away.** The import guard tests `is None` while this resolver gates on
+    TRUTHINESS, so an import declaring `config_hash=""` writes `""` and does land there. ⛔ *I stated
+    an absolute and its exception in the same change and did not notice.* Narrowed at every site to
+    "no import declaring a NON-EMPTY hash".
+  - 🔴 **The reason STRING was wrong for that donor too** — a substantive defect, not wording: it
+    attributed the shape to "trained from scratch, or written directly", and an empty-hash import is
+    NEITHER, so the sentence stored in the database would have been false of the donor in hand. *That
+    is the exact failure class § 4 and D1 exist to prevent.* It now names all three reachable shapes.
+  - 🔴 **Round 5's own claim that the hole was "named rather than left as an overstatement" was FALSE**
+    — it was named in a test docstring while the SOURCE comment kept the absolute, which is the text an
+    operator actually reads. Removed rather than re-argued.
+  - 🔴 **A LIVE era inference in the very test cited as outcome 10's pin**: "A donor with no provenance
+    and no warm-start row pre-dates all of this" — false for a from-scratch artifact today, and sitting
+    290 lines above the `assert "pre-dates" not in reason` added to forbid exactly that. *Twelfth
+    occurrence: found by `grep -n "pre-dates"` over the whole file, which is what the value sweep is
+    supposed to be.*
+  - ⭐ **The empty-string route is now PINNED** (`..._an_import_declaring_an_empty_hash_...`), and
+    mutation-verified: replacing the truthiness gate with `is not None` fails exactly that test. ⇒ The
+    claim and the code can no longer drift apart silently.
+  ⚖️ **THE REVIEW LOOP STOPS HERE — six rounds, twelve reviewer passes.** ⛔ *Not because it converged:
+  rounds 2-6 each found a false statement of mine while affirming the mechanism.* 🔑 **The measured
+  pattern: every defect was in ARGUMENTATIVE prose** — "no case can reach here", "exactly N tests",
+  "this pre-dates X" — while descriptive statements ("this returns X") were wrong zero times in six
+  rounds. ⇒ **T3 onward: state behaviour, cite the test, and do not write reachability arguments into
+  comments.** *A claim about what CANNOT happen requires enumerating every route, and on this evidence
+  I should assume I have not.*
