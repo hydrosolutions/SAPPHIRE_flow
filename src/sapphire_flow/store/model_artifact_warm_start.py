@@ -154,9 +154,14 @@ def resolve_donor_config(
     Hashing whatever template is on disk today satisfies a naive "the hash
     matches the file it names" check while naming the WRONG configuration
     whenever the template has changed since the donor was built. The installed
-    values are accepted only to be COMPARED against the donor's recorded hash,
-    and a mismatch is a refusal the caller makes — not something this resolver
-    papers over.
+    values are accepted to be COMPARED against the donor's recorded hash — but
+    ⛔ **no caller compares them yet.** `installed_config_sha256` is currently
+    accepted and never read; the comparison, and the refusal of a changed
+    template, are Plan 405 T2's work. ⚠️ *Stated rather than promised: this
+    docstring previously said "a mismatch is a refusal the caller makes", which
+    Plan 405 § 1 cites as the defect — a docstring deferring to a check nobody
+    performs.* Whenever it lands, the refusal belongs to the caller, not here:
+    this resolver never papers a mismatch over.
     """
     from sapphire_flow.store.model_artifact_provenance import fetch_artifact_provenance
 
@@ -166,7 +171,9 @@ def resolve_donor_config(
         # PATH (`model_artifact_provenance` carries source_repository,
         # source_commit, config_hash, imported_at, imported_by, notes). So the
         # only available path is the installed one, and it is meaningful ONLY
-        # while the hashes match — which the caller checks.
+        # while the hashes match. ⛔ NOBODY CHECKS THAT YET — T2 adds it. Until
+        # then this branch is unreachable in the flow, which hardcodes
+        # `installed_config_path=None`.
         if installed_config_path is None:
             # ⛔ Do NOT return a NULL path with no reason: `WarmStartRecord`
             # rejects that, and rightly — an unexplained NULL is indis-

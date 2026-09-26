@@ -7,7 +7,11 @@ SAP3-produced donor. A fake writer would answer that question itself, which is t
 "fake more permissive than production" failure Plan 399 hit three times.
 
 The chain is production-shaped: generation 0 IMPORTED (a provenance row with a
-config hash) → generation 1 retrained from it → generation 2 retrained from THAT.
+config hash) → generation 1 retrained from it → generation 2 retrained from THAT
+→ generation 3 from that again. ⚠️ Generation 0 is SEEDED as an import, not
+trained through the flow — that is the point, it is the only generation with a
+`model_artifact_provenance` row. Generations 1, 2 and 3 each come from a real
+`train_models_flow` call.
 Before Plan 405 T1 the third step raised `base_config_path is NULL without a
 reason` — after the artifact had already been stored, leaving a saved model whose
 provenance was refused.
@@ -317,6 +321,10 @@ class TestRetrainOfARetrainThroughTheFlow:
         got = fetch_warm_start(db_connection, gen3)
         assert got is not None
         assert got.base_artifact_id == gen2
+        # 🔑 The hash CARRIES FORWARD unchanged from the imported ancestor — the
+        # property that makes a third generation interesting rather than a repeat
+        # of the second.
+        assert got.base_config_sha256 == _IMPORTED_CONFIG_HASH
         reason = got.base_config_unknown_reason
         assert reason
         # 🔴 TRUE OF GENERATION 2 — itself SAP3-produced, with no provenance row.

@@ -164,7 +164,7 @@ that gains traceability, not the second.*
   | step | when | why |
   |---|---|---|
   | resolve the donor's config, and refuse on a mismatch or an unconstructable record | **BEFORE training** | ⭐ *This is the cheap fix, and an earlier version of this task did not name it.* A `ValueError` then cannot happen after the artifact is stored, because the resolved triple is VALIDATED first. ⚠️ **Not by constructing the real record** — `WarmStartRecord.artifact_id` does not exist until the store runs. ⇒ **Validate the resolved `(path, sha, reason)` against the same invariant, and THREAD those values into the post-store record.** ⛔ *Re-resolving after the store would remove the raise by luck, not by construction; and a hand-rolled copy of the invariant can drift from `__post_init__` — share it.* |
-  | write the row | after the store, as now | ⛔ **"BEFORE" is IMPOSSIBLE**: `model_artifact_id` is both PK and a FK to `model_artifacts.id` (`0060:30-37`), so no warm-start row can precede its artifact. *An earlier version offered "BEFORE or ATOMICALLY WITH … stating which" — a two-way choice that is a one-way street, and an instruction to decide rather than a decision.* |
+  | write the row | after the store, as now | ⛔ **"BEFORE" is IMPOSSIBLE**: `model_artifact_id` is both PK and a FK to `model_artifacts.id` (`alembic/versions/0060_model_artifact_warm_start.py:31-36` — ⚠️ *was cited as `0060:30-37`, off by one at each end*), so no warm-start row can precede its artifact. *An earlier version offered "BEFORE or ATOMICALLY WITH … stating which" — a two-way choice that is a one-way street, and an instruction to decide rather than a decision.* |
   ⚠️ **Atomicity is NOT attempted.** *`PgWarmStartWriter` holds its own connection and the store is a
   separate Prefect task; joining them is a transaction restructuring this task does not scope. Moving
   the refusal earlier removes the failure mode without it.*
@@ -451,3 +451,29 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   ⛔ **The index had gone stale again** — `open_decisions: [D1]` and "D1 asks what … means" both still
   present. *Third consecutive plan where a decision closure reached the plan and not the index. The
   value sweep caught it this time because I ran it before claiming the fold was done.*
+- **2026-09-26 — T1 IMPLEMENTED, three commits, three review rounds.** ⭐ *Round 1 (`c0550d52`) fixed
+  only the reason and was called done; **both** cross-checks returned INCOMPLETE and agreed on why —
+  T1's ordering bullet was entirely absent, the "refusal stores nothing" verification had no test AND no
+  mechanism, the red was helper-level where T1 demands a flow-level integration test, and the content
+  assertions were weak enough that `reason="TODO"` would pass all four.*
+  - **Round 2 (`9a907f48`)** implemented the ordering: resolve/refuse before training, the
+    `(path, sha, reason)` triple THREADED into the post-store record, and the invariant SHARED with
+    `WarmStartRecord.__post_init__` via `check_config_provenance` rather than copied.
+    🔬 **Mutation-proven both ways**: reverting the resolver's reason fails the flow test with the exact
+    defect raise; removing ONLY the pre-training check leaves the raise intact but stores the artifact
+    anyway — so the test pins the ORDERING, not merely that something throws.
+  - **Round 3 (`4007e62f`)** folded two more cross-checks. 🔴 **Both found the same defect: a docstring
+    of mine promised a hash comparison the code does not make** — verbatim the thing § 1 charges against
+    399, reproduced one task later. ⚠️ *The two reviewers DISAGREED on whether generation 3 needed a flow
+    run; settled by running the chain one generation further rather than adjudicating the reading.*
+  - **This entry (round 4 fold).** 🧹 **The round-3 sweep was incomplete**: the identical false promise
+    survived one file away (`store/model_artifact_warm_start.py` docstring + inline comment) while the
+    commit message asserted "no comparison exists anywhere". *[[feedback_sweep_by_value_not_by_site]]
+    again — I swept the file I had just edited instead of the VALUE across the repo.* Also folded: the
+    stale `0060:30-37` citation in THIS file, which round 3 declared "left alone rather than churned"
+    while already editing this file; the gen-3 test now asserts the hash carry-forward; and this entry,
+    whose absence broke the plan's own one-entry-per-fold convention.
+  🔑 **T6 gained a hazard note, not an implementation**: T1's pre-check covers the CONFIG triple only,
+  so if any of T6's three donor classes yields an empty params reason the post-store crash returns
+  through the params column. ⛔ *Widening T1 to cover it would have been a scope decision that is not
+  the implementer's to make* ([[feedback_a_plan_scope_boundary_is_a_decision_not_a_defect]]).
