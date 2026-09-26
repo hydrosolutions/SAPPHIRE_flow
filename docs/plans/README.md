@@ -795,7 +795,9 @@ exit criteria — Plan 212 owns that deeper screening.
 
 - **403** — [Give Swiss river stations their surveyed gauge-zero datum](403-swiss-river-gauge-zero-datums.md)
   — `DRAFT`, `depends_on: [323]`; **READY from both reviewers in rounds 10 and 11** (round 11
-  on its current text; two LOW precision points left for implementation — see the plan's owner report);
+  on its current text; two LOW precision points from round 11 left for the implementer: whether an EXISTING river's
+  unsupported unit fails re-onboarding (likely yes), and that a unit entry without a datum entry is
+  ignored);
   number granted by the owner 2026-09-26. BAFU delivers water level in
   m a.s.l., and the water-level range check is relative to the gauge zero; Plan 101 skips the
   datum-dependent rules "until the datum is set" — and for **rivers it never was**: CAMELS
