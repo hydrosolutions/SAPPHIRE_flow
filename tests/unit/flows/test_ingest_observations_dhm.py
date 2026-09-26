@@ -318,6 +318,7 @@ class TestDhmIngest:
                 "water_level",
                 qc_rules=RULES,
                 now=NOW,
+                station_networks={config.id: config.network},
                 fetched_times=tuple(o.timestamp for o in resumed.observations),
             )
             newest = observation(config, 10)
@@ -372,6 +373,7 @@ class TestDhmIngest:
             "water_level",
             qc_rules=RULES,
             now=NOW,
+            station_networks={config.id: config.network},
             fetched_times=tuple(o.timestamp for o in rows),
         )
         assert all(o.qc_status is not QcStatus.RAW for o in store.observations())

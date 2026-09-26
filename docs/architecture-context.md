@@ -336,7 +336,7 @@ QC runs in two stages with different purposes. This follows established practice
   - **Frozen sensor check**: identical value repeated for N consecutive intervals.
   - **Spike detection**: single-interval excursion that returns to previous value (telemetry corruption).
   - **Gross outlier**: value beyond K standard deviations from rolling climatological window.
-  - QC rule version is stored with each flag — enables selective recomputation when rules change without losing the audit trail.
+  - Observation QC rules are selected by parameter, cadence and station network. An exact network-specific rule replaces the generic rule with the same rule/parameter/cadence key; generic rules remain the fallback when no network rule exists. Rule definitions and the `[qc_rules].version` live in the shared base configuration, and overlays that declare `[qc_rules]` are rejected. A behavior change bumps the affected rule's `rule_version`; each emitted flag records that configured rule version. The row's `qc_rule_version` remains the Plan 324 processing-generation marker, not a copy of the rule-set or per-rule version. Forecast QC uses its separate rule set and is unaffected.
   - Hard failures → `qc_status = 'qc_failed'`, observation stored but excluded from downstream use. No conversion attempted.
 
 - **2.4**: Persists Stage 1 flags. Flagged values are excluded from conversion (2.5) and from downstream use (forecasting in Flow 1 step 1.6).
@@ -2328,7 +2328,7 @@ observations:
   rating_curve_correction_version: TEXT NULL  # correction param version — set when source = rating_curve_derived
   qc_status: TEXT              # aggregate QcStatus enum value
   qc_flags: JSONB              # list[QcFlag], empty list when status = 'raw' or 'missing'
-  qc_rule_version: TEXT NULL   # version of the QC ruleset (set of rules + config) that last evaluated this row; individual per-rule versions are in qc_flags[].rule_version
+  qc_rule_version: TEXT NULL   # observation-QC processing-generation marker (Plan 324); individual configured rule versions are in qc_flags[].rule_version
   created_at: TIMESTAMPTZ
   -- CHECK: (qc_status = 'missing') = (value IS NULL)
 ```

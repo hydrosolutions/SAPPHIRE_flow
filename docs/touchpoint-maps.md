@@ -449,7 +449,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   deployed).
   **Plan 253 T2a adds a THIRD persistence floor**: a combination whose
   `(parameter, time_step)` selects NO forecast QC rule is not persisted, logging
-  `forecast_combination.no_qc_rules_for_step_not_persisted`. Rules are selected by
+  `forecast_combination.no_qc_rules_for_step_not_persisted`. Forecast rules are selected by
   EXACT `(parameter, time_step)` and production declares them at 3600 s and 86400 s
   only, so a combination rebuilt on a coarsened derived step would otherwise select
   zero rules, raise zero flags, and be stored `QC_PASSED` — an unchecked forecast
@@ -457,6 +457,14 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   ONLY: member and group forecasts run at their assignment's declared step and are
   unaffected. A `QC_FAILED` combination IS persisted, marked failed (OD-1), and
   excluded from the Forecast Lab (OD-1a) — that is a different case from this floor.
+- **Observation QC is a separate selector** (`services/qc.py::resolve_selection` and
+  `Stage1QualityChecker.check`): it selects by parameter, cadence and station network.
+  An exact network rule replaces a generic rule with the same rule/parameter/cadence key;
+  the generic rule remains the fallback when no network-specific row exists. Callers pass
+  a required station-to-network map so selection reporting and executed checks agree.
+  Keep this distinct from forecast QC, whose `ForecastQcRuleSet` remains network-agnostic.
+  Observation QC rules and their versions live in shared base config; overlays declaring
+  `[qc_rules]` are rejected, while unrelated overlay settings continue to merge.
 - fan-out: Phase A `_fetch_nwp_task.submit` + Step 1.6
   `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
 - drift guard: `_check_fallback_priority_drift`

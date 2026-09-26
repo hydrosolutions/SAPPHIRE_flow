@@ -22,18 +22,50 @@ _VALID_RULE_IDS: frozenset[str] = frozenset(
 )
 
 
-def _parse_rule(raw: dict) -> QcRuleParams:
+def _parse_rule(raw: dict[str, object]) -> QcRuleParams:
+    allowed_fields = {
+        "rule_id",
+        "rule_version",
+        "parameter",
+        "time_step_seconds",
+        "thresholds",
+        "network",
+    }
+    unknown_fields = set(raw) - allowed_fields
+    if unknown_fields:
+        raise ValueError(f"Unknown QC rule fields: {sorted(unknown_fields)}")
+    network = raw.get("network")
+    if network is not None and not isinstance(network, str):
+        raise ValueError(f"QC rule network must be a string or null, got {network!r}")
     rule_id = raw["rule_id"]
+    rule_version = raw["rule_version"]
+    parameter = raw["parameter"]
+    time_step_seconds = raw["time_step_seconds"]
+    thresholds = raw["thresholds"]
+    if not isinstance(rule_id, str):
+        raise ValueError(f"QC rule_id must be a string, got {rule_id!r}")
     if rule_id not in _VALID_RULE_IDS:
         raise ValueError(
             f"Unknown QC rule_id {rule_id!r}; valid: {sorted(_VALID_RULE_IDS)}"
         )
+    if not isinstance(rule_version, str) or not isinstance(parameter, str):
+        raise ValueError("QC rule_version and parameter must be strings")
+    if not isinstance(time_step_seconds, int) or isinstance(time_step_seconds, bool):
+        raise ValueError("QC time_step_seconds must be an integer")
+    if not isinstance(thresholds, dict) or not all(
+        isinstance(key, str)
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        for key, value in thresholds.items()
+    ):
+        raise ValueError("QC thresholds must map string keys to numeric values")
     return QcRuleParams(
         rule_id=cast("QcRuleId", rule_id),
-        rule_version=raw["rule_version"],
-        parameter=raw["parameter"],
-        time_step=timedelta(seconds=raw["time_step_seconds"]),
-        thresholds=dict(raw["thresholds"]),
+        rule_version=rule_version,
+        parameter=parameter,
+        time_step=timedelta(seconds=time_step_seconds),
+        thresholds={key: float(value) for key, value in thresholds.items()},
+        network=network,
     )
 
 

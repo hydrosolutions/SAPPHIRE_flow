@@ -288,6 +288,7 @@ class TestUncheckedIsReExamined:
             "discharge",
             qc_rules=_QC_RULES,
             now=_NOW,
+            station_networks={station_id: "bafu"},
             context_window_hours=2.0,
             fetched_times=tuple(o.timestamp for o in recovered),
         )

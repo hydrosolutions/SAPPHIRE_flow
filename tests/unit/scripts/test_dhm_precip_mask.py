@@ -229,6 +229,33 @@ class TestBuildMaskDefectSignatures:
         with pytest.raises(TimeStepMismatchError, match="mismatched-30min"):
             _raise_on_time_step_mismatch(hourly_series, mixed_rule_set)
 
+    def test_dhm_override_does_not_look_like_a_cadence_mismatch(self) -> None:
+        sid = StationId(uuid.uuid4())
+        start = datetime(2024, 7, 1, tzinfo=UTC)
+        hourly_series = _hourly_run(sid, start, 1.0, 3)
+        rules = QcRuleSet(
+            version="test-network-override",
+            rules=(
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="generic-v1",
+                    parameter="precipitation",
+                    time_step=timedelta(hours=1),
+                    thresholds={"value_min": 0.0, "value_max": 200.0},
+                ),
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="dhm-v1",
+                    parameter="precipitation",
+                    time_step=timedelta(hours=1),
+                    thresholds={"value_min": 0.0, "value_max": 200.0},
+                    network="dhm",
+                ),
+            ),
+        )
+
+        _raise_on_time_step_mismatch(hourly_series, rules)
+
 
 class TestBuildMaskOverlap:
     def test_a_constant_run_above_the_floor_trips_both_instances_but_masks_once(
@@ -245,8 +272,13 @@ class TestBuildMaskOverlap:
         stuck = rule_subset(rule_set, frozenset({STUCK_VALUE_RULE_VERSION}))
         long_zero = rule_subset(rule_set, frozenset({LONG_ZERO_RUN_RULE_VERSION}))
         checker = Stage1QualityChecker()
-        stuck_flags = checker.check(run, stuck, [], [])
-        long_zero_flags = checker.check(run, long_zero, [], [])
+        station_networks = {obs.station_id: "dhm" for obs in run}
+        stuck_flags = checker.check(
+            run, stuck, [], [], station_networks=station_networks
+        )
+        long_zero_flags = checker.check(
+            run, long_zero, [], [], station_networks=station_networks
+        )
         assert any(stuck_flags[o.id] for o in run)
         assert any(long_zero_flags[o.id] for o in run)
 

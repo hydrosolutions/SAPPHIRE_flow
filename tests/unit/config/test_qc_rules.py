@@ -66,6 +66,43 @@ class TestLoadFromToml:
         assert wl_rule.parameter == "water_level"
         assert wl_rule.thresholds == {"k_sigma": 3.0}
 
+    def test_network_round_trips_from_toml(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[qc_rules]\nversion = "2.0.0"\n\n'
+            '[[qc_rules.rules]]\nrule_id = "range_check"\n'
+            'rule_version = "2.0.0"\nparameter = "discharge"\n'
+            'time_step_seconds = 86400\nnetwork = "dhm"\n'
+            "thresholds = { value_min = 0.0, value_max = 100.0 }\n"
+        )
+
+        result = load_qc_rules(config_file)
+
+        assert result.rules[0].network == "dhm"
+
+    @pytest.mark.parametrize(
+        "field_value, error",
+        [
+            ("network = 12", "network must be a string or null"),
+            ('netwrok = "dhm"', "Unknown QC rule fields"),
+        ],
+    )
+    def test_invalid_network_or_unknown_rule_field_is_rejected(
+        self, tmp_path: Path, field_value: str, error: str
+    ) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[qc_rules]\nversion = "2.0.0"\n\n'
+            '[[qc_rules.rules]]\nrule_id = "range_check"\n'
+            'rule_version = "2.0.0"\nparameter = "discharge"\n'
+            "time_step_seconds = 86400\n"
+            f"{field_value}\n"
+            "thresholds = { value_min = 0.0, value_max = 100.0 }\n"
+        )
+
+        with pytest.raises(ValueError, match=error):
+            load_qc_rules(config_file)
+
 
 class TestDefaultRules:
     def test_default_rules_has_discharge_10min(self) -> None:
@@ -101,6 +138,9 @@ class TestDefaultRules:
     def test_default_version(self) -> None:
         rules = _default_swiss_qc_rules()
         assert rules.version == "1.0.0"
+
+    def test_all_default_rules_are_generic(self) -> None:
+        assert all(rule.network is None for rule in _default_swiss_qc_rules().rules)
 
     def test_water_level_daily_rules_exist(self) -> None:
         rules = _default_swiss_qc_rules()
@@ -141,6 +181,35 @@ class TestProductionConfigRules:
         }
         assert all("tolerance" not in rule.thresholds for rule in water_level_spikes)
 
+    def test_checked_in_qc_configs_agree_on_network_rules_and_version(self) -> None:
+        config = load_qc_rules(_REPO_ROOT / "config.toml")
+        reference = load_qc_rules(_REPO_ROOT / "docs/spec/config-reference.toml")
+
+        assert config.version == reference.version
+        config_network_rules = {
+            (
+                rule.rule_id,
+                rule.rule_version,
+                rule.parameter,
+                rule.time_step,
+                rule.network,
+            )
+            for rule in config.rules
+            if rule.network is not None
+        }
+        reference_network_rules = {
+            (
+                rule.rule_id,
+                rule.rule_version,
+                rule.parameter,
+                rule.time_step,
+                rule.network,
+            )
+            for rule in reference.rules
+            if rule.network is not None
+        }
+        assert config_network_rules == reference_network_rules
+
     def test_loaded_water_level_spike_rule_dispatches_on_max_delta(self) -> None:
         station_id = StationId(uuid4())
         start = ensure_utc(datetime(2026, 4, 8, 14, 0, tzinfo=UTC))
@@ -167,6 +236,7 @@ class TestProductionConfigRules:
             load_qc_rules(_REPO_ROOT / "config.toml"),
             overrides=[],
             baselines=[],
+            station_networks={station_id: "bafu"},
         )
 
         assert any(flag.rule_id == "spike" for flag in flags[observations[1].id])
@@ -219,7 +289,7 @@ class TestMissingQcSectionReturnsDefault:
 
 
 class TestOverlaySupport:
-    def test_overlay_patches_qc_version(
+    def test_overlay_setting_qc_version_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         base = tmp_path / "config.toml"
@@ -228,11 +298,10 @@ class TestOverlaySupport:
         overlay.write_text('[qc_rules]\nversion = "3.5.0"\n')
         monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay))
 
-        result = load_qc_rules(base)
-
-        # overlay deep-merged into qc_rules, so version changed but rules preserved
-        assert result.version == "3.5.0"
-        assert len(result.rules) == 2
+        with pytest.raises(
+            ValueError, match="QC rules must be changed in the base config"
+        ):
+            load_qc_rules(base)
 
 
 class TestShippedDischargeCeiling:

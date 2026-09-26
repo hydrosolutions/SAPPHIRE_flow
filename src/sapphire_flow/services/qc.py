@@ -5,6 +5,7 @@ from itertools import groupby
 from statistics import median
 from typing import TYPE_CHECKING
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services._qc_helpers import merge_thresholds
 from sapphire_flow.types.domain import (
     ClimBaseline,
@@ -16,17 +17,10 @@ from sapphire_flow.types.domain import (
 from sapphire_flow.types.enums import QcStatus
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.types.ids import ObservationId, StationId
     from sapphire_flow.types.observation import Observation
-
-# Plan 324 T2: the generation label for observation QC verdicts. Bumped from
-# "1.0" to "1.2" so that a verdict produced by Plan 272's corrected rule
-# selection is distinguishable from one produced by the pre-272 code.
-# ⛔ FORWARD label only: rows already stored under post-272 logic keep the old
-# value, so this does not repair the provenance of anything already written.
-# ⛔ NOT the forecast-QC constant of the same name (`services/forecast_qc.py`),
-# which versions a different rule family and does not move with this one.
-_RULE_VERSION = "1.2"
 
 
 def _merge_thresholds(
@@ -78,6 +72,7 @@ def resolve_selection(
     observations: list[Observation],
     rule_set: QcRuleSet,
     *,
+    station_networks: Mapping[StationId, str],
     skipped_rule_ids: frozenset[str] = frozenset(),
 ) -> dict[tuple[StationId, str], tuple[timedelta | None, int]]:
     """Plan 272 T3: what `check` will select, per group, **before** it runs.
@@ -96,7 +91,12 @@ def resolve_selection(
     ):
         group = list(group_iter)
         step = infer_time_step(group)
-        rules = rule_set.rules_for(group[0].parameter, step) if step else ()
+        network = _network_for_station(key[0], station_networks)
+        rules = (
+            rule_set.rules_for(group[0].parameter, step, network=network)
+            if step
+            else ()
+        )
         # ⚠️ The SKIP filter must be applied here too. `check` skips these rules
         # (`:303`), so a group whose only matching rule is skipped — a water
         # level with no datum, say — executes nothing while a naive count
@@ -105,6 +105,17 @@ def resolve_selection(
         runnable = [r for r in rules if r.rule_id not in skipped_rule_ids]
         resolved[key] = (step, len(runnable))
     return resolved
+
+
+def _network_for_station(
+    station_id: StationId, station_networks: Mapping[StationId, str]
+) -> str:
+    try:
+        return station_networks[station_id]
+    except KeyError as exc:
+        raise ConfigurationError(
+            f"missing network mapping for station {station_id}"
+        ) from exc
 
 
 def _apply_range_check(
@@ -121,7 +132,7 @@ def _apply_range_check(
     ):
         return QcFlag(
             rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
+            rule_version=rule.rule_version,
             status=QcStatus.QC_FAILED,
             detail=f"value {obs.value} outside [{v_min}, {v_max}]",
         )
@@ -140,7 +151,7 @@ def _apply_rate_of_change(
     if abs(obs.value - prev.value) > max_rate:
         return QcFlag(
             rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
+            rule_version=rule.rule_version,
             status=QcStatus.QC_SUSPECT,
             detail=(
                 f"rate {abs(obs.value - prev.value):.4f} exceeds max_rate {max_rate}"
@@ -229,7 +240,7 @@ def _apply_spike(
         ):
             return QcFlag(
                 rule_id=rule.rule_id,
-                rule_version=_RULE_VERSION,
+                rule_version=rule.rule_version,
                 status=QcStatus.QC_SUSPECT,
                 detail=(
                     f"spike: value {obs.value} deviates from prev {prev.value} "
@@ -247,7 +258,7 @@ def _apply_spike(
     ):
         return QcFlag(
             rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
+            rule_version=rule.rule_version,
             status=QcStatus.QC_SUSPECT,
             detail=(
                 f"spike: value {obs.value} deviates from prev {prev.value} "
@@ -274,7 +285,7 @@ def _apply_gross_outlier(
     if abs(obs.value - baseline.rolling_mean) > k_sigma * baseline.rolling_std:
         return QcFlag(
             rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
+            rule_version=rule.rule_version,
             status=QcStatus.QC_SUSPECT,
             detail=(
                 f"gross outlier: value {obs.value} deviates from baseline "
@@ -292,6 +303,8 @@ class Stage1QualityChecker:
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        *,
+        station_networks: Mapping[StationId, str],
         skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]:
         if not observations:
@@ -313,9 +326,14 @@ class Stage1QualityChecker:
         for (station_id, parameter), group_iter in groupby(sorted_obs, key=group_key):
             group = list(group_iter)
             time_step = infer_time_step(group)
+            network = _network_for_station(station_id, station_networks)
             # `None` means no cadence could be inferred, so no rule can be
             # selected for this group — NOT that an hourly one should be.
-            rules = rule_set.rules_for(parameter, time_step) if time_step else ()
+            rules = (
+                rule_set.rules_for(parameter, time_step, network=network)
+                if time_step
+                else ()
+            )
 
             for rule in rules:
                 if rule.rule_id in skipped_rule_ids:

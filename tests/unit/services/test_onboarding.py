@@ -195,6 +195,7 @@ def _run(
     obs_by_station: dict,
     forcing_by_station: dict,
     *,
+    qc_rules: QcRuleSet = _TEST_RULES,
     start_utc: UtcDatetime = _START,
     end_utc: UtcDatetime = _END,
     forcing_source: object = None,
@@ -224,7 +225,7 @@ def _run(
         forcing_store=s.forcing,
         baseline_store=s.baseline,
         flow_regime_store=s.regime,
-        qc_rules=_TEST_RULES,
+        qc_rules=qc_rules,
         clock=_fixed_clock,
         start_utc=start_utc,
         end_utc=end_utc,
@@ -239,6 +240,70 @@ def _run(
         require_meteoswiss_backfill=require,
         lineage_writer=lineage_writer,
     )
+
+
+class TestNetworkAwareOnboardingQc:
+    def test_qc_uses_station_network_from_resolved_config(self) -> None:
+        station = make_station_config(code="447", network="dhm")
+        stores = _Stores()
+        rules = QcRuleSet(
+            version="network-test",
+            rules=(
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="generic-v1",
+                    parameter="discharge",
+                    time_step=timedelta(days=1),
+                    thresholds={"value_min": 0.0, "value_max": 100.0},
+                ),
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="dhm-v1",
+                    parameter="discharge",
+                    time_step=timedelta(days=1),
+                    thresholds={"value_min": 0.0, "value_max": 10.0},
+                    network="dhm",
+                ),
+            ),
+        )
+
+        _run(
+            stores,
+            stations=[station],
+            basins=[],
+            obs_by_station={station.id: _make_raw_obs(station.id, n=3)},
+            forcing_by_station={},
+            qc_rules=rules,
+        )
+
+        assert len(stores.obs.observations()) == 3
+        stored = sorted(
+            stores.obs.observations(), key=lambda observation: observation.timestamp
+        )
+        assert [observation.qc_status for observation in stored] == [
+            QcStatus.QC_PASSED,
+            QcStatus.QC_FAILED,
+            QcStatus.QC_FAILED,
+        ]
+
+    def test_qc_configuration_error_is_not_swallowed(self) -> None:
+        station = make_station_config(code="448")
+        stores = _Stores()
+
+        with (
+            patch(
+                "sapphire_flow.services.onboarding.Stage1QualityChecker.check",
+                side_effect=ConfigurationError("missing network mapping"),
+            ),
+            pytest.raises(ConfigurationError, match="missing network mapping"),
+        ):
+            _run(
+                stores,
+                stations=[station],
+                basins=[],
+                obs_by_station={station.id: _make_raw_obs(station.id, n=3)},
+                forcing_by_station={},
+            )
 
 
 class TestHappyPath:
