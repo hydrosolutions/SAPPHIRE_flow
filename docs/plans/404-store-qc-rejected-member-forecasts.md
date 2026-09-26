@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-26
 plan: 404
 title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
@@ -17,11 +17,14 @@ source: 2026-09-26 — found by the round-5 review of Plan 402 — a rejected me
 
 ## Status
 
-**DRAFT — HIGH RISK — end-of-run save (D5), its hard overall limit (D6) and review corrections folded, not re-reviewed.** A new table, live writes from
-the forecast cycle and an external-facing route (`docs/workflow.md` § High-risk work): the ordinary
-Claude + Codex pair on the current text, plus one owner-commissioned review before READY and again
-before the implementation PR. Depends on Plan 401 (the REVIEW gate) and Plan 402 (the typed flag
-model and the committed map contract). All decisions (D1-D6) are closed.
+**READY — HIGH RISK.** Set 2026-09-26 by the orchestrator session on the owner's instruction,
+after the ordinary Claude + Codex rounds, the owner-commissioned data- and forecast-cycle-safety
+review and its re-checks (on `de9adc1a`: Codex clean, high-risk reviewer no findings; the Claude
+reviewer's two minors folded, and focused Codex checks of that fold clean on `899e3078`). High risk
+(a new table, live writes from the forecast cycle and an external-facing route, `docs/workflow.md`
+§ High-risk work): the implementation PR needs one more owner-commissioned review before it is
+opened. Depends on Plan 401 (merged, #320) and Plan 402 (READY, not yet built). All decisions
+(D1-D6) are closed.
 
 ## Why this exists
 
