@@ -165,10 +165,33 @@ def resolve_donor_config(
 
     inherited = fetch_warm_start(conn, base_artifact_id)
     if inherited is not None and inherited.base_config_sha256:
+        if inherited.base_config_path is not None:
+            # The donor has a real path: it carries forward with its hash, and no
+            # reason is owed because nothing is missing.
+            return (
+                inherited.base_config_path,
+                inherited.base_config_sha256,
+                None,
+            )
+        # Plan 405 T1 — the donor's path is NULL, so this one is too, and a NULL
+        # path MUST carry a reason (`WarmStartRecord` rejects an unexplained one,
+        # rightly).
+        #
+        # ⛔ The reason is DERIVED for THIS donor, never inherited verbatim. The
+        # donor here is SAP3-produced and has no `model_artifact_provenance` row —
+        # that is precisely why this branch was reached — so propagating an
+        # imported ancestor's sentence ("its config hash is recorded in its
+        # provenance") would assert something FALSE about it.
         return (
-            inherited.base_config_path,
-            inherited.base_config_sha256,
             None,
+            inherited.base_config_sha256,
+            (
+                "donor was produced by SAP3 (a retrain) and its own warm-start "
+                "record carries no config path, so none can be inherited; its "
+                "config HASH is known and recorded here. Not inferred from the "
+                "installed template — that would name a configuration this donor "
+                "may never have used."
+            ),
         )
 
     return (
