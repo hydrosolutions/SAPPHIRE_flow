@@ -353,3 +353,67 @@ class TestRecordToWatchdogEndToEnd:
         # with "unknown" where the detail could not be read.
         assert state.consecutive_qc_unchecked_failures == 1
         assert len(slack.calls) == 1
+
+
+class TestUnjudgedRecordIsIsolated:
+    """Plan 323 T4 (D5): unjudged readings go into their own record type, which
+    the watchdog does not probe. Driven through the REAL probe against a stub
+    that filters by the request's `check_type` and honours `limit=1`, as the
+    health API does — a stub that ignores the URL would pass whatever the probe
+    asked for, and could not catch a filter the probe dropped."""
+
+    @staticmethod
+    def _serve(records: list[dict[str, object]]) -> object:
+        def handler(request: httpx.Request) -> httpx.Response:
+            wanted = request.url.params.get("check_type")
+            limit = int(request.url.params.get("limit", "100"))
+            matching = [r for r in records if r["check_type"] == wanted]
+            newest_first = sorted(
+                matching, key=lambda r: str(r["checked_at"]), reverse=True
+            )
+            return httpx.Response(200, json={"items": newest_first[:limit]})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        return functools.partial(probe_qc_unchecked, client=client)
+
+    @staticmethod
+    def _record(check_type: str, minutes_ago: int) -> dict[str, object]:
+        return {
+            "check_type": check_type,
+            "checked_at": (_NOW - timedelta(minutes=minutes_ago)).isoformat(),
+            "status": "warning",
+            "detail": {
+                "zero_rule_groups": [
+                    {"station_id": "2135", "parameter": "water_level"}
+                ],
+                "unjudged_groups": [{"station_id": "2289", "parameter": "water_level"}],
+                "groups_affected": 1,
+                "observations_unchecked": 4,
+            },
+        }
+
+    def test_a_newer_unjudged_record_does_not_mask_the_alarm(
+        self, tmp_path: Path
+    ) -> None:
+        probe = self._serve(
+            [
+                self._record("observation_qc_unchecked", minutes_ago=30),
+                self._record("observation_qc_unjudged", minutes_ago=5),
+            ]
+        )
+
+        slack = _SlackRecorder()
+        state = _run(tmp_path, probe, slack)
+
+        assert state.consecutive_qc_unchecked_failures == 1
+        assert len(slack.calls) == 1
+        assert "RECOVERED" not in slack.calls[0][1]
+
+    def test_an_unjudged_record_alone_is_silent(self, tmp_path: Path) -> None:
+        probe = self._serve([self._record("observation_qc_unjudged", minutes_ago=5)])
+
+        slack = _SlackRecorder()
+        state = _run(tmp_path, probe, slack)
+
+        assert state.consecutive_qc_unchecked_failures == 0
+        assert slack.calls == []

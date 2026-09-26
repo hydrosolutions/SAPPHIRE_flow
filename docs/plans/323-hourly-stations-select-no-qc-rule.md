@@ -354,7 +354,8 @@ the recorded query and get the same table** — otherwise the thresholds rest on
 can reproduce.
 
 T1 needs the live store; it cannot be done from the repo. (Blocked on 2026-09-24 while the staging
-host was off the network; reachable again 2026-09-25.)
+host was off the network; reachable again 2026-09-25; off the network again from 2026-09-26 for
+about two days — § Status.)
 
 ### T2 — Add the hourly rules (D1, D2)
 
@@ -406,8 +407,10 @@ row (D2 — no plan yet). ⛔ Computing climatological baselines (§ 12). ⛔ Re
   unchanged** (asserted, so the addition cannot perturb the 140 stations that were fine). The test
   loads the shipped `config.toml` rule set, not a hand-built one — a hand-built set proves nothing
   about the file this plan edits.
-- **T4's guard on the hourly rows** (T4 is built first, § Status): the hourly datum-less case listed
-  in T4's verification — X is `QC_UNCHECKED` with `no_check_could_run`, not `QC_PASSED`.
+- **T4's guard on the hourly rows** (T4 is built first, § Status): an hourly water_level group, no
+  datum, reading X at −1 h already `QC_UNCHECKED` and a new reading at 0 h, `now` = 0 h + 5 min — the
+  window holds X and 0 h, infers 3600 s, selects `rate_of_change` and `spike`, and X is stored
+  `QC_UNCHECKED` with `no_check_could_run`, not `QC_PASSED`.
 - ⚠️ The selection count includes `gross_outlier`, which runs nothing where no baseline exists
   (§ 12). It is therefore not evidence that a check ran; the range and temporal rules are.
 - A synthetic hourly series with a value outside `range_check` comes back `QC_FAILED`; an ordinary
@@ -504,9 +507,12 @@ group.** It must fail on X's status.
   unchanged, and one integration test writes it through `PgPipelineHealthStore` against real
   Postgres and reads it back — ⛔ the fake store cannot catch a UUID in JSONB.
 - **Zero-rule wins:** a pending reading in a zero-rule group appears in the zero-rule record only;
-  `IngestResult.qc_unchecked` and `qc_unjudged` add up to the stored `QC_UNCHECKED` rows.
-- **A valueless neighbour:** the reading before 0 h exists with `value = None` — 0 h is not
-  judgeable, `QC_UNCHECKED`.
+  `IngestResult.qc_unchecked` and `qc_unjudged` add up to the stored `QC_UNCHECKED` rows. ⚠️ The
+  zero-rule fixture uses a cadence no row will declare (e.g. 1800 s) — not 3600 s, which T2 adds
+  and which would silently turn the fixture into a selecting group later on the same branch.
+- **A valueless neighbour:** the −10 min reading exists with `value = None` — the 0 min reading has
+  no valued previous reading, no next one and fewer than 12 instants, so it is not judgeable,
+  `QC_UNCHECKED`.
 - **Relative spike, zero reference:** `spike` with a `tolerance` and a previous value of 0 reports
   *not evaluable*, not *clean* (a unit test on the rule function — for discharge, `range_check`
   still judges the reading).
@@ -518,10 +524,7 @@ group.** It must fail on X's status.
 - **Context rows are not re-reported:** an already-`QC_PASSED` oldest reading with a judgeable
   pending successor produces no unjudged record.
 - The same case **with** a datum: X gets a real verdict from `range_check`.
-- **The hourly case, once T2's rows exist** (added to T2's verification): an hourly water_level
-  group, no datum, reading X at −1 h already `QC_UNCHECKED` and a new reading at 0 h, `now` = 0 h +
-  5 min — the window holds X and 0 h, infers 3600 s, selects `rate_of_change` and `spike`, and X is
-  stored `QC_UNCHECKED` with `no_check_could_run`, not `QC_PASSED`.
+- The hourly datum-less case is verified in **T2** once its rows exist — ⛔ not a T4 gate.
 - **The watchdog is isolated from the new record, through the real probe and a real filter.** The
   existing stub pattern (`tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`) returns a fixed
   payload whatever the URL, so it cannot tell a filtered request from an unfiltered one. ⇒ Either
@@ -705,4 +708,5 @@ returns the entry.
   **T4 is built first**. T4's RED test moves to a 10-minute datum-less water-level case that exists on
   today's rule set (measured failing on `main` at `bd4daad2`); the hourly case becomes a T2
   verification. Phase graph: T4 → T1 → T2 → T3 → T5. One branch, one PR, so T2 and T4 still deploy
-  together. Reviewed as an amendment before T4 is built.
+  together. **Amendment reviewed before T4 was built: READY from both reviewers** (Codex no findings;
+  Claude six LOW wording findings, folded on the implementation branch with the T4 code).

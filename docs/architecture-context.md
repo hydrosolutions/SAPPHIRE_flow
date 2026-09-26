@@ -338,6 +338,7 @@ QC runs in two stages with different purposes. This follows established practice
   - **Gross outlier**: value beyond K standard deviations from rolling climatological window.
   - Observation QC rules are selected by parameter, cadence and station network. An exact network-specific rule replaces the generic rule with the same rule/parameter/cadence key; generic rules remain the fallback when no network rule exists. Rule definitions and the `[qc_rules].version` live in the shared base configuration, and overlays that declare `[qc_rules]` are rejected. A behavior change bumps the affected rule's `rule_version`; each emitted flag records that configured rule version. The row's `qc_rule_version` remains the Plan 324 processing-generation marker, not a copy of the rule-set or per-rule version. Forecast QC uses its separate rule set and is unaffected.
   - Hard failures → `qc_status = 'qc_failed'`, observation stored but excluded from downstream use. No conversion attempted.
+  - A reading no selected rule could judge (no neighbour, no value, no baseline — datum-less water level after a gap, above all) is stored `qc_status = 'qc_unchecked'`, never passed, and recorded in its own non-alarming health record (Plan 323 T4).
 
 - **2.4**: Persists Stage 1 flags. Flagged values are excluded from conversion (2.5) and from downstream use (forecasting in Flow 1 step 1.6).
 
