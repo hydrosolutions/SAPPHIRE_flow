@@ -672,19 +672,25 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
-  — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)**; T1/T2/T4 complete, T3 complete in code. 🔴 **ONE thing remains: the staging run** — the host was unreachable all session and the run is orchestrator-gated; nothing has exercised the retrain path against a real model. ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land
+  — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
+  earlier version of this entry said "T1/T2/T4 complete, ONE thing remains" — **false**; a post-merge
+  review against the shipped code found four requirements that never shipped and two verification
+  bullets never written.* 🔴 **SEVEN items remain** — see the plan's Status table; **Plan 400** carries
+  the six code/test ones, the staging run stays here. 🔴 *A retrain-of-a-retrain currently CRASHES after
+  storing the artifact.* ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
   rather than onboard ERA5-Land.
   ⭐ **Asks for NO new capability.** FI already defines `RetrainableModel.retrain()`,
   aquacast already implements it with an identical signature, and
   `assemble_group_training_data` already reads the same reanalysis binding the
-  operational path uses. 🔴 **SAP3 is the only side that does not participate** — no
-  call site anywhere, and the passthrough is missing at all four of our layers.
-  🔴 **Two blockers the review found**: the empty config mapping is hardcoded at
-  SEVEN sites, so there is no model-config channel at all (⚖️ D3 closed: supplied as
-  a run parameter; the channel is T2's, the RECORD is T4's); and **group training is broken
-  today** — the flow attaches no station-code resolver, so the adapter raises before
-  the model is reached, which is why no group artifact has ever been produced here.
+  operational path uses. ⚖️ *Was: "SAP3 is the only side that does not participate — no call site anywhere, and the
+  passthrough is missing at all four of our layers." **Fixed by #314**; kept as the problem
+  statement, not a current fact.*
+  ⚖️ *Was: "the empty config mapping is hardcoded at SEVEN sites, so there is no model-config
+  channel at all" and "group training is broken today — the flow attaches no station-code
+  resolver, which is why no group artifact has ever been produced here". **Both fixed by #314**;
+  kept as the problem statement. ⛔ Neither is a current fact.* (D3 closed: config supplied as a
+  run parameter; the channel is T2's, the RECORD is T4's.)
   ⚠️ ⚖️ D2 (closed: REFUSE) deliberately diverges from FI's suggested fall-back to
   `train`. 🔴 A bare structural `isinstance` would silently defeat that refusal — the
   adapter has no `__getattr__`, so support must be read off the INNER model.
