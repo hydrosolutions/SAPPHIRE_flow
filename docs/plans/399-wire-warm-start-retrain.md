@@ -861,4 +861,5 @@ none.**
     being called with a byte-identical `run_config`; § 14's side table with a genuine `RESTRICT`; § 15's
     seven dispositions; all four documentation targets; the phase graph; the index entry; and every
     pre-merge verification claim except the mutation sentence above.
-  ⇒ **Follow-on: Plan 400** carries A1-A4 and B1-B2. ⛔ *This plan is NOT complete and its status says so.*
+  ⇒ **Follow-on: Plan 405** carries A1-A4 and B1-B2. ⛔ *Drafted as 400, which was already the
+  owner-granted cadence plan; renumbered.* ⛔ *This plan is NOT complete and its status says so.*

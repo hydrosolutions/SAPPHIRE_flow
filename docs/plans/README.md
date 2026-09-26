@@ -661,7 +661,7 @@ exit criteria — Plan 212 owns that deeper screening.
   value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
-- **400** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](400-warm-start-gaps-and-untested-boundaries.md)
+- **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](405-warm-start-gaps-and-untested-boundaries.md)
   — `DRAFT`, `open_decisions: [D1]`, **`depends_on: [399]`**. Drafted from two independent post-merge
   reviews of **399's shipped code** — the first able to check that plan against reality rather than
   itself. ⭐ **No new capability**: every item is something 399 asserts and the code does not do.
@@ -677,7 +677,7 @@ exit criteria — Plan 212 owns that deeper screening.
   — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
   earlier version of this entry said "T1/T2/T4 complete, ONE thing remains" — **false**; a post-merge
   review against the shipped code found four requirements that never shipped and two verification
-  bullets never written.* 🔴 **SEVEN items remain** — see the plan's Status table; **Plan 400** carries
+  bullets never written.* 🔴 **SEVEN items remain** — see the plan's Status table; **Plan 405** carries
   the six code/test ones, the staging run stays here. 🔴 *A retrain-of-a-retrain currently CRASHES after
   storing the artifact.* ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing

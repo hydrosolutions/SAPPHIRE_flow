@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-09-26
-plan: 400
+plan: 405
 title: Four warm-start requirements that never shipped, and two boundaries nothing tests
 scope: Close the gaps a post-merge review found in Plan 399's shipped code — the missing changed-template refusal, the never-recorded donor config path, the un-inspected donor params, and the retrain-of-a-retrain crash — plus the two verification bullets 399 wrote and never implemented. NOT Plan 399's staging run (it stays there, orchestrator-gated). NOT new capability of any kind. NOT the FI contract changes in fi-issue 004. NOT the fine-tuning strategy surface (owner: opaque config for v1).
 depends_on: [399]
@@ -11,9 +11,13 @@ open_decisions: [D1]
 source: 2026-09-26 — two independent reviews of Plan 399's MERGED code (PR #314) against the plan. Every item below is a thing 399 asserts and the code does not do, measured at `7aec753b`.
 ---
 
-# Plan 400 — the warm-start gaps 399 asserted and did not ship
+# Plan 405 — the warm-start gaps 399 asserted and did not ship
 
-⚠️ **Plan number PROVISIONAL until the owner grants it.** 400 was free at drafting.
+⚠️ **Plan number 405 PROVISIONAL until the owner grants it.**
+⛔ *Drafted as 400. **400 was NOT free** — it belongs to `400-infer-cadence-from-recent-readings.md`,
+granted by the owner 2026-09-25. My check was invalid: `ls docs/plans/400* docs/plans/archive/400*`
+aborts in zsh when EITHER glob has no match, so the `|| echo "FREE"` fallback fired while the first
+glob was matching. 405 was confirmed free three independent ways.*
 
 ## Status
 
