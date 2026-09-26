@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import random
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -265,6 +266,20 @@ class TestQualityCheckerConformance:
         from sapphire_flow.services.qc import Stage1QualityChecker
 
         assert isinstance(Stage1QualityChecker(), QualityChecker)
+
+    def test_stage1_protocol_requires_keyword_only_station_networks(self) -> None:
+        from sapphire_flow.services.qc import Stage1QualityChecker
+
+        implementation = inspect.signature(Stage1QualityChecker.check).parameters[
+            "station_networks"
+        ]
+        protocol = inspect.signature(QualityChecker.check).parameters[
+            "station_networks"
+        ]
+
+        for parameter in (implementation, protocol):
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            assert parameter.default is inspect.Parameter.empty
 
     def test_forecast_output_quality_checker(self) -> None:
         from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker

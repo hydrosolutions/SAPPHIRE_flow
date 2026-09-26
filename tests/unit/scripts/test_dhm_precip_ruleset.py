@@ -69,7 +69,13 @@ class TestBuildPrecipitationQcRuleSet:
             _obs(start + timedelta(hours=i), v) for i, v in enumerate(noise)
         ]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
-        flags = Stage1QualityChecker().check(observations, rule_set, [], [])
+        flags = Stage1QualityChecker().check(
+            observations,
+            rule_set,
+            [],
+            [],
+            station_networks={obs.station_id: "dhm" for obs in observations},
+        )
         stuck_flags: list[QcFlag] = [
             f
             for obs_flags in flags.values()
@@ -88,7 +94,13 @@ class TestBuildPrecipitationQcRuleSet:
             _obs(start + timedelta(minutes=30 * i), 72.0) for i in range(20)
         ]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
-        flags = Stage1QualityChecker().check(observations, rule_set, [], [])
+        flags = Stage1QualityChecker().check(
+            observations,
+            rule_set,
+            [],
+            [],
+            station_networks={obs.station_id: "dhm" for obs in observations},
+        )
         assert all(obs_flags == [] for obs_flags in flags.values())
 
 
@@ -104,14 +116,26 @@ class TestRangeCheckCalibration:
         start = datetime(2025, 7, 1, 0, tzinfo=UTC)
         observations = [_obs(start - timedelta(hours=1), 0.0), _obs(start, 100.0)]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
-        flags = Stage1QualityChecker().check(observations, rule_set, [], [])
+        flags = Stage1QualityChecker().check(
+            observations,
+            rule_set,
+            [],
+            [],
+            station_networks={obs.station_id: "dhm" for obs in observations},
+        )
         assert flags[observations[1].id] == []
 
     def test_200_point_1_is_masked(self) -> None:
         start = datetime(2025, 7, 1, 0, tzinfo=UTC)
         observations = [_obs(start - timedelta(hours=1), 0.0), _obs(start, 200.1)]
         rule_set = build_precipitation_qc_rule_set(DEFAULT_PARAMS)
-        flags = Stage1QualityChecker().check(observations, rule_set, [], [])
+        flags = Stage1QualityChecker().check(
+            observations,
+            rule_set,
+            [],
+            [],
+            station_networks={obs.station_id: "dhm" for obs in observations},
+        )
         assert any(f.status == QcStatus.QC_FAILED for f in flags[observations[1].id])
 
 

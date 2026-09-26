@@ -9,7 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Collection, Mapping, Sequence
     from datetime import date
     from pathlib import Path
     from uuid import UUID
@@ -1059,6 +1059,8 @@ class QualityChecker(Protocol):
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        *,
+        station_networks: Mapping[StationId, str],
         skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]:
         raise NotImplementedError

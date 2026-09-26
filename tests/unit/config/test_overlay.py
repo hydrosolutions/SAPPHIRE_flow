@@ -117,6 +117,40 @@ class TestLoadMergedToml:
         assert result["max_retention_days"] == 200
         assert result["weather_hot_days"] == 90
 
+    @pytest.mark.parametrize(
+        "overlay_text",
+        (
+            '[qc_rules]\nversion = "2.0.0"\n',
+            '[qc_rules]\nversion = "1.0.0"\n\n'
+            '[[qc_rules.rules]]\nrule_id = "range_check"\n',
+        ),
+    )
+    def test_qc_rules_overlay_is_rejected_before_merge(
+        self, tmp_path: Path, overlay_text: str
+    ) -> None:
+        base_file = tmp_path / "base.toml"
+        base_file.write_text('[qc_rules]\nversion = "1.0.0"\n')
+        overlay_file = tmp_path / "overlay.toml"
+        overlay_file.write_text(overlay_text)
+
+        with pytest.raises(
+            ValueError, match="QC rules must be changed in the base config"
+        ):
+            load_merged_toml(base_file, [overlay_file])
+
+    def test_unrelated_overlay_remains_supported_with_qc_base(
+        self, tmp_path: Path
+    ) -> None:
+        base_file = tmp_path / "base.toml"
+        base_file.write_text('[qc_rules]\nversion = "1.0.0"\n')
+        overlay_file = tmp_path / "overlay.toml"
+        overlay_file.write_text('[onboarding]\ndata_source = "dhm"\n')
+
+        result = load_merged_toml(base_file, [overlay_file])
+
+        assert result["qc_rules"] == {"version": "1.0.0"}
+        assert result["onboarding"] == {"data_source": "dhm"}
+
     def test_missing_overlay_path_raises_file_not_found(self, tmp_path: Path) -> None:
         base_file = tmp_path / "base.toml"
         base_file.write_text(_BASE_TOML)

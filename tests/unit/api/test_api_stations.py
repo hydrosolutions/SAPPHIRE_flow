@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import InputQualityFlag
+from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.enums import (
     AccessTokenRole,
     EnsembleRepresentation,
@@ -16,6 +17,7 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
+    QcStatus,
     StationKind,
     StationStatus,
 )
@@ -264,6 +266,17 @@ class TestListObservations:
             timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
             rng=random.Random(2),
         )
+        obs = replace(
+            obs,
+            qc_flags=[
+                QcFlag(
+                    rule_id="range_check",
+                    rule_version="2.0.0",
+                    status=QcStatus.QC_SUSPECT,
+                    detail="test flag",
+                )
+            ],
+        )
         fake_stores["obs_store"].store_observations([obs])
 
         resp = client.get(
@@ -284,6 +297,7 @@ class TestListObservations:
         assert item["source"] == obs.source.value
         assert item["qc_status"] == obs.qc_status.value
         assert isinstance(item["qc_flags"], list)
+        assert item["qc_flags"][0]["rule_version"] == "2.0.0"
 
     def test_missing_required_params(self, client: TestClient) -> None:
         resp = client.get(f"/api/v1/stations/{uuid4()}/observations")

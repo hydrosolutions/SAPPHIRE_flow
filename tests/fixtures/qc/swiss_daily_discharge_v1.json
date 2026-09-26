@@ -1,0 +1,17 @@
+{
+  "fixture_version": 1,
+  "parameter": "discharge",
+  "cadence_seconds": 86400,
+  "station_id": "00000000-0000-0000-0000-000000000264",
+  "created_at": "2025-06-15T00:00:00+00:00",
+  "observations": [
+    {"id": "f0e52f0c-8e7a-5a7f-9f35-27e3015a43d2", "timestamp": "2025-06-15T00:00:00+00:00", "value": 5.0, "status": "qc_passed", "flags": []},
+    {"id": "62bf69db-7195-5a12-8833-b4194e009d5c", "timestamp": "2025-06-16T00:00:00+00:00", "value": 6.0, "status": "qc_passed", "flags": []},
+    {"id": "cf574d90-51de-56d6-8c24-791680784ac5", "timestamp": "2025-06-17T00:00:00+00:00", "value": 100.0, "status": "qc_suspect", "flags": [
+      {"rule_id": "spike", "status": "qc_suspect", "detail": "spike: value 100.0 deviates from prev 6.0 and next 7.0 by >50.00% of |prev|"},
+      {"rule_id": "gross_outlier", "status": "qc_suspect", "detail": "gross outlier: value 100.0 deviates from baseline mean 6.0000 by >5.0σ (std=1.0000)"}
+    ]},
+    {"id": "72ca6319-0ed3-5080-99ea-1c96e58bfbeb", "timestamp": "2025-06-18T00:00:00+00:00", "value": 7.0, "status": "qc_passed", "flags": []}
+  ],
+  "baseline": {"day_of_year": 168, "rolling_mean": 6.0, "rolling_std": 1.0, "sample_count": 30}
+}

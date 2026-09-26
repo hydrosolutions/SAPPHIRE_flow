@@ -150,6 +150,7 @@ class QcRuleParams:
     parameter: str
     time_step: timedelta
     thresholds: dict[str, float]
+    network: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -157,13 +158,39 @@ class QcRuleSet:
     version: str
     rules: tuple[QcRuleParams, ...]
 
+    def __post_init__(self) -> None:
+        identities = [
+            (r.rule_id, r.rule_version, r.parameter, r.time_step, r.network)
+            for r in self.rules
+        ]
+        if len(identities) != len(set(identities)):
+            raise ValueError("duplicate QC rule identity in rule set")
+
     def rules_for(
-        self, parameter: str, time_step: timedelta
+        self,
+        parameter: str,
+        time_step: timedelta,
+        *,
+        network: str | None = None,
     ) -> tuple[QcRuleParams, ...]:
-        return tuple(
+        candidates = tuple(
             r
             for r in self.rules
-            if r.parameter == parameter and r.time_step == time_step
+            if r.parameter == parameter
+            and r.time_step == time_step
+            and (r.network is None or r.network == network)
+        )
+        specificity: dict[tuple[str, str, timedelta], bool] = {}
+        for rule in candidates:
+            key = (rule.rule_id, rule.parameter, rule.time_step)
+            specificity[key] = specificity.get(key, False) or (
+                network is not None and rule.network == network
+            )
+        return tuple(
+            rule
+            for rule in candidates
+            if (rule.network == network and network is not None)
+            == specificity[(rule.rule_id, rule.parameter, rule.time_step)]
         )
 
 

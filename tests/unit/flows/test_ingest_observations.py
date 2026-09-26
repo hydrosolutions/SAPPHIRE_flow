@@ -5,8 +5,11 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
+import pytest
 
+import sapphire_flow.flows.ingest_observations as ingest_module
 from sapphire_flow.adapters.replay.station import ReplayStationAdapter
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
     _load_adapter_config,
@@ -20,8 +23,6 @@ from sapphire_flow.types.observation import RawObservation
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
     from sapphire_flow.types.ids import StationId
 from tests.conftest import make_station_config
@@ -153,6 +154,83 @@ def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore
 
 
 class TestIngestObservationsFlow:
+    def test_station_network_selects_network_specific_rule(self) -> None:
+        bafu = make_station_config(
+            code="2135", name="Aare Bern", network="bafu", rng=random.Random(1)
+        )
+        dhm = make_station_config(
+            code="447", name="Nepal Gauge", network="dhm", rng=random.Random(2)
+        )
+        stations = FakeStationStore()
+        stations.store_station(bafu)
+        stations.store_station(dhm)
+        observations = [
+            _make_obs(station.id, "discharge", 20.0, offset_minutes=10)
+            for station in (bafu, dhm)
+        ] + [_make_obs(station.id, "discharge", 20.0) for station in (bafu, dhm)]
+        rules = QcRuleSet(
+            version="network-test",
+            rules=(
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="generic-v1",
+                    parameter="discharge",
+                    time_step=timedelta(minutes=10),
+                    thresholds={"value_min": 0.0, "value_max": 100.0},
+                ),
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="dhm-v1",
+                    parameter="discharge",
+                    time_step=timedelta(minutes=10),
+                    thresholds={"value_min": 0.0, "value_max": 10.0},
+                    network="dhm",
+                ),
+            ),
+        )
+        obs_store = FakeObservationStore()
+
+        ingest_observations_flow(
+            station_store=stations,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(observations),
+            qc_rules=rules,
+            clock=_fixed_clock,
+        )
+
+        latest = {
+            station_id: max(
+                (o for o in obs_store.observations() if o.station_id == station_id),
+                key=lambda o: o.timestamp,
+            )
+            for station_id in (bafu.id, dhm.id)
+        }
+        assert latest[bafu.id].qc_status is QcStatus.QC_PASSED
+        assert latest[dhm.id].qc_status is QcStatus.QC_FAILED
+
+    def test_configuration_error_from_qc_is_not_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+
+        def fail_qc(*args: object, **kwargs: object) -> None:
+            raise ConfigurationError("missing network mapping")
+
+        monkeypatch.setattr(ingest_module, "_run_qc_task", fail_qc)
+
+        with pytest.raises(ConfigurationError, match="missing network mapping"):
+            ingest_observations_flow(
+                station_store=station_store,
+                obs_store=FakeObservationStore(),
+                baseline_store=FakeClimBaselineStore(),
+                adapter=FakeStationDataSource([_make_obs(station.id, "discharge", 20)]),
+                qc_rules=_QC_RULES,
+                clock=_fixed_clock,
+            )
+
     def test_happy_path_two_stations(self) -> None:
         s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
         s2 = make_station_config(code="2289", name="Rhein Basel", rng=random.Random(2))
@@ -334,6 +412,7 @@ class TestIngestObservationsFlow:
             "water_level",
             qc_rules=_WATER_LEVEL_DATUM_RULES,
             now=_NOW,
+            station_networks={station.id: station.network},
             datum=260.0,
         )
 
@@ -368,6 +447,7 @@ class TestIngestObservationsFlow:
             "water_level",
             qc_rules=_WATER_LEVEL_DATUM_RULES,
             now=_NOW,
+            station_networks={station.id: station.network},
             datum=None,
         )
 
@@ -405,6 +485,7 @@ class TestIngestObservationsFlow:
                 "discharge",
                 qc_rules=_WATER_LEVEL_DATUM_RULES,
                 now=_NOW,
+                station_networks={station.id: station.network},
                 datum=datum,
             )
             latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]

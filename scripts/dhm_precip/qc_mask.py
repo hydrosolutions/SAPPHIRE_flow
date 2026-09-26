@@ -146,9 +146,12 @@ def _raise_on_time_step_mismatch(
     inferred = infer_time_step(observations)
     if inferred is None:
         return
-    mismatched = [
-        r for r in rule_set.rules if r not in rule_set.rules_for(r.parameter, inferred)
+    effective_rules = [
+        rule
+        for rule in rule_set.rules
+        if rule in rule_set.rules_for(rule.parameter, rule.time_step, network="dhm")
     ]
+    mismatched = [rule for rule in effective_rules if rule.time_step != inferred]
     if mismatched:
         offending = sorted(f"{r.rule_version} ({r.time_step})" for r in mismatched)
         raise TimeStepMismatchError(
@@ -193,15 +196,20 @@ def _station_mask(
     if not observations:
         return frozenset()
     ordered = sorted(observations, key=lambda o: o.timestamp)
+    station_networks = {obs.station_id: "dhm" for obs in ordered}
 
     dropped: set[MaskKey] = set()
     _raise_on_time_step_mismatch(ordered, pass_a_rules)
-    flags_a = checker.check(ordered, pass_a_rules, [], [])
+    flags_a = checker.check(
+        ordered, pass_a_rules, [], [], station_networks=station_networks
+    )
     dropped.update((station, obs.timestamp) for obs in ordered if flags_a[obs.id])
 
     for _year, season_obs in _jjas_seasons(ordered, params):
         _raise_on_time_step_mismatch(season_obs, pass_b_rules)
-        flags_b = checker.check(season_obs, pass_b_rules, [], [])
+        flags_b = checker.check(
+            season_obs, pass_b_rules, [], [], station_networks=station_networks
+        )
         dropped.update(
             (station, obs.timestamp) for obs in season_obs if flags_b[obs.id]
         )

@@ -29,6 +29,8 @@ from sapphire_flow.types.enums import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.config.dhm import DhmConfig
     from sapphire_flow.config.river_stations import HydroScraperConfig
     from sapphire_flow.protocols.adapters import BatchStationDataSource
@@ -424,6 +426,8 @@ def _run_qc_task(
     parameter: str,
     qc_rules: QcRuleSet,
     now: UtcDatetime,
+    *,
+    station_networks: Mapping[StationId, str],
     datum: float | None = None,
     context_window_hours: float = 2.0,
     fetched_times: tuple[UtcDatetime, ...] = (),
@@ -475,6 +479,7 @@ def _run_qc_task(
         rule_set=qc_rules,
         overrides=[],
         baselines=baselines,
+        station_networks=station_networks,
         skipped_rule_ids=obs_skipped_rules(parameter, datum),
     )
     flags = add_observation_datum_details(
@@ -488,7 +493,10 @@ def _run_qc_task(
     # Plan 272 T3: what did selection actually resolve? Computed over the SAME
     # rows `check` saw, so the two agree by construction.
     selection = resolve_selection(
-        qc_observations, qc_rules, skipped_rule_ids=obs_skipped_rules(parameter, datum)
+        qc_observations,
+        qc_rules,
+        station_networks=station_networks,
+        skipped_rule_ids=obs_skipped_rules(parameter, datum),
     )
     unresolved = {key for key, (_, n_rules) in selection.items() if n_rules == 0}
     # Plan 318 T1: the same facts the warning carries, kept as VALUES so they
@@ -902,6 +910,7 @@ def ingest_observations_flow(
     station_params: set[tuple[StationId, str]] = {
         (o.station_id, o.parameter) for o in raw_obs
     }
+    station_networks = {station.id: station.network for station in eligible}
     datums: dict[tuple[StationId, str], float | None] = {
         (station.id, "water_level"): station.water_level_datum_masl
         for station in eligible
@@ -938,6 +947,7 @@ def ingest_observations_flow(
                 parameter,
                 qc_rules=qc_rules,
                 now=now,
+                station_networks=station_networks,
                 datum=datums.get((station_id, parameter)),
                 context_window_hours=context_window_hours,
                 fetched_times=tuple(recovered_times.get((station_id, parameter), ())),
@@ -949,6 +959,8 @@ def ingest_observations_flow(
             totals["rechecked"] += counts.counts["rechecked"]
             totals["newly_checked"] += counts.counts["newly_checked"]
             zero_rule_groups.extend(counts.zero_rule_groups)
+        except ConfigurationError:
+            raise
         except Exception as exc:
             log.warning(
                 "ingest.qc_failed",

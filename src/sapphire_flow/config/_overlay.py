@@ -20,6 +20,11 @@ def load_merged_toml(
     merged: dict[str, object] = _parse_toml_file(base_path)
     for overlay_path in overlay_paths:
         overlay_data: dict[str, object] = _parse_toml_file(overlay_path)
+        if "qc_rules" in overlay_data:
+            raise ValueError(
+                "QC rules must be changed in the base config, not an overlay: "
+                f"{overlay_path}"
+            )
         merged = _deep_merge(merged, overlay_data)
     return merged
 

@@ -783,10 +783,12 @@ def _run_onboarding(
             if not raw_obs:
                 continue
             station = station_by_id.get(station_id)
+            if station is None:
+                raise ConfigurationError(
+                    f"missing station network mapping for station {station_id}"
+                )
             datum = (
-                station.water_level_datum_masl
-                if station is not None and parameter == "water_level"
-                else None
+                station.water_level_datum_masl if parameter == "water_level" else None
             )
             qc_obs = shift_observations_for_water_level_datum(
                 raw_obs,
@@ -798,6 +800,7 @@ def _run_onboarding(
                 qc_rules,
                 overrides=[],
                 baselines=[],
+                station_networks={station_id: station.network},
                 skipped_rule_ids=obs_skipped_rules(parameter, datum),
             )
             flags = add_observation_datum_details(
@@ -835,6 +838,8 @@ def _run_onboarding(
                 parameter=parameter,
                 count=len(raw_obs),
             )
+        except ConfigurationError:
+            raise
         except Exception as exc:
             msg = f"QC failed for station {station_id}: {exc}"
             log.error("qc_error", station_id=str(station_id), error=str(exc))

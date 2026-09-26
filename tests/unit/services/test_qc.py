@@ -10,6 +10,7 @@ from sapphire_flow.services.qc import Stage1QualityChecker
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import (
     ClimBaseline,
+    QcFlag,
     QcRuleParams,
     QcRuleSet,
     StationQcOverride,
@@ -102,6 +103,23 @@ def _rule_set(*rules: QcRuleParams) -> QcRuleSet:
     return QcRuleSet(version="1.0", rules=tuple(rules))
 
 
+def _check(
+    checker: Stage1QualityChecker,
+    observations: list[Observation],
+    rule_set: QcRuleSet,
+    overrides: list[StationQcOverride],
+    baselines: list[ClimBaseline],
+) -> dict[ObservationId, list[QcFlag]]:
+    networks = {obs.station_id: "bafu" for obs in observations}
+    return checker.check(
+        observations,
+        rule_set,
+        overrides,
+        baselines,
+        station_networks=networks,
+    )
+
+
 class TestRangeCheckRealistic:
     @pytest.mark.parametrize(
         "value,expected_pass",
@@ -116,7 +134,7 @@ class TestRangeCheckRealistic:
         checker = Stage1QualityChecker()
         obs = _make_obs(value)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 3000.0}))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         if expected_pass:
             assert flags == []
@@ -131,14 +149,14 @@ class TestRangeCheck:
         checker = Stage1QualityChecker()
         obs = _make_obs(50.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         assert result[obs.id] == []
 
     def test_value_below_min_fails(self) -> None:
         checker = Stage1QualityChecker()
         obs = _make_obs(-1.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -148,7 +166,7 @@ class TestRangeCheck:
         checker = Stage1QualityChecker()
         obs = _make_obs(200.0)
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -159,14 +177,14 @@ class TestRateOfChange:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(11.0, 1)]
         rs = _rule_set(_rule("rate_of_change", {"max_rate": 5.0}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert result[obs[1].id] == []
 
     def test_excessive_rate_suspect(self) -> None:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(100.0, 1)]
         rs = _rule_set(_rule("rate_of_change", {"max_rate": 5.0}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flags = result[obs[1].id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_SUSPECT
@@ -176,7 +194,7 @@ class TestRateOfChange:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(100.0, 1)]
         rs = _rule_set(_rule("rate_of_change", {"max_rate": 5.0}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         # First obs has no previous — must have no flag from rate_of_change
         assert result[obs[0].id] == []
 
@@ -186,7 +204,7 @@ class TestFrozenSensor:
         checker = Stage1QualityChecker()
         obs = [_make_obs(float(v), i) for i, v in enumerate([10, 20, 30, 40, 50])]
         rs = _rule_set(_rule("frozen_sensor", {"tolerance": 0.1, "min_consecutive": 3}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
 
     def test_frozen_values_suspect(self) -> None:
@@ -196,7 +214,7 @@ class TestFrozenSensor:
         rs = _rule_set(
             _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flagged = [o for o in obs if result[o.id]]
         assert len(flagged) >= 3
         for o in flagged:
@@ -210,7 +228,7 @@ class TestFrozenSensor:
         rs = _rule_set(
             _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
 
 
@@ -236,7 +254,7 @@ class TestFrozenSensorExclusion:
                 },
             )
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         # Assert on ALL 120, not just from index 11: the rule backfills the
         # whole run once min_consecutive is reached, so skipping the first 11
         # would let broken backfilling pass unnoticed (review finding).
@@ -257,7 +275,7 @@ class TestFrozenSensorExclusion:
                 },
             )
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
 
     def test_existing_discharge_case_unchanged_when_threshold_absent(
@@ -270,7 +288,7 @@ class TestFrozenSensorExclusion:
         rs = _rule_set(
             _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flagged = [o for o in obs if result[o.id]]
         assert len(flagged) >= 3
         for o in flagged:
@@ -298,7 +316,7 @@ class TestFrozenSensorExclusion:
                 },
             )
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
 
 
@@ -318,10 +336,87 @@ class TestFrozenSensorRuleVersion:
             thresholds={"tolerance": 0.01, "min_consecutive": 3},
         )
         rs = _rule_set(rule)
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flags = [f for o in obs for f in result[o.id]]
         assert flags
         assert all(f.rule_version == "2.1.0-precip-exclusion" for f in flags)
+
+
+class TestConfiguredRuleVersions:
+    def test_each_flag_producing_rule_uses_its_configured_version(self) -> None:
+        scenarios = (
+            (
+                "range_check",
+                {"value_min": 0.0, "value_max": 10.0},
+                [1.0, 20.0],
+                None,
+                1,
+            ),
+            ("rate_of_change", {"max_rate": 5.0}, [1.0, 20.0], None, 1),
+            ("spike", {"tolerance": 0.1}, [10.0, 100.0, 10.0], None, 1),
+            (
+                "gross_outlier",
+                {"k_sigma": 5.0},
+                [10.0, 20.0],
+                (10.0, 1.0),
+                1,
+            ),
+        )
+        for rule_id, thresholds, values, baseline_values, flagged_index in scenarios:
+            observations = [_make_obs(value, i) for i, value in enumerate(values)]
+            rule = _rule(rule_id, thresholds)
+            configured_rule = replace(rule, rule_version="2.0.0")
+            baselines: list[ClimBaseline] = []
+            if baseline_values is not None:
+                mean, std = baseline_values
+                baselines = [
+                    ClimBaseline(
+                        station_id=_STATION,
+                        parameter=_PARAM,
+                        day_of_year=observations[-1].timestamp.timetuple().tm_yday,
+                        rolling_mean=mean,
+                        rolling_std=std,
+                        sample_count=30,
+                    )
+                ]
+
+            flags = _check(
+                Stage1QualityChecker(),
+                observations,
+                _rule_set(configured_rule),
+                [],
+                baselines,
+            )
+
+            assert flags[observations[flagged_index].id]
+            assert all(
+                flag.rule_version == "2.0.0"
+                for flag in flags[observations[flagged_index].id]
+                if flag.rule_id == rule_id
+            )
+
+    def test_network_specific_and_generic_flags_keep_their_own_versions(self) -> None:
+        observations = [_make_obs(5.0, 0), _make_obs(20.0, 1)]
+        generic_range = replace(
+            _rule("range_check", {"value_min": 0.0, "value_max": 10.0}),
+            rule_version="generic-v3",
+        )
+        dhm_rate = replace(
+            _rule("rate_of_change", {"max_rate": 1.0}),
+            rule_version="dhm-v2",
+            network="dhm",
+        )
+        flags = Stage1QualityChecker().check(
+            observations,
+            _rule_set(generic_range, dhm_rate),
+            [],
+            [],
+            station_networks={_STATION: "dhm"},
+        )
+
+        assert {
+            (flag.rule_id, flag.rule_version) for flag in flags[observations[-1].id]
+        } == {("range_check", "generic-v3"), ("rate_of_change", "dhm-v2")}
 
 
 class TestSpike:
@@ -330,7 +425,7 @@ class TestSpike:
         obs = [_make_obs(10.0, 0), _make_obs(12.1, 1), _make_obs(10.2, 2)]
         rs = _rule_set(_rule("spike", {"max_delta": 1.0}))
 
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
 
         flags = result[obs[1].id]
         assert len(flags) == 1
@@ -342,7 +437,7 @@ class TestSpike:
         obs = [_make_obs(10.0, 0), _make_obs(10.8, 1), _make_obs(10.1, 2)]
         rs = _rule_set(_rule("spike", {"max_delta": 1.0}))
 
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
 
         assert result[obs[1].id] == []
 
@@ -350,7 +445,7 @@ class TestSpike:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(11.0, 1), _make_obs(10.5, 2)]
         rs = _rule_set(_rule("spike", {"tolerance": 0.5}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
 
     def test_spike_detected(self) -> None:
@@ -358,7 +453,7 @@ class TestSpike:
         # prev=10, current=100, next=10.5 — huge deviation from both neighbors
         obs = [_make_obs(10.0, 0), _make_obs(100.0, 1), _make_obs(10.5, 2)]
         rs = _rule_set(_rule("spike", {"tolerance": 0.5}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flags = result[obs[1].id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_SUSPECT
@@ -368,7 +463,7 @@ class TestSpike:
         checker = Stage1QualityChecker()
         obs = [_make_obs(100.0, 0), _make_obs(10.0, 1), _make_obs(100.0, 2)]
         rs = _rule_set(_rule("spike", {"tolerance": 0.5}))
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         # First and last obs have no prev/next — cannot be flagged as spikes
         assert result[obs[0].id] == []
         assert result[obs[2].id] == []
@@ -391,7 +486,7 @@ class TestGrossOutlier:
         obs = _make_obs(12.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         baseline = self._baseline(mean=10.0, std=2.0)
-        result = checker.check(_with_cadence(obs), rs, [], [baseline])
+        result = _check(checker, _with_cadence(obs), rs, [], [baseline])
         assert result[obs.id] == []
 
     def test_outlier_detected(self) -> None:
@@ -399,7 +494,7 @@ class TestGrossOutlier:
         obs = _make_obs(100.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         baseline = self._baseline(mean=10.0, std=2.0)
-        result = checker.check(_with_cadence(obs), rs, [], [baseline])
+        result = _check(checker, _with_cadence(obs), rs, [], [baseline])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_SUSPECT
@@ -410,7 +505,7 @@ class TestGrossOutlier:
         obs = _make_obs(999.0)
         rs = _rule_set(_rule("gross_outlier", {"k_sigma": 3.0}))
         # No baseline provided — must not flag, must not raise
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         assert result[obs.id] == []
 
 
@@ -427,7 +522,7 @@ class TestOverrideMerging:
             time_step=_STEP,
             thresholds={"value_max": 50.0, "value_min": None},
         )
-        result = checker.check(_with_cadence(obs), rs, [override], [])
+        result = _check(checker, _with_cadence(obs), rs, [override], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -444,7 +539,7 @@ class TestOverrideMerging:
             time_step=_STEP,
             thresholds={"value_max": 200.0, "value_min": None},
         )
-        result = checker.check(_with_cadence(obs), rs, [override], [])
+        result = _check(checker, _with_cadence(obs), rs, [override], [])
         flags = result[obs.id]
         # value_min stays 0.0 (None → inherit), so -5.0 still fails
         assert len(flags) == 1
@@ -476,7 +571,7 @@ class TestWaterLevelQc:
             thresholds={"value_min": 0.0, "value_max": 100.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         flags = result[obs.id]
         assert len(flags) == 1
         assert flags[0].status == QcStatus.QC_FAILED
@@ -507,7 +602,7 @@ class TestWaterLevelQc:
             thresholds={"value_min": 0.0, "value_max": 100.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         # No rules match the daily (1-hour step) obs — all pass
         assert result[obs.id] == []
 
@@ -521,7 +616,7 @@ class TestIntegration:
             _rule("range_check", {"value_min": 0.0, "value_max": 100.0}),
             _rule("rate_of_change", {"max_rate": 5.0}),
         )
-        result = checker.check(obs, rs, [], [])
+        result = _check(checker, obs, rs, [], [])
         flags = result[obs[1].id]
         rule_ids = {f.rule_id for f in flags}
         assert "range_check" in rule_ids
@@ -530,7 +625,7 @@ class TestIntegration:
     def test_empty_observations_returns_empty(self) -> None:
         checker = Stage1QualityChecker()
         rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 100.0}))
-        result = checker.check([], rs, [], [])
+        result = _check(checker, [], rs, [], [])
         assert result == {}
 
     def test_no_rules_for_parameter(self) -> None:
@@ -545,5 +640,5 @@ class TestIntegration:
             thresholds={"value_min": -50.0, "value_max": 60.0},
         )
         rs = QcRuleSet(version="1.0", rules=(rule,))
-        result = checker.check(_with_cadence(obs), rs, [], [])
+        result = _check(checker, _with_cadence(obs), rs, [], [])
         assert result[obs.id] == []

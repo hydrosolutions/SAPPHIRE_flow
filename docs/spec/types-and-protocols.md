@@ -624,6 +624,7 @@ class QcRuleParams:
     parameter: str                 # canonical parameter name (e.g. "discharge", "water_level")
     time_step: timedelta           # observation time step these thresholds apply to
     thresholds: dict[str, float]   # rule-specific thresholds, e.g. {"value_min": 0, "value_max": 5000}
+    network: str | None = None     # None is generic; an exact network rule takes precedence
 ```
 
 **Threshold keys by rule**:
@@ -637,8 +638,9 @@ class QcRuleParams:
 
 ### QcRuleSet
 
-A versioned collection of QC rules for a deployment. Loaded from `config.toml` `[qc_rules]`
-section (see `config-reference.toml`).
+A versioned collection of QC rules for a deployment. Loaded from the shared base
+`config.toml` `[qc_rules]` section (see `config-reference.toml`). QC overlays are
+rejected; rule changes are made through reviewed base-config changes and rule versions.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -646,9 +648,11 @@ class QcRuleSet:
     version: str                           # ruleset version (e.g. "1.0.0")
     rules: tuple[QcRuleParams, ...]        # all rules for all parameters and time steps
 
-    def rules_for(self, parameter: str, time_step: timedelta) -> tuple[QcRuleParams, ...]:
-        """Filter rules matching this parameter and time step."""
-        return tuple(r for r in self.rules if r.parameter == parameter and r.time_step == time_step)
+    def rules_for(
+        self, parameter: str, time_step: timedelta, *, network: str | None = None
+    ) -> tuple[QcRuleParams, ...]:
+        """Select exact-network rules per rule key, falling back to generic rules."""
+        ...
 ```
 
 ### StationQcOverride
@@ -749,6 +753,8 @@ class QualityChecker(Protocol):
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        *,
+        station_networks: Mapping[StationId, str],
         skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]: ...
         # Returns QC flags per observation. An EMPTY list is ambiguous on its
@@ -760,6 +766,8 @@ class QualityChecker(Protocol):
         # group — a datum-dependent rule at a station with no water level
         # datum. They do not execute, so they do not count as selected:
         # resolve_selection() must be given the same set.
+        # This required map drives network-specific observation-QC selection;
+        # forecast QC remains on its separate ForecastQcRuleSet contract.
 ```
 
 Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
@@ -876,7 +884,7 @@ class Observation:
     rating_curve_correction_version: str | None  # v1 — correction param version. Omit from v0 DB schema.
     qc_status: QcStatus
     qc_flags: list[QcFlag]
-    qc_rule_version: str | None    # version of the QC ruleset that last evaluated this row
+    qc_rule_version: str | None    # Plan 324 observation-QC processing-generation marker
     created_at: UtcDatetime
 
 
