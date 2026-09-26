@@ -22,7 +22,7 @@ import sqlalchemy as sa
 if TYPE_CHECKING:
     from pathlib import Path
 
-from sapphire_flow.db.metadata import model_artifacts, models
+from sapphire_flow.db.metadata import model_artifacts, models, stations
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.store.model_artifact_warm_start import (
     WarmStartRecord,
@@ -31,7 +31,8 @@ from sapphire_flow.store.model_artifact_warm_start import (
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
-from sapphire_flow.types.ids import ArtifactId, ModelId
+from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
@@ -44,18 +45,41 @@ def _seed_model(conn: sa.Connection) -> ModelId:
         sa.insert(models).values(
             id=mid,
             display_name="Warm Start Test Model",
-            artifact_scope="group",
+            artifact_scope="station",
             description="Integration test",
         )
     )
     return mid
 
 
+def _seed_station(conn: sa.Connection) -> StationId:
+    sid = StationId(uuid.uuid4())
+    conn.execute(
+        sa.insert(stations).values(
+            id=sid,
+            code=f"WS-STA-{sid.hex[:6]}",
+            name="Warm Start Test Station",
+            location="SRID=4326;POINT(7.5 46.5)",
+            station_kind="river",
+            network="bafu",
+            timezone="Europe/Zurich",
+            measured_parameters=["discharge"],
+            ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
+        )
+    )
+    return sid
+
+
 def _seed_artifact(
-    conn: sa.Connection, tmp_path: Path, model_id: ModelId
+    conn: sa.Connection, tmp_path: Path, model_id: ModelId, station_id: StationId
 ) -> ArtifactId:
+    # `ck_model_artifacts_scope_xor` requires EXACTLY ONE of station_id/group_id.
+    # ⚠️ The FAKE store does not enforce that, so an artifact seeded with neither
+    # passes every unit test and fails only against a real database — which is
+    # exactly what happened here.
     aid, _ = PgModelArtifactStore(conn, tmp_path).store_artifact(
-        model_id, b"payload", _T0, _T1, _T2
+        model_id, b"payload", _T0, _T1, _T2, station_id=station_id
     )
     return aid
 
@@ -77,8 +101,9 @@ class TestWarmStartProvenance:
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:
         mid = _seed_model(db_connection)
-        base = _seed_artifact(db_connection, tmp_path, mid)
-        child = _seed_artifact(db_connection, tmp_path, mid)
+        sid = _seed_station(db_connection)
+        base = _seed_artifact(db_connection, tmp_path, mid, sid)
+        child = _seed_artifact(db_connection, tmp_path, mid, sid)
 
         record_warm_start(db_connection, _record(child, base))
         got = fetch_warm_start(db_connection, child)
@@ -96,7 +121,8 @@ class TestWarmStartProvenance:
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:
         mid = _seed_model(db_connection)
-        fresh = _seed_artifact(db_connection, tmp_path, mid)
+        sid = _seed_station(db_connection)
+        fresh = _seed_artifact(db_connection, tmp_path, mid, sid)
         assert fetch_warm_start(db_connection, fresh) is None
 
     def test_deleting_a_referenced_donor_is_refused(
@@ -105,8 +131,9 @@ class TestWarmStartProvenance:
         """🔴 RESTRICT, not CASCADE. A cascade would silently delete the child's
         provenance and pass a 'no orphan remains' test."""
         mid = _seed_model(db_connection)
-        base = _seed_artifact(db_connection, tmp_path, mid)
-        child = _seed_artifact(db_connection, tmp_path, mid)
+        sid = _seed_station(db_connection)
+        base = _seed_artifact(db_connection, tmp_path, mid, sid)
+        child = _seed_artifact(db_connection, tmp_path, mid, sid)
         record_warm_start(db_connection, _record(child, base))
 
         with pytest.raises(sa.exc.IntegrityError):
@@ -120,8 +147,9 @@ class TestWarmStartProvenance:
     ) -> None:
         """Supersession MARKS, it does not delete — so the record must resolve."""
         mid = _seed_model(db_connection)
-        base = _seed_artifact(db_connection, tmp_path, mid)
-        child = _seed_artifact(db_connection, tmp_path, mid)
+        sid = _seed_station(db_connection)
+        base = _seed_artifact(db_connection, tmp_path, mid, sid)
+        child = _seed_artifact(db_connection, tmp_path, mid, sid)
         record_warm_start(db_connection, _record(child, base))
 
         PgModelArtifactStore(db_connection, tmp_path).transition_artifact_status(
