@@ -1145,6 +1145,16 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `ingest.qc_complete` event and the `OBSERVATION_QC_UNCHECKED` health record
   split the judged rows by what they were before the run. Asserted in
   `tests/unit/flows/test_ingest_observations_recheck.py`
+- Plan 323 T4 (D4, D5): a reading is `QC_PASSED` only if some selected rule actually
+  **judged** it — `Stage1QualityChecker.check_with_coverage` returns the flags and the
+  `judged` set, taken from the rule functions themselves (no neighbour, no value, no
+  baseline, a short `frozen_sensor` stretch ⇒ not judged). A pending reading nothing
+  judged is stored `QC_UNCHECKED` and reported in a separate
+  `OBSERVATION_QC_UNJUDGED` health record (`reason = "no_check_could_run"`, observation
+  ids as strings) that the watchdog does **not** probe; it is counted as
+  `IngestResult.qc_unjudged`, apart from the zero-rule `qc_unchecked` (zero-rule wins).
+  Reach: datum-less water level — every Swiss river station today — after any gap.
+  Asserted in `tests/unit/flows/test_ingest_observations_unjudged.py`
 - Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
   RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
   `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`

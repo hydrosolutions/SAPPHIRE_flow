@@ -757,7 +757,8 @@ exit criteria — Plan 212 owns that deeper screening.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
   — **`READY`** (orchestrator, 2026-09-26, owner-confirmed), no open decisions, `blocks: [400, 403]`;
-  READY from both reviewers in rounds 8-11. ⚠️ T1 needs staging, which is off-network for now. Found from a live Slack warning on
+  READY from both reviewers in rounds 8-11. ⚠️ T1 needs staging, off-network for now ⇒ **T4 is built first** (owner, 2026-09-26); one
+  branch, one PR, so T2 and T4 still deploy together. Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
   earlier rows were fail-open passed (~1,277 readings never checked). Thresholds come from

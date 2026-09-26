@@ -338,6 +338,7 @@ QC runs in two stages with different purposes. This follows established practice
   - **Gross outlier**: value beyond K standard deviations from rolling climatological window.
   - QC rule version is stored with each flag — enables selective recomputation when rules change without losing the audit trail.
   - Hard failures → `qc_status = 'qc_failed'`, observation stored but excluded from downstream use. No conversion attempted.
+  - A reading no selected rule could judge (no neighbour, no value, no baseline — datum-less water level after a gap, above all) is stored `qc_status = 'qc_unchecked'`, never passed, and recorded in its own non-alarming health record (Plan 323 T4).
 
 - **2.4**: Persists Stage 1 flags. Flagged values are excluded from conversion (2.5) and from downstream use (forecasting in Flow 1 step 1.6).
 

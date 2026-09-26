@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ObservationId, StationId
     from sapphire_flow.types.observation import (
         HydroScraperBatchResult,
         Observation,
@@ -61,6 +61,11 @@ class IngestResult:
     qc_failed: int
     qc_suspect: int
     qc_unchecked: int = 0
+    # Plan 323 T4 (D5): readings whose group selected rules but which no rule
+    # could judge. Stored `QC_UNCHECKED` like `qc_unchecked`, counted apart so
+    # the zero-rule count keeps its meaning; the two add up to the stored
+    # `QC_UNCHECKED` rows.
+    qc_unjudged: int = 0
     # Plan 317 T1: of the rows QC judged this run, how many were re-examined
     # after being stored `QC_UNCHECKED` by an earlier run, and how many were
     # judged for the first time. Kept apart so the effect is visible rather
@@ -152,9 +157,11 @@ def _fetch_configured_dhm(
 def _aggregate_qc_status(flags: list[object], *, rules_ran: bool = True) -> QcStatus:
     """Plan 272 T2b: an empty flag list means one of two OPPOSITE things.
 
-    With rules selected, it means every rule ran and found nothing wrong —
-    `QC_PASSED`. With none selected, it means nothing was checked at all, which
-    used to be stored as the same clean pass. `rules_ran=False` separates them.
+    With a rule that judged the reading, it means that rule found nothing
+    wrong — `QC_PASSED`. With none, nothing was checked at all, which used to
+    be stored as the same clean pass. `rules_ran=False` separates them — and,
+    since Plan 323 T4, it is per READING: a group can select rules none of
+    which could judge a given reading (no neighbour, no baseline).
     """
     if not flags:
         return QcStatus.QC_PASSED if rules_ran else QcStatus.QC_UNCHECKED
@@ -259,6 +266,22 @@ class QcTaskOutcome:
 
     counts: dict[str, int]
     zero_rule_groups: tuple[ZeroRuleGroup, ...]
+    unjudged_groups: tuple[UnjudgedGroup, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class UnjudgedGroup:
+    """Plan 323 T4 (D4, D5): a group that selected rules, with pending readings
+    none of them could judge — stored `QC_UNCHECKED`, reported in their own
+    health record, not alarmed on.
+
+    ⛔ A zero-rule group is never also reported here: zero-rule wins.
+    """
+
+    station_id: StationId
+    parameter: str
+    inferred_time_step_seconds: float | None
+    observation_ids: tuple[ObservationId, ...]
 
 
 def _append_zero_rule_health_record(
@@ -324,6 +347,69 @@ def _append_zero_rule_health_record(
         log.warning(
             "pipeline.health_record_write_failed",
             check_type=PipelineCheckType.OBSERVATION_QC_UNCHECKED.value,
+            subject="ingest_observations",
+            error=str(exc),
+        )
+
+
+def _append_unjudged_health_record(
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    groups: tuple[UnjudgedGroup, ...],
+    totals: dict[str, int],
+) -> None:
+    """Plan 323 T4 (D5). Shaped after `_append_zero_rule_health_record`, under
+    its own check type, which the watchdog does NOT probe.
+
+    ⛔ A separate record, not a reason inside the zero-rule one: the watchdog
+    reads only the LATEST zero-rule record, so a run carrying only unjudged
+    readings would otherwise hide an earlier run's real alarm and post a false
+    recovery.
+    ⚠️ Observation ids are written as strings: they are UUIDs, the JSONB
+    column has no serializer for them, and a failed insert here is only
+    logged — the record would vanish while every fake-store test passed.
+    ⚠️ A reading stays pending while unjudged, so it is re-reported on every
+    run in its window: count distinct ids across records, never records.
+    """
+    if not groups or pipeline_health_store is None:
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    detail: dict[str, object] = {
+        "reason": "no_check_could_run",
+        "unjudged_groups": [
+            {
+                "station_id": str(g.station_id),
+                "parameter": g.parameter,
+                "inferred_time_step_seconds": g.inferred_time_step_seconds,
+                "observation_ids": [str(obs_id) for obs_id in g.observation_ids],
+            }
+            for g in groups
+        ],
+        "groups_affected": len(groups),
+        "observations_unjudged": totals["unjudged"],
+    }
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED,
+                checked_at=checked_at,
+                status=PipelineHealthStatus.WARNING,
+                subject="ingest_observations",
+                detail=detail,
+                cycle_time=None,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort telemetry write
+        log.warning(
+            "pipeline.health_record_write_failed",
+            check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED.value,
             subject="ingest_observations",
             error=str(exc),
         )
@@ -407,6 +493,7 @@ def _empty_qc_counts() -> dict[str, int]:
         "failed": 0,
         "suspect": 0,
         "unchecked": 0,
+        "unjudged": 0,
         "rechecked": 0,
         "newly_checked": 0,
     }
@@ -470,7 +557,7 @@ def _run_qc_task(
         datum=datum,
     )
     checker = Stage1QualityChecker()
-    flags = checker.check(
+    checked = checker.check_with_coverage(
         observations=qc_observations,
         rule_set=qc_rules,
         overrides=[],
@@ -478,7 +565,7 @@ def _run_qc_task(
         skipped_rule_ids=obs_skipped_rules(parameter, datum),
     )
     flags = add_observation_datum_details(
-        flags,
+        checked.flags,
         raw_observations=all_obs,
         shifted_observations=qc_observations,
         parameter=parameter,
@@ -522,13 +609,19 @@ def _run_qc_task(
     counts: dict[str, int] = _empty_qc_counts()
     version = obs_qc_rule_version(parameter, datum)
     obs_by_id = {obs.id: obs for obs in all_obs}
+    unjudged_ids: dict[tuple[StationId, str], list[ObservationId]] = {}
     for obs_id, obs_flags in flags.items():
         if obs_id not in pending_ids:
             continue
         obs_for_id = obs_by_id[obs_id]
+        group = (obs_for_id.station_id, obs_for_id.parameter)
+        # Plan 323 T4: passed only if some selected rule actually judged this
+        # reading. Zero-rule wins: an unresolved group's readings are counted
+        # and reported as zero-rule, never also as unjudged.
+        zero_rule = group in unresolved
         status = _aggregate_qc_status(
             obs_flags,
-            rules_ran=(obs_for_id.station_id, obs_for_id.parameter) not in unresolved,
+            rules_ran=not zero_rule and obs_id in checked.judged,
         )
         obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version=version)
         if obs_id in rechecked_ids:
@@ -550,15 +643,45 @@ def _run_qc_task(
             counts["passed"] += 1
         elif status == QcStatus.QC_FAILED:
             counts["failed"] += 1
-        elif status == QcStatus.QC_UNCHECKED:
+        elif status == QcStatus.QC_UNCHECKED and zero_rule:
             # ⛔ NOT `suspect`: a group nothing checked and a group a rule
             # found odd are different facts, and the counter is what an
             # operator reads.
             counts["unchecked"] += 1
+        elif status == QcStatus.QC_UNCHECKED:
+            counts["unjudged"] += 1
+            unjudged_ids.setdefault(group, []).append(obs_id)
         else:
             counts["suspect"] += 1
 
-    return QcTaskOutcome(counts=counts, zero_rule_groups=tuple(zero_rule_groups))
+    unjudged_groups: list[UnjudgedGroup] = []
+    for (station_key, parameter_key), ids in sorted(
+        unjudged_ids.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])
+    ):
+        inferred, _ = selection[(station_key, parameter_key)]
+        seconds = inferred.total_seconds() if inferred is not None else None
+        unjudged_groups.append(
+            UnjudgedGroup(
+                station_id=station_key,
+                parameter=parameter_key,
+                inferred_time_step_seconds=seconds,
+                observation_ids=tuple(sorted(ids, key=str)),
+            )
+        )
+        log.info(
+            "qc.no_check_could_run",
+            station_id=str(station_key),
+            parameter=parameter_key,
+            inferred_time_step_seconds=seconds,
+            observations=len(ids),
+            outcome="qc_unchecked",
+        )
+
+    return QcTaskOutcome(
+        counts=counts,
+        zero_rule_groups=tuple(zero_rule_groups),
+        unjudged_groups=tuple(unjudged_groups),
+    )
 
 
 def _component_eligible(cfg: StationConfig | None) -> bool:
@@ -911,6 +1034,7 @@ def ingest_observations_flow(
     # Plan 318 T1: accumulated across every (station, parameter) so the run
     # writes ONE record carrying all of them, not one record per group.
     zero_rule_groups: list[ZeroRuleGroup] = []
+    unjudged_groups: list[UnjudgedGroup] = []
     errors: list[str] = []
     qc_failed_station_ids: set[StationId] = set()
     dhm_station_ids = {
@@ -946,9 +1070,11 @@ def ingest_observations_flow(
             totals["failed"] += counts.counts["failed"]
             totals["suspect"] += counts.counts["suspect"]
             totals["unchecked"] += counts.counts["unchecked"]
+            totals["unjudged"] += counts.counts["unjudged"]
             totals["rechecked"] += counts.counts["rechecked"]
             totals["newly_checked"] += counts.counts["newly_checked"]
             zero_rule_groups.extend(counts.zero_rule_groups)
+            unjudged_groups.extend(counts.unjudged_groups)
         except Exception as exc:
             log.warning(
                 "ingest.qc_failed",
@@ -965,6 +1091,7 @@ def ingest_observations_flow(
         failed=totals["failed"],
         suspect=totals["suspect"],
         unchecked=totals["unchecked"],
+        unjudged=totals["unjudged"],
         # Plan 317 T1: of the rows judged above, how many were re-examined
         # after an earlier run could not check them.
         rechecked=totals["rechecked"],
@@ -979,6 +1106,13 @@ def ingest_observations_flow(
         pipeline_health_store,
         checked_at=now,
         groups=tuple(zero_rule_groups),
+        totals=totals,
+    )
+    # Plan 323 T4 (D5): recorded, not alarmed on — its own check type.
+    _append_unjudged_health_record(
+        pipeline_health_store,
+        checked_at=now,
+        groups=tuple(unjudged_groups),
         totals=totals,
     )
 
@@ -1042,6 +1176,7 @@ def ingest_observations_flow(
         qc_failed=totals["failed"],
         qc_suspect=totals["suspect"],
         qc_unchecked=totals["unchecked"],
+        qc_unjudged=totals["unjudged"],
         qc_rechecked=totals["rechecked"],
         qc_newly_checked=totals["newly_checked"],
         stations_failed=len(all_failed_station_ids),
@@ -1060,6 +1195,7 @@ def ingest_observations_flow(
         qc_failed=result.qc_failed,
         qc_suspect=result.qc_suspect,
         qc_unchecked=result.qc_unchecked,
+        qc_unjudged=result.qc_unjudged,
         qc_rechecked=result.qc_rechecked,
         qc_newly_checked=result.qc_newly_checked,
         stations_failed=result.stations_failed,

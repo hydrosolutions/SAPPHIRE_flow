@@ -88,9 +88,11 @@ class QcStatus(Enum):
     QC_SUSPECT = "qc_suspect"
     MISSING = "missing"
     QC_UNCHECKED = "qc_unchecked"   # Plan 272: no rule was selected for the
-                                    # group, so nothing ran. Distinct from
-                                    # QC_PASSED (rules ran, found nothing) and
-                                    # from RAW (QC has not been attempted).
+                                    # group, so nothing ran — or (Plan 323 T4)
+                                    # rules were selected but none could judge
+                                    # this reading. Distinct from QC_PASSED (a
+                                    # rule judged it, found nothing) and from
+                                    # RAW (QC has not been attempted).
                                     # Plan 317: NOT terminal — the ingest QC
                                     # step picks up {RAW, QC_UNCHECKED}, so a
                                     # row stored unchecked is re-judged once a
@@ -259,6 +261,21 @@ class PipelineCheckType(Enum):
         # noise at a handful of stations). No watchdog probe wired yet
         # (Plan 175 § Residual forks #1) — visible today only via
         # `/api/v1/health/detail` and the dashboard.
+    # NOTE: types/enums.py also carries OBSERVATION_QC_UNCHECKED (Plan 318 —
+    # the zero-rule record the watchdog probes); not listed here before, drift.
+    OBSERVATION_QC_UNJUDGED = "observation_qc_unjudged"
+        # Plan 323 T4 (D5) — written by ingest_observations_flow only when a
+        # group SELECTED rules but had pending readings no rule could judge
+        # (datum-less water level with no neighbour, above all); the readings
+        # are stored QC_UNCHECKED. A separate type from the zero-rule record so
+        # the watchdog — which probes only the latest OBSERVATION_QC_UNCHECKED
+        # record — neither alarms on it nor lets it mask a real alarm. Locked
+        # `detail` keys: `reason` ("no_check_could_run"), `unjudged_groups`
+        # (station_id, parameter, inferred_time_step_seconds, observation_ids —
+        # ids as strings), `groups_affected`, `observations_unjudged`. A reading
+        # is re-reported on every run while it stays in the window: count
+        # distinct ids, never records. Rollback: delete these rows first — the
+        # store parses `check_type` into this enum.
 
 class FetchOutcomeCause(Enum):
     # Per-station observation fetch failure taxonomy (Plans 175/300).
@@ -526,10 +543,12 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     """Derive aggregate QC status from individual flags.
 
     Ordering: QC_FAILED > QC_SUSPECT > QC_PASSED.
-    Empty flags list after QC completes → QC_PASSED — but ONLY when rules
-    actually ran. Plan 272: the ingest flow resolves that with
+    Empty flags list after QC completes → QC_PASSED — but ONLY when a rule
+    actually judged the reading. Plan 272: the ingest flow resolves that with
     resolve_selection() first and stores QC_UNCHECKED for a group that
-    selected zero rules, rather than calling this function at all.
+    selected zero rules; Plan 323 T4: and for a reading no selected rule could
+    judge (Stage1QualityChecker.check_with_coverage's `judged` set), rather
+    than calling this function at all.
     """
     if not flags:
         return QcStatus.QC_PASSED
@@ -753,9 +772,12 @@ class QualityChecker(Protocol):
     ) -> dict[ObservationId, list[QcFlag]]: ...
         # Returns QC flags per observation. An EMPTY list is ambiguous on its
         # own: every selected rule passed, OR no rule was selected at all
-        # (Plan 272). The caller resolves that with resolve_selection() and
-        # stores QC_PASSED only when rules actually ran, QC_UNCHECKED when
-        # none did, then calls ObservationStore.update_qc() to persist.
+        # (Plan 272), OR rules were selected but none could judge that reading
+        # (Plan 323 T4 — no neighbour, no baseline). The ingest flow resolves
+        # it with resolve_selection() and Stage1QualityChecker's
+        # check_with_coverage() (below), and stores QC_PASSED only when a rule
+        # actually judged the reading, QC_UNCHECKED otherwise, then calls
+        # ObservationStore.update_qc() to persist.
         # `skipped_rule_ids` are rules the caller knows cannot run on this
         # group — a datum-dependent rule at a station with no water level
         # datum. They do not execute, so they do not count as selected:
@@ -763,6 +785,16 @@ class QualityChecker(Protocol):
 ```
 
 Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
+
+**`Stage1QualityChecker.check_with_coverage` (Plan 323 T4)** — the implementation's second
+method, outside the Protocol: same arguments as `check`; returns a frozen
+`QcCheckResult(flags: dict[ObservationId, list[QcFlag]], judged: frozenset[ObservationId])`.
+`judged` holds every reading at least one selected, non-skipped rule could evaluate; the
+verdict comes from the rule functions themselves (a missing value, a missing or valueless
+neighbour, `spike`'s zero reference, a missing baseline; `frozen_sensor` judges a reading
+only inside a stretch of at least `min_consecutive` distinct instants with effective
+values). `check` delegates to it and returns `.flags`, so the Protocol, onboarding and
+`scripts/dhm_precip/` are unchanged. Module: `services/qc.py`.
 
 ### ForecastQualityChecker Protocol
 

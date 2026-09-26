@@ -161,9 +161,12 @@ class TestDhmIngest:
         assert (
             next(o for o in store.observations() if o.id == context_id).qc_flags == []
         )
+        # Plan 323 T4: the inside row is the oldest in the widened window — no
+        # previous reading, so no neighbour rule can judge it. It used to be
+        # stored QC_PASSED over nothing; it is now honestly unchecked.
         assert (
             next(o for o in store.observations() if o.id == inside_id).qc_status
-            is not QcStatus.RAW
+            is QcStatus.QC_UNCHECKED
         )
         assert (
             next(o for o in store.observations() if o.id == outside_id).qc_status
@@ -266,6 +269,12 @@ class TestDhmIngest:
         assert (
             store.fetch_latest_timestamp(config.id, "water_level") == rows[1].timestamp
         )
+        # Plan 323 T4: the first reading has no previous one, so nothing can
+        # judge it; the second is judged by `rate_of_change`.
+        statuses = [
+            o.qc_status for o in sorted(store.observations(), key=lambda o: o.timestamp)
+        ]
+        assert statuses == [QcStatus.QC_UNCHECKED, QcStatus.QC_PASSED]
 
     def test_supervised_recovery_stores_genuine_later_data_before_normal_poll(
         self,
@@ -375,6 +384,11 @@ class TestDhmIngest:
             fetched_times=tuple(o.timestamp for o in rows),
         )
         assert all(o.qc_status is not QcStatus.RAW for o in store.observations())
+        # Plan 323 T4: the older reading has no previous one to judge it by.
+        statuses = [
+            o.qc_status for o in sorted(store.observations(), key=lambda o: o.timestamp)
+        ]
+        assert statuses == [QcStatus.QC_UNCHECKED, QcStatus.QC_PASSED]
 
     @pytest.mark.parametrize("failure_stage", ["construction", "fetch"])
     def test_flow_owned_client_closes_on_unexpected_failure(

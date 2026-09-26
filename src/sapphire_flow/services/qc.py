@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from itertools import groupby
 from statistics import median
@@ -107,25 +108,36 @@ def resolve_selection(
     return resolved
 
 
+# Plan 323 T4 (D4): each rule reports whether it could JUDGE a reading, apart
+# from whether it flagged it. A clean result and "nothing could run" both
+# produce no flag, and only the first may be stored as QC_PASSED. The verdict
+# is taken from the rule functions themselves — every precondition they already
+# have (a missing value, a missing or valueless neighbour, a zero reference, a
+# missing baseline) counts — so it cannot drift from what the rules compute.
+# ⛔ What each rule computes and flags is unchanged; only the return value now
+# also says whether the rule could judge the reading.
+_Evaluation = tuple[bool, QcFlag | None]
+
+
 def _apply_range_check(
     obs: Observation,
     thresholds: dict[str, float],
     rule: QcRuleParams,
-) -> QcFlag | None:
+) -> _Evaluation:
     if obs.value is None:
-        return None
+        return False, None
     v_min = thresholds.get("value_min")
     v_max = thresholds.get("value_max")
     if (v_min is not None and obs.value < v_min) or (
         v_max is not None and obs.value > v_max
     ):
-        return QcFlag(
+        return True, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_FAILED,
             detail=f"value {obs.value} outside [{v_min}, {v_max}]",
         )
-    return None
+    return True, None
 
 
 def _apply_rate_of_change(
@@ -133,12 +145,12 @@ def _apply_rate_of_change(
     prev: Observation | None,
     thresholds: dict[str, float],
     rule: QcRuleParams,
-) -> QcFlag | None:
+) -> _Evaluation:
     if prev is None or obs.value is None or prev.value is None:
-        return None
+        return False, None
     max_rate = thresholds["max_rate"]
     if abs(obs.value - prev.value) > max_rate:
-        return QcFlag(
+        return True, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -146,14 +158,21 @@ def _apply_rate_of_change(
                 f"rate {abs(obs.value - prev.value):.4f} exceeds max_rate {max_rate}"
             ),
         )
-    return None
+    return True, None
 
 
 def _apply_frozen_sensor(
     group: list[Observation],
     thresholds: dict[str, float],
     rule: QcRuleParams,
-) -> dict[ObservationId, QcFlag]:
+) -> tuple[dict[ObservationId, QcFlag], frozenset[ObservationId]]:
+    """Flags, and the readings the rule could judge.
+
+    Plan 323 T4: a reading is judged only if it lies in a stretch of at least
+    `min_consecutive` distinct instants with effective values — enough context
+    to tell stuck from not stuck. A `None` or excluded value ends a stretch, as
+    it ends a run below.
+    """
     tolerance = thresholds["tolerance"]
     min_consecutive = int(thresholds["min_consecutive"])
     # D8 (Plan 172, M-I1): a value at or below this threshold never starts
@@ -207,7 +226,20 @@ def _apply_frozen_sensor(
                             f"within tolerance {tolerance}"
                         ),
                     )
-    return flags
+
+    stretches: list[list[Observation]] = [[]]
+    for obs in group:
+        if _effective(obs.value) is None:
+            stretches.append([])
+        else:
+            stretches[-1].append(obs)
+    judged = frozenset(
+        obs.id
+        for stretch in stretches
+        if len({o.timestamp for o in stretch}) >= min_consecutive
+        for obs in stretch
+    )
+    return flags, judged
 
 
 def _apply_spike(
@@ -216,18 +248,18 @@ def _apply_spike(
     nxt: Observation | None,
     thresholds: dict[str, float],
     rule: QcRuleParams,
-) -> QcFlag | None:
+) -> _Evaluation:
     if prev is None or nxt is None:
-        return None
+        return False, None
     if obs.value is None or prev.value is None or nxt.value is None:
-        return None
+        return False, None
     if "max_delta" in thresholds:
         max_delta = thresholds["max_delta"]
         if (
             abs(obs.value - prev.value) > max_delta
             and abs(obs.value - nxt.value) > max_delta
         ):
-            return QcFlag(
+            return True, QcFlag(
                 rule_id=rule.rule_id,
                 rule_version=_RULE_VERSION,
                 status=QcStatus.QC_SUSPECT,
@@ -236,16 +268,16 @@ def _apply_spike(
                     f"and next {nxt.value} by >{max_delta}"
                 ),
             )
-        return None
+        return True, None
     tolerance = thresholds["tolerance"]
     ref = abs(prev.value)
     if ref == 0.0:
-        return None
+        return False, None
     if (
         abs(obs.value - prev.value) > tolerance * ref
         and abs(obs.value - nxt.value) > tolerance * ref
     ):
-        return QcFlag(
+        return True, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -254,7 +286,7 @@ def _apply_spike(
                 f"and next {nxt.value} by >{tolerance:.2%} of |prev|"
             ),
         )
-    return None
+    return True, None
 
 
 def _apply_gross_outlier(
@@ -262,17 +294,17 @@ def _apply_gross_outlier(
     thresholds: dict[str, float],
     baseline_index: dict[tuple[StationId, str, int], ClimBaseline],
     rule: QcRuleParams,
-) -> QcFlag | None:
+) -> _Evaluation:
     if obs.value is None:
-        return None
+        return False, None
     doy = obs.timestamp.timetuple().tm_yday
     key = (obs.station_id, obs.parameter, doy)
     baseline = baseline_index.get(key)
     if baseline is None:
-        return None
+        return False, None
     k_sigma = thresholds["k_sigma"]
     if abs(obs.value - baseline.rolling_mean) > k_sigma * baseline.rolling_std:
-        return QcFlag(
+        return True, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -282,7 +314,18 @@ def _apply_gross_outlier(
                 f"{k_sigma}σ (std={baseline.rolling_std:.4f})"
             ),
         )
-    return None
+    return True, None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcCheckResult:
+    """Plan 323 T4: the flags, and the readings at least one rule could judge.
+
+    ⚠️ An observation with no flags is `QC_PASSED` only if it is in `judged`.
+    """
+
+    flags: dict[ObservationId, list[QcFlag]]
+    judged: frozenset[ObservationId]
 
 
 class Stage1QualityChecker:
@@ -294,10 +337,30 @@ class Stage1QualityChecker:
         baselines: list[ClimBaseline],
         skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]:
+        return self.check_with_coverage(
+            observations,
+            rule_set,
+            overrides,
+            baselines,
+            skipped_rule_ids=skipped_rule_ids,
+        ).flags
+
+    def check_with_coverage(
+        self,
+        observations: list[Observation],
+        rule_set: QcRuleSet,
+        overrides: list[StationQcOverride],
+        baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
+    ) -> QcCheckResult:
+        """Plan 323 T4. `check` delegates here and keeps its contract, so the
+        `QualityChecker` Protocol, onboarding and `scripts/dhm_precip/` are
+        unchanged."""
         if not observations:
-            return {}
+            return QcCheckResult(flags={}, judged=frozenset())
 
         result: dict[ObservationId, list[QcFlag]] = {obs.id: [] for obs in observations}
+        judged: set[ObservationId] = set()
 
         baseline_index: dict[tuple[StationId, str, int], ClimBaseline] = {
             (b.station_id, b.parameter, b.day_of_year): b for b in baselines
@@ -323,29 +386,37 @@ class Stage1QualityChecker:
                 thresholds = _merge_thresholds(rule, overrides, station_id)
 
                 if rule.rule_id == "frozen_sensor":
-                    frozen_flags = _apply_frozen_sensor(group, thresholds, rule)
+                    frozen_flags, frozen_judged = _apply_frozen_sensor(
+                        group, thresholds, rule
+                    )
                     for obs_id, flag in frozen_flags.items():
                         result[obs_id].append(flag)
+                    judged |= frozen_judged
                     continue
 
                 for i, obs in enumerate(group):
                     prev = group[i - 1] if i > 0 else None
                     nxt = group[i + 1] if i < len(group) - 1 else None
 
-                    flag: QcFlag | None = None
+                    evaluation: _Evaluation = (False, None)
                     match rule.rule_id:
                         case "range_check":
-                            flag = _apply_range_check(obs, thresholds, rule)
+                            evaluation = _apply_range_check(obs, thresholds, rule)
                         case "rate_of_change":
-                            flag = _apply_rate_of_change(obs, prev, thresholds, rule)
+                            evaluation = _apply_rate_of_change(
+                                obs, prev, thresholds, rule
+                            )
                         case "spike":
-                            flag = _apply_spike(obs, prev, nxt, thresholds, rule)
+                            evaluation = _apply_spike(obs, prev, nxt, thresholds, rule)
                         case "gross_outlier":
-                            flag = _apply_gross_outlier(
+                            evaluation = _apply_gross_outlier(
                                 obs, thresholds, baseline_index, rule
                             )
 
+                    evaluated, flag = evaluation
+                    if evaluated:
+                        judged.add(obs.id)
                     if flag is not None:
                         result[obs.id].append(flag)
 
-        return result
+        return QcCheckResult(flags=result, judged=frozenset(judged))

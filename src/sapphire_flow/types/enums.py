@@ -9,7 +9,9 @@ class QcStatus(Enum):
     MISSING = "missing"
     # Plan 272: no QC rule could be SELECTED for this observation's group — the
     # cadence inferred from the rows in front of the checker matched no configured
-    # rule. Distinct from QC_PASSED, which means rules ran and found nothing wrong.
+    # rule — or (Plan 323 T4) rules were selected but none could JUDGE this
+    # reading. Distinct from QC_PASSED, which means a rule judged the reading
+    # and found nothing wrong.
     QC_UNCHECKED = "qc_unchecked"
 
 
@@ -229,11 +231,18 @@ class PipelineCheckType(Enum):
     # and the rows stored QC_UNCHECKED (Plan 272). Deliberately distinct from
     # OBSERVATION_INGEST_FETCH — that one is written on EVERY run and reports
     # fetch outcomes, so reusing it would make the zero-rule signal
-    # indistinguishable from an ordinary heartbeat. ⚠️ Unlike every other
-    # member, a record of THIS type is written only when the condition occurs,
-    # which is why its watchdog probe is a PRESENCE probe and not a freshness
-    # probe (Plan 318 T2).
+    # indistinguishable from an ordinary heartbeat. ⚠️ Unlike the other
+    # members except OBSERVATION_QC_UNJUDGED, a record of THIS type is written
+    # only when the condition occurs, which is why its watchdog probe is a
+    # PRESENCE probe and not a freshness probe (Plan 318 T2).
     OBSERVATION_QC_UNCHECKED = "observation_qc_unchecked"
+    # Plan 323 T4 (D5): a group that selected rules but had pending readings no
+    # rule could JUDGE (no neighbour, no baseline — datum-less water level
+    # above all). Written only when that occurs, like the one above, but kept a
+    # separate type so the watchdog — which probes only the latest
+    # OBSERVATION_QC_UNCHECKED record — neither alarms on it nor lets it mask a
+    # real zero-rule alarm.
+    OBSERVATION_QC_UNJUDGED = "observation_qc_unjudged"
 
 
 class NotificationChannel(Enum):
