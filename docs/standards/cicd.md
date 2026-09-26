@@ -244,6 +244,28 @@ deployment's overlay, redeploy, and confirm the composed config shows the mount 
 
 No schema downgrade path — rollback = restore from backup + redeploy previous image tag. Migrations must be backwards-compatible for one version (additive only: new columns nullable, no destructive changes in a single release). This means the previous image tag can run against the new schema during the migration window.
 
+**Reviewer access tokens (Plan 401, migration `0061`)** — an image older than Plan 401
+cannot parse the `reviewer` role (it reads roles fail-closed), so a single reviewer row —
+revoked or not; `revoke` only sets `disabled_at` — crashes its token listing and turns a
+reviewer request into a 500 instead of a 401. **After any backup restore, and immediately
+before starting an image older than Plan 401, delete every reviewer token** as the
+database owner (the API role has no DELETE on `access_tokens`; there is no cascade, so the
+scope rows go first):
+
+```bash
+docker compose exec -T postgres psql -U ${DB_USER:-sapphire} -d sapphire
+```
+
+```sql
+DELETE FROM access_token_stations
+  WHERE token_id IN (SELECT id FROM access_tokens WHERE role = 'reviewer');
+DELETE FROM access_tokens WHERE role = 'reviewer';
+```
+
+Not before the restore — the restore would bring them back. `0061`'s `downgrade()` refuses
+while any reviewer row exists and prints these same statements; the migration never
+deletes tokens itself.
+
 **Two-release column tightening (Plan 115a/115c)** — `station_weather_sources.role`
 illustrates the additive-then-tighten pattern for a column that must eventually be
 `NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies

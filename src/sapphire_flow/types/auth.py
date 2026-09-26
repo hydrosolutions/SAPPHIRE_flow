@@ -169,10 +169,11 @@ class AccessToken:
     scope_mode: ScopeMode = ScopeMode.STATIONS
 
     def __post_init__(self) -> None:
-        if self.role is AccessTokenRole.CONSUMER and self.tenant_id is None:
+        if self.role is not AccessTokenRole.ADMIN and self.tenant_id is None:
             raise ValueError(
-                "AccessToken: role=consumer requires a non-null tenant_id "
-                "(G4 — every consumer token belongs to exactly one tenant)"
+                f"AccessToken: role={self.role.value} requires a non-null tenant_id "
+                "(G4 — every consumer or reviewer token belongs to exactly one "
+                "tenant)"
             )
         if self.role is AccessTokenRole.ADMIN and self.tenant_id is not None:
             raise ValueError(

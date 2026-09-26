@@ -334,6 +334,7 @@ class AccessTokenRole(Enum):
     management. No third role (no session/operator role in v1.0)."""
 
     CONSUMER = "consumer"
+    REVIEWER = "reviewer"
     ADMIN = "admin"
 
 

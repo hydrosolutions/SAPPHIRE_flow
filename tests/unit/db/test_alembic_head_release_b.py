@@ -80,13 +80,16 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # and no-cleanup guards) onto 0058 — advancing the pinned head to 0059. Plan 399
 # T4 then chains 0060 (warm-start provenance: what a retrained artifact was
 # derived FROM, a side table so `model_artifacts` gains no column) onto 0059 —
-# advancing the pinned head to 0060.
+# advancing the pinned head to 0060. Plan 401 T1 then chains 0061 (the
+# `reviewer` access-token role — three role CHECKs re-created, downgrade
+# refused while a reviewer row exists) onto 0060 — advancing the pinned head
+# to 0061.
 #
 # Three of these were authored in parallel branches and renumbered on merge:
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0060"
+_RELEASE_B_HEAD = "0061"
 
 
 def _down_revisions() -> dict[str, str | None]:

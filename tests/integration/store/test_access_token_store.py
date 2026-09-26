@@ -23,6 +23,12 @@ from tests.conftest import make_station_config
 _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 _EXPIRES = ensure_utc(_NOW + timedelta(days=30))
 
+# Plan 401 T1: a reviewer token is tenant-bound exactly like a consumer, so the
+# cross-tenant cases hold for both.
+_TENANT_BOUND_ROLES = pytest.mark.parametrize(
+    "role", [AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER], ids=lambda r: r.value
+)
+
 
 def _token(**overrides: object) -> AccessToken:
     defaults: dict[str, object] = dict(
@@ -73,8 +79,9 @@ class TestScopeMembershipValidation:
         assert fetched is not None
         assert fetched.station_ids == frozenset({station.id})
 
+    @_TENANT_BOUND_ROLES
     def test_grant_station_derives_tenant_from_the_token_not_the_caller(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
         """Independent Codex review of the Plan 215 diff: `grant_station` took
         `tenant_id` as a caller keyword, so a caller could pair token A with
@@ -93,7 +100,7 @@ class TestScopeMembershipValidation:
         PgStationStore(db_connection).store_station(foreign_station)
 
         store = PgAccessTokenStore(db_connection)
-        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        token = _token(role=role, tenant_id=DEFAULT_TENANT_ID)
         store.create_token(token, station_ids=frozenset())
 
         # The caller cannot smuggle the foreign tenant in — there is nowhere
@@ -128,8 +135,9 @@ class TestScopeMembershipValidation:
         with pytest.raises(ValueError, match="unknown access token"):
             store.grant_station(AccessTokenId(uuid4()), station.id)
 
+    @_TENANT_BOUND_ROLES
     def test_cross_tenant_station_is_rejected(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
         from sapphire_flow.store.tenant_store import PgTenantStore
         from sapphire_flow.types.ids import TenantId
@@ -143,7 +151,7 @@ class TestScopeMembershipValidation:
         PgStationStore(db_connection).store_station(station)
 
         store = PgAccessTokenStore(db_connection)
-        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        token = _token(role=role, tenant_id=DEFAULT_TENANT_ID)
         with pytest.raises(CrossTenantScopeError):
             store.create_token(token, station_ids=frozenset({station.id}))
 
@@ -237,6 +245,32 @@ class TestRoleTenantDbCheckConstraint:
             sa.insert(access_tokens).values(
                 **_raw_insert_values(
                     role=AccessTokenRole.CONSUMER.value, tenant_id=DEFAULT_TENANT_ID
+                )
+            )
+        )
+
+    def test_db_rejects_reviewer_without_tenant(
+        self, db_connection: sa.Connection
+    ) -> None:
+        with (
+            pytest.raises(IntegrityError, match="ck_access_tokens_role_tenant"),
+            db_connection.begin_nested(),
+        ):
+            db_connection.execute(
+                sa.insert(access_tokens).values(
+                    **_raw_insert_values(
+                        role=AccessTokenRole.REVIEWER.value, tenant_id=None
+                    )
+                )
+            )
+
+    def test_db_accepts_reviewer_with_tenant(
+        self, db_connection: sa.Connection
+    ) -> None:
+        db_connection.execute(
+            sa.insert(access_tokens).values(
+                **_raw_insert_values(
+                    role=AccessTokenRole.REVIEWER.value, tenant_id=DEFAULT_TENANT_ID
                 )
             )
         )
@@ -337,8 +371,9 @@ class TestTenantModeScopeResolution:
         assert fetched.station_ids == frozenset({granted.id})
         assert fetched.scope_mode is ScopeMode.STATIONS
 
+    @_TENANT_BOUND_ROLES
     def test_cross_tenant_station_never_enters_tenant_mode_scope(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
         from sapphire_flow.store.tenant_store import PgTenantStore
         from sapphire_flow.types.ids import TenantId
@@ -358,12 +393,13 @@ class TestTenantModeScopeResolution:
         PgStationStore(db_connection).store_station(own_station)
 
         store = PgAccessTokenStore(db_connection)
-        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        token = _token(role=role, tenant_id=DEFAULT_TENANT_ID)
         store.create_token(token, station_ids=frozenset())
         _set_scope_mode(db_connection, token.id, ScopeMode.TENANT)
 
         fetched = store.fetch_token(token.id)
         assert fetched is not None
+        assert fetched.role is role
         assert own_station.id in fetched.station_ids
         assert foreign_station.id not in fetched.station_ids
 

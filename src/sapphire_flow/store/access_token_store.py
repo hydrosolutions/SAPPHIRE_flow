@@ -63,11 +63,12 @@ class PgAccessTokenStore:
         self, station_ids: frozenset[StationId], tenant_id: TenantId | None
     ) -> None:
         if tenant_id is None:
-            # A station scope always belongs to a consumer token, and
-            # AccessToken.__post_init__ + the DB CHECK constraint both
-            # require role=consumer -> tenant_id IS NOT NULL. A None here
-            # means a caller tried to attach a scope to a tenantless token —
-            # structurally invalid, never a silent "everything matches".
+            # A station scope always belongs to a tenant-bound (consumer or
+            # reviewer) token, and AccessToken.__post_init__ + the DB CHECK
+            # constraint both require a non-admin role -> tenant_id IS NOT
+            # NULL. A None here means a caller tried to attach a scope to a
+            # tenantless token — structurally invalid, never a silent
+            # "everything matches".
             raise CrossTenantScopeError(
                 "a station scope requires a non-null tenant_id — a "
                 "tenantless (global) token cannot be scoped to stations"
