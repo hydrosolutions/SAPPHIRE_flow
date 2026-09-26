@@ -19,7 +19,8 @@ source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` o
 
 **READY** — flipped by the orchestrator 2026-09-26 on the owner's explicit instruction
 (*"ok, flip ready and implement"*). ⚖️ **All three decisions closed by the owner** — D1 and D2 on
-2026-09-25, D3 on 2026-09-26. **Five review rounds, nine independent reviews.**
+2026-09-25, D3 on 2026-09-26. **Five review rounds.** ⚠️ *An earlier version claimed "nine independent reviews"; the changelog
+records **six** passes, and per this project's own rule the RECORD is what stands.*
 
 ⚠️ **Stated plainly: the round-5 fold itself is UNREVIEWED.** *The two round-5 reviewers read
 `b8465e6c`; this state adds that fold — including four newly-MADE decisions (the donor-config
@@ -229,7 +230,7 @@ have its base config so that can also be stored (I mean the paths to params and 
 | | what | why it is recoverable |
 |---|---|---|
 | the base **artifact id** | which weights were fine-tuned | chosen by the caller (D1) — known at the call |
-| the path to the base **config** | the model template the donor was built from | 🔑 **Resolved from the DONOR's own provenance, not from today's installed file** — `model_artifact_provenance` records the `config_hash` captured at import (`services/model_import.py:460`) and `store/model_artifact_provenance.py` reads it back. ⛔ *An earlier version said "derivable from the model", which would record the CURRENTLY installed template — see § 13* |
+| the base **config** — its HASH always, its PATH only conditionally | the model template the donor was built from | 🔴 **Provenance stores a HASH and NO PATH** (`model_artifact_provenance` carries `source_repository`, `source_commit`, `config_hash`, `imported_at`, `imported_by`, `notes`). ⛔ *An earlier version of this cell asked for "the path … resolved from the DONOR's own provenance" — **not satisfiable**.* ⇒ The donor's **hash** is authoritative; the **path** can only be the INSTALLED one and is meaningful ONLY while the two agree (a mismatch is refused). A path that cannot be pinned records its reason. Resolved from the donor's provenance, not from today's installed file — `model_artifact_provenance` records the `config_hash` captured at import (`services/model_import.py:460`) and `store/model_artifact_provenance.py` reads it back. ⛔ *An earlier version said "derivable from the model", which would record the CURRENTLY installed template — see § 13* |
 | the path to the base **params** | the configuration the donor was trained with | D3's channel, once it exists. ⚠️ **For `cmal_small` this is UNKNOWN, not known-absent** (§ 5a) — the field is nullable, and T4 must INSPECT the donor's provenance rather than assume. ⛔ *An earlier version of this cell asserted it "is genuinely absent … the first retrain records none". That is the invalid inference § 5a corrects, left standing here.* |
 
 ⚠️ **A path alone is weak provenance — pin it with the hash that already exists.** *`_shim.py`'s
@@ -487,13 +488,18 @@ none.**
 - The parent is resolvable to a real artifact row.
 - 🔴 **The config used for the run is recorded and readable back** — the half of D3's condition that
   moved here from T2 (§ 14). ⚠️ *T3 then asserts supplied = received = recorded.*
-- 🔴 **A base whose params are UNKNOWN still retrains, and stores a NULL params path with a reason**
-  — asserted (§ 5a). ⚠️ *Whether `cmal_small` is that case is a T4 measurement, not an assumption.*
+- 🔴 **A base whose params are UNKNOWN records a NULL params path WITH a reason** — asserted at the
+  RECORD level here. ⛔ *An earlier version said "still **retrains**", which is unsatisfiable in this
+  phase: there is no retrain caller until T3. The end-to-end half belongs to T3.* ⚠️ *Whether
+  `cmal_small` is that case is a measurement, not an assumption.*
 - 🔴 **The donor's config is identified from ITS OWN recorded provenance and compared with the
   donor's import-time hash** (§ 13) — ⛔ *"the hash matches the file it names" is NOT sufficient: it
   passes while recording today's template.*
 - 🔴 **A CHANGED-TEMPLATE case, with ONE required outcome**: the vendored config differs from the
-  donor's recorded hash ⇒ **the retrain is REFUSED**, naming both hashes. ⛔ *An earlier version
+  donor's recorded hash ⇒ **REFUSED**, naming both hashes. ⚠️ **T4 owns the comparison helper and
+  tests it directly; T3 owns the end-to-end refusal**, since the retrain caller does not exist until
+  then — ⛔ *an earlier version put the end-to-end assertion here, unsatisfiable in this phase and the
+  third instance of that defect class on this plan.* ⛔ *An earlier version also
   offered "rejected, OR the donor's configuration preserved" — an either/or that two different
   implementations both satisfy.* ⭐ *Refusing is consistent with D2: we would rather stop than
   fine-tune from something we cannot identify.* ⛔ *Matching today's file alone must not pass.*
@@ -732,3 +738,36 @@ none.**
     T4's internal consistency, T2's two-surface no-config assertion, and that **round 4's fold
     introduced no new defect** — the bullet that could once have been satisfied by breaking ordinary
     training is properly scoped.
+- **2026-09-26 — POST-IMPLEMENTATION check, two reviewers, both verdicts negative:
+  DIFF INCOMPLETE and PLAN NEEDS CHANGES.** ⛔ *The most serious finding is about my own
+  verification, not the code.*
+  - 🔴 **I reported mutation testing as assurance, having mutated the WRONG LAYER.** I told the owner
+    "each rule's test fails when that rule is broken". The mutations ran against
+    `services/training.py` — which my tests DO call and which was already correct on `main`. A
+    reviewer measured what I had not: the T2 tests pass verbatim against unmodified `main`, and
+    `grep training_params tests/` returned **zero hits**. Mutating the real change (making the flow
+    ignore the caller's config) left **all six green**. ⇒ [[feedback_mutate_the_line_you_changed]].
+  - 🔴 **Three tests verified their own fakes.** A "flow-level" test that never called the flow; a
+    wrapped-adapter test that re-implemented the capability check in its own body. All three deleted
+    and replaced with tests that drive the real flow.
+  - 🔴 **T3 was one bullet of seven.** No donor input, no fetch, no non-promoting store path, and
+    **nothing called T4's recorder** — the precise defect this plan named against itself. Now
+    implemented, with the red measured for the RIGHT reason (the first red was "missing parameter",
+    which the plan explicitly rules out, so the parameter was added alone and red re-measured).
+  - 🔴 **A doc I wrote reintroduced an error this plan retracts** — "onboarding trains at import
+    time". The import path never trains. Corrected, and the distinction spelled out because § 5a's
+    argument depends on it.
+  - **Two of four documentation targets were untouched**; both now written, plus the orchestration
+    standard's flow-parameter conventions.
+  - 🔴 **A plan requirement was NOT SATISFIABLE**: D1 asked for the donor's config PATH resolved from
+    its provenance, and provenance stores a **hash and no path**. I had silently resolved that in code
+    by pairing today's installed path with the donor's hash — the mixed-provenance record § 13 warns
+    against — and the default argument made that branch produce a record the type rejects. The plan
+    now says hash-authoritative, path-conditional; the code records a reason when it cannot pin one.
+  - **T4 carried two more unsatisfiable-in-phase bullets** (they need T3's retrain caller). Split:
+    T4 tests the helper directly, T3 owns the end-to-end. ⚠️ *Third instance of that defect class here.*
+  - **"Nine independent reviews" was unsupported** — the changelog records six passes. Corrected.
+  - ⭐ **Confirmed sound:** the D2 capability check really does read the inner model; §§ 13/14/15 are
+    internally consistent and true of the code; no parked "decide X" instructions remain; the index
+    entry did not regress; and scope is clean — no `train` signature change, no mandatory retrain, no
+    FI package edit.
