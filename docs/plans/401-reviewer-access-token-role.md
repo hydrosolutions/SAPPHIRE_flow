@@ -47,7 +47,7 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
 |---|---|---|
 | third parties | read their stations — published forecasts only, in a tenant where Plan 341's gate is active | the existing **consumer** token |
 | the Nepal (and Swiss) review dashboard, reading | everything a consumer reads for that client's stations, plus the REVIEW routes | **this plan — `reviewer`** |
-| a hydrologist reviewing candidates and publishing or withdrawing a forecast | reads of unpublished candidates and a write, recorded against that person | **Plan 341** — a signed-in, named person with per-station permission. The shared `reviewer` token gets neither, unless 341 changes that by explicit decision (D2). |
+| a hydrologist reviewing candidates and publishing or withdrawing a forecast | reads of unpublished candidates and a write, recorded against that person | **Plan 341** — a signed-in, named person with per-station permission. The shared `reviewer` token gets neither. Only the unpublished-read default may be changed, and only by 341 (D2); no token gains a write (D1, D3). |
 
 ## What is measured (origin/main, 2026-09-26)
 
@@ -124,14 +124,16 @@ The Nepal dashboard's token stays read-only. Publishing and withdrawal are Plan 
 signed-in hydrologist with per-station permission and an audit trail, acting through the
 dashboard. No token role gains a write.
 
-### D4 — Nepal stations get their own tenant. **⚖️ CLOSED — owner, 2026-09-26.**
+### D4 — The DHM gauges get their own tenant. **⚖️ CLOSED — owner, 2026-09-26.**
 
 This **confirms Plan 268 D11** (owner, 2026-09-10): the DHM gauges go into a new tenant in the
 existing database, which Plan 268 T2b provisions (fetch-before-create, with the code and display
 name fixed in 268's artifact). Where a client's stations all sit in its own tenant, consumer and
 reviewer tokens of different clients are separated by tenant; **admin tokens stay global** (they
 carry no tenant and bypass station scope, `types/auth.py:177`, `api/security.py:138`). This plan adds
-no tenant and names none. Tenant mode for a dashboard token follows the rule in *Why this exists*.
+no tenant and names none. Tenant mode for a dashboard token follows the rule in *Why this exists*:
+in particular, the `sapphire`-tenant (Swiss) dashboard token stays in `stations` mode for as long as
+any non-Swiss station remains in `sapphire`. Plan 402 D12 states the same rule.
 
 ## Tasks
 
@@ -243,7 +245,8 @@ roles, with GET-only unchanged.
 - `docs/architecture-context.md` (`access_tokens.role` values), `docs/spec/database-schema.md:1075`
   (`role "consumer | admin"`), `docs/conventions.md:74-77` (roles and CLI command list), `docs/v1-scope.md:379` (role list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
   issuance), `docs/touchpoint-maps.md` (API auth paragraph), `docs/spec/types-and-protocols.md`
-  (`AccessTokenRole` at `:1339`, "consumer-only" at `:1346`, the CLI set at `:1366`, "the two HTTP
+  (the `AccessTokenRole`/`ScopeMode` definitions at `:304-310` — "exactly 2 roles", consumer-only
+  scope modes; `AccessTokenRole` at `:1339`, "consumer-only" at `:1346`, the CLI set at `:1366`, "the two HTTP
   read roles" at `:1411`, and `require_principal`/`require_admin` at `:1362` — add `require_reviewer`).
 - Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
   `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
@@ -273,8 +276,9 @@ uv run python scripts/check_readiness.py docs/plans/401-reviewer-access-token-ro
 After staging deploy (orchestrator): run the migration; create one reviewer token with
 `--tenant sapphire`, **scoped to one station** (`scope_mode = stations`); confirm 200 on `/api/v1/stations`
 listing only that station, 404 on another existing station's detail route, 403 on `/tables/`; then
-**delete** it (stations rows, then token row). The downgrade refusal is exercised by T1's migration
-test, never on staging.
+**delete** that one token by id — its `access_token_stations` rows, then its `access_tokens` row
+(`... WHERE token_id = '<id>'` / `WHERE id = '<id>'`); the role-wide statements of T1 are for
+downgrade and rollback only, and would also delete any dashboard tokens already issued. The downgrade refusal is exercised by T1's migration test, never on staging.
 
 ## Explicitly out of scope
 

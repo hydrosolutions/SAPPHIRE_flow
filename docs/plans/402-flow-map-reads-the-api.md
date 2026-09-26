@@ -6,7 +6,7 @@ title: The flow map reads the /api/v1 interface — QC rule sets and station ski
 scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-scoped reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
 risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
 depends_on: [401]
-blocks: []
+blocks: [404]
 related: [143, 147, 198, 235, 251, 253, 264, 269, 272, 303, 323, 324, 329, 340, 341, 404]
 open_decisions: [D9]
 closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D12, D13]   # D2-D4 2026-09-25; the rest 2026-09-26
@@ -159,7 +159,7 @@ cadence is not stored, so the map shows every matching rule of that set and para
 **candidate** (e.g. both `rate_of_change` rows), and labels the thresholds as the **current**
 configuration — not proof of what was in force when the flag was written. ⚠️ The map also adopted
 "no time step on skill rows" on the strength of a wrong statement from this side — skill rows carry
-`time_step_seconds` and `phase_offset_seconds`, and this plan serves both (T6 tells the map).
+`time_step_seconds` and `phase_offset_seconds`, and this plan serves both (post-deploy step 4 tells the map).
 
 ### D5 — reading `skill_scores`. **⚖️ CLOSED — owner, 2026-09-26.**
 
@@ -213,8 +213,9 @@ The owner asked for a dedicated identity per dashboard (BAFU/Swiss, Nepal) inste
 token. Plan 401 adds a `reviewer` role: GET-only, bound to one tenant, scoped exactly like a
 consumer, plus the routes gated REVIEW. The two new routes are gated with `require_reviewer`:
 reviewer and admin tokens pass, a consumer gets 403. The Swiss dashboard's token sees only the
-stations it is scoped to — an explicit station list while Swiss and Nepal stations share the
-`sapphire` tenant, tenant scope once Nepal has its own tenant (Plan 401 D4). The token stays
+stations it is scoped to. It may use tenant scope only when every station in its tenant belongs to
+its client (Plan 401, *Why this exists*): the `sapphire` (Swiss) dashboard token stays on an explicit
+station list for as long as any non-Swiss station remains in `sapphire`, whatever other tenants exist. The token stays
 server-side in the map. This plan waits for Plan 401.
 
 ### D13 — T3's two fields are visible to every authenticated role. **⚖️ CLOSED — owner, 2026-09-26.**
@@ -413,11 +414,19 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   calculated-station flags (`upstream_propagated` / `component_derivation/v1`) match no rule and
   their `detail` names the component stations; combined (pooled/BMA) forecasts have no skill rows
   here; water-level **forecasts** without a datum skip three rules and a forecast
-  response cannot show it; forecast flag versions; `evaluated_on`; the token must stay server-side.
-- `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, and D13's
-  visibility decision beside § Input-quality visibility; the `docs/touchpoint-maps.md` API
+  response cannot show it; forecast flag versions; `evaluated_on`; the token must stay server-side;
+  **on a tenant where Plan 341's publication gate is active, the reviewer token sees only published
+  forecasts, and a `qc_failed` forecast is never published — so forecast QC failures are not visible
+  through the forecast routes there** (Plan 404's route shows which rule rejected them).
+- `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, D13's
+  visibility decision beside § Input-quality visibility, and D6's precondition next to it (before
+  DHM observations are readable by a Nepal consumer token, the owner decides whether flag `detail` is
+  stripped for consumers on that network); the `docs/touchpoint-maps.md` API
   paragraph (new routes, the contract file); `docs/conventions.md` § API routes (`:40-65`, the route
   list `security.md:3` points to) — both routes, marked REVIEW (reviewer or admin token).
+- **If Plan 341's route inventory (its T3) exists on the base branch:** classify
+  `GET /api/v1/qc/rules` and `GET /api/v1/stations/{id}/skill` there as REVIEW diagnostics with no
+  publication filter, and extend its test — Plan 341 hands this to this plan when 341 lands first.
 
 **Out:** serving the schema; versioning the path (`/api/v2`).
 
@@ -427,15 +436,17 @@ locally and watching it fail.
 **Verification:** `uv run pytest tests/unit/api/` including the drift test and the route-matrix
 test; and a bounded inspection that the consumer page carries every caveat listed in In, and that
 the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
-`conventions.md` routes are in the branch diff, and Plan 341 still carries `341:28,30,48,102,104,106`
-as cited in T5.
+`conventions.md` routes and the D6 precondition are in the branch diff; that the two routes are
+classified in Plan 341's route inventory if it exists; and that Plan 341 still states, by content:
+the REVIEW-diagnostic classification, reviewer tokens see published values only, the contract's
+creation order, and the gating of `qc_flags[].detail`.
 
 ### T5 — (removed)
 
-Plan 341 already records everything this task was to add (PR #313, 2026-09-26): the two new routes
-are REVIEW-class diagnostics with no forecast values (`341:30`, `:106`); the reviewer token sees only
-published values (`:28,30,48`); the map contract's creation order (`:102`); and the gating of
-`qc_flags[].detail` (`:104`). T4's inspection checks those lines are still present.
+Plan 341 already records the cross-plan facts (PR #313, 2026-09-26): the two new routes are
+REVIEW-class diagnostics with no forecast values; the reviewer token sees only published values;
+the map contract's creation order; and the gating of `qc_flags[].detail`. The one remaining duty —
+classifying the two routes in 341's route inventory if 341 lands first — moved to T4.
 
 ### T6 — hand-over and durable records
 
@@ -449,13 +460,13 @@ staging checks (see *After staging deploy*).
   stripped for consumers on that network.
 - A status note in Plan 251: "Plan 402 T3 adds forecast `qc_flags` to `/api/v1`, which may cover
   this plan's purpose; the owner decides."
-- The `docs/plans/README.md` entry.
+- The existing `docs/plans/README.md` entry for 402, updated to its implemented status.
 
 **Out:** editing another session's worktree.
 
 **Pre-change:** N/A — documentation and hand-over.
 
-**Verification:** the Plan 143 and 251 notes and the README entry are in the feature-branch
+**Verification:** the Plan 143 and 251 notes and the updated README entry are in the feature-branch
 diff.
 
 ## Exit gates
@@ -477,8 +488,9 @@ After staging deploy (orchestrator), before the map is told:
    row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
    that row's model.
 3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
-   that station, and 404 on `/skill` for another **existing** station; a consumer token → 403. Then
-   **delete** that token (Plan 401's procedure).
+   that station, and 404 on `/skill` for another **existing** station; a temporary consumer token
+   created for this check → 403. Then **delete both tokens by id** (Plan 401's single-token
+   procedure — never the role-wide statements).
 4. Only then does the orchestrator send the reply to the map session: endpoints,
    `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
    `python -m sapphire_flow.cli.access_tokens create-reviewer`) and that it must stay server-side,
