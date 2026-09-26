@@ -345,9 +345,13 @@ and a truthful `source`.
 
 **In:**
 - `config/qc_rules.py` and `config/forecast_qc_rules.py` — one public resolution function per set
-  (`SAPPHIRE_CONFIG` + overlays, else built-in default — the observation one **takes over the body
-  of `load_qc_rules`**, which then delegates to it; it keeps the `load_merged_toml` path, so the
-  overlay rejection of PR #315 stays, and decides `source` at the section check) returning the rule set **and** which branch
+  (`SAPPHIRE_CONFIG` + overlays, else built-in default). For observation rules the shared part is
+  the code from `load_merged_toml(path, _resolve_overlay_paths())` onward: it takes a path, keeps the
+  PR #315 overlay rejection, and returns the rule set plus `source`, decided at the `qc_rules` section
+  check. `load_qc_rules` keeps its `config_path` parameter and its raise when nothing is set (tested,
+  `tests/unit/config/test_qc_rules.py:279-287`) and calls that shared part; the public resolution
+  function reads `SAPPHIRE_CONFIG`, returns `builtin_default` when it is unset, and otherwise calls
+  the same shared part. It returns the rule set **and** which branch
   supplied it, including the missing-section fallback. The four loaders call them
   (behaviour-preserving): `flows/ingest_observations.py::_load_qc_rules`,
   `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules`,
@@ -432,7 +436,7 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   filtered result (the station list). A drift test in `tests/unit/api/` asserts the file equals the
   regenerated one, that the route list holds no other route, that every operation carries the
   bearer requirement, and that `info.version` is the D14 constant. **D14's CI check**:
-  `tools/check_map_contract_version.py` (beside the repo's other CI-only gates), run as a step in
+  `tools/check_map_contract_version.py` (beside the repo's other CI-only gates), run as a **named** step (`Check map contract version`) in
   the `lint` job of `.github/workflows/ci.yml` on `pull_request` only, with `fetch-depth: 0` and
   `--base-ref "${{ github.event.pull_request.base.sha }}"`; the script compares the file with its
   copy at `git merge-base HEAD <base>`. Rules: a file absent at the base passes; an unchanged file
@@ -497,7 +501,9 @@ changed file fails with an unchanged version and passes with a greater one.
 **Verification:** `uv run pytest tests/unit/api/ tests/unit/tools/test_check_map_contract_version.py`
 including the drift test, the route-matrix test and the version-check cases — file absent at base →
 pass; unchanged → pass; changed with the same version → fail; changed with a greater version → pass;
-`1.9` → `1.10` counts as greater; and `uv run python tools/gate_parity_check.py` passes; and a bounded inspection that the consumer page carries every caveat listed in In, and that
+`1.9` → `1.10` counts as greater; `uv run python tools/gate_parity_check.py` lists the new step as `allowlisted-ci-only` under the key
+`("ci", "Check map contract version")` and reports no drift row beyond the base branch's (it already
+reports unrelated drift today); and a bounded inspection that the consumer page carries every caveat listed in In, and that
 the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
 `conventions.md` routes, the D6 precondition, the `ci.yml` step with its base fetch, the
 `cicd.md` step-table row and the `CI_ONLY_ALLOWLIST` entry are in the branch diff; that the two routes are

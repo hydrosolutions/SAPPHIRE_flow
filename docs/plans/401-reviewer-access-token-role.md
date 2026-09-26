@@ -177,7 +177,7 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
   `tests/integration/db/test_migration_<rev>_reviewer_role.py`.
 - `store/access_token_store.py` — no logic change (it refuses only admin scopes); the comment at
   `:67-73` stops saying a scope belongs only to a consumer.
-- `docs/standards/cicd.md` § Rollback — **after any backup restore and immediately before starting
+- `docs/standards/cicd.md` § Database migration strategy › Rollback (`:243`) — **after any backup restore and immediately before starting
   an image older than this plan, delete every reviewer token** with the same two statements and
   command, because that image cannot parse the role (deleting before the restore would let the
   restore bring them back).
@@ -196,7 +196,7 @@ create/grant and never enters a tenant-mode scope; admin with `scope_mode = 'ten
 `ck_access_tokens_role`, and the definitions of all three constraints read back with
 `pg_get_constraintdef` equal the readback **captured at the prior revision before upgrading** (Postgres
 normalises the text, so the comparison is readback against readback, not against the migration
-source); and a bounded inspection that `docs/standards/cicd.md` § Rollback carries T1's two DELETE
+source); and a bounded inspection that `docs/standards/cicd.md` § Database migration strategy › Rollback (`:243`) carries T1's two DELETE
 statements and the `psql -U ${DB_USER:-sapphire}` command, placed after the backup restore and
 before the older image starts.
 
