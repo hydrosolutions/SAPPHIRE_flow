@@ -1,5 +1,5 @@
 ---
-status: READY
+status: IMPLEMENTED_EXCEPT_STAGING_RUN
 created: 2026-09-25
 plan: 399
 title: SAP3 never calls the warm-start retrain both sides already implement
@@ -17,7 +17,35 @@ source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` o
 
 ## Status
 
-**READY** — flipped by the orchestrator 2026-09-26 on the owner's explicit instruction
+⚖️ **MERGED 2026-09-26 as PR #314** (`dd75a963` on `main`, version 0.1.994, migration **0060**).
+**T1, T2 and T4 are complete. T3 is complete IN CODE but its one required run has NOT happened.**
+
+🔴 **WHAT REMAINS — exactly one thing:**
+> T3: *"One real run on staging"* — ⛔ **not done.** The host has been unreachable all session
+> (`ssh sapphire@192.168.1.136` times out), and the run is **orchestrator-gated** in any case.
+> ⚠️ **This is the only part of the plan nothing has exercised**: § 10/§ 11 measured that group
+> training has never produced an artifact on any deployment — because it *could not* until this
+> merge — so the retrain path has never met a real model. Unit and integration tests prove the
+> mechanism; only this proves the thing works.
+
+⚠️ **Also pending: the mini runs 0.1.986 and `main` is at 0.1.994** — this merge is NOT deployed.
+⛔ *Merging is never deploying ([[project_qc_cadence_is_inferred_not_declared]]'s lesson).*
+
+⭐ **Verified before merge:** the full unit suite; the CI shard that had failed, reproduced locally
+(1661 passed); the four warm-start **integration** tests against a real PostGIS container; and
+mutation checks on each changed line — including flipping the donor FK to `CASCADE`, which fails the
+delete-refusal test, so `RESTRICT` is proven rather than merely written.
+
+⚠️ **Three CI failures preceded the merge, all the same shape** — a FAKE more permissive than the
+real thing: the fake store's own SHA-256 check masked the flow's new guard; the `aquacast` extra is
+absent locally but installed in CI, so the shim changes were never exercised here; and
+`ck_model_artifacts_scope_xor` (exactly one of station/group) is unenforced by the fake store, so
+test artifacts seeded with neither passed every unit test. *Recorded so the next reader does not
+trust a green unit run for a schema or shim change.*
+
+---
+
+**Previously READY** — flipped by the orchestrator 2026-09-26 on the owner's explicit instruction
 (*"ok, flip ready and implement"*). ⚖️ **All three decisions closed by the owner** — D1 and D2 on
 2026-09-25, D3 on 2026-09-26. **Five review rounds.** ⚠️ *An earlier version claimed "nine independent reviews"; the changelog
 records **six** passes, and per this project's own rule the RECORD is what stands.*
