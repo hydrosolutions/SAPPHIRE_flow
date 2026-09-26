@@ -278,8 +278,9 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   broad `except` on this path: T4 records the carve-out in `docs/conventions.md` § Flow-level
   strategy. Where `attempt_id` is minted, the flow binds it into the structlog context
   (`structlog.contextvars.bind_contextvars`, as it already does for `station_id` at `:3021`) and
-  unbinds it in its own `finally` at the end of the outermost `finally` — outside the
-  store/buffer condition and the carve-out `except`, so it runs on every exit — so both `qc_failed` events,
+  unbinds it in a `try`/`finally` that wraps the whole body of the outermost `finally` (the capture
+  and the existing `created_http_client.close()`, `:3941-3942`) — outside the store/buffer
+  condition and the carve-out `except`, so it runs on every exit — so both `qc_failed` events,
   `write_failed` and `write_timed_out` carry the same `attempt_id` as the stored rows.
 - `docs/spec/types-and-protocols.md` — `AssignmentFailure`, `MultiModelForecastResult`, the
   `run_station_forecast` return, and a new entry for the group outcome.
@@ -308,7 +309,7 @@ import or argument error.
 - a rejected ensemble whose members have different timelines round-trips with each member's own timestamps;
 - a rejected assignment with one failed and one suspect parameter records both, each with its own status and flags, on the member and the group path;
 - every row written by one flow execution carries the same `attempt_id`, and the run's `qc_failed`, `write_failed` and `write_timed_out` events carry that same `attempt_id`, so the three can be joined (captured with `structlog.testing.capture_logs(processors=[structlog.contextvars.merge_contextvars])`, since plain `capture_logs()` drops context variables);
-- after a returning run and after a raising run, `structlog.contextvars.get_contextvars()` holds no `attempt_id`, and two sequential in-process runs log different `attempt_id`s;
+- after a returning run, a raising run, and a run whose HTTP client's `close()` raises, `structlog.contextvars.get_contextvars()` holds no `attempt_id`, and two sequential in-process runs log different `attempt_id`s;
 - the payload types have no validation hook: a rejected assignment beside passing models, and a rejected group station beside passing siblings, leave the stored forecasts, the kept siblings and the result exactly as on the base branch;
 - a row-building failure in the capture on an aborting run still re-raises the original error, and on a normal run still returns the original result;
 - a rejected ensemble containing NaN or `inf` is captured, not dropped by the best-effort write;
