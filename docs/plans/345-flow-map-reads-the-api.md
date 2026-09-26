@@ -397,18 +397,20 @@ locally and watching it fail.
 
 ### T5 — cross-plan records for Plan 341
 
-**Outcome:** Plan 341 knows (a) the two new routes are REVIEW-class internal diagnostic and carry no
-forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer role is the
-natural holder of its internal-diagnostic read access to unpublished forecasts — 341 decides; (c)
-`docs/spec/api-v1-map.openapi.json` and its drift test already cover `/stations/{id}/forecasts` and
-`/forecasts/{id}`, so 341 updates that file rather than producing a second contract; (d) after T3,
-`qc_flags[].detail` on both forecast routes contains forecast values and, for
-`climatology_outlier`, observation-derived baseline statistics — so 341's published-only rule and
-its metadata-only tombstones must strip or gate that field.
+**Outcome:** Plan 341 records (a) the two new routes are REVIEW-class internal diagnostic and carry
+no forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer token
+sees the same published forecast values as a same-scope consumer on ordinary routes, while only a
+named, station-granted hydrologist reads unpublished candidates on 341's review routes; (c)
+`docs/spec/api-v1-map.openapi.json` and its drift test cover `/stations/{id}/forecasts` and
+`/forecasts/{id}` once Plan 345 lands. If 345 lands first, 341 updates that file; if 341 lands first,
+345 T4 creates it from the then-current forecast schema. Neither plan creates a duplicate map
+contract; (d) after T3, `qc_flags[].detail` on both forecast routes contains forecast values and,
+for `climatology_outlier`, observation-derived baseline statistics — so 341's published-only rule
+and metadata-only tombstones must strip or gate that field.
 
 **In:** a note in `docs/plans/341-chwrr-forecast-publication-api.md`.
 
-**Out:** changing 341's design.
+**Out:** changing 341's human-only candidate-read decision.
 
 **Pre-change:** N/A — cross-plan record.
 
