@@ -7,7 +7,7 @@ scope: Close the gaps a post-merge review found in Plan 399's shipped code — t
 depends_on: [399]
 blocks: []
 related: [262, 399]
-open_decisions: [D1]
+open_decisions: []   # D1 closed by the owner 2026-09-26 on (b)
 source: 2026-09-26 — two independent reviews of Plan 399's MERGED code (PR #314) against the plan. Every item below is a thing 399 asserts and the code does not do, measured at `7aec753b`.
 ---
 
@@ -22,7 +22,7 @@ glob was matching. 405 was confirmed free three independent ways.*
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review and a READY flip.
-**D1 must be answered before T6** — it changes what A4 means. ⛔ *An earlier version said "first", which reads as blocking the whole plan; T1-T5 are independent of it, and the phase graph gates only phase 4.*
+⚖️ **All decisions closed** — D1 on (b), 2026-09-26. *It changed what A4 means; T6 now carries the settled shape.* ⛔ *An earlier version said "first", which reads as blocking the whole plan; T1-T5 are independent of it, and the phase graph gates only phase 4.*
 
 ## Why this plan exists
 
@@ -98,7 +98,7 @@ legitimate fix — declared here rather than hidden under a blanket claim.* ⭐ 
 
 ## Owner decisions
 
-### D1 — what does "inspect the donor's params" MEAN now? **OPEN.**
+### D1 — what does "inspect the donor's params" MEAN now? **⚖️ CLOSED — owner, 2026-09-26: (b).**
 
 § 4 measured that 399's constant reason is already false. Two donor classes now exist:
 
@@ -107,14 +107,20 @@ legitimate fix — declared here rather than hidden under a blanket claim.* ⭐ 
 | **(a)** | **Record the donor's `run_config` as its params.** A retrained donor's own row carries it (verified: `record_warm_start` writes `run_config`, JSONB at `0060:54-59`, read back by `fetch_warm_start`). | ⚠️ **Needs a MIGRATION this plan must then carry**: `base_params_path` is `sa.Text()` (`0060:50`) — a mapping cannot go in it. ⇒ a new column or a widened meaning, plus a `WarmStartRecord` field, an invariant update and the alembic-head test. ⛔ *An earlier version flagged this in a footnote and then T6's In-list carried none of it.* |
 | **(b)** ⭐ | **Keep the path NULL, with a reason TRUE per donor class** — and record that the donor's configuration is retrievable via `base_artifact_id`. | ⭐ **Nothing is lost.** *A missing params-FILE path does not discard the donor's configuration: it stays addressable through its own warm-start row, and the donor FK is `RESTRICT` so it cannot vanish.* No migration, no schema scope. |
 
-**Recommendation: (b).** ⛔ *An earlier version recommended (a), arguing that (b) "throws away
-provenance we now demonstrably hold". **That reasoning was wrong** — 399 asks for the PATH to the base
-params, and D3 separately records the run config; they are different facts, and I conflated them to
-make (a) look necessary.* ⚠️ *(a) is still a legitimate design choice — it is schema work, not gap
-closure, and belongs in its own plan if wanted.*
+**⚖️ CLOSED on (b).** ⇒ **The params path stays NULL, carrying a reason true of the donor's class, and
+records that the donor's own configuration is reachable through `base_artifact_id`.**
+⛔ *No migration, no new column, no widened field — (a) is NOT taken.*
 
-🔴 **Either way, D1 must say what happens when the donor's `run_config` is EMPTY**, and T6 must carry
-it. `flows/train_models.py:787` passes `run_config=training_params or {}`, so a retrained donor's row
+⭐ *The field asks WHERE the settings file is, and for these donors there is none. What we have is the
+configuration itself, stored against the donor and safe from deletion (`RESTRICT`). (a) remains a
+legitimate design if the inline value is ever wanted — it is schema work, not gap closure, and would
+be its own plan.*
+
+⛔ *An earlier version recommended (a), arguing that (b) "throws away provenance we now demonstrably
+hold". **That reasoning was wrong** — 399 asks for the PATH to the base params, and D3 separately
+records the run config; different facts, which I conflated to make (a) look necessary.*
+
+🔴 **And D1 settles what happens when the donor's `run_config` is EMPTY** — T6 carries it. `flows/train_models.py:787` passes `run_config=training_params or {}`, so a retrained donor's row
 can carry `{}`.
 ⚖️ **DECIDED — `{}` is a KNOWN-EMPTY run config, NOT unknown.** *The flow normalises "nothing supplied"
 to it deliberately (`flows/train_models.py:269`), so it accurately records what the model was given.*
@@ -298,8 +304,13 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   carried none of D1's empty-config clause — verbatim the criticism this plan levels at its own draft
   in the D1(a) cell ("flagged in a footnote and then T6's In-list carried none of it"), moved from a
   footnote to a table cell.*
-- ⚠️ **If the owner overrides to (a)**, this task ALSO carries: a migration (a mapping cannot go in
-  `sa.Text()`), a `WarmStartRecord` field, the invariant update and the alembic-head test.
+- ⚖️ **Per D1(b): the path stays NULL with a per-class reason**, plus the note that the donor's own
+  configuration is reachable via `base_artifact_id`. ⛔ *No migration and no schema change in this task —
+  (a) was not taken.*
+- 🔴 **The reason must NOT claim the configuration "is retrievable" when the donor's row holds `{}`.**
+  *It IS retrievable, and it is empty — a different sentence. ⚠️ That is the known-empty vs
+  unknown-effective distinction D1 settles; getting it wrong here relabels a known fact as unknown,
+  which is the defect § 4 already has.*
 
 **Out.** ⛔ Inventing a params file where none exists.
 
@@ -413,3 +424,16 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     blocker, appeared in no table anywhere** — and both 399 and the index still said "SEVEN remain / six
     carried". Now EIGHT and SEVEN, B3 listed, and the index's unqualified "723 tests passing" and
     blanket "no new capability" both qualified. ⛔ *Fold reaches the sentence, misses the sum.*
+- **2026-09-26** — ⚖️ **D1 CLOSED on (b) by the owner.** The donor's params PATH stays NULL, carrying a
+  reason true of its class and noting that the donor's own configuration is reachable through
+  `base_artifact_id`. ⛔ *(a) is NOT taken — no migration, no new column, no widened field.*
+  ⭐ *The field asks WHERE the settings file is; for these donors there is none. What exists is the
+  configuration itself, stored against the donor and safe from deletion (`RESTRICT`).*
+  🔑 **`open_decisions` is now empty and every task is settled.**
+  ⚠️ **T6 carries D1's harder half**: the reason must NOT claim the configuration "is retrievable" when
+  the donor's row holds `{}` — it is retrievable AND empty, which is a different sentence. *That is the
+  known-empty vs unknown-effective distinction; collapsing it relabels a known fact as unknown, which is
+  the defect § 4 already has.*
+  ⛔ **The index had gone stale again** — `open_decisions: [D1]` and "D1 asks what … means" both still
+  present. *Third consecutive plan where a decision closure reached the plan and not the index. The
+  value sweep caught it this time because I ran it before claiming the fold was done.*

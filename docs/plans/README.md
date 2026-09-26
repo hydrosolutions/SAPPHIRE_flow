@@ -662,7 +662,7 @@ exit criteria — Plan 212 owns that deeper screening.
   before either builds the status change. Neither plan's frontmatter mentions the other.
 
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](405-warm-start-gaps-and-untested-boundaries.md)
-  — `DRAFT`, `open_decisions: [D1]`, **`depends_on: [399]`**. Drafted from two independent post-merge
+  — `DRAFT`, **no open decisions** (D1 closed on (b), 2026-09-26), **`depends_on: [399]`**. Drafted from two independent post-merge
   reviews of **399's shipped code** — the first able to check that plan against reality rather than
   itself. ⭐ **No new capability, with one declared exception** (T1's refusal-before-training ordering, which 399 never required): every other item is something 399 asserts and the code does not do.
   🔴 **A retrain-of-a-retrain CRASHES** — the inherited NULL-path reason is dropped and the record
@@ -670,8 +670,10 @@ exit criteria — Plan 212 owns that deeper screening.
   execution). 🔴 **The changed-template refusal does not exist** (`installed_config_sha256` is
   accepted and never compared; the resolver has no test at all). 🔴 **The donor config path is never
   recorded, for any donor, ever.** 🔴 **Neither retrain boundary is tested** — gutting the adapter's
-  `retrain` body leaves **723 tests passing** *(that SELECTION, not the 6043-test suite)*. ⚠️ D1 asks what "inspect the donor's params" means now
-  that a retrained donor demonstrably HAS a recorded config. ⛔ 399's staging run stays with 399.
+  `retrain` body leaves **723 tests passing** *(that SELECTION, not the 6043-test suite)*. ⚖️ **D1 closed on (b)**: the donor's params PATH stays
+  NULL with a reason true of its class, noting its configuration is reachable via `base_artifact_id` —
+  ⛔ *no migration, no new column.* *(The question was what "inspect the donor's params" means now that
+  a retrained donor demonstrably HAS a recorded config.)* ⛔ 399's staging run stays with 399.
 
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
   — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
