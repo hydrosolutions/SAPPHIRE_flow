@@ -13,6 +13,7 @@ from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.train_models import train_models_flow
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    ModelArtifactStatus,
     ModelAssignmentStatus,
     SpatialRepresentation,
     WeatherSourceRole,
@@ -1289,3 +1290,302 @@ class TestTrainModelsDefaultPeriodEnd:
             f"last complete daily bucket boundary {expected_end} "
             f"(not the raw clock() instant {non_boundary_now})"
         )
+
+
+class TestWarmStartRetrainThroughTheFlow:
+    """Plan 399 T3 — the retrain path, driven through `train_models_flow`.
+
+    🔴 These tests call the REAL flow. An earlier attempt built a stand-in
+    adapter, called its method directly and asserted the stand-in recorded it —
+    which passed with the production change deleted. A test that exercises a
+    fake standing in for the changed code proves nothing about that code.
+    """
+
+    @staticmethod
+    def _retrainable_model() -> object:
+        class _Retrainable(FakeStationForecastModel):
+            supports_warm_start = True
+            seen_base: object = None
+            seen_params: object = None
+
+            def retrain(
+                self,
+                base_artifact: object,
+                data: object,
+                params: object,
+                rng: object,
+            ) -> object:
+                type(self).seen_base = base_artifact
+                type(self).seen_params = params
+                return "retrained"
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return str(artifact).encode()
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                return raw.decode()
+
+        return _Retrainable()
+
+    def _kwargs(self, model_id: ModelId, model: object, station_id: StationId) -> dict:
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+        return _flow_kwargs(
+            model_id,
+            model,
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        )
+
+    def test_naming_a_base_artifact_retrains_instead_of_training(self) -> None:
+        """The whole point: a named donor routes to `retrain`, not `train`."""
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = self._retrainable_model()
+        kwargs = self._kwargs(model_id, model, station_id)
+
+        # Seed the donor through the same store the flow will read it from.
+        donor_id, _ = kwargs["artifact_store"].store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        results = train_models_flow(
+            **kwargs,
+            base_artifact_id=str(donor_id),
+            training_params={"finetuning": {"strategy": "last_layer"}},
+        )
+
+        assert len(results) == 1
+        assert results[0].error is None
+        assert results[0].artifact_id is not None
+        # 🔑 The donor reached the model, deserialized from the FETCHED bytes.
+        assert type(model).seen_base == "donor-bytes"
+        # …and the caller's config arrived with it, byte-identical.
+        assert type(model).seen_params == {"finetuning": {"strategy": "last_layer"}}
+
+    def test_a_retrained_artifact_is_not_promoted(self) -> None:
+        """⛔ The current artifact keeps serving until a human decides."""
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        kwargs = self._kwargs(model_id, self._retrainable_model(), station_id)
+        donor_id, _ = kwargs["artifact_store"].store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        results = train_models_flow(
+            **kwargs, base_artifact_id=str(donor_id), training_params={}
+        )
+
+        new_id = results[0].artifact_id
+        assert new_id is not None
+        record = kwargs["artifact_store"].fetch_artifact_record(new_id)
+        assert record is not None
+        assert record.status is not ModelArtifactStatus.ACTIVE, (
+            "a retrained artifact must NOT be promoted — the current one keeps "
+            "serving until a human decides otherwise"
+        )
+
+    def test_a_missing_donor_is_refused(self) -> None:
+        """`fetch_artifact` returns None for an unknown id — a real case."""
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        kwargs = self._kwargs(model_id, self._retrainable_model(), station_id)
+
+        results = train_models_flow(
+            **kwargs,
+            base_artifact_id=str(UUID(int=999)),
+            training_params={},
+        )
+
+        assert len(results) == 1
+        assert results[0].artifact_id is None
+        assert results[0].error is not None
+        assert "base artifact" in results[0].error.lower()
+
+    def test_a_model_without_warm_start_is_refused_not_trained(self) -> None:
+        """D2 through the flow: no silent fall-back to from-scratch training."""
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        plain = FakeStationForecastModel()  # no `retrain`
+        kwargs = self._kwargs(model_id, plain, station_id)
+        donor_id, _ = kwargs["artifact_store"].store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        results = train_models_flow(
+            **kwargs, base_artifact_id=str(donor_id), training_params={}
+        )
+
+        assert results[0].artifact_id is None
+        assert results[0].error is not None
+        assert "warm-start" in results[0].error.lower()
+
+    def test_no_base_artifact_still_trains_from_scratch(self) -> None:
+        """🔴 The unchanged case — ordinary training names no donor."""
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        kwargs = self._kwargs(model_id, FakeStationForecastModel(), station_id)
+
+        results = train_models_flow(**kwargs)
+
+        assert len(results) == 1
+        assert results[0].error is None
+        assert results[0].artifact_id is not None
+
+    def test_the_flow_records_warm_start_provenance(self) -> None:
+        """🔴 T3 must actually CALL T4's recorder.
+
+        The plan named this against itself — "T4 would have shipped a recorder
+        nobody calls" — and the first implementation did exactly that.
+        """
+        recorded: list[object] = []
+
+        class _SpyWriter:
+            def resolve_donor_config(
+                self,
+                base_artifact_id: object,
+                *,
+                installed_config_path: object = None,
+                installed_config_sha256: object = None,
+            ) -> tuple[str | None, str | None, str | None]:
+                return ("configs/cmal_small.yaml", "a" * 64, None)
+
+            def record(self, record: object) -> None:
+                recorded.append(record)
+
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        kwargs = self._kwargs(model_id, self._retrainable_model(), station_id)
+        donor_id, _ = kwargs["artifact_store"].store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        results = train_models_flow(
+            **kwargs,
+            base_artifact_id=str(donor_id),
+            training_params={"finetuning": {"strategy": "lora", "rank": 8}},
+            warm_start_writer=_SpyWriter(),
+        )
+
+        assert len(recorded) == 1, "the retrain path must record its provenance"
+        record = recorded[0]
+        assert record.base_artifact_id == donor_id  # type: ignore[attr-defined]
+        assert record.artifact_id == results[0].artifact_id  # type: ignore[attr-defined]
+        # D3's condition: the config used is recoverable afterwards.
+        assert record.run_config == {  # type: ignore[attr-defined]
+            "finetuning": {"strategy": "lora", "rank": 8}
+        }
+
+    def test_ordinary_training_records_no_warm_start_provenance(self) -> None:
+        """A freshly trained artifact has no donor, so nothing is recorded."""
+        recorded: list[object] = []
+
+        class _SpyWriter:
+            def resolve_donor_config(self, *a: object, **k: object) -> tuple:
+                raise AssertionError("must not resolve a donor for fresh training")
+
+            def record(self, record: object) -> None:
+                recorded.append(record)
+
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        kwargs = self._kwargs(model_id, FakeStationForecastModel(), station_id)
+
+        train_models_flow(**kwargs, warm_start_writer=_SpyWriter())
+
+        assert recorded == []
+
+    def test_a_corrupted_donor_is_refused_before_deserializing(self) -> None:
+        """🔴 The FLOW's own SHA-256 guard on the donor.
+
+        ⚠️ This test uses a store that does NOT verify on fetch. That is the
+        whole point: `FakeModelArtifactStore.fetch_artifact` and the real
+        `PgModelArtifactStore` both verify internally, so against either of them
+        a test cannot tell the flow's guard from the store's — a first version of
+        this test passed with the flow's comparison deleted. The guard exists
+        precisely because a caller-injected store need not verify, and this is
+        the only shape that proves it fires.
+        """
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = self._retrainable_model()
+        kwargs = self._kwargs(model_id, model, station_id)
+        real_store = kwargs["artifact_store"]
+        donor_id, _ = real_store.store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        class _NonVerifyingStore:
+            """Delegates everything, but hands back corrupted bytes unchecked."""
+
+            def __init__(self, inner: object) -> None:
+                self._inner = inner
+
+            def fetch_artifact(self, artifact_id: object) -> tuple:
+                return (artifact_id, b"tampered")
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._inner, name)
+
+        kwargs["artifact_store"] = _NonVerifyingStore(real_store)
+
+        results = train_models_flow(
+            **kwargs, base_artifact_id=str(donor_id), training_params={}
+        )
+
+        assert results[0].artifact_id is None
+        assert results[0].error is not None
+        assert "sha-256" in results[0].error.lower()
+        # …and the model was never asked to retrain from the corrupted donor.
+        assert type(model).seen_base is None

@@ -453,3 +453,19 @@ The table below fixes the run-name template for every `@flow` and `@task` site u
 ### Coverage rule
 
 Every run-name template must be covered by `tests/unit/flows/test_run_names.py` (see Plan 050 Task 2). A template that doesn't resolve against at least one real call-site parameter set will fail only at dashboard-render time in production — the unit test catches typos and missing params before deploy.
+
+## Flow parameters that carry opaque model configuration (Plan 399)
+
+`train_models_flow` takes two run parameters that are **passed through, not interpreted**:
+
+- `training_params` — the model's own training/fine-tuning configuration. SAP3 does not
+  validate it (owner decision: it stays opaque config for v1) but **does record it** against
+  the produced artifact, so "which strategy produced this?" is answerable later.
+- `base_artifact_id` — names a donor artifact to fine-tune FROM. Omitted, the flow trains
+  from scratch exactly as before; supplied, the run retrains and the result is **stored
+  without being promoted**.
+
+⚠️ Both default to `None` and the no-parameter path is unchanged — every model trained before
+Plan 399 received an empty mapping, and still does when nothing is supplied. ⛔ The four
+onboarding training sites and two smoke-test sites deliberately keep the empty mapping; they
+train at onboarding time, where no caller config exists.

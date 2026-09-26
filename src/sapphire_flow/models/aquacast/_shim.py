@@ -608,6 +608,28 @@ class AquacastShim:
     ) -> TrainedArtifact:
         return self._inner.train(_to_aquacast_inputs(inputs), config=config, rng=rng)
 
+    @property
+    def supports_warm_start(self) -> bool:
+        """Plan 399 T1 — whether the WRAPPED model implements `retrain`.
+
+        Read off `self._inner`, never off this shim: a shim that always defines
+        `retrain` would make a structural `isinstance` check pass for a model
+        that cannot retrain, and SAP3's refusal (D2) would never fire.
+        """
+        return callable(getattr(self._inner, "retrain", None))
+
+    def retrain(
+        self,
+        base_artifact: TrainedArtifact,
+        inputs: ModelInputs,
+        *,
+        config: Mapping[str, Any],
+        rng: Random,
+    ) -> TrainedArtifact:
+        return self._inner.retrain(
+            base_artifact, _to_aquacast_inputs(inputs), config=config, rng=rng
+        )
+
     def predict(
         self,
         artifact: TrainedArtifact,

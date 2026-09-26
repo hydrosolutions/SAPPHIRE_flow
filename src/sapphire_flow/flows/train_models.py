@@ -4,7 +4,7 @@ import hashlib
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import structlog
@@ -12,16 +12,22 @@ from prefect import flow, runtime, task
 from prefect.cache_policies import NO_CACHE
 from prefect.utilities.annotations import unmapped
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ArtifactIntegrityError, ConfigurationError
 from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
-from sapphire_flow.services.model_registry import discover_models, register_models
+from sapphire_flow.services.model_registry import (
+    build_station_code_resolver,
+    discover_models,
+    register_models,
+)
 from sapphire_flow.services.scope import determine_training_scope
 from sapphire_flow.services.training import (
+    retrain_group_model,
+    retrain_station_model,
     store_and_promote_artifact,
     train_group_model,
     train_station_model,
@@ -30,7 +36,7 @@ from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
 )
-from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
 from sapphire_flow.types.training import TrainingResult, TrainingScope, TrainingUnit
 
 if TYPE_CHECKING:
@@ -45,6 +51,11 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.model import (
+        GroupTrainingData,
+        ModelParams,
+        StationTrainingData,
+    )
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
@@ -156,6 +167,89 @@ def _assemble_data_task(
         )
 
 
+def _record_warm_start_provenance(
+    *,
+    warm_start_writer: object,
+    artifact_id: ArtifactId,
+    base_artifact_id: ArtifactId,
+    model: object,
+    run_config: dict,
+) -> None:
+    """Plan 399 T3/T4 — record what this artifact was fine-tuned FROM.
+
+    The donor's config identity comes from the DONOR's own provenance, never
+    from hashing whatever template is installed now (§ 13). The installed path
+    and hash are passed in only so the resolver can PAIR them with the donor's
+    recorded hash — a mismatch is the caller's refusal, not something papered
+    over here.
+    """
+    from sapphire_flow.store.model_artifact_warm_start import WarmStartRecord
+
+    installed_hash = getattr(model, "config_hash", None)
+    path, sha256, reason = warm_start_writer.resolve_donor_config(  # type: ignore[attr-defined]
+        base_artifact_id,
+        installed_config_path=None,
+        installed_config_sha256=installed_hash,
+    )
+    warm_start_writer.record(  # type: ignore[attr-defined]
+        WarmStartRecord(
+            artifact_id=artifact_id,
+            base_artifact_id=base_artifact_id,
+            run_config=dict(run_config),
+            base_config_path=path,
+            base_config_sha256=sha256,
+            base_config_unknown_reason=reason,
+            base_params_path=None,
+            base_params_unknown_reason=(
+                "SAP3 has never recorded training params for any artifact "
+                "before Plan 399 T2; this donor's params are UNKNOWN, not "
+                "known-absent"
+            ),
+        )
+    )
+
+
+def _load_base_artifact(
+    model: object,
+    artifact_store: object,
+    base_artifact_id: ArtifactId,
+) -> object:
+    """Plan 399 T3 — load the donor, from the FETCHED bytes.
+
+    ⛔ `fetch_artifact` returns `(ArtifactId, bytes) | None`; `None` is a real
+    return value for an unknown id and is REFUSED here rather than allowed to
+    surface as an obscure failure later. And the artifact is deserialized from
+    the bytes the STORE returned — not from anything held in memory, which is
+    what the neighbouring integrity check does and is not a pattern to copy.
+    """
+    store = cast("ModelArtifactStore", artifact_store)
+    fetched = store.fetch_artifact(base_artifact_id)
+    if fetched is None:
+        raise ConfigurationError(
+            f"base artifact {base_artifact_id} not found; refusing to retrain "
+            "(Plan 399 T3)"
+        )
+    _, stored_bytes = fetched
+
+    # SHA-256 guard before deserializing. `PgModelArtifactStore.fetch_artifact`
+    # already verifies internally, but this is a NEW flow-level deserialization
+    # path and `tests/unit/test_hash_verification_coverage.py` is right to
+    # require the check here rather than have it depend on a store's internals:
+    # a caller-injected store need not verify, and a donor's integrity matters
+    # MORE than usual because a whole new model gets built on top of it.
+    record = store.fetch_artifact_record(base_artifact_id)
+    if record is not None:
+        computed = hashlib.sha256(stored_bytes).hexdigest()
+        if computed != record.sha256_hash:
+            raise ArtifactIntegrityError(
+                f"base artifact {base_artifact_id} failed its SHA-256 check "
+                f"(computed {computed[:8]}…, stored {record.sha256_hash[:8]}…); "
+                "refusing to retrain from it"
+            )
+
+    return model.deserialize_artifact(stored_bytes)  # type: ignore[attr-defined]
+
+
 @task(
     name="train-model",
     task_run_name=_resolve_train_model_run_name,
@@ -166,8 +260,34 @@ def _train_model_task(
     model: object,
     data: object,
     rng: random.Random,
+    params: ModelParams | None = None,
+    base_artifact: object = None,
 ) -> bytes:
-    params: dict = {}
+    # Plan 399 T2 — the caller's training config. Was hardcoded `{}` here, so
+    # NO model could ever receive configuration; a fine-tune cannot select a
+    # strategy without this. `None` keeps every existing caller's behaviour.
+    params = {} if params is None else params
+    # Plan 399 T3 — a named donor routes to retrain. ⛔ No fall-back: a model
+    # without warm-start support raises WarmStartUnsupportedError from the
+    # service (D2), it does NOT quietly train from scratch.
+    if base_artifact is not None:
+        if unit.station_id is not None:
+            return retrain_station_model(
+                model=cast("StationForecastModel", model),
+                base_artifact=base_artifact,
+                data=cast("StationTrainingData", data),
+                params=params,
+                rng=rng,
+                model_id=str(unit.model_id),
+            )
+        return retrain_group_model(
+            model=cast("GroupForecastModel", model),
+            base_artifact=base_artifact,
+            data=cast("GroupTrainingData", data),
+            params=params,
+            rng=rng,
+            model_id=str(unit.model_id),
+        )
     if unit.station_id is not None:
         return train_station_model(model=model, data=data, params=params, rng=rng)
     else:
@@ -189,8 +309,8 @@ def _store_artifact_task(
     principal: object = None,
     audit_log_store: object = None,
     audited_writer: object = None,
+    promote: bool = True,
 ) -> object:
-    from typing import cast
 
     typed_principal = cast("WritePrincipal | None", principal)
     typed_audit = cast("AuditLogStore | None", audit_log_store)
@@ -205,6 +325,20 @@ def _store_artifact_task(
         )
 
     def _run(store: object, audit: object, *, audit_rejection: bool) -> object:
+        if not promote:
+            # Plan 399 T3 — a retrained artifact is stored, NOT promoted. The
+            # current artifact keeps serving until a human decides otherwise;
+            # promoting here would put an unevaluated fine-tune into service.
+            aid, _ = cast("ModelArtifactStore", store).store_artifact(
+                unit.model_id,
+                artifact_bytes,
+                unit.training_period_start,
+                unit.training_period_end,
+                clock(),
+                station_id=unit.station_id,
+                group_id=unit.group_id,
+            )
+            return aid
         return store_and_promote_artifact(
             artifact_store=cast("ModelArtifactStore", store),
             model_id=unit.model_id,
@@ -271,6 +405,10 @@ def train_models_flow(
     period_start: str | None = None,
     period_end: str | None = None,
     time_step_hours: int = 24,
+    # Plan 399 T2 (D3) — supplied per run, opaque to SAP3 and passed through to
+    # the model unchanged. Omitted, every model sees `{}` exactly as before.
+    training_params: dict | None = None,
+    base_artifact_id: str | None = None,
     model_store: object = None,
     station_store: object = None,
     group_store: object = None,
@@ -283,6 +421,7 @@ def train_models_flow(
     forcing_store: object = None,
     forcing_source: object = None,
     lineage_writer: object = None,
+    warm_start_writer: object = None,
     models: dict | None = None,
     clock: object = None,
     rng: object = None,
@@ -291,7 +430,6 @@ def train_models_flow(
     audit_log_store: object = None,
 ) -> list[TrainingResult]:
     from datetime import UTC, datetime
-    from typing import cast
     from uuid import UUID
 
     from sapphire_flow.services.write_principal import (
@@ -330,6 +468,14 @@ def train_models_flow(
     # write (_store_artifact_task) — built only on the production DB-backed
     # path (a bootstrapped `_conn` exists); None for caller-injected stores,
     # which keep the direct AUTOCOMMIT path.
+    # Plan 399 T3 — the warm-start provenance writer, wired on the production
+    # DB path exactly like `lineage_writer`. ⛔ Without this the recorder T4
+    # ships has no caller, which is the defect the plan named against itself.
+    if warm_start_writer is None and _conn is not None:
+        from sapphire_flow.store.model_artifact_warm_start import PgWarmStartWriter
+
+        warm_start_writer = PgWarmStartWriter(_conn)
+
     audited_writer: object = None
     if _conn is not None:
         from sapphire_flow.store.audited_writer import make_audited_writer
@@ -435,8 +581,34 @@ def train_models_flow(
         discovered = discover_models()
         register_models(discovered, model_store, clock)
         models = discovered
+
     else:
         register_models(models, model_store, clock)
+
+    # Plan 399 T3 (§ 11) — attach the station-code resolver that GROUP paths
+    # require. `discover_models()` wraps FI models with NO resolver, and the
+    # adapter raises ConfigurationError for every GROUP input conversion, train
+    # and predict without one. That is why group training has never produced an
+    # artifact on any deployment: it could not. Attaching it here fixes group
+    # TRAIN as well as retrain — a station-scoped model is unaffected, since it
+    # never reaches the resolver.
+    #
+    # ⚠️ Placement matters: this MUST sit after the models-are-registered
+    # if/else above. Inserted between them it captures the `else`, so
+    # registration silently stops running whenever a station store IS supplied.
+    if station_store is not None:
+        resolver = build_station_code_resolver(cast("StationStore", station_store))
+        for _model in models.values():
+            attach = getattr(_model, "with_station_code_resolver", None)
+            if callable(attach):
+                attach(resolver)
+
+    # Plan 399 T3 — resolve the donor ONCE if one was named. `None` means
+    # ordinary training, which is the overwhelmingly common case and must be
+    # completely unaffected.
+    typed_base_artifact_id: ArtifactId | None = (
+        ArtifactId(UUID(base_artifact_id)) if base_artifact_id else None
+    )
 
     # T.1: determine scope
     scope = _determine_scope_task(
@@ -556,11 +728,20 @@ def train_models_flow(
         # corruption, a system-level integrity failure that must still abort
         # the run loudly, not be swallowed per-unit.
         try:
+            base_artifact = (
+                _load_base_artifact(
+                    model_instance, artifact_store, typed_base_artifact_id
+                )
+                if typed_base_artifact_id is not None
+                else None
+            )
             artifact_bytes = _train_model_task(
                 unit=unit,
                 model=model_instance,
                 data=data,
                 rng=rng,
+                params=training_params,
+                base_artifact=base_artifact,
             )
         except Exception as exc:  # flow-level guard, see docstring above
             log.error(
@@ -590,7 +771,21 @@ def train_models_flow(
             principal=run_principal,
             audit_log_store=audit_log_store,
             audited_writer=audited_writer,
+            # Plan 399 T3 — a retrained artifact is never auto-promoted.
+            promote=typed_base_artifact_id is None,
         )
+
+        # Plan 399 T3/T4 — warm-start provenance, right after the store, on the
+        # same pattern as basin lineage below. Only for a RETRAIN: a freshly
+        # trained artifact has no donor and records nothing (T4).
+        if typed_base_artifact_id is not None and warm_start_writer is not None:
+            _record_warm_start_provenance(
+                warm_start_writer=warm_start_writer,
+                artifact_id=cast("ArtifactId", artifact_id),
+                base_artifact_id=typed_base_artifact_id,
+                model=model_instance,
+                run_config=training_params or {},
+            )
 
         # Plan 120 Task 2D: lineage AFTER store + promote. Trained subset —
         # {unit.station_id} for a station-scoped unit, data.station_ids (the
