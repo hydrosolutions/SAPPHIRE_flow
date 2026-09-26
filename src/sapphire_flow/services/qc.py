@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from enum import Enum, auto
 from itertools import groupby
 from statistics import median
 from typing import TYPE_CHECKING
@@ -116,7 +117,14 @@ def resolve_selection(
 # missing baseline) counts — so it cannot drift from what the rules compute.
 # ⛔ What each rule computes and flags is unchanged; only the return value now
 # also says whether the rule could judge the reading.
-_Evaluation = tuple[bool, QcFlag | None]
+class Judgement(Enum):
+    """Whether a rule could judge a reading (Plan 323 T4)."""
+
+    JUDGED = auto()
+    NOT_EVALUABLE = auto()
+
+
+_Evaluation = tuple[Judgement, QcFlag | None]
 
 
 def _apply_range_check(
@@ -125,19 +133,19 @@ def _apply_range_check(
     rule: QcRuleParams,
 ) -> _Evaluation:
     if obs.value is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     v_min = thresholds.get("value_min")
     v_max = thresholds.get("value_max")
     if (v_min is not None and obs.value < v_min) or (
         v_max is not None and obs.value > v_max
     ):
-        return True, QcFlag(
+        return Judgement.JUDGED, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_FAILED,
             detail=f"value {obs.value} outside [{v_min}, {v_max}]",
         )
-    return True, None
+    return Judgement.JUDGED, None
 
 
 def _apply_rate_of_change(
@@ -147,10 +155,10 @@ def _apply_rate_of_change(
     rule: QcRuleParams,
 ) -> _Evaluation:
     if prev is None or obs.value is None or prev.value is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     max_rate = thresholds["max_rate"]
     if abs(obs.value - prev.value) > max_rate:
-        return True, QcFlag(
+        return Judgement.JUDGED, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -158,7 +166,7 @@ def _apply_rate_of_change(
                 f"rate {abs(obs.value - prev.value):.4f} exceeds max_rate {max_rate}"
             ),
         )
-    return True, None
+    return Judgement.JUDGED, None
 
 
 def _apply_frozen_sensor(
@@ -250,16 +258,16 @@ def _apply_spike(
     rule: QcRuleParams,
 ) -> _Evaluation:
     if prev is None or nxt is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     if obs.value is None or prev.value is None or nxt.value is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     if "max_delta" in thresholds:
         max_delta = thresholds["max_delta"]
         if (
             abs(obs.value - prev.value) > max_delta
             and abs(obs.value - nxt.value) > max_delta
         ):
-            return True, QcFlag(
+            return Judgement.JUDGED, QcFlag(
                 rule_id=rule.rule_id,
                 rule_version=_RULE_VERSION,
                 status=QcStatus.QC_SUSPECT,
@@ -268,16 +276,16 @@ def _apply_spike(
                     f"and next {nxt.value} by >{max_delta}"
                 ),
             )
-        return True, None
+        return Judgement.JUDGED, None
     tolerance = thresholds["tolerance"]
     ref = abs(prev.value)
     if ref == 0.0:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     if (
         abs(obs.value - prev.value) > tolerance * ref
         and abs(obs.value - nxt.value) > tolerance * ref
     ):
-        return True, QcFlag(
+        return Judgement.JUDGED, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -286,7 +294,7 @@ def _apply_spike(
                 f"and next {nxt.value} by >{tolerance:.2%} of |prev|"
             ),
         )
-    return True, None
+    return Judgement.JUDGED, None
 
 
 def _apply_gross_outlier(
@@ -296,15 +304,15 @@ def _apply_gross_outlier(
     rule: QcRuleParams,
 ) -> _Evaluation:
     if obs.value is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     doy = obs.timestamp.timetuple().tm_yday
     key = (obs.station_id, obs.parameter, doy)
     baseline = baseline_index.get(key)
     if baseline is None:
-        return False, None
+        return Judgement.NOT_EVALUABLE, None
     k_sigma = thresholds["k_sigma"]
     if abs(obs.value - baseline.rolling_mean) > k_sigma * baseline.rolling_std:
-        return True, QcFlag(
+        return Judgement.JUDGED, QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
@@ -314,7 +322,7 @@ def _apply_gross_outlier(
                 f"{k_sigma}σ (std={baseline.rolling_std:.4f})"
             ),
         )
-    return True, None
+    return Judgement.JUDGED, None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -398,7 +406,7 @@ class Stage1QualityChecker:
                     prev = group[i - 1] if i > 0 else None
                     nxt = group[i + 1] if i < len(group) - 1 else None
 
-                    evaluation: _Evaluation = (False, None)
+                    evaluation: _Evaluation = (Judgement.NOT_EVALUABLE, None)
                     match rule.rule_id:
                         case "range_check":
                             evaluation = _apply_range_check(obs, thresholds, rule)
@@ -413,8 +421,8 @@ class Stage1QualityChecker:
                                 obs, thresholds, baseline_index, rule
                             )
 
-                    evaluated, flag = evaluation
-                    if evaluated:
+                    judgement, flag = evaluation
+                    if judgement is Judgement.JUDGED:
                         judged.add(obs.id)
                     if flag is not None:
                         result[obs.id].append(flag)
