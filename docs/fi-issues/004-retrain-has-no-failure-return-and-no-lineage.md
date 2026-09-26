@@ -57,8 +57,13 @@ ForecastInterface v0.1.20, aquacast 0.1.356, 2026-09-25.
 ⭐ **`retrain` is what converts the deferral from comfortable to lossy.**
 
 A `train` artifact has no parent, so provenance can be reconstructed later from the training inputs.
-A `retrain` artifact's parent is **knowable only at the call**. If it is not captured there, it is
-not recoverable afterwards.
+A `retrain` artifact's parent is knowable only at the call. If it is not captured there, it is not
+recoverable afterwards.
+
+⚠️ **Where the caller picks the donor, the caller can capture it** — SAP3's Plan 399 does, so that
+case needs nothing from FI. The gap is the artifact whose donor the consumer did **not** choose:
+produced elsewhere, or handed over already fine-tuned. ⛔ *We are asking for one edge on THOSE, not
+for FI to record what we already know.*
 
 🔴 **This has already cost us once, on the artifact we would be fine-tuning.** SAP3's provenance row
 for `cmal_small` records, in the operator's own words, that the training revision is
@@ -112,8 +117,11 @@ a particular place.*
 - **The fine-tuning strategy surface.** aquacast's `FineTuningConfig` carries `strategy` (seven
   values: `full_model`, `last_layer`, `static_only`, `lora`, `lora_ensemble`, `svd`, `svd_ensemble`),
   `lr`, `rank`, `alpha`, `lora_target`, `n_members`, `normalization` and `per_branch`. All of it
-  reaches the model through FI's opaque `config: Mapping[str, Any]`, so SAP3 can neither validate nor
-  record which strategy produced an artifact.
+  reaches the model through FI's opaque `config: Mapping[str, Any]`, so SAP3 cannot **validate** it
+  or reason about it. ⛔ *An earlier version of this line also said SAP3 cannot **record** which
+  strategy produced an artifact. **That is wrong** — opacity does not prevent us storing the mapping
+  we supplied, and SAP3's Plan 399 T2 does exactly that.* ⇒ The remaining limitation is validation,
+  not provenance.
   ⚖️ **SAP3 owner, 2026-09-25: "agreed strategy surface is currently invisible. it's config.
   ACCEPTED for v1."** ⛔ *Recorded here so it is a known, accepted limitation rather than an
   oversight — not a request.*
