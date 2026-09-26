@@ -1,25 +1,25 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-25
 plan: 328
 title: Replacing a forecast — supersession, and the readers that would still serve the old one
 scope: Build supersession: a re-run matching row 1 or 2 of Plan 327's decision table (values differ; or values equal but the model artifact differs) replaces the stored forecast and leaves the original on record, marked. ⛔ NOT row 3 (QC verdict differs), which 327 refuses permanently. Includes the schema work that makes the state reachable and the reader work that stops a superseded forecast being served. NOT resuming an identical re-run (Plan 327), NOT the review/publish lifecycle, NOT hindcasts (their store already does approved atomic replacement on a six-column key).
 depends_on: [327]
 blocks: []
-related: [327, 340]
+related: [327, 340, 341]
 open_decisions: []
 source: 2026-09-25 — split out of Plan 327 at the owner's direction. A fourth review of 327 found it non-executable because resume and supersession were entangled: *"T3 is scheduled before T4 while T3's differing-content verification requires T4."* Every claim below was measured against `origin/main` and the live staging database that day.
 ---
 
 # Plan 328 — replacing a forecast
 
-⚠️ **Plan number PROVISIONAL until the owner grants it.** 340-344 are held by a concurrent session.
-
 ## Status
 
-**READY** — set by the orchestrator 2026-09-25; the final review returned **no findings**. ⛔ No implementation until an independent review and a READY flip. **Depends on Plan 327**
-— 327 defines the decision table and refuses rows 1, 2 and 3; this plan turns the **row 1 and 2**
-refusals into replacements. ⛔ *Row 3 stays refused.*
+**COMPLETE — merged in PR #309.** Migration `0058` adds the status and DB CHECK; the
+forecast store atomically supersedes and replaces rows 1 and 2 of Plan 327's decision table,
+retains the original and its evidence, and filters generation-current readers. Row 3 stays
+refused. The measurements and task instructions below describe the 2026-09-25 baseline and
+implementation requirements; they are historical, not claims about current code.
 
 ## Why this plan exists
 
@@ -36,7 +36,7 @@ it a replacement.
 a value the domain cannot produce and the index behaves as a full one. ⛔ *A reader of
 `db/metadata.py` would reasonably conclude a retry path exists. It does not.*
 
-## What is measured
+## What was measured before implementation
 
 `origin/main` and the live staging DB, 2026-09-25. ⚠️ *Plan 327 § What is measured carries the full
 set; repeated here are only the claims THIS plan rests on.*
@@ -65,36 +65,22 @@ set; repeated here are only the claims THIS plan rests on.*
 6. **A superseded forecast must stay reachable by id.** § (4) keeps its evidence; discarding the
    ability to read it back would make that evidence unreachable, which defeats its purpose.
 
-## 🔴 UNDECLARED COLLISION WITH PLAN 341 — found 2026-09-25, owned by nobody
+## Resolved boundary with Plan 341 — 2026-09-26
 
-**Plan 341 (CHWRR forecast review and publication API) is independently inventing the same
-mechanism**, and neither plan's frontmatter mentions the other. Measured from `341`'s own text:
+The earlier collision warning described a draft of Plan 341 that would have added
+`ForecastStatus.WITHDRAWN`. The reviewed Plan 341 explicitly forbids that status change.
+This plan owns automatic generation supersession: `ForecastStatus.SUPERSEDED`, its DB CHECK and
+existing partial unique index, and the readers that select the current generated forecast.
+Plan 341 owns a separate append-only human publication ledger and current-selection projection;
+reasoned withdrawal changes that ledger, not `forecasts.status` or its unique index.
 
-| | this plan (328) | Plan 341 |
-|---|---|---|
-| new `ForecastStatus` member | `SUPERSEDED` | **`WITHDRAWN`** (`341:34`) |
-| what it does | removes a forecast from current reads, keeps it on record | *"Withdrawal removes it from current consumer reads"* — **the same sentence** |
-| the DB CHECK on `forecasts.status` | must admit the new value | must admit **its** new value — **the same constraint, two migrations** |
-
-🔴 **Three concrete ways they collide:**
-
-1. **The enum and the CHECK constraint.** Two plans adding a member to `ForecastStatus` and to
-   `metadata.py:1130`. Whichever lands second rebases onto the first — survivable, but only if
-   someone knows.
-2. ⛔ **341 does not know the predicate is dead.** It never mentions `superseded` or
-   `uq_forecasts_station_model_issued_param`. ⇒ **A `withdrawn` forecast would still occupy the
-   unique slot**, so a replacement could not be published at the same key — 341 walks into the very
-   trap § (1) documents. ⚠️ *And if this plan makes the predicate reachable for `superseded` ONLY,
-   341 inherits the trap with a different value.* ⇒ **The predicate should exclude any
-   not-current state, not one named value.**
-3. **Both do the same reader work.** T3 here stops the unfiltered readers serving a superseded row;
-   341 needs exactly that for withdrawn ones. § (5) shows `fetch_latest_forecast()` and
-   `fetch_forecasts_for_cycle()` have **no status filter**, and 341 shows no sign of knowing.
-
-⚠️ **Not urgent: 341 is `DRAFT — not implementable`, flagged high-risk pending security and
-authorization work.** ⇒ **This is a sequencing note, not a blocker.** ⛔ *Recorded rather than
-resolved: renumbering or re-scoping another session's plan is not this one's to do. The owner
-should put the two sides in contact before either builds the status change.*
+The reader contracts differ. This plan's generation-current readers exclude superseded rows,
+while by-ID access retains them. Under Plan 341's CHWRR publication gate, a human-selected
+forecast remains visible to authorized consumers with its original values even if an automatic
+retry later marks its generation row `superseded`; only a new human decision moves or withdraws
+that publication selection. Implementing Plan 341 must therefore add its own published-selection
+reads without undoing this plan's generation-current filters. There is no shared enum, DB CHECK,
+index-predicate or reader migration for a `WITHDRAWN` forecast status.
 
 ## Owner decisions
 
@@ -170,7 +156,7 @@ already shows a differing same-key forecast raising `IntegrityError`.*
 
 ### T3 — Stop the readers serving a superseded forecast
 
-**Outcome.** No consumer serves a superseded forecast as if it were current.
+**Outcome.** No generation-current reader serves a superseded forecast as the current generated result; Plan 341's later human-published selection is a separate read contract.
 
 ⭐ **This task exists because of § (5), and it is the part a schema-only plan would have missed.**
 
@@ -199,7 +185,7 @@ today by luck.*
 **Verification.**
 - Each reader in the inventory, asserted individually. ⛔ *A single "consumers exclude it" test would
   pass on one reader and prove nothing about the rest.*
-- The Forecast Lab shows the replacement, and the published series does not show the original.
+- The Forecast Lab shows the replacement, and the pre-Plan-341 generation-current published series does not show the original. Plan 341 may later serve the human-selected original through its distinct publication read path.
 - By-id access to the superseded row still works, and it is distinguishable from a current one.
 
 ### T4 — Update the architecture (handed over by Plan 327 D3)
