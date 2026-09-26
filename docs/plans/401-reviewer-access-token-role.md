@@ -7,7 +7,7 @@ scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
 blocks: [345]
-related: [042, 143, 147, 215, 341, 345]
+related: [042, 147, 215, 268, 341, 345]
 open_decisions: []
 closed_decisions: [D1, D2, D3, D4]   # owner, 2026-09-26
 source: 2026-09-26 — owner, while reviewing Plan 345: "could we have a special user for the BAFU dashboard and the Nepal dashboard?" — to replace the admin token Plan 345 D11 had the map use.
@@ -33,7 +33,7 @@ The owner asked for a dedicated identity for each dashboard instead.
 **Separation needs separate clients.** A token is bound to one tenant (client), so tenant binding
 keeps two dashboards apart only when their stations sit in different tenants. Today every station
 is in the single seeded tenant `sapphire` (`alembic/versions/0041_tenants_table.py:9`;
-`config.toml:178` `writable_tenants = ["sapphire"]`). Until Nepal stations have their own tenant
+`config.toml:178` `writable_tenants = ["sapphire"]`). Until Plan 268 T2b provisions the DHM tenant
 (D4), a dashboard token on a shared database uses `scope_mode = stations` with an explicit station
 list — never `tenant` mode, which would follow every station in `sapphire`.
 
@@ -121,10 +121,11 @@ dashboard. No token role gains a write.
 
 ### D4 — Nepal stations get their own tenant. **⚖️ CLOSED — owner, 2026-09-26.**
 
-When Nepal stations are onboarded, they are registered under their own tenant (e.g. `dhm`), not the
-shared `sapphire` tenant, so a Swiss and a Nepal dashboard are separated by tenant for every token
-kind. T4 records this as a precondition in Plan 143 (DHM onboarding). Until then, dashboard tokens
-use an explicit station list (see *Why this exists*).
+This **confirms Plan 268 D11** (owner, 2026-09-10): the DHM gauges go into a new tenant in the
+existing database, which Plan 268 T2b provisions (fetch-before-create, with the code and display
+name fixed in 268's artifact). A Swiss and a Nepal dashboard are then separated by tenant for every
+token kind. This plan adds no tenant and names none. Until 268 T2b has run, dashboard tokens use an
+explicit station list (see *Why this exists*).
 
 ## Tasks
 
@@ -170,9 +171,13 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
 `__post_init__` requires a tenant only for consumers (the fail-open gap); and a migration test
 inserting a reviewer row with a tenant fails on `ck_access_tokens_role`.
 
-**Verification:** `uv run pytest tests/unit/types/test_auth.py tests/unit/db/test_alembic_head_release_b.py tests/integration/store/test_access_token_store.py tests/integration/db/` including a new `tests/integration/db/test_migration_<rev>_reviewer_role.py` modelled on `test_migration_0049_scope_mode.py` — upgrade; reviewer with a tenant accepted; reviewer without a tenant rejected; reviewer with `scope_mode = 'tenant'` accepted; admin with `scope_mode = 'tenant'` still rejected; downgrade refused while a reviewer row exists **and still refused after revoking it**; downgrade succeeds on a database with no reviewer rows, **after which** a reviewer insert fails on
-`ck_access_tokens_role` and an admin row with `scope_mode = 'tenant'` fails on
-`ck_access_tokens_tenant_mode_is_consumer` (the 0047/0049 rules are back).
+**Verification:** `uv run pytest tests/unit/types/test_auth.py tests/unit/db/test_alembic_head_release_b.py tests/integration/store/test_access_token_store.py tests/integration/db/` including a new `tests/integration/db/test_migration_<rev>_reviewer_role.py` modelled on `test_migration_0049_scope_mode.py` — upgrade; reviewer with a tenant accepted; reviewer without a tenant rejected; reviewer with `scope_mode = 'tenant'` accepted; the existing cross-tenant store cases
+(`tests/integration/store/test_access_token_store.py`, the consumer-only cases at `:96`, `:146`,
+`:340`) parameterized over consumer **and** reviewer — a foreign-tenant station is refused at
+create/grant and never enters a tenant-mode scope; admin with `scope_mode = 'tenant'` still rejected; downgrade refused while a reviewer row exists **and still refused after revoking it**; downgrade succeeds on a database with no reviewer rows, **after which** a reviewer insert fails on
+`ck_access_tokens_role`, and the definitions of all three constraints read back with
+`pg_get_constraintdef` equal the 0047/0049 definitions
+(`alembic/versions/0047_access_tokens_table.py:71-80`, `0049_access_tokens_scope_mode.py:49-58`).
 
 ### T2 — the auth dependency and route classification
 
@@ -190,7 +195,7 @@ so the dependency is also exercised on a test-only app.
 option (`require_principal`), admits a consumer — the test asserting a consumer gets 403 fails for
 the reason the gap exists. T2 switches that route to `require_reviewer`.
 
-**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope.
+**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
 
 ### T3 — issuing and managing reviewer tokens
 
@@ -236,8 +241,6 @@ roles, with GET-only unchanged.
   reviewer token; 341's own "reviewer(s)" (`:66`, `:82`) means the signed-in person, and `:82`'s RAW
   access does not extend to the token role; the two-role descriptions at `:28` and `:45` are
   superseded.
-- **A note in `docs/plans/143-dhm-v1-basin-gauge-onboarding.md`**: D4 — Nepal stations are
-  onboarded under their own tenant, not `sapphire`.
 
 **Out:** rewriting archived Plan 147.
 
@@ -247,8 +250,9 @@ roles, with GET-only unchanged.
 `grep -rniE 'two roles|two HTTP|third.{0,6}role|exactly two|consumer-only|consumer.{0,12}admin|CONSUMER.{0,40}ADMIN|create-admin' docs/ src/ --include='*.md' --include='*.py' | grep -v 'docs/plans/'`
 and read every hit: each must either name all three roles, or be one of the expected residual
 classes — a `create-admin` command line (bootstrap/rotation instructions), a legitimate per-role
-code branch, or an unrelated match (e.g. "exactly two sentences"). The Plan 341 and Plan 143 notes
-exist in the branch diff.
+code branch, or an unrelated match (e.g. "exactly two sentences"). The Plan 341 note exists in the
+branch diff, and **each In-listed location is changed in the branch diff, checked item by item**
+(the grep alone cannot show that).
 
 ## Exit gates
 
@@ -277,7 +281,7 @@ never on staging.
 ## Changelog
 
 - 2026-09-26 — drafted at the owner's request. Decisions: D1 (a third role, `reviewer`), D2 (a
-  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (Nepal stations get their own tenant).
+  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (confirms Plan 268 D11: the DHM gauges get their own tenant).
 
 ## Dependency graph
 
