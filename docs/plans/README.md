@@ -662,21 +662,22 @@ exit criteria — Plan 212 owns that deeper screening.
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](405-warm-start-gaps-and-untested-boundaries.md)
   — `DRAFT`, `open_decisions: [D1]`, **`depends_on: [399]`**. Drafted from two independent post-merge
   reviews of **399's shipped code** — the first able to check that plan against reality rather than
-  itself. ⭐ **No new capability**: every item is something 399 asserts and the code does not do.
+  itself. ⭐ **No new capability, with one declared exception** (T1's refusal-before-training ordering, which 399 never required): every other item is something 399 asserts and the code does not do.
   🔴 **A retrain-of-a-retrain CRASHES** — the inherited NULL-path reason is dropped and the record
   type raises **after the artifact is stored**, so a saved model loses its provenance (demonstrated by
   execution). 🔴 **The changed-template refusal does not exist** (`installed_config_sha256` is
   accepted and never compared; the resolver has no test at all). 🔴 **The donor config path is never
   recorded, for any donor, ever.** 🔴 **Neither retrain boundary is tested** — gutting the adapter's
-  `retrain` body leaves **723 tests passing**. ⚠️ D1 asks what "inspect the donor's params" means now
+  `retrain` body leaves **723 tests passing** *(that SELECTION, not the 6043-test suite)*. ⚠️ D1 asks what "inspect the donor's params" means now
   that a retrained donor demonstrably HAS a recorded config. ⛔ 399's staging run stays with 399.
 
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
   — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
   earlier version of this entry said "T1/T2/T4 complete, ONE thing remains" — **false**; a post-merge
   review against the shipped code found four requirements that never shipped and THREE verification
-  bullets never written.* 🔴 **SEVEN items remain** — see the plan's Status table; **Plan 405** carries
-  the six code/test ones, the staging run stays here. 🔴 *A retrain-of-a-retrain currently CRASHES after
+  bullets never written.* 🔴 **EIGHT items remain** — see the plan's Status table; **Plan 405** carries
+  the SEVEN code/test ones (four gaps + three bullets), the staging run stays here. ⛔ *An earlier
+  version said "seven remain, six carried" — the pre-fold arithmetic, from counting two bullets.* 🔴 *A retrain-of-a-retrain currently CRASHES after
   storing the artifact.* ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
   rather than onboard ERA5-Land.

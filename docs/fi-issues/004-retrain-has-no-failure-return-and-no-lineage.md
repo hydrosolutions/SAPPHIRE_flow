@@ -1,7 +1,10 @@
 # FI issue draft — `retrain` can neither REFUSE a base artifact nor record that it used one
 
-**Status:** DRAFT, ready to file at `hydrosolutions/ForecastInterface`.
-⛔ *Drafted by SAP3; filing is the owner's.*
+**Status:** ✅ **FILED 2026-09-26 as `hydrosolutions/ForecastInterface#10`** — on the owner's
+instruction. *Filed as three asks: the typed training failure (§ 1), parent identity scoped to donors
+the consumer did NOT select (§ 2), and the comment amendment for a caller that refuses (§ 3).*
+⚠️ *The filed text is self-contained — our internal plan numbers and section references were replaced
+with the evidence itself, since they mean nothing to the reader.*
 **Raised by:** SAPPHIRE Flow (SAP3), 2026-09-25.
 **Measured against:** ForecastInterface **v0.1.20**, aquacast **0.1.356**, both as installed in the
 SAP3 forecast worker image `sapphire-flow-aquacast:0.1.986`.

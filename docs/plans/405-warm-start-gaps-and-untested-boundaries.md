@@ -113,11 +113,21 @@ params, and D3 separately records the run config; they are different facts, and 
 make (a) look necessary.* ⚠️ *(a) is still a legitimate design choice — it is schema work, not gap
 closure, and belongs in its own plan if wanted.*
 
-🔴 **Either way, D1 must say what happens when the donor's `run_config` is EMPTY.**
-`flows/train_models.py:787` passes `run_config=training_params or {}`, so a retrained donor's row can
-carry `{}` — ⛔ *recording that as "the donor's params" reproduces § 4's defect one generation down:
-indistinguishable from unknown, with no reason. An empty mapping is UNKNOWN-with-a-reason, not a
-value.* ⭐ *Same hole that sank Plan 257 — an omitted config read as a declared zero.*
+🔴 **Either way, D1 must say what happens when the donor's `run_config` is EMPTY**, and T6 must carry
+it. `flows/train_models.py:787` passes `run_config=training_params or {}`, so a retrained donor's row
+can carry `{}`.
+⚖️ **DECIDED — `{}` is a KNOWN-EMPTY run config, NOT unknown.** *The flow normalises "nothing supplied"
+to it deliberately (`flows/train_models.py:269`), so it accurately records what the model was given.*
+⛔ *An earlier version said "an empty mapping is UNKNOWN-with-a-reason, not a value". **That is wrong**
+and conflates two things:*
+| | what it means |
+|---|---|
+| `run_config == {}` | **KNOWN**: the caller supplied no overrides. Record it as such. |
+| the model's EFFECTIVE settings after its own defaults | **UNKNOWN** — ⚠️ *and equally unknown for a NON-empty override, so this is not an empty-mapping problem at all.* |
+⇒ Under **(b)**, the per-class reason must not claim the donor's configuration "is retrievable via
+`base_artifact_id`" when that row holds `{}` — it is retrievable and it is empty, which is a different
+sentence. ⭐ *Plan 257's hole was an omitted config read as a declared zero; the fix here is to keep
+"empty" and "unknown" distinct rather than to relabel one as the other.*
 
 ⚠️ *Precision: (a) fires only when the DONOR is itself a retrain, so it is the **third** generation
 that gains traceability, not the second.*
@@ -129,13 +139,19 @@ that gains traceability, not the second.*
 **Outcome.** A retrain of a retrain completes and records accurate provenance.
 
 **In.**
-- `resolve_donor_config`'s inherited branch returns the inherited `base_config_unknown_reason`
-  rather than `None` — 🔴 **only when the inherited path is NULL** (§ 3 of the review: otherwise a
-  record can carry BOTH a path and an "unknown" reason, which `__post_init__` does not catch).
+- 🔴 **`resolve_donor_config`'s inherited branch DERIVES a reason describing the IMMEDIATE donor** —
+  regenerated, or naming which generation it describes — **only when the inherited path is NULL**
+  (otherwise a record can carry BOTH a path and an "unknown" reason, which `__post_init__` does not
+  catch).
+  ⛔ *An earlier version of this bullet said "returns the inherited `base_config_unknown_reason`".
+  **That is the naive fix this task's own Verification rejects** — an implementer building the In-list
+  would have failed the checks below. And it writes something FALSE: generation 1 is SAP3-produced and
+  has NO provenance row — which is precisely why the inherited branch is taken — yet the inherited
+  sentence asserts "the donor's config hash is recorded in its provenance."*
 - ⚖️ **DECIDED — separate RESOLVE/REFUSE from RECORD:**
   | step | when | why |
   |---|---|---|
-  | resolve the donor's config, and refuse on a mismatch or an unconstructable record | **BEFORE training** | ⭐ *This is the cheap fix, and an earlier version of this task did not name it.* A `ValueError` then cannot happen after the artifact is stored, because the record is proven constructible first. |
+  | resolve the donor's config, and refuse on a mismatch or an unconstructable record | **BEFORE training** | ⭐ *This is the cheap fix, and an earlier version of this task did not name it.* A `ValueError` then cannot happen after the artifact is stored, because the resolved triple is VALIDATED first. ⚠️ **Not by constructing the real record** — `WarmStartRecord.artifact_id` does not exist until the store runs. ⇒ **Validate the resolved `(path, sha, reason)` against the same invariant, and THREAD those values into the post-store record.** ⛔ *Re-resolving after the store would remove the raise by luck, not by construction; and a hand-rolled copy of the invariant can drift from `__post_init__` — share it.* |
   | write the row | after the store, as now | ⛔ **"BEFORE" is IMPOSSIBLE**: `model_artifact_id` is both PK and a FK to `model_artifacts.id` (`0060:30-37`), so no warm-start row can precede its artifact. *An earlier version offered "BEFORE or ATOMICALLY WITH … stating which" — a two-way choice that is a one-way street, and an instruction to decide rather than a decision.* |
   ⚠️ **Atomicity is NOT attempted.** *`PgWarmStartWriter` holds its own connection and the store is a
   separate Prefect task; joining them is a transaction restructuring this task does not scope. Moving
@@ -147,6 +163,10 @@ invariant — the unexplained NULL it rejects is a real defect, and rejecting it
 **Pre-change.** 🔴 **A RED test of the PRODUCTION-SHAPED chain**: generation 0 imported → 1 retrain →
 2 retrain, through the flow, not by calling the helper. ⚠️ *It must fail with
 `"base_config_path is NULL without a reason"` — that exact raise is the defect.*
+🔑 **This red is an INTEGRATION test.** *`resolve_donor_config` takes an `sa.Connection` and reads two
+tables, so a production-shaped chain needs the real writer against PostGIS — as 399's four warm-start
+tests did. ⛔ A unit fake writer here would recreate the "fake more permissive than production" failure
+399 hit three times.*
 🔴 **The donor must be pinned to a NULL config path deliberately.** ⛔ *Once T2 records a real path the
 inherited branch stops returning NULL and this test silently stops exercising the branch it exists
 for — vacuous by phase 2 unless the fixture forces the case.*
@@ -155,14 +175,17 @@ for — vacuous by phase 2 unless the fixture forces the case.*
 - Generation 2 completes and its record resolves to generation 1.
 - 🔴 **The recorded reason is TRUE OF THE IMMEDIATE DONOR, not inherited verbatim.** ⛔ *Propagating
   generation 0's sentence ("no installed config path was supplied to pair with it") to generation 2
-  describes a DIFFERENT artifact — which T6 explicitly forbids, so a naive "return the inherited
-  reason" fix violates this plan's own rule. Either the reason names which generation it describes,
+  describes a DIFFERENT artifact. ⚠️ *T6 states this rule for the PARAMS reason; the principle applies
+  here to the CONFIG reason — same rule, different column, so cite the principle rather than T6.* Either the reason names which generation it describes,
   or it is regenerated per donor.*
 - 🔴 **Generation 3 completes AND its recorded reason is true of generation 2** — ⛔ *"completes"
   alone proves nothing: any non-empty placeholder satisfies `__post_init__`, so a wrong fix passes.
   Assert the CONTENT.*
-- 🔴 **If provenance fails, no orphaned artifact remains** — asserted, since § 5's real damage was
-  the ordering.
+- 🔴 **When resolution REFUSES, nothing is stored** — no artifact row and no warm-start row.
+  ⛔ *An earlier version said "if provenance fails, no orphaned artifact remains". **Unsatisfiable in
+  this task**: the row is still written after the store on its own connection, which is exactly the
+  atomicity this task declines two bullets above. Only the PRE-TRAINING refusal leaves nothing
+  persisted — the same scope T2 already words correctly.*
 
 ### T2 — Record the donor's config path, and refuse a changed template (§§ 1, 3)
 
@@ -173,8 +196,9 @@ matches the donor is refused.
 - The flow passes the **real** installed config path (it already reads `model.config_hash` beside it).
 - `resolve_donor_config` **compares** `installed_config_sha256` with the donor's recorded hash, and
   the refusal happens **BEFORE retraining**, naming both hashes.
-- ⛔ *`installed_config_sha256` stops being a dead parameter, or it is removed — not left accepted
-  and ignored.*
+- ⛔ *`installed_config_sha256` stops being a dead parameter.* ⚠️ *An earlier version added "or it is
+  removed" — foreclosed, since the bullet above REQUIRES the comparison. Same shape round 1 struck from
+  T1: an either/or that is a one-way street.*
 
 **Out.** ⛔ Hashing today's template as the donor's identity (399 § 13's trap). ⛔ Refusing when the
 donor's hash is genuinely unknown — that is a NULL-with-reason, not a mismatch.
@@ -233,8 +257,11 @@ survives → add the boundary test → confirm the test now kills the mutation.*
 
 **Out.** ⛔ Giving onboarding a config channel. ⛔ Changing onboarding behaviour at all.
 
-**Pre-change.** 🔴 **A PER-SITE SOURCE MUTATION**: flip `params={}` to a non-empty mapping at each of
-the four sites and confirm the matching assertion fails. ⛔ *An earlier version said "N/A — this asserts
+**Pre-change.** 🔴 **A PER-SITE SOURCE MUTATION**: flip the empty mapping to a non-empty one at each of
+the four sites and confirm the matching assertion fails. ⚠️ **Two of the four pass it POSITIONALLY** —
+`services/model_onboarding.py:1453,1457` are `train_*_model(model, training_data, {}, rng)`, not
+`params={}`; only `flows/onboard_model.py:368,375` use the keyword. ⛔ *A mutation written for
+`params={}` alone would silently skip half the sites.* ⛔ *An earlier version said "N/A — this asserts
 existing behaviour, so it cannot be red". **That is the excuse, not an N/A**: T3 and T5 both derive
 their red from a source mutation and the same tool applies here. Declining it leaves the textbook
 vacuous pass open — an assertion shaped "every captured call passed `{}`" passes when NO call was
@@ -266,13 +293,25 @@ does.*
 
 **In.** D1's answer, replacing the constant reason at `flows/train_models.py:202-208`. ⛔ *Whatever
 D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is already false.*
+- 🔴 **THREE donor classes, not two** — and the third is the one D1 flags: imported; a retrain whose
+  `run_config` has content; **a retrain whose `run_config` is `{}`**. ⛔ *An earlier version of this task
+  carried none of D1's empty-config clause — verbatim the criticism this plan levels at its own draft
+  in the D1(a) cell ("flagged in a footnote and then T6's In-list carried none of it"), moved from a
+  footnote to a table cell.*
+- ⚠️ **If the owner overrides to (a)**, this task ALSO carries: a migration (a mapping cannot go in
+  `sa.Text()`), a `WarmStartRecord` field, the invariant update and the alembic-head test.
 
 **Out.** ⛔ Inventing a params file where none exists.
 
 **Pre-change.** A RED test: **a retrained donor's recorded params are not the constant string.**
 
-**Verification.** An imported donor and a retrained donor produce DIFFERENT, accurate records —
-asserted both ways.
+**Verification.**
+- All **THREE** donor classes produce DIFFERENT, accurate records — imported, retrain-with-content,
+  and **retrain-with-`{}`** — asserted individually. ⛔ *Two cases would leave the third, which is the
+  one D1 exists to settle, unasserted.*
+- 🔴 **The recorded reason is true of the donor in hand**, checked by CONTENT, not merely non-constant.
+  ⛔ *`base_params_path=None` already differs from the old constant, so "not the constant string" passes
+  trivially.*
 
 ## Explicitly out of scope
 
@@ -299,6 +338,8 @@ asserted both ways.
 
 - **2026-09-26** — drafted from two independent post-merge reviews of Plan 399's shipped code. ⭐ *Every
   item is a thing 399 asserts that the code does not do, measured at `7aec753b` — not new scope.*
+  ⚖️ *AMENDED 2026-09-26: with ONE declared exception — T1's refusal-before-training ordering, which 399
+  never required. See § Why this plan exists.*
   ⚠️ **§ 5's crash and § 6's 723-passing mutation were both measured by execution, not inferred.**
 - **2026-09-26 — first review, two reviewers, both NEEDS CHANGES.** ⭐ *Both confirmed the measured
   section holds and the task decomposition is clean — all nine sections have exactly one owner, nothing
@@ -339,3 +380,36 @@ asserted both ways.
   - **The "two verification bullets" count was wrong in three files** (this plan, 399, the index): it is
     three. **And T2's coupling to T1's ordering is now declared**, along with "nothing persisted" beside
     "model not called".
+- **2026-09-26 — second review, two reviewers, both NEEDS CHANGES.** ⭐ *Both confirmed the file held
+  still this time (one checked its md5 at start and end) — the discipline that failed in round 1 held.*
+  ⭐ *Both also re-confirmed: the measured section holds, the decomposition is clean, the 723/6043 figures
+  reproduce to the digit, and the shim route genuinely reaches the real shim (its helper subclasses
+  `AquacastShim` with an empty body, so no method is stubbed).* ⛔ **Two of the four findings were
+  defects my ROUND-1 FOLD introduced.**
+  - 🔴 **T1's In-list prescribed exactly the fix T1's Verification calls a violation.** I added the
+    content requirement to the Verification and left the In-list saying "return the inherited reason" —
+    so an implementer building the In-list fails the checks below it. ⚠️ *And the inherited sentence is
+    demonstrably FALSE of the immediate donor: generation 1 has no provenance row (that is why the
+    inherited branch is taken) yet the sentence asserts its hash "is recorded in its provenance".*
+  - 🔴 **T1's orphan bullet contradicted T1's own "atomicity is NOT attempted".** "If provenance fails,
+    no orphaned artifact remains" is unsatisfiable while the row is still written after the store on its
+    own connection. Narrowed to the refusal path — the scope T2 already worded correctly.
+  - 🔴 **"An empty mapping is UNKNOWN-with-a-reason" was WRONG.** `{}` is a KNOWN-empty run config — the
+    flow normalises "nothing supplied" to it deliberately. What is unknown is the model's EFFECTIVE
+    settings after its own defaults, and that is equally unknown for a NON-empty override, so it was
+    never an empty-mapping problem. Now a two-row table keeping "empty" and "unknown" distinct.
+  - 🔴 **D1's empty-config clause reached no task.** T6 carried two donor classes; there are three, and
+    the third is the one D1 exists to settle. ⛔ *Verbatim the criticism this plan levels at its own
+    earlier draft — "flagged in a footnote and then T6's In-list carried none of it" — moved from a
+    footnote to a table cell.*
+  - **"Proven constructible" is not literally possible** (the artifact id does not exist pre-store) ⇒
+    validate the resolved triple and **thread** it into the post-store record; re-resolving would remove
+    the raise by luck. **T1's red is an INTEGRATION test**, not unit — a fake writer would recreate the
+    "fake more permissive than production" failure 399 hit three times. **T2 kept a foreclosed
+    either/or** ("or it is removed") — the shape round 1 struck from T1. **T4's mutation covered half
+    the sites** — two pass the mapping positionally. **The T6 citation overreached** by one column.
+  - 🔴 **The count fix reached the WORD "three" and not the ARITHMETIC.** 399's item table still headed
+    "B. Two verification bullets" with only B1/B2 — so **B3, the bullet covering 399's own headline
+    blocker, appeared in no table anywhere** — and both 399 and the index still said "SEVEN remain / six
+    carried". Now EIGHT and SEVEN, B3 listed, and the index's unqualified "723 tests passing" and
+    blanket "no new capability" both qualified. ⛔ *Fold reaches the sentence, misses the sum.*

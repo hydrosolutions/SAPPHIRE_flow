@@ -115,9 +115,11 @@ lands first, Plan 341 already records that its activation wires this predicate a
 | `model_artifact_id` | FK `model_artifacts`, nullable |
 | `group_id` | FK `station_groups`, null for a member forecast |
 | `issued_at` | the cycle's issue time; the route's `start`/`end` filter on it |
-| `parameter`, `representation`, `units`, `time_step_seconds` | as on `forecasts` |
-| `values` | JSONB, exactly the `EnsembleResponse` value fields (`api/schemas.py:108`): `valid_times` and `series`, keyed by member id or quantile level. The **raw** ensemble, as `forecasts` would store it — for water level, not the datum-shifted copy QC checked. Non-finite numbers use the evidence encoding `{"nonfinite": "nan" \| "inf" \| "-inf"}` (`services/forecast_evidence.py:76-77`), so a rejected ensemble containing them is stored losslessly |
-| `qc_status` | the parameter's own verdict: `qc_failed`, `qc_suspect`, `qc_passed`, or `qc_unchecked` when its QC or datum handling errored after an earlier failure — so an errored parameter can never read as a pass |
+| `parameter`, `units` | as on `forecasts` |
+| `representation` | CHECK `IN ('members', 'quantiles')` |
+| `time_step_seconds` | NOT NULL (every new rejected row has a known step; `forecasts` allows NULL only for legacy rows) |
+| `values` | JSONB `series`, keyed by member id or quantile level, each an array of `[valid_time, value]` pairs — each series keeps **its own** timestamps, because `ForecastEnsemble` allows members with different timelines (`types/ensemble.py:42`), which a shared `valid_times` array (as in `EnsembleResponse`) would lose. The **raw** ensemble, as `forecasts` would store it — for water level, not the datum-shifted copy QC checked. Non-finite numbers use the evidence encoding `{"nonfinite": "nan" \| "inf" \| "-inf"}` (`services/forecast_evidence.py:76-77`), so a rejected ensemble containing them is stored losslessly |
+| `qc_status` | CHECK over the four values; the parameter's own verdict, **taken from the capture payload, never re-derived from the flags** (`worst_qc_status([])` is `QC_PASSED`): `qc_failed`, `qc_suspect`, `qc_passed`, or `qc_unchecked` when its QC or datum handling errored after an earlier failure — so an errored parameter can never read as a pass |
 | `qc_flags` | JSONB, the four-key flag shape, holding the parameter's flags — `[]` only for a passed or unchecked parameter |
 | `recorded_at` | server default `now()` |
 
@@ -125,10 +127,12 @@ Index `(station_id, issued_at)`. One assignment's rows are written in **one stat
 none). Every parameter of a rejected assignment is recorded, each with its own `qc_status` and flags: QC now runs on **all** parameters before the verdict, which is unchanged (any failed
 parameter still rejects the assignment).
 
-**Route** `GET /api/v1/stations/{id}/rejected-forecasts?start=&end=[&model_id=][&limit=&offset=]`,
-REVIEW-gated (Plan 401), station-scoped, paginated with its own ceiling (`limit` ≤ 50, since each item
-carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered by
-`(issued_at, recorded_at, id)`, non-finite values in the same encoding, flags typed as Plan 402's
+**Route** `GET /api/v1/stations/{id}/rejected-forecasts?[start=&end=][&model_id=][&limit=&offset=]`,
+REVIEW-gated (Plan 401), station-scoped; `start`/`end` filter `issued_at`, optional, default the last
+7 days ending at request time, `end` exclusive (Plan 402's query conventions); paginated with its own
+ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered newest first,
+`(issued_at DESC, recorded_at DESC, id DESC)` — like `/stations/{id}/forecasts`
+(`store/forecast_store.py:484`) — non-finite values in the same encoding, flags typed as Plan 402's
 `QcFlagResponse`; values and `detail` withheld per D4. Added to Plan 402's committed map contract and its explicit route list.
 
 ## Tasks
@@ -147,7 +151,9 @@ production for both the flow and the API.
 `rejected_forecast_store` on `run_forecast_cycle_flow` (`flows/run_forecast_cycle.py:2323-2365`),
 read from the production bundle when stores are not injected (`:2405-2428`) — an injected caller that
 omits it gets no capture, which leaves the ~84 existing injected test calls unchanged; a flow
-parameter `id_gen` (default `uuid4`) from which the flow mints `attempt_id`; grants in `docker/bootstrap-roles.sql`
+parameter `id_gen: object | None = None`, resolved to `uuid4` in the body beside `clock`/`rng`
+(`flows/run_forecast_cycle.py:2338-2339`, `:2398-2401` — a callable default is not a valid Prefect
+deployment parameter), from which the flow mints `attempt_id`; grants in `docker/bootstrap-roles.sql`
 (worker INSERT; API SELECT; no UPDATE/DELETE/TRUNCATE for either); `docs/spec/types-and-protocols.md`,
 `docs/spec/database-schema.md`, and the grant matrix in `docs/conventions.md` § Service users.
 
@@ -156,7 +162,7 @@ parameter `id_gen` (default `uuid4`) from which the flow mints `attempt_id`; gra
 **Pre-change:** with the Protocol and the fake in place, a store round-trip test against Postgres
 fails on the missing table.
 
-**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/ tests/integration/store/` including the new store and migration tests, named in the PR — round-trip of an ensemble and a quantile row, including a single-step forecast, a `qc_suspect` sibling parameter with its flags, one assignment's rows all written or none (a forced mid-statement failure against Postgres leaves no partial record), and one containing NaN, `inf` and `-inf`, preserving units, cadence and every value; upgrade and downgrade on an empty table; `tests/integration/db/test_role_bootstrap.py` extended: the worker can INSERT, the API can SELECT, and neither can UPDATE, DELETE or TRUNCATE (the precedent at `:381`); the production store bundle contains the new store.
+**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/ tests/integration/store/` including the new store and migration tests, named in the PR — round-trip of an ensemble and a quantile row, including a single-step forecast, a `qc_suspect` sibling parameter with its flags, an out-of-set `qc_status` rejected by the CHECK, members with different timelines, one assignment's rows all written or none (a forced mid-statement failure against Postgres leaves no partial record), and one containing NaN, `inf` and `-inf`, preserving units, cadence and every value; upgrade and downgrade on an empty table; `tests/integration/db/test_role_bootstrap.py` extended: the worker can INSERT, the API can SELECT, and neither can UPDATE, DELETE or TRUNCATE (the precedent at `:381`); the production store bundle contains the new store.
 
 ### T2 — capture every rejection, change nothing else
 
@@ -166,30 +172,37 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
 
 **In:**
 - `services/run_station_forecast.py` — QC every parameter before the verdict, logging
-  `run_station_forecast.qc_failed` once per rejected assignment with a `parameters` list (likewise
-  `run_group_forecast.qc_failed`, once per rejected station), and
-  `run_station_forecast.qc_parameter_unchecked` for a parameter whose block errored. Once a parameter has failed, an error anywhere in a remaining parameter's
+  `run_station_forecast.qc_failed` (warning; `station_id`, `model_id`, `parameters` = the failed
+  parameters) once per rejected assignment — likewise `run_group_forecast.qc_failed` (plus
+  `group_id`) once per rejected station — and `run_station_forecast.qc_parameter_unchecked` /
+  `run_group_forecast.qc_parameter_unchecked` (error; `station_id`, `model_id`, `parameter`,
+  `error`) for a parameter whose block errored. Once a parameter has failed, an error anywhere in a remaining parameter's
   block — the datum shift, `forecast_skipped_rules`, QC or `add_forecast_datum_details`
   (`services/run_station_forecast.py:571-587`, `services/run_group_forecast.py:289-307`) — is logged,
   records that parameter as `qc_unchecked`, and leaves the verdict at `QC_FAILED` — it never turns the
   cause into `UNEXPECTED_EXCEPTION` nor escapes the group call to drop the whole group.
   `AssignmentFailure`
-  gains an optional rejected payload (values, units, cadence, flags, artifact, issued time);
+  gains an optional rejected payload: artifact, issued time and, **per parameter**, `parameter`,
+  `representation`, `units`, `time_step_seconds`, the raw values, the flags and an explicit
+  `qc_status`;
   `run_station_forecast` (the PRIMARY wrapper) returns the rejected payloads alongside its result.
 - `services/run_group_forecast.py` — QC every parameter before the verdict in
   `_build_station_result` (`:287-318`, which today returns at the first failing one), and a new return
   shape carrying results **and** per-station rejected payloads (e.g. a `GroupForecastOutcome`). If a
   later station raises after an earlier one was rejected, the call raises a `GroupForecastError`
-  (chained to the original) that carries the rejected payloads gathered so far; the flow's existing
-  group `except` branch (`flows/run_forecast_cycle.py:3822-3838`) writes them, then skips the group
-  exactly as today — logging and recording the **chained original exception's message**, so the
-  `error` field and the cycle's `errors` text are unchanged. The caller at
+  carrying the rejected payloads gathered so far **and the original exception**. A new handler in
+  the flow, placed before the existing generic one, writes the payloads and then takes the existing
+  log-and-skip branch (`flows/run_forecast_cycle.py:3822-3838`) with the original's message, so the
+  `error` field and the cycle's `errors` text are unchanged. A `StoreError` is never wrapped: no
+  store call happens inside the per-station loop (`services/run_group_forecast.py:265-381`; the
+  artifact fetch at `:482-510` precedes it), so one cannot follow a rejection, and any `StoreError`
+  still propagates to the existing dedicated branch (`:3820`) exactly as today. The caller at
   `flows/run_forecast_cycle.py:3715` and `tests/unit/flows/test_run_forecast_cycle_group_fi_resolver.py`.
 - `flows/run_forecast_cycle.py` — mint one `attempt_id` at flow start from `id_gen`
   and pass it to every rejected-record write; write the payloads **immediately after** each of
   `run_all_station_forecasts_per_track`, `run_all_station_forecasts`, `run_station_forecast` and
   `run_group_forecast` returns, before the cross-cycle preflight, the `all_models_failed` checks or
-  any other exit. The write is **best-effort**: a failure logs `rejected_forecast.write_failed` (`attempt_id`,
+  any other exit. The write is **best-effort**: a failure logs `rejected_forecast.write_failed` (warning; `attempt_id`,
   `station_id`, `model_id`, `group_id`, `error`; once per rejected assignment), never aborts the
   cycle, is never counted in `forecasts_stored`, and never goes through the group path's fatal store
   call. A missing store in the production bundle is an error at setup (T1), not a silent no-op.
@@ -215,7 +228,9 @@ import or argument error.
 - a per-track station with a cross-cycle mismatch **and** a rejected model records the rejection and still skips the station;
 - a mixed group records only the failing station, with flags for **every** parameter; the sibling's forecast is stored as today;
 - an error in a later parameter's block after an earlier one failed keeps the verdict `QC_FAILED`, records that parameter as `qc_unchecked` (never as a pass), on the member path and the group path, where the siblings keep their results;
-- in a group, station A rejected then station B raising: A's rejection is recorded and the group is skipped exactly as today, with the same logged error text;
+- in a group, station A rejected then station B raising an ordinary error: A's rejection is recorded and the group is skipped exactly as today, with the same logged error text;
+- the stored `qc_status` of an unchecked parameter is `qc_unchecked` even though its flags are `[]`;
+- a rejected ensemble whose members have different timelines round-trips with each member's own timestamps;
 - a rejected assignment with one failed and one suspect parameter records both, each with its own status and flags, on the member and the group path;
 - every write in one flow execution carries the same `attempt_id`;
 - a rejected ensemble containing NaN or `inf` is captured, not dropped by the best-effort write;
@@ -230,9 +245,11 @@ import or argument error.
 
 **In:** the route next to Plan 402's REVIEW routes; response models reusing `QcFlagResponse`; the
 route-matrix entry (REVIEW); Plan 402's contract generator — its per-route role descriptions and its
-REVIEW 403 set gain this third REVIEW route; Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
+REVIEW 403 set and its 400 set (the route parses query values) gain this third REVIEW route; Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
-active); `docs/conventions.md` § API routes; `docs/standards/security.md` (the REVIEW-class route
+active; every parameter of a rejected assignment is returned — including `qc_passed` and `qc_suspect`
+ones — each with its own status; one rejection is the group `(attempt_id, station_id, model_id,
+group_id)`; `qc_unchecked` is not a pass; the query conventions above); `docs/conventions.md` § API routes; `docs/standards/security.md` (the REVIEW-class route
 list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API paragraph). The gate
 predicate (D4). If Plan 341's route inventory and switch exist on the base branch, wire the
 predicate to the switch, classify this route there as a REVIEW diagnostic whose values follow D4,
@@ -252,7 +269,7 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values and flags (predicate answers no), 404 out of scope; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come in `(issued_at, recorded_at, id)` order; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
+**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
 
 ### T4 — documents
 
@@ -260,10 +277,15 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **In:** `docs/spec/types-and-protocols.md` (Flow 1 step 1.10, `:797`), `docs/architecture-context.md:90,116`
 (rejections are recorded separately; group rejection is per station), the same whole-group wording
-in `docs/standards/orchestration.md:176-187`, `docs/standards/logging.md` (the two `qc_failed`
-events now once per assignment with `parameters`, and the new `qc_parameter_unchecked` and
-`rejected_forecast.write_failed` events), `docs/touchpoint-maps.md`
-(the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts), and
+in `docs/standards/orchestration.md:176-187`, `docs/standards/logging.md` (every event of T2 with
+its level and kwargs: the two `qc_failed` events, now once per assignment with the failed
+`parameters`; the two `qc_parameter_unchecked` events; `rejected_forecast.write_failed`), `docs/touchpoint-maps.md`
+(the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts; and
+`:412`'s "a mismatch skips ALL writes for that station this cycle"), the same cross-cycle contract in
+`docs/architecture-context.md:113` and the flow comment at `flows/run_forecast_cycle.py:3057-3060` —
+each reworded to "no forecast or model-state write; the rejected-forecast record is written before
+the preflight (Plan 404)" (`docs/standards/logging.md:300` already says "no forecast or state write"
+and stays true), and
 Plan 402's consumer-page line that rejected forecasts are not stored. Plan 341 already carries this plan's facts
 (this REVIEW route carries values, withheld from reviewer tokens on a gated tenant; its activation
 wires D4's predicate; rejected member/group forecasts never enter `forecasts` — `341:84`, `:112`);
@@ -292,10 +314,14 @@ After staging deploy (orchestrator):
    the volume measurement for retention.
 2. For each station and cycle with a rejection: in **combination** mode (staging runs `pooled`,
    `config/overlays/mac-mini.toml:15`) on a **fresh** cycle, the rejected model is absent from the
-   stored contributors and every other successful model is stored as before; in **PRIMARY** mode, the
-   stored forecast is the highest-priority successful model's. For a **re-run** of an earlier cycle,
+   stored contributors and every other successful model is stored as before (PRIMARY mode is covered
+   by T2's unit case; staging never runs it). For a **re-run** of an earlier cycle,
    check only that rejected outputs never enter the current attempt's combination inputs; existing
    rows behave as Plans 327/328 prescribe.
+3. A reviewer token (`--tenant sapphire`) scoped to one station → 200 on the route for that station
+   and 404 for another existing station; a temporary consumer token → 403. Delete both tokens by id
+   (Plan 401's single-token procedure).
+4. Only then does the orchestrator tell the map session about the route and the new contract version.
 
 ## Explicitly out of scope
 
