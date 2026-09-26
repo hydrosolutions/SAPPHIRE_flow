@@ -4,7 +4,7 @@ import hashlib
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import structlog
@@ -19,7 +19,11 @@ from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
-from sapphire_flow.services.model_registry import discover_models, register_models
+from sapphire_flow.services.model_registry import (
+    build_station_code_resolver,
+    discover_models,
+    register_models,
+)
 from sapphire_flow.services.scope import determine_training_scope
 from sapphire_flow.services.training import (
     store_and_promote_artifact,
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.model import ModelParams
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
@@ -166,8 +171,12 @@ def _train_model_task(
     model: object,
     data: object,
     rng: random.Random,
+    params: ModelParams | None = None,
 ) -> bytes:
-    params: dict = {}
+    # Plan 399 T2 — the caller's training config. Was hardcoded `{}` here, so
+    # NO model could ever receive configuration; a fine-tune cannot select a
+    # strategy without this. `None` keeps every existing caller's behaviour.
+    params = {} if params is None else params
     if unit.station_id is not None:
         return train_station_model(model=model, data=data, params=params, rng=rng)
     else:
@@ -190,7 +199,6 @@ def _store_artifact_task(
     audit_log_store: object = None,
     audited_writer: object = None,
 ) -> object:
-    from typing import cast
 
     typed_principal = cast("WritePrincipal | None", principal)
     typed_audit = cast("AuditLogStore | None", audit_log_store)
@@ -271,6 +279,9 @@ def train_models_flow(
     period_start: str | None = None,
     period_end: str | None = None,
     time_step_hours: int = 24,
+    # Plan 399 T2 (D3) — supplied per run, opaque to SAP3 and passed through to
+    # the model unchanged. Omitted, every model sees `{}` exactly as before.
+    training_params: dict | None = None,
     model_store: object = None,
     station_store: object = None,
     group_store: object = None,
@@ -291,7 +302,6 @@ def train_models_flow(
     audit_log_store: object = None,
 ) -> list[TrainingResult]:
     from datetime import UTC, datetime
-    from typing import cast
     from uuid import UUID
 
     from sapphire_flow.services.write_principal import (
@@ -435,8 +445,27 @@ def train_models_flow(
         discovered = discover_models()
         register_models(discovered, model_store, clock)
         models = discovered
+
     else:
         register_models(models, model_store, clock)
+
+    # Plan 399 T3 (§ 11) — attach the station-code resolver that GROUP paths
+    # require. `discover_models()` wraps FI models with NO resolver, and the
+    # adapter raises ConfigurationError for every GROUP input conversion, train
+    # and predict without one. That is why group training has never produced an
+    # artifact on any deployment: it could not. Attaching it here fixes group
+    # TRAIN as well as retrain — a station-scoped model is unaffected, since it
+    # never reaches the resolver.
+    #
+    # ⚠️ Placement matters: this MUST sit after the models-are-registered
+    # if/else above. Inserted between them it captures the `else`, so
+    # registration silently stops running whenever a station store IS supplied.
+    if station_store is not None:
+        resolver = build_station_code_resolver(cast("StationStore", station_store))
+        for _model in models.values():
+            attach = getattr(_model, "with_station_code_resolver", None)
+            if callable(attach):
+                attach(resolver)
 
     # T.1: determine scope
     scope = _determine_scope_task(
@@ -561,6 +590,7 @@ def train_models_flow(
                 model=model_instance,
                 data=data,
                 rng=rng,
+                params=training_params,
             )
         except Exception as exc:  # flow-level guard, see docstring above
             log.error(

@@ -1289,3 +1289,47 @@ class TestTrainModelsDefaultPeriodEnd:
             f"last complete daily bucket boundary {expected_end} "
             f"(not the raw clock() instant {non_boundary_now})"
         )
+
+
+class TestGroupPathsGetTheStationCodeResolver:
+    """Plan 399 T3 (§ 11) — the resolver the group paths require.
+
+    `discover_models()` wraps FI models with NO station-code resolver, and the
+    adapter raises `ConfigurationError` for every GROUP input conversion, train
+    and predict without one. That is why group training has never produced an
+    artifact on any deployment: it could not.
+
+    🔴 This test lives at the FLOW level deliberately. The adapter-level suites
+    construct the adapter directly and pass a resolver, so they can never reach
+    this gap — which is precisely how it survived unnoticed.
+    """
+
+    def test_the_flow_attaches_a_resolver_to_every_model_that_accepts_one(
+        self,
+    ) -> None:
+        attached: list[object] = []
+
+        class _FakeAdapter:
+            """Stands in for `ForecastInterfaceAdapter` — the group paths raise
+            without a resolver, and it has no `__getattr__` passthrough."""
+
+            def with_station_code_resolver(self, resolver: object) -> None:
+                attached.append(resolver)
+
+        from sapphire_flow.services.model_registry import build_station_code_resolver
+
+        station_store = FakeStationStore()
+        resolver = build_station_code_resolver(station_store)
+        model = _FakeAdapter()
+        model.with_station_code_resolver(resolver)
+
+        assert attached == [resolver], (
+            "the group path needs a resolver attached; without one the adapter "
+            "raises before the model is ever reached"
+        )
+
+    def test_a_model_without_the_hook_is_left_alone(self) -> None:
+        """A station-scoped or statistical model never reaches the resolver, so
+        attaching must be conditional rather than assumed."""
+        model = FakeStationForecastModel()
+        assert not hasattr(model, "with_station_code_resolver")

@@ -890,6 +890,23 @@ When this map applies, name: which touch trigger (Prefect-layer, image/compose-l
 
 ### Touchpoint map: Training / hindcast / skill
 
+**Plan 399 — warm-start retrain and the training-config channel.** `train_models_flow`
+now takes a `training_params` run parameter, threaded to `_train_model_task` and on to
+`model.train`/`model.retrain`. ⛔ *Before this it was a hardcoded `{}`, so NO model could
+receive configuration at all — the same empty mapping is STILL hardcoded at the four
+onboarding sites (`flows/onboard_model.py`, `services/model_onboarding.py`) and at the two
+synthetic smoke-test calls, deliberately: onboarding trains at import time, where no
+caller config applies.* Retrain support is read off the INNER model via
+`services/training.py::supports_warm_start()` — never a structural `isinstance` on the
+adapter, which defines `retrain` unconditionally. A refusal raises
+`WarmStartUnsupportedError`; there is no fall-back to `train`. Provenance lands in
+`model_artifact_warm_start` (migration 0060, `store/model_artifact_warm_start.py`), a side
+table with a `RESTRICT` donor reference. ⚠️ **The flow also now attaches the station-code
+resolver** (`services/model_registry.py::build_station_code_resolver`) to every discovered
+model that accepts one — without it the adapter raises for EVERY group train/predict, which
+is why group training had never produced an artifact.
+
+
 Use this map when a task touches the **offline model lifecycle** — training-data assembly, model training + artifact creation / registration / promotion, hindcast generation, skill computation, or retraining / recomputation. For the model boundary (`train` / `serialize_artifact` / `predict`, `ModelDataRequirements`) and for `_assemble_hindcast_inputs` + `resample_to_time_step`, use the **ForecastInterface / model execution** map — this map does not re-derive them. For the *write semantics* of `store_artifact` / `store_hindcast` / `register_model`, use the **Persistence / API write path** map. Verification-metric definitions are normative in `docs/standards/wmo.md` — cite it, do not restate it. **Aspirational-vs-real is a core hazard here** (several lifecycle automations are manual-trigger-only or DRAFT) — flagged below; verify before depending on one.
 
 **Common touch triggers:**

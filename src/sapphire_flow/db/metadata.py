@@ -198,6 +198,74 @@ model_artifact_basin_versions = sa.Table(
     sa.PrimaryKeyConstraint("model_artifact_id", "basin_version_id"),
 )
 
+# Plan 399 T4 — warm-start (fine-tune) provenance: what a retrained artifact
+# was derived FROM, and the configuration the run used.
+#
+# A SIDE TABLE, not columns on `model_artifacts` — the same reasoning as
+# `model_artifact_basin_versions` above: `model_artifacts` itself gains no new
+# column. One row per retrained artifact.
+#
+# ⛔ `ondelete` is deliberately RESTRICT (the SQLAlchemy default for a plain
+# ForeignKey): deleting a base artifact that something was fine-tuned from is
+# REFUSED. CASCADE would delete this row, which passes a naive "no orphan
+# remains" check while destroying the only answer to "what was this fine-tuned
+# from?" — the question the table exists for. Supersession is unaffected: it
+# marks status (`services/training.py`), it does not delete.
+model_artifact_warm_start = sa.Table(
+    "model_artifact_warm_start",
+    metadata,
+    sa.Column(
+        "model_artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id"),
+        primary_key=True,
+    ),
+    # The donor. RESTRICT is EXPLICIT rather than left to the default: the
+    # default (NO ACTION) also refuses, but the intent belongs in the schema
+    # where the next reader sees it, not in a default.
+    sa.Column(
+        "base_artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    # The donor's config identity, resolved from the DONOR's own provenance —
+    # never by hashing whatever template is installed today (§ 13). NULL when
+    # the donor pre-dates this table and was not imported, with the reason in
+    # `base_config_unknown_reason`.
+    sa.Column("base_config_path", sa.Text(), nullable=True),
+    sa.Column("base_config_sha256", sa.Text(), nullable=True),
+    sa.Column("base_config_unknown_reason", sa.Text(), nullable=True),
+    # What the donor was TRAINED with. Nullable because it may be UNKNOWN, not
+    # known-absent: an imported donor's external training params are not
+    # recoverable from SAP3 (§ 5a).
+    sa.Column("base_params_path", sa.Text(), nullable=True),
+    sa.Column("base_params_unknown_reason", sa.Text(), nullable=True),
+    # D3's other half: the configuration THIS run was given, stored verbatim so
+    # "which strategy produced this artifact?" is answerable later. Opaque to
+    # SAP3 by decision (owner: accepted as config for v1).
+    sa.Column(
+        "run_config",
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+    ),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+)
+
+# The audit question "what was fine-tuned FROM this artifact?" keys on the
+# donor, which the PK (`model_artifact_id`) cannot serve.
+sa.Index(
+    "ix_model_artifact_warm_start_base",
+    model_artifact_warm_start.c.base_artifact_id,
+)
+
+
 # The correction path looks up lineage rows by `basin_version_id`, which the
 # composite PK `(model_artifact_id, basin_version_id)` cannot serve (its leading
 # column is `model_artifact_id`). A dedicated single-column index makes that

@@ -1069,6 +1069,41 @@ class ForecastInterfaceAdapter:
         model_inputs = self._model_inputs_from_data(data)
         return self._model.train(model_inputs, config=params, rng=rng)
 
+    @property
+    def supports_warm_start(self) -> bool:
+        """Plan 399 T1 — whether the WRAPPED FI model implements `retrain`.
+
+        Read off `self._model`, exactly like `config_hash` above and for the
+        same reason: this class has NO `__getattr__` passthrough. Because
+        `retrain` below is defined unconditionally, a structural
+        `isinstance(adapter, RetrainableStationModel)` would be True for EVERY
+        FI model — including one whose inner model cannot retrain — and the
+        refusal SAP3 owes (D2) would never fire for the one case it exists for.
+        Callers MUST consult this property, not `isinstance`.
+        """
+        inner_supports = getattr(self._model, "supports_warm_start", None)
+        if isinstance(inner_supports, bool):
+            return inner_supports
+        return callable(getattr(self._model, "retrain", None))
+
+    def retrain(
+        self,
+        base_artifact: ModelArtifact,
+        data: StationTrainingData | GroupTrainingData,
+        params: ModelParams,
+        rng: random.Random,
+    ) -> ModelArtifact:
+        """Plan 399 T1 — warm-start from an existing artifact.
+
+        ⛔ No fall-back to `train`. A caller that has not checked
+        `supports_warm_start` and reaches a model without `retrain` gets the
+        inner model's own AttributeError, which is a programming error here —
+        the service layer refuses before calling this.
+        """
+        self._assert_single_deliverable_dynamic_branch()
+        model_inputs = self._model_inputs_from_data(data)
+        return self._model.retrain(base_artifact, model_inputs, config=params, rng=rng)
+
     def evidence_inputs(
         self, inputs: StationModelInputs | GroupModelInputs
     ) -> ModelInputs:

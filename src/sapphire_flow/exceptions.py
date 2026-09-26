@@ -184,6 +184,19 @@ class UnsupportedModelRequirementError(SapphireError):
     instead (``services/model_registry.py::discover_models``)."""
 
 
+class WarmStartUnsupportedError(SapphireError):
+    """Plan 399 T2/D2 — a retrain was requested for a model that does not
+    implement warm-start.
+
+    ⛔ SAP3 REFUSES rather than falling back to `train` (owner, 2026-09-26).
+    The FI contract's own comment suggests the fall-back, and we deliberately
+    diverge: asking to fine-tune and silently getting a from-scratch retrain
+    discards the pre-training that motivates fine-tuning at all, and the
+    resulting artifact is indistinguishable from a fine-tuned one. The
+    divergence is recorded in `docs/fi-issues/004`.
+    """
+
+
 class ModelSmokeTestError(SapphireError):
     """Model failed smoke test during onboarding."""
 

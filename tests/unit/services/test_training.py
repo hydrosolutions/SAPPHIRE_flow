@@ -7,9 +7,11 @@ from uuid import UUID
 import polars as pl
 import pytest
 
-from sapphire_flow.exceptions import TenantIsolationError
+from sapphire_flow.exceptions import TenantIsolationError, WarmStartUnsupportedError
 from sapphire_flow.services.training import (
     promote_artifact,
+    retrain_group_model,
+    retrain_station_model,
     store_and_promote_artifact,
     train_group_model,
     train_station_model,
@@ -443,3 +445,166 @@ class TestPromotionTenantIsolation:
         record = store.fetch_artifact_record(new_id)
         assert record is not None
         assert record.status == ModelArtifactStatus.TRAINING
+
+
+class TestWarmStartRefusal:
+    """Plan 399 T1/D2 — SAP3 REFUSES a retrain on a model without warm-start
+    rather than falling back to training from scratch."""
+
+    def test_a_model_without_retrain_is_refused_and_train_is_never_called(
+        self,
+    ) -> None:
+        model = FakeStationForecastModel()
+        assert not hasattr(model, "retrain")
+        called: list[str] = []
+        model.train = lambda *a, **k: called.append("train")  # type: ignore[method-assign]
+
+        with pytest.raises(
+            WarmStartUnsupportedError, match="does not support warm-start"
+        ):
+            retrain_station_model(
+                model=model,
+                base_artifact=object(),
+                data=_make_training_data(),
+                params={},
+                rng=_RNG,
+                model_id="no_warm_start",
+            )
+
+        # ⛔ The point of D2: it must NOT quietly train from scratch.
+        assert called == []
+
+    def test_the_error_names_the_model(self) -> None:
+        with pytest.raises(WarmStartUnsupportedError, match="'linreg_daily'"):
+            retrain_group_model(
+                model=FakeGroupForecastModel(),
+                base_artifact=object(),
+                data=_make_group_training_data(),
+                params={},
+                rng=_RNG,
+                model_id="linreg_daily",
+            )
+
+    def test_a_wrapped_model_whose_inner_model_cannot_retrain_is_refused(self) -> None:
+        """🔴 The case a bare structural `isinstance` would silently PASS.
+
+        A wrapper that defines `retrain` unconditionally satisfies the
+        structural protocol even when the model it wraps cannot retrain — so
+        support must be read off the inner model via `supports_warm_start`.
+        """
+
+        class _WrapperDefiningRetrainUnconditionally:
+            """Stands in for `ForecastInterfaceAdapter`: no `__getattr__`."""
+
+            def __init__(self, inner: object) -> None:
+                self._model = inner
+
+            @property
+            def supports_warm_start(self) -> bool:
+                return callable(getattr(self._model, "retrain", None))
+
+            def retrain(self, *a: object, **k: object) -> object:  # always defined
+                return self._model.retrain(*a, **k)  # type: ignore[attr-defined]
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return b""
+
+        wrapped = _WrapperDefiningRetrainUnconditionally(FakeStationForecastModel())
+        # The trap: the wrapper DOES have a callable `retrain`.
+        assert callable(wrapped.retrain)
+        # …and is nonetheless refused, because the INNER model has none.
+        with pytest.raises(WarmStartUnsupportedError):
+            retrain_station_model(
+                model=wrapped,  # type: ignore[arg-type]
+                base_artifact=object(),
+                data=_make_training_data(),
+                params={},
+                rng=_RNG,
+                model_id="wrapped_without_support",
+            )
+
+    def test_a_model_with_retrain_receives_the_base_artifact_and_the_config(
+        self,
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        class _Retrainable(FakeStationForecastModel):
+            def retrain(
+                self,
+                base_artifact: object,
+                data: object,
+                params: object,
+                rng: object,
+            ) -> object:
+                seen["base"] = base_artifact
+                seen["params"] = params
+                return "retrained-artifact"
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return str(artifact).encode()
+
+        base = object()
+        config = {"finetuning": {"strategy": "last_layer", "lr": 0.0001}}
+        raw = retrain_station_model(
+            model=_Retrainable(),  # type: ignore[arg-type]
+            base_artifact=base,
+            data=_make_training_data(),
+            params=config,
+            rng=_RNG,
+            model_id="cmal_small",
+        )
+
+        assert raw == b"retrained-artifact"
+        assert seen["base"] is base
+        # 🔑 byte-identical, not merely truthy — a hardcoded strategy must fail.
+        assert seen["params"] == config
+
+
+class TestTrainingConfigChannel:
+    """Plan 399 T2/D3 — a caller can supply training configuration.
+
+    Before this, `flows/train_models.py` hardcoded an empty mapping, so NO
+    model could receive any configuration at all (seven sites, § 5)."""
+
+    def test_the_task_helper_forwards_the_callers_config(self) -> None:
+        seen: dict[str, object] = {}
+
+        class _Recording(FakeStationForecastModel):
+            def train(self, data: object, params: object, rng: object) -> object:
+                seen["params"] = params
+                return "artifact"
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return str(artifact).encode()
+
+        config = {"finetuning": {"strategy": "lora", "rank": 8}}
+        train_station_model(
+            model=_Recording(),  # type: ignore[arg-type]
+            data=_make_training_data(),
+            params=config,
+            rng=_RNG,
+        )
+        # byte-identical: a hardcoded or partially-forwarded config must fail
+        assert seen["params"] == config
+
+    def test_no_config_supplied_leaves_the_model_seeing_an_empty_mapping(
+        self,
+    ) -> None:
+        """🔴 The unchanged case — every existing model trains through here."""
+        seen: dict[str, object] = {}
+
+        class _Recording(FakeStationForecastModel):
+            def train(self, data: object, params: object, rng: object) -> object:
+                seen["params"] = params
+                return "artifact"
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return str(artifact).encode()
+
+        train_station_model(
+            model=_Recording(),  # type: ignore[arg-type]
+            data=_make_training_data(),
+            params={},
+            rng=_RNG,
+        )
+        assert seen["params"] == {}

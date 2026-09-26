@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sapphire_flow.exceptions import WarmStartUnsupportedError
 from sapphire_flow.types.enums import AuditEventType, ModelArtifactStatus
 
 if TYPE_CHECKING:
@@ -51,6 +52,58 @@ def train_group_model(
     rng: random.Random,
 ) -> bytes:
     artifact = model.train(data, params, rng)
+    return model.serialize_artifact(artifact)
+
+
+def supports_warm_start(model: object) -> bool:
+    """Plan 399 T1/D2 — does this model support fine-tuning from an artifact?
+
+    ⛔ Deliberately NOT `isinstance(model, RetrainableStationModel)`. A wrapped
+    FI model reaches us as `ForecastInterfaceAdapter`, which has no
+    `__getattr__` passthrough and defines `retrain` unconditionally — so a
+    structural check is True for EVERY FI model, including one whose inner
+    model cannot retrain, and the refusal below would never fire for the only
+    case it exists for. The adapter exposes `supports_warm_start`, which reads
+    the INNER model (the same precedent as its `config_hash` proxy).
+    """
+    declared = getattr(model, "supports_warm_start", None)
+    if isinstance(declared, bool):
+        return declared
+    return callable(getattr(model, "retrain", None))
+
+
+def _require_warm_start(model: object, model_id: str) -> None:
+    if not supports_warm_start(model):
+        raise WarmStartUnsupportedError(
+            f"model {model_id!r} does not support warm-start retrain; "
+            "SAP3 refuses rather than falling back to training from scratch "
+            "(Plan 399 D2)"
+        )
+
+
+def retrain_station_model(
+    model: StationForecastModel,
+    base_artifact: object,
+    data: StationTrainingData,
+    params: ModelParams,
+    rng: random.Random,
+    model_id: str = "<unknown>",
+) -> bytes:
+    _require_warm_start(model, model_id)
+    artifact = model.retrain(base_artifact, data, params, rng)  # type: ignore[attr-defined]
+    return model.serialize_artifact(artifact)
+
+
+def retrain_group_model(
+    model: GroupForecastModel,
+    base_artifact: object,
+    data: GroupTrainingData,
+    params: ModelParams,
+    rng: random.Random,
+    model_id: str = "<unknown>",
+) -> bytes:
+    _require_warm_start(model, model_id)
+    artifact = model.retrain(base_artifact, data, params, rng)  # type: ignore[attr-defined]
     return model.serialize_artifact(artifact)
 
 

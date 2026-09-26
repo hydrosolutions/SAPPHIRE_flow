@@ -2143,7 +2143,60 @@ class GroupForecastModel(Protocol):
 
 # Union type for the orchestration layer to dispatch on
 ForecastModel = StationForecastModel | GroupForecastModel
+
+
+# --- Plan 399 — OPTIONAL warm-start (fine-tune) capability ---------------------
+#
+# A model MAY support continuing from an existing artifact instead of training
+# from scratch. These are SEPARATE, OPTIONAL protocols: the Swiss statistical
+# models implement none of this and satisfy the two protocols above unchanged.
+#
+# Mirrors ForecastInterface's `RetrainableModel`, which aquacast already
+# implements. SAP3 REFUSES a retrain on a model that does not support it
+# (`WarmStartUnsupportedError`) rather than falling back to `train` — a
+# deliberate divergence from the FI contract comment, recorded in
+# `docs/fi-issues/004`: a silent from-scratch retrain would discard the
+# pre-training that motivates fine-tuning, and the resulting artifact would be
+# indistinguishable from a fine-tuned one.
+
+@runtime_checkable
+class RetrainableStationModel(Protocol):
+    def retrain(
+        self,
+        base_artifact: ModelArtifact,
+        data: StationTrainingData,
+        params: ModelParams,
+        rng: random.Random,
+    ) -> ModelArtifact: ...
+
+@runtime_checkable
+class RetrainableGroupModel(Protocol):
+    def retrain(
+        self,
+        base_artifact: ModelArtifact,
+        data: GroupTrainingData,
+        params: ModelParams,
+        rng: random.Random,
+    ) -> ModelArtifact: ...
 ```
+
+⛔ **Do NOT decide warm-start support with `isinstance(model, RetrainableStationModel)`.**
+A wrapped ForecastInterface model arrives as `ForecastInterfaceAdapter`, which has
+no `__getattr__` passthrough and defines `retrain` unconditionally — so a
+structural check is `True` for **every** FI model, including one whose inner model
+cannot retrain, and the refusal never fires for the only case it exists for. Ask
+`services/training.py::supports_warm_start()`, which reads the INNER model through
+the adapter's `supports_warm_start` proxy (the same precedent as its `config_hash`
+proxy).
+
+**Provenance.** A retrained artifact records what it came from in
+`model_artifact_warm_start` (Plan 399, migration 0060) — the donor artifact, the
+donor's config path and hash, the donor's params path, and the config the run
+used. A SIDE TABLE: `model_artifacts` gains no column. The donor reference is
+`RESTRICT` — deleting a base artifact something was fine-tuned from is refused,
+because a cascade would destroy the only answer to "what was this fine-tuned
+from?". UNKNOWN and known-absent are distinct states and each NULL carries a
+reason.
 
 Models are pure functions — no DB, no I/O. Artifact serialization is the model's
 responsibility; artifact *persistence* (reading/writing files) is the caller's.
