@@ -333,7 +333,8 @@ none.**
   "phases": [
     {"phase": 1, "tasks": ["T2"], "parallel": false, "decision": "D3 CLOSED",
      "note": "the config channel first — D3 is the ONE decision still open and it blocks everything; nothing can select a strategy without it"},
-    {"phase": 2, "tasks": ["T1"], "parallel": false, "decision": "D2 CLOSED"},
+    {"phase": 2, "tasks": ["T1"], "parallel": false, "decision": "D2 CLOSED",
+     "note": "T1 is NOT technically blocked by T2 — the services and the FI boundary already accept a config argument, so the passthrough is independently testable. T2 first is a sequencing PREFERENCE (D3 gates the real run), not a dependency"},
     {"phase": 3, "tasks": ["T4"], "parallel": false,
      "note": "lineage BEFORE the first real run, so the first retrained artifact is not the one with no parent recorded"},
     {"phase": 4, "tasks": ["T3"], "parallel": false, "decision": "D1 CLOSED"}
@@ -364,3 +365,36 @@ none.**
     `cmal_small`, the very first base, has none to point at.
   - ⛔ **D3 remains open and still gates everything**, now declared as a machine-readable gate on
     phase 1 rather than only noted in prose.
+- **2026-09-26** — **independent review: NEEDS CHANGES. Every finding verified against the code
+  before folding.** ⭐ *One is a genuine blocker the draft had no idea about.*
+  - 🔴 **GROUP TRAINING IS BROKEN TODAY, and that explains § 10.** The training flow wraps discovered
+    models with `adapt_if_fi` and attaches **no station-code resolver**; the adapter raises for every
+    GROUP train/predict without one. ⇒ Group training has never produced an artifact here because it
+    **cannot**, not merely because nobody ran it. New § 11; T3 now owns the wiring, and its RED test
+    moved to the FLOW level — ⛔ *the draft's "T1/T2's tests cover the mechanism" was false: those
+    exercise the adapter directly and never reach the missing resolver.*
+  - 🔴 **I inferred a fact I had not measured.** From "run params are an empty dict" I concluded
+    "`cmal_small` has no training params, so the first retrain records none". **Invalid** — it was
+    IMPORTED, not trained here, so our empty params say nothing about its external training. New
+    § 5a separates three kinds of config (vendored template / run params / the donor's own), and T4
+    must now INSPECT the donor rather than assume NULL.
+  - 🔴 **The forcing-parity justification was overstated.** Measured: training's future leg is
+    reanalysis, serving's is NWP forecast records. ⇒ Fine-tuning fixes the **climatology** mismatch
+    (ERA5-Land vs RhiresD/TabsD); it does **not** teach the model ICON's forecast-error behaviour.
+    ⚠️ *Equally true of the original Caravan training, so nothing is made worse — but the plan must
+    not be read as closing a gap it does not close.*
+  - **§ 8 stated the wrong store contract** — `fetch_artifact` returns `(ArtifactId, bytes) | None`,
+    not `(sha256, bytes)`; and the existing call site is not a model to copy (it discards the id and
+    deserializes the in-memory bytes). T3 now deserializes the FETCHED bytes and rejects a missing
+    donor.
+  - **The existing store step auto-promotes** (`store_and_promote_artifact`), so T3's
+    already-stated "do not promote" needs a path that does not, and says so.
+  - **T2's RED test named `train`/`retrain`** — unsatisfiable, since `retrain` does not exist until
+    the next phase. Split.
+  - **fi-issue 004 had two claims this plan contradicts**, both corrected there: that SAP3 cannot
+    *record* which strategy produced an artifact (it can — T2 does), and an unscoped parent-identity
+    ask (scoped now to donors SAP3 did not select). A third section added: the D2 refusal diverges
+    from FI's own fall-back comment, so the issue asks upstream to confirm the choice is the
+    caller's — ⚠️ *documenting it locally does not reconcile it.*
+  - **Phase note added:** T1 is not technically blocked by T2; T2-first is a preference, not a
+    dependency.
