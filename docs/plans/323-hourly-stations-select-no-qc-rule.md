@@ -6,7 +6,7 @@ plan: 323
 title: Five Swiss stations report hourly and select no QC rule at all
 scope: Give the observation QC rule set a 3600 s cadence for the parameters the hourly BAFU stations deliver, so those stations are actually checked instead of selecting zero rules — on ~95% of checks; the owner accepted the leftover on 2026-09-25 — and, so that no hourly reading is marked passed unjudged, require that a reading passes only if some selected check could actually judge it (T4; recorded, not alarmed on — D5; owner 2026-09-26). NOT supplying water-level datums (Plan 403). NOT how the cadence is inferred (Plan 400), NOT an hourly `frozen_sensor` row (no plan yet), NOT the DHM/Nepal rule rows (303), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT per-station overrides (269), NOT re-QC of the rows already stored (owner, 2026-09-24 — history is left), NOT the pick-up set (317, merged), NOT the consumer policy (316, merged).
 depends_on: []
-blocks: [400]
+blocks: [400, 403]
 related: [264, 269, 272, 303, 313, 315, 316, 317, 318, 400, 403]
 open_decisions: []
 source: 2026-09-24 — the owner reported Slack warnings that BAFU observations were unchecked. Every claim in § What is measured was measured on the staging host that day against v0.1.965 and against `main` at `3b515f6b`; each says how. Items 10-13 were added on 2026-09-25 from an independent Claude review, measured on staging (running `main` at `7a7f2aae`) and against `main` at `2fe660e2`.
@@ -17,7 +17,7 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Six review rounds have run — a Claude review on 2026-09-25, then five
+the orchestrator sets READY. Seven review rounds have run — a Claude review on 2026-09-25, then six
 Claude + Codex rounds on 2026-09-26 — all NOT READY, all findings folded (§ Review record). Owner
 decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
 
@@ -438,8 +438,20 @@ alarmed on.
   re-reported: a new `PipelineCheckType.OBSERVATION_QC_UNJUDGED` (`types/enums.py`, beside
   `OBSERVATION_QC_UNCHECKED` at `:236`) and a record written like the Plan 318 one
   (`flows/ingest_observations.py:264-331`), carrying `reason = "no_check_could_run"`, the groups,
-  the reported **observation ids**, and `observations_unjudged`. The zero-rule record's
-  `observations_unchecked` excludes them (D5). The watchdog does not probe the new type.
+  the reported **observation ids as strings**, and `observations_unjudged`. 🔴 `ObservationId` is a
+  `UUID` (`types/ids.py:13`) and the engine has no JSON serializer for it, so a raw id in the JSONB
+  `detail` raises at insert — and the Plan 318 writer catches that and only logs a warning
+  (`:311-329`), so the record would be lost silently in production while the fake store, which never
+  serialises, passes every test. The watchdog does not probe the new type.
+- **How it reaches the flow:** `QcTaskOutcome` (`flows/ingest_observations.py:250-261`, the Plan 318
+  mechanism) gains the unjudged groups and ids; the flow writes the record, as it does the zero-rule
+  one (`:978-983`).
+- **Counting rules.** (a) **Zero-rule wins:** a pending reading in a group that resolved zero rules
+  is reported only in the zero-rule record, never also as unjudged. (b) Unjudged readings leave
+  `counts["unchecked"]` (D5), so every reader of that counter gains a separate `unjudged` count:
+  the zero-rule record (`observations_unjudged` goes only in the new record),
+  `IngestResult.qc_unchecked` (`:63`, set at `:1044`, logged at `:1062`) beside a new
+  `qc_unjudged`, and the `ingest.qc_complete` log (`:967`).
 - Text that would otherwise become false: the enum comment at `types/enums.py:229-235` ("unlike every
   other member…") now describes two presence-type members; `ZeroRuleGroup`'s docstring
   (`flows/ingest_observations.py:237-247`) and the `qc.no_rules_selected` log event
@@ -455,16 +467,23 @@ alarmed on.
 same hole (the first row of a datum-less water-level group) and **no plan owns it** — recorded for
 Plan 315's owner, whose scope is onboarding's zero-rule fail-open. ⛔ Supplying datums (Plan 403).
 
-**Pre-change.** A RED test through `_run_qc_task` with the shipped `config.toml` (after T2): an
-hourly water_level group, **no datum**, reading X at −1 h already `QC_UNCHECKED` and a new reading at
-0 h, `now` = 0 h + 5 min. The window holds X and 0 h, infers 3600 s, and selects `rate_of_change`
+**Pre-change.** A RED test through `_run_qc_task` (asserting its stored statuses and its
+`QcTaskOutcome`; the record itself is asserted through the flow, below) with the shipped
+`config.toml` (after T2): an hourly water_level group, **no datum**, reading X at −1 h already
+`QC_UNCHECKED` and a new reading at 0 h, `now` = 0 h + 5 min. The window holds X and 0 h, infers 3600 s, and selects `rate_of_change`
 and `spike`; X has no previous reading, so neither can judge it. Today X is stored `QC_PASSED`. It
 must fail on X's status.
 
 **Verification.**
-- X is stored `QC_UNCHECKED`; an `observation_qc_unjudged` record lists X's id with
-  `no_check_could_run`; no zero-rule record is written and `observations_unchecked` does not count
-  X; the 0 h reading gets a real verdict from `rate_of_change`.
+- X is stored `QC_UNCHECKED` and appears in the task's `QcTaskOutcome` unjudged ids; the 0 h
+  reading gets a real verdict from `rate_of_change`. Through `ingest_observations_flow` with a fake
+  health store: an `observation_qc_unjudged` record lists X's id with `no_check_could_run`, no
+  zero-rule record is written, and `observations_unchecked` does not count X.
+- **The record survives serialisation:** its `detail` round-trips through `json.dumps`/`json.loads`
+  unchanged, and one integration test writes it through `PgPipelineHealthStore` against real
+  Postgres and reads it back — ⛔ the fake store cannot catch a UUID in JSONB.
+- **Zero-rule wins:** a pending reading in a zero-rule group appears in the zero-rule record only;
+  `IngestResult.qc_unchecked` and `qc_unjudged` add up to the stored `QC_UNCHECKED` rows.
 - **A valueless neighbour:** the reading before 0 h exists with `value = None` — 0 h is not
   judgeable, `QC_UNCHECKED`.
 - **Relative spike, zero reference:** `spike` with a `tolerance` and a previous value of 0 reports
@@ -480,11 +499,14 @@ must fail on X's status.
 - The same case **with** a datum: X gets a real verdict from `range_check`.
 - A 600 s datum-less water-level group with **fewer than 12** distinct instants whose oldest pending
   reading has no neighbour: `QC_UNCHECKED`, `no_check_could_run`.
-- **The watchdog is isolated from the new record, through the real probe** (the stub-transport
-  pattern of `tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`, not injected fakes, which
-  would return whatever they are given): an older `observation_qc_unchecked` record plus a newer
-  `observation_qc_unjudged` one ⇒ the alarm stands and no false recovery is posted; unjudged-only
-  ⇒ silence. The probe URL keeps `check_type=observation_qc_unchecked`.
+- **The watchdog is isolated from the new record, through the real probe and a real filter.** The
+  existing stub pattern (`tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`) returns a fixed
+  payload whatever the URL, so it cannot tell a filtered request from an unfiltered one. ⇒ Either
+  drive the real health route through Starlette's `TestClient(app)` (an `httpx.Client`) over a fake
+  health store holding both records, or a stub that serves from a two-record list filtered by the
+  request's `check_type` and `limit=1`. With an older `observation_qc_unchecked` record and a newer
+  `observation_qc_unjudged` one ⇒ the alarm stands and no false recovery is posted; unjudged-only ⇒
+  silence.
 - `check` still returns the same flags as before on every existing QC test; every existing ingest
   and QC test passes; the three DHM tests above now assert the verdict.
 
@@ -639,3 +661,10 @@ returns the entry.
   alarm's count (→ `observations_unjudged`); records count runs, not readings (→ ids in the record,
   distinct-id measurements); DHM gauge-zero stations are datum-less and no plan owns them
   (recorded); enum comment, spec and file names for citations; rollback must delete the new rows.
+- **2026-09-26 — round 7: Codex READY; Claude NOT READY (one MEDIUM); all findings folded, no
+  decision needed.** Claude: observation ids are UUIDs and would make the JSONB insert fail, which
+  the Plan 318 writer swallows — the record would vanish in production while fakes pass (→ ids as
+  strings; a JSON round-trip and a real-Postgres test); the RED test asked `_run_qc_task` for a
+  record only the flow writes (→ `QcTaskOutcome` field, record asserted through the flow);
+  zero-rule wins over unjudged, and every reader of the unchecked counter gains an unjudged count;
+  the watchdog-isolation stub must actually filter; `blocks` gains 403.

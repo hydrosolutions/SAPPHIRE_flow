@@ -18,8 +18,8 @@ source: 2026-09-25 — the owner, after an independent review of Plan 323 found 
 
 **DRAFT — redesigned 2026-09-26.** The first draft widened the check window to 24 h. Both
 independent reviews found that doing so changes what the rules compare — not only how the interval
-is inferred — and the owner chose the narrower design below. Five review rounds have run (§ Review
-record), the fifth (round 6) READY from both reviewers, with low findings folded since; **that fold is
+is inferred — and the owner chose the narrower design below. Six review rounds have run (§ Review
+record), rounds 6 and 7 READY from both reviewers, with round 7's low findings folded since; **that fold is
 unreviewed.** ⛔ No implementation until
 an independent review of this exact state is complete and the orchestrator sets READY. It runs
 **after Plan 323**.
@@ -208,8 +208,9 @@ value and `max_readings = 2` are rejected with a message naming the key.
 an occasional missing reading selects its rules, while the rules still run on the 2 h window.
 
 **In.** § Design's store method (Protocol, Pg, fake), the timestamp-level inference function, the
-optional `time_steps` keyword on `Stage1QualityChecker.check`, `resolve_selection` and the
-`QualityChecker` Protocol, and the second fetch in `_run_qc_task` with `not_before =
+optional `time_steps` keyword on `Stage1QualityChecker.check`, on Plan 323 T4's new checker method
+(flags plus the judged set — the one `_run_qc_task` calls after 323), on `resolve_selection` and on
+the `QualityChecker` Protocol, and the second fetch in `_run_qc_task` with `not_before =
 min(now − lookback, window_start)` — so on the DHM catch-up path, where the window can start more
 than `lookback` ago, the look-back never excludes the window's own readings — `before` = the check
 window's end, `limit = max_readings`.
@@ -254,8 +255,9 @@ record). It must fail on that status, not on a fixture or config key.
   with `no_cadence_inferable`.
 - **No silent pass on the look-back path (Plan 323 D4/T4's guard):** the missing-hour fixture as
   water_level with no datum — the look-back infers 3600 s, the lone reading is judged by nothing,
-  and it is stored `QC_UNCHECKED` in an `observation_qc_unjudged` record (`no_check_could_run`),
-  not `QC_PASSED`; the same series with a datum gets a real verdict from `range_check`.
+  and it is stored `QC_UNCHECKED` and listed in the task's `QcTaskOutcome` unjudged ids (Plan 323
+  T4; the record itself is the flow's), not `QC_PASSED`; the same series with a datum gets a real
+  verdict from `range_check`.
 - **Look-back bound on catch-up:** a DHM recovery whose window starts more than `lookback` ago still
   infers its cadence from the window's own readings.
 - **Unchanged where it should be:** a gap-free 600 s group selects the same rules as before, and the
@@ -281,8 +283,8 @@ record). It must fail on that status, not on a fixture or config key.
 
 **Outcome.** The two-fetch design and its knob are written where the next person meets them.
 
-**In.** `docs/spec/types-and-protocols.md` — the `QualityChecker` Protocol (around line 741) and
-the new `ObservationStore` method; the observation-ingest map in `docs/touchpoint-maps.md` beside
+**In.** `docs/spec/types-and-protocols.md` — the `QualityChecker` Protocol (around line 741), the
+`time_steps` keyword on Plan 323 T4's checker method, and the new `ObservationStore` method; the observation-ingest map in `docs/touchpoint-maps.md` beside
 the Plan 317 entry (two fetches, why, the config keys) — and correct that entry's sentence that the
 unfiltered fetch supplies what "cadence inference and the temporal rules need": after this plan it
 supplies the temporal rules; inference has its own, equally unfiltered, fetch; Stage 1 QC (step 2.3) in
@@ -409,3 +411,6 @@ alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measu
   new checker method receiving the same `time_steps`; the T4 records gate says what an off-grid
   record means; unjudged readings are counted as distinct ids; the duplicated datum-less test
   bullets merged.
+- **2026-09-26 — round 7: READY from both reviewers (Claude with LOW findings), folded.** T2 In and
+  T3 name Plan 323 T4's checker method, which `_run_qc_task` calls after 323; the no-silent-pass test
+  asserts the task's outcome, not a record only the flow writes.
