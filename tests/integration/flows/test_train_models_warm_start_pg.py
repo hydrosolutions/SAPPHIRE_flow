@@ -12,9 +12,11 @@ config hash) → generation 1 retrained from it → generation 2 retrained from 
 trained through the flow — that is the point, it is the only generation with a
 `model_artifact_provenance` row. Generations 1, 2 and 3 each come from a real
 `train_models_flow` call.
-Before Plan 405 T1 the third step raised `base_config_path is NULL without a
-reason` — after the artifact had already been stored, leaving a saved model whose
-provenance was refused.
+Before Plan 405 T1 the generation-2 retrain — the first whose donor is itself a
+SAP3 retrain — raised `base_config_path is NULL without a reason`, after the
+artifact had already been stored, leaving a saved model whose provenance was
+refused. *Said by generation rather than by "step": the chain gained a fourth
+entry and "the third step" no longer names it unambiguously.*
 
 Only the warm-start writer and the artifact store are real; the rest of the
 training run uses the unit suite's fakes, with the rows the foreign keys require
@@ -321,9 +323,12 @@ class TestRetrainOfARetrainThroughTheFlow:
         got = fetch_warm_start(db_connection, gen3)
         assert got is not None
         assert got.base_artifact_id == gen2
-        # 🔑 The hash CARRIES FORWARD unchanged from the imported ancestor — the
-        # property that makes a third generation interesting rather than a repeat
-        # of the second.
+        # 🔑 The hash CARRIES FORWARD unchanged from the imported ancestor, two
+        # retrains later. ⚠️ This exercises the SAME resolver branch generation 2
+        # does, so it is not new branch coverage and a break would fail the gen-2
+        # assertion first. *What actually distinguishes generation 3 is asserted
+        # above: its donor's NULL path is RESOLVER-PRODUCED, where generation 1's
+        # was pinned by the test.*
         assert got.base_config_sha256 == _IMPORTED_CONFIG_HASH
         reason = got.base_config_unknown_reason
         assert reason

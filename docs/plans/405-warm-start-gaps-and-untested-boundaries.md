@@ -451,7 +451,9 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   ⛔ **The index had gone stale again** — `open_decisions: [D1]` and "D1 asks what … means" both still
   present. *Third consecutive plan where a decision closure reached the plan and not the index. The
   value sweep caught it this time because I ran it before claiming the fold was done.*
-- **2026-09-26 — T1 IMPLEMENTED, three commits, three review rounds.** ⭐ *Round 1 (`c0550d52`) fixed
+- **2026-09-26 — T1 IMPLEMENTED, FOUR commits, FOUR review rounds** (`git rev-list c0550d52^..87f1101b` = 4).
+  ⛔ *First written as "three commits, three review rounds" while the body below enumerated four — the
+  same word-vs-arithmetic failure this plan already charges at the entry above ([[feedback_measure_dont_reason_about_operational_numbers]]).* ⭐ *Round 1 (`c0550d52`) fixed
   only the reason and was called done; **both** cross-checks returned INCOMPLETE and agreed on why —
   T1's ordering bullet was entirely absent, the "refusal stores nothing" verification had no test AND no
   mechanism, the red was helper-level where T1 demands a flow-level integration test, and the content
@@ -477,3 +479,26 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   so if any of T6's three donor classes yields an empty params reason the post-store crash returns
   through the params column. ⛔ *Widening T1 to cover it would have been a scope decision that is not
   the implementer's to make* ([[feedback_a_plan_scope_boundary_is_a_decision_not_a_defect]]).
+- **2026-09-26 — round 4 (on `87f1101b`): both reviewers COMPLETE, no code defect.** ⭐ *The first round
+  where nothing in `src/` was wrong — one reviewer diffed the AST and confirmed the sweep changed
+  docstrings and nothing executable.* Three prose corrections folded, all mine:
+  - 🔴 **A comment written WHILE fixing a misleading comment was itself misleading.** "Until then this
+    branch is unreachable in the flow" sat directly above `if installed_config_path is None:` — the
+    branch every caller DOES take. The dead one is the path-carrying return below it. ⛔ *A positional
+    "this branch" binds to the next statement; a reader got the exact opposite.* Now named explicitly,
+    and the reviewer's stronger measurement recorded: that return is dead REPO-WIDE — no caller
+    anywhere passes a non-None path — not merely in the flow.
+  - 🔴 **The heading said "three commits, three review rounds" while its own body enumerated four**, and
+    the commit message said "three code commits, four review rounds" against four actual commits.
+    ⛔ *Verbatim the word-vs-arithmetic failure the entry above already charges — the fix reached one
+    number and not the count.* Now pinned to a command whose output is the number.
+  - 🔴 **"Each against the state that actually shipped" was FALSE when written.** `87f1101b` had zero
+    reviews at commit time; this round is its review. *The claim is true of the first three commits and
+    becomes true of the fourth only with this entry* — [[feedback_count_review_rounds_against_commits]],
+    which is exactly about a chain ending on one's own fold.
+  ⚠️ *Two smaller corrections: the gen-3 hash assertion exercises the SAME resolver branch as gen 2, so
+  it is not new branch coverage and the comment claiming it is what makes a third generation interesting
+  overreached — the real distinction is that gen 3's donor NULL is resolver-produced where gen 1's was
+  test-pinned. And "the only residual hits are history notes" was loose: Plan 399's requirement cells are
+  a third category, legitimate because that plan is openly `PARTIALLY_IMPLEMENTED` and its own gap table
+  records "Nothing compares them".*

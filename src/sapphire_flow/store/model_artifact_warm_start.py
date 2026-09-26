@@ -171,9 +171,15 @@ def resolve_donor_config(
         # PATH (`model_artifact_provenance` carries source_repository,
         # source_commit, config_hash, imported_at, imported_by, notes). So the
         # only available path is the installed one, and it is meaningful ONLY
-        # while the hashes match. ⛔ NOBODY CHECKS THAT YET — T2 adds it. Until
-        # then this branch is unreachable in the flow, which hardcodes
-        # `installed_config_path=None`.
+        # while the hashes match. ⛔ NOBODY CHECKS THAT YET — T2 adds it.
+        #
+        # ⚠️ Until then the PATH-CARRYING RETURN at the bottom of this block is
+        # DEAD — not the `installed_config_path is None` branch just below, which
+        # is the one every caller takes. *Worded positionally at first ("this
+        # branch"), which bound it to the next statement and so stated the
+        # opposite; caught in review.* Measured dead repo-wide, not merely in the
+        # flow: no caller anywhere passes a non-None `installed_config_path` — the
+        # flow hardcodes `None`, and every test call and fake defaults to it.
         if installed_config_path is None:
             # ⛔ Do NOT return a NULL path with no reason: `WarmStartRecord`
             # rejects that, and rightly — an unexplained NULL is indis-
