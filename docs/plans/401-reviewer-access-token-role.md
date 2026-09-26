@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-26
 plan: 401
 title: A reviewer access token for the review dashboards — read everything a review needs, for one client's stations, write nothing
@@ -17,10 +17,11 @@ source: 2026-09-26 — owner, while reviewing Plan 402: "could we have a special
 
 ## Status
 
-**DRAFT — HIGH RISK — review corrections folded, not re-reviewed.** Authentication and a
-migration are high-risk triggers (`docs/workflow.md` § High-risk work): the ordinary Claude + Codex
-pair on the current text, plus one owner-commissioned review before READY and again before the
-implementation PR. All decisions are closed.
+**READY — HIGH RISK.** Set 2026-09-26 by the orchestrator session on the owner's instruction,
+after the ordinary Claude + Codex rounds, the owner-commissioned security review, and a final check
+of the exact text (Claude and Codex both clean on `296f20a6`). High risk (authentication and a
+migration, `docs/workflow.md` § High-risk work): the implementation PR needs one more
+owner-commissioned review before it is opened. All decisions are closed.
 
 ## Why this exists
 
