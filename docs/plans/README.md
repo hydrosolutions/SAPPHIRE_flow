@@ -734,22 +734,29 @@ exit criteria — Plan 212 owns that deeper screening.
   uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
-  — `DRAFT`, `open_decisions: [D1, D2, D3]`. Found from a live Slack warning on
-  2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s
-  and 86400 s, and selection matches by exact equality — so they resolve ZERO
-  rules. ⭐ Not new and not a regression: they have been hourly every day for at
-  least a fortnight, and their earlier rows carry a rule version with no flags —
-  the fail-open signature, ~1,277 readings never actually checked. Plan 272/318
-  are what made it visible. ⛔ **Plan 317 does not fix this**: re-examination is
-  the right answer to a TRANSIENT cause, and this one recurs every cycle.
-  ⚖️ All three decisions CLOSED by the owner 2026-09-24: thresholds are derived
-  from **these gauges' own measured behaviour** (§ 6 found the existing
-  600 s↔86400 s pairs follow NO formula — ×10, ×4, ×5, unchanged — so nothing
-  can be interpolated), hourly gets **all five** checks, and nearest-rule
-  matching is recorded as 264's work rather than commissioned here. ⇒ T1 is the
-  MEASUREMENT and is a deliverable; 🔴 it needs the staging host and is blocked
-  while that is off the network. ⚠️ Interacts with 313: if `rate_of_change`
-  later divides by elapsed time, every `max_rate` set here changes meaning.
+  — `DRAFT`, no open decisions; **the 2026-09-25 fold is unreviewed**. Found from a live
+  Slack warning on 2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only
+  600 s and 86400 s, and selection matches by exact equality — so they resolve ZERO rules.
+  Not new: their earlier rows were fail-open passed (~1,277 readings never checked).
+  Thresholds come from the gauges' own measured behaviour (D1). ⚖️ **Amended by the owner
+  2026-09-25 after an independent review:** hourly gets each parameter's 600 s rule shape
+  **less `frozen_sensor`**, which cannot fire in a three-reading window and waits for 400;
+  water temperature gets no `spike` (D2). 🔴 **It does not silence the watchdog:** ~5% of
+  hourly checks still infer no declared cadence from a single missing reading, which keeps
+  the watchdog failing ~64% of the time — the owner accepted that leftover (D3); 400 closes
+  it. ⛔ Plan 264 does NOT own nearest-rule matching (the earlier text said it did).
+  ⚠️ Interacts with 313, which does not yet carry the reverse note.
+
+- **400** — [Work out a series' reporting interval from a day of readings, not two hours](400-infer-cadence-from-a-day-of-readings.md)
+  — `DRAFT`, unreviewed, `depends_on: [323]`; number granted by the owner 2026-09-25.
+  Raises the observation-QC context window from 2 h to 24 h: replayed on staging, cadence
+  inference goes from 95.3% to **100%** correct on the hourly gauges (14 days) and stays
+  100% on 10-minute ones; a longer window beats every change of statistic inside 2 h.
+  Then adds the hourly `frozen_sensor` rows 323 deferred. ⚠️ The price, measured and
+  stated: `frozen_sensor` verdicts at 10-minute stations shift (water_level −12%, and
+  10-minute water temperature's rule — which can never fire today — switches on), and
+  each ingest run reads ~11× more rows. ⚠️ Collides in text with 264's in-flight rewrite
+  ("the window remains three hours").
 
 - **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
   — `READY`, both owner decisions closed 2026-09-24 (four shards; the shards'
