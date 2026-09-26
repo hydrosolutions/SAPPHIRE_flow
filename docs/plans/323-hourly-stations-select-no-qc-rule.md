@@ -23,9 +23,12 @@ rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Cla
 (§ Review record). Owner decisions changed on both days (D1, D2, D3), and D4 and D5 were added on
 2026-09-26.
 
-⚠️ **T1 needs the staging store**, which is off the network while the owner is away from the office.
-T2 may not invent a number T1 has not produced (D1), so T1 is the first thing done once staging is
-reachable.
+⚠️ **T1 needs the staging store**, which is off the network while the owner is away from the office
+(about two days from 2026-09-26). T2 may not invent a number T1 has not produced (D1). ⇒ **Owner,
+2026-09-26: build T4 first** — it needs no measured number. Its RED test therefore uses a case that
+exists on today's rule set (a 10-minute datum-less water-level group, § T4 Pre-change) instead of
+the hourly one, which becomes a T2 verification. All tasks stay on one branch and one PR, so T5's
+"T2 and T4 deployed together" still holds.
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
 *checkable*: about 95% of their checks will run real rules. It does **not** make the Plan 318
@@ -403,6 +406,8 @@ row (D2 — no plan yet). ⛔ Computing climatological baselines (§ 12). ⛔ Re
   unchanged** (asserted, so the addition cannot perturb the 140 stations that were fine). The test
   loads the shipped `config.toml` rule set, not a hand-built one — a hand-built set proves nothing
   about the file this plan edits.
+- **T4's guard on the hourly rows** (T4 is built first, § Status): the hourly datum-less case listed
+  in T4's verification — X is `QC_UNCHECKED` with `no_check_could_run`, not `QC_PASSED`.
 - ⚠️ The selection count includes `gross_outlier`, which runs nothing where no baseline exists
   (§ 12). It is therefore not evidence that a check ran; the range and temporal rules are.
 - A synthetic hourly series with a value outside `range_check` comes back `QC_FAILED`; an ordinary
@@ -481,14 +486,18 @@ Plan 315's owner, whose scope is onboarding's zero-rule fail-open. ⛔ Supplying
 
 **Pre-change.** A RED test through `_run_qc_task` (asserting its stored statuses and its
 `QcTaskOutcome`; the record itself is asserted through the flow, below) with the shipped
-`config.toml` (after T2): an hourly water_level group, **no datum**, reading X at −1 h already
-`QC_UNCHECKED` and a new reading at 0 h, `now` = 0 h + 5 min. The window holds X and 0 h, infers 3600 s, and selects `rate_of_change`
-and `spike`; X has no previous reading, so neither can judge it. Today X is stored `QC_PASSED`. It
-must fail on X's status.
+`config.toml` **as it is before T2** (T4 is built first — § Status): a 600 s water_level group,
+**no datum**, four pending readings at −30, −20, −10 and 0 min after a gap longer than the window
+(the first readings after an outage), `now` = 0 min + 5 min. The window holds all four, infers
+600 s, and — the datum skip removing `range_check` and `gross_outlier` — selects `rate_of_change`,
+`spike` and `frozen_sensor`. The oldest reading, X at −30 min, has no previous reading, so neither
+`rate_of_change` nor `spike` can judge it, and four instants are fewer than `frozen_sensor`'s 12.
+**Measured on `main` at `bd4daad2`: today X is stored `QC_PASSED` with no flags and no zero-rule
+group.** It must fail on X's status.
 
 **Verification.**
-- X is stored `QC_UNCHECKED` and appears in the task's `QcTaskOutcome` unjudged ids; the 0 h
-  reading gets a real verdict from `rate_of_change`. Through `ingest_observations_flow` with a fake
+- X is stored `QC_UNCHECKED` and appears in the task's `QcTaskOutcome` unjudged ids; the −20, −10
+  and 0 min readings get a real verdict from `rate_of_change`. Through `ingest_observations_flow` with a fake
   health store: an `observation_qc_unjudged` record lists X's id with `no_check_could_run`, no
   zero-rule record is written, and `observations_unchecked` does not count X.
 - **The record survives serialisation:** its `detail` round-trips through `json.dumps`/`json.loads`
@@ -509,8 +518,10 @@ must fail on X's status.
 - **Context rows are not re-reported:** an already-`QC_PASSED` oldest reading with a judgeable
   pending successor produces no unjudged record.
 - The same case **with** a datum: X gets a real verdict from `range_check`.
-- A 600 s datum-less water-level group with **fewer than 12** distinct instants whose oldest pending
-  reading has no neighbour: `QC_UNCHECKED`, `no_check_could_run`.
+- **The hourly case, once T2's rows exist** (added to T2's verification): an hourly water_level
+  group, no datum, reading X at −1 h already `QC_UNCHECKED` and a new reading at 0 h, `now` = 0 h +
+  5 min — the window holds X and 0 h, infers 3600 s, selects `rate_of_change` and `spike`, and X is
+  stored `QC_UNCHECKED` with `no_check_could_run`, not `QC_PASSED`.
 - **The watchdog is isolated from the new record, through the real probe and a real filter.** The
   existing stub pattern (`tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`) returns a fixed
   payload whatever the URL, so it cannot tell a filtered request from an unfiltered one. ⇒ Either
@@ -602,9 +613,9 @@ returns the entry.
 ```json
 {
   "phases": [
-    {"phase": 1, "tasks": ["T1"], "parallel": false},
-    {"phase": 2, "tasks": ["T2"], "parallel": false},
-    {"phase": 3, "tasks": ["T4"], "parallel": false},
+    {"phase": 1, "tasks": ["T4"], "parallel": false},
+    {"phase": 2, "tasks": ["T1"], "parallel": false},
+    {"phase": 3, "tasks": ["T2"], "parallel": false},
     {"phase": 4, "tasks": ["T3"], "parallel": false},
     {"phase": 5, "tasks": ["T5"], "parallel": false}
   ]
@@ -690,3 +701,8 @@ returns the entry.
 - **2026-09-26 — round 11: READY from both reviewers, no findings on this plan** (the fold-check of
   round 10's LOW). **Set READY by the orchestrator** on the owner's confirmation; Codex's readiness
   advice: READY, no blockers — staging's absence schedules T1, it does not hold READY.
+- **2026-09-26 — amendment after READY (owner):** staging is off the network for about two days, so
+  **T4 is built first**. T4's RED test moves to a 10-minute datum-less water-level case that exists on
+  today's rule set (measured failing on `main` at `bd4daad2`); the hourly case becomes a T2
+  verification. Phase graph: T4 → T1 → T2 → T3 → T5. One branch, one PR, so T2 and T4 still deploy
+  together. Reviewed as an amendment before T4 is built.
