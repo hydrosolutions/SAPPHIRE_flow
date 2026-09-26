@@ -114,6 +114,8 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
    `id, model_id, station_id, group_id, status, artifact_path, training_period_start/end,
    trained_at, promoted_at, promoted_by, superseded_at, created_at, sha256_hash` — **no parent.**
    The existing `store/model_artifact_lineage.py` records artifact→**basin** lineage only.
+   ⚠️ *"No parent column" describes the GAP, not the fix — § 14 decides the fix is a side table, and
+   `model_artifacts` gains no column.*
    ⭐ **We do not need FI to tell us the parent: WE choose the base artifact, so we know its id.**
    *(fi-issue 004 § 2 matters for artifacts trained elsewhere; it does not block this plan.)*
 10. **Group training has never actually run here.** Of **903** artifacts on staging, exactly **one**
@@ -162,6 +164,26 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     satisfy a naive "the hash matches the file it names" check while MISIDENTIFYING the donor's
     configuration.** ⛔ *T4 must resolve the donor's recorded provenance and compare, not hash
     whatever is on disk now.*
+
+14. ⚖️ **STORAGE SHAPE — DECIDED HERE, once: a SIDE TABLE, and `model_artifacts` gains no column.**
+    The repo states the precedent explicitly at `db/metadata.py:177-182`:
+    *"A join table (not a singular FK on `model_artifacts`) because a GROUP-scoped artifact spans many
+    stations → many basins → many basin_versions. `model_artifacts` itself gains no new column."*
+    ⇒ **ALL of this plan's provenance — parent artifact id, base config path, base params path, and
+    the config used for the run — lives in ONE side table, shipped by ONE migration, owned by T4.**
+    ⛔ *An earlier version left this as an instruction to decide ("Decide column-vs-side-table
+    explicitly"), which is not a decision — and § 9's "no parent column" phrasing implied the
+    opposite of T4's cited precedent.*
+    ⚠️ **This refines which TASK records the config; it does not change D3.** *The owner's decision
+    stands in full: supplied per run AND recorded. T2 ships the channel, T4 ships the record.*
+15. ⚖️ **THE SEVEN `{}` SITES — DECIDED: T2 covers ONE, and the reason the others are excluded.**
+    | site | disposition |
+    |---|---|
+    | `flows/train_models.py:170` | ✅ **IN** — the operational training path, and the one retrain uses |
+    | `services/model_onboarding.py:552`, `:585` | ⛔ **OUT, by nature** — these are SMOKE TESTS on synthetic data (`_make_synthetic_group_training_data`, `ModelSmokeTestError`) proving a model can train at all. There is no caller and no config to supply |
+    | `flows/onboard_model.py:368`, `:375`; `services/model_onboarding.py:1453`, `:1457` | ⛔ **OUT, deliberately** — real training, but at IMPORT time. Fine-tuning is a later act with an explicitly named base (D1); no closed decision needs onboarding to accept config. ⚠️ **T2 must ASSERT these are unchanged** |
+    ⛔ *An earlier version said "either bring them into this task or state explicitly … that
+    onboarding keeps `{}`" — an instruction to choose, not a choice.*
 
 ## Owner decisions
 
@@ -258,6 +280,16 @@ does not.
   model when support is absent. ⛔ *No fall-back to `train` at any layer.*
 - ⚠️ **A note in `docs/fi-issues/004` recording the divergence** — FI's own comment says SAP3 falls
   back to `train`; we refuse. ⭐ *One paragraph, not a new issue.*
+- 🔴 **DOCUMENTATION, which the plan had NONE of** (⛔ *`CLAUDE.md`: "every code change updates
+  affected docs — no exceptions"; the fi-issue paragraph was the plan's only doc deliverable*):
+  | file | why |
+  |---|---|
+  | `docs/spec/types-and-protocols.md:2096-2137` | **the authoritative Protocol spec** — `StationForecastModel` (`:2104`) and `GroupForecastModel` (`:2121`); T1 adds a capability to both |
+  | `docs/touchpoint-maps.md:60` | "ForecastInterface / model execution" — the map for this subsystem |
+  | `docs/touchpoint-maps.md:883` | "Training / hindcast / skill" — the map for this flow |
+  | `docs/design/v0-flow678-training-pipeline.md` | describes this pipeline and already mentions retrain |
+  ⛔ **Consult the two touchpoint maps BEFORE implementing** — `CLAUDE.md` requires it for any task
+  touching those subsystems, and this plan cited no map at all.
 
 **Out.** ⛔ Changing `train`'s signature or behaviour. ⛔ The FI package (fi-issue 004). ⛔ Making
 retrain mandatory on any protocol.
@@ -291,16 +323,16 @@ which a stub satisfies.*
 **In.** D3's channel, replacing `flows/train_models.py:170`'s hardcoded `{}` (§ 5), and **the config
 recorded against the produced artifact**.
 
-- 🔴 **Say WHERE the recorded config lives, and own its migration.** ⛔ *An earlier version required
-  "the config recorded against the produced artifact" while declaring no schema change — leaving two
-  migrations (T2's and T4's) in the same provenance area with no statement of which owns what.*
-  ⚠️ **Decide column-vs-side-table explicitly**: § 9 frames the gap as a missing *column*, but T4
-  follows `model_artifact_lineage.py`'s side-table precedent, and `db/metadata.py:176-182` argues for
-  the latter — *"A join table (not a singular FK on `model_artifacts`) … `model_artifacts` itself
-  gains no new column."* ⇒ **One decision, stated once, and ONE task owns each migration.**
-- ⚠️ **The other six `{}` sites (§ 5)**: either bring them into this task or state explicitly, with
-  the reason, that onboarding keeps `{}` for now. ⛔ *Completeness against the In-list is the gate
-  this project checks; silence reads as an omission.*
+- 🔑 **The CHANNEL only — `flows/train_models.py:170` (§ 15). NO storage and NO migration here**
+  (§ 14: one side table, one migration, owned by T4). ⛔ *An earlier version of this task also
+  required "the config recorded against the produced artifact" while declaring no schema change,
+  which left two migrations in the same area with no owner.*
+- 🔑 **Name the flow entry point and how the parameter threads through.** ⚠️ *`:170` sits inside a
+  task helper whose parameters are `model`/`data`/`unit`/`rng` — nothing there names the flow
+  parameter or how it survives the task fan-out.* ⛔ **Read `docs/standards/orchestration.md` first**
+  — it is mandatory for flow work and this plan cited no standards document.
+- 🔴 **Documentation** (⛔ *`CLAUDE.md`: "every code change updates affected docs — no exceptions"*):
+  `docs/standards/orchestration.md`'s flow-parameter conventions if this adds one.
 
 **Out.** ⛔ Validating or typing the fine-tuning strategy — owner: opaque for v1 (§ 7). ⛔ Changing
 what any model does with config it already ignores.
@@ -313,7 +345,11 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
 **Verification.**
 - Config supplied → received by the model, **byte-identical**.
 - 🔴 **No config supplied → the existing behaviour is unchanged** (an empty mapping), asserted,
-  because every current model trains through this path today.
+  ⛔ *An earlier version justified this as "every current model trains through this path today" —
+  **retracted by § 5**: a newly onboarded model trains through the ONBOARDING path.* ⇒ **Assert the
+  no-config case on BOTH**: `flows/train_models.py` AND the four real onboarding sites (§ 15), which
+  stay at `{}` by decision. ⚠️ *Asserting only the training flow is how onboarding silently diverges
+  while the suite stays green.*
 - The config used is readable back from the artifact record afterwards.
 
 ### T3 — Select a base artifact and run a retrain end to end (D1)
@@ -338,9 +374,17 @@ phase, so that half was unsatisfiable here. T1 covers retrain's own config arriv
 - 🔴 **T3 must actually CALL T4's recorder.** ⛔ *T4 ships a helper and a migration; nothing else in
   the plan forces the retrain path to pass the parent through — so the plan could end with a lineage
   recorder nobody calls, which is § 3's defect all over again.*
-- ⚠️ **Run preconditions, stated before the run**: which base artifact id, expected runtime and
-  hardware, and what distinguishes "failed for an environmental reason" from "T1/T2 are wrong".
-  ⭐ *§ 10 warns this path has never worked; without this an implementer blind-retries.*
+- ⚠️ **Run preconditions, RECORDED IN THIS TASK BEFORE THE RUN** (⛔ *an earlier version demanded
+  them without supplying any, which is a TODO not a deliverable*):
+  - **the base artifact id** — the single ACTIVE `cmal_small` artifact; ⚠️ *a measurement, so T3
+    records the id it used rather than the plan naming it now*;
+  - **expected runtime and hardware** — the aquacast worker image on the staging host, the only
+    place this model runs;
+  - **the abort criterion** — ⛔ *the resolver error of § 11 or a missing donor (§ 8) means T1/T3 are
+    wrong; anything raised INSIDE the model after inputs are accepted is environmental and is retried
+    once, then escalated.*
+- ⛔ **The staging run is ORCHESTRATOR-GATED.** *`CLAUDE.md`: staging deploys are the orchestrator's;
+  the owner keeps production. This task does not self-authorise the run.*
 
 **Out.** ⛔ Promoting the result, assigning it, or letting it serve a forecast — that is a separate,
 owner-gated act. ⛔ Judging whether it is any good (skill comparison, outside this plan).
@@ -371,8 +415,10 @@ group training from ever running.* The test must fail with the resolver error to
 
 **Outcome.** "What was this fine-tuned from?" is answerable from our own records.
 
-**In.** Per **D1 (closed)**, the produced artifact records **all three**: the parent artifact id,
-the path to the base **config**, and the path to the base **params** — each stored **with the hash
+**In.** 🔑 **ONE side table, ONE migration — ALL of this plan's provenance (§ 14).**
+`model_artifacts` gains no column. Per **D1 (closed)**, the record carries the parent artifact id,
+the path to the base **config**, and the path to the base **params** — ⭐ **plus the config used for
+THIS run**, which moved here from T2 so one task owns the whole record (§ 14; D3 unchanged) — each stored **with the hash
 that pins it** where one exists (D1's note: a bare path silently changes meaning when the file
 does). ⭐ *We know all of it because the caller named the base (D1) — this does not wait on
 fi-issue 004.* With a migration. Follow `store/model_artifact_lineage.py`'s precedent: a standalone
@@ -398,6 +444,8 @@ none.**
   "all three non-null". ⚠️ Whether that holds for `cmal_small` is a T4 MEASUREMENT — its donor params
   are UNKNOWN, not known-absent (§ 5a). Do not encode either answer as an assumption.*
 - The parent is resolvable to a real artifact row.
+- 🔴 **The config used for the run is recorded and readable back** — the half of D3's condition that
+  moved here from T2 (§ 14). ⚠️ *T3 then asserts supplied = received = recorded.*
 - 🔴 **A base whose params are UNKNOWN still retrains, and stores a NULL params path with a reason**
   — asserted (§ 5a). ⚠️ *Whether `cmal_small` is that case is a T4 measurement, not an assumption.*
 - 🔴 **The donor's config is identified from ITS OWN recorded provenance and compared with the
@@ -561,3 +609,36 @@ none.**
   - ⭐ **Confirmed unchanged by this round:** the seven config sites, the missing resolver, the
     adapter's absent `__getattr__` and its quoted warning, the narrowed forcing claim, both corrected
     citations, the index entry, and the T2→T1→T4→T3 ordering.
+- **2026-09-26 — FOURTH review: NEEDS CHANGES, three majors + a process finding. All verified.**
+  ⛔ **Process finding first, because it is mine:** *I folded the other reviewer's findings into this
+  file WHILE this reviewer was reading it — 501 lines at its start, 534 eight minutes later, and
+  uncommitted. Two findings it had drafted were fixed under it mid-review.* ⇒ 🔴 **No review of a
+  moving file certifies anything.** *One committed state, then one review of THAT state. Reviews are
+  not launched while an edit is in flight.*
+  - 🔴 **T2 parked two decisions as instructions to itself** — *"Decide column-vs-side-table
+    explicitly"* and *"either bring them in or state explicitly"*. ⛔ **Those are round-3 findings
+    pasted in as imperatives; a plan that tells itself to decide has not decided.** Both are now
+    DECIDED, in the measured section, once:
+    § 14 — **a side table, one migration, owned by T4**, on the repo's own explicit precedent
+    (*"A join table (not a singular FK on `model_artifacts`) … `model_artifacts` itself gains no new
+    column"*). ⚠️ *This moves which TASK records the config; D3 itself is unchanged.*
+    § 15 — **T2 covers ONE of the seven `{}` sites**, with the other six ruled out by reason: two are
+    smoke tests on synthetic data (no caller exists), four are import-time onboarding, which no closed
+    decision requires to accept config — **and T2 must assert those four are unchanged.**
+  - 🔴 **T2's verification still carried the rationale § 5 retracts** — *"every current model trains
+    through this path today"*. **Third stale site for that one claim**, and it has teeth: an
+    implementer reading it asserts on the training flow only, leaving the onboarding path — the path a
+    newly onboarded model actually trains through — unasserted while the suite stays green.
+  - 🔴 **The plan had NO documentation deliverable**, in a repo whose rules forbid that. The
+    authoritative Protocol spec (`docs/spec/types-and-protocols.md:2096-2137`) defines both model
+    Protocols and T1 adds a capability to them; two touchpoint maps covering exactly this subsystem
+    were never consulted. All four now named in T1. ⭐ *Same omission as plan 329's second round —
+    and this time I did not catch it either.*
+  - **T3's run preconditions were demanded, not supplied.** Now recorded: the base artifact id is a
+    measurement T3 reports, the abort criterion distinguishes a resolver/missing-donor failure (our
+    bug) from one raised inside the model (environmental, retried once). ⛔ **And the staging run is
+    orchestrator-gated** — the plan does not self-authorise it.
+  - ⭐ **Confirmed correct by this round:** § 12's adapter trap including the new protocol-precision
+    paragraph, all seven config sites, § 11's resolver gap, § 5a/§ 6's consistency, both citations,
+    the index entry, fi-issue 004, and that **this round's predecessor introduced no new defect** —
+    the round-1 bullet that could have been satisfied by breaking ordinary training is properly scoped.
