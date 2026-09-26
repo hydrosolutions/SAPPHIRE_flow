@@ -60,8 +60,8 @@ fire. Their silence says nothing about the thresholds; the evidence simply does 
   it would count toward the heartbeat; and every reader that takes a stored row as "the" forecast
   (Forecast Lab reads and its cycle marker, `/api/v1`, the dashboard, scripts) would need an
   exclusion. A separate record touches none of these.
-- **Production store wiring.** The flow's stores come from `flows/_db.py::setup_production_stores`
-  (`:78`); the API's from `api/deps.py`.
+- **Production store wiring.** The flow's store bundle is built in `flows/_db.py::make_pg_stores`
+  (`:23-73`), which `setup_production_stores` (`:78`) calls; the API's comes from `api/deps.py`.
 - **Plan 341's boundary** (`docs/plans/341-chwrr-forecast-publication-api.md`): a reviewer token
   sees only published values; REVIEW routes are outside the publication gate because they carry no
   forecast values; `qc_flags[].detail` is gated; a `qc_failed` forecast is never publishable.
@@ -77,23 +77,29 @@ model state or the freshness heartbeat.
 
 ### D3 — group rejections are per station. **⚖️ CLOSED — follows from the code.**
 
-### D4 — where Plan 341's gate is active, reviewers see the rule, not the values. **⚖️ CLOSED — owner, 2026-09-26.**
+### D4 — where Plan 341's gate is active, service tokens see the rule, not the values. **⚖️ CLOSED — owner, 2026-09-26.**
 
-For a tenant where Plan 341's publication gate is active, a **reviewer** token receives each
-rejection's `attempt_id`, station, model, issued time, parameter, `rule_id`, `rule_version` and
-`status` — no
-values and no flag `detail`. **Admin** tokens receive everything. Plan 341 now specifies that its
-named hydrologist with a current station `review` grant may read the full diagnostic record but
-cannot publish its ID; this human path is added when Plan 341 exists. Where the gate is not active
-(e.g. the Swiss deployment today), reviewers receive everything.
+For a tenant where Plan 341's publication gate is active, a **reviewer** service token receives
+each rejection's rule fields only: `attempt_id`, `recorded_at`, station, model, issued time,
+parameter, `representation`, `units`, `time_step_seconds`, and flags with `rule_id`,
+`rule_version` and `status` — no values and no flag `detail`. **Admin** tokens receive everything
+(owner, 2026-09-26, as PR #316 recorded in Plan 341's *Rejected-record visibility*). Plan 341 also
+specifies that its named hydrologist with a current station `review` grant may read the full
+diagnostic record but cannot publish its ID; this human path is added when Plan 341 exists. Where
+the gate is not active (e.g. the Swiss deployment today), reviewer and admin tokens receive
+everything.
+
+**How "withheld" looks on the wire:** `values` and each flag's `detail` are optional in the response
+model from the start, and each item carries `withheld: bool`. A gated reviewer item has
+`withheld: true`, `values: null` and `detail: null`, so a map can tell "withheld" from "no
+detail". Switching the gate on therefore changes no response shape.
 
 **One named check decides "gated"**: a single predicate (e.g. `publication_gate_active(tenant_id)`)
 that answers **no** until Plan 341 provides its tenant activation switch, and then asks that switch.
 The route consults nothing else. **Both landing orders are covered:** if Plan 341 lands first, T3
 wires the predicate to its switch and classifies this route in 341's route inventory; if this plan
-lands first, T4 records in Plan 341 that this REVIEW route **carries values**, that its activation
-must wire the predicate and apply D4, and that `341:78`'s "Plan 404 may retain such rows" now means
-this separate record.
+lands first, Plan 341 already records that this REVIEW route carries values and applies D4 (added
+2026-09-26), and T4 adds that 341's activation must wire the predicate to its switch.
 
 ## Record and route contract
 
@@ -119,9 +125,9 @@ parameter still rejects the assignment).
 
 **Route** `GET /api/v1/stations/{id}/rejected-forecasts?start=&end=[&model_id=][&limit=&offset=]`,
 REVIEW-gated (Plan 401), station-scoped, paginated with its own ceiling (`limit` ≤ 50, since each item
-carries a full ensemble), every item carrying `attempt_id` and `recorded_at`, non-finite values in
-the same encoding, flags typed as Plan 402's `QcFlagResponse`; values and
-`detail` withheld per D4. Added to Plan 402's committed map contract and its explicit route list.
+carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered by
+`(issued_at, recorded_at, id)`, non-finite values in the same encoding, flags typed as Plan 402's
+`QcFlagResponse`; values and `detail` withheld per D4. Added to Plan 402's committed map contract and its explicit route list.
 
 ## Tasks
 
@@ -135,7 +141,7 @@ production for both the flow and the API.
 **In:** `db/metadata.py`; a new alembic migration (next free revision at implementation time);
 `tests/unit/db/test_alembic_head_release_b.py` (the head pin); the store Protocol in
 `protocols/stores.py` and its implementation under `store/`; the fake in `tests/fakes/fake_stores.py`;
-`flows/_db.py::setup_production_stores` and `api/deps.py`; the flow parameter
+`flows/_db.py::make_pg_stores` and `api/deps.py`; the flow parameter
 `rejected_forecast_store` on `run_forecast_cycle_flow` (`flows/run_forecast_cycle.py:2323-2365`),
 read from the production bundle when stores are not injected (`:2405-2428`) — an injected caller that
 omits it gets no capture, which leaves the ~84 existing injected test calls unchanged; grants in `docker/bootstrap-roles.sql`
@@ -158,7 +164,10 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
 **In:**
 - `services/run_station_forecast.py` — QC every parameter before the verdict, logging
   `run_station_forecast.qc_failed` once per rejected assignment (likewise the group warning, once
-  per rejected station); `AssignmentFailure`
+  per rejected station). Once a parameter has failed, an error in a remaining parameter's QC is
+  logged and leaves the verdict at `QC_FAILED` with the flags gathered so far — it never turns the
+  cause into `UNEXPECTED_EXCEPTION` nor escapes the group call to drop the whole group.
+  `AssignmentFailure`
   gains an optional rejected payload (values, units, cadence, flags, artifact, issued time);
   `run_station_forecast` (the PRIMARY wrapper) returns the rejected payloads alongside its result.
 - `services/run_group_forecast.py` — QC every parameter before the verdict in
@@ -175,7 +184,9 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   `run_station_forecast` return, and a new entry for the group outcome.
 - Tests broken by the new `run_station_forecast` return, updated: `tests/integration/test_e2e_pipeline.py`,
   `tests/unit/services/test_run_station_forecast_fanout.py`,
-  `tests/unit/services/test_unchecked_observation_policy.py`.
+  `tests/unit/services/test_unchecked_observation_policy.py`, the direct calls in
+  `tests/unit/services/test_run_station_forecast.py`, and — for the new group return shape — the
+  calls through `_call_run_group_forecast` in `tests/unit/services/test_run_group_forecast.py`.
 
 **Out:** QC rules and verdicts; `forecasts`; alerting; combination; model state; hindcasts; Plan 340
 evidence capture (a rejected forecast is not an issued forecast).
@@ -190,6 +201,7 @@ import or argument error.
 - a station where every model is rejected records every rejection and still reports `all_models_failed`;
 - a per-track station with a cross-cycle mismatch **and** a rejected model records the rejection and still skips the station;
 - a mixed group records only the failing station, with flags for **every** parameter; the sibling's forecast is stored as today;
+- an error in a later parameter's QC after an earlier one failed keeps the verdict `QC_FAILED` with the flags gathered so far — on the member path and on the group path, where the siblings keep their results;
 - a rejected ensemble containing NaN or `inf` is captured, not dropped by the best-effort write;
 - a re-run of the same cycle appends a second attempt and leaves Plan 327's classification of the stored forecasts unchanged;
 - a failed write of the record leaves the cycle's result and heartbeat unchanged;
@@ -201,7 +213,8 @@ import or argument error.
 **Outcome:** `GET /api/v1/stations/{id}/rejected-forecasts` serves the record per D4.
 
 **In:** the route next to Plan 402's REVIEW routes; response models reusing `QcFlagResponse`; the
-route-matrix entry (REVIEW); Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
+route-matrix entry (REVIEW); Plan 402's contract generator — its per-route role descriptions and its
+REVIEW 403 set gain this third REVIEW route; Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
 active); `docs/conventions.md` § API routes; `docs/standards/security.md` (the REVIEW-class route
 list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API paragraph). The gate
@@ -218,7 +231,7 @@ publication route.
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values and flags (predicate answers no), 404 out of scope; with the predicate forced to yes, reviewer → rule fields and `attempt_id` only, no values and no `detail`, admin → everything; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal.
+**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values and flags (predicate answers no), 404 out of scope; with the predicate forced to yes, reviewer → exactly D4's rule fields with `withheld: true`, `values: null` and `detail: null`, admin → everything; items come in `(issued_at, recorded_at, id)` order; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal.
 
 ### T4 — documents
 
@@ -227,10 +240,11 @@ publication route.
 **In:** `docs/spec/types-and-protocols.md` (Flow 1 step 1.10, `:789`), `docs/architecture-context.md:90,116`
 (rejections are recorded separately; group rejection is per station), `docs/touchpoint-maps.md`
 (the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts), and
-Plan 402's consumer-page line that rejected forecasts are not stored. **If Plan 341 has not landed:**
-a note in `docs/plans/341-chwrr-forecast-publication-api.md` that this REVIEW route carries values,
-that 341's activation must wire D4's predicate to its switch and apply D4, and that its line on
-Plan 404 retaining rows now means this separate record (see D4).
+Plan 402's consumer-page line that rejected forecasts are not stored. Plan 341 already carries this plan's facts
+(added 2026-09-26: this REVIEW route carries values, withheld from reviewer tokens on a gated
+tenant; rejected member/group forecasts never enter `forecasts`); **if Plan 341 has not landed**, T4
+checks those lines are still there and adds that 341's activation must wire D4's predicate to its
+switch.
 
 **Out:** archived Plan 253.
 
@@ -248,15 +262,17 @@ uv run python scripts/check_readiness.py docs/plans/404-store-qc-rejected-member
 ```
 
 After staging deploy (orchestrator):
-1. Over the first days, count distinct `(attempt_id, station_id, model_id)` in the record per day —
-   one per rejected assignment — and compare with the rejection log lines
+1. Over the first days, count distinct `(attempt_id, station_id, model_id, group_id)` in the record
+   per day — one per rejected assignment, since a station in two groups can be rejected in both — and compare with the rejection log lines
    (`run_station_forecast.qc_failed` / `run_group_forecast.qc_failed`, logged once per rejected
    assignment after T2) minus the logged capture failures. They must match. The daily row count is
    the volume measurement for retention.
 2. For each station and cycle with a rejection: in **combination** mode (staging runs `pooled`,
-   `config/overlays/mac-mini.toml:15`), the rejected model is absent from the stored contributors
-   and every other successful model is stored as before; in **PRIMARY** mode, the stored forecast is
-   the highest-priority successful model's.
+   `config/overlays/mac-mini.toml:15`) on a **fresh** cycle, the rejected model is absent from the
+   stored contributors and every other successful model is stored as before; in **PRIMARY** mode, the
+   stored forecast is the highest-priority successful model's. For a **re-run** of an earlier cycle,
+   check only that rejected outputs never enter the current attempt's combination inputs; existing
+   rows behave as Plans 327/328 prescribe.
 
 ## Explicitly out of scope
 
@@ -269,7 +285,7 @@ After staging deploy (orchestrator):
 
 - 2026-09-26 — drafted at the owner's request as the follow-on to Plan 402. Decisions: D1 (keep
   them), D2 (a separate record, chosen after the first review found the `forecasts` table unsafe),
-  D3 (per station), D4 (values withheld from reviewer tokens where Plan 341's gate is active).
+  D3 (per station), D4 (values withheld from reviewer tokens where Plan 341's gate is active; admins and Plan 341's granted hydrologists keep full access — owner, 2026-09-26, as PR #316 recorded in Plan 341).
 
 ## Dependency graph
 

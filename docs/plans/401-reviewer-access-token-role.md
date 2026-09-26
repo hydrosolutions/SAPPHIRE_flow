@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-26
 plan: 401
 title: A reviewer access token for the review dashboards — read everything a review needs, for one client's stations, write nothing
-scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do (T2 only aligns one out-of-scope error message, which hid nothing but existence).
+scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do (T2 only aligns one out-of-scope error message, which revealed only an out-of-scope forecast's existence).
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
 blocks: [402, 404]
@@ -200,7 +200,8 @@ source).
 ### T2 — the auth dependency and route classification
 
 **Outcome:** `require_reviewer` admits reviewer and admin tokens and rejects a consumer with 403;
-reviewer tokens behave exactly like consumers on every existing route.
+reviewer tokens behave exactly like consumers on every existing route; an out-of-scope forecast id
+answers exactly like an absent one, for consumer and reviewer tokens.
 
 **In:** `api/security.py` — `Principal.can_review` (reviewer or admin) and `require_reviewer`;
 `station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW;
@@ -217,7 +218,8 @@ text only — the one change here that consumer tokens also see.
 **Pre-change:** two test-app routes standing for a REVIEW route, each taking a station: one gated
 with `require_principal` admits a consumer (the test asserting 403 fails), and one gated with
 `require_admin` refuses a reviewer with 403 (the test asserting 200 fails) — the two halves of the
-gap. T2 switches both to `require_reviewer`.
+gap. T2 switches both to `require_reviewer`. And the absent-vs-out-of-scope parity test on
+`GET /api/v1/forecasts/{id}` fails today — the bodies are "Forecast not found" vs "Station not found".
 
 **Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — on the test-app REVIEW route, reviewer → 200 for an in-scope station and 404 for an out-of-scope
 one (a REVIEW route applies the principal's station scope like any other); reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; for consumer and reviewer tokens, `GET /api/v1/forecasts/{id}` returns an identical status **and body** for an absent forecast and an out-of-scope one; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
@@ -251,7 +253,7 @@ roles, with GET-only unchanged.
   for consumers only (`:57-59`); the CLI summary (`:204`); the REVIEW class, stating that every
   REVIEW route serving station data applies the principal's station scope (404 on detail routes,
   filtering on collections), and that a REVIEW route serving forecast values applies Plan 341's
-  publication gate to reviewer tokens where it is active (Plan 404 D4); and the D4 tenant-mode rule (tenant mode only when every station in
+  publication gate to reviewer tokens where it is active (Plan 404 D4; admins keep full access there, per Plan 341); and the D4 tenant-mode rule (tenant mode only when every station in
   the tenant belongs to that dashboard's client; tokens cannot span or change tenants; the Nepal
   token binds to the DHM tenant).
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
@@ -262,8 +264,9 @@ roles, with GET-only unchanged.
   (`role "consumer | admin"`), `docs/conventions.md:74-77` (roles and CLI command list), `docs/v1-scope.md:379` (role list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
   issuance), `docs/touchpoint-maps.md` (API auth paragraph), `docs/spec/types-and-protocols.md`
   (the `AccessTokenRole`/`ScopeMode` definitions at `:304-310` — "exactly 2 roles", consumer-only
-  scope modes; `AccessTokenRole` at `:1339`, "consumer-only" at `:1346`, the CLI set at `:1366`, "the two HTTP
-  read roles" at `:1411`, and `require_principal`/`require_admin` at `:1362` — add `require_reviewer`).
+  scope modes; `AccessTokenRole` at `:1347`, "consumer-only" at `:1354`, the CLI set at `:1374`, "the two HTTP
+  read roles" at `:1418-1419`, and `require_principal`/`require_admin` at `:1370` — add
+  `require_reviewer`).
 - Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
   `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
   `cli/access_tokens.py:1-6,588-590`.
