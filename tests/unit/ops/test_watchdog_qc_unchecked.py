@@ -395,17 +395,22 @@ class TestUnjudgedRecordIsIsolated:
     def test_a_newer_unjudged_record_does_not_mask_the_alarm(
         self, tmp_path: Path
     ) -> None:
-        probe = self._serve(
-            [
-                self._record("observation_qc_unchecked", minutes_ago=30),
-                self._record("observation_qc_unjudged", minutes_ago=5),
-            ]
+        """Two runs sharing state: the first raises the alarm, the second adds
+        a newer unjudged record. A probe that saw that record would report the
+        zero-rule condition gone and post a false RECOVERED."""
+        unchecked = self._record("observation_qc_unchecked", minutes_ago=30)
+        slack = _SlackRecorder()
+
+        _run(tmp_path, self._serve([unchecked]), slack)
+        state = _run(
+            tmp_path,
+            self._serve(
+                [unchecked, self._record("observation_qc_unjudged", minutes_ago=5)]
+            ),
+            slack,
         )
 
-        slack = _SlackRecorder()
-        state = _run(tmp_path, probe, slack)
-
-        assert state.consecutive_qc_unchecked_failures == 1
+        assert state.consecutive_qc_unchecked_failures == 2
         assert len(slack.calls) == 1
         assert "RECOVERED" not in slack.calls[0][1]
 

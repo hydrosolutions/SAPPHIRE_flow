@@ -20,8 +20,14 @@ from sapphire_flow.flows.ingest_observations import (
     _run_qc_task,
     ingest_observations_flow,
 )
+from sapphire_flow.services.qc import (
+    Judgement,
+    _apply_frozen_sensor,
+    _apply_gross_outlier,
+    _apply_spike,
+)
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
+from sapphire_flow.types.domain import ClimBaseline, QcRuleParams, QcRuleSet
 from sapphire_flow.types.enums import ObservationSource, PipelineCheckType, QcStatus
 from sapphire_flow.types.ids import ObservationId
 from sapphire_flow.types.observation import Observation, RawObservation
@@ -35,9 +41,10 @@ from tests.fakes.fake_stores import (
 )
 
 if TYPE_CHECKING:
-    from sapphire_flow.flows.ingest_observations import QcTaskOutcome
+    from sapphire_flow.flows.ingest_observations import IngestResult, QcTaskOutcome
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.station import StationConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -207,32 +214,104 @@ class TestFirstReadingsAfterAnOutage:
         assert _by_minutes(store)[20].qc_status is QcStatus.QC_PASSED
 
 
+def _frozen_rule(min_consecutive: int) -> QcRuleParams:
+    return QcRuleParams(
+        rule_id="frozen_sensor",
+        rule_version="1.0",
+        parameter="water_level",
+        time_step=timedelta(seconds=600),
+        thresholds={"tolerance": 0.001, "min_consecutive": float(min_consecutive)},
+    )
+
+
+def _judged_minutes(store: FakeObservationStore, min_consecutive: int) -> set[int]:
+    group = sorted(store.observations(), key=lambda o: o.timestamp)
+    rule = _frozen_rule(min_consecutive)
+    _, judged = _apply_frozen_sensor(group, dict(rule.thresholds), rule)  # type: ignore[arg-type]
+    by_id = {o.id: o for o in group}
+    return {int((_T0 - by_id[i].timestamp).total_seconds() // 60) for i in judged}
+
+
 class TestFrozenSensorJudgesPerReading:
     """A reading is judged by `frozen_sensor` only inside a stretch of at least
-    `min_consecutive` (12 at 600 s) distinct instants with values."""
+    `min_consecutive` distinct instants with values. Asserted on the rule's
+    whole judged set — through the flow, `rate_of_change` would mask a reading
+    `frozen_sensor` failed to cover."""
 
-    def test_a_long_clean_stretch_judges_the_oldest_reading(self) -> None:
+    def test_every_reading_of_a_qualifying_stretch_is_judged(self) -> None:
         station_id = _station().id
         store = FakeObservationStore()
-        minutes = range(110, -1, -10)  # 12 instants, all inside the 2 h window
+        minutes = range(110, -1, -10)  # exactly 12 instants
         store.store_raw_observations([_raw(station_id, m, _level(m)) for m in minutes])
+
+        assert _judged_minutes(store, 12) == set(minutes)
+
+    def test_a_missing_reading_splits_the_stretch(self) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        minutes = range(230, -1, -10)  # 24 instants; the 13th is missing
+        store.store_raw_observations(
+            [_raw(station_id, m, _level(m)) for m in minutes if m != 110]
+        )
+        store.store_observations([_missing(station_id, 110)])
+
+        # 12 valued instants before the gap qualify; the 11 after it do not.
+        assert _judged_minutes(store, 12) == set(range(230, 119, -10))
+
+    def test_duplicate_instants_count_once(self) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        minutes = range(50, -1, -10)  # 6 instants, two sources each = 12 rows
+        store.store_raw_observations(
+            [_raw(station_id, m, _level(m)) for m in minutes]
+            + [
+                RawObservation(
+                    station_id=station_id,
+                    timestamp=ensure_utc(_T0 - timedelta(minutes=m)),
+                    parameter="water_level",
+                    value=_level(m),
+                    source=ObservationSource.MANUAL_IMPORT,
+                )
+                for m in minutes
+            ]
+        )
+
+        assert _judged_minutes(store, 12) == set()
+
+    def test_excluded_values_end_a_stretch(self) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        store.store_raw_observations(
+            [
+                _raw(station_id, m, 0.0 if m % 20 == 0 else 1.0 + m / 1000)
+                for m in range(230, -1, -10)
+            ]
+        )
+        group = sorted(store.observations(), key=lambda o: o.timestamp)
+        rule = _frozen_rule(3)
+
+        _, judged = _apply_frozen_sensor(
+            group,
+            {"tolerance": 0.001, "min_consecutive": 3, "exclude_at_or_below": 0.0},
+            rule,
+        )
+
+        # Every other reading is excluded, so no stretch reaches 3 instants.
+        assert judged == frozenset()
+
+    def test_through_the_task_the_oldest_reading_of_a_long_stretch_passes(
+        self,
+    ) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        store.store_raw_observations(
+            [_raw(station_id, m, _level(m)) for m in range(110, -1, -10)]
+        )
 
         outcome = _run_task(store, station_id)
 
         assert _by_minutes(store)[110].qc_status is QcStatus.QC_PASSED
         assert outcome.unjudged_groups == ()
-
-    def test_a_gap_that_splits_the_stretch_leaves_the_oldest_unjudged(self) -> None:
-        station_id = _station().id
-        store = FakeObservationStore()
-        store.store_raw_observations(
-            [_raw(station_id, m, _level(m)) for m in range(110, -1, -10) if m != 60]
-        )
-        store.store_observations([_missing(station_id, 60)])
-
-        _run_task(store, station_id)
-
-        assert _by_minutes(store)[110].qc_status is QcStatus.QC_UNCHECKED
 
 
 class TestZeroRuleWins:
@@ -255,6 +334,13 @@ class TestZeroRuleWins:
         assert group.inferred_time_step_seconds == 1800.0
 
 
+class _FailingUnjudgedWrites(FakePipelineHealthStore):
+    def append_health_record(self, record: PipelineHealthRecord) -> None:
+        if record.check_type is PipelineCheckType.OBSERVATION_QC_UNJUDGED:
+            raise RuntimeError("health store unavailable")
+        super().append_health_record(record)
+
+
 class TestThroughTheFlow:
     def _flow(
         self,
@@ -262,7 +348,7 @@ class TestThroughTheFlow:
         station: StationConfig,
         health: FakePipelineHealthStore,
         obs_store: FakeObservationStore,
-    ) -> object:
+    ) -> IngestResult:
         station_store = FakeStationStore()
         station_store.store_station(station)
         return ingest_observations_flow(
@@ -302,8 +388,8 @@ class TestThroughTheFlow:
             health.fetch_recent(check_type=PipelineCheckType.OBSERVATION_QC_UNCHECKED)
             == []
         )
-        assert result.qc_unchecked == 0  # type: ignore[attr-defined]
-        assert result.qc_unjudged == 1  # type: ignore[attr-defined]
+        assert result.qc_unchecked == 0
+        assert result.qc_unjudged == 1
 
     def test_the_record_survives_json_serialisation(self) -> None:
         station = _station()
@@ -321,7 +407,42 @@ class TestThroughTheFlow:
         )
         assert json.loads(json.dumps(record.detail)) == record.detail
 
-    def test_unchecked_and_unjudged_add_up_to_the_stored_unchecked_rows(
+    def test_no_record_when_every_reading_was_judged(self) -> None:
+        station = _station(datum=495.0)
+        health = FakePipelineHealthStore()
+
+        self._flow(
+            [_raw(station.id, m, _level(m)) for m in (30, 20, 10, 0)],
+            station,
+            health,
+            FakeObservationStore(),
+        )
+
+        assert (
+            health.fetch_recent(check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED)
+            == []
+        )
+
+    def test_a_judged_context_row_produces_no_record(self) -> None:
+        station = _station()
+        health = FakePipelineHealthStore()
+        obs_store = FakeObservationStore()
+        [oldest] = obs_store.store_raw_observations([_raw(station.id, 30, _level(30))])
+        obs_store.update_qc(oldest, QcStatus.QC_PASSED, [])
+
+        self._flow(
+            [_raw(station.id, m, _level(m)) for m in (20, 10, 0)],
+            station,
+            health,
+            obs_store,
+        )
+
+        assert (
+            health.fetch_recent(check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED)
+            == []
+        )
+
+    def test_zero_rule_and_unjudged_readings_stay_in_their_own_records(
         self,
     ) -> None:
         station = _station()
@@ -337,65 +458,114 @@ class TestThroughTheFlow:
         stored_unchecked = sum(
             o.qc_status is QcStatus.QC_UNCHECKED for o in obs_store.observations()
         )
-        assert result.qc_unchecked + result.qc_unjudged == stored_unchecked  # type: ignore[attr-defined]
-        assert result.qc_unchecked == 4  # type: ignore[attr-defined]
-        assert result.qc_unjudged == 1  # type: ignore[attr-defined]
-
-
-class TestRelativeSpikeZeroReference:
-    def test_a_zero_previous_value_is_not_evaluable(self) -> None:
-        from sapphire_flow.services.qc import _apply_spike
-
-        station_id = _station().id
-        store = FakeObservationStore()
-        store.store_raw_observations(
-            [
-                _raw(station_id, m, v, parameter="discharge")
-                for m, v in ((20, 0.0), (10, 5.0), (0, 0.0))
-            ]
+        assert result.qc_unchecked + result.qc_unjudged == stored_unchecked
+        assert (result.qc_unchecked, result.qc_unjudged) == (4, 1)
+        [zero_rule] = health.fetch_recent(
+            check_type=PipelineCheckType.OBSERVATION_QC_UNCHECKED
         )
-        rows = _by_minutes(store)
-        rule = QcRuleParams(
-            rule_id="spike",
-            rule_version="1.0",
+        assert zero_rule.detail["observations_unchecked"] == 4
+        assert "observations_unjudged" not in zero_rule.detail
+        assert [g["parameter"] for g in zero_rule.detail["zero_rule_groups"]] == [
+            "discharge"
+        ]
+        [unjudged] = health.fetch_recent(
+            check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED
+        )
+        assert [g["parameter"] for g in unjudged.detail["unjudged_groups"]] == [
+            "water_level"
+        ]
+        assert unjudged.detail["observations_unjudged"] == 1
+
+    def test_a_failed_record_write_does_not_fail_the_run(self) -> None:
+        station = _station()
+        obs_store = FakeObservationStore()
+
+        result = self._flow(
+            [_raw(station.id, m, _level(m)) for m in (30, 20, 10, 0)],
+            station,
+            _FailingUnjudgedWrites(),
+            obs_store,
+        )
+
+        assert result.qc_unjudged == 1
+        assert _by_minutes(obs_store)[30].qc_status is QcStatus.QC_UNCHECKED
+
+
+def _discharge_rows(values: tuple[float, float, float]) -> dict[int, Observation]:
+    station_id = _station().id
+    store = FakeObservationStore()
+    store.store_raw_observations(
+        [
+            _raw(station_id, m, v, parameter="discharge")
+            for m, v in zip((20, 10, 0), values, strict=True)
+        ]
+    )
+    return _by_minutes(store)
+
+
+def _rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
+    return QcRuleParams(
+        rule_id=rule_id,
+        rule_version="1.0",
+        parameter="discharge",
+        time_step=timedelta(seconds=600),
+        thresholds=thresholds,
+    )
+
+
+class TestRuleJudgements:
+    """Each rule reports whether it could judge a reading. Asserted on the rule
+    itself: through the flow another rule can hide a wrong answer."""
+
+    def test_relative_spike_with_a_zero_reference_is_not_evaluable(self) -> None:
+        rows = _discharge_rows((0.0, 5.0, 0.0))
+        thresholds = {"tolerance": 0.1}
+
+        judgement, flag = _apply_spike(
+            rows[10], rows[20], rows[0], thresholds, _rule("spike", thresholds)
+        )
+
+        assert (judgement, flag) == (Judgement.NOT_EVALUABLE, None)
+
+    def test_absolute_spike_on_a_clean_reading_is_judged(self) -> None:
+        rows = _discharge_rows((10.0, 10.1, 10.2))
+        thresholds = {"max_delta": 1.0}
+
+        judgement, flag = _apply_spike(
+            rows[10], rows[20], rows[0], thresholds, _rule("spike", thresholds)
+        )
+
+        assert (judgement, flag) == (Judgement.JUDGED, None)
+
+    def test_gross_outlier_without_a_baseline_is_not_evaluable(self) -> None:
+        rows = _discharge_rows((10.0, 10.1, 10.2))
+        thresholds = {"k_sigma": 5.0}
+
+        judgement, flag = _apply_gross_outlier(
+            rows[10], thresholds, {}, _rule("gross_outlier", thresholds)
+        )
+
+        assert (judgement, flag) == (Judgement.NOT_EVALUABLE, None)
+
+    def test_gross_outlier_with_a_baseline_is_judged(self) -> None:
+        rows = _discharge_rows((10.0, 10.1, 10.2))
+        obs = rows[10]
+        doy = obs.timestamp.timetuple().tm_yday
+        baseline = ClimBaseline(
+            station_id=obs.station_id,
             parameter="discharge",
-            time_step=timedelta(seconds=600),
-            thresholds={"tolerance": 0.1},
+            day_of_year=doy,
+            rolling_mean=10.0,
+            rolling_std=1.0,
+            sample_count=30,
+        )
+        thresholds = {"k_sigma": 5.0}
+
+        judgement, flag = _apply_gross_outlier(
+            obs,
+            thresholds,
+            {(obs.station_id, "discharge", doy): baseline},
+            _rule("gross_outlier", thresholds),
         )
 
-        evaluated, flag = _apply_spike(
-            rows[10], rows[20], rows[0], {"tolerance": 0.1}, rule
-        )
-
-        assert (evaluated, flag) == (False, None)
-
-
-class TestFrozenSensorExclusion:
-    def test_excluded_values_are_not_judged_by_frozen_sensor(self) -> None:
-        from sapphire_flow.services.qc import _apply_frozen_sensor
-
-        station_id = _station().id
-        store = FakeObservationStore()
-        store.store_raw_observations(
-            [
-                _raw(station_id, m, 0.0 if m % 20 == 0 else 1.0 + m / 1000)
-                for m in range(230, -1, -10)
-            ]
-        )
-        group = sorted(store.observations(), key=lambda o: o.timestamp)
-        rule = QcRuleParams(
-            rule_id="frozen_sensor",
-            rule_version="1.0",
-            parameter="water_level",
-            time_step=timedelta(seconds=600),
-            thresholds={"tolerance": 0.001, "min_consecutive": 3},
-        )
-
-        _, judged = _apply_frozen_sensor(
-            group,
-            {"tolerance": 0.001, "min_consecutive": 3, "exclude_at_or_below": 0.0},
-            rule,
-        )
-
-        # Every other reading is excluded, so no stretch reaches 3 instants.
-        assert judged == frozenset()
+        assert (judgement, flag) == (Judgement.JUDGED, None)
