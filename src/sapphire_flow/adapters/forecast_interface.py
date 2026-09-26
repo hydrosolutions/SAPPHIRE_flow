@@ -44,6 +44,9 @@ from forecast_interface import (
     EnsembleMode as FIEnsembleMode,
 )
 from forecast_interface import (
+    RetrainableModel as FIRetrainableModel,
+)
+from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
 )
 
@@ -1095,12 +1098,19 @@ class ForecastInterfaceAdapter:
     ) -> ModelArtifact:
         """Plan 399 T1 — warm-start from an existing artifact.
 
-        ⛔ No fall-back to `train`. A caller that has not checked
-        `supports_warm_start` and reaches a model without `retrain` gets the
-        inner model's own AttributeError, which is a programming error here —
-        the service layer refuses before calling this.
+        ⛔ No fall-back to `train`. The service layer refuses first
+        (`services/training.py::supports_warm_start`); the narrow below is the
+        library-level backstop, against FI's OWN `RetrainableModel` contract
+        rather than reaching for an attribute the base `ForecastModel` protocol
+        does not declare.
         """
         self._assert_single_deliverable_dynamic_branch()
+        if not isinstance(self._model, FIRetrainableModel):
+            raise ConfigurationError(
+                "wrapped model does not implement ForecastInterface's "
+                "RetrainableModel; SAP3 refuses rather than falling back to "
+                "train (Plan 399 D2)"
+            )
         model_inputs = self._model_inputs_from_data(data)
         return self._model.retrain(base_artifact, model_inputs, config=params, rng=rng)
 
