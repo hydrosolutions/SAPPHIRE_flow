@@ -18,13 +18,10 @@ source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepa
 
 ## Status
 
-**DRAFT — HIGH RISK — reviewed twice, second-round corrections folded, not re-reviewed.** An
-external-facing API contract is a high-risk trigger (`docs/workflow.md` § High-risk work), so in
-addition to the ordinary Claude + Codex pair the owner commissions **one more independent review
-before READY and again before the implementation PR**. Round 1 (on `f71fb951`): 17 findings,
-folded; the owner decided D10–D11, then replaced D11 with D12 (Plan 401). Round 2 (on `96a8e771`):
-14 findings, all verified; the owner decided D13 and had the rest folded. The corrected plan has had
-no review. One decision is open (D9, a follow-on). This plan **depends on Plan 401**.
+**DRAFT — HIGH RISK — review corrections folded, not re-reviewed.** An external-facing API
+contract is a high-risk trigger (`docs/workflow.md` § High-risk work): the ordinary Claude + Codex
+pair on the current text, plus one owner-commissioned review before READY and again before the
+implementation PR. One decision is open (D9, a follow-on). This plan **depends on Plan 401**.
 
 ## Why this exists
 
@@ -88,7 +85,13 @@ Repository facts this plan relies on:
   (`"1.0.0"`) for `frozen_sensor` — deliberate (Plan 324). The row's `qc_rule_version` is `"1.2"`,
   `"1.2-datum"` or `"1.2-datum-skip"` (`services/qc_datum.py:21-22`); `-datum-skip` means
   `range_check` and `gross_outlier` were skipped, and water-level thresholds apply to datum-shifted
-  values. Forecast flags carry the forecast QC module's own `_RULE_VERSION` (`"1.0"`). Water-level
+  values. Forecast flags carry the forecast QC module's own `_RULE_VERSION` (`"1.0"`). **These labels are
+  not a closed set:** rows written before Plan 324 hold `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`,
+  and every calculated-station observation carries a flag `rule_id = "upstream_propagated"`,
+  `rule_version = "component_derivation/v1"`, possibly with status `qc_passed`, and
+  `qc_rule_version = "component_derivation/v1"` (`services/component_derivation.py:30-31`,
+  `flows/ingest_observations.py:687-689`); its `detail` is JSON naming the component stations.
+  A flag's `rule_version` never equals a served rule's `rule_version`. Water-level
   **forecasts** on a station without a datum skip `range_check`, `negative_value` and
   `climatology_outlier` (`services/qc_datum.py:15-17,37-40`), and a forecast stores no
   `qc_rule_version`, so that skip is invisible in a forecast response.
@@ -97,6 +100,7 @@ Repository facts this plan relies on:
   baseline statistics.
 - **Skill.** `latest_generation_predicate` (`store/skill_store.py`) scopes by station, model,
   artifact, parameter, skill source and forcing type — not time step; harmless today (one cadence).
+  Combined (pooled/BMA) skill rows carry `model_artifact_id = NULL` (`db/metadata.py:1742-1748`).
   `SkillScore.forcing_type` and `phase_offset_seconds` are nullable, `lead_time_hours` is not
   (`types/skill.py`); `model_artifacts.training_period_start/_end` are NOT NULL
   (`db/metadata.py:936-937`).
@@ -211,7 +215,9 @@ plan, and T4 records it in `security.md` beside that section.
 Both new routes are `GET`, read-only, registered on a router gated with `Depends(require_reviewer)`
 (Plan 401). A consumer token receives 403; a reviewer token is station-scoped as on every other
 route (the rule sets carry no station data). Timestamps follow the API's existing UTC convention.
-Every closed set below is a `Literal` in the response model.
+Every closed set below is a `Literal` in the response model. Stored labels are **not** closed sets:
+`QcFlagResponse.rule_id`, `QcFlagResponse.rule_version` and `ObservationResponse.qc_rule_version`
+are plain `str` (see *Repository facts*).
 
 **`GET /api/v1/qc/rules`** — both QC rule sets as **the serving process resolves them now**:
 
@@ -266,7 +272,8 @@ training period → `training_period`; disjoint → `outside_training_period`; o
 out-of-scope station → 404.
 
 **Typed flags and additive fields on existing responses (T3):** one `QcFlagResponse` model
-(`rule_id`, `rule_version`, `status`, `detail`) replaces the untyped `qc_flags` of
+(`rule_id: str`, `rule_version: str`, `status` — a `Literal` over every `QcStatus` value, `qc_passed`
+included — and `detail: str | None`) replaces the untyped `qc_flags` of
 `ObservationResponse` and types the new `ForecastSummary.qc_flags` (`[]` when none; inherited by
 `ForecastDetail`). `ObservationResponse.qc_rule_version` (nullable, the stored value). The JSON on the
 wire for observations is unchanged by the typing.
@@ -322,9 +329,10 @@ response models.
 **Out:** computing or re-selecting skill; `latest_generation_predicate`; skill diagrams; any ranking
 or comparability judgement; any change to the snapshot or to `fetch_active_model_assignments`.
 
-**Pre-change:** a store test asserting that, for a group-scope model assigned directly to a station,
-the ID-only method returns the group artifact the forecast path returns — fails on the missing
-method; after it exists, the route test for the same case returns that artifact's rows.
+**Pre-change:** (1) a request to `GET /api/v1/stations/{id}/skill` returns 404; (2) a store test
+asserting that, for a group-scope model assigned directly to a station, the ID-only method returns
+the group artifact the forecast path returns — fails on the missing method; after it exists, the
+route test for the same case returns that artifact's rows.
 
 **Verification:** `uv run pytest tests/unit/api/ tests/integration/store/` plus the new test files, named in the PR — the ID-only method agrees with `fetch_active_artifact_for_station` for a station-scoped artifact, a group-scoped one, and a station holding both; superseded-artifact rows are excluded; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present, in the specified order; `evaluated_on` takes each of its three values; `?model_id=` filters; unknown station → 404; a reviewer token for a station outside its scope → 404.
 
@@ -345,7 +353,9 @@ query), `tests/fakes/fake_stores.py` (the fake summary rows), `api/routes/api_st
 forecast's `qc_flags`; the forecast **detail** omits them; an observation omits its stored
 `qc_rule_version`.
 
-**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/test_forecast_summary.py` — a flagged forecast returns its flags on both routes, an unflagged one `[]`; the store's summary query returns the stored flags; an observation returns its stored `qc_rule_version`, and `null` when none is stored; a **consumer** token receives the same fields (D13); the observation `qc_flags` JSON is byte-identical to before for the same row.
+**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/test_forecast_summary.py` — a flagged forecast returns its flags on both routes, an unflagged one `[]`; the store's summary query returns the stored flags; an observation returns its stored `qc_rule_version`, and `null` when none is stored; a **consumer** token receives the same fields (D13); the observation `qc_flags` JSON is byte-identical to before for the same row — including a
+calculated-station row (`upstream_propagated`, status `qc_passed`) and a pre-324 row (`"1.1-datum"`),
+whose `qc_rule_version` is also returned unchanged.
 
 ### T4 — commit the contract for the map's routes, the consumer page, and the security record
 
@@ -356,13 +366,23 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
 **In:**
 - The generated file, built with `fastapi.openapi.utils.get_openapi(routes=<explicit list>)` over
   exactly: `GET /api/v1/stations`, `/stations/{id}`, `/stations/{id}/observations`,
-  `/stations/{id}/forecasts`, `/forecasts/{id}`, `/qc/rules`, `/stations/{id}/skill`. A drift test
-  in `tests/unit/api/`, and an assertion that the list holds no other route.
+  `/stations/{id}/forecasts`, `/forecasts/{id}`, `/qc/rules`, `/stations/{id}/skill`. Because
+  `require_principal` reads the header from `Request` (`api/security.py:152-181`), the generator
+  sees no auth: the file **adds explicitly** a bearer `securityScheme` and a `security` requirement
+  on every operation, and each operation's description states which token roles it admits
+  (REVIEW for the two new routes) and that an out-of-scope station returns 404 (detail routes) or a
+  filtered result (the station list). A drift test in `tests/unit/api/` asserts the file equals the
+  regenerated one, that the route list holds no other route, and that every operation carries the
+  bearer requirement.
 - `docs/spec/api-v1-review.md`, a short consumer page: `qc_unchecked` ≠ passed; `raw` = not yet
   checked; the matching rule of D4 (candidates; the rules served are the **current** resolution, not
   the thresholds behind past flags); severity; the `qc_rule_version` labels (`"1.2"`, `"1.2-datum"`,
-  `"1.2-datum-skip"`) are code generations, not rule-set versions, and `-datum-skip` means two
-  rules were skipped; water-level **forecasts** without a datum skip three rules and a forecast
+  `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
+  generations, not rule-set versions, and `-datum-skip` means two rules were skipped; a flag's
+  `rule_version` never equals the served rule's `rule_version`, and matching never uses it;
+  calculated-station flags (`upstream_propagated` / `component_derivation/v1`) match no rule and
+  their `detail` names the component stations; combined (pooled/BMA) forecasts have no skill rows
+  here; water-level **forecasts** without a datum skip three rules and a forecast
   response cannot show it; forecast flag versions; `evaluated_on`; the token must stay server-side.
 - `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, and D13's
   visibility decision beside § Input-quality visibility; the `docs/touchpoint-maps.md` API
@@ -381,7 +401,10 @@ locally and watching it fail.
 forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer role is the
 natural holder of its internal-diagnostic read access to unpublished forecasts — 341 decides; (c)
 `docs/spec/api-v1-map.openapi.json` and its drift test already cover `/stations/{id}/forecasts` and
-`/forecasts/{id}`, so 341 updates that file rather than producing a second contract.
+`/forecasts/{id}`, so 341 updates that file rather than producing a second contract; (d) after T3,
+`qc_flags[].detail` on both forecast routes contains forecast values and, for
+`climatology_outlier`, observation-derived baseline statistics — so 341's published-only rule and
+its metadata-only tombstones must strip or gate that field.
 
 **In:** a note in `docs/plans/341-chwrr-forecast-publication-api.md`.
 
@@ -431,7 +454,8 @@ After staging deploy (orchestrator), before the map is told:
    `cli/register_deployments.py`) and compare the returned sets — equal environment variables do
    not prove equal rules (overlays and bind-mounted file contents also decide).
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and every
-   row's `model_artifact_id` is the artifact the station's latest forecast used.
+   row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
+   that row's model.
 3. A Swiss reviewer token **scoped to one station** → 200 on both new routes for that station, and
    404 on `/skill` for another **existing** Swiss station; a consumer token → 403.
 
@@ -444,26 +468,15 @@ After staging deploy (orchestrator), before the map is told:
 - QC what-if / dry run (D9); forcing and basin attributes (last priority).
 - DHM/Nepal rules (303), hourly rules (323), network selection (264), overrides (269).
 - `latest_generation_predicate` lacking time step.
+- Combined (pooled/BMA) forecast skill — its rows have no artifact, so the selection never serves
+  them; staging holds none today.
 
 ## Changelog
 
-- 2026-09-25 — drafted as a snapshot v3 extension; D2–D4 closed.
-- 2026-09-26 — D5–D8 closed; then rewritten for the `/api/v1` interface (D1). File renamed from
-  `345-forecast-lab-snapshot-v3-qc-and-skill.md`.
-- 2026-09-26 — round 1 (Claude + Codex on `f71fb951`): 17 findings, all verified. Owner decided
-  D10 (serve the forecast rule set too) and D11 (admin token); the rest folded (contract limited to
-  the map's routes; truthful `source`; loader unification; per-container staging check; non-null
-  fields; T3's real files; consumer page; D6 precondition in Plan 143; high-risk).
-- 2026-09-26 — owner replaced the admin token with a reviewer token per dashboard (D12, Plan 401);
-  D11 superseded; depends on Plan 401.
-- 2026-09-26 — round 2 (Claude + Codex on `96a8e771`): 14 findings, all verified. Owner decided D13
-  (T3's fields visible to every role, following the 2026-09-04 precedent). Folded: skill rows follow
-  the artifact the forecast uses (ID-only store method), dropping the assignment-scope helper and
-  field; flag matching by set, parameter and cadence with candidates and "current, not historical"
-  (the "exactly" claim withdrawn); typed `QcFlagResponse` and `Literal` closed sets; the fourth
-  loader; T1–T3 test paths and discriminating pre-change tests; a tie-free sort; nullability; three
-  consumer-page caveats; D3's unsupported "labels them as Swiss" claim removed; T5 tells 341 about
-  the contract file; router-comment lines; an existing-station staging check.
+- 2026-09-25 — drafted as a snapshot v3 extension. Decisions D2–D4.
+- 2026-09-26 — rewritten for the `/api/v1` interface (D1); file renamed from
+  `345-forecast-lab-snapshot-v3-qc-and-skill.md`. Decisions D5–D7, D10, D12 (reviewer token,
+  Plan 401; D11's admin token superseded), D13 (T3's fields visible to every role); D8 superseded.
 
 ## Dependency graph
 

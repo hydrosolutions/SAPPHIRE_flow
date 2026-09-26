@@ -17,11 +17,10 @@ source: 2026-09-26 — owner, while reviewing Plan 345: "could we have a special
 
 ## Status
 
-**DRAFT — HIGH RISK — reviewed once, corrections folded, not re-reviewed.** Authentication and a
+**DRAFT — HIGH RISK — review corrections folded, not re-reviewed.** Authentication and a
 migration are high-risk triggers (`docs/workflow.md` § High-risk work): the ordinary Claude + Codex
-pair, plus one owner-commissioned review before READY and again before the implementation PR. The
-first Claude and Codex passes (2026-09-26, on `96a8e771`) found 10 issues, all verified; the owner
-closed D3 and had the rest folded. The corrected plan has had no review.
+pair on the current text, plus one owner-commissioned review before READY and again before the
+implementation PR. All decisions are closed.
 
 ## Why this exists
 
@@ -59,11 +58,17 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
     construction: `api/security.py:131-142`, `api/routes/api_stations.py:174`,
     `api/routes/api_alerts.py:97`, `api/routes/forecast_lab.py:116`,
     `store/access_token_store.py:31,119`, `cli/access_tokens.py:201,303`.
-  - Sites testing `CONSUMER` would put a reviewer in the **tenantless, admin-like** branch and
-    **must change**: `types/auth.py:172` (tenant required), `cli/access_tokens.py:579-592` (role
-    choice; `--tenant` read only for consumers), and the SQL predicates of
-    `ck_access_tokens_role_tenant` and `ck_access_tokens_tenant_mode_is_consumer`
-    (`db/metadata.py:2091,2099`).
+  - Sites testing `CONSUMER` that would **fail open** — a reviewer falls into the tenantless,
+    admin-like branch — and **must change**: `types/auth.py:172` (a tenant is required only for a
+    consumer) and `cli/access_tokens.py:579-592` (role choice; `--tenant` read only for consumers).
+  - Predicates that **fail closed** but are too strict and **must change**:
+    `ck_access_tokens_role_tenant` (`db/metadata.py:2090-2091`, admits only admin+NULL or
+    consumer+tenant, so rejects every reviewer row) and `ck_access_tokens_tenant_mode_is_consumer`
+    (`:2099`, rejects a reviewer in tenant mode).
+- **Out-of-scope behaviour differs by route.** Detail routes return 404 for an out-of-scope
+  station (`api/security.py::ensure_station_in_scope`); collection routes filter instead — the
+  station list (`api/routes/api_stations.py:174`) and alerts, which answer an explicit
+  out-of-scope `station_id` with 200 and an empty result (`api/routes/api_alerts.py:84-89`).
 - **Route gating.** Routers mount with `Depends(require_principal)` or `Depends(require_admin)`
   (`api/__init__.py:84-101`); `require_admin` rejects a non-admin with 403. The route matrix
   (`tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive`, `_classify_routes`) derives
@@ -98,7 +103,8 @@ reclassified; Plan 345 adds the first two REVIEW routes.
 **This plan gives a reviewer no access to unpublished forecasts.** Where Plan 341's publication gate
 is active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes, unless
 Plan 341 itself authorizes the reviewer role for its internal-diagnostic route (Plan 345 T5 raises
-this with 341). Reviewing unpublished candidates is the named hydrologist's job in 341.
+this with 341; T4 records the default in 341 itself). Reviewing unpublished candidates is the
+named hydrologist's job in 341.
 
 ### D3 — publishing is a person, not a dashboard token. **⚖️ CLOSED — owner, 2026-09-26.**
 
@@ -127,19 +133,32 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
 - The migration's **downgrade refuses while any `reviewer` row exists, revoked or not**, naming the
   step: delete the token's `access_token_stations` rows, then its `access_tokens` row (no cascade;
   the API's database role has only INSERT and UPDATE on `access_tokens` —
-  `docker/bootstrap-roles.sql:149` — so this is an operator step on the owner role). A migration never deletes them itself.
+  `docker/bootstrap-roles.sql:149` — so this is an operator step on the owner role). A migration never deletes them itself. The
+  refusal message carries the exact statements:
+  ```sql
+  DELETE FROM access_token_stations
+    WHERE token_id IN (SELECT id FROM access_tokens WHERE role = 'reviewer');
+  DELETE FROM access_tokens WHERE role = 'reviewer';
+  ```
+  run as the database owner: `docker compose exec -T postgres psql -U ${DB_USER:-sapphire} -d sapphire`
+  (the owner role of `docker/bootstrap-roles.sql:3`).
 - `tests/unit/db/test_alembic_head_release_b.py` — the head pin moves to the new revision.
 - `store/access_token_store.py` — no logic change (it refuses only admin scopes); the comment at
   `:67-73` stops saying a scope belongs only to a consumer.
 - `docs/standards/cicd.md` § Rollback — **before redeploying an image older than this plan, delete
-  every reviewer token** (same step), because that image cannot parse the role.
+  every reviewer token** with the same two statements and command, because that image cannot parse
+  the role.
 
 **Out:** any change to consumer/admin rows or rules.
 
-**Pre-change:** a test constructing `AccessToken(role=REVIEWER, …)` fails on the missing enum
-member; a migration test inserting a reviewer row fails on `ck_access_tokens_role`.
+**Pre-change:** with only the enum member added, a test asserting that
+`AccessToken(role=REVIEWER, tenant_id=None, …)` raises fails — it constructs, because
+`__post_init__` requires a tenant only for consumers (the fail-open gap); and a migration test
+inserting a reviewer row with a tenant fails on `ck_access_tokens_role`.
 
-**Verification:** `uv run pytest tests/unit/types/test_auth.py tests/unit/db/test_alembic_head_release_b.py tests/integration/store/test_access_token_store.py tests/integration/db/` including a new `tests/integration/db/test_migration_<rev>_reviewer_role.py` modelled on `test_migration_0049_scope_mode.py` — upgrade; reviewer with a tenant accepted; reviewer without a tenant rejected; reviewer with `scope_mode = 'tenant'` accepted; admin with `scope_mode = 'tenant'` still rejected; downgrade refused while a reviewer row exists **and still refused after revoking it**; downgrade succeeds on a database with no reviewer rows.
+**Verification:** `uv run pytest tests/unit/types/test_auth.py tests/unit/db/test_alembic_head_release_b.py tests/integration/store/test_access_token_store.py tests/integration/db/` including a new `tests/integration/db/test_migration_<rev>_reviewer_role.py` modelled on `test_migration_0049_scope_mode.py` — upgrade; reviewer with a tenant accepted; reviewer without a tenant rejected; reviewer with `scope_mode = 'tenant'` accepted; admin with `scope_mode = 'tenant'` still rejected; downgrade refused while a reviewer row exists **and still refused after revoking it**; downgrade succeeds on a database with no reviewer rows, **after which** a reviewer insert fails on
+`ck_access_tokens_role` and an admin row with `scope_mode = 'tenant'` fails on
+`ck_access_tokens_tenant_mode_is_consumer` (the 0047/0049 rules are back).
 
 ### T2 — the auth dependency and route classification
 
@@ -153,10 +172,11 @@ so the dependency is also exercised on a test-only app.
 
 **Out:** gating or reclassifying any existing route.
 
-**Pre-change:** after T1, a test asserting `require_reviewer` admits a reviewer fails on the missing
-dependency.
+**Pre-change:** a test-app route standing for a REVIEW route, gated with today's only non-admin
+option (`require_principal`), admits a consumer — the test asserting a consumer gets 403 fails for
+the reason the gap exists. T2 switches that route to `require_reviewer`.
 
-**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station and 404 for an out-of-scope one; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope.
+**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope.
 
 ### T3 — issuing and managing reviewer tokens
 
@@ -179,23 +199,31 @@ role. Structured log events per `docs/standards/logging.md`.
 roles, with GET-only unchanged.
 
 **In:**
-- `docs/standards/security.md` — the role model at `:17` (amending G4's role list, citing D1), the
-  endpoint matrix (a reviewer column; the REVIEW class), and a line that a reviewer token is held
-  server-side by its dashboard.
+- `docs/standards/security.md` — the role model at `:17` (amending G4's role list, citing D1); the
+  CLI list (`:63`); "the two HTTP read roles" (`:88`); the realised-status note (`:254-262`); the
+  input-quality section's "only `consumer` and `admin`" (`:296-301`); pepper rotation (`:341`);
+  the endpoint matrix (a reviewer column; the REVIEW class); and a line that a reviewer token is
+  held server-side by its dashboard.
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
   add `create-reviewer`) and any mention of `ck_access_tokens_tenant_mode_is_consumer`'s meaning.
-- `docs/architecture-context.md` (`access_tokens.role` values), `docs/conventions.md:77` (CLI command
-  list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
+- `docs/architecture-context.md` (`access_tokens.role` values), `docs/spec/database-schema.md:1075`
+  (`role "consumer | admin"`), `docs/conventions.md:77` (CLI command list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
   issuance), `docs/touchpoint-maps.md` (API auth paragraph), `docs/spec/types-and-protocols.md`
-  (`AccessTokenRole`).
-- Docstrings: `api/security.py:10-14`, `types/auth.py:129-155,185`, `types/enums.py:331-350`,
-  `types/write_principal.py:14`.
+  (`AccessTokenRole` at `:1339`, "consumer-only" at `:1346`, the CLI set at `:1366`, "the two HTTP
+  read roles" at `:1411`).
+- Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
+  `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
+  `cli/access_tokens.py:1-6,588-590`.
+- **A note in `docs/plans/341-chwrr-forecast-publication-api.md`**: a third, non-admin service-token
+  role now exists; every published-only surface treats it like a consumer unless 341 explicitly
+  authorises it; 341's route-inventory tests include a reviewer token; the "consumer/admin"
+  description at `:28` is superseded.
 
 **Out:** rewriting archived Plan 147.
 
 **Pre-change:** N/A — documentation.
 
-**Verification:** `grep -rniE "two roles|third role|exactly two|'consumer' \| 'admin'|create/create-admin" docs/ src/ --include=*.md --include=*.py | grep -v "docs/plans/archive"` returns only text updated by this task or deliberate history.
+**Verification:** `grep -rniE 'two roles|two HTTP|third role|exactly two|consumer.{0,12}admin|CONSUMER.{0,40}ADMIN|create-admin' docs/ src/ --include='*.md' --include='*.py' | grep -v 'docs/plans/'` returns only lines this task updated to name all three roles, or deliberate history; and the Plan 341 note exists.
 
 ## Exit gates
 
@@ -223,13 +251,8 @@ never on staging.
 
 ## Changelog
 
-- 2026-09-26 — drafted at the owner's request; D1–D2 closed by the owner the same day.
-- 2026-09-26 — first Claude + Codex reviews (on `96a8e771`): 10 findings, all verified. Owner closed
-  D3 (publishing is a person). Folded: the downgrade refuses on any reviewer row and the procedure
-  is *delete*, not revoke, including before redeploying an older image; D2 states reviewers get no
-  unpublished-forecast access; the `CONSUMER`-testing sites listed as must-change; the constraint
-  keeps its name; the head pin, docs and docstrings added; GET-only verification with the 501 POST;
-  `--station` and the module invocation; a station-scoped staging check.
+- 2026-09-26 — drafted at the owner's request. Decisions: D1 (a third role, `reviewer`), D2 (a
+  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person).
 
 ## Dependency graph
 
