@@ -603,10 +603,11 @@ class AquacastShim:
     def config_path(self) -> str:
         """Plan 405 T2 — WHERE the vendored config lives, beside its hash.
 
-        ⭐ Derived from the SAME `_config_path(CONFIG_FILENAME)` call
-        `config_hash` digests, so the path and the hash cannot come to name
-        different files — the identical "there is no second source to keep in
-        step" argument `config_hash` makes above.
+        ⭐ Evaluates the SAME `_config_path(type(self).CONFIG_FILENAME)`
+        EXPRESSION that `config_hash` digests — two call sites, one expression —
+        so the path and the hash cannot come to name different files. The
+        identical "there is no second source to keep in step" argument
+        `config_hash` makes above.
 
         Warm-start provenance records this as the donor's config path, but ONLY
         once the hash has been checked against the donor's recorded one

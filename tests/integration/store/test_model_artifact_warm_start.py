@@ -189,9 +189,13 @@ class TestRetrainOfARetrain:
     def _gen1_as_the_flow_writes_it(
         conn: sa.Connection, child: ArtifactId, base: ArtifactId
     ) -> None:
-        """Exactly the shape `_record_warm_start_provenance` produces today: the
-        flow always passes `installed_config_path=None`, so an imported donor
-        yields a NULL path WITH a reason."""
+        """A generation-1 row with a NULL config path and a reason.
+
+        ⚠️ **No longer what the flow produces.** Before Plan 405 T2 the flow
+        hardcoded `installed_config_path=None`, so this WAS the normal shape; T2
+        passes the model's real `config_path`, and a verified imported donor now
+        yields a real path. ⇒ This helper pins the NULL-path case DELIBERATELY,
+        which is the whole reason the chain tests stay meaningful."""
         record_warm_start(
             conn,
             WarmStartRecord(
@@ -618,4 +622,92 @@ class TestComparingTheInstalledTemplate:
         assert self._CHANGED in message
         assert "no path supplied" in message, (
             "with no path the message must still say what was hashed"
+        )
+
+    def test_a_contradictory_record_does_not_become_verified_looking(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 A path AND an "unknown" reason — unreachable, not impossible.
+
+        No writer produces this shape (the resolver returns either a path with no
+        reason or a NULL with one) and no DB CHECK forbids it. ⛔ Left unhandled it
+        would skip the comparison AND carry the path forward with `reason=None`,
+        upgrading an explicitly unverified record into a verified-looking one —
+        the exact failure this task exists to fix, by a third route.
+        """
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        ancestor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        record_warm_start(
+            db_connection,
+            WarmStartRecord(
+                artifact_id=donor,
+                base_artifact_id=ancestor,
+                run_config={},
+                base_config_path="models/aquacast/configs/cmal_small.yaml",
+                base_config_sha256=self._DONOR_HASH,
+                base_config_unknown_reason="something was already unclear here",
+                base_params_path=None,
+                base_params_unknown_reason="donor was imported",
+            ),
+        )
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._CHANGED,
+        )
+
+        assert path is None, (
+            "an explicitly unverified record's path must NOT be inherited — doing "
+            "so would present it as verified"
+        )
+        assert sha256 == self._DONOR_HASH
+        assert reason is not None
+        assert "self-contradictory" in reason
+        assert "something was already unclear here" in reason, (
+            "the donor's own caveat must survive, not be dropped"
+        )
+
+    def test_a_record_with_no_config_hash_says_so_rather_than_denying_the_record(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """⛔ The reason must describe the donor in hand.
+
+        A donor WITH a warm-start record but no config hash falls through to the
+        final case, whose reason said "nor produced with a warm-start record" —
+        false of it. It has one; it records no hash.
+        """
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        ancestor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        record_warm_start(
+            db_connection,
+            WarmStartRecord(
+                artifact_id=donor,
+                base_artifact_id=ancestor,
+                run_config={},
+                base_config_path=None,
+                base_config_sha256=None,
+                base_config_unknown_reason="no config identity was captured",
+                base_params_path=None,
+                base_params_unknown_reason="donor was imported",
+            ),
+        )
+
+        _, _, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._CHANGED,
+        )
+
+        assert reason is not None
+        assert "carries no config hash" in reason
+        assert "nor produced with a warm-start record" not in reason, (
+            "this donor HAS a warm-start record — denying it describes a "
+            "different artifact"
         )

@@ -557,4 +557,39 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     and the round-2 entry (KNOWN-empty); corrected, because **T6's implementer reads it**.
   🔬 Mutation-checked, five ways across both rounds: deleting either refusal, reverting the flow to a
   hardcoded NULL path, repointing `config_path` at a different config, and re-adding the
-  path-dependency to the comparison each fail exactly one intended test.
+  path-dependency to the comparison. ⛔ *First published as "each fail exactly one intended test",
+  which is WRONG and wrong because of this very fold: deleting the imported-branch refusal fails at
+  least THREE — the direct mismatch test, the no-path mismatch test this fold ADDED, and the
+  flow-level red. The true claim is that each mutation is caught, and that no mutation leaves the
+  suite green.*
+- **2026-09-26 — T2 round 2 (on `a488bd59`): behaviour CORRECT, the prose sweep was not.** One
+  reviewer COMPLETE-on-behaviour / INCOMPLETE-on-prose, the other INCOMPLETE; they agree.
+  ⭐ *The fix I had just made held up under both. Every finding is a statement ABOUT it.*
+  - 🔴 **One real code path: the CONTRADICTORY record** — a path AND an "unknown" reason. Unreachable
+    (no writer produces it, no DB CHECK forbids it) but not impossible, and left unhandled it would
+    have skipped the comparison AND carried the path forward with `reason=None`, upgrading an
+    explicitly unverified record into a verified-looking one — *the same failure this task exists to
+    fix, by a third route.* Now returns NULL-with-a-reason that preserves the donor's own caveat.
+    ⚠️ *I predicted this shape when briefing the reviewers and pointed them at it; that is why it was
+    found rather than shipped.*
+  - 🔴 **A reason that described the wrong donor.** A donor WITH a warm-start record but no config
+    hash fell through to the final case, whose text says "nor produced with a warm-start record" — it
+    HAS one, it records no hash. The reason is now derived from which of the two donors reached it.
+  - 🧹 **THREE prose statements of the class round 1 was fixing, in three different files:**
+    (a) a test-file comment still said "the flow always passes `installed_config_path=None`" — false
+    since T2, in a file that same commit edited; (b) `_shim.py` still said "the SAME `_config_path`
+    **call**" — the exact wording I had just corrected in the touchpoint map, one file away; (c) my
+    own new docstring line said the installed values are "never adopted as the donor's identity",
+    true of the HASH and false of the PATH, which on a verified match IS recorded.
+    ⛔ *[[feedback_sweep_by_value_not_by_site]], for the ninth time. Swept properly this round:
+    `grep -rn` on each VALUE across `src/ tests/ docs/`, not on the files I had touched.*
+  - 🔴 **"Each mutation fails exactly one intended test" was FALSE, and false because of this fold** —
+    deleting the imported-branch refusal fails three, one of which this fold added. Corrected where
+    it was published.
+  - ⚠️ The spec's "the path is recorded only on a match" was STILL too strong after round 1 narrowed
+    it once: a verified retrain's path comes forward even with no hash to compare. *Second attempt at
+    the same sentence.*
+  - 🧹 `donor_kind` became a `Literal` with a prose lookup, per CLAUDE.md's "Literal over raw strings
+    — Always"; the refusal message is unchanged.
+  🔬 Two further mutations: dropping the contradictory-record branch, and reverting the derived final
+  reason, each fail exactly the one test written for them.

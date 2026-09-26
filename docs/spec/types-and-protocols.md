@@ -2197,11 +2197,13 @@ donor's config path and hash, the donor's params path, and the config the run
 used. ⭐ **Plan 405 T2**: where the donor's hash is COMPARABLE — an imported
 donor, or a retrain whose own record was verified when it was produced — a
 mismatch against the installed template raises `ConfigurationError` before
-training, and the path is recorded only on a match. ⚠️ For a retrain whose own
-record carries a NULL path the carried hash describes an ANCESTOR, so there is
-nothing valid to compare and the record stays NULL-with-a-reason. An
-unverifiable path is never recorded, rather than naming a config the donor may
-never have used. A SIDE TABLE: `model_artifacts` gains no column. The donor reference is
+training. ⚠️ **A path is never recorded on a MISMATCH — but "only on a match" is
+too strong**: a verified retrain's carried path comes forward even when the model
+declares no hash to compare, and for an IMPORTED donor with no declared hash the
+path is withheld with a reason. ⚠️ For a retrain whose own record carries a NULL
+path — or, unreachably, both a path and an "unknown" reason — the carried hash
+describes an ANCESTOR or is self-contradictory, so there is nothing valid to
+compare and the record stays NULL-with-a-reason. A SIDE TABLE: `model_artifacts` gains no column. The donor reference is
 `RESTRICT` — deleting a base artifact something was fine-tuned from is refused,
 because a cascade would destroy the only answer to "what was this fine-tuned
 from?". UNKNOWN and known-absent are distinct states and each NULL carries a

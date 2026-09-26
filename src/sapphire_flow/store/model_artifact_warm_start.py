@@ -20,7 +20,7 @@ Two things this records that nothing else can:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Final, Literal, NoReturn
 
 import sqlalchemy as sa
 import structlog
@@ -134,10 +134,16 @@ def fetch_warm_start(
     )
 
 
+_DONOR_KIND_PROSE: Final[dict[str, str]] = {
+    "imported": "imported",
+    "verified_retrain": "a SAP3 retrain, verified when it was produced",
+}
+
+
 def _refuse_changed_template(
     *,
     base_artifact_id: ArtifactId,
-    donor_kind: str,
+    donor_kind: Literal["imported", "verified_retrain"],
     recorded_hash: str,
     installed_hash: str,
     installed_path: str | None,
@@ -148,6 +154,7 @@ def _refuse_changed_template(
     BOTH hashes named — an operator who cannot see which side moved cannot tell
     whether the template or the donor is the surprise.
     """
+    kind = _DONOR_KIND_PROSE[donor_kind]
     where = (
         installed_path
         if installed_path is not None
@@ -156,7 +163,7 @@ def _refuse_changed_template(
     raise ConfigurationError(
         "refusing to retrain: the installed config template does not match the "
         f"one this donor was built from. donor artifact {base_artifact_id} "
-        f"({donor_kind}) recorded config hash {recorded_hash}, while {where} "
+        f"({kind}) recorded config hash {recorded_hash}, while {where} "
         f"hashes to {installed_hash}. Fine-tuning across a changed template "
         "would mix two configurations without recording that it happened."
     )
@@ -183,8 +190,12 @@ def resolve_donor_config(
     Hashing whatever template is on disk today satisfies a naive "the hash
     matches the file it names" check while naming the WRONG configuration
     whenever the template has changed since the donor was built. The installed
-    values are therefore only ever COMPARED against a hash the donor itself
-    recorded — never adopted as the donor's identity.
+    installed HASH is therefore only ever COMPARED against one the donor itself
+    recorded — never adopted as the donor's identity. ⚠️ *The installed PATH is a
+    different matter: on a verified match it IS recorded as the donor's config
+    path, because that is the only path available (provenance stores none). An
+    earlier wording said "the installed values are never adopted", which was true
+    of the hash and false of the path.*
 
     ⭐ **Plan 405 T2 — a changed template is REFUSED** with `ConfigurationError`
     naming both hashes. *399 promised this comparison in a docstring and never
@@ -269,21 +280,48 @@ def resolve_donor_config(
 
     inherited = fetch_warm_start(conn, base_artifact_id)
     if inherited is not None and inherited.base_config_sha256:
+        if (
+            inherited.base_config_path is not None
+            and inherited.base_config_unknown_reason is not None
+        ):
+            # 🔴 A CONTRADICTORY record: a path AND a reason saying the config is
+            # unknown. ⛔ Not producible by any writer today (this resolver returns
+            # either a path with no reason or a NULL with one) and no DB CHECK
+            # forbids it — so it is unreachable, not impossible.
+            #
+            # Handled explicitly because the alternative is the exact failure this
+            # task was fixing: skipping the comparison AND carrying the path
+            # forward with `reason=None` would UPGRADE an explicitly unverified
+            # record into a verified-looking one. The donor's own record says its
+            # config is unknown, so its path is not a verified identity and is not
+            # inherited.
+            return (
+                None,
+                inherited.base_config_sha256,
+                (
+                    "donor's own warm-start record is self-contradictory: it "
+                    "carries a config path AND a reason saying the config is "
+                    f"unknown ({inherited.base_config_unknown_reason}). Its path "
+                    "is therefore NOT treated as a verified identity and is not "
+                    "inherited, and its hash could not be checked against the "
+                    "installed template."
+                ),
+            )
         if inherited.base_config_path is not None:
             # 🔴 A donor whose OWN record was verified at its own time — a path,
-            # and no "unknown" reason. ⭐ Its retrain was itself refused unless
-            # the template matched, so this carried-forward hash DOES describe
-            # the config it was built with, and comparing against it is valid.
-            # ⛔ Without this, a changed template passed unrefused from
-            # generation 2 onward while the row still read as verified.
+            # and no "unknown" reason (the contradictory shape returned above).
+            # ⭐ Its retrain was itself refused unless the template matched, so
+            # this carried-forward hash DOES describe the config it was built
+            # with, and comparing against it is valid. ⛔ Without this, a changed
+            # template passed unrefused from generation 2 onward while the row
+            # still read as verified.
             if (
-                inherited.base_config_unknown_reason is None
-                and installed_config_sha256 is not None
+                installed_config_sha256 is not None
                 and installed_config_sha256 != inherited.base_config_sha256
             ):
                 _refuse_changed_template(
                     base_artifact_id=base_artifact_id,
-                    donor_kind="a SAP3 retrain, verified when it was produced",
+                    donor_kind="verified_retrain",
                     recorded_hash=inherited.base_config_sha256,
                     installed_hash=installed_config_sha256,
                     installed_path=installed_config_path,
@@ -318,13 +356,23 @@ def resolve_donor_config(
             ),
         )
 
+    # ⛔ TWO different donors reach here and the reason must not describe the
+    # wrong one: no warm-start row at all (pre-dates Plan 399 T4), OR a row whose
+    # `base_config_sha256` is NULL. Saying "nor produced with a warm-start record"
+    # to the second is false — it HAS one, it just records no config hash.
+    why = (
+        "it has a warm-start record, but that record carries no config hash, so "
+        "no config identity was ever captured for it"
+        if inherited is not None
+        else "it was neither imported (no provenance row) nor produced with a "
+        "warm-start record, so it pre-dates Plan 399 T4"
+    )
     return (
         None,
         None,
-        "donor has no recorded config identity: it was neither imported (no "
-        "provenance row) nor produced with a warm-start record, so it pre-dates "
-        "Plan 399 T4. Not inferred from the installed template — that would name "
-        "a configuration the donor may never have used.",
+        f"donor has no recorded config identity: {why}. Not inferred from the "
+        "installed template — that would name a configuration the donor may "
+        "never have used.",
     )
 
 
