@@ -7,7 +7,7 @@ scope: Make SAP3 able to fine-tune an existing model artifact — the FI `Retrai
 depends_on: []
 blocks: []
 related: [262, 307, 329]
-open_decisions: [D3]   # D1 and D2 closed by the owner 2026-09-25
+open_decisions: []   # D1, D2 closed 2026-09-25; D3 closed 2026-09-26 — all by the owner
 source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` on Swiss forcing rather than onboard ERA5-Land. Measured the same day: the capability exists on BOTH sides and SAP3 never calls it.
 ---
 
@@ -17,10 +17,8 @@ source: 2026-09-25 — the owner asked whether we could fine-tune `cmal_small` o
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip.
-⚖️ **D1 and D2 closed by the owner 2026-09-25.** **D3 remains open and is load-bearing** — there is
-no channel for model config today at all, so without it nothing can select a fine-tuning strategy
-and the rest of the plan cannot run.
+**DRAFT.** ⛔ No implementation until an independent review of THIS state and a READY flip.
+⚖️ **All three decisions closed by the owner** — D1 and D2 on 2026-09-25, D3 on 2026-09-26.
 
 ## Why this plan exists
 
@@ -197,7 +195,7 @@ fall-back path to `train`, at any layer.*
 contract says it falls back is a real interoperability difference, and leaving it undocumented is
 how the next reader finds it the hard way.*
 
-### D3 — where does the fine-tuning config come from? **OPEN — nothing can run without this.**
+### D3 — where does the fine-tuning config come from? **⚖️ CLOSED — owner, 2026-09-26: (a), a run parameter.**
 
 § 5: `params` is hardcoded `{}`, so this is not "extend the channel", it is "there is no channel".
 
@@ -207,9 +205,18 @@ how the next reader finds it the hard way.*
 | (b) | Per-model config **in the database**, alongside the assignment. | Durable and auditable. ⛔ *A new config surface, for a v1 the owner has already scoped as opaque.* |
 | (c) | A vendored YAML beside the model config. | Consistent with how the model's own config ships. ⛔ *Changing a strategy would need an image rebuild.* |
 
-**Recommendation: (a) now**, ⚠️ **and record the exact config used on the artifact**, or § 7's
-"opaque for v1" becomes "unknowable forever" — the failure already on record for this very model,
-whose training revision is *"genuinely unrecoverable"*.
+**⚖️ CLOSED on (a).** ⇒ **The configuration is supplied when the run is triggered.** ⛔ *No new
+database surface (b), no vendored file (c).*
+
+🔑 **The condition travels with it: the exact config used is RECORDED against the artifact it
+produced.** ⚠️ *Without that, § 7's "opaque for v1" becomes "unknowable forever" — which is the
+failure already on record for this very model, whose training revision is
+"genuinely unrecoverable".* ⇒ T2 owns both halves: the channel **and** the recording.
+
+⚠️ **This widens slightly beyond fine-tuning, deliberately.** *It is the same path all training uses
+(§ 5's seven sites), so opening it touches ordinary training too. Nothing changes behaviour — no
+caller sends configuration today — but T2 must PROVE that, which is why its verification asserts the
+no-config case is unchanged.*
 
 ## Tasks
 
@@ -387,7 +394,7 @@ none.**
 {
   "phases": [
     {"phase": 1, "tasks": ["T2"], "parallel": false, "decision": "D3 CLOSED",
-     "note": "the config channel first — D3 is the ONE decision still open and it blocks everything; nothing can select a strategy without it"},
+     "note": "the config channel first — D3 (closed: a run parameter) gates everything downstream; nothing can select a strategy without the channel, and T2 also owns RECORDING the config used"},
     {"phase": 2, "tasks": ["T1"], "parallel": false, "decision": "D2 CLOSED",
      "note": "T1 is NOT technically blocked by T2 — the services and the FI boundary already accept a config argument, so the passthrough is independently testable. T2 first is a sequencing PREFERENCE (D3 gates the real run), not a dependency"},
     {"phase": 3, "tasks": ["T4"], "parallel": false,
@@ -418,8 +425,8 @@ none.**
     already exists and is already used to refuse an artifact/config mismatch); and the **params path
     must be NULLABLE**, because § 5 measured that no model has ever received params — so
     `cmal_small`, the very first base, has none to point at.
-  - ⛔ **D3 remains open and still gates everything**, now declared as a machine-readable gate on
-    phase 1 rather than only noted in prose.
+  - ⛔ **D3 remained open at that point and still gated everything**, declared as a machine-readable
+    gate on phase 1 rather than only noted in prose. ⚖️ *SUPERSEDED 2026-09-26 — D3 is now closed.*
 - **2026-09-26** — **independent review: NEEDS CHANGES. Every finding verified against the code
   before folding.** ⭐ *One is a genuine blocker the draft had no idea about.*
   - 🔴 **GROUP TRAINING IS BROKEN TODAY, and that explains § 10.** The training flow wraps discovered
@@ -482,3 +489,13 @@ none.**
   - Citation drifts fixed (adapter `train` at `:1062`, `assemble_group_training_data` at `:620`), and
     fi-issue 004 gained the D2-divergence section, asking for the contract COMMENT to be amended and
     noting the divergence is documented only inside SAP3 until filed.
+- **2026-09-26** — ⚖️ **D3 CLOSED on (a): the config is supplied when the run is triggered**, with
+  the condition that **the exact config used is recorded against the artifact** — otherwise § 7's
+  "opaque for v1" becomes "unknowable forever", the failure already on record for this model. T2 owns
+  both halves. ⚠️ *This widens slightly beyond fine-tuning by design: it is the same path all
+  training uses, so T2 must PROVE the no-config case is unchanged.*
+  🔴 **`open_decisions` is now empty — and the INDEX had never been updated when D1/D2 closed either.**
+  ⛔ *Four stale sites found by sweeping for the value rather than re-reading where I had just edited:
+  the phase-1 note, a changelog line asserting D3 open in the present tense, and the index entry's
+  machine field plus its prose. The index is the corpus entry point and `open_decisions` reads as a
+  gate — exactly the failure recorded against plan 329 two days ago, repeated.*
