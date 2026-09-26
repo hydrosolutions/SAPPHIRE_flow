@@ -1539,3 +1539,53 @@ class TestWarmStartRetrainThroughTheFlow:
         train_models_flow(**kwargs, warm_start_writer=_SpyWriter())
 
         assert recorded == []
+
+    def test_a_corrupted_donor_is_refused_before_deserializing(self) -> None:
+        """🔴 The FLOW's own SHA-256 guard on the donor.
+
+        ⚠️ This test uses a store that does NOT verify on fetch. That is the
+        whole point: `FakeModelArtifactStore.fetch_artifact` and the real
+        `PgModelArtifactStore` both verify internally, so against either of them
+        a test cannot tell the flow's guard from the store's — a first version of
+        this test passed with the flow's comparison deleted. The guard exists
+        precisely because a caller-injected store need not verify, and this is
+        the only shape that proves it fires.
+        """
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = self._retrainable_model()
+        kwargs = self._kwargs(model_id, model, station_id)
+        real_store = kwargs["artifact_store"]
+        donor_id, _ = real_store.store_artifact(
+            model_id,
+            b"donor-bytes",
+            _TRAINING_START,
+            _TRAINING_END,
+            _EPOCH,
+            station_id=station_id,
+        )
+
+        class _NonVerifyingStore:
+            """Delegates everything, but hands back corrupted bytes unchecked."""
+
+            def __init__(self, inner: object) -> None:
+                self._inner = inner
+
+            def fetch_artifact(self, artifact_id: object) -> tuple:
+                return (artifact_id, b"tampered")
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._inner, name)
+
+        kwargs["artifact_store"] = _NonVerifyingStore(real_store)
+
+        results = train_models_flow(
+            **kwargs, base_artifact_id=str(donor_id), training_params={}
+        )
+
+        assert results[0].artifact_id is None
+        assert results[0].error is not None
+        assert "sha-256" in results[0].error.lower()
+        # …and the model was never asked to retrain from the corrupted donor.
+        assert type(model).seen_base is None

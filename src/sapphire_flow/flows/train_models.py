@@ -12,7 +12,7 @@ from prefect import flow, runtime, task
 from prefect.cache_policies import NO_CACHE
 from prefect.utilities.annotations import unmapped
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ArtifactIntegrityError, ConfigurationError
 from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.protocols.forecast_model import (
@@ -222,15 +222,31 @@ def _load_base_artifact(
     the bytes the STORE returned — not from anything held in memory, which is
     what the neighbouring integrity check does and is not a pattern to copy.
     """
-    fetched = cast("ModelArtifactStore", artifact_store).fetch_artifact(
-        base_artifact_id
-    )
+    store = cast("ModelArtifactStore", artifact_store)
+    fetched = store.fetch_artifact(base_artifact_id)
     if fetched is None:
         raise ConfigurationError(
             f"base artifact {base_artifact_id} not found; refusing to retrain "
             "(Plan 399 T3)"
         )
     _, stored_bytes = fetched
+
+    # SHA-256 guard before deserializing. `PgModelArtifactStore.fetch_artifact`
+    # already verifies internally, but this is a NEW flow-level deserialization
+    # path and `tests/unit/test_hash_verification_coverage.py` is right to
+    # require the check here rather than have it depend on a store's internals:
+    # a caller-injected store need not verify, and a donor's integrity matters
+    # MORE than usual because a whole new model gets built on top of it.
+    record = store.fetch_artifact_record(base_artifact_id)
+    if record is not None:
+        computed = hashlib.sha256(stored_bytes).hexdigest()
+        if computed != record.sha256_hash:
+            raise ArtifactIntegrityError(
+                f"base artifact {base_artifact_id} failed its SHA-256 check "
+                f"(computed {computed[:8]}…, stored {record.sha256_hash[:8]}…); "
+                "refusing to retrain from it"
+            )
+
     return model.deserialize_artifact(stored_bytes)  # type: ignore[attr-defined]
 
 
