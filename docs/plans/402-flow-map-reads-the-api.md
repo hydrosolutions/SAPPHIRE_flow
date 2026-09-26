@@ -259,14 +259,16 @@ set but its merged file lacks the section.
 { station_id,
   selection: "latest_generation_on_forecast_artifact",
   rows: [ { model_id, model_artifact_id, generation_id,      # generation_id null for a pre-235 baseline row
-            skill_source, forcing_type,                      # forcing_type nullable
+            skill_source,      # Literal over SkillSource (types/enums.py:70)
+            forcing_type,      # Literal over ForcingType (types/enums.py:65) | null
             computation_version,
             time_step_seconds, phase_offset_seconds,         # phase_offset_seconds nullable
             eval_period_start, eval_period_end,
             training_period_start, training_period_end,      # never null
             evaluated_on: "training_period" | "outside_training_period" | "overlaps_training_period",
             lead_time_hours,                                 # never null
-            season, flow_regime,                             # each null when the row is not stratified by it
+            season, flow_regime,  # each null when the row is not stratified by it; flow_regime is
+                                  # Literal["low", "high", "flood"] (FlowRegime); season is a plain str
             metric, score, sample_size } ] }        # score nullable: a non-finite stored score (e.g. an
                                                      # undefined skill score) is served as null
 ```
@@ -284,9 +286,11 @@ Row selection:
 4. Dropped when `eval_period_end` is after the injected request time (D5).
 
 Sorted by `(model_id, skill_source, forcing_type, time_step_seconds, phase_offset_seconds,
-lead_time_hours, season, flow_regime, metric)`, nulls first. `evaluated_on`: eval window inside the
-training period → `training_period`; disjoint → `outside_training_period`; otherwise
-`overlaps_training_period`. Empty `rows` when nothing qualifies (the baselines today). Unknown or
+lead_time_hours, season, flow_regime, metric)`, nulls first. `evaluated_on` treats both periods as
+**closed** intervals `[start, end]`: eval window inside the training period → `training_period`;
+no shared instant (eval ends before training starts, or starts after training ends) →
+`outside_training_period`; otherwise — including an eval window that starts exactly at
+`training_period_end` — `overlaps_training_period`. Closed intervals never overstate independence. Empty `rows` when nothing qualifies (the baselines today). Unknown or
 out-of-scope station → 404.
 
 **Typed flags and additive fields on existing responses (T3):** one `QcFlagResponse` model
@@ -352,7 +356,7 @@ asserting that, for a group-scope model assigned directly to a station, the ID-o
 the group artifact the forecast path returns — fails on the missing method; after it exists, the
 route test for the same case returns that artifact's rows.
 
-**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/` plus the new test files, named in the PR — the ID-only method agrees with `fetch_active_artifact_for_station` for a station-scoped artifact, a group-scoped one, and a station holding both; superseded-artifact rows are excluded; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present, in the specified order; `evaluated_on` takes each of its three values; a stored NaN score is served as `null` and the JSON is valid; `?model_id=` filters; unknown station → 404; a reviewer token for a station outside its scope → 404.
+**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/` plus the new test files, named in the PR — the ID-only method agrees with `fetch_active_artifact_for_station` for a station-scoped artifact, a group-scoped one, and a station holding both; superseded-artifact rows are excluded; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present, in the specified order; `evaluated_on` takes each of its three values, and an eval window starting exactly at `training_period_end` is `overlaps_training_period`; a stored NaN score is served as `null` and the JSON is valid; `?model_id=` filters; unknown station → 404; a reviewer token for a station outside its scope → 404.
 
 ### T3 — typed flags and additive QC fields on existing responses
 
@@ -412,14 +416,18 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   response cannot show it; forecast flag versions; `evaluated_on`; the token must stay server-side.
 - `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, and D13's
   visibility decision beside § Input-quality visibility; the `docs/touchpoint-maps.md` API
-  paragraph (new routes, the contract file).
+  paragraph (new routes, the contract file); `docs/conventions.md` § API routes (`:40-65`, the route
+  list `security.md:3` points to) — both routes, marked REVIEW (reviewer or admin token).
 
 **Out:** serving the schema; versioning the path (`/api/v2`).
 
 **Pre-change:** N/A — new artefact; the drift test is proven by renaming one `QcFlagResponse` field
 locally and watching it fail.
 
-**Verification:** `uv run pytest tests/unit/api/` including the drift test and the route-matrix test.
+**Verification:** `uv run pytest tests/unit/api/` including the drift test and the route-matrix
+test; and a bounded inspection that the consumer page carries every caveat listed in In, and that
+the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
+`conventions.md` routes are in the branch diff.
 
 ### T5 — cross-plan records for Plan 341
 
@@ -446,30 +454,23 @@ its metadata-only tombstones must strip or gate that field.
 ### T6 — hand-over and durable records
 
 **Outcome:** the Nepal onboarding, Plan 251 and the plan index know what changed, in the
-repository, and the text of the reply to the map session is written. The reply is **sent** only
-after the staging checks below pass (see *After staging deploy*), not by this task.
+repository. Messages to other sessions are not this task's: they are orchestrator steps after the
+staging checks (see *After staging deploy*).
 
 **In:**
-- The reply to the map session, as a draft in the PR description: endpoints,
-  `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
-  `python -m sapphire_flow.cli.access_tokens create-reviewer`) and that it must stay server-side,
-  the D4 matching rule and its limits, `score: null`, that QC-rejected member and group forecasts
-  are not stored, the `time_step_seconds` correction, the in-sample label, and that the snapshot
-  stays v2 for archived BAFU forecasts. **The raw token is never in the reply** — it is delivered
-  separately (step 5 below).
 - **Plan 143** (DHM onboarding): the D6 precondition — before DHM observations are readable by a
   Nepal consumer token, the owner decides whether observation and forecast flag `detail` is
   stripped for consumers on that network.
-- A note to the region-bundle v3 draft's owning session that QC and skill are station-level
-  `/api/v1` endpoints, plus the D6 carry-forward.
-- A status note in Plan 251 recording D1's supersession; the `docs/plans/README.md` entry.
+- A status note in Plan 251: "Plan 402 T3 adds forecast `qc_flags` to `/api/v1`, which may cover
+  this plan's purpose; the owner decides."
+- The `docs/plans/README.md` entry.
 
 **Out:** editing another session's worktree.
 
 **Pre-change:** N/A — documentation and hand-over.
 
-**Verification:** the draft reply's routes and fields match the committed contract file; the Plan
-143, 251 and 341 notes and the README entry are in the feature-branch diff.
+**Verification:** the Plan 143, 251 and 341 notes and the README entry are in the feature-branch
+diff.
 
 ## Exit gates
 
@@ -492,7 +493,14 @@ After staging deploy (orchestrator), before the map is told:
 3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
    that station, and 404 on `/skill` for another **existing** station; a consumer token → 403. Then
    **delete** that token (Plan 401's procedure).
-4. Only then does the orchestrator send T6's reply to the map session.
+4. Only then does the orchestrator send the reply to the map session: endpoints,
+   `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
+   `python -m sapphire_flow.cli.access_tokens create-reviewer`) and that it must stay server-side,
+   the D4 matching rule and its limits, `score: null`, that QC-rejected member and group forecasts
+   are not stored (Plan 404), the `time_step_seconds` correction, the in-sample label, and that the
+   snapshot stays v2 for archived BAFU forecasts — checked against the committed contract file.
+   **The raw token is never in the reply.** It also tells the region-bundle v3 draft's owning
+   session that QC and skill are station-level `/api/v1` endpoints, plus the D6 carry-forward.
 5. The orchestrator or owner issues one reviewer token per dashboard with an explicit station list
    (Plan 401 D4) and delivers the raw key out of band into the map's server-side secret store —
    never in a message or document.
@@ -510,7 +518,7 @@ After staging deploy (orchestrator), before the map is told:
   them; staging holds none today.
 - Skill for any parameter other than discharge.
 - Surfacing QC-rejected member and group forecasts — they are not stored today. Plan 404
-  (owner, 2026-09-26) stores them marked failed, as combined forecasts already are.
+  (owner, 2026-09-26) keeps them in a separate record, served by its own REVIEW route.
 - A station in several groups that each hold an active artifact for the same model: the forecast
   path itself picks one arbitrarily, so "the artifact the forecast uses" is not defined there. A
   possible fault in forecasting, to be investigated separately (owner informed 2026-09-26).

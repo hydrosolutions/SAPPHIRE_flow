@@ -33,9 +33,13 @@ The owner asked for a dedicated identity for each dashboard instead.
 **Separation needs separate clients.** A token is bound to one tenant (client), so tenant binding
 keeps two dashboards apart only when their stations sit in different tenants. Today every station
 is in the single seeded tenant `sapphire` (`alembic/versions/0041_tenants_table.py:9`;
-`config.toml:178` `writable_tenants = ["sapphire"]`). Until Plan 268 T2b provisions the DHM tenant
-(D4), a dashboard token on a shared database uses `scope_mode = stations` with an explicit station
-list — never `tenant` mode, which would follow every station in `sapphire`.
+`config.toml:178` `writable_tenants = ["sapphire"]`). Plan 268 T2b creates the DHM tenant with six
+*new* stations; it moves no existing station, so any Nepal station already in `sapphire` stays there.
+The rule is therefore not "after 268" but: a dashboard token may use `tenant` mode **only when every station in its tenant belongs to that
+dashboard's client**. A token is bound to one tenant for life and cannot span two — `grant` refuses
+a station from another tenant (`store/access_token_store.py:90-95`) — so when a dashboard's
+stations move to their own tenant, its token is re-issued with `create-reviewer --tenant <new>`.
+Until then, a dashboard token uses `scope_mode = stations` with an explicit station list.
 
 The Nepal deployment needs three kinds of access; this plan supplies exactly one of them:
 
@@ -123,9 +127,10 @@ dashboard. No token role gains a write.
 
 This **confirms Plan 268 D11** (owner, 2026-09-10): the DHM gauges go into a new tenant in the
 existing database, which Plan 268 T2b provisions (fetch-before-create, with the code and display
-name fixed in 268's artifact). A Swiss and a Nepal dashboard are then separated by tenant for every
-token kind. This plan adds no tenant and names none. Until 268 T2b has run, dashboard tokens use an
-explicit station list (see *Why this exists*).
+name fixed in 268's artifact). Where a client's stations all sit in its own tenant, consumer and
+reviewer tokens of different clients are separated by tenant; **admin tokens stay global** (they
+carry no tenant and bypass station scope, `types/auth.py:177`, `api/security.py:138`). This plan adds
+no tenant and names none. Tenant mode for a dashboard token follows the rule in *Why this exists*.
 
 ## Tasks
 
@@ -176,8 +181,9 @@ inserting a reviewer row with a tenant fails on `ck_access_tokens_role`.
 `:340`) parameterized over consumer **and** reviewer — a foreign-tenant station is refused at
 create/grant and never enters a tenant-mode scope; admin with `scope_mode = 'tenant'` still rejected; downgrade refused while a reviewer row exists **and still refused after revoking it**; downgrade succeeds on a database with no reviewer rows, **after which** a reviewer insert fails on
 `ck_access_tokens_role`, and the definitions of all three constraints read back with
-`pg_get_constraintdef` equal the 0047/0049 definitions
-(`alembic/versions/0047_access_tokens_table.py:71-80`, `0049_access_tokens_scope_mode.py:49-58`).
+`pg_get_constraintdef` equal the readback **captured at the prior revision before upgrading** (Postgres
+normalises the text, so the comparison is readback against readback, not against the migration
+source).
 
 ### T2 — the auth dependency and route classification
 
@@ -191,11 +197,13 @@ so the dependency is also exercised on a test-only app.
 
 **Out:** gating or reclassifying any existing route.
 
-**Pre-change:** a test-app route standing for a REVIEW route, gated with today's only non-admin
-option (`require_principal`), admits a consumer — the test asserting a consumer gets 403 fails for
-the reason the gap exists. T2 switches that route to `require_reviewer`.
+**Pre-change:** two test-app routes standing for a REVIEW route, each taking a station: one gated
+with `require_principal` admits a consumer (the test asserting 403 fails), and one gated with
+`require_admin` refuses a reviewer with 403 (the test asserting 200 fails) — the two halves of the
+gap. T2 switches both to `require_reviewer`.
 
-**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
+**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — on the test-app REVIEW route, reviewer → 200 for an in-scope station and 404 for an out-of-scope
+one (a REVIEW route applies the principal's station scope like any other); reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
 
 ### T3 — issuing and managing reviewer tokens
 
@@ -223,10 +231,14 @@ roles, with GET-only unchanged.
   input-quality section's "only `consumer` and `admin`" (`:296-301`); pepper rotation (`:341`);
   the endpoint matrix (a reviewer column; the REVIEW class); and a line that a reviewer token is
   held server-side by its dashboard; the consumer-surface sentence (`:48`); the scope rules worded
-  for consumers only (`:57-59`); the CLI summary (`:204`); and that tenant binding separates
-  dashboards only across tenants (D4).
+  for consumers only (`:57-59`); the CLI summary (`:204`); the REVIEW class, stating that every
+  REVIEW route serving station data applies the principal's station scope (404 on detail routes,
+  filtering on collections); and the D4 tenant-mode rule (tenant mode only when every station in
+  the tenant belongs to that dashboard's client; tokens cannot span or change tenants).
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
-  add `create-reviewer`) and any mention of `ck_access_tokens_tenant_mode_is_consumer`'s meaning.
+  add `create-reviewer`); § Station scope management (`grant`, `revoke-station`, `set-scope-mode`
+  act on reviewer tokens too, and its "when to reach for tenant mode" guidance carries the D4
+  rule); and any mention of `ck_access_tokens_tenant_mode_is_consumer`'s meaning.
 - `docs/architecture-context.md` (`access_tokens.role` values), `docs/spec/database-schema.md:1075`
   (`role "consumer | admin"`), `docs/conventions.md:74-77` (roles and CLI command list), `docs/v1-scope.md:379` (role list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
   issuance), `docs/touchpoint-maps.md` (API auth paragraph), `docs/spec/types-and-protocols.md`
@@ -266,8 +278,8 @@ uv run python scripts/check_readiness.py docs/plans/401-reviewer-access-token-ro
 After staging deploy (orchestrator): run the migration; create one reviewer token with
 `--tenant sapphire`, **scoped to one station** (`scope_mode = stations`); confirm 200 on `/api/v1/stations`
 listing only that station, 404 on another existing station's detail route, 403 on `/tables/`; then
-**delete** it (stations rows, then token row). Exercise the downgrade refusal on a scratch copy,
-never on staging.
+**delete** it (stations rows, then token row). The downgrade refusal is exercised by T1's migration
+test, never on staging.
 
 ## Explicitly out of scope
 
