@@ -91,7 +91,9 @@ Repository facts this plan relies on:
   `rule_version = "component_derivation/v1"`, possibly with status `qc_passed`, and
   `qc_rule_version = "component_derivation/v1"` (`services/component_derivation.py:30-31`,
   `flows/ingest_observations.py:687-689`); its `detail` is JSON naming the component stations.
-  A flag's `rule_version` never equals a served rule's `rule_version`. Water-level
+  A flag's `rule_version` is not a rule-set version: four observation kinds carry the
+  code-generation label, `frozen_sensor` echoes the configured rule's version
+  (`services/qc.py:203`), forecast flags carry `"1.0"`. Water-level
   **forecasts** on a station without a datum skip `range_check`, `negative_value` and
   `climatology_outlier` (`services/qc_datum.py:15-17,37-40`), and a forecast stores no
   `qc_rule_version`, so that skip is invisible in a forecast response.
@@ -107,7 +109,11 @@ Repository facts this plan relies on:
 - **Which artifact a station's forecast uses.** `ModelArtifactStore.fetch_active_artifact_for_station`
   (`store/model_artifact_store.py:147-199`, called from `services/run_station_forecast.py:359`):
   the station's own active artifact first, otherwise an active group artifact of a group the station
-  belongs to. Assignment priority plays no part. It also loads the artifact bytes.
+  belongs to. Assignment priority plays no part. It also loads the artifact bytes. When a station
+  belongs to **several** groups that each hold an active artifact for the same model, it returns one
+  of them arbitrarily (`order_by` on a constant priority, `limit(1)`,
+  `store/model_artifact_store.py:183-190`), while a **group** model's forecast is run once per group
+  (`services/run_group_forecast.py:483`). That case is out of scope here (see below).
 - **Auth surface.** `security.md:44-49` and the router comment at `api/__init__.py:64-70`: the
   modern `/api/v1/stations|forecasts|alerts` API is the one surface a consumer token reaches; every
   other data route is admin-gated. `security.md` § Input-quality visibility (Plan 253 OD-2) records
@@ -199,8 +205,10 @@ because an admin token reaches every admin route and every client's stations.
 The owner asked for a dedicated identity per dashboard (BAFU/Swiss, Nepal) instead of an admin
 token. Plan 401 adds a `reviewer` role: GET-only, bound to one tenant, scoped exactly like a
 consumer, plus the routes gated REVIEW. The two new routes are gated with `require_reviewer`:
-reviewer and admin tokens pass, a consumer gets 403. The Swiss dashboard's token sees only Swiss
-stations. The token stays server-side in the map. This plan waits for Plan 401.
+reviewer and admin tokens pass, a consumer gets 403. The Swiss dashboard's token sees only the
+stations it is scoped to — an explicit station list while Swiss and Nepal stations share the
+`sapphire` tenant, tenant scope once Nepal has its own tenant (Plan 401 D4). The token stays
+server-side in the map. This plan waits for Plan 401.
 
 ### D13 — T3's two fields are visible to every authenticated role. **⚖️ CLOSED — owner, 2026-09-26.**
 
@@ -250,7 +258,8 @@ set but its merged file lacks the section.
             evaluated_on: "training_period" | "outside_training_period" | "overlaps_training_period",
             lead_time_hours,                                 # never null
             season, flow_regime,                             # each null when the row is not stratified by it
-            metric, score, sample_size } ] }
+            metric, score, sample_size } ] }        # score nullable: a non-finite stored score (e.g. an
+                                                     # undefined skill score) is served as null
 ```
 
 Row selection:
@@ -260,7 +269,7 @@ Row selection:
    `fetch_active_artifact_for_station` (station's own active artifact first, else an active group
    artifact of a group containing the station) — through a new **ID-only** store method that loads
    no bytes (T2). A model with no such artifact contributes no rows.
-3. Skill rows for that model, parameter `discharge`, via `SkillStore.fetch_latest_scores` (the Plan
+3. Skill rows for that model, parameter **`discharge` only**, via `SkillStore.fetch_latest_scores` (the Plan
    235 predicate), kept only when `model_artifact_id` equals that artifact. Training period from
    `fetch_artifact_record`.
 4. Dropped when `eval_period_end` is after the injected request time (D5).
@@ -272,8 +281,8 @@ training period → `training_period`; disjoint → `outside_training_period`; o
 out-of-scope station → 404.
 
 **Typed flags and additive fields on existing responses (T3):** one `QcFlagResponse` model
-(`rule_id: str`, `rule_version: str`, `status` — a `Literal` over every `QcStatus` value, `qc_passed`
-included — and `detail: str | None`) replaces the untyped `qc_flags` of
+(`rule_id: str`, `rule_version: str`, `status: Literal["qc_passed", "qc_suspect", "qc_failed", "qc_unchecked"]` — the
+values a `QcFlag` can hold (`types/domain.py:94-101` rejects `raw` and `missing`) — and `detail: str | None`) replaces the untyped `qc_flags` of
 `ObservationResponse` and types the new `ForecastSummary.qc_flags` (`[]` when none; inherited by
 `ForecastDetail`). `ObservationResponse.qc_rule_version` (nullable, the stored value). The JSON on the
 wire for observations is unchanged by the typing.
@@ -334,7 +343,7 @@ asserting that, for a group-scope model assigned directly to a station, the ID-o
 the group artifact the forecast path returns — fails on the missing method; after it exists, the
 route test for the same case returns that artifact's rows.
 
-**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/` plus the new test files, named in the PR — the ID-only method agrees with `fetch_active_artifact_for_station` for a station-scoped artifact, a group-scoped one, and a station holding both; superseded-artifact rows are excluded; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present, in the specified order; `evaluated_on` takes each of its three values; `?model_id=` filters; unknown station → 404; a reviewer token for a station outside its scope → 404.
+**Verification:** `uv run pytest tests/unit/api/ tests/integration/store/` plus the new test files, named in the PR — the ID-only method agrees with `fetch_active_artifact_for_station` for a station-scoped artifact, a group-scoped one, and a station holding both; superseded-artifact rows are excluded; a row with `eval_period_end` after the injected request time is dropped; stratified and headline rows both present, in the specified order; `evaluated_on` takes each of its three values; a stored NaN score is served as `null` and the JSON is valid; `?model_id=` filters; unknown station → 404; a reviewer token for a station outside its scope → 404.
 
 ### T3 — typed flags and additive QC fields on existing responses
 
@@ -378,8 +387,10 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   checked; the matching rule of D4 (candidates; the rules served are the **current** resolution, not
   the thresholds behind past flags); severity; the `qc_rule_version` labels (`"1.2"`, `"1.2-datum"`,
   `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
-  generations, not rule-set versions, and `-datum-skip` means two rules were skipped; a flag's
-  `rule_version` never equals the served rule's `rule_version`, and matching never uses it;
+  generations, not rule-set versions, and `-datum-skip` means two rules were skipped; a flag's `rule_version` is not a rule-set version — four observation kinds carry the
+  code-generation label, `frozen_sensor` echoes the configured rule's version, forecast flags carry
+  `"1.0"` — so matching never uses it;
+  `score: null` means the skill score is undefined for that stratum;
   calculated-station flags (`upstream_propagated` / `component_derivation/v1`) match no rule and
   their `detail` names the component stations; combined (pooled/BMA) forecasts have no skill rows
   here; water-level **forecasts** without a datum skip three rules and a forecast
@@ -398,8 +409,8 @@ locally and watching it fail.
 ### T5 — cross-plan records for Plan 341
 
 **Outcome:** Plan 341 knows (a) the two new routes are REVIEW-class internal diagnostic and carry no
-forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer role is the
-natural holder of its internal-diagnostic read access to unpublished forecasts — 341 decides; (c)
+forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer token gets no
+access to unpublished forecasts unless 341 grants it by explicit decision (Plan 401 D2); (c)
 `docs/spec/api-v1-map.openapi.json` and its drift test already cover `/stations/{id}/forecasts` and
 `/forecasts/{id}`, so 341 updates that file rather than producing a second contract; (d) after T3,
 `qc_flags[].detail` on both forecast routes contains forecast values and, for
@@ -416,14 +427,16 @@ its metadata-only tombstones must strip or gate that field.
 
 ### T6 — hand-over and durable records
 
-**Outcome:** the map session has the endpoints and contract; the Nepal onboarding and Plan 251 know
-what changed, in the repository and not only in a message.
+**Outcome:** the Nepal onboarding, Plan 251 and the plan index know what changed, in the
+repository, and the text of the reply to the map session is written. The reply is **sent** only
+after the staging checks below pass (see *After staging deploy*), not by this task.
 
 **In:**
-- A reply to the map session: endpoints, `docs/spec/api-v1-map.openapi.json`, the reviewer token
-  (one per dashboard, issued with `python -m sapphire_flow.cli.access_tokens create-reviewer`) and
-  that it must stay server-side, the D4 matching rule and its limits, the `time_step_seconds`
-  correction, the in-sample label, and that the snapshot stays v2 for archived BAFU forecasts.
+- The reply to the map session, as a draft in the PR description: endpoints,
+  `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
+  `python -m sapphire_flow.cli.access_tokens create-reviewer`) and that it must stay server-side,
+  the D4 matching rule and its limits, `score: null`, the `time_step_seconds` correction, the
+  in-sample label, and that the snapshot stays v2 for archived BAFU forecasts.
 - **Plan 143** (DHM onboarding): the D6 precondition — before DHM observations are readable by a
   Nepal consumer token, the owner decides whether observation and forecast flag `detail` is
   stripped for consumers on that network.
@@ -435,8 +448,8 @@ what changed, in the repository and not only in a message.
 
 **Pre-change:** N/A — documentation and hand-over.
 
-**Verification:** the reply's routes and fields match the committed contract file; the Plan 143 note
-exists on main.
+**Verification:** the draft reply's routes and fields match the committed contract file; the Plan
+143, 251 and 341 notes and the README entry are in the feature-branch diff.
 
 ## Exit gates
 
@@ -456,8 +469,9 @@ After staging deploy (orchestrator), before the map is told:
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and every
    row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
    that row's model.
-3. A Swiss reviewer token **scoped to one station** → 200 on both new routes for that station, and
-   404 on `/skill` for another **existing** Swiss station; a consumer token → 403.
+3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
+   that station, and 404 on `/skill` for another **existing** station; a consumer token → 403.
+4. Only then does the orchestrator send T6's reply to the map session.
 
 ## Explicitly out of scope
 
@@ -470,6 +484,10 @@ After staging deploy (orchestrator), before the map is told:
 - `latest_generation_predicate` lacking time step.
 - Combined (pooled/BMA) forecast skill — its rows have no artifact, so the selection never serves
   them; staging holds none today.
+- Skill for any parameter other than discharge.
+- A station in several groups that each hold an active artifact for the same model: the forecast
+  path itself picks one arbitrarily, so "the artifact the forecast uses" is not defined there. A
+  possible fault in forecasting, to be investigated separately (owner informed 2026-09-26).
 
 ## Changelog
 
@@ -477,6 +495,7 @@ After staging deploy (orchestrator), before the map is told:
 - 2026-09-26 — rewritten for the `/api/v1` interface (D1); file renamed from
   `345-forecast-lab-snapshot-v3-qc-and-skill.md`. Decisions D5–D7, D10, D12 (reviewer token,
   Plan 401; D11's admin token superseded), D13 (T3's fields visible to every role); D8 superseded.
+  Nepal stations get their own tenant (Plan 401 D4).
 
 ## Dependency graph
 

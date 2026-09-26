@@ -7,9 +7,9 @@ scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
 blocks: [345]
-related: [042, 147, 215, 341, 345]
+related: [042, 143, 147, 215, 341, 345]
 open_decisions: []
-closed_decisions: [D1, D2, D3]   # owner, 2026-09-26
+closed_decisions: [D1, D2, D3, D4]   # owner, 2026-09-26
 source: 2026-09-26 — owner, while reviewing Plan 345: "could we have a special user for the BAFU dashboard and the Nepal dashboard?" — to replace the admin token Plan 345 D11 had the map use.
 ---
 
@@ -27,8 +27,15 @@ implementation PR. All decisions are closed.
 Plan 345 gives the flow map (the dashboard we use to demonstrate and review forecast products)
 two new read routes — the QC rule sets and a station's skill — which a consumer token must not
 reach. With only two roles today, the map would have had to hold an **admin** token: it reaches
-every admin page and route and sees every client's stations, so a Swiss dashboard would also see
-Nepal data. The owner asked for a dedicated identity for each dashboard instead.
+every admin page and route and sees every station, so a Swiss dashboard would also see Nepal data.
+The owner asked for a dedicated identity for each dashboard instead.
+
+**Separation needs separate clients.** A token is bound to one tenant (client), so tenant binding
+keeps two dashboards apart only when their stations sit in different tenants. Today every station
+is in the single seeded tenant `sapphire` (`alembic/versions/0041_tenants_table.py:9`;
+`config.toml:178` `writable_tenants = ["sapphire"]`). Until Nepal stations have their own tenant
+(D4), a dashboard token on a shared database uses `scope_mode = stations` with an explicit station
+list — never `tenant` mode, which would follow every station in `sapphire`.
 
 The Nepal deployment needs three kinds of access; this plan supplies exactly one of them:
 
@@ -36,7 +43,7 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
 |---|---|---|
 | third parties | read their stations — published forecasts only, in a tenant where Plan 341's gate is active | the existing **consumer** token |
 | the Nepal (and Swiss) review dashboard, reading | everything a consumer reads for that client's stations, plus the REVIEW routes | **this plan — `reviewer`** |
-| a hydrologist reviewing candidates and publishing or withdrawing a forecast | reads of unpublished candidates and a write, recorded against that person | **Plan 341** — a signed-in, named person with per-station permission; never a shared token |
+| a hydrologist reviewing candidates and publishing or withdrawing a forecast | reads of unpublished candidates and a write, recorded against that person | **Plan 341** — a signed-in, named person with per-station permission. The shared `reviewer` token gets neither, unless 341 changes that by explicit decision (D2). |
 
 ## What is measured (origin/main, 2026-09-26)
 
@@ -100,17 +107,24 @@ A reviewer token is tenant-bound, uses the consumer's scope rules unchanged (bot
 additionally reaches routes gated REVIEW. It never reaches an ADMIN route. No existing route is
 reclassified; Plan 345 adds the first two REVIEW routes.
 
-**This plan gives a reviewer no access to unpublished forecasts.** Where Plan 341's publication gate
-is active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes, unless
-Plan 341 itself authorizes the reviewer role for its internal-diagnostic route (Plan 345 T5 raises
-this with 341; T4 records the default in 341 itself). Reviewing unpublished candidates is the
-named hydrologist's job in 341.
+**A reviewer token gets no access to unpublished forecasts.** Where Plan 341's publication gate is
+active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes. The default
+is **no**; only Plan 341 may change it, by an explicit, recorded decision (T4 writes this default
+into 341). Reviewing unpublished candidates is the named hydrologist's job in 341. Note that 341's
+own word "reviewer" (`341:66`, `:82`) means that signed-in person, not this token role.
 
 ### D3 — publishing is a person, not a dashboard token. **⚖️ CLOSED — owner, 2026-09-26.**
 
 The Nepal dashboard's token stays read-only. Publishing and withdrawal are Plan 341's named,
 signed-in hydrologist with per-station permission and an audit trail, acting through the
 dashboard. No token role gains a write.
+
+### D4 — Nepal stations get their own tenant. **⚖️ CLOSED — owner, 2026-09-26.**
+
+When Nepal stations are onboarded, they are registered under their own tenant (e.g. `dhm`), not the
+shared `sapphire` tenant, so a Swiss and a Nepal dashboard are separated by tenant for every token
+kind. T4 records this as a precondition in Plan 143 (DHM onboarding). Until then, dashboard tokens
+use an explicit station list (see *Why this exists*).
 
 ## Tasks
 
@@ -176,7 +190,7 @@ so the dependency is also exercised on a test-only app.
 option (`require_principal`), admits a consumer — the test asserting a consumer gets 403 fails for
 the reason the gap exists. T2 switches that route to `require_reviewer`.
 
-**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope.
+**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope.
 
 ### T3 — issuing and managing reviewer tokens
 
@@ -203,27 +217,38 @@ roles, with GET-only unchanged.
   CLI list (`:63`); "the two HTTP read roles" (`:88`); the realised-status note (`:254-262`); the
   input-quality section's "only `consumer` and `admin`" (`:296-301`); pepper rotation (`:341`);
   the endpoint matrix (a reviewer column; the REVIEW class); and a line that a reviewer token is
-  held server-side by its dashboard.
+  held server-side by its dashboard; the consumer-surface sentence (`:48`); the scope rules worded
+  for consumers only (`:57-59`); the CLI summary (`:204`); and that tenant binding separates
+  dashboards only across tenants (D4).
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
   add `create-reviewer`) and any mention of `ck_access_tokens_tenant_mode_is_consumer`'s meaning.
 - `docs/architecture-context.md` (`access_tokens.role` values), `docs/spec/database-schema.md:1075`
-  (`role "consumer | admin"`), `docs/conventions.md:77` (CLI command list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
+  (`role "consumer | admin"`), `docs/conventions.md:74-77` (roles and CLI command list), `docs/v1-scope.md:379` (role list), `docs/handover/it-operations.md` and `docs/standards/plan-147-mini-rollout.md` (token
   issuance), `docs/touchpoint-maps.md` (API auth paragraph), `docs/spec/types-and-protocols.md`
   (`AccessTokenRole` at `:1339`, "consumer-only" at `:1346`, the CLI set at `:1366`, "the two HTTP
-  read roles" at `:1411`).
+  read roles" at `:1411`, and `require_principal`/`require_admin` at `:1362` — add `require_reviewer`).
 - Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
   `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
   `cli/access_tokens.py:1-6,588-590`.
 - **A note in `docs/plans/341-chwrr-forecast-publication-api.md`**: a third, non-admin service-token
   role now exists; every published-only surface treats it like a consumer unless 341 explicitly
-  authorises it; 341's route-inventory tests include a reviewer token; the "consumer/admin"
-  description at `:28` is superseded.
+  authorises it, by explicit decision — the default is no; 341's route-inventory tests include a
+  reviewer token; 341's own "reviewer(s)" (`:66`, `:82`) means the signed-in person, and `:82`'s RAW
+  access does not extend to the token role; the two-role descriptions at `:28` and `:45` are
+  superseded.
+- **A note in `docs/plans/143-dhm-v1-basin-gauge-onboarding.md`**: D4 — Nepal stations are
+  onboarded under their own tenant, not `sapphire`.
 
 **Out:** rewriting archived Plan 147.
 
 **Pre-change:** N/A — documentation.
 
-**Verification:** `grep -rniE 'two roles|two HTTP|third role|exactly two|consumer.{0,12}admin|CONSUMER.{0,40}ADMIN|create-admin' docs/ src/ --include='*.md' --include='*.py' | grep -v 'docs/plans/'` returns only lines this task updated to name all three roles, or deliberate history; and the Plan 341 note exists.
+**Verification:** a bounded inspection. Run
+`grep -rniE 'two roles|two HTTP|third.{0,6}role|exactly two|consumer-only|consumer.{0,12}admin|CONSUMER.{0,40}ADMIN|create-admin' docs/ src/ --include='*.md' --include='*.py' | grep -v 'docs/plans/'`
+and read every hit: each must either name all three roles, or be one of the expected residual
+classes — a `create-admin` command line (bootstrap/rotation instructions), a legitimate per-role
+code branch, or an unrelated match (e.g. "exactly two sentences"). The Plan 341 and Plan 143 notes
+exist in the branch diff.
 
 ## Exit gates
 
@@ -234,9 +259,9 @@ uv run pytest
 uv run python scripts/check_readiness.py docs/plans/401-reviewer-access-token-role.md
 ```
 
-After staging deploy (orchestrator): run the migration; create one reviewer token for the Swiss
-tenant, **scoped to one station** (`scope_mode = stations`); confirm 200 on `/api/v1/stations`
-listing only that station, 404 on another existing Swiss station, 403 on `/tables/`; then
+After staging deploy (orchestrator): run the migration; create one reviewer token with
+`--tenant sapphire`, **scoped to one station** (`scope_mode = stations`); confirm 200 on `/api/v1/stations`
+listing only that station, 404 on another existing station's detail route, 403 on `/tables/`; then
 **delete** it (stations rows, then token row). Exercise the downgrade refusal on a scratch copy,
 never on staging.
 
@@ -252,7 +277,7 @@ never on staging.
 ## Changelog
 
 - 2026-09-26 — drafted at the owner's request. Decisions: D1 (a third role, `reviewer`), D2 (a
-  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person).
+  consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (Nepal stations get their own tenant).
 
 ## Dependency graph
 
