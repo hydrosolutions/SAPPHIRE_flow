@@ -7,7 +7,7 @@ title: Work out a series' reporting interval from its recent readings, not from 
 scope: Infer each observation group's cadence from a separate, bounded, CONFIGURABLE look-back of its most recent readings (default the last 50 distinct readings within 30 days), while the rules keep running on today's two-hour check window. This removes the zero-rule checks that a single missing reading causes at hourly stations. NOT the check window itself (it stays 2 h — the owner rejected widening it, 2026-09-26), NOT how selection MATCHES a cadence (exact equality stays), NOT nearest-rule matching (no plan owns it; unnecessary for every measured case), NOT an hourly `frozen_sensor` rule (needs a longer check window; no plan yet), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT the onboarding QC path (315), NOT forecast QC, NOT re-QC of stored history, NOT any threshold.
 depends_on: [323]
 blocks: []
-related: [264, 272, 313, 315, 317, 318, 323]
+related: [264, 272, 313, 315, 317, 318, 323, 403]
 open_decisions: []
 source: 2026-09-25 — the owner, after an independent review of Plan 323 found that hourly rules alone leave ~5% of hourly checks with no rule and the Plan 318 watchdog failing ~64% of the time — "first accept the leftover alert rate and then fix how it works out the interval for hourly stations … so 2 plans". Number granted by the owner 2026-09-25. 2026-09-26, after independent Claude + Codex reviews of the first draft (which widened the check window to 24 h): the owner chose a separate inference look-back instead (option B) and required it to be configurable. Figures in § What is measured come from staging data pulled 2026-09-25 (staging running `main` at `7a7f2aae`) and code at `main` `2fe660e2`; each says how.
 ---
@@ -18,9 +18,15 @@ source: 2026-09-25 — the owner, after an independent review of Plan 323 found 
 
 **DRAFT — redesigned 2026-09-26.** The first draft widened the check window to 24 h. Both
 independent reviews found that doing so changes what the rules compare — not only how the interval
-is inferred — and the owner chose the narrower design below. ⛔ This version is unreviewed: no
-implementation until an independent review of this exact state is complete and the orchestrator
-sets READY. It runs **after Plan 323**.
+is inferred — and the owner chose the narrower design below. Four review rounds have run (§ Review
+record), all NOT READY, all folded; **the latest fold is unreviewed.** ⛔ No implementation until
+an independent review of this exact state is complete and the orchestrator sets READY. It runs
+**after Plan 323**.
+
+⚠️ **What it cannot fix alone:** at a water-level station with **no datum** — every Swiss river
+station today (Plan 323 D4) — only neighbour-comparing rules run, so the reading after a missed hour
+has nothing to judge it however well the cadence is inferred. Plan 323 D4/D5 stores it
+`QC_UNCHECKED` in a separate, non-alarming record; **Plan 403** (datums) is what ends it.
 
 ## Why this plan exists
 
@@ -88,7 +94,8 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
 3. **What changes for the checks it does repair (Plan 272 C3, bounded).** A check that today infers
    `None` or an off-grid gap because of a missing reading will now select its cadence's rules, and
    those rules run on the unchanged 2 h window. `range_check` and `gross_outlier` judge each
-   reading alone. **`rate_of_change` and `spike` compare a reading with its neighbours in that
+   reading alone — except for water level without a datum, where both are skipped
+   (`services/qc_datum.py:32-35`) and a lone reading stays unjudged (Plan 323 D4). **`rate_of_change` and `spike` compare a reading with its neighbours in that
    window — which, across the missing reading, are further apart than the cadence the thresholds
    were sized for,** and `rate_of_change` compares raw differences without dividing by elapsed time
    (Plan 313). So a repaired check can raise a `QC_SUSPECT` that a gap-free series would not.
@@ -135,10 +142,12 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
   :limit`, returned chronological. 🔴 **The cap is a SQL `LIMIT`, not a client-side slice** (272's
   rule: a slice bounds the median's input and nothing else). ⛔ `fetch_observations` is not changed
   — its ordering guarantee is load-bearing (Plan 228 comment in `store/observation_store.py`).
-- **One inferred cadence per group, used by both selection paths.** `_run_qc_task` infers the
+- **One inferred cadence per group, used by every selection consumer.** `_run_qc_task` infers the
   cadence once from the fetched timestamps and passes it to **both** `Stage1QualityChecker.check`
   and `resolve_selection`, so the rules that run and the zero-rule record agree by construction —
-  the property Plan 272 T3 built. Mechanism: an optional keyword `time_steps: Mapping[tuple[
+  the property Plan 272 T3 built — and by Plan 323 T4's "could any rule judge it" decision, which
+  takes `resolve_selection`'s result rather than inferring its own cadence, so it sees the
+  look-back cadence through the same keyword. Mechanism: an optional keyword `time_steps: Mapping[tuple[
   StationId, str], timedelta | None] | None = None`; when `None`, both infer from the observations
   exactly as today. **A group absent from a non-`None` mapping** is inferred from its observations
   as today — the flow always supplies every group, so the fallback only protects other callers. ⇒
@@ -214,7 +223,8 @@ window's end, `limit = max_readings`.
 `fetch_observations`. ⛔ Onboarding and `scripts/dhm_precip/` (they keep inferring from their own
 rows). ⛔ Matching, thresholds, the pick-up set.
 
-**Pre-change.** A RED test in the production shape: an hourly series with readings on the hour from
+**Pre-change.** A RED test in the production shape: an hourly **discharge** series (so a
+per-reading rule, `range_check`, exists — Plan 323 D4) with readings on the hour from
 −23 h to 0 h **except −1 h**, the 0 h reading pending, `now` = 0 h + 5 min, run through
 `_run_qc_task` with the rule set loaded from the shipped `config.toml` (which after Plan 323
 declares 3600 s rows). Today the window `[−1 h 55 min, …)` holds only the 0 h reading, inference
@@ -227,6 +237,14 @@ record). It must fail on that status, not on a fixture or config key.
 - **The knob is real:** the same series with `max_readings = 3` (the smallest T1 allows) samples
   0 h, −2 h and −3 h, infers 5400 s, and the reading stays `QC_UNCHECKED` with
   `no_rule_declares_it` — proving the configured value, not a constant, drives inference.
+- **The configuration reaches the scheduled flow:** the same fixture run through
+  `ingest_observations_flow` with the look-back loaded from configuration — `max_readings = 50`
+  gives a verdict, `max_readings = 3` leaves `QC_UNCHECKED` — so the setting is proven to travel
+  from the config file through the flow (`flows/ingest_observations.py:934-943`) to `_run_qc_task`,
+  not only when passed to the task directly.
+- **Datum-less water level (Plan 323 D4):** the missing-hour fixture as water_level with no datum —
+  the look-back infers 3600 s, the lone reading is judged by nothing, and it is `QC_UNCHECKED` in
+  an `observation_qc_unjudged` record, not `QC_PASSED`.
 - **Missing key:** a non-`None` `time_steps` mapping without the group falls back to inferring
   from the observations.
 - **Cadence switch (§ 2):** a series that moves from 600 s to 3600 s keeps inferring 600 s until
@@ -282,18 +300,21 @@ returns both; the Protocol in the spec matches `protocols/stores.py`.
 
 ### T4 — Prove it on staging
 
-**Outcome.** The five hourly gauges stop producing zero-rule records, and the cost and the § 3
-exposure are measured, not assumed.
+**Outcome.** While delivering, the five hourly gauges stop producing alarming zero-rule records
+(`observation_qc_unchecked`); what remains unjudged is datum-less water level, recorded without an
+alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measured, not assumed.
 
 **In.** For the 24 h before and the 24 h after deploy, each with the query recorded here:
 - **Five-station outcome.** Numerator: the five stations' readings received in the period whose
   stored status at the end of the period is `QC_PASSED`, `QC_SUSPECT` or `QC_FAILED` — ⛔ not
   "not `QC_UNCHECKED`", which would count `RAW` rows a failed QC run left behind (the flow catches
   a QC exception per group, `flows/ingest_observations.py:952`). Denominator: all their readings
-  received in the period. `RAW` reported separately. Plus the zero-rule health records for these stations, which carry the
-  reason and inferred seconds (a reading row stores no cadence): after deploy, **none** may have
-  reason `no_cadence_inferable` or an inferred cadence that is a multiple of 3600 s while the
-  station was delivering.
+  received in the period. `RAW` reported separately. Reported per parameter; discharge and
+  water_temperature must reach at least 95%; water level is reported with its datum status.
+- **Records.** After deploy, while the station was delivering, **no** `observation_qc_unchecked`
+  record for these stations — neither `no_cadence_inferable` nor a cadence that is a multiple of
+  3600 s. `observation_qc_unjudged` records (`no_check_could_run`, Plan 323 D5) are counted
+  separately and expected only for datum-less water level.
 - **Watchdog.** Its state is **reported, not required**: the watchdog alarms on a zero-rule record
   from *any* station (`ops/watchdog.py:220`), so a new or silent station elsewhere can keep it
   failing for reasons this plan does not own.
@@ -375,3 +396,11 @@ exposure are measured, not assumed.
   (→ replay); the look-back's lower bound could exclude a DHM catch-up window's own rows
   (`not_before = min(…)`); "existing tests unmodified" contradicted the re-pointed guard; the README
   entry was stale; the JSON graph sat inside the review record.
+- **2026-09-26 — round 5: independent Claude review and independent Codex review of `ba93dc9d`:
+  both NOT READY; all findings folded.** Claude (HIGH): datum-less water level — every Swiss river
+  station — keeps an unjudged leftover this plan cannot remove (§ Status, § 3; T4 outcome and gate
+  narrowed); owner: datums via **Plan 403**, and unjudged readings recorded without an alarm
+  (Plan 323 D5). Both: T4's gate rejected the `no_check_could_run` outcome it must now expect.
+  Claude: Plan 323 T4's decision is a third selection consumer (§ Design); the RED test names
+  discharge; § Status was stale. Codex: no test proved the configuration reaches the scheduled flow
+  (T2).
