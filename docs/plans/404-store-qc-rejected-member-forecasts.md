@@ -2,153 +2,163 @@
 status: DRAFT
 created: 2026-09-26
 plan: 404
-title: Keep the member and group forecasts that QC rejects — stored marked failed, never used
-scope: Store a station (member) or group forecast whose forecast QC verdict is `qc_failed`, marked failed with its flags and values, instead of dropping it, so a reviewer can see what QC rejected and why — the same treatment Plan 253 OD-1 gave combined forecasts. The fallback chain, alerting and combination keep working from in-memory results exactly as today; every reader that uses a stored forecast as "the" forecast excludes failed rows explicitly. NOT any change to forecast QC rules, thresholds or verdicts; NOT publishing or alerting on a failed forecast; NOT the Forecast Lab snapshot format; NOT hindcasts; NOT backfilling forecasts already dropped.
-risk: high   # live-database impact + user-visible behaviour (docs/workflow.md § High-risk work)
-depends_on: []
+title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
+scope: Record every station (member) or group-station forecast whose forecast QC verdict is `qc_failed` — its values and every parameter's flags — in a separate rejected-forecast record, not in the `forecasts` table, and serve it to reviewers through one REVIEW-gated `/api/v1` route, so the flow map can show what forecast QC rejected and why. The forecast cycle's behaviour is otherwise unchanged — fallback, alerting, combination, model state, re-runs (Plans 327/328), the freshness heartbeat and every reader of `forecasts` see exactly what they see today. NOT any change to forecast QC rules, thresholds or verdicts; NOT combined forecasts (already stored failed, Plan 253 OD-1); NOT hindcasts; NOT backfilling earlier rejections; NOT publishing or alerting on a rejected forecast.
+risk: high   # new table + migration, live-database writes, external-facing route (docs/workflow.md § High-risk work)
+depends_on: [401, 402]
 blocks: []
-related: [251, 253, 327, 328, 340, 341, 401, 402]
-open_decisions: [D2, D3]
-closed_decisions: [D1]   # owner, 2026-09-26
-source: 2026-09-26 — found by the round-5 review of Plan 402 — a failed member or group forecast is dropped, so the flow map can never show a forecast-QC rejection except on a combined forecast. Owner, 2026-09-26: fix it in a separate follow-on plan (this one).
+related: [251, 253, 327, 328, 340, 341]
+open_decisions: []
+closed_decisions: [D1, D2, D3]   # owner, 2026-09-26
+source: 2026-09-26 — found by the round-5 review of Plan 402 — a rejected member or group forecast is dropped, so the flow map can never show a forecast-QC rejection except on a combined forecast. Owner, 2026-09-26: a separate follow-on plan; then, after the first review, a separate record rather than the forecast table.
 ---
 
 # Plan 404 — keep the member and group forecasts that QC rejects
 
 ## Status
 
-**DRAFT — HIGH RISK — not reviewed.** It changes what the forecast cycle writes to the live
-database and what reviewers see (`docs/workflow.md` § High-risk work): the ordinary Claude + Codex
-pair, plus one owner-commissioned review before READY and again before the implementation PR.
+**DRAFT — HIGH RISK — redesigned after its first review, not re-reviewed.** A new table, live
+writes from the forecast cycle and an external-facing route (`docs/workflow.md` § High-risk work):
+the ordinary Claude + Codex pair, plus one owner-commissioned review before READY and again before
+the implementation PR. Depends on Plan 401 (the REVIEW gate) and Plan 402 (the typed flag model
+and the committed map contract).
 
 ## Why this exists
 
 The flow map (Plan 402) lets a reviewer — DHM first — judge whether QC thresholds are right. For
-forecasts it cannot: when a member or group forecast fails QC it is thrown away, so the three
+forecasts it cannot: a member or group-station forecast that fails QC is thrown away, so the three
 rejecting forecast rules (`negative_value`, `range_check`, `quantile_crossing`) appear never to
 fire. Their silence says nothing about the thresholds; the evidence simply does not exist.
 
-Plan 253 OD-1 already stores a failed **combined** forecast marked failed, arguing that a dropped
-row "leaves no record of what was rejected or why". It exempted member models because a failed
-member "routes to fallback". That is true for *operations* — something else is forecast — but not
-for *review*: the fallback replaces the forecast, not the evidence. This plan extends OD-1's
-reasoning to member and group forecasts, keeping the fallback exactly as it is.
-
 ## What is measured (origin/main, 2026-09-26)
 
-- **Station (member) path.** `services/run_station_forecast.py:588-599`: when the worst flag is
-  `qc_failed`, it logs `run_station_forecast.qc_failed` and returns
-  `AssignmentFailure(QC_FAILED)`; nothing is stored, and the cycle tries the next model by priority.
-- **Group path.** `services/run_group_forecast.py:308-317`: the same, returning `None`; no
-  per-station fallback within the batch, nothing stored.
-- **Combined path.** `services/forecast_combination.py:530-536`: stored marked `qc_failed` (OD-1).
-  The Forecast Lab excludes it explicitly (`services/forecast_lab/db_sources.py:274-285`, OD-1a).
-- **Alerting and combination do not read stored forecasts.** `services/alert_checker.py::check_station_alerts`
-  takes in-memory ensembles; combination takes the cycle's `combinable_results`
-  (`flows/run_forecast_cycle.py:1944-1964`). A failed assignment is absent from both because it
-  failed upstream (`docs/architecture-context.md:447`), not because of a stored-row filter.
-- **Readers of stored forecast rows** (store methods and raw SQL, outside the store):
-  - Forecast Lab — `fetch_latest_forecast` per model (`services/forecast_lab/db_sources.py:218-263`,
-    `services/forecast_lab/snapshot.py:425`) and `fetch_forecasts_for_cycle` (combined only).
-  - `/api/v1` — `GET /stations/{id}/forecasts` (`fetch_forecast_summaries`,
-    `api/routes/api_stations.py:300`) and `GET /forecasts/{id}`; both already return `qc_status`.
-  - Legacy admin HTML/JSON — `api/routes/forecasts.py` (raw SQL).
-  - Plan 341 (DRAFT) will add publication candidates; Plan 340 captures evidence per stored forecast;
-    Plans 327/328 re-run and supersede by forecast key.
-  T1 re-verifies this list; it is the plan's main risk.
-- **Documents that state the drop as the rule:** `docs/spec/types-and-protocols.md:789` (Flow 1
-  step 1.10), `docs/architecture-context.md:90` and `:116`.
+- **Station (member) path.** `services/run_station_forecast.py:587-599` stops at the **first**
+  parameter whose worst flag is `qc_failed` and returns `AssignmentFailure(QC_FAILED)` — which
+  carries only `cause` and `detail` (`:116-118`); the forecast object is never built, later
+  parameters are never checked, nothing is stored, and the cycle tries the next model.
+- **Group path is per station, not per batch.** `services/run_group_forecast.py:287-318` returns
+  `None` for the failing station only; siblings keep their results (`:601-635`; test
+  `tests/unit/services/test_run_group_forecast.py:838`). `docs/architecture-context.md:90,116`
+  describe it as a whole-batch drop — imprecise.
+- **All models failing ends the station early.** `flows/run_forecast_cycle.py:3083-3090, 3379,
+  3451` (`all_models_failed`) exit before persistence; the PRIMARY wrapper returns `None`
+  (`services/run_station_forecast.py:928`). In PRIMARY mode every assignment runs but only the
+  selected model's forecast is stored (`flows/run_forecast_cycle.py:3349-3408`).
+- **Why not the `forecasts` table** (the first draft's design, rejected after review):
+  - `store_forecast` classifies a repeated key; a different QC verdict on equal values is "row 3",
+    refused by Plan 327 (`services/forecast_retry.py:76-82`). A stored rejected row would turn a
+    later passing re-run into a refusal (dropped from alerting), and on the group path a refusal
+    is fatal to the cycle (`flows/run_forecast_cycle.py:3744-3786`).
+  - `FORECAST_FRESHNESS` is CRITICAL only when `forecasts_stored == 0` (`:928-934`); rejected rows
+    would count.
+  - Every reader that takes a stored row as "the" forecast — the Forecast Lab's latest reads and
+    its cycle marker `fetch_latest_uncombined_issued_at`, `/api/v1`, the dashboard, scripts — would
+    need an exclusion.
+  A separate record touches none of these.
+- **Alerting and combination read in-memory results**, not stored rows
+  (`services/alert_checker.py::check_station_alerts`; `combinable_results`, which also excludes the
+  named fallback models, `services/run_station_forecast.py:132-136`).
 
 ## Owner decisions
 
-### D1 — store rejected member and group forecasts. **⚖️ CLOSED — owner, 2026-09-26.**
+### D1 — keep rejected member and group-station forecasts. **⚖️ CLOSED — owner, 2026-09-26.**
 
-A member or group forecast with aggregate `qc_failed` is stored with its values, `qc_status =
-qc_failed` and its flags, as a combined forecast already is. The in-memory result is still a
-failure: the station falls through to its next model exactly as today, and alerting and
-combination never see the failed ensemble.
+### D2 — in a separate record, not the `forecasts` table. **⚖️ CLOSED — owner, 2026-09-26.**
 
-### D2 — who sees a stored failed forecast? **OPEN.**
+A new table holds rejected forecasts. Nothing that reads `forecasts` changes, and a rejected
+forecast is never a candidate for alerting, combination, publication, re-run comparison, model
+state or the freshness heartbeat.
 
-**Recommendation:**
-- **Shown**, with `qc_status` and flags: `/api/v1` forecast list and detail (the map's review
-  surface, Plan 402), and the admin legacy pages.
-- **Excluded** explicitly, wherever a stored row is taken as *the* forecast: the Forecast Lab (as
-  OD-1a does for combined), any "latest forecast" read, and — recorded for Plan 341 — publication
-  candidates: a failed forecast is never publishable.
+### D3 — group rejections are per station. **⚖️ CLOSED — follows from the code.**
 
-### D3 — group forecasts: one failed row per member station? **OPEN.**
+Only the failing station's forecast is recorded, with its own flags; its siblings are untouched.
 
-A group model runs one batch and today drops it whole on any failed parameter. **Recommendation:**
-store the per-station forecasts the batch produced, each carrying the batch's failed verdict and
-flags, because the map reviews per station. Nothing else about group handling changes (still no
-per-station fallback within the batch).
+## Record and route contract
+
+**Record** — one row per rejected (station, model, parameter) per attempt, append-only:
+`station_id`, `model_id`, `model_artifact_id`, `group_id` (null for a member), `issued_at` (the
+cycle), `parameter`, `representation`, the ensemble or quantile values, `qc_flags` (the four-key
+shape), `recorded_at`. An attempt stores **every** parameter of the rejected assignment, each with
+its own flags — QC is run on all parameters before the verdict, which is unchanged (any failed
+parameter still rejects the assignment). A re-run of the same cycle appends; nothing is replaced.
+
+**Route** — `GET /api/v1/stations/{id}/rejected-forecasts?start=&end=[&model_id=]`, REVIEW-gated
+(Plan 401), station-scoped like its siblings, returning the rows above with flags typed as Plan
+402's `QcFlagResponse`. Added to Plan 402's committed map contract (its explicit route list).
 
 ## Tasks
 
 Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate).
 
-### T1 — the reader inventory
+### T1 — the table
 
-**Outcome:** a table in this plan of every code path that reads stored forecast rows, each marked
-**shown** or **excluded** per D2, with the file:line of its current QC handling.
+**Outcome:** the rejected-forecast table exists, append-only, with its store Protocol and
+implementation.
 
-**In:** a repository-wide search of `forecast_store` methods and raw SQL on `forecasts` outside
-`store/`; this plan document.
+**In:** `db/metadata.py`, a new alembic migration (next free revision at implementation time), a
+store Protocol in `protocols/stores.py` and implementation under `store/`, the fake in
+`tests/fakes/fake_stores.py`, `docs/spec/types-and-protocols.md`, `docs/spec/database-schema.md`,
+and grants in `docker/bootstrap-roles.sql` (worker INSERT; API SELECT).
 
-**Out:** code changes.
+**Out:** any change to `forecasts`.
 
-**Pre-change:** N/A — inventory.
+**Pre-change:** a store test inserting a rejected row fails on the missing table.
 
-**Verification:** bounded inspection — `grep -rn "forecast_store\.\|forecasts\.c\." src/ | grep -v "^src/sapphire_flow/store/"` shows no reader missing from the table.
+**Verification:** `uv run pytest tests/integration/store/` plus the new store and migration tests, named in the PR — insert and range read round-trip; upgrade and downgrade on an empty table.
 
-### T2 — store the rejected forecast, keep the fallback
+### T2 — capture every rejection, change nothing else
 
-**Outcome:** a member forecast and (per D3) a group batch that fail QC are stored marked
-`qc_failed` with flags; the in-memory outcome is unchanged (member → `AssignmentFailure`, fallback
-runs; group → no result).
+**Outcome:** each rejected member assignment and each rejected group station is written to the new
+record, including when every model for the station fails and in PRIMARY mode; the cycle otherwise
+behaves exactly as today.
 
-**In:** `services/run_station_forecast.py`, `services/run_group_forecast.py`, and the storing seam
-in `flows/run_forecast_cycle.py` that already stores results (`:200`, `:3749`); Plan 340's evidence
-capture runs for these rows like any stored forecast.
+**In:** `services/run_station_forecast.py` (QC every parameter before the verdict;
+`AssignmentFailure` gains an optional rejected payload — values, flags, artifact, issued time),
+`services/run_group_forecast.py` (the same for the failing station), and
+`flows/run_forecast_cycle.py`, which writes payloads **before** any `all_models_failed` exit and in
+both PRIMARY and multi-model modes. The write is **best-effort**: a failure logs a structured
+warning and never aborts the cycle, is never counted in `forecasts_stored`, and never goes through
+the group path's fatal store call. The spec entries for `AssignmentFailure`,
+`MultiModelForecastResult` and the group result (`docs/spec/types-and-protocols.md`).
 
-**Out:** QC rules and verdicts; alerting; combination; hindcasts.
+**Out:** QC rules and verdicts; `forecasts`; alerting; combination; model state; hindcasts; Plan
+340 evidence capture (a rejected forecast is not an issued forecast).
 
-**Pre-change:** a flow test where a member model's ensemble trips `negative_value` asserts a stored
-`qc_failed` row for that model — fails today because nothing is stored.
+**Pre-change:** a flow test where a member model's ensemble trips `negative_value` asserts a
+rejected-record row — fails today because nothing is kept.
 
-**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py tests/unit/services/test_run_station_forecast.py tests/unit/services/test_run_group_forecast.py` — the failed member row is stored with its flags; the fallback model's forecast is stored and is the one alerting and combination used; a passing cycle stores exactly what it stores today; a group batch with one failed parameter stores per D3 and runs no fallback.
+**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py tests/unit/services/test_run_station_forecast.py tests/unit/services/test_run_group_forecast.py` — a rejected member is recorded with flags for **every** parameter and the next ordinary model's forecast is stored as today; named fallback models stay out of combination; a rejected ensemble is absent from alert inputs and no model state is stored for it; a station where every model is rejected records every rejection and still reports `all_models_failed`; PRIMARY mode records every assignment that was rejected; a mixed group records only the failing station and the sibling's forecast is stored as today; a failed write of the record leaves the cycle's result and heartbeat unchanged; a cycle in which every assignment is rejected leaves `FORECAST_FRESHNESS` CRITICAL; the forecasts stored by a cycle with no rejection are byte-identical to today's.
 
-### T3 — exclude failed rows wherever a stored row is taken as the forecast
+### T3 — the review route
 
-**Outcome:** every reader T1 marks **excluded** skips `qc_failed` rows explicitly; every reader
-marked **shown** returns them with `qc_status` and flags.
+**Outcome:** `GET /api/v1/stations/{id}/rejected-forecasts` serves the record to reviewer and admin
+tokens.
 
-**In:** the readers in T1's table — at least `services/forecast_lab/db_sources.py` (member
-`fetch_latest_forecast` reads) and any "latest" store method used operationally; a note in
-`docs/plans/341-chwrr-forecast-publication-api.md` that a `qc_failed` forecast is never a
-publication candidate.
+**In:** the route next to Plan 402's REVIEW routes, response models reusing `QcFlagResponse`, the
+route-matrix entry (REVIEW), Plan 402's map contract file and its explicit route list, the consumer
+page `docs/spec/api-v1-review.md` (rejected forecasts live here, not in the forecast list), and
+`docs/conventions.md` § API routes.
 
-**Out:** the Forecast Lab snapshot format; Plan 402's fields.
+**Out:** any change to the forecast list or detail routes.
 
-**Pre-change:** with T2 in place, a Forecast Lab test storing a failed member row newer than a
-passing one shows the failed row as that model's forecast — the fault this task removes.
+**Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/services/forecast_lab/ tests/unit/api/` plus the tests for each T1 reader — excluded readers return the passing row or none; `/api/v1` list and detail return the failed row with `qc_status = qc_failed` and its flags.
+**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope, 404 out of scope; consumer → 403; the drift test covers the route.
 
 ### T4 — documents
 
-**Outcome:** the specification and architecture describe the new rule.
+**Outcome:** the specification and architecture describe the rule, and the group wording is exact.
 
-**In:** `docs/spec/types-and-protocols.md:789`, `docs/architecture-context.md:90,116`,
-`docs/touchpoint-maps.md` (forecast readers), and Plan 402's consumer-page text that says failed
-member/group forecasts are not stored.
+**In:** `docs/spec/types-and-protocols.md` (Flow 1 step 1.10 at `:789`), `docs/architecture-context.md:90,116`
+(rejections are recorded separately; group rejection is per station), `docs/touchpoint-maps.md`
+(the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts), and
+Plan 402's consumer-page line that rejected forecasts are not stored.
 
 **Out:** archived Plan 253.
 
 **Pre-change:** N/A — documentation.
 
-**Verification:** `grep -rn "nothing is stored for that assignment\|no forecast written" docs/` returns only historical records.
+**Verification:** bounded inspection — each In-listed location is changed in the branch diff, and no document still says a rejected member forecast leaves no record.
 
 ## Exit gates
 
@@ -159,20 +169,22 @@ uv run pytest
 uv run python scripts/check_readiness.py docs/plans/404-store-qc-rejected-member-forecasts.md
 ```
 
-After staging deploy (orchestrator): over the next cycles, count stored `qc_failed` rows by result
-kind; confirm each failed member row has a fallback forecast for the same station and cycle, and
-that the Forecast Lab snapshot shows none of them.
+After staging deploy (orchestrator): over the next cycles, count rejected records by model and
+station; for each, confirm that — where a lower-priority ordinary model succeeded — its forecast is
+stored as before, and that the count of stored forecasts per cycle is unchanged from the days before
+the deploy.
 
 ## Explicitly out of scope
 
 - Changing any forecast QC rule, threshold or verdict.
-- Alerting on, publishing, or combining a failed forecast.
-- Backfilling forecasts dropped before this plan.
-- Hindcasts (their QC does not trigger fallback already).
+- Alerting on, publishing, combining or re-running from a rejected forecast.
+- Retention or cleanup of rejected records (rare and small; revisit if volume says otherwise).
+- Backfilling rejections before this plan; hindcasts.
 
 ## Changelog
 
-- 2026-09-26 — drafted at the owner's request as the follow-on to Plan 402. Decision D1.
+- 2026-09-26 — drafted at the owner's request as the follow-on to Plan 402 (D1). After its first
+  review the owner chose a separate record over the `forecasts` table (D2); rewritten on that design.
 
 ## Dependency graph
 
