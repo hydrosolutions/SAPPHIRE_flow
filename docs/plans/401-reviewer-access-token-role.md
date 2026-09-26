@@ -89,7 +89,7 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
   repeatable `--station`), `create-admin`, `list`, `revoke`, `show`, `grant`, `revoke-station`,
   `set-scope-mode` (`cli/access_tokens.py:419-470`, `:616`). There is no `access-tokens` console
   script. `revoke` only sets `disabled_at` (`store/access_token_store.py:177-181`): the row stays.
-- **Rollback.** `docs/standards/cicd.md` § Rollback: no schema downgrade in practice — restore from
+- **Rollback.** `docs/standards/cicd.md` § Database migration strategy › Rollback (`:243`): no schema downgrade in practice — restore from
   backup and redeploy the previous image, which must run against the new schema. The previous
   image parses roles fail-closed with `AccessTokenRole(row["role"])`
   (`store/access_token_store.py:233`), so **any** reviewer row — revoked or not — makes its token

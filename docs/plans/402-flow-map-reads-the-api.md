@@ -351,7 +351,11 @@ and a truthful `source`.
   check. `load_qc_rules` keeps its `config_path` parameter and its raise when nothing is set (tested,
   `tests/unit/config/test_qc_rules.py:279-287`) and calls that shared part; the public resolution
   function reads `SAPPHIRE_CONFIG`, returns `builtin_default` when it is unset, and otherwise calls
-  the same shared part. It returns the rule set **and** which branch
+  the same shared part. Likewise for forecast rules: the shared part is the code from
+  `load_merged_toml(...)` onward, decided at the `forecast_qc_rules` section check
+  (`config/forecast_qc_rules.py:263-265`); `load_forecast_qc_rules` keeps its `config_path` parameter
+  and its raise (`tests/unit/config/test_forecast_qc_rules.py:64-73`) and calls it. Each public
+  resolution function returns the rule set **and** which branch
   supplied it, including the missing-section fallback. The four loaders call them
   (behaviour-preserving): `flows/ingest_observations.py::_load_qc_rules`,
   `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules`,
@@ -370,7 +374,7 @@ the emitted status equals the severity constant fails on the missing constant, t
 once it exists — the constant describes the code, it does not change it; (2) a request to the route
 returns 404.
 
-**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns what the shared function returns (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. An overlay that sets `[qc_rules]` is still rejected through the shared function. Reviewer and admin tokens → 200; consumer token → 403; no token → 401.
+**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns the rule set that its public resolution function returns, with `SAPPHIRE_CONFIG` both set and unset (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. An overlay that sets `[qc_rules]` is still rejected through the path-taking shared part (and through the public function with `SAPPHIRE_CONFIG` set). Reviewer and admin tokens → 200; consumer token → 403; no token → 401.
 
 ### T2 — `GET /api/v1/stations/{id}/skill`
 

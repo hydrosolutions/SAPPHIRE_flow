@@ -130,8 +130,9 @@ parameter still rejects the assignment).
 **Route** `GET /api/v1/stations/{id}/rejected-forecasts?[start=&end=][&model_id=][&limit=&offset=]`,
 REVIEW-gated (Plan 401), station-scoped; `start`/`end` filter `issued_at`, optional, default the last
 7 days ending at request time, `end` exclusive (Plan 402's query conventions); paginated with its own
-ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered by
-`(issued_at, recorded_at, id)`, non-finite values in the same encoding, flags typed as Plan 402's
+ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered newest first,
+`(issued_at DESC, recorded_at DESC, id DESC)` — like `/stations/{id}/forecasts`
+(`store/forecast_store.py:484`) — non-finite values in the same encoding, flags typed as Plan 402's
 `QcFlagResponse`; values and `detail` withheld per D4. Added to Plan 402's committed map contract and its explicit route list.
 
 ## Tasks
@@ -190,11 +191,12 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   shape carrying results **and** per-station rejected payloads (e.g. a `GroupForecastOutcome`). If a
   later station raises after an earlier one was rejected, the call raises a `GroupForecastError`
   carrying the rejected payloads gathered so far **and the original exception**. A new handler in
-  the flow, placed before the existing ones, writes the payloads and then dispatches on the
-  original exactly as today: an original `StoreError` is re-raised and aborts the flow (the existing
-  dedicated branch, `flows/run_forecast_cycle.py:3820`); any other exception takes the existing
-  log-and-skip branch (`:3822-3838`) with the original's message, so the `error` field and the
-  cycle's `errors` text are unchanged. The caller at
+  the flow, placed before the existing generic one, writes the payloads and then takes the existing
+  log-and-skip branch (`flows/run_forecast_cycle.py:3822-3838`) with the original's message, so the
+  `error` field and the cycle's `errors` text are unchanged. A `StoreError` is never wrapped: no
+  store call happens inside the per-station loop (`services/run_group_forecast.py:265-381`; the
+  artifact fetch at `:482-510` precedes it), so one cannot follow a rejection, and any `StoreError`
+  still propagates to the existing dedicated branch (`:3820`) exactly as today. The caller at
   `flows/run_forecast_cycle.py:3715` and `tests/unit/flows/test_run_forecast_cycle_group_fi_resolver.py`.
 - `flows/run_forecast_cycle.py` — mint one `attempt_id` at flow start from `id_gen`
   and pass it to every rejected-record write; write the payloads **immediately after** each of
@@ -226,7 +228,7 @@ import or argument error.
 - a per-track station with a cross-cycle mismatch **and** a rejected model records the rejection and still skips the station;
 - a mixed group records only the failing station, with flags for **every** parameter; the sibling's forecast is stored as today;
 - an error in a later parameter's block after an earlier one failed keeps the verdict `QC_FAILED`, records that parameter as `qc_unchecked` (never as a pass), on the member path and the group path, where the siblings keep their results;
-- in a group, station A rejected then station B raising an ordinary error: A's rejection is recorded and the group is skipped exactly as today, with the same logged error text; station B raising a `StoreError` instead: A's rejection is recorded and the flow aborts exactly as today;
+- in a group, station A rejected then station B raising an ordinary error: A's rejection is recorded and the group is skipped exactly as today, with the same logged error text;
 - the stored `qc_status` of an unchecked parameter is `qc_unchecked` even though its flags are `[]`;
 - a rejected ensemble whose members have different timelines round-trips with each member's own timestamps;
 - a rejected assignment with one failed and one suspect parameter records both, each with its own status and flags, on the member and the group path;
@@ -267,7 +269,7 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/` — reviewer and admin → 200 in scope with values, flags and `withheld: false` (predicate answers no), 404 out of scope and for an unknown station, no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come in `(issued_at, recorded_at, id)` order; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
+**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
 
 ### T4 — documents
 
@@ -278,7 +280,12 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 in `docs/standards/orchestration.md:176-187`, `docs/standards/logging.md` (every event of T2 with
 its level and kwargs: the two `qc_failed` events, now once per assignment with the failed
 `parameters`; the two `qc_parameter_unchecked` events; `rejected_forecast.write_failed`), `docs/touchpoint-maps.md`
-(the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts), and
+(the forecast-cycle paragraph and the freshness bullet: rejected records are not forecasts; and
+`:412`'s "a mismatch skips ALL writes for that station this cycle"), the same cross-cycle contract in
+`docs/architecture-context.md:113` and the flow comment at `flows/run_forecast_cycle.py:3057-3060` —
+each reworded to "no forecast or model-state write; the rejected-forecast record is written before
+the preflight (Plan 404)" (`docs/standards/logging.md:300` already says "no forecast or state write"
+and stays true), and
 Plan 402's consumer-page line that rejected forecasts are not stored. Plan 341 already carries this plan's facts
 (this REVIEW route carries values, withheld from reviewer tokens on a gated tenant; its activation
 wires D4's predicate; rejected member/group forecasts never enter `forecasts` — `341:84`, `:112`);
@@ -307,8 +314,8 @@ After staging deploy (orchestrator):
    the volume measurement for retention.
 2. For each station and cycle with a rejection: in **combination** mode (staging runs `pooled`,
    `config/overlays/mac-mini.toml:15`) on a **fresh** cycle, the rejected model is absent from the
-   stored contributors and every other successful model is stored as before; in **PRIMARY** mode, the
-   stored forecast is the highest-priority successful model's. For a **re-run** of an earlier cycle,
+   stored contributors and every other successful model is stored as before (PRIMARY mode is covered
+   by T2's unit case; staging never runs it). For a **re-run** of an earlier cycle,
    check only that rejected outputs never enter the current attempt's combination inputs; existing
    rows behave as Plans 327/328 prescribe.
 3. A reviewer token (`--tenant sapphire`) scoped to one station → 200 on the route for that station
