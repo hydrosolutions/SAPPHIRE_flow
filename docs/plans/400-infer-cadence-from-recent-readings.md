@@ -149,6 +149,15 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
   instants; fewer than two ⇒ `None`) that `infer_time_step` delegates to, so the rule is written
   once. ⛔ Fewer than two distinct readings in the sample still infers `None` and the group stays
   `QC_UNCHECKED` — the Plan 272 fail-closed property.
+- 🔴 **A selected rule is not a rule that ran — relies on Plan 323 T4.** Once the cadence comes
+  from outside the check window, a group can select rules none of which can evaluate the pending
+  reading. Measured case (Codex, round 4): a water_level station with no datum and the
+  missing-hour fixture — the look-back infers 3600 s, the datum skip removes `range_check` and
+  `gross_outlier`, and `rate_of_change`/`spike` return at once with no neighbour in the one-reading
+  window (`services/qc.py:137`, `:220`). Without a guard that reading would be stored `QC_PASSED`.
+  The case is reachable under Plan 323 alone too, so the owner put the guard there (323 D4/T4:
+  a reading passes only if some selected check could judge it; otherwise `QC_UNCHECKED` with
+  reason `no_check_could_run`). This plan **depends on it** and tests it on the look-back path.
 
 ## Owner decisions
 
@@ -190,8 +199,10 @@ an occasional missing reading selects its rules, while the rules still run on th
 
 **In.** § Design's store method (Protocol, Pg, fake), the timestamp-level inference function, the
 optional `time_steps` keyword on `Stage1QualityChecker.check`, `resolve_selection` and the
-`QualityChecker` Protocol, and the second fetch in `_run_qc_task` with `not_before = now −
-lookback`, `before` = the check window's end, `limit = max_readings`.
+`QualityChecker` Protocol, and the second fetch in `_run_qc_task` with `not_before =
+min(now − lookback, window_start)` — so on the DHM catch-up path, where the window can start more
+than `lookback` ago, the look-back never excludes the window's own readings — `before` = the check
+window's end, `limit = max_readings`.
 
 - Re-point `tests/unit/flows/test_ingest_observations_recheck.py::test_already_checked_neighbours_stay_in_the_group`
   (`:233`). It guards the unfiltered check fetch by relying on cadence inference; once cadence
@@ -225,8 +236,14 @@ record). It must fail on that status, not on a fixture or config key.
   by the look-back, runs `rate_of_change` across that gap — asserted and named, not prevented.
 - **Fail-closed kept:** a group with one distinct reading in the look-back stays `QC_UNCHECKED`
   with `no_cadence_inferable`.
+- **No silent pass on the look-back path (Plan 323 T4's guard):** Codex's round-4 fixture —
+  water_level, no datum, the missing-hour series — is stored `QC_UNCHECKED` with reason
+  `no_check_could_run`, not `QC_PASSED`; the same series with a datum gets a real verdict from
+  `range_check`.
+- **Look-back bound on catch-up:** a DHM recovery whose window starts more than `lookback` ago still
+  infers its cadence from the window's own readings.
 - **Unchanged where it should be:** a gap-free 600 s group selects the same rules as before, and the
-  existing ingest tests pass unmodified — including
+  existing ingest tests pass unmodified, except the re-pointed Plan 317 guard above — including
   `tests/unit/flows/test_ingest_observations_dhm.py::TestDhmIngest::test_six_hour_recovery_qcs_old_rows_with_preceding_context`,
   which the first draft's wider window broke.
 - **Agreement:** a test where the check-window rows alone would infer `None` but the look-back
@@ -234,7 +251,10 @@ record). It must fail on that status, not on a fixture or config key.
   non-zero count — the two cannot disagree.
 - **The SQL bound:** an integration test against real Postgres (beside
   `tests/integration/store/test_observation_store.py`) that the method returns at most `limit`
-  distinct timestamps, the most recent ones, in chronological order, and none before `not_before`.
+  distinct timestamps, the most recent ones, in chronological order, with boundary fixtures proving
+  `not_before <= timestamp < before`; and a unit assertion on the compiled statement that the
+  distinct selection and the `LIMIT` are in the SQL — ⛔ result-shape tests alone pass equally with
+  an unbounded query sliced in Python, which § Design forbids.
 - **Before merge, on a copy of staging data:** a replay with the production functions, the
   post-Plan-323 rule set, the production window and look-back bounds, and only the readings that
   existed at each simulated run time, listing every group whose selection changes, with its old and
@@ -277,10 +297,14 @@ exposure are measured, not assumed.
 - **Watchdog.** Its state is **reported, not required**: the watchdog alarms on a zero-rule record
   from *any* station (`ops/watchdog.py:220`), so a new or silent station elsewhere can keep it
   failing for reasons this plan does not own.
-- **§ 3 exposure.** `QC_SUSPECT`/`QC_FAILED` from `rate_of_change` and `spike` on readings that
-  were zero-rule before the change — counted, with examples, the DHM catch-up path separately.
-- **Selection changes.** Every group whose inferred cadence differs from before, compared with
-  T2's pre-merge list — including cadence switches (§ 2).
+- **§ 3 exposure and selection changes — by replay, because no record holds them.** Neither a
+  reading row nor any health record stores the cadence of a group that selected rules, and "was
+  zero-rule before the change" is a counterfactual after deploy. So T2's pre-merge replay is re-run
+  over the 24 h after deploy, computing old (window-only) and new (look-back) inference per run:
+  every group whose inferred cadence differs (cadence switches included, § 2), and the
+  `QC_SUSPECT`/`QC_FAILED` verdicts from `rate_of_change` and `spike` on readings the old
+  inference left zero-rule — counted, with examples, the DHM catch-up path separately. Plus the
+  count of `no_check_could_run` entries from the live records.
 - **Cost.** `ingest-observations` flow-run duration, median and maximum. If the median more than
   doubles, report it to the owner before closing.
 
@@ -310,6 +334,16 @@ exposure are measured, not assumed.
 - **Climatological baselines** for series that have none (Plan 323 § 12).
 - **Re-QC of stored history** — the owner's standing answer (Plan 323, Plan 315 D3): leave it.
 
+```json
+{
+  "phases": [
+    {"phase": 1, "tasks": ["T1"], "parallel": false},
+    {"phase": 2, "tasks": ["T2"], "parallel": false},
+    {"phase": 3, "tasks": ["T3", "T4"], "parallel": false}
+  ]
+}
+```
+
 ## Review record
 
 - **2026-09-26 — independent Claude review and independent Codex review of the first draft (24 h
@@ -322,15 +356,6 @@ exposure are measured, not assumed.
   numerator, denominator and reported-not-required watchdog; the recovery test named as a
   must-stay-green; § Why's citation of 272; the 313 and 315 notes.
 
-```json
-{
-  "phases": [
-    {"phase": 1, "tasks": ["T1"], "parallel": false},
-    {"phase": 2, "tasks": ["T2"], "parallel": false},
-    {"phase": 3, "tasks": ["T3", "T4"], "parallel": false}
-  ]
-}
-```
 - **2026-09-26 — round 3: independent Claude review and independent Codex review of `cd6ead60`:
   both NOT READY; all findings folded.** Both: the knob test used `max_readings = 2`, which T1
   rejects (→ 3, asserting 5400 s and `no_rule_declares_it`). Codex: `RAW` counted as success
@@ -341,3 +366,12 @@ exposure are measured, not assumed.
   consequences of option B, stated and tested); a missing mapping key was undefined (§ Design);
   the RED test named a record `_run_qc_task` does not write (T2); T1's pre-change would have been
   red only on a missing loader (T1 → N/A with the reason).
+- **2026-09-26 — round 4: independent Claude review and independent Codex review of `7e0886d0`:
+  both NOT READY, no decision contradicted; all findings folded.** Codex (P1): a group can select
+  rules none of which can judge the pending reading, and would be stored `QC_PASSED` — the Plan
+  272 fail-open through a new door. Reachable under 323 alone, so the owner moved the guard into
+  Plan 323 (D4/T4); this plan depends on it and tests it on its path (§ Design, T2). Codex: the SQL-bound test could not tell a `LIMIT`
+  from a Python slice, and omitted `before` (T2). Claude: two T4 items had no record to query
+  (→ replay); the look-back's lower bound could exclude a DHM catch-up window's own rows
+  (`not_before = min(…)`); "existing tests unmodified" contradicted the re-pointed guard; the README
+  entry was stale; the JSON graph sat inside the review record.

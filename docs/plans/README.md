@@ -734,7 +734,7 @@ exit criteria — Plan 212 owns that deeper screening.
   uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
-  — `DRAFT`, no open decisions, `blocks: [400]`; **the latest fold is unreviewed** (three
+  — `DRAFT`, no open decisions, `blocks: [400]`; **the latest fold is unreviewed** (four
   review rounds so far, all NOT READY, all folded). Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
@@ -745,20 +745,26 @@ exit criteria — Plan 212 owns that deeper screening.
   datum-relative, discharge spike relative); CAMELS daily imports excluded (D1). ⚠️ The rows
   apply to every hourly series, not only these five. Hourly gets each parameter's 600 s rule shape **less `frozen_sensor`**, which has
   **no plan yet**; water temperature gets no `spike` (D2). 🔴 **It does not silence the
-  watchdog:** ~5% of hourly checks still infer a cadence no rule declares, from a single missing reading —
+  watchdog:** ~5% of hourly checks still infer no cadence, or one no rule declares, from a single missing reading —
   the owner accepted that leftover (D3); 400 closes it. ⛔ Plan 264 does NOT own
-  nearest-rule matching. ⚠️ 313 and 315 do not yet carry the reverse notes.
+  nearest-rule matching. 🔴 **D4/T4 (owner 2026-09-26): a reading passes only if some
+  selected check could actually judge it** — else `QC_UNCHECKED`, reason `no_check_could_run`;
+  closes a silent pass reachable at datum-less hourly water level. ⚠️ 313 and 315 do not yet
+  carry the reverse notes.
 
 - **400** — [Work out a series' reporting interval from its recent readings, not from the two-hour check window](400-infer-cadence-from-recent-readings.md)
-  — `DRAFT`, **redesigned 2026-09-26 and unreviewed**, `depends_on: [323]`; number granted
+  — `DRAFT`, redesigned 2026-09-26, **latest fold unreviewed** (three review rounds so far),
+  `depends_on: [323]`; number granted
   by the owner 2026-09-25. Infers each group's cadence from a **separate, configurable
   look-back** (`[qc_rules.cadence_inference]`: last 50 distinct readings within 30 days by
   default, SQL `LIMIT`) while the rules keep running on the 2 h window — the owner's
   option B, after both reviews showed a 24 h check window changes what the rules compare.
   Replayed on staging: **100%** correct on hourly and 10-minute series (the 2 h window
   gives 95.3% hourly). Revives Plan 272's parked bounded-lookback design on a new argument.
-  ⚠️ Bounded exposure it states: a repaired check runs `rate_of_change`/`spike` across one
-  missing reading (Plan 313's arithmetic). ⚠️ Touches the same `check` signature as 264's
+  ⚠️ Exposure it states: a repaired check runs `rate_of_change`/`spike` across one missing
+  reading (Plan 313's arithmetic) — within 2 h ordinarily, **not bounded on the DHM catch-up
+  path**. 🔴 Relies on 323's new guard that a reading passes only if some selected check could
+  actually judge it (`no_check_could_run`). ⚠️ Touches the same `check` signature as 264's
   in-flight rewrite.
 
 - **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
