@@ -9,7 +9,7 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 - **342** — [Alert evaluations and CHWRR warning decisions](342-chwrr-alert-evaluation-and-decisions.md) — `DRAFT`; high/low-flow evaluation ledger and human warning publish/dismiss history. Depends on 340 and 341.
 - **343** — [Operational post-event verification](343-operational-post-event-verification.md) — `DRAFT`; preliminary scoring, revisions, cases and corrective actions. Depends on 340, 341 and 342.
 - **344** — [Six-year evidence archive and replay](344-chwrr-evidence-archive-and-replay.md) — `DRAFT`; cold archive and diagnostic replay. Depends on 340–343; not required for first guarded CHWRR testing.
-- **345** — [The flow map reads the /api/v1 interface — QC rules, station skill, forecast QC flags, committed contract](345-flow-map-reads-the-api.md) — `DRAFT, unreviewed`; rewritten 2026-09-26 after the owner chose the API over extending the snapshot (snapshot stays v2; the v3/251 sharing is superseded). Open: D9 — QC what-if dry run, recommended as a follow-on plan.
+- **345** — [The flow map reads the /api/v1 interface — QC rule sets, station skill, forecast QC flags, committed contract](345-flow-map-reads-the-api.md) — `DRAFT, HIGH RISK`; first Claude + Codex reviews folded 2026-09-26 (17 findings; owner: serve forecast rules too, map uses an admin token so the new routes are admin-only). Corrected text NOT yet re-reviewed; high-risk ⇒ one extra owner-commissioned review before READY. Open: D9 — QC what-if dry run, recommended as a follow-on.
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
