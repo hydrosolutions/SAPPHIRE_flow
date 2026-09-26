@@ -1,12 +1,12 @@
 ---
 status: DRAFT
 created: 2026-09-24
-revised: 2026-09-25
+revised: 2026-09-26
 plan: 323
 title: Five Swiss stations report hourly and select no QC rule at all
-scope: Give the observation QC rule set a 3600 s cadence for the parameters the hourly BAFU stations deliver, so those stations are actually checked instead of selecting zero rules — on ~95% of checks; the owner accepted the leftover on 2026-09-25. NOT how the cadence is inferred and NOT an hourly `frozen_sensor` row (both Plan 400), NOT the DHM/Nepal rule rows (303), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT per-station overrides (269), NOT re-QC of the rows already stored (owner, 2026-09-24 — history is left), NOT the pick-up set (317, merged), NOT the consumer policy (316, merged).
+scope: Give the observation QC rule set a 3600 s cadence for the parameters the hourly BAFU stations deliver, so those stations are actually checked instead of selecting zero rules — on ~95% of checks; the owner accepted the leftover on 2026-09-25. NOT how the cadence is inferred (Plan 400), NOT an hourly `frozen_sensor` row (no plan yet), NOT the DHM/Nepal rule rows (303), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT per-station overrides (269), NOT re-QC of the rows already stored (owner, 2026-09-24 — history is left), NOT the pick-up set (317, merged), NOT the consumer policy (316, merged).
 depends_on: []
-blocks: []
+blocks: [400]
 related: [264, 269, 272, 303, 313, 316, 317, 318, 400]
 open_decisions: []
 source: 2026-09-24 — the owner reported Slack warnings that BAFU observations were unchecked. Every claim in § What is measured was measured on the staging host that day against v0.1.965 and against `main` at `3b515f6b`; each says how. Items 10-13 were added on 2026-09-25 from an independent Claude review, measured on staging (running `main` at `7a7f2aae`) and against `main` at `2fe660e2`.
@@ -17,9 +17,9 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. An independent Claude review on 2026-09-25 returned NOT READY; its six
-findings are folded below (§ Review record), and two of them changed owner decisions (D2, D3). The
-fold itself has not been reviewed.
+the orchestrator sets READY. Two review rounds have run — a Claude review on 2026-09-25, then
+Claude and Codex on the fold on 2026-09-26 — all NOT READY, all findings folded (§ Review record).
+Owner decisions changed on both days (D2, D3). **This state is unreviewed.**
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
 *checkable*: about 95% of their checks will run real rules. It does **not** make the Plan 318
@@ -93,12 +93,18 @@ All figures from the staging host, 2026-09-24, unless stated.
    forecasting marked `DEGRADED` and keeps it out of alerts, skill scoring and training. So this is
    five uncontrolled Swiss gauges, honestly labelled — not corrupted forecasts.
 10. 🔴 **Adding a 3600 s rule does NOT stop every zero-rule check.** The cadence is inferred from the
-    rows in the QC window, `[now − 2 h, now + 1 h]` (`flows/ingest_observations.py:431-432`, default
-    `context_window_hours = 2.0` at `:743`) — at most **three** hourly readings, so two gaps. One
-    missing reading makes the median gap 7200 s, which no rule declares. Replaying that inference at
-    every stored reading of the 9 groups over the preceding 14 days: **2,554 of 2,679 checks
-    (95.3%) infer exactly 3600 s**; the misses are 7200 s ×111, `None` ×6, 3900 s ×4, 6900 s ×2,
-    3450 s ×2. Because the watchdog alerts whenever ANY zero-rule record exists in the last 6 h
+    rows in the QC window, `[now − 2 h, now + 1 h)` (`flows/ingest_observations.py:431-432`, default
+    `context_window_hours = 2.0` at `:743`; start inclusive, end exclusive,
+    `store/observation_store.py:190-191`). Ingest runs every 5 minutes, so `now` is usually a few
+    minutes past the hour and the window holds the **two** most recent hourly readings; one missing
+    reading leaves one, which infers `None` (`no_cadence_inferable`). Only a run landing exactly on
+    the hour sees three readings, where a missing one gives a 7200 s gap. Either way, no rule.
+    **Estimate of the rate** — a replay anchored at each stored reading's timestamp (so it sees
+    three readings, and reports the miss as 7200 s rather than `None`) over the 9 groups and the
+    preceding 14 days: **2,554 of 2,679 checks (95.3%) infer exactly 3600 s**; misses 7200 s ×111,
+    `None` ×6, 3900 s ×4, 6900 s ×2, 3450 s ×2. The anchoring differs from production, so this is
+    an estimate of the rate, not of the reason code an operator sees; T1 re-measures it from the
+    live zero-rule records. Because the watchdog alerts whenever ANY zero-rule record exists in the last 6 h
     (`ops/watchdog.py:220`), replaying those misses against 5-minute watchdog ticks puts it in the
     failing state **64% of the time, on 15 of 15 days**. ⇒ This plan cannot make the warning stop;
     D3 records the owner's acceptance of that, and Plan 400 is the fix.
@@ -107,8 +113,8 @@ All figures from the staging host, 2026-09-24, unless stated.
     hourly readings. Any count above 3 is inert; a count of 3 means "flat for ~2-3 h", which in the
     current drought is ordinary — at 600 s, `frozen_sensor` already flags ~8% of discharge and ~18%
     of water_level readings (replay over the preceding 3 days at the configured `tolerance 0.001,
-    min_consecutive 12`). ⇒ D2 now defers the hourly `frozen_sensor` row to Plan 400, which widens
-    the window.
+    min_consecutive 12`). ⇒ D2 defers the hourly `frozen_sensor` row. Plan 400 keeps the 2 h check
+    window (owner, 2026-09-26), so **no plan owns it yet**.
 12. **`gross_outlier` runs only where a climatological baseline exists, and for most of these
     groups none does.** `_apply_gross_outlier` returns no flag when the baseline is missing
     (`services/qc.py:270-272`), yet `resolve_selection` counts the rule as selected. On staging,
@@ -143,9 +149,22 @@ T1 did not produce.
   as bad the first time it rains. ⇒ **T1 measures the longest history available for each series,
   not the recent window**, and reports how much it found; if a series has only weeks, its bounds are
   provisional and must say so.
-- **Every rule needs its own statistic.** `range_check` wants the value distribution; `rate_of_change`
-  and `spike` want the distribution of change BETWEEN consecutive readings; `frozen_sensor` wants the
-  longest run of near-identical values. ⛔ *One summary table of values cannot answer all four.*
+- **Every rule needs its own statistic, in the form the rule computes it.** `range_check` wants the
+  value distribution; `rate_of_change` wants the distribution of the raw difference between
+  consecutive readings (`services/qc.py:131-149`, no division by time — Plan 313); `spike` fires
+  only when a reading differs from **both** neighbours, so it wants the distribution of
+  `min(|x − prev|, |x − next|)` — absolute for water_level (`max_delta`), and **relative** for
+  discharge, i.e. divided by `|prev|` with `prev = 0` excluded, because discharge's `tolerance` is
+  a fraction of the previous value (`services/qc.py:240-246`). ⛔ *One summary table of values
+  cannot answer all of these.*
+- 🔴 **Water level is checked relative to the station's datum, not as stored.** `range_check` and
+  `gross_outlier` see `value − water_level_datum_masl` (`services/qc_datum.py:44-55`, applied at
+  `flows/ingest_observations.py:466-470`); that is why the 600 s bounds are −2 … 20 m. And where a
+  station has **no** datum, both rules are skipped entirely (`OBS_DATUM_DEPENDENT_RULES`,
+  `services/qc_datum.py:14,32-35`). A `range_check` fitted to stored metres above sea level would
+  fail every hourly water-level reading. ⇒ T1 measures water_level's value distribution on the
+  datum-shifted value and records per station whether a datum exists. The change statistics
+  (`rate_of_change`, `spike`, flat runs) are unaffected by a constant shift.
 
 ⚠️ `gross_outlier` is the exception: `k_sigma` is a multiplier on a climatological baseline, not a
 value in the series' units, and it is identical at 600 s and 86400 s (§ 6). It is cadence-independent
@@ -153,9 +172,9 @@ and carries across unchanged from the 600 s row of the same parameter — **5.0*
 water_level, **4.0** for water_temperature (§ 13) — and T1 need not measure for it. ⚠️ Where no
 baseline exists it runs nothing (§ 12).
 
-### D2 — which rules get an hourly row. **⚖️ CLOSED — owner, 2026-09-24; amended by the owner 2026-09-25: the 600 s shape of each parameter, less `frozen_sensor`, which waits for Plan 400.**
+### D2 — which rules get an hourly row. **⚖️ CLOSED — owner, 2026-09-24; amended by the owner 2026-09-25: the 600 s shape of each parameter, less `frozen_sensor`, which waits for a later plan.**
 
-| parameter | hourly rows (this plan) | deferred to Plan 400 |
+| parameter | hourly rows (this plan) | deferred — no plan yet |
 |---|---|---|
 | discharge | `range_check`, `rate_of_change`, `spike` (`tolerance`, relative), `gross_outlier` | `frozen_sensor` |
 | water_level | `range_check`, `rate_of_change`, `spike` (`max_delta`, absolute), `gross_outlier` | `frozen_sensor` |
@@ -164,13 +183,20 @@ baseline exists it runs nothing (§ 12).
 Why the amendment: on 2026-09-24 the owner chose all five checks, `frozen_sensor` included. The
 2026-09-25 review measured that the QC window holds at most three hourly readings (§ 11), so an
 hourly `frozen_sensor` could only flag a ~3 h flat stretch — ordinary during the drought, and
-therefore noisy. The owner deferred it to Plan 400, which widens the window so the count can be set
-from the gauges' real flat stretches. On water temperature the owner chose to match the 600 s set
+therefore noisy. The owner deferred it to Plan 400, expecting a wider window. On 2026-09-26 the owner
+chose for Plan 400 a separate inference look-back that leaves the 2 h check window as it is, so
+Plan 400 cannot carry `frozen_sensor` either: **it waits for a plan that does not exist yet.** On
+water temperature the owner chose to match the 600 s set
 rather than introduce a `spike` check that exists nowhere else for temperature.
 
-🔴 **When Plan 400 adds `frozen_sensor`, `min_consecutive` must be re-expressed, not copied** (§ 8):
-it counts READINGS, so the 600 s value of 12 means 2 h there and would mean 12 h at 3600 s. T1 of
-this plan still measures the longest flat run in hours, because Plan 400 needs it.
+⚠️ **Water level without a datum runs two of its four rows.** `range_check` and `gross_outlier` are
+skipped for a water-level station with no datum (D1), so its selection is 2 runnable rules, not 4.
+
+🔴 **Whichever plan adds hourly `frozen_sensor` must re-express `min_consecutive`, not copy it**
+(§ 8): it counts READINGS, so the 600 s value of 12 means 2 h there and would mean 12 h at 3600 s.
+And per D1's first hazard it must come from a stated percentile of the flat-run distribution, not
+from the longest run observed. T1 of this plan measures that distribution so the later plan need
+not.
 
 ### D3 — the checks that still find no rule. **⚖️ CLOSED — owner, 2026-09-25: accept the leftover here; fix the interval in Plan 400.**
 
@@ -182,9 +208,9 @@ series with occasional gaps.
 
 ⛔ **Replaced, not amended:** the 2026-09-24 text named nearest-rule matching as "Plan 264's
 territory". It is not. Plan 264's scope is the network dimension of selection and never takes on
-cadence matching; the in-flight rewrite of 264 excludes "cadence repair" in its own scope line.
-Nearest-rule matching is commissioned by **no** plan, and Plan 400 does not need it — see Plan 400
-§ What is measured.
+cadence matching; an in-flight rewrite of 264 in another session (uncommitted, seen 2026-09-25)
+excludes "cadence repair" in its own scope line. Nearest-rule matching is commissioned by **no**
+plan, and Plan 400 does not need it — see Plan 400 § What is measured.
 
 ⛔ **Not a decision: the stored history.** The owner closed it on 2026-09-24 — *leave it* — on the
 same reasoning as Plan 315 D3: real customer deployments are onboarded fresh, so a mixed-era corpus
@@ -200,19 +226,26 @@ threshold T2 writes can cite a row of it.
 **In.**
 - Per series, over **the longest history the store holds** (not the recent window — D1's drought
   hazard): the row count, the span in days, and the value distribution (min, max, and the 1st, 50th,
-  99th and 99.9th percentiles).
-- Per series, the distribution of **|change between consecutive readings|** at the hourly cadence —
-  same percentiles. This is what `rate_of_change` and `spike` are judged against, and it is a
-  different statistic from the value distribution.
-- Per series, the **longest run of near-identical values, in hours**, at the `tolerance` the 600 s
-  rule already uses (0.001 for discharge and water_level, **0.01 for water_temperature**, § 13).
-  This plan adds no `frozen_sensor` row (D2); the measurement is recorded for Plan 400, which will.
+  99th and 99.9th percentiles). 🔴 **For water_level, on `value − water_level_datum_masl`** — the
+  value the rules see (D1) — and a per-station note of whether a datum exists at all.
+- Per series, each change statistic **in the form its rule computes it** (D1), same percentiles:
+  the raw difference between consecutive readings (`rate_of_change`); `min(|x − prev|, |x − next|)`
+  for water_level's absolute `spike`; the same divided by `|prev|`, `prev = 0` excluded, for
+  discharge's relative `spike`.
+- Per series, the **distribution of flat-run lengths, in hours** — percentiles and the longest — at
+  the `tolerance` the 600 s rule already uses (0.001 for discharge and water_level, **0.01 for
+  water_temperature**, § 13). This plan adds no `frozen_sensor` row (D2); the measurement is
+  recorded for whichever later plan does.
 - ⚠️ **The span each series actually has, stated per series.** A series with only weeks of history
   yields provisional bounds and T2 must mark them so.
 - The analysis run as a heredoc against the staging database per the repo convention, with the query
   recorded in the plan so it can be re-run when the drought ends.
-- ⭐ The § (10) replay re-run and recorded with the same query: the share of checks per group that
-  infer exactly 3600 s. It is the baseline T2's staging check is judged against.
+- ⭐ **The live leftover, from the production records rather than a replay.** The zero-rule health
+  records (`OBSERVATION_QC_UNCHECKED`, Plan 318) carry the reason and the inferred seconds per
+  group. Count, for the five stations, the readings received since the 2026-09-24 deploy and how
+  many are still `QC_UNCHECKED` now (Plan 317 re-examines an unchecked reading while it remains in
+  a later run's window, so the final status is what counts). This is the baseline T2's staging check is judged against; § 10's replay is only the
+  estimate.
 
 **Out.** ⛔ Changing any rule — T1 only measures. ⛔ Excluding outliers by judgement: the point is
 to see them. ⛔ Any claim about *why* these five are hourly.
@@ -234,7 +267,8 @@ real verdict.
 **In.**
 - `[[qc_rules.rules]]` rows at `time_step_seconds = 3600` exactly as D2's table lists them: four
   each for `discharge` and `water_level`, three for `water_temperature` — **eleven rows**, no
-  `frozen_sensor`.
+  `frozen_sensor`. The same rows added to `docs/spec/config-reference.toml`, which mirrors the rule
+  set.
 - 🔴 **Each threshold carries the T1 statistic it came from**, in a comment beside it. § (5) is the
   argument: an unexplained threshold survived months without anyone noticing it never fired.
 - `gross_outlier.k_sigma` carried across unchanged from the same parameter's 600 s row, per D1's
@@ -245,7 +279,7 @@ real verdict.
 
 **Out.** ⛔ Any change to the 600 s or 86400 s rows — this adds, it does not retune. ⛔ Any change
 to how selection MATCHES or how cadence is inferred (D3 — Plan 400). ⛔ An hourly `frozen_sensor`
-row (D2 — Plan 400). ⛔ Computing climatological baselines (§ 12). ⛔ Re-QC of stored rows.
+row (D2 — no plan yet). ⛔ Computing climatological baselines (§ 12). ⛔ Re-QC of stored rows.
 ⛔ DHM/Nepal rows (303).
 
 **Pre-change.** A RED test asserting the DESIRED behaviour: **a group whose inferred cadence is
@@ -254,7 +288,9 @@ row (D2 — Plan 400). ⛔ Computing climatological baselines (§ 12). ⛔ Re-QC
 
 **Verification.**
 - An hourly group selects exactly its D2 rows — 4 for discharge and water_level, 3 for
-  water_temperature — asserted by `rule_id`, not only by count; **a 600 s group's selection is
+  water_temperature — asserted by `rule_id`, not only by count, with a datum set for water_level;
+  and a water_level group **without** a datum reports 2 runnable rules (`rate_of_change`,
+  `spike`) (D2); **a 600 s group's selection is
   unchanged** (asserted, so the addition cannot perturb the 140 stations that were fine). The test
   loads the shipped `config.toml` rule set, not a hand-built one — a hand-built set proves nothing
   about the file this plan edits.
@@ -265,12 +301,17 @@ row (D2 — Plan 400). ⛔ Computing climatological baselines (§ 12). ⛔ Re-QC
 - 🔴 **Each threshold is exercised at least once against T1's percentiles**: a value at the 99.9th
   percentile does NOT flag, one beyond the chosen bound does. ⛔ *Otherwise a threshold can be
   mistyped by an order of magnitude and every test still passes.*
-- ⭐ **On staging, over the first full day after deploy:** the share of the five stations' checks
-  that run rules matches T1's replay baseline (≈95%, § 10), and **every** remaining `QC_UNCHECKED`
-  reading for them carries an inferred cadence other than 3600 s — i.e. a gap, not a missing rule.
-  ⛔ *Not* "the watchdog stops warning": it will not (§ 10, D3), and a verification that demands it
-  fails for a reason this plan does not own. The unit tests prove the mechanism; only this proves
-  the live defect narrowed to the accepted leftover.
+- ⭐ **On staging, over the first full day after deploy**, with the queries recorded here:
+  - **Numerator / denominator:** the five stations' readings received that day whose stored status
+    at the end of the day is not `QC_UNCHECKED`, over all their readings received that day. It must
+    be at least T1's live baseline share and at least 90%; a lower figure is reported to the owner.
+  - **Every** zero-rule health record for the five stations that day carries reason
+    `no_cadence_inferable` or an inferred cadence other than 3600 s — i.e. a gap, not a missing
+    rule. (A reading row stores no cadence; the health records do.)
+  - ⛔ *Not* "the watchdog stops warning": it will not (§ 10, D3), and a verification that demands
+    it fails for a reason this plan does not own.
+  The unit tests prove the mechanism; only this proves the live defect narrowed to the accepted
+  leftover.
 
 ### T3 — Record what happens when a cadence matches no rule (D3)
 
@@ -304,8 +345,11 @@ returns the entry.
   dependency is recorded here either way. ⚠️ **Checked 2026-09-25: Plan 313 does not yet carry the
   reverse note** — it mentions hourly rules only as synthetic test fixtures. Adding it is 313's
   owner's edit, not this plan's.
+- **Onboarding's QC** — Plan 315. ⚠️ 315 D1 runs after every plan that changes the rule set's shape
+  or the cadences it declares, and names 303, 269, 313 and 264 — not this plan, which adds a
+  cadence. Recorded for 315's owner; 315 is not edited here.
 - **How the cadence is inferred for a series with gaps** — Plan 400 (D3).
-- **An hourly `frozen_sensor` row** — Plan 400 (D2).
+- **An hourly `frozen_sensor` row** — no plan yet (D2); Plan 400 keeps the 2 h check window and cannot carry it.
 - **Nearest-cadence matching** — no plan (D3). Most-specific-wins across networks is Plan 264.
 - **Per-station threshold overrides** — Plan 269. A per-station override is not a substitute for a
   cadence the rule set cannot express.
@@ -329,7 +373,18 @@ returns the entry.
   a 3600 s rule leaves ~5% of hourly checks with no rule and the watchdog failing ~64% of the time
   → § 10, D3, T2 verification. (2) D3 named Plan 264 as owner of nearest-rule matching; 264 does not
   own it → D3 replaced. (3) `frozen_sensor` cannot fire in a three-reading window → § 11, D2
-  (owner: defer to Plan 400). (4) `water_temperature`'s 600 s set has four rules and different
+  (owner: defer to Plan 400 — changed 2026-09-26, see the next entry). (4) `water_temperature`'s 600 s set has four rules and different
   values → § 13, D2 (owner: match it, no `spike`). (5) `gross_outlier` inert without a baseline
   → § 12, T2. (6) Plan 313 lacks the reverse note → recorded in § Explicitly out of scope; not
   edited here.
+- **2026-09-26 — independent Claude review and independent Codex review of the fold: both NOT
+  READY; all findings folded.** Both: water level is checked datum-relative, and discharge's `spike`
+  is relative — T1 must measure each rule's own statistic in the rule's own form (D1, T1, D2's
+  datum note). Claude: the `frozen_sensor` count must come from a percentile, not the longest run
+  (D2, T1); the replay's anchoring differs from production, so § 10 is an estimate and the live
+  baseline comes from the zero-rule records (§ 10, T1); T2's staging check had no measurable form
+  and no tolerance (T2); `blocks: [400]`; `config-reference.toml` mirrors the rules (T2); the 264
+  rewrite cited is uncommitted (D3); Plan 315 is not told of the new cadence (§ Explicitly out of
+  scope). Codex: the replay and the live check counted different populations (T2's numerator and
+  denominator). Owner, same day: Plan 400 keeps the check window, so hourly `frozen_sensor` has no
+  plan yet (§ 11, D2).
