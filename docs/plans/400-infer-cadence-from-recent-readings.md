@@ -62,16 +62,29 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
    | **last 25 distinct readings** (≤ 30 d) | **100.00%** | **100.00%** |
    | **last 50 distinct readings** (≤ 30 d) — the default | **100.00%** | **100.00%** |
 
-   ⇒ A count-capped sample is cadence-independent — 50 readings is ~8 h at 600 s, ~2 days at
+   ⇒ A count-capped sample scales with the cadence — 50 readings is ~8 h at 600 s, ~2 days at
    3600 s, and a daily series' last 30 days within the time bound — and reaches 100% on both
    measured cadences. Changing the statistic inside the 2 h window does not. The count-capped
    rows were replayed on 2,376 hourly checks (14 days less a 60 h warm-up) and 141,733 10-minute
-   checks. ⚠️ **Anchoring:** the window rows are anchored at each reading's timestamp, not at a
-   5-minute run clock (§ Why), so they approximate production's rate; the count-capped rows take
-   the last N readings and are insensitive to the anchor.
-2. **No group that selects rules today changes its selection.** In the same replay, every check
-   whose 2 h inference already matched the series' cadence also matches under the last-50 sample.
-   The change only affects checks that resolve zero rules today.
+   checks. ⚠️ **Anchoring:** every row is anchored at a stored reading's timestamp, not at a
+   5-minute run clock (§ Why), and uses readings as stored now rather than as available at run
+   time; the figures estimate production's rate, they do not reproduce it. T2's pre-merge replay
+   uses the production bounds.
+2. **Where selection changes, and where the replay cannot say.** In the replay, every check whose
+   2 h inference matched the series' own multi-day cadence also matches under the last-50 sample.
+   That covers the compared population only. Two populations it does **not** cover:
+   - **After Plan 323, a check can select non-zero rules for the wrong cadence** — e.g. a
+     10-minute series whose 2 h window infers 3600 s now selects hourly rules. The look-back may
+     move it back to 600 s: a non-zero → non-zero change. T2's pre-merge replay reports these.
+   - 🔴 **A station that changes its reporting interval.** The median of the last 50 readings
+     trails a switch by ~25 readings: after 10 min → hourly, the 600 s rules keep running on an
+     hourly series for about a day; after hourly → 10 min, the 3600 s rules run for ~4 h. Today's
+     2 h window switches within ~2 h. The same holds for a station whose recent history was
+     imported at another cadence. And as Plan 272 recorded, N also bounds how long a
+     *degradation* episode can be repaired: once off-grid gaps are the majority of the last N,
+     the look-back returns the off-grid median too. ⇒ Accepted consequences of option B,
+     stated; `max_readings` is configurable (owner) and is the lever. T2 tests a switch; T4
+     lists every group whose inferred cadence changed.
 3. **What changes for the checks it does repair (Plan 272 C3, bounded).** A check that today infers
    `None` or an off-grid gap because of a missing reading will now select its cadence's rules, and
    those rules run on the unchanged 2 h window. `range_check` and `gross_outlier` judge each
@@ -79,8 +92,12 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
    window — which, across the missing reading, are further apart than the cadence the thresholds
    were sized for,** and `rate_of_change` compares raw differences without dividing by elapsed time
    (Plan 313). So a repaired check can raise a `QC_SUSPECT` that a gap-free series would not.
-   Bounded: the neighbour is at most one window (2 h) away, and it affects only the repaired
-   checks — ~4.7% of hourly checks and ~0.04% of 10-minute checks in the replay. ⚠️ Stated, not
+   Bounded in the ordinary case: the neighbour is at most one window (2 h) away, and it affects
+   only the repaired checks — ~4.7% of hourly checks and ~0.04% of 10-minute checks in the replay.
+   ⚠️ **Not bounded on the DHM catch-up path:** there the check window widens to cover the
+   recovered readings (`flows/ingest_observations.py:433-445`) and the rules compare adjacent rows
+   with no gap limit (`services/qc.py:331-340`), so a repaired check can compare across a longer
+   gap. T2 tests that case; T4 counts it. ⚠️ Stated, not
    hidden; T4 counts it on staging.
 4. **Daily series may start being checked.** A daily series has at most one reading in a 2 h window,
    so today it infers `None` and is never checked. With a 30-day, 50-reading sample it infers
@@ -110,7 +127,9 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
   `max_readings < 3` (two gaps are the fewest a median can use sensibly). An absent table means the
   defaults. Documented in `docs/spec/config-reference.toml`.
 - **Additive store method.** `fetch_recent_timestamps(station_id, parameter, *, not_before,
-  before, limit) -> list[UtcDatetime]` on the `ObservationStore` Protocol
+  before, limit) -> list[UtcDatetime]` — ⛔ **no filter on `qc_status` or `source`**, for the same
+  reason the check fetch is unfiltered (Plan 317): inference describes the series, whatever its
+  verdicts — on the `ObservationStore` Protocol
   (`protocols/stores.py:105`), `PgObservationStore` and `FakeObservationStore`
   (`tests/fakes/fake_stores.py:132`): `SELECT DISTINCT timestamp … ORDER BY timestamp DESC LIMIT
   :limit`, returned chronological. 🔴 **The cap is a SQL `LIMIT`, not a client-side slice** (272's
@@ -121,7 +140,9 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
   and `resolve_selection`, so the rules that run and the zero-rule record agree by construction —
   the property Plan 272 T3 built. Mechanism: an optional keyword `time_steps: Mapping[tuple[
   StationId, str], timedelta | None] | None = None`; when `None`, both infer from the observations
-  exactly as today. ⇒ Other callers — onboarding (`services/onboarding.py`) and
+  exactly as today. **A group absent from a non-`None` mapping** is inferred from its observations
+  as today — the flow always supplies every group, so the fallback only protects other callers. ⇒
+  Other callers — onboarding (`services/onboarding.py`) and
   `scripts/dhm_precip/`, which calls `check` positionally — are unchanged.
   `QualityChecker.check` in `protocols/stores.py` gains the same optional keyword.
 - **Inference stays one function.** A timestamp-level function (median of gaps between distinct
@@ -155,8 +176,9 @@ defaults.
 
 **Out.** ⛔ Any use of the value (T2). ⛔ Other `[qc_rules]` keys.
 
-**Pre-change.** A test that loading a config with `lookback_days = 0` raises — today the key is not
-read at all, so the test fails for the reason the task exists.
+**Pre-change.** N/A as a behavioural red — this task adds a configuration surface with no prior
+behaviour to fail against (a test of the new loader would be red only on its absence). T2's RED test
+is the behavioural one.
 
 **Verification.** Defaults when the table is absent; explicit values round-trip; `0`, a negative
 value and `max_readings = 2` are rejected with a message naming the key.
@@ -171,6 +193,12 @@ optional `time_steps` keyword on `Stage1QualityChecker.check`, `resolve_selectio
 `QualityChecker` Protocol, and the second fetch in `_run_qc_task` with `not_before = now −
 lookback`, `before` = the check window's end, `limit = max_readings`.
 
+- Re-point `tests/unit/flows/test_ingest_observations_recheck.py::test_already_checked_neighbours_stay_in_the_group`
+  (`:233`). It guards the unfiltered check fetch by relying on cadence inference; once cadence
+  comes from the look-back, a narrowed fetch would still select `range_check` and the test would
+  stay green through the regression it exists to catch. Make the unchecked reading's verdict
+  depend on a `QC_PASSED` neighbour through a temporal rule (e.g. `rate_of_change`).
+
 **Out.** ⛔ The check window (`context_window_hours`, the DHM `fetched_times` widening). ⛔
 `fetch_observations`. ⛔ Onboarding and `scripts/dhm_precip/` (they keep inferring from their own
 rows). ⛔ Matching, thresholds, the pick-up set.
@@ -179,13 +207,22 @@ rows). ⛔ Matching, thresholds, the pick-up set.
 −23 h to 0 h **except −1 h**, the 0 h reading pending, `now` = 0 h + 5 min, run through
 `_run_qc_task` with the rule set loaded from the shipped `config.toml` (which after Plan 323
 declares 3600 s rows). Today the window `[−1 h 55 min, …)` holds only the 0 h reading, inference
-returns `None`, and the reading is stored `QC_UNCHECKED` with a `no_cadence_inferable` zero-rule
-record. It must fail on that status, not on a fixture or config key.
+returns `None`, and the reading is stored `QC_UNCHECKED` with a `no_cadence_inferable` entry in
+the task's `QcTaskOutcome.zero_rule_groups` (the flow, not `_run_qc_task`, writes the health
+record). It must fail on that status, not on a fixture or config key.
 
 **Verification.**
-- The RED test passes: the pending reading gets a real verdict; no zero-rule record is written.
-- **The knob is real:** the same series with `max_readings = 2` reproduces today's failure — proving
-  the configured value, not a constant, drives inference.
+- The RED test passes: the pending reading gets a real verdict; `zero_rule_groups` is empty.
+- **The knob is real:** the same series with `max_readings = 3` (the smallest T1 allows) samples
+  0 h, −2 h and −3 h, infers 5400 s, and the reading stays `QC_UNCHECKED` with
+  `no_rule_declares_it` — proving the configured value, not a constant, drives inference.
+- **Missing key:** a non-`None` `time_steps` mapping without the group falls back to inferring
+  from the observations.
+- **Cadence switch (§ 2):** a series that moves from 600 s to 3600 s keeps inferring 600 s until
+  hourly gaps are the majority of the last `max_readings` — asserted, so the lag is a known
+  quantity rather than a surprise.
+- **DHM catch-up (§ 3):** a recovered DHM water-level batch with a gap longer than 2 h, repaired
+  by the look-back, runs `rate_of_change` across that gap — asserted and named, not prevented.
 - **Fail-closed kept:** a group with one distinct reading in the look-back stays `QC_UNCHECKED`
   with `no_cadence_inferable`.
 - **Unchanged where it should be:** a gap-free 600 s group selects the same rules as before, and the
@@ -198,9 +235,11 @@ record. It must fail on that status, not on a fixture or config key.
 - **The SQL bound:** an integration test against real Postgres (beside
   `tests/integration/store/test_observation_store.py`) that the method returns at most `limit`
   distinct timestamps, the most recent ones, in chronological order, and none before `not_before`.
-- **Before merge, on a copy of staging data:** a replay with the production functions listing every
-  group whose selection changes, with its old and new cadence (§ 2, § 4). Anything other than
-  "zero rules → its cadence's rules" is reported to the owner before merge.
+- **Before merge, on a copy of staging data:** a replay with the production functions, the
+  post-Plan-323 rule set, the production window and look-back bounds, and only the readings that
+  existed at each simulated run time, listing every group whose selection changes, with its old and
+  new cadence (§ 2, § 4). Anything other than "zero rules → its cadence's rules" — in particular
+  every non-zero → non-zero change — is reported to the owner before merge.
 
 ### T3 — Documentation
 
@@ -208,7 +247,9 @@ record. It must fail on that status, not on a fixture or config key.
 
 **In.** `docs/spec/types-and-protocols.md` — the `QualityChecker` Protocol (around line 741) and
 the new `ObservationStore` method; the observation-ingest map in `docs/touchpoint-maps.md` beside
-the Plan 317 entry (two fetches, why, the config keys); Stage 1 QC (step 2.3) in
+the Plan 317 entry (two fetches, why, the config keys) — and correct that entry's sentence that the
+unfiltered fetch supplies what "cadence inference and the temporal rules need": after this plan it
+supplies the temporal rules; inference has its own, equally unfiltered, fetch; Stage 1 QC (step 2.3) in
 `docs/architecture-context.md`; replace Plan 323 T3's "until Plan 400 lands" sentence with the
 landed state. (The README's Plan 272 entry already records the revival.)
 
@@ -226,8 +267,10 @@ exposure are measured, not assumed.
 
 **In.** For the 24 h before and the 24 h after deploy, each with the query recorded here:
 - **Five-station outcome.** Numerator: the five stations' readings received in the period whose
-  stored status is not `QC_UNCHECKED` at the end of the period. Denominator: all their readings
-  received in the period. Plus the zero-rule health records for these stations, which carry the
+  stored status at the end of the period is `QC_PASSED`, `QC_SUSPECT` or `QC_FAILED` — ⛔ not
+  "not `QC_UNCHECKED`", which would count `RAW` rows a failed QC run left behind (the flow catches
+  a QC exception per group, `flows/ingest_observations.py:952`). Denominator: all their readings
+  received in the period. `RAW` reported separately. Plus the zero-rule health records for these stations, which carry the
   reason and inferred seconds (a reading row stores no cadence): after deploy, **none** may have
   reason `no_cadence_inferable` or an inferred cadence that is a multiple of 3600 s while the
   station was delivering.
@@ -235,9 +278,9 @@ exposure are measured, not assumed.
   from *any* station (`ops/watchdog.py:220`), so a new or silent station elsewhere can keep it
   failing for reasons this plan does not own.
 - **§ 3 exposure.** `QC_SUSPECT`/`QC_FAILED` from `rate_of_change` and `spike` on readings that
-  were zero-rule before the change — counted, with examples.
-- **Selection changes.** Groups whose inferred cadence differs from before, compared with T2's
-  pre-merge list.
+  were zero-rule before the change — counted, with examples, the DHM catch-up path separately.
+- **Selection changes.** Every group whose inferred cadence differs from before, compared with
+  T2's pre-merge list — including cadence switches (§ 2).
 - **Cost.** `ingest-observations` flow-run duration, median and maximum. If the median more than
   doubles, report it to the owner before closing.
 
@@ -288,3 +331,13 @@ exposure are measured, not assumed.
   ]
 }
 ```
+- **2026-09-26 — round 3: independent Claude review and independent Codex review of `cd6ead60`:
+  both NOT READY; all findings folded.** Both: the knob test used `max_readings = 2`, which T1
+  rejects (→ 3, asserting 5400 s and `no_rule_declares_it`). Codex: `RAW` counted as success
+  (T4); the 2 h exposure bound fails on the DHM catch-up path (§ 3, T2, T4); § 2's
+  preservation claim covered a narrower population than it concluded about (§ 2, T2 replay).
+  Claude: the Plan 317 guard test would stay green through its own regression (T2 In, T3); a
+  cadence switch lags ~N/2 readings and N bounds repairable degradation (§ 2 — accepted
+  consequences of option B, stated and tested); a missing mapping key was undefined (§ Design);
+  the RED test named a record `_run_qc_task` does not write (T2); T1's pre-change would have been
+  red only on a missing loader (T1 → N/A with the reason).

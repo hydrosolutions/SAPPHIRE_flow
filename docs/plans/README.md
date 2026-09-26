@@ -734,16 +734,18 @@ exit criteria — Plan 212 owns that deeper screening.
   uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
-  — `DRAFT`, no open decisions, `blocks: [400]`; **the 2026-09-26 fold is unreviewed** (two
+  — `DRAFT`, no open decisions, `blocks: [400]`; **the latest fold is unreviewed** (three
   review rounds so far, all NOT READY, all folded). Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
   earlier rows were fail-open passed (~1,277 readings never checked). Thresholds come from
-  the gauges' own measured behaviour, each in the form its rule computes it — 🔴 water level
-  **relative to the station datum**, discharge's spike **relative to the previous value**
-  (D1). Hourly gets each parameter's 600 s rule shape **less `frozen_sensor`**, which has
+  the gauges' own measured hourly behaviour but **loose** (owner 2026-09-26, per the
+  loose-first QC posture): range bounds and `k_sigma` copied from 600 s; change limits the
+  larger of 2 × P99.9 and the 600 s value, each statistic in its rule's own form (water level
+  datum-relative, discharge spike relative); CAMELS daily imports excluded (D1). ⚠️ The rows
+  apply to every hourly series, not only these five. Hourly gets each parameter's 600 s rule shape **less `frozen_sensor`**, which has
   **no plan yet**; water temperature gets no `spike` (D2). 🔴 **It does not silence the
-  watchdog:** ~5% of hourly checks still infer no cadence from a single missing reading —
+  watchdog:** ~5% of hourly checks still infer a cadence no rule declares, from a single missing reading —
   the owner accepted that leftover (D3); 400 closes it. ⛔ Plan 264 does NOT own
   nearest-rule matching. ⚠️ 313 and 315 do not yet carry the reverse notes.
 

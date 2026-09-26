@@ -130,28 +130,52 @@ All figures from the staging host, 2026-09-24, unless stated.
 
 ## Owner decisions
 
-### D1 — the hourly threshold values. **⚖️ CLOSED — owner, 2026-09-24: derive them from these stations' OWN behaviour.**
+### D1 — the hourly threshold values. **⚖️ CLOSED — owner, 2026-09-24: derive them from these stations' OWN behaviour; amended by the owner 2026-09-26: LOOSE, informed by that data.**
 
-Owner: *measure what the five gauges actually do — typical hourly change, observed range, longest
-flat stretch — and set the thresholds from that*, rather than from judgement or from a factor
-applied to the 600 s row. § (6) is why: the existing pairs scale by ×10, ×4, ×5 and not at all
-depending on the rule, so there is nothing to interpolate.
+Owner, 2026-09-24: *measure what the five gauges actually do — typical hourly change, observed
+range, longest flat stretch — and set the thresholds from that*, rather than from judgement or from
+a factor applied to the 600 s row. § (6) is why: the existing pairs scale by ×10, ×4, ×5 and not at
+all depending on the rule, so there is nothing to interpolate.
 
-⇒ **The measurement is T1 and it is a deliverable, not preparation.** T2 may not invent a number
-T1 did not produce.
+Owner, 2026-09-26, after a review found that D1 as written conflicted with the standing QC posture
+(`docs/v1-scope.md` § QC posture — *LOOSE FIRST, narrowed with data*, owner 2026-09-23: "Do NOT carry
+narrow thresholds in from the beginning"): **loose limits, informed by the data.** Concretely:
 
-🔴 **Three hazards the measurement must handle, or it produces confidently wrong thresholds:**
+| rule | hourly value | source |
+|---|---|---|
+| `range_check` | **the same parameter's 600 s bounds, copied** — discharge 0 … 100000, water_level −2 … 20 (datum-relative), water_temperature −2 … 40 | impossibility gates, not plausibility filters; they do not depend on cadence |
+| `gross_outlier` | the same parameter's 600 s `k_sigma`, copied (5.0 / 5.0 / 4.0) | a multiplier on a baseline, cadence-independent |
+| `rate_of_change` `max_rate`, `spike` `max_delta` / `tolerance` | **the larger of** 2 × the 99.9th percentile of the rule's own statistic over the gauges' measured hourly history (T1), **and** the same parameter's 600 s value | measured behaviour with a generous margin; never tighter than the 10-minute rule |
+
+⚠️ **Why "never tighter than the 600 s value":** an hour allows more change than ten minutes, so an
+hourly limit below the 10-minute one would be tighter where it should be looser.
+
+🔴 **These rows reach every series that infers 3600 s, not only these five.** Selection has no
+network or station dimension until Plan 264 (network) and Plan 269 (per-station overrides), and the
+staging host runs the live Swiss observation-alert path on `QC_PASSED` readings
+(`docs/v1-scope.md` § QC posture). Loose-first is what makes a fleet-wide hourly row safe to ship.
+
+⇒ **The measurement is T1 and it is a deliverable, not preparation.** T2 may not invent a derived
+number T1 did not produce; a copied number cites the 600 s row it came from.
+
+🔴 **Hazards the measurement must handle, or it produces confidently wrong thresholds:**
 - **The data has never been quality controlled** (§ 5). It therefore CONTAINS the very outliers the
-  rules exist to catch. ⛔ A threshold set at the observed maximum can never fire. Use high
-  percentiles and state which, per rule.
-- **Switzerland is in drought** (owner, 2026-09-24). Flows sampled now are at the low end of their
-  range, and a `range_check` or `rate_of_change` bound fitted to them would flag ordinary high water
-  as bad the first time it rains. ⇒ **T1 measures the longest history available for each series,
-  not the recent window**, and reports how much it found; if a series has only weeks, its bounds are
-  provisional and must say so.
+  rules exist to catch, so the observed maximum may itself be an outlier. The table above uses the
+  99.9th percentile, not the maximum, for that reason; T1 reports both.
+- 🔴 **Only the gauges' own HOURLY MEASURED readings.** These five are CAMELS-CH onboarding basins
+  (`config.toml` `[onboarding] basin_ids`), and onboarding imported their CAMELS history as **daily**
+  `discharge` and `water_level` rows with `source = manual_import`
+  (`adapters/camelsch_adapter.py:60-70,96-101`) into the same `observations` table. Decades of daily
+  means would swamp weeks of hourly readings and flatten every peak. ⇒ T1 uses only
+  `source = measured` rows, and change statistics only on consecutive pairs exactly 3600 s apart.
+  Imported daily history is reported separately and not used.
+- **Switzerland is in drought** (owner, 2026-09-24). The hourly history is weeks long and sampled at
+  low flow, so its change statistics are low. The 2× margin and the 600 s floor are the protection;
+  T1 states the span per series and T2 marks every derived number provisional.
 - **Every rule needs its own statistic, in the form the rule computes it.** `range_check` wants the
-  value distribution; `rate_of_change` wants the distribution of the raw difference between
-  consecutive readings (`services/qc.py:131-149`, no division by time — Plan 313); `spike` fires
+  value distribution; `rate_of_change` wants the distribution of `|x − prev|`, the absolute
+  difference between consecutive readings (`services/qc.py:131-149`, no division by time — Plan
+  313); `spike` fires
   only when a reading differs from **both** neighbours, so it wants the distribution of
   `min(|x − prev|, |x − next|)` — absolute for water_level (`max_delta`), and **relative** for
   discharge, i.e. divided by `|prev|` with `prev = 0` excluded, because discharge's `tolerance` is
@@ -166,11 +190,7 @@ T1 did not produce.
   datum-shifted value and records per station whether a datum exists. The change statistics
   (`rate_of_change`, `spike`, flat runs) are unaffected by a constant shift.
 
-⚠️ `gross_outlier` is the exception: `k_sigma` is a multiplier on a climatological baseline, not a
-value in the series' units, and it is identical at 600 s and 86400 s (§ 6). It is cadence-independent
-and carries across unchanged from the 600 s row of the same parameter — **5.0** for discharge and
-water_level, **4.0** for water_temperature (§ 13) — and T1 need not measure for it. ⚠️ Where no
-baseline exists it runs nothing (§ 12).
+⚠️ `gross_outlier` needs no measurement (table above); where no baseline exists it runs nothing (§ 12).
 
 ### D2 — which rules get an hourly row. **⚖️ CLOSED — owner, 2026-09-24; amended by the owner 2026-09-25: the 600 s shape of each parameter, less `frozen_sensor`, which waits for a later plan.**
 
@@ -203,7 +223,7 @@ not.
 § (10) measured that about 5% of hourly checks will still infer a cadence no rule declares, because
 one missing reading in a three-reading window changes the median gap. The owner's call: this plan
 ships the hourly rules and **accepts that leftover** — the Plan 318 watchdog will keep warning
-intermittently until Plan 400 lands — and **Plan 400 fixes how the cadence is worked out** for a
+intermittently for these stations until Plan 400 lands — and **Plan 400 fixes how the cadence is worked out** for a
 series with occasional gaps.
 
 ⛔ **Replaced, not amended:** the 2026-09-24 text named nearest-rule matching as "Plan 264's
@@ -224,15 +244,19 @@ exists only on this development host. § (5)'s 1,277 rows stay as they are.
 threshold T2 writes can cite a row of it.
 
 **In.**
-- Per series, over **the longest history the store holds** (not the recent window — D1's drought
-  hazard): the row count, the span in days, and the value distribution (min, max, and the 1st, 50th,
-  99th and 99.9th percentiles). 🔴 **For water_level, on `value − water_level_datum_masl`** — the
-  value the rules see (D1) — and a per-station note of whether a datum exists at all.
-- Per series, each change statistic **in the form its rule computes it** (D1), same percentiles:
-  the raw difference between consecutive readings (`rate_of_change`); `min(|x − prev|, |x − next|)`
-  for water_level's absolute `spike`; the same divided by `|prev|`, `prev = 0` excluded, for
-  discharge's relative `spike`.
-- Per series, the **distribution of flat-run lengths, in hours** — percentiles and the longest — at
+- 🔴 **Population:** `source = measured` rows only, over the whole measured history (D1's hazards);
+  `manual_import` (CAMELS daily) history reported separately — row count and span — and not used.
+- Per series: the measured row count, the span in days, and the value distribution (min, max, and
+  the 1st, 50th, 99th and 99.9th percentiles) — for the record; `range_check` is copied (D1). For
+  water_level, on `value − water_level_datum_masl`, the value the rules see, with a per-station note
+  of whether a datum exists at all.
+- Per series, each change statistic **in the form its rule computes it** (D1), over consecutive
+  pairs exactly 3600 s apart, same percentiles plus the maximum: `|x − prev|` (`rate_of_change`);
+  `min(|x − prev|, |x − next|)` for water_level's absolute `spike`; the same divided by `|prev|`,
+  `prev = 0` excluded, for discharge's relative `spike`. Then the D1 value per parameter: the
+  larger of 2 × the 99.9th percentile (pooled across the parameter's series) and the 600 s value.
+- Per series, the **distribution of flat-run lengths, in hours**, on the same measured hourly rows —
+  percentiles and the longest — at
   the `tolerance` the 600 s rule already uses (0.001 for discharge and water_level, **0.01 for
   water_temperature**, § 13). This plan adds no `frozen_sensor` row (D2); the measurement is
   recorded for whichever later plan does.
@@ -240,11 +264,12 @@ threshold T2 writes can cite a row of it.
   yields provisional bounds and T2 must mark them so.
 - The analysis run as a heredoc against the staging database per the repo convention, with the query
   recorded in the plan so it can be re-run when the drought ends.
-- ⭐ **The live leftover, from the production records rather than a replay.** The zero-rule health
-  records (`OBSERVATION_QC_UNCHECKED`, Plan 318) carry the reason and the inferred seconds per
-  group. Count, for the five stations, the readings received since the 2026-09-24 deploy and how
-  many are still `QC_UNCHECKED` now (Plan 317 re-examines an unchecked reading while it remains in
-  a later run's window, so the final status is what counts). This is the baseline T2's staging check is judged against; § 10's replay is only the
+- ⭐ **The live baseline, from the production records rather than a replay.** Today every hourly
+  reading resolves zero rules, so a "share checked" is ~0% and cannot serve as a baseline. Instead:
+  the zero-rule health records (`OBSERVATION_QC_UNCHECKED`, Plan 318) carry each group's reason and
+  inferred seconds; the **share of the five stations' group entries since the 2026-09-24 deploy
+  with an inferred cadence of exactly 3600 s** is the share that becomes checkable once T2's rows
+  exist. That is the baseline T2's staging check is judged against; § 10's replay is only the
   estimate.
 
 **Out.** ⛔ Changing any rule — T1 only measures. ⛔ Excluding outliers by judgement: the point is
@@ -267,12 +292,21 @@ real verdict.
 **In.**
 - `[[qc_rules.rules]]` rows at `time_step_seconds = 3600` exactly as D2's table lists them: four
   each for `discharge` and `water_level`, three for `water_temperature` — **eleven rows**, no
-  `frozen_sensor`. The same rows added to `docs/spec/config-reference.toml`, which mirrors the rule
-  set.
-- 🔴 **Each threshold carries the T1 statistic it came from**, in a comment beside it. § (5) is the
-  argument: an unexplained threshold survived months without anyone noticing it never fired.
-- `gross_outlier.k_sigma` carried across unchanged from the same parameter's 600 s row, per D1's
-  exception (5.0, 5.0, 4.0).
+  `frozen_sensor`, with the values D1's table prescribes.
+- The same eleven rows in `docs/spec/config-reference.toml` (the two files must agree on these
+  rows; ⛔ existing differences between them are not this plan's) and in
+  `_default_swiss_qc_rules()` (`config/qc_rules.py:40`) — a live fallback when `SAPPHIRE_CONFIG` is
+  unset, pinned equal to `config.toml` by
+  `tests/unit/config/test_qc_rules.py::test_the_swiss_defaults_agree_with_the_shipped_config`.
+- Existing tests that pin the cadence set by value, updated by value:
+  `test_water_level_spike_rules_use_max_delta` (asserts water_level `spike` cadences are exactly
+  {600, 86400}) and `TestShippedDischargeCeiling::test_both_toml_surfaces_ship_the_loose_ceiling`
+  (asserts discharge ceilings exactly {600: 100000, 86400: 100000}) — both extended with 3600, not
+  loosened.
+- 🔴 **Each threshold carries its source in a comment beside it**: a derived one names the T1
+  statistic and the rule (2 × P99.9 or the 600 s floor, whichever won); a copied one names the
+  600 s row. § (5) is the argument: an unexplained threshold survived months without anyone
+  noticing it never fired.
 - 🔴 **A test that an hourly group selects a non-empty rule list**, via `resolve_selection` — the
   operation Plan 272 built for exactly this question. ⛔ *Not "the config parses", which is not this
   defect.*
@@ -298,13 +332,17 @@ row (D2 — no plan yet). ⛔ Computing climatological baselines (§ 12). ⛔ Re
   (§ 12). It is therefore not evidence that a check ran; the range and temporal rules are.
 - A synthetic hourly series with a value outside `range_check` comes back `QC_FAILED`; an ordinary
   one comes back `QC_PASSED` — the rules must be able both to fire and not to fire.
-- 🔴 **Each threshold is exercised at least once against T1's percentiles**: a value at the 99.9th
-  percentile does NOT flag, one beyond the chosen bound does. ⛔ *Otherwise a threshold can be
-  mistyped by an order of magnitude and every test still passes.*
+- 🔴 **Each threshold is exercised on each side it has**: a derived change threshold does not flag
+  a change at T1's 99.9th percentile and does flag one just beyond the chosen value; each
+  `range_check` bound is tested at its own side (just inside the minimum passes, just below fails;
+  likewise the maximum); each copied `k_sigma` is exercised against a synthetic baseline. ⛔
+  *Otherwise a threshold can be mistyped by an order of magnitude and every test still passes.*
 - ⭐ **On staging, over the first full day after deploy**, with the queries recorded here:
   - **Numerator / denominator:** the five stations' readings received that day whose stored status
-    at the end of the day is not `QC_UNCHECKED`, over all their readings received that day. It must
-    be at least T1's live baseline share and at least 90%; a lower figure is reported to the owner.
+    at the end of the day is `QC_PASSED`, `QC_SUSPECT` or `QC_FAILED` — a real verdict; ⛔ not
+    merely "not `QC_UNCHECKED`", which would count `RAW` rows a failed QC run left behind — over all
+    their readings received that day. `RAW` is reported separately. It must be at least T1's live
+    baseline share and at least 90%; a lower figure is reported to the owner.
   - **Every** zero-rule health record for the five stations that day carries reason
     `no_cadence_inferable` or an inferred cadence other than 3600 s — i.e. a gap, not a missing
     rule. (A reading row stores no cadence; the health records do.)
@@ -388,3 +426,12 @@ returns the entry.
   scope). Codex: the replay and the live check counted different populations (T2's numerator and
   denominator). Owner, same day: Plan 400 keeps the check window, so hourly `frozen_sensor` has no
   plan yet (§ 11, D2).
+- **2026-09-26 — round 3: independent Claude review and independent Codex review of `cd6ead60`:
+  both NOT READY; all findings folded.** Claude: T1 would have mixed the CAMELS daily history into
+  hourly statistics (D1 hazard, T1 population); D1 conflicted with the standing loose-first QC
+  posture and did not say the rows are fleet-wide — **escalated; owner chose "loose, informed by
+  data"** (D1 table); T2 missed three tests and the live defaults fallback (T2 In); a ~0% "share
+  checked" cannot be a baseline (T1). Codex: `RAW` rows would count as checked (T2 numerator);
+  `gross_outlier` and range bounds cannot follow a percentile rule (D1 table, T2 verification);
+  `config-reference.toml` does not mirror today's rule set (T2 In). Both: `rate_of_change`'s
+  statistic is `|x − prev|` (D1, T1). Claude: D3's watchdog sentence scoped to these stations.
