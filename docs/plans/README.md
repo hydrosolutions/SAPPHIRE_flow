@@ -9,7 +9,7 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 - **342** — [Alert evaluations and CHWRR warning decisions](342-chwrr-alert-evaluation-and-decisions.md) — `DRAFT`; high/low-flow evaluation ledger and human warning publish/dismiss history. Depends on 340 and 341.
 - **343** — [Operational post-event verification](343-operational-post-event-verification.md) — `DRAFT`; preliminary scoring, revisions, cases and corrective actions. Depends on 340, 341 and 342.
 - **344** — [Six-year evidence archive and replay](344-chwrr-evidence-archive-and-replay.md) — `DRAFT`; cold archive and diagnostic replay. Depends on 340–343; not required for first guarded CHWRR testing.
-- **345** — [Forecast Lab snapshot v3 — QC flags, rule set, current skill](345-forecast-lab-snapshot-v3-qc-and-skill.md) — `DRAFT, unreviewed`; read-only export for the flow map (DHM audience). Owns the v2→v3 change shared with **251** (owner, 2026-09-25). Open: D5 lift Plan 198's "never read `skill_scores`" bar, D6 publish flag `detail`, D7 unstratified skill only, D8 absorb 251 T2.
+- **345** — [Forecast Lab snapshot v3 — QC flags, rule set, current skill](345-forecast-lab-snapshot-v3-qc-and-skill.md) — `DRAFT, unreviewed`; read-only export for the flow map (DHM audience). Owns the v2→v3 change shared with **251** (owner, 2026-09-25). All decisions closed 2026-09-26: skill_scores bar lifted (with a future-period guard), flag `detail` published, ALL skill breakdowns, 251's T2 absorbed (251 keeps T3).
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 

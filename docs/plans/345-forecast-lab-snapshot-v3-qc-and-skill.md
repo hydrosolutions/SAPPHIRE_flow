@@ -7,8 +7,8 @@ scope: Publish, read-only, three things the Forecast Lab snapshot withholds toda
 depends_on: []
 blocks: []
 related: [198, 204, 235, 251, 264, 269, 272, 303, 323, 324, 329]
-open_decisions: [D5, D6, D7, D8]
-closed_decisions: [D1, D2, D3, D4]
+open_decisions: []
+closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D8]   # D1-D4 2026-09-25, D5-D8 2026-09-26
 source: 2026-09-25 — request from the SAPPHIRE-flow-map session (primary audience Nepal DHM, who need to see which readings QC rejected and why, and compare models); owner decisions the same day. Measured on origin/main 6c77c666 and the staging database.
 ---
 
@@ -16,9 +16,9 @@ source: 2026-09-25 — request from the SAPPHIRE-flow-map session (primary audie
 
 ## Status
 
-**DRAFT — not reviewed.** Four owner decisions are closed (D1–D4); four are open (D5–D8), each
-with a recommendation. Not implementable until the open decisions are closed, an independent
-review is complete, and the orchestrator sets READY.
+**DRAFT — not reviewed.** All eight decisions are closed by the owner (D1–D4 on 2026-09-25,
+D5–D8 on 2026-09-26). Not implementable until an independent review is complete and the
+orchestrator sets READY.
 
 ## Why this exists
 
@@ -31,7 +31,7 @@ side. The Swiss Forecast Lab should show the same view. The snapshot can show no
   reason, never leave the backend.
 - Nothing in the document names a QC rule or threshold, so a reader cannot judge "too strict".
 - `build_snapshot()` **structurally never reads `skill_scores`** (Plan 198 D3; asserted in
-  `tests/unit/services/forecast_lab/test_snapshot.py`). D5 revisits that on purpose.
+  `tests/unit/services/forecast_lab/test_snapshot.py`). D5 lifts that bar for `skill_scores` only.
 
 Nothing new has to be computed. The four-key flag `{rule_id, rule_version, status, detail}` is
 already stored (`store/observation_store.py::_serialize_flags`) and already served by
@@ -98,7 +98,7 @@ Flags are matched to rules by `rule_id` only; severity is derived from code; bas
 rows are shown as absent. ⚠️ The map also adopted "no time step on skill rows" on the strength of
 a wrong statement from this side; this plan exports `time_step_seconds` and T6 tells the map.
 
-### D5 — may the snapshot read `skill_scores` at all? **OPEN.**
+### D5 — may the snapshot read `skill_scores` at all? **⚖️ CLOSED — owner, 2026-09-26: YES, `skill_scores` only, with the guard.**
 
 Plan 198 D3 (owner decision O7.1) made the snapshot structurally unable to read `skill_scores`,
 `hindcast_forecasts` and `hindcast_values`, for two stated reasons. Checked:
@@ -112,42 +112,44 @@ Plan 198 D3 (owner decision O7.1) made the snapshot structurally unable to read 
    the snapshot's `data_cutoff_at`, and the test keeps asserting that the two hindcast tables are
    never read.
 
-**Recommendation:** lift the bar for `skill_scores` only, with that guard. The owner's D2 already
-implies it, but it reverses a recorded decision, so it is closed explicitly.
+**Decision:** the bar is lifted for `skill_scores` only, with that guard. This explicitly reverses
+the `skill_scores` part of Plan 198 D3; the hindcast tables stay unreadable.
 
-### D6 — publish each flag's free-text `detail`? **OPEN.**
+### D6 — publish each flag's free-text `detail`? **⚖️ CLOSED — owner, 2026-09-26: YES, verbatim, in the Swiss snapshot.**
 
 `detail` holds observation values, neighbour values and a baseline mean and standard deviation.
 For the Swiss snapshot all of these come from public BAFU observations, and the snapshot is
 served only behind a scoped token. The region-bundle v3 draft forbids copying `detail` verbatim
 because DHM data is restricted, so the two carriers would differ.
 
-**Recommendation:** publish `detail` verbatim in the Swiss snapshot — it is the "why" DHM asked
+**Decision:** `detail` is published verbatim in the Swiss snapshot — it is the "why" DHM asked
 for, and `rule_id` plus the threshold alone cannot show a spike's neighbours. The Nepal carrier
-keeps its own rule.
+keeps its own rule; the two regions will differ here, deliberately.
 
-### D7 — which skill rows? **OPEN.**
+### D7 — which skill rows? **⚖️ CLOSED — owner, 2026-09-26: ALL breakdowns.**
 
 The active artifact holds ≈ 513 rows per station, about 72 000 over 141 stations — several times
 the size of the rest of the document. Unstratified rows (`season` and `flow_regime` both null)
 are 44 per station: every lead time × every metric.
 
-**Recommendation:** export only the unstratified rows in v3. `season` and `flow_regime` stay in
-the row shape (always null), so adding the stratified rows later is a content change, not a
-format change.
+**Decision:** export every row the selection keeps — headline and stratified alike — so
+`season` and `flow_regime` carry real values where a row is stratified. (The orchestrator had
+recommended headline rows only.) Consequence: the all-station document grows by roughly 72 000
+rows. Nothing caps it; the post-deploy gate measures the size and build time and reports both to
+the map, and a scoped (per-station) request stays small.
 
-### D8 — how v3 is shared with Plan 251. **OPEN.**
+### D8 — how v3 is shared with Plan 251. **⚖️ CLOSED — owner, 2026-09-26: (a), absorb 251 T2.**
 
 Plan 251 is DRAFT and unreviewed, with three open decisions. Its T2 adds `qc_status` and
 `qc_flags` to the two combined-forecast objects; its T3 stops hiding a failed combination.
 
-- **(a) Recommended — absorb 251 T2 here as T5.** The fields exist on the stored forecast
+- **(a) Chosen — absorb 251 T2 here as T5.** The fields exist on the stored forecast
   (`types/forecast.py::OperationalForecast.qc_status`/`qc_flags`); populating them is small. v3
   then ships complete without waiting on 251. 251 keeps T3, which shows the rejected combination
   inside v3 with no format change. Its D1 (replace) and D2 (required, nullable) are settled by
   this plan; its D3 (what `available` means) stays with it.
-- (b) 345 does the version change, and v3 is not deployed for the map until 251 T2 lands.
-  This makes the map wait on a plan that has not yet been reviewed.
+- (b) Rejected — 345 changes the version and v3 waits for 251 T2; the map would wait on an
+  unreviewed plan.
 
 ## Block shapes (the contract this plan implements)
 
@@ -196,14 +198,15 @@ published (`docs/standards/security.md`).
 ```text
 skill:
   selection: "latest_generation_on_active_artifact"
-  rows: [                      # empty when no row qualifies; sorted by (model_key, time_step_seconds, lead_time_hours, metric)
+  rows: [                      # empty when no row qualifies; sorted by (model_key, time_step_seconds, lead_time_hours,
+                               #   season, flow_regime, metric), nulls first
     { model_key, model_artifact_id, generation_id,   # generation_id null for a pre-Plan-235 baseline row
       skill_source, forcing_type, computation_version,
       time_step_seconds, phase_offset_seconds,
       eval_period_start, eval_period_end,
       training_period_start, training_period_end,    # null when the artifact record has none
       evaluated_on: "training_period" | "outside_training_period" | "overlaps_training_period" | "unknown",
-      lead_time_hours, season, flow_regime,          # season/flow_regime null (D7)
+      lead_time_hours, season, flow_regime,          # each null when the row is not stratified by it (D7)
       metric, score, sample_size } ]
 ```
 
@@ -217,7 +220,7 @@ them (station and group, Plan 329), parameter `discharge`, selected by
 `model_artifact_id` is an **active** artifact for that assignment's scope (station, or group for
 a group assignment), and dropped when `eval_period_end > data_cutoff_at` (D5).
 
-**Combined forecast (D8a only)** — both `CombinedForecastMembersSchema` and
+**Combined forecast (D8)** — both `CombinedForecastMembersSchema` and
 `CombinedForecastQuantilesSchema` gain `qc_status` and `qc_flags` (same four-key flag shape).
 
 `snapshot_id` changes prefix from `fls2-` to `fls3-`.
@@ -307,9 +310,9 @@ diagrams; any ranking or comparability judgement in the document.
 **Pre-change:** a snapshot test with a fake skill store holding current rows on an active and a
 superseded artifact fails on the missing `skill` field.
 
-**Verification:** `uv run pytest tests/unit/services/forecast_lab/ tests/unit/api/test_forecast_lab_schema.py tests/unit/cli/test_export_forecast_lab.py tests/unit/api/` — cases: superseded-artifact rows are excluded; a group-assigned model's rows come from the group's active artifact; a row with `eval_period_end` after `data_cutoff_at` is dropped; stratified rows are excluded (D7); `evaluated_on` takes each of its four values; a model with no rows contributes nothing; `hindcast_forecasts` and `hindcast_values` are still never read.
+**Verification:** `uv run pytest tests/unit/services/forecast_lab/ tests/unit/api/test_forecast_lab_schema.py tests/unit/cli/test_export_forecast_lab.py tests/unit/api/` — cases: superseded-artifact rows are excluded; a group-assigned model's rows come from the group's active artifact; a row with `eval_period_end` after `data_cutoff_at` is dropped; stratified rows are included with their `season`/`flow_regime` and a headline row with both null (D7); `evaluated_on` takes each of its four values; a model with no rows contributes nothing; `hindcast_forecasts` and `hindcast_values` are still never read.
 
-### T5 — Combined-forecast `qc_status` and `qc_flags` (only if D8 = a)
+### T5 — Combined-forecast `qc_status` and `qc_flags` (D8)
 
 **Outcome:** both combined-forecast objects carry the stored forecast's `qc_status` and
 `qc_flags`. Which combinations are shown is unchanged — the `QC_FAILED` exclusion stays, for
@@ -332,7 +335,7 @@ the missing field.
 record agrees with what shipped.
 
 **In:** a reply to the map session (final v3 shapes; the `time_step_seconds` correction to D4;
-the in-sample label; `detail` per D6; the D7 row set); a note in the unnumbered region-bundle v3
+the in-sample label; `detail` per D6; the full stratified row set per D7, with the measured document size); a note in the unnumbered region-bundle v3
 draft's owning session that `observation_qc` and `qc_rule_set` are to be carried with the same
 shapes, subject to that draft's own `detail` rule; `docs/plans/README.md` entry; the
 `docs/touchpoint-maps.md` Forecast Lab paragraph (the new store and the lifted skill bar).
@@ -369,13 +372,15 @@ After staging deploy (orchestrator), before the map is told to cut over:
   mismatch is declared, not fixed), re-QC of stored rows.
 - DHM/Nepal rules (303), hourly rules (323), network selection (264), overrides (269).
 - The Nepal region bundle exporter.
-- Skill diagrams, stratified skill (D7), baselines' absence (a data fact, shown as absent).
+- Skill diagrams, baselines' absence (a data fact, shown as absent).
 - `latest_generation_predicate`'s scope lacking time step.
 
 ## Changelog
 
 - 2026-09-25 — drafted from the map request and the owner's four decisions; measured on
   `6c77c666` and staging.
+- 2026-09-26 — owner closed D5 (lift the bar, with the guard), D6 (publish `detail`), D7 (all
+  breakdowns — against the recommendation) and D8 (absorb 251 T2).
 
 ## Dependency graph
 
