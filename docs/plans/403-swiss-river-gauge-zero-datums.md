@@ -16,7 +16,7 @@ source: 2026-09-26 — the owner, after the round-5 review of Plans 323/400 foun
 
 ## Status
 
-**DRAFT.** Two review rounds have run (§ Review record), NOT READY, folded; **this fold is
+**DRAFT.** Three review rounds have run (§ Review record), NOT READY, folded; **this fold is
 unreviewed.** ⛔ No implementation until an independent review of this exact state is complete and
 the orchestrator sets READY. **Implementation follows Plan 323** (`depends_on`): T4's before/after
 evidence reads 323's `observation_qc_unjudged` records. T1's sourcing needs no code and no deploy,
@@ -108,14 +108,19 @@ judges each reading on its own.
   bounds (−2 … 20), and **refuses to apply** a datum below 99% — or when fewer than 100 readings
   exist ("insufficient data") — reporting either. The same check guards a datum added or corrected
   by hand later: it is part of the command, not a one-off analysis.
-- 🔴 **The command is the only way an existing station's datum changes.** Re-running onboarding
-  replaces an existing station from the maps (`services/onboarding.py:503`) without checking any
-  readings, so it could overwrite a validated datum with an unchecked one. ⇒ On an **update**,
-  onboarding keeps the existing row's `water_level_datum_masl` and `water_level_unit`; it applies
-  the maps only to a station it creates (which has no readings to validate against yet).
+- 🔴 **For an existing RIVER station, the command is the only way its datum changes.** Re-running
+  onboarding replaces an existing station from the maps (`services/onboarding.py:503`) without
+  checking any readings, so it could overwrite a validated datum with an unchecked one. ⇒ When the
+  **existing row is `StationKind.RIVER`**, onboarding's update keeps that row's
+  `water_level_datum_masl` and `water_level_unit`; it applies the maps to a river it creates (no
+  readings yet to validate against). ⛔ **Lakes keep today's behaviour** — re-onboarding still
+  fills or corrects a lake's datum from the maps (the route `docs/spec/config-reference.toml:264`
+  documents and Plan 101 § 5 item 4 names), since the command does not handle lakes.
 - **Storage:** the existing `[onboarding.water_level_datums_masl]` and `[onboarding.water_level_units]`
-  tables. ⚠️ If T1 finds the publication's terms do not allow the values in a public repository,
-  they go in the host overlay instead — a T1 finding, not a design change.
+  tables in `config.toml`. ⚠️ This repository is public, and so is the staging host overlay
+  (`config/overlays/mac-mini.toml` is tracked and bind-mounted from the checkout). ⇒ **If T1 finds
+  the publication's terms do not allow publishing the values, T1 stops and escalates to the owner
+  before T2** — an untracked overlay would be a deploy change this plan does not carry.
 - **Rivers use the table like lakes do:** the RIVER branches of `attributes_to_station` take the datum
   and unit from the maps when present and stay `None` otherwise; a datum with no unit entry defaults
   to `m a.s.l.`, as the lake branch does (`adapters/camelsch_adapter.py:172`). ⛔ `measured_parameters` and
@@ -136,7 +141,12 @@ judges each reading on its own.
     (`services/write_principal.py:41`) and enforces the target's tenant
     (`enforce_tenant_isolation`, `:107`). The dry run uses a write-free pre-check, as
     `create_station_group.py` does (`plan_station_group`, `scripts/create_station_group.py:152-156`)
-    — `enforce_tenant_isolation` writes a rejection audit row, which a dry run must not.
+    — `enforce_tenant_isolation` writes a rejection audit row, which a dry run must not. 🔴 **On
+    apply, the check runs on an autocommit connection before the write transaction opens**, as
+    `scripts/create_station_group.py:315-329` does: `enforce_tenant_isolation` appends the rejection
+    row and then raises (`services/write_principal.py:143-157`), so inside `engine.begin()` the raise
+    would roll its own audit row back. A rejection **aborts the whole run**, as onboarding does
+    (`services/onboarding.py:529-532`).
   - **One transaction, named:** a single `engine.begin()` connection
     (`scripts/create_station_group.py:360` precedent) carrying `PgStationStore`,
     `PgClimBaselineStore` and `PgAuditLogStore`, in which it writes the datum and unit through an
@@ -147,6 +157,11 @@ judges each reading on its own.
     carries no baseline store, which is why it is not the mechanism here.
   - **Dry-run output, per station:** old and new datum and unit, the in-range share and reading
     count, the baselines that would be deleted, and every refusal with its reason.
+  - **Clearing a wrong datum:** `--clear <code>` sets a river station's datum and unit back to
+    `None` — no validation (there is nothing to validate against), same tenant check, same single
+    transaction and a `STATION_DATUM_SET` audit row recording old → none. Without it, onboarding can
+    no longer change a river's datum and an absent table entry does nothing, so a wrong datum found
+    in T4 would have no way back.
   - ⛔ Re-running onboarding for 142 stations is rejected: it rewrites unrelated metadata and re-runs
     onboarding QC (§ 3).
 
@@ -167,7 +182,8 @@ against the station's own data — plus the three facts § 4 and § 5 left unmea
   have their mechanism): the Pegelnullpunkt from the yearbook's
   station information, with edition, retrieval date, and page or URL; stations with no entry, or
   whose gauge zero changed during the period covered, listed separately.
-- Whether the publication's terms allow the values in this repository (decides storage location).
+- Whether the publication's terms allow publishing the values (this repository is public). If
+  not, stop and escalate to the owner before T2 (§ Design, Storage).
 - **Read-only, on staging:**
   - per station, the median of its measured (`source = measured`) water-level readings ⇒
     absolute or stage-relative (§ Design), and the datum that follows;
@@ -198,12 +214,18 @@ running stations table, through a write as guarded as onboarding's.
   from the maps, as the LAKE branch does (`:171-172`).
 - `scripts/onboard.py:339-365` passes both maps.
 - The datum-only `StationStore` method (Protocol, Pg, fake) and the command of § Design, with its
-  validation, river-only population, tenant pre-check and check, baseline deletion and single-
-  transaction audited write; the Dockerfile's script list.
+  validation, river-only population, tenant pre-check and apply-time check, baseline deletion,
+  single-transaction audited write and `--clear`.
+- The curated operator-script list, locked in five places (the test's docstring,
+  `tests/unit/deploy/test_dockerfile_operator_scripts.py:195-202`, names them): `Dockerfile:145-151`;
+  `_CURATED_SCRIPTS` in that test (`:143`, exact-set equality); the "Smoke-check operator scripts"
+  step in `.github/workflows/ci.yml` (~`:771-782`); and, for T3, `docs/touchpoint-maps.md:842` and
+  `docs/deployment/mac-mini-staging.md:772`.
 - `AuditEventType.STATION_DATUM_SET`, with the two places that lock that enum:
   `tests/unit/types/test_enums.py:95-121` (member count and expected set) and the spec enum in
   `docs/spec/types-and-protocols.md:312-331` — the test's docstring requires all three together.
-- Onboarding on **update** keeps the existing datum and unit (§ Design).
+- Onboarding on **update of an existing river** keeps its datum and unit (§ Design); lakes
+  unchanged. `docs/spec/config-reference.toml:264`'s sentence says so.
 - `docs/spec/config-reference.toml` — the example gains a river station and the text says rivers now
   use it.
 
@@ -221,14 +243,17 @@ returns `water_level_datum_masl is None` today — it must fail on that value.
 - The command (unit, with fakes): dry run writes nothing, audit included; a station below 99% in
   range, or with fewer than 100 readings, is refused and reported; a stage-relative entry (`0.0`,
   `m`) validates and applies; a lake entry in the same tables is skipped and its datum and baselines
-  are untouched; a target under another tenant is rejected on apply (and the rejection audited, as
-  `enforce_tenant_isolation` does); an unknown code is skipped and reported.
-- **Atomicity, against real Postgres** (integration test — fakes have no transactions): with the
-  audit insert forced to fail, both the original datum and the existing water-level baseline rows
-  are still there afterwards; on success, all three changes are present.
-- **Onboarding cannot bypass validation:** re-onboarding an existing river station with a
-  different datum in the maps leaves its stored datum unchanged; onboarding a new station applies
-  the map value.
+  are untouched; an unknown code is skipped and reported; `--clear` sets a river's datum and unit to
+  `None` with an audit row.
+- **Atomicity and the rejection audit, against real Postgres** (integration test — fakes have no
+  transactions): with the audit insert forced to fail, both the original datum and the existing
+  water-level baseline rows are still there afterwards; on success, all three changes are present;
+  a target under another tenant aborts the run, writes nothing, and its **rejection audit row
+  survives**.
+- **Onboarding cannot bypass validation, and lakes keep their route:** re-onboarding an existing
+  river station with a different datum in the maps leaves its stored datum unchanged; onboarding a
+  new river applies the map value; re-onboarding an existing **lake** with a changed map datum still
+  updates it.
 - An ingest test: a river water-level reading with the datum set runs `range_check` on
   `value − datum` and gets version `1.2-datum`; one at `datum + 25 m` is `QC_FAILED`.
 
@@ -244,7 +269,9 @@ now carry a datum; the datum command and its validation); Stage 1 QC (step 2.3) 
 quality control" and § 10 "Observation QC — What the Flags Mean" — the Swiss source, and the command
 as the only way to add or correct a datum; the tenant-isolation chokepoint lists in
 `docs/standards/security.md` (§ Tenant write-isolation, ~lines 109-113) and the
-`services/write_principal.py` module docstring (`:9-14`) — the command is a new write chokepoint.
+`services/write_principal.py` module docstring (`:9-14`) — the command is a new write chokepoint;
+the audited-call-site list in `docs/spec/types-and-protocols.md` (~`:1389-1396`); the operator-script
+inventories in `docs/touchpoint-maps.md:842` and `docs/deployment/mac-mini-staging.md:772`.
 Plan 323's D4/D5 text already names this plan.
 
 **Out.** ⛔ Plan 101's archived text. ⛔ Documenting DHM datums.
@@ -320,3 +347,11 @@ orchestrator's host), then record the first full day after:
   docstring list every chokepoint; Plan 101 also asks for recompute and re-QC (departure stated);
   T3 pointed at the DHM table; frontmatter vs prose on the dependency; thresholds and the validation
   window numbered; a datum without a unit defaults to `m a.s.l.`.
+- **2026-09-26 — round 8: both NOT READY for this plan (323 and 400 READY from both); all findings
+  folded, no decision needed.** Both: keeping the existing datum on every onboarding update froze
+  lakes, whose only fill/correct route is re-onboarding (→ rivers only; a lake re-onboarding test).
+  Codex: the operator-script list is locked in five places (→ all named). Claude: the apply-time
+  tenant rejection would be rolled back inside the write transaction (→ autocommit check before
+  `engine.begin()`, abort the run, real-Postgres test that the rejection row survives); the fallback
+  storage — the host overlay — is public too (→ stop and escalate if publishing is not allowed); no
+  way to clear a wrong datum (→ `--clear`); the audited-call-site list in the spec.

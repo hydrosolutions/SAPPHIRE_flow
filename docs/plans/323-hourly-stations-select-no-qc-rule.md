@@ -17,8 +17,9 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Seven review rounds have run — a Claude review on 2026-09-25, then six
-Claude + Codex rounds on 2026-09-26 — all NOT READY, all findings folded (§ Review record). Owner
+the orchestrator sets READY. Eight review rounds have run — a Claude review on 2026-09-25, then seven
+Claude + Codex rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Claude
+NOT READY; **round 8 was READY from both**, with LOW findings folded since (§ Review record). Owner
 decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
@@ -453,7 +454,12 @@ alarmed on.
   `IngestResult.qc_unchecked` (`:63`, set at `:1044`, logged at `:1062`) beside a new
   `qc_unjudged`, and the `ingest.qc_complete` log (`:967`).
 - Text that would otherwise become false: the enum comment at `types/enums.py:229-235` ("unlike every
-  other member…") now describes two presence-type members; `ZeroRuleGroup`'s docstring
+  other member…") now describes two presence-type members; four comments that define
+  `QC_UNCHECKED`/`QC_PASSED` by selection alone now also cover a selected rule that could not judge
+  the reading — the `_aggregate_qc_status` docstring (`flows/ingest_observations.py:153-158`), the
+  `QcStatus.QC_UNCHECKED` comment (`types/enums.py:10-12`), and in
+  `docs/spec/types-and-protocols.md` the `QC_UNCHECKED` comment (`:90-93`) and the `QualityChecker`
+  comment (`:757`); `ZeroRuleGroup`'s docstring
   (`flows/ingest_observations.py:237-247`) and the `qc.no_rules_selected` log event
   (`flows/ingest_observations.py:514`) stay for the zero-rule reasons, and the unjudged case gets
   its own log event.
@@ -668,3 +674,5 @@ returns the entry.
   record only the flow writes (→ `QcTaskOutcome` field, record asserted through the flow);
   zero-rule wins over unjudged, and every reader of the unchecked counter gains an unjudged count;
   the watchdog-isolation stub must actually filter; `blocks` gains 403.
+- **2026-09-26 — round 8: READY from both reviewers**; Claude's two LOW findings folded: § Status's
+  round tally, and four comments that define `QC_UNCHECKED`/`QC_PASSED` by selection alone (T4).
