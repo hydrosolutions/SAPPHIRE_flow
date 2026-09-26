@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-26
 plan: 405
 title: Four warm-start requirements that never shipped, and two boundaries nothing tests
@@ -21,7 +21,13 @@ glob was matching. 405 was confirmed free three independent ways.*
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip.
+**READY** — flipped by the orchestrator 2026-09-26 on the owner's instruction (*"start on 405"*).
+**Two review rounds, four independent reviews**; all findings folded; ⚖️ **all decisions closed**
+(D1 on (b), 2026-09-26).
+
+⚠️ **Stated plainly: the round-2 fold and D1's closure are themselves UNREVIEWED.** *The round-2
+reviewers read the pre-fold state.* ⛔ *Same sequencing the owner chose for 399 — the plan and the diff
+are checked AFTER implementation. Recorded so it is not mistaken for a skipped gate.*
 ⚖️ **All decisions closed** — D1 on (b), 2026-09-26. *It changed what A4 means; T6 now carries the settled shape.* ⛔ *An earlier version said "first", which reads as blocking the whole plan; T1-T5 are independent of it, and the phase graph gates only phase 4.*
 
 ## Why this plan exists

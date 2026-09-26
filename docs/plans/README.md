@@ -660,7 +660,7 @@ exit criteria — Plan 212 owns that deeper screening.
   its generation row. See Plan 328 § Resolved boundary with Plan 341.
 
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](405-warm-start-gaps-and-untested-boundaries.md)
-  — `DRAFT`, **no open decisions** (D1 closed on (b), 2026-09-26), **`depends_on: [399]`**. Drafted from two independent post-merge
+  — `READY` (owner instruction 2026-09-26; 2 review rounds, 4 reviews — ⚠️ the final fold is checked AFTER implementation), **no open decisions**, **`depends_on: [399]`**. Drafted from two independent post-merge
   reviews of **399's shipped code** — the first able to check that plan against reality rather than
   itself. ⭐ **No new capability, with one declared exception** (T1's refusal-before-training ordering, which 399 never required): every other item is something 399 asserts and the code does not do.
   🔴 **A retrain-of-a-retrain CRASHES** — the inherited NULL-path reason is dropped and the record
