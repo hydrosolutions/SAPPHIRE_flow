@@ -177,6 +177,15 @@ Step 1.9 is conditional — pass-through until sufficient forecast archive exist
 
 Every stored forecast record carries the NWP cycle reference time used as forcing — the API and dashboard can display which NWP cycle produced each forecast, not just the forecast issue time.
 
+**As-used evidence (Plan 340).** New operational forecasts also store an
+immutable model-input snapshot, observation/QC and forcing provenance,
+threshold/configuration values and an explicit capture status in the same
+database transaction as the forecast values. A missing source is recorded as
+`evidence_incomplete`; older forecasts have no retroactive snapshot. The
+protected host backup checks one representative forecast chain and retains
+its runtime image bytes. This is an operator diagnosis path, not a CHWRR
+publication decision or a public evidence API; see `it-operations.md` §7.
+
 **Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two built-in fallback models — climatology and persistence — serve as guaranteed last-resort fallbacks. They ensure a forecast is always producible even when all configured models fail.
 
 **Multi-model forecast combination (step 1.12 — not committed for Nepal v1; see *Not Committed for Nepal v1*).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.12 pools the ensembles from all non-fallback models into a single combined forecast. If fewer than two models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.

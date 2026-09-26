@@ -409,6 +409,12 @@ encryption.
 The host `assess` read path uses the backup role and validates hashes on the
 protected volume. That volume is not mounted into the API; Plan 341 may expose
 only the derived status through an authenticated route.
+Plan 340 records no hydrologist publish decision and grants no forecast-evidence
+API write path. Treat evidence snapshots, artifact bytes, dumps and image
+archives as operationally sensitive: keep the protected target encrypted and
+access-restricted, and return only status, attestation identity and reasons in
+future review responses. A valid capture or attestation is not a substitute for
+the live protected-backup health check before CHWRR publication is activated.
 
 ## Backup encryption
 

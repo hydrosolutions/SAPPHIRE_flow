@@ -265,6 +265,14 @@ Rules:
 - Additional context goes in keyword arguments, not the event string.
 - **List-of-dicts kwargs** are accepted when an event carries variable-length structured sub-items. Example: `forecast.input_quality_assessed` passes `flags` as `list[dict]` with keys `category`, `level`, and `detail`. Use this pattern sparingly — prefer flat kwargs for simple scalar context.
 
+The host backup CLI also returns JSON status and a nonzero exit code for missing,
+stale or invalid backup health. Monitor the scheduled command's result as an
+operations signal; `evidence_backup.protected` proves only that one
+representative forecast was attested, not that every captured forecast has a
+fresh protected proof. `forecast_evidence.capture_failed` is a
+forecast-specific diagnosis signal: inspect the immutable evidence reason,
+rather than logging input arrays or treating the forecast as reproducible.
+
 ### Canonical forecast cycle events (Flow 1)
 
 | Event | Level | Notes |

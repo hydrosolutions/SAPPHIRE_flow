@@ -1228,14 +1228,95 @@ checks retained attestations newest first and uses the newest verifiable proof;
 a damaged newer bundle does not invalidate an older intact one.
 
 A protected dump is taken before its own attestation is appended. After disaster
-recovery from that dump, run `reconcile --backup-id <UUID>` with the same target,
-database-volume and Compose arguments after restoring PostgreSQL and bootstrapping
-the scoped roles. This rechecks the manifest, bytes, disposable restore and pinned
-image load, then verifies the live database's snapshot, artifact and output-value
-digests before re-appending the missing attestation. Repeating it is safe when the
-existing proof matches; a conflicting proof fails. Run `assess --forecast-id` to
-confirm the effective status, then `health` to check live freshness. A new scheduled
-backup is still needed if the retained bundle is older than the configured maximum.
+recovery from that dump, follow this host procedure before starting forecast
+workers or consumer routes:
+
+1. Provision a fresh, empty PostgreSQL volume and determine its existing host
+   mount path before running the verifier; `verify_separate_target` requires
+   both paths to exist. Mount the access-controlled protected target on a
+   different filesystem device. Select the newest completed
+   `backup-<UUID>.json` and matching `.dump` from that target and record its
+   backup ID and timestamp. Run `health` to determine whether the newest
+   bundle also meets the live freshness limit. Independently verify the
+   selected bundle's hashes and image archives without that age limit before
+   restoring it; a stale bundle may be a valid recovery source while CHWRR
+   publication remains closed until a fresh backup succeeds. If the selected
+   bundle is invalid, investigate or select an older retained bundle and
+   verify that one. Never restore an unverified dump. This one-time host check
+   uses the same verifier as `health` (substitute the actual paths and ID):
+
+   ```bash
+   uv run python <<'PY'
+   from datetime import UTC, datetime
+   from pathlib import Path
+   from sapphire_flow.ops.protected_evidence_backup import verify_protected_backup
+
+   target = Path("/protected/path")
+   volume = Path("/host/postgres/volume")
+   backup_id = "UUID"
+   result = verify_protected_backup(
+       target / f"backup-{backup_id}.json",
+       target=target,
+       database_volume=volume,
+       now=datetime.now(UTC),
+       max_age_hours=None,
+   )
+   if result.status.value != "verified":
+       raise SystemExit(f"Protected bundle invalid: {result.reason}")
+   print(f"Verified protected bundle {backup_id}")
+   PY
+   ```
+2. Restore the deployment secrets, including `db_password` and the scoped
+   API, worker and backup-role secrets, before starting any Compose service.
+   Load each image archive listed in the selected manifest from
+   `images/<image-digest-without-sha256-prefix>.tar` with `docker load -i`,
+   then confirm its immutable ID with `docker image inspect`. Use a compatible
+   deployed checkout/image for the restored schema. Keep the API and workers
+   stopped while restoring.
+3. Start only PostgreSQL on a fresh replacement volume. For the default
+   `sapphire` database/user, restore the selected custom-format dump from the
+   host into that fresh database:
+
+   ```bash
+   docker compose up -d --wait postgres
+   docker compose exec -T postgres pg_restore --single-transaction --exit-on-error --clean --if-exists --no-owner --no-acl -U sapphire -d sapphire < /protected/path/backup-UUID.dump
+   ```
+
+   Replace `/protected/path/backup-UUID.dump` with the verified dump and adjust
+   the database user if deployment configuration differs. Confirm PostgreSQL
+   has completed first initialization and is healthy before `pg_restore`;
+   do not run this command against a live production volume. Start
+   `prefect-server`, then run `docker compose run --rm init` to apply compatible
+   migrations and bootstrap scoped roles. Stop `prefect-server` again before
+   bringing up maintenance workers; no scheduled forecast work should run
+   during recovery verification.
+4. The host `reconcile` and `assess` commands use `docker compose exec` in
+   `prefect-worker` and `prefect-worker-backup`. Start those two containers
+   without their Prefect polling commands, using a temporary Compose override
+   in the same project directory:
+
+   ```yaml
+   services:
+     prefect-worker:
+       command: ["sleep", "infinity"]
+     prefect-worker-backup:
+       command: ["sleep", "infinity"]
+   ```
+
+   Run `docker compose -f docker-compose.yml -f maintenance-override.yml up -d --no-deps prefect-worker prefect-worker-backup`. The override contains
+   no secrets; use a local file under operator control and remove it after
+   recovery. `--no-deps` keeps Prefect scheduling stopped. From the same
+   Compose project, run the host `reconcile --backup-id <UUID>` with the same
+   target, database-volume and Compose arguments. It rechecks the manifest,
+   bytes, disposable restore and pinned image load, then verifies the live database's snapshot,
+   artifact and output-value digests before re-appending the attestation that
+   was created after the dump. Repeating it is safe when the existing proof
+   matches; a conflicting proof fails. Run `assess --forecast-id` for the
+   manifest's sample forecast and `health` for live freshness. Stop the two
+   maintenance containers, remove the override, and start normal services
+   only after their operational checks pass. Keep CHWRR publication disabled
+   until a new protected backup passes if the retained bundle is older than
+   the configured freshness limit.
 
 The weekly `scripts/launchd/prune-docker.sh` now asks the backup worker whether any
 forecast evidence exists. Once evidence exists, it skips image pruning entirely,
@@ -1257,3 +1338,18 @@ per day, a 1 GiB starting dump and 2,192 unpruned daily full dumps imply roughly
 lower-bound scenario, not a Nepal capacity measurement. The clean-volume test restore
 uses a tiny seeded database and took about 15 seconds locally; a Nepal-sized restore
 duration remains to be measured on the DHM target.
+
+**CHWRR activation check.** Before enabling the later publication routes,
+record the separate encrypted target and its access controls, confirm the
+worker's image ID matches `SAPPHIRE_IMAGE_DIGEST`, run a protected backup and
+clean restore, check `health` is `verified` within the configured freshness
+window, and inspect `assess --forecast-id` for representative first-run
+forecasts. Capture-time `evidence_incomplete` remains visible even if an
+image-byte-only gap is later covered by an attestation. A complete assessment
+does not prove deterministic model replay or outcome verification. This T2
+backup attests one representative forecast per bundle. Before activation,
+Plan 341 must demonstrate that every forecast published with backup proof
+pending is later checked and attested, with an overdue deadline alert and a
+gate on further publish writes. An individual forecast may still be published
+while its proof is pending when the protected backup system is healthy.
+Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
