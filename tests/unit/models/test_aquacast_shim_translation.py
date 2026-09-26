@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from importlib import resources
+from pathlib import Path
 from random import Random
 from typing import Any
 
@@ -997,3 +998,36 @@ class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:
         [dyn] = spatial_spec.data.values()
 
         assert dyn.past_known["aquacast"]["discharge"].aggregation is None
+
+
+class TestConfigPathAndHashCannotDrift:
+    """Plan 405 T2 — `config_path` exists so warm-start provenance can record WHERE
+    the donor's config lives. 🔴 Its whole value depends on naming the SAME file
+    `config_hash` digests: a path pointing at one config while the hash describes
+    another would record a verified-looking lie.
+
+    ⚠️ Runs WITHOUT the `aquacast` extra — both properties use only `_config_path`
+    and `hashlib`, so `object.__new__` suffices and CI's base `unit` job covers it.
+    """
+
+    class _Stub(AquacastShim):
+        CONFIG_FILENAME = "cmal_small.yaml"
+
+    def _shim(self) -> AquacastShim:
+        return object.__new__(self._Stub)
+
+    def test_the_path_names_the_file_the_hash_digests(self) -> None:
+        shim = self._shim()
+
+        digest = hashlib.sha256(Path(shim.config_path).read_bytes()).hexdigest()
+
+        assert digest == shim.config_hash, (
+            "config_path and config_hash describe DIFFERENT files — a warm-start "
+            "row would then pair a real hash with a path that does not produce it"
+        )
+
+    def test_the_path_points_at_an_existing_vendored_config(self) -> None:
+        shim = self._shim()
+
+        assert Path(shim.config_path).is_file()
+        assert Path(shim.config_path).name == "cmal_small.yaml"

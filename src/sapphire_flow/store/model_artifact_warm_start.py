@@ -26,6 +26,7 @@ import sqlalchemy as sa
 import structlog
 
 from sapphire_flow.db.metadata import model_artifact_warm_start
+from sapphire_flow.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId
@@ -154,14 +155,18 @@ def resolve_donor_config(
     Hashing whatever template is on disk today satisfies a naive "the hash
     matches the file it names" check while naming the WRONG configuration
     whenever the template has changed since the donor was built. The installed
-    values are accepted to be COMPARED against the donor's recorded hash — but
-    ⛔ **no caller compares them yet.** `installed_config_sha256` is currently
-    accepted and never read; the comparison, and the refusal of a changed
-    template, are Plan 405 T2's work. ⚠️ *Stated rather than promised: this
-    docstring previously said "a mismatch is a refusal the caller makes", which
-    Plan 405 § 1 cites as the defect — a docstring deferring to a check nobody
-    performs.* Whenever it lands, the refusal belongs to the caller, not here:
-    this resolver never papers a mismatch over.
+    ⭐ **Plan 405 T2 — the installed values are now COMPARED, here, and a changed
+    template is REFUSED** with `ConfigurationError` naming both hashes. *399
+    promised this comparison in a docstring and never made it; 405 § 1 charges
+    that, and this is where the promise is kept.*
+
+    ⛔ **The comparison applies ONLY to an imported donor.** Its
+    `model_artifact_provenance.config_hash` is the hash of ITS OWN config. A
+    SAP3-retrained donor's recorded hash is *carried forward* from its ancestor
+    (see the inherited branch below), so it does NOT describe that donor's own
+    configuration — refusing on it would refuse on a hash belonging to a
+    different artifact. ⇒ For that donor the own-config hash is genuinely
+    UNKNOWN, which T2 states is a NULL-with-reason and not a mismatch.
     """
     from sapphire_flow.store.model_artifact_provenance import fetch_artifact_provenance
 
@@ -192,8 +197,41 @@ def resolve_donor_config(
                 "installed config path was supplied to pair with it; "
                 "provenance stores no path of its own",
             )
+        if installed_config_sha256 is None:
+            # ⛔ A path we cannot VERIFY is worse than no path: recording it
+            # would name a configuration this donor may never have used, which
+            # is 399 § 13's trap and T2's first "Out" bullet. The model declared
+            # no hash, so the pairing cannot be checked — say so and keep NULL.
+            return (
+                None,
+                provenance.config_hash,
+                "donor's config hash is recorded in its provenance, but the "
+                "installed model declares no config hash to pair with it, so "
+                "the supplied path could not be VERIFIED to name the donor's "
+                "configuration; recording it unverified would name a config "
+                "this donor may never have used",
+            )
+        if installed_config_sha256 != provenance.config_hash:
+            # 🔴 THE REFUSAL. The template on disk is not the one this donor was
+            # built from, so fine-tuning it would silently mix two
+            # configurations. Raised rather than returned: the caller resolves
+            # BEFORE training (Plan 405 T1), so this aborts while nothing has
+            # been trained and nothing stored.
+            raise ConfigurationError(
+                "refusing to retrain: the installed config template does not "
+                "match the one this donor was built from. "
+                f"donor artifact {base_artifact_id} recorded config hash "
+                f"{provenance.config_hash}, the installed "
+                f"{installed_config_path} hashes to {installed_config_sha256}. "
+                "Fine-tuning across a changed template would mix two "
+                "configurations without recording that it happened."
+            )
         return installed_config_path, provenance.config_hash, None
 
+    # ⛔ NO COMPARISON BELOW, deliberately — see this function's docstring: a
+    # retrained donor's recorded hash identifies its ANCESTOR's config, not its
+    # own, so `installed_config_sha256` has nothing here it can validly be
+    # checked against.
     inherited = fetch_warm_start(conn, base_artifact_id)
     if inherited is not None and inherited.base_config_sha256:
         if inherited.base_config_path is not None:

@@ -32,6 +32,7 @@ import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import model_artifacts
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.train_models import train_models_flow
 from sapphire_flow.store.model_artifact_provenance import record_artifact_provenance
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
@@ -95,6 +96,114 @@ def _seed_imported_donor(
         ),
     )
     return aid
+
+
+def _model_declaring(config_hash: str, config_path: str) -> object:
+    """A retrainable model that declares `config_hash`/`config_path`, as the real
+    aquacast shim does — the fakes declare neither, so without this no flow test
+    could reach Plan 405 T2's comparison at all."""
+    base = _Unit._retrainable_model()
+
+    class _Declaring(type(base)):  # type: ignore[misc]
+        @property
+        def config_hash(self) -> str:
+            return config_hash
+
+        @property
+        def config_path(self) -> str:
+            return config_path
+
+    return _Declaring()
+
+
+class TestTheInstalledTemplateIsCompared:
+    """Plan 405 T2 — the comparison 399 promised in a docstring and never made."""
+
+    _INSTALLED = "models/aquacast/configs/cmal_small.yaml"
+
+    def _seed(
+        self, conn: sa.Connection, tmp_path: Path
+    ) -> tuple[ModelId, StationId, ArtifactId]:
+        model_id = _seed_model(conn)
+        station_id = _seed_station(conn)
+        gen0 = _seed_imported_donor(conn, tmp_path, model_id, station_id)
+        return model_id, station_id, gen0
+
+    def test_a_changed_template_is_refused_before_the_model_is_called(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 THE RED. ⛔ "an error was raised" would also pass on a refusal that
+        happens too late — so this asserts the model was never invoked AND that
+        nothing was persisted."""
+        model_id, station_id, gen0 = self._seed(db_connection, tmp_path)
+        changed = "f" * 64
+        assert changed != _IMPORTED_CONFIG_HASH
+        model = _model_declaring(changed, self._INSTALLED)
+        type(model).seen_base = None
+        before = db_connection.execute(
+            sa.select(sa.func.count()).select_from(model_artifacts)
+        ).scalar_one()
+
+        with pytest.raises(ConfigurationError) as exc:
+            TestRetrainOfARetrainThroughTheFlow._run(
+                db_connection,
+                tmp_path,
+                model_id=model_id,
+                station_id=station_id,
+                base_artifact_id=gen0,
+                writer=PgWarmStartWriter(db_connection),
+                model=model,
+            )
+
+        # 🔴 BOTH hashes named — a refusal that does not say what differed leaves
+        # the operator unable to tell which of the two is wrong.
+        assert _IMPORTED_CONFIG_HASH in str(exc.value)
+        assert changed in str(exc.value)
+        assert self._INSTALLED in str(exc.value)
+        # 🔴 The mechanism: the model was never reached.
+        assert type(model).seen_base is None, "the model was called despite the refusal"
+        # 🔴 The property § 5 cares about: nothing persisted, of either kind.
+        after = db_connection.execute(
+            sa.select(sa.func.count()).select_from(model_artifacts)
+        ).scalar_one()
+        assert after == before, "a refused retrain stored an artifact anyway"
+        assert (
+            db_connection.execute(
+                sa.select(sa.func.count()).select_from(model_artifact_warm_start)
+            ).scalar_one()
+            == 0
+        ), "a refused retrain wrote a warm-start row"
+
+    def test_matching_hashes_record_the_donors_config_path(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """T2's first Verification bullet: the path stops being NULL.
+
+        ⭐ This is what makes generation 1's path non-NULL in production — and so
+        what would have made the gen-2 chain test vacuous had it not been pinned.
+        """
+        model_id, station_id, gen0 = self._seed(db_connection, tmp_path)
+        model = _model_declaring(_IMPORTED_CONFIG_HASH, self._INSTALLED)
+
+        results = TestRetrainOfARetrainThroughTheFlow._run(
+            db_connection,
+            tmp_path,
+            model_id=model_id,
+            station_id=station_id,
+            base_artifact_id=gen0,
+            writer=PgWarmStartWriter(db_connection),
+            model=model,
+        )
+
+        assert results[0].error is None, results[0].error
+        got = fetch_warm_start(db_connection, results[0].artifact_id)
+        assert got is not None
+        assert got.base_config_path == self._INSTALLED
+        assert got.base_config_sha256 == _IMPORTED_CONFIG_HASH
+        assert got.base_config_unknown_reason is None, (
+            "nothing is unknown once the hashes agree — a path AND a reason "
+            "together is a record the invariant cannot catch"
+        )
 
 
 class TestRetrainOfARetrainThroughTheFlow:

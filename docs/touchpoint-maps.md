@@ -66,7 +66,11 @@ structural `isinstance` on the adapter**: it has no `__getattr__` passthrough an
 inner model cannot retrain — and the refusal SAP3 owes (Plan 399 D2) would never fire for the
 only case it exists for. Ask `services/training.py::supports_warm_start()`, which reads the
 INNER model through the adapter's proxy — the same precedent as the adapter's `config_hash`
-property, which exists for exactly this reason. ⚠️ The shim also defines `retrain`
+property, which exists for exactly this reason. ⚠️ **Plan 405 T2 added a third such proxy,
+`config_path`**, for the same structural reason: no passthrough means an unproxied attribute
+reads as `None` for every FI model, which had warm-start provenance recording a NULL config
+path indefinitely. *Neither `config_hash` nor `config_path` is part of the FI protocol — both
+are SAP3-side conventions.* ⚠️ The shim also defines `retrain`
 unconditionally, so the adapter's `isinstance(self._model, FIRetrainableModel)` backstop does
 NOT catch an aquacast model whose inner model lacks it; the service-layer refusal is what
 holds. Touch `adapters/forecast_interface.py`'s retrain/`supports_warm_start` and re-run
@@ -941,6 +945,21 @@ deliberately: unresolvable donor provenance is an integrity failure like the SHA
 so it aborts the run loudly rather than being recorded as one failed unit and continued past.
 ⚠️ **Atomicity is NOT claimed** — `PgWarmStartWriter` holds its own connection and the store is
 a separate Prefect task; moving the refusal earlier removes the failure mode without it.
+
+**Plan 405 T2 — a CHANGED TEMPLATE is refused, and the config path is now real.** The flow reads
+`config_path` alongside `config_hash` off the model and passes BOTH; `resolve_donor_config`
+compares the installed hash with the donor's recorded one and raises `ConfigurationError`
+naming both when they differ. ⇒ Two refusals now happen before training: the mismatch and the
+shared invariant. ⛔ **The comparison applies ONLY to an IMPORTED donor.** A SAP3-retrained
+donor's recorded hash is *carried forward from its ancestor* and does not describe that donor's
+own config, so comparing against it would refuse on a hash belonging to a different artifact —
+for that donor the own-config hash is genuinely UNKNOWN, which is a NULL-with-reason, not a
+mismatch. ⛔ **An unverifiable path is NOT recorded**: if the model declares no hash, the path
+stays NULL with a reason, because recording it would name a configuration the donor may never
+have used (399 § 13's trap). ⚠️ `config_path` must keep naming the same file `config_hash`
+digests — both derive from one `_config_path(CONFIG_FILENAME)` call in
+`models/aquacast/_shim.py`, and `tests/unit/models/test_aquacast_shim_translation.py` asserts
+they cannot drift.
 
 
 Use this map when a task touches the **offline model lifecycle** — training-data assembly, model training + artifact creation / registration / promotion, hindcast generation, skill computation, or retraining / recomputation. For the model boundary (`train` / `serialize_artifact` / `predict`, `ModelDataRequirements`) and for `_assemble_hindcast_inputs` + `resample_to_time_step`, use the **ForecastInterface / model execution** map — this map does not re-derive them. For the *write semantics* of `store_artifact` / `store_hindcast` / `register_model`, use the **Persistence / API write path** map. Verification-metric definitions are normative in `docs/standards/wmo.md` — cite it, do not restate it. **Aspirational-vs-real is a core hazard here** (several lifecycle automations are manual-trigger-only or DRAFT) — flagged below; verify before depending on one.

@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from sapphire_flow.db.metadata import model_artifacts, models, stations
+from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.store.model_artifact_provenance import record_artifact_provenance
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.store.model_artifact_warm_start import (
     WarmStartRecord,
@@ -33,6 +35,7 @@ from sapphire_flow.store.model_artifact_warm_start import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.model import ModelArtifactProvenance
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
@@ -371,4 +374,154 @@ class TestRetrainOfARetrain:
         assert reason is None, (
             "nothing is missing, so no reason is owed — a path AND an 'unknown' "
             "reason together is a record the invariant cannot catch"
+        )
+
+
+class TestComparingTheInstalledTemplate:
+    """Plan 405 T2 — `resolve_donor_config`'s comparison, tested DIRECTLY.
+
+    🔑 T2's last Verification bullet asks for direct tests of this function
+    because § 2 found it had none at all. T1 added four; these add the comparison
+    cases, which are the ones with a refusal in them.
+    """
+
+    _INSTALLED = "models/aquacast/configs/cmal_small.yaml"
+    _DONOR_HASH = "1" * 64
+    _CHANGED = "2" * 64
+
+    def _imported_donor(
+        self, conn: sa.Connection, tmp_path: Path, *, config_hash: str | None
+    ) -> ArtifactId:
+        mid = _seed_model(conn)
+        sid = _seed_station(conn)
+        aid = _seed_artifact(conn, tmp_path, mid, sid)
+        record_artifact_provenance(
+            conn,
+            ModelArtifactProvenance(
+                artifact_id=aid,
+                source_repository="hydrosolutions/aquacast",
+                source_commit="cafe",
+                config_hash=config_hash,
+                imported_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+                imported_by="onboarding",
+                notes=None,
+            ),
+        )
+        return aid
+
+    def test_matching_hashes_return_the_path_and_owe_no_reason(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        donor = self._imported_donor(
+            db_connection, tmp_path, config_hash=self._DONOR_HASH
+        )
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._DONOR_HASH,
+        )
+
+        assert path == self._INSTALLED
+        assert sha256 == self._DONOR_HASH
+        assert reason is None
+
+    def test_a_changed_template_is_refused_naming_both_hashes(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        donor = self._imported_donor(
+            db_connection, tmp_path, config_hash=self._DONOR_HASH
+        )
+
+        with pytest.raises(ConfigurationError) as exc:
+            resolve_donor_config(
+                db_connection,
+                donor,
+                installed_config_path=self._INSTALLED,
+                installed_config_sha256=self._CHANGED,
+            )
+
+        message = str(exc.value)
+        assert self._DONOR_HASH in message, "the donor's recorded hash is unnamed"
+        assert self._CHANGED in message, "the installed hash is unnamed"
+        assert self._INSTALLED in message, "which file was hashed is unnamed"
+
+    def test_no_installed_hash_is_not_a_refusal_and_records_no_path(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """⛔ T2's "Out": an unknown hash is a NULL-with-reason, not a mismatch.
+
+        🔴 And the path is NOT recorded. Recording a path nobody verified would
+        name a configuration the donor may never have used — Plan 399 § 13's trap,
+        and the one thing T2 must not do while making the path real.
+        """
+        donor = self._imported_donor(
+            db_connection, tmp_path, config_hash=self._DONOR_HASH
+        )
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=None,
+        )
+
+        assert path is None, "an unverified path must not be recorded"
+        assert sha256 == self._DONOR_HASH
+        assert reason is not None
+        assert "could not be VERIFIED" in reason
+
+    def test_an_unknown_donor_hash_is_not_a_refusal(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """A donor with no provenance and no warm-start row pre-dates all of this."""
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._CHANGED,
+        )
+
+        assert path is None
+        assert sha256 is None
+        assert reason is not None
+        assert "no recorded config identity" in reason
+
+    def test_a_retrained_donor_is_never_refused_on_its_ancestors_hash(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 THE DESIGN DECISION, asserted so it cannot be "simplified" away.
+
+        A SAP3-retrained donor's recorded hash is CARRIED FORWARD from its
+        ancestor — it does not describe that donor's own configuration. ⛔ So
+        comparing the installed template against it would refuse on a hash
+        belonging to a DIFFERENT artifact. T2's own "Out" bullet covers this: the
+        donor's own hash is genuinely unknown, which is a NULL-with-reason.
+        """
+        mid = _seed_model(db_connection)
+        sid = _seed_station(db_connection)
+        ancestor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        donor = _seed_artifact(db_connection, tmp_path, mid, sid)
+        TestRetrainOfARetrain._gen1_as_the_flow_writes_it(
+            db_connection, donor, ancestor
+        )
+
+        # The installed hash deliberately differs from the carried-forward one.
+        path, sha256, reason = resolve_donor_config(
+            db_connection,
+            donor,
+            installed_config_path=self._INSTALLED,
+            installed_config_sha256=self._CHANGED,
+        )
+
+        assert path is None
+        assert reason is not None
+        assert "produced by SAP3" in reason, (
+            "a retrained donor must resolve through the inherited branch, not be "
+            "refused on a hash that belongs to its ancestor"
         )
