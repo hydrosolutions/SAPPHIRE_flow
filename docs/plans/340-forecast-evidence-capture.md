@@ -1,12 +1,16 @@
 ---
-status: DRAFT
+status: PARTIAL
 created: 2026-09-24
+revised: 2026-09-26
 plan: 340
 title: Immutable forecast evidence capture for CHWRR
 depends_on: []
 blocks: [341, 342, 343, 344]
 related: [035, 147, 317]
-reviews: []
+reviews:
+  - "2026-09-26 independent gpt-6-astra status/dependency review — no findings"
+  - "2026-09-26 independent gpt-6-sol repository review — no findings"
+  - "2026-09-26 additional independent gpt-5.6-terra high-risk review — no findings"
 open_decisions:
   - CHWRR will set evidence retention to at least six years after forecast valid time. The Mac mini test deployment has no separate backup volume, so its publication gate stays closed. DHM will configure a separate volume; confirm its path, encryption and capacity before CHWRR publication is activated. Plan 344 adds the longer-term cold archive and diagnostic replay.
 source: 2026-09-24 owner — retain the as-used evidence from the first Nepal forecast runs so later errors can be diagnosed.
@@ -16,7 +20,7 @@ source: 2026-09-24 owner — retain the as-used evidence from the first Nepal fo
 
 ## Status and scope
 
-**DRAFT — not implementable.** This is the independent first slice of the CHWRR post-event work. It captures evidence before mutable observations, thresholds, forcing or model references change. Plan 341 adds human forecast publication, Plan 342 adds the alert evaluation and decision ledger, Plan 343 verifies outcomes, and Plan 344 adds long-term cold archive and replay. The earlier combined Plan 340 was split so this plan has no functional dependency on human authentication. Database migration, retention and model input provenance make it high-risk under `docs/workflow.md`.
+**PARTIAL — implementation landed; deployment proof remains open.** T1's capture and migration merged in PR #306, T2's retention guards and protected-backup/restore tooling merged in PR #311, and T3's handoff merged in PR #312. The synthetic six-station capture and small clean-volume restore verify the software path. T2's Nepal-sized capacity and restore-time measurement, a monitored daily backup on a separately mounted encrypted DHM target, and a fresh protected restore there have not happened. The Mac mini has no separate target, so CHWRR publication remains disabled. Do not mark this plan COMPLETE until the T2 field evidence and the exit gate are recorded and checked. This is the independent first slice of the CHWRR post-event work; Plan 341 adds human forecast publication, Plan 342 adds the alert evaluation and decision ledger, Plan 343 verifies outcomes, and Plan 344 adds long-term cold archive and replay. The earlier combined Plan 340 was split so this plan has no functional dependency on human authentication. Database migration, retention and model input provenance make it high-risk under `docs/workflow.md`.
 
 Current forecast rows hold a weather cycle and model artifact ID but cannot reconstruct the exact model-ready observation and forcing arrays or the QC and threshold configuration used. `observations` and `station_thresholds` are upserted. A later change cannot reliably recover what a past run saw. Do not claim completeness for pre-migration forecasts.
 
@@ -51,6 +55,8 @@ Current forecast rows hold a weather cycle and model artifact ID but cannot reco
 **In / Out.** In: CHWRR-set `evidence_retention_days` with a minimum of 2,192 days after forecast valid time (covering any six-calendar-year span), cleanup exclusion for evidence-linked outputs/snapshots/artifact and image bytes, protected backup target outside the active database volume, backup-freshness health signal, one representative restore and a six-year capacity estimate. The protected backup manifest and restore test must include snapshot and artifact blobs plus pinned runtime image bytes by digest; a database-only dump is insufficient. Add an append-only preservation attestation for an earlier T1 run only after its full chain passes restore verification, leaving the original capture-time status unchanged. The attestation binds forecast ID, capture-manifest hash, artifact/image digests, protected backup identity and restore-check result/time. Expose both immutable `capture_status` and a derived `effective_preservation_status` with attestation ID and remaining reasons: it becomes complete only when every capture gap is covered by verified retained material; an absent/stale/unverifiable attestation or any other gap remains incomplete. Backup freshness remains a separate live health gate. Record the backup location and the no-cleanup activation gate in `docs/standards/cicd.md`. Out: cold Parquet/object-store tier, six-year-old replay, a new object-storage service without demonstrated need. Retention configuration may be increased by CHWRR but never set below the floor; leave deletion disabled until Plan 344's linked-record restore passes.
 
 **Verification.** Focused config/cleanup and restore checks; below-floor retention is rejected, a seeded evidence/output/artifact/image chain survives cleanup and database-volume replacement, missing/stale protected backup blocks publication activation, and a representative Nepal-sized capacity and restore-time measurement is recorded. A T1 run initially incomplete only for unpinned image bytes gains a complete effective-preservation view after a valid attestation without changing its capture status; missing image bytes, a mismatched manifest or another unresolved capture gap leave it incomplete.
+
+**Remaining field acceptance.** On the DHM deployment target, record its path, separate-device and encryption checks, six-station daily growth, full-dump capacity estimate, monitored backup schedule, and measured backup/clean-restore duration. Run a fresh protected backup and restore of representative captured forecasts before closing this task or enabling the publication gates. The local small-database restore and synthetic sizing do not satisfy this field check.
 
 **Pre-change.** RED: the existing backup defaults to seven copies, and the architecture's future hot/cold cleanup does not preserve a six-year forecast-evidence chain.
 
