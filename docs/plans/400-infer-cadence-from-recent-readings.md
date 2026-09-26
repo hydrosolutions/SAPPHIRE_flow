@@ -18,8 +18,9 @@ source: 2026-09-25 — the owner, after an independent review of Plan 323 found 
 
 **DRAFT — redesigned 2026-09-26.** The first draft widened the check window to 24 h. Both
 independent reviews found that doing so changes what the rules compare — not only how the interval
-is inferred — and the owner chose the narrower design below. Four review rounds have run (§ Review
-record), all NOT READY, all folded; **the latest fold is unreviewed.** ⛔ No implementation until
+is inferred — and the owner chose the narrower design below. Five review rounds have run (§ Review
+record), the fifth (round 6) READY from both reviewers, with low findings folded since; **that fold is
+unreviewed.** ⛔ No implementation until
 an independent review of this exact state is complete and the orchestrator sets READY. It runs
 **after Plan 323**.
 
@@ -145,9 +146,9 @@ time (Plan 323 § 10). That is an operability defect, not a robustness nicety.
 - **One inferred cadence per group, used by every selection consumer.** `_run_qc_task` infers the
   cadence once from the fetched timestamps and passes it to **both** `Stage1QualityChecker.check`
   and `resolve_selection`, so the rules that run and the zero-rule record agree by construction —
-  the property Plan 272 T3 built — and by Plan 323 T4's "could any rule judge it" decision, which
-  takes `resolve_selection`'s result rather than inferring its own cadence, so it sees the
-  look-back cadence through the same keyword. Mechanism: an optional keyword `time_steps: Mapping[tuple[
+  the property Plan 272 T3 built — and by Plan 323 T4's new checker method (flags plus the judged
+  set), which receives the same inputs as `check`, so the same `time_steps` keyword reaches it and
+  its "could any rule judge it" decision uses the look-back cadence. Mechanism: an optional keyword `time_steps: Mapping[tuple[
   StationId, str], timedelta | None] | None = None`; when `None`, both infer from the observations
   exactly as today. **A group absent from a non-`None` mapping** is inferred from its observations
   as today — the flow always supplies every group, so the fallback only protects other callers. ⇒
@@ -242,9 +243,6 @@ record). It must fail on that status, not on a fixture or config key.
   gives a verdict, `max_readings = 3` leaves `QC_UNCHECKED` — so the setting is proven to travel
   from the config file through the flow (`flows/ingest_observations.py:934-943`) to `_run_qc_task`,
   not only when passed to the task directly.
-- **Datum-less water level (Plan 323 D4):** the missing-hour fixture as water_level with no datum —
-  the look-back infers 3600 s, the lone reading is judged by nothing, and it is `QC_UNCHECKED` in
-  an `observation_qc_unjudged` record, not `QC_PASSED`.
 - **Missing key:** a non-`None` `time_steps` mapping without the group falls back to inferring
   from the observations.
 - **Cadence switch (§ 2):** a series that moves from 600 s to 3600 s keeps inferring 600 s until
@@ -254,10 +252,10 @@ record). It must fail on that status, not on a fixture or config key.
   by the look-back, runs `rate_of_change` across that gap — asserted and named, not prevented.
 - **Fail-closed kept:** a group with one distinct reading in the look-back stays `QC_UNCHECKED`
   with `no_cadence_inferable`.
-- **No silent pass on the look-back path (Plan 323 T4's guard):** Codex's round-4 fixture —
-  water_level, no datum, the missing-hour series — is stored `QC_UNCHECKED` with reason
-  `no_check_could_run`, not `QC_PASSED`; the same series with a datum gets a real verdict from
-  `range_check`.
+- **No silent pass on the look-back path (Plan 323 D4/T4's guard):** the missing-hour fixture as
+  water_level with no datum — the look-back infers 3600 s, the lone reading is judged by nothing,
+  and it is stored `QC_UNCHECKED` in an `observation_qc_unjudged` record (`no_check_could_run`),
+  not `QC_PASSED`; the same series with a datum gets a real verdict from `range_check`.
 - **Look-back bound on catch-up:** a DHM recovery whose window starts more than `lookback` ago still
   infers its cadence from the window's own readings.
 - **Unchanged where it should be:** a gap-free 600 s group selects the same rules as before, and the
@@ -312,9 +310,10 @@ alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measu
   received in the period. `RAW` reported separately. Reported per parameter; discharge and
   water_temperature must reach at least 95%; water level is reported with its datum status.
 - **Records.** After deploy, while the station was delivering, **no** `observation_qc_unchecked`
-  record for these stations — neither `no_cadence_inferable` nor a cadence that is a multiple of
-  3600 s. `observation_qc_unjudged` records (`no_check_could_run`, Plan 323 D5) are counted
-  separately and expected only for datum-less water level.
+  record for these stations with reason `no_cadence_inferable` or a cadence that is a multiple of
+  3600 s. An off-grid cadence (e.g. 3900 s from a jittered timestamp) is allowed but listed with
+  its readings. Unjudged readings (`observation_qc_unjudged`, Plan 323 D5) are counted as distinct
+  observation ids — records count runs — and expected only for datum-less water level.
 - **Watchdog.** Its state is **reported, not required**: the watchdog alarms on a zero-rule record
   from *any* station (`ops/watchdog.py:220`), so a new or silent station elsewhere can keep it
   failing for reasons this plan does not own.
@@ -325,7 +324,7 @@ alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measu
   every group whose inferred cadence differs (cadence switches included, § 2), and the
   `QC_SUSPECT`/`QC_FAILED` verdicts from `rate_of_change` and `spike` on readings the old
   inference left zero-rule — counted, with examples, the DHM catch-up path separately. Plus the
-  count of `no_check_could_run` entries from the live records.
+  distinct observation ids in the live `observation_qc_unjudged` records.
 - **Cost.** `ingest-observations` flow-run duration, median and maximum. If the median more than
   doubles, report it to the owner before closing.
 
@@ -404,3 +403,9 @@ alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measu
   Claude: Plan 323 T4's decision is a third selection consumer (§ Design); the RED test names
   discharge; § Status was stale. Codex: no test proved the configuration reaches the scheduled flow
   (T2).
+- **2026-09-26 — round 6: independent Claude review and independent Codex review of `a2f32b5f`:
+  both READY for this plan (Claude with LOW findings), NOT READY for 323 and 403.** Folded: § Design
+  no longer says 323 T4's decision takes `resolve_selection`'s result (it returns a count) — it is a
+  new checker method receiving the same `time_steps`; the T4 records gate says what an off-grid
+  record means; unjudged readings are counted as distinct ids; the duplicated datum-less test
+  bullets merged.

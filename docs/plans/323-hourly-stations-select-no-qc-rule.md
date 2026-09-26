@@ -17,7 +17,7 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Five review rounds have run — a Claude review on 2026-09-25, then four
+the orchestrator sets READY. Six review rounds have run — a Claude review on 2026-09-25, then five
 Claude + Codex rounds on 2026-09-26 — all NOT READY, all findings folded (§ Review record). Owner
 decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
 
@@ -261,9 +261,12 @@ green, but three DHM tests silently flip a reading from passed to unchecked beca
 only "not `RAW`" (T4 pins them).
 
 The owner moved the fix into this plan (T4) so no window exists in which hourly readings pass
-unjudged; Plan 400 relies on it. The lasting fix for water level is a datum — **Plan 403** (owner,
-2026-09-26) onboards BAFU gauge-zero datums from the hydrological yearbook, after which
-`range_check` judges every water-level reading.
+unjudged; Plan 400 relies on it. The lasting fix for Swiss water level is a datum — **Plan 403**
+(owner, 2026-09-26) onboards BAFU gauge-zero datums from the hydrological yearbook, after which
+`range_check` judges every water-level reading. ⚠️ **DHM is not covered by 403**: a gauge-zero-
+referenced DHM binding requires a null datum (`adapters/dhm.py:108-110`), so after T4 its
+water-level readings with no neighbour stay `QC_UNCHECKED`. **No plan owns that** — recorded for
+the owner; a likely fix is to treat a `gauge_zero` binding as datum 0 / unit `m` for QC.
 
 ### D5 — how an unjudgeable reading is reported. **⚖️ CLOSED — owner, 2026-09-26: record it, do not alarm on it.**
 
@@ -277,7 +280,22 @@ only unjudgeable readings hide an earlier run's real alarm and post a false reco
 groups go into a **separate** health record, `check_type = observation_qc_unjudged`, which the
 watchdog does not probe. `check_type` is a text column (`db/metadata.py:1984`), so no migration.
 The existing record and its alarm keep their meaning: no cadence could be inferred, or no rule
-declares it.
+declares it — ⚠️ **including its counts**: today every `QC_UNCHECKED` verdict feeds
+`counts["unchecked"]` (`flows/ingest_observations.py:553-557`), which the zero-rule record carries
+as `observations_unchecked` (`:300`) and the Slack alert prints as zero-rule readings
+(`ops/watchdog.py:1641-1664`). Unjudged readings are counted separately
+(`observations_unjudged`, carried only in the new record).
+
+⚠️ **A record counts runs, not readings.** An unjudged reading stays `QC_UNCHECKED`, so Plan 317
+re-examines — and re-reports — it on every run while it is in the window, and the LINDAS adapter
+ignores `since` (`adapters/hydro_scraper.py:109,122`), so that is every 5 minutes. ⇒ The new record
+carries the **observation ids** it reports, and every measurement of unjudged readings in these
+plans counts **distinct ids**, never records.
+
+⚠️ **Rollback.** `store/pipeline_health_store.py:43` parses `PipelineCheckType(row["check_type"])`,
+so after a code rollback stored `observation_qc_unjudged` rows would make the unfiltered
+`/api/v1/health/detail` and the health dashboard fail. Rolling T4 back therefore includes deleting
+those rows first.
 
 ## Tasks
 
@@ -393,36 +411,49 @@ row (D2 — no plan yet). ⛔ Computing climatological baselines (§ 12). ⛔ Re
 ### T4 — A reading passes only if some check could judge it (D4, D5)
 
 **Outcome.** No reading is stored `QC_PASSED` unless at least one selected, non-skipped rule
-actually evaluated it; otherwise it is `QC_UNCHECKED`, recorded, and not alarmed on.
+actually evaluated it; otherwise it is `QC_UNCHECKED`, recorded in its own health record, and not
+alarmed on.
 
 **In.**
 - 🔴 **"Could evaluate" comes from the rule functions themselves**, not from a list kept beside
-  them: each `_apply_*` reports *not evaluable* separately from *clean* — so every precondition the
-  function already has counts, and a new one cannot drift out of sync: a missing value
-  (`services/qc.py:115`, `:137`), a missing or valueless neighbour (`:137`, `:220-223`), the
-  relative `spike`'s zero reference (`:241-243`), a missing baseline (`:270-272`), and
-  `frozen_sensor`'s run resets and `exclude_at_or_below`. ⛔ What each rule *computes* does not
-  change.
-- `_aggregate_qc_status` (`flows/ingest_observations.py:152-163`) becomes per reading: `QC_PASSED`
-  needs at least one evaluating rule. The decision is made once and used for both the stored
-  status and the report, and it takes the **selection** (`resolve_selection`'s per-group rule list)
-  as input rather than inferring a cadence of its own — so Plan 400 can hand it the look-back
-  cadence through the same path.
-- Reporting (D5), for **pending** readings only — a context row already judged in an earlier run
-  is not re-reported: groups with a pending reading no rule could judge go into a new
-  `observation_qc_unjudged` health record (`PipelineCheckType`, `types/enums.py:236` area) with
-  reason `no_check_could_run`, written like the Plan 318 record (`:264-331`) and never probed by
-  the watchdog. `ZeroRuleGroup`'s docstring (`:237-247`) and the `qc.no_rules_selected` log event
-  (`:514`) stay true for the zero-rule reasons; the unjudged case gets its own log event.
+  them: each `_apply_*` in `services/qc.py` reports *not evaluable* separately from *clean* (an
+  internal return value; ⛔ what each rule computes and flags does not change). Every precondition
+  the functions already have therefore counts: a missing value (`:115`, `:137`), a missing or
+  valueless neighbour (`:137`, `:220-223`), the relative `spike`'s zero reference (`:241-243`), a
+  missing baseline (`:270-272`). **`frozen_sensor`, defined per reading:** a reading is judged by it
+  only if it lies within a stretch of at least `min_consecutive` distinct instants whose effective
+  values (not `None`, not excluded by `exclude_at_or_below`) exist — enough context to tell stuck
+  from not stuck; a stretch broken by a `None` or an excluded value restarts.
+- **How the result leaves the checker, without touching its contract.** `Stage1QualityChecker`
+  gains a method returning both the flags and the set of judged observation ids (a frozen
+  dataclass); `check` delegates to it and still returns only the flags. ⇒ The `QualityChecker`
+  Protocol (`protocols/stores.py:1055-1064`), onboarding (`services/onboarding.py:796`) and
+  `scripts/dhm_precip/` (`qc_mask.py:199,204`, `build_dudh_koshi_handover.py:175` — no pyright gate
+  there) are unchanged. `resolve_selection` is unchanged (it returns `(cadence, count)`,
+  `services/qc.py:77-108`); the new method receives the same inputs `check` does, so Plan 400's
+  look-back cadence reaches it through the same keyword.
+- `_run_qc_task` calls the new method; `_aggregate_qc_status` (`flows/ingest_observations.py:152-163`)
+  becomes per reading: `QC_PASSED` needs the reading in the judged set.
+- **Reporting (D5), pending readings only** — a context row already judged in an earlier run is not
+  re-reported: a new `PipelineCheckType.OBSERVATION_QC_UNJUDGED` (`types/enums.py`, beside
+  `OBSERVATION_QC_UNCHECKED` at `:236`) and a record written like the Plan 318 one
+  (`flows/ingest_observations.py:264-331`), carrying `reason = "no_check_could_run"`, the groups,
+  the reported **observation ids**, and `observations_unjudged`. The zero-rule record's
+  `observations_unchecked` excludes them (D5). The watchdog does not probe the new type.
+- Text that would otherwise become false: the enum comment at `types/enums.py:229-235` ("unlike every
+  other member…") now describes two presence-type members; `ZeroRuleGroup`'s docstring
+  (`flows/ingest_observations.py:237-247`) and the `qc.no_rules_selected` log event
+  (`flows/ingest_observations.py:514`) stay for the zero-rule reasons, and the unjudged case gets
+  its own log event.
 - The three DHM tests the round-5 review found flipping silently get a verdict assertion:
   `test_ingest_observations_dhm.py::…::test_six_hour_recovery_qcs_old_rows_with_preceding_context`
   (its `inside_id` row), `test_qc_exclusive_end_includes_latest_even_beyond_recent_window` and
-  `test_repeated_polls_advance_the_level_cursor` — each asserting the status it should now have.
+  `test_repeated_polls_advance_the_level_cursor`.
 
-**Out.** ⛔ Changing what any rule computes. ⛔ The watchdog's alarm logic (D5 keeps it untouched by
-using a separate record). ⛔ Onboarding's aggregation: it has the same hole (the first row of a
-datum-less water-level group) and **no plan owns it** — recorded for Plan 315's owner, whose scope is
-onboarding's zero-rule fail-open, not this. ⛔ Supplying datums (Plan 403).
+**Out.** ⛔ Changing what any rule computes or flags. ⛔ The watchdog's alarm logic. ⛔ The
+`QualityChecker` Protocol and `resolve_selection`'s return. ⛔ Onboarding's aggregation: it has the
+same hole (the first row of a datum-less water-level group) and **no plan owns it** — recorded for
+Plan 315's owner, whose scope is onboarding's zero-rule fail-open. ⛔ Supplying datums (Plan 403).
 
 **Pre-change.** A RED test through `_run_qc_task` with the shipped `config.toml` (after T2): an
 hourly water_level group, **no datum**, reading X at −1 h already `QC_UNCHECKED` and a new reading at
@@ -431,21 +462,31 @@ and `spike`; X has no previous reading, so neither can judge it. Today X is stor
 must fail on X's status.
 
 **Verification.**
-- X is stored `QC_UNCHECKED` and reported in an `observation_qc_unjudged` record with
-  `no_check_could_run`; no `observation_qc_unchecked` record is written for it; the 0 h reading
-  gets a real verdict from `rate_of_change`.
-- **A valueless neighbour:** the same group where the reading before 0 h exists but has
-  `value = None` — 0 h is not judgeable, `QC_UNCHECKED`.
+- X is stored `QC_UNCHECKED`; an `observation_qc_unjudged` record lists X's id with
+  `no_check_could_run`; no zero-rule record is written and `observations_unchecked` does not count
+  X; the 0 h reading gets a real verdict from `rate_of_change`.
+- **A valueless neighbour:** the reading before 0 h exists with `value = None` — 0 h is not
+  judgeable, `QC_UNCHECKED`.
+- **Relative spike, zero reference:** `spike` with a `tolerance` and a previous value of 0 reports
+  *not evaluable*, not *clean* (a unit test on the rule function — for discharge, `range_check`
+  still judges the reading).
+- **`frozen_sensor` per reading:** a clean, non-flat 600 s datum-less water-level group of at
+  least 12 distinct instants — every reading in the stretch is judged and passes; the same group
+  broken by a `None` into stretches shorter than 12 — readings in them are not judged by
+  `frozen_sensor`; values excluded by `exclude_at_or_below` are not judged by it. Existing
+  `frozen_sensor` flags are unchanged (asserted on the existing tests).
 - **Context rows are not re-reported:** an already-`QC_PASSED` oldest reading with a judgeable
   pending successor produces no unjudged record.
-- The same case **with** a datum: X gets a real verdict from `range_check` — the rule does not
-  over-reach.
-- A 600 s datum-less water_level group with **fewer than 12** distinct instants (so `frozen_sensor`
-  cannot evaluate) whose oldest pending reading has no neighbour: `QC_UNCHECKED`,
-  `no_check_could_run`.
-- The watchdog still alarms on an `observation_qc_unchecked` record and ignores an
-  `observation_qc_unjudged` one (run through `run_once` with fake probes).
-- Every existing ingest and QC test passes; the three DHM tests above now assert the verdict.
+- The same case **with** a datum: X gets a real verdict from `range_check`.
+- A 600 s datum-less water-level group with **fewer than 12** distinct instants whose oldest pending
+  reading has no neighbour: `QC_UNCHECKED`, `no_check_could_run`.
+- **The watchdog is isolated from the new record, through the real probe** (the stub-transport
+  pattern of `tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`, not injected fakes, which
+  would return whatever they are given): an older `observation_qc_unchecked` record plus a newer
+  `observation_qc_unjudged` one ⇒ the alarm stands and no false recovery is posted; unjudged-only
+  ⇒ silence. The probe URL keeps `check_type=observation_qc_unchecked`.
+- `check` still returns the same flags as before on every existing QC test; every existing ingest
+  and QC test passes; the three DHM tests above now assert the verdict.
 
 ### T5 — Prove it on staging (T2 + T4 deployed together)
 
@@ -462,7 +503,8 @@ here:
   (T1): without a datum its unjudged readings are the accepted D4 leftover until Plan 403.
 - **Every** `observation_qc_unchecked` group for the five stations that day carries reason
   `no_cadence_inferable` or an off-grid cadence (a gap — Plan 400's leftover), never
-  `no_rule_declares_it` at 3600 s; `observation_qc_unjudged` groups are counted separately.
+  `no_rule_declares_it` at 3600 s. Unjudged readings are counted as **distinct observation ids**
+  from the `observation_qc_unjudged` records (D5 — records count runs), per parameter.
 - ⛔ *Not* "the watchdog stops warning": gap-caused `no_cadence_inferable` records still alarm
   until Plan 400 (§ 10, D3).
 
@@ -487,6 +529,8 @@ where the rule kinds are described (`docs/standards/wmo.md` defers observation Q
 - **A gap inside a known cadence** (§ 10) is answered by Plan 400's inference change; until it
   lands, such checks stay `QC_UNCHECKED` and the watchdog reports them.
 - Nearest-rule matching is commissioned by no plan (D3).
+- `docs/spec/types-and-protocols.md`: the new checker method and its result type, and the
+  `PipelineCheckType` member.
 - **A selected rule that could not judge a reading** leaves it `QC_UNCHECKED`, recorded as
   `no_check_could_run` in its own health record and not alarmed on (D4, D5) — never a pass; datums
   (Plan 403) remove most of these for water level.
@@ -586,3 +630,12 @@ returns the entry.
   case (→ separate record type); three DHM tests flip silently (pinned); T4's function must take
   the selection, not infer its own cadence (Plan 400's third consumer); onboarding's same hole has
   no owner (recorded for 315); the 600 s fixture needs fewer than 12 instants.
+- **2026-09-26 — round 6: independent Claude review and independent Codex review of `a2f32b5f`:
+  both NOT READY for this plan (both READY for 400); all findings folded, no decision needed.**
+  Both: T4 had no path for "not evaluable" out of the checker and misdescribed `resolve_selection`
+  (→ a new checker method; Protocol, `check` and `resolve_selection` unchanged); `frozen_sensor`
+  needed a per-reading definition and clean-run tests; fake watchdog probes cannot prove the record
+  isolation (→ real probe, stub transport). Claude: unjudged readings would inflate the zero-rule
+  alarm's count (→ `observations_unjudged`); records count runs, not readings (→ ids in the record,
+  distinct-id measurements); DHM gauge-zero stations are datum-less and no plan owns them
+  (recorded); enum comment, spec and file names for citations; rollback must delete the new rows.

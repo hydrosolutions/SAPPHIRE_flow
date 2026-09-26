@@ -734,7 +734,7 @@ exit criteria — Plan 212 owns that deeper screening.
   uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
-  — `DRAFT`, no open decisions, `blocks: [400]`; **the latest fold is unreviewed** (five
+  — `DRAFT`, no open decisions, `blocks: [400]`; **the latest fold is unreviewed** (six
   review rounds so far, all NOT READY, all folded). Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
@@ -749,14 +749,15 @@ exit criteria — Plan 212 owns that deeper screening.
   the owner accepted that leftover (D3); 400 closes it. ⛔ Plan 264 does NOT own
   nearest-rule matching. 🔴 **D4/T4 (owner 2026-09-26): a reading passes only if some
   selected check could actually judge it** — else `QC_UNCHECKED`, reason `no_check_could_run`,
-  in a separate health record the watchdog does **not** alarm on (D5). Wide reach: **no Swiss
+  in a separate health record the watchdog does **not** alarm on (D5), counted by distinct
+  reading ids, not records. Wide reach: **no Swiss
   river station has a water-level datum**, so water level runs only neighbour rules fleet-wide;
   datums are Plan 403. Hourly rows and the guard deploy together (T5). ⚠️ 313 and 315 do not yet
   carry the reverse notes.
 
 - **400** — [Work out a series' reporting interval from its recent readings, not from the two-hour check window](400-infer-cadence-from-recent-readings.md)
-  — `DRAFT`, redesigned 2026-09-26, **latest fold unreviewed** (four review rounds so far),
-  `depends_on: [323]`; number granted
+  — `DRAFT`, redesigned 2026-09-26; **round 6: READY from both reviewers**, low findings
+  folded since (unreviewed); `depends_on: [323]`; number granted
   by the owner 2026-09-25. Infers each group's cadence from a **separate, configurable
   look-back** (`[qc_rules.cadence_inference]`: last 50 distinct readings within 30 days by
   default, SQL `LIMIT`) while the rules keep running on the 2 h window — the owner's
@@ -771,7 +772,8 @@ exit criteria — Plan 212 owns that deeper screening.
   in-flight rewrite.
 
 - **403** — [Give Swiss river stations their surveyed gauge-zero datum](403-swiss-river-gauge-zero-datums.md)
-  — `DRAFT`, unreviewed; number granted by the owner 2026-09-26. BAFU delivers water level in
+  — `DRAFT`, `depends_on: [323]` (T4 only); one review round, NOT READY, folded (unreviewed);
+  number granted by the owner 2026-09-26. BAFU delivers water level in
   m a.s.l., and the water-level range check is relative to the gauge zero; Plan 101 skips the
   datum-dependent rules "until the datum is set" — and for **rivers it never was**: CAMELS
   onboarding forces `None` for every river, so water level on all ~142 Swiss stations is
@@ -779,7 +781,9 @@ exit criteria — Plan 212 owns that deeper screening.
   Sources each Pegelnullpunkt from the **hydrological yearbook** (owner), **validates it
   against the station's own readings** (a wrong datum fails every reading), stores it in the
   existing `[onboarding.water_level_datums_masl]` table, applies it to rivers, and sets it on
-  existing rows through a datum-only update (not a re-onboarding). ⚠️ River water-level
+  existing rows through a datum-only command — validated at apply time, tenant-checked and
+  audited like onboarding's writes (not a re-onboarding). A stage-relative LINDAS series gets
+  datum 0 / `m`. ⚠️ River water-level
   baselines are still never computed, so `gross_outlier` stays inert there.
 
 - **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
