@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-26
 plan: 401
 title: A reviewer access token for the review dashboards — read everything a review needs, for one client's stations, write nothing
-scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do.
+scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do (T2 only aligns one out-of-scope error message, which hid nothing but existence).
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
 blocks: [402, 404]
@@ -206,6 +206,10 @@ reviewer tokens behave exactly like consumers on every existing route.
 `station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW;
 `TestRouteAuthMatrixExhaustive` gains a reviewer dimension. No REVIEW route exists until Plan 402,
 so the dependency is also exercised on a test-only app.
+`api/routes/api_forecasts.py` — `GET /api/v1/forecasts/{id}` answers an out-of-scope forecast with the
+same 404 **body** as an absent one ("Forecast not found"), instead of "Station not found", which today
+confirms that another scope's forecast exists (security review, 2026-09-26). This changes an error
+text only — the one change here that consumer tokens also see.
 `tests/integration/api/test_access_token_auth.py` — the cross-tenant HTTP cases parameterized.
 
 **Out:** gating or reclassifying any existing route.
@@ -216,7 +220,7 @@ with `require_principal` admits a consumer (the test asserting 403 fails), and o
 gap. T2 switches both to `require_reviewer`.
 
 **Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — on the test-app REVIEW route, reviewer → 200 for an in-scope station and 404 for an out-of-scope
-one (a REVIEW route applies the principal's station scope like any other); reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
+one (a REVIEW route applies the principal's station scope like any other); reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; for consumer and reviewer tokens, `GET /api/v1/forecasts/{id}` returns an identical status **and body** for an absent forecast and an out-of-scope one; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
 
 ### T3 — issuing and managing reviewer tokens
 
@@ -305,6 +309,8 @@ downgrade and rollback only, and would also delete any dashboard tokens already 
 
 - 2026-09-26 — drafted at the owner's request. Decisions: D1 (a third role, `reviewer`), D2 (a
   consumer plus REVIEW routes; no unpublished-forecast access), D3 (publishing is a named person), D4 (confirms Plan 268 D11: the DHM gauges get their own tenant; the Nepal dashboard's token binds to it only).
+- 2026-09-26 — the owner-commissioned security review found one minor issue (an out-of-scope
+  forecast's 404 revealed its existence); fixed in T2.
 
 ## Dependency graph
 

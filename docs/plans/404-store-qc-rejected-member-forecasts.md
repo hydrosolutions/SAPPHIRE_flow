@@ -200,7 +200,7 @@ import or argument error.
 **Outcome:** `GET /api/v1/stations/{id}/rejected-forecasts` serves the record per D4.
 
 **In:** the route next to Plan 402's REVIEW routes; response models reusing `QcFlagResponse`; the
-route-matrix entry (REVIEW); Plan 402's map contract file and explicit route list; the consumer page
+route-matrix entry (REVIEW); Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
 active); `docs/conventions.md` § API routes; `docs/standards/security.md` (the REVIEW-class route
 list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API paragraph). The gate

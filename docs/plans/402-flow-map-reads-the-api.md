@@ -9,7 +9,7 @@ depends_on: [401]
 blocks: [404]
 related: [143, 147, 198, 235, 251, 253, 264, 269, 272, 303, 323, 324, 329, 340, 341, 404]
 open_decisions: [D9]
-closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D12, D13]   # D2-D4 2026-09-25; the rest 2026-09-26
+closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D12, D13, D14]   # D2-D4 2026-09-25; the rest 2026-09-26
 superseded_decisions: [D8, D11]
 source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepal DHM: see which readings QC rejected and why, judge the thresholds, compare models' skill). 2026-09-26 — owner: the map reads the API, not an extended snapshot; then, instead of an admin token, a dedicated reviewer token per dashboard (Plan 401). Measured on origin/main and the staging database.
 ---
@@ -226,6 +226,14 @@ consumers see them too. This follows the owner's 2026-09-04 decision for forecas
 flagged forecast needs to see why. It is the **one** change to what a consumer can read in this
 plan, and T4 records it in `security.md` beside that section.
 
+### D14 — the map contract carries a version, and every change to it is visible. **⚖️ CLOSED — owner, 2026-09-26.**
+
+The committed file's `info.version` is a hand-maintained constant (start `"1.0"`), never the package
+version. Additive changes (a new field, route or enum member) bump the minor number; any other change
+bumps the major number and is announced to the map session **before** deploy. The file never changes
+without a bump; the drift test asserts it. Plans 341 and 404, which regenerate the file, follow the
+same rule.
+
 ## Endpoint contract
 
 Both new routes are `GET`, read-only, registered on a router gated with `Depends(require_reviewer)`
@@ -298,8 +306,10 @@ out-of-scope station → 404.
 (`rule_id: str`, `rule_version: str`, `status: Literal["qc_passed", "qc_suspect", "qc_failed", "qc_unchecked"]` — the
 values a `QcFlag` can hold (`types/domain.py:94-101` rejects `raw` and `missing`) — and `detail: str | None`) replaces the untyped `qc_flags` of
 `ObservationResponse` and types the new `ForecastSummary.qc_flags` (`[]` when none; inherited by
-`ForecastDetail`). `ObservationResponse.qc_rule_version` (nullable, the stored value). The JSON on the
-wire for observations is unchanged by the typing.
+`ForecastDetail`). `ObservationResponse.qc_rule_version` (nullable, the stored value). The row-level
+`qc_status` of `ObservationResponse` and `ForecastSummary` is typed as a `Literal` over every
+`QcStatus` value — it can hold `raw` and `missing`, which a flag cannot. The JSON on the wire for
+observations is unchanged by the typing.
 
 ## Tasks
 
@@ -397,10 +407,18 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   on every operation, and each operation's description states which token roles it admits
   (REVIEW for the two new routes) and that an out-of-scope station returns 404 (detail routes) or a
   filtered result (the station list). A drift test in `tests/unit/api/` asserts the file equals the
-  regenerated one, that the route list holds no other route, and that every operation carries the
-  bearer requirement.
-- `docs/spec/api-v1-review.md`, a short consumer page: `qc_unchecked` ≠ passed; `raw` = not yet
-  checked; the matching rule of D4 (candidates; the rules served are the **current** resolution, not
+  regenerated one, that the route list holds no other route, that every operation carries the
+  bearer requirement, and that `info.version` is the D14 constant. The generator also adds the
+  401/403/404 responses (403 on the two REVIEW routes) referencing the existing `ErrorResponse`
+  (`api/schemas.py:18`), since those errors use `{"error": …, "detail": null}` (`api/errors.py:10`)
+  while 422 keeps FastAPI's `{"detail": [...]}`.
+- `docs/spec/api-v1-review.md`, a short consumer page: the D14 version rule; the error envelope and
+  the 422 exception; query conventions — ISO-8601 times with naive meaning UTC, `end` exclusive,
+  the `parameter` values, the forecast list's default window (last 7 days to request time), `limit`
+  ceilings, observations unpaginated; the skill metrics the service emits, each with its unit and
+  whether higher or lower is better, and that `season` names are deployment-configured; that
+  `/qc/rules` is deployment-global, the same document for every client's token; `qc_unchecked` ≠
+  passed; `raw` = not yet checked (so `qc_flags: []` on a `raw` forecast is not a pass); the matching rule of D4 (candidates; the rules served are the **current** resolution, not
   the thresholds behind past flags); severity; the `qc_rule_version` labels (`"1.2"`, `"1.2-datum"`,
   `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
   generations, not rule-set versions, and `-datum-skip` means two rules were skipped; a flag's `rule_version` is not a rule-set version — four observation kinds carry the
@@ -421,7 +439,10 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   appear on its own route (the rejecting rule only, on a gated tenant); a rejected **combined**
   forecast is visible on a gated tenant only through Plan 341's human review routes, never to a
   reviewer token; for a station in several groups that each hold an active artifact of one model,
-  the skill rows served are one of those artifacts' and may not be the one the forecast used.
+  the skill rows served are one of those artifacts' and may not be the one the forecast used; and
+  for a model reached through a group assignment while the station also holds an active
+  station-scoped artifact of it, the forecast uses the group artifact but the skill rows come from
+  the station artifact.
 - `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, D13's
   visibility decision beside § Input-quality visibility, and D6's precondition next to it (before
   DHM observations are readable by a Nepal consumer token, the owner decides whether flag `detail` is
@@ -488,7 +509,8 @@ After staging deploy (orchestrator), before the map is told:
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and every
    row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
    that row's model — choosing a station that is not in several groups holding an active artifact of
-   the same model (there the pick is arbitrary).
+   the same model (there the pick is arbitrary), and whose group-assigned models have no active
+   station-scoped artifact.
 3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
    that station, and 404 on `/skill` for another **existing** station; a temporary consumer token
    created for this check → 403. Then **delete both tokens by id** (Plan 401's single-token
@@ -522,6 +544,8 @@ After staging deploy (orchestrator), before the map is told:
 - A station in several groups that each hold an active artifact for the same model: the forecast
   path itself picks one arbitrarily, so "the artifact the forecast uses" is not defined there. A
   possible fault in forecasting, to be investigated separately (owner informed 2026-09-26).
+- A group-assigned model at a station that also holds an active station-scoped artifact of it: the
+  forecast uses the group artifact, the skill endpoint the station one; recorded on the consumer page.
 
 ## Changelog
 
@@ -532,6 +556,8 @@ After staging deploy (orchestrator), before the map is told:
   `345-forecast-lab-snapshot-v3-qc-and-skill.md`. Decisions D5–D7, D10, D12 (reviewer token,
   Plan 401; D11's admin token superseded), D13 (T3's fields visible to every role); D8 superseded.
   The DHM gauges get their own tenant (Plan 401 D4).
+  After the owner-commissioned API-contract review: D14 (the contract's version rule), the error
+  envelope and query conventions in the contract and consumer page, typed row-level `qc_status`.
   T5 removed: Plan 341 already records its cross-plan facts (PR #313); its one remaining duty moved
   to T4.
   QC-rejected member and group forecasts are not stored; surfacing them is Plan 404
