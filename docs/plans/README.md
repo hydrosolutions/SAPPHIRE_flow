@@ -404,7 +404,7 @@ exit criteria — Plan 212 owns that deeper screening.
   different plan has an open decision.*
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
   together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
-  Plans 264/268/269/301/303/304/315 remain DRAFT.
+  Plan 264 is **COMPLETE** (#315); Plans 268/269/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
     `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
     review). Fifteen of sixteen decisions closed; **D14 reopened** — the DHM daily QC
@@ -413,28 +413,18 @@ exit criteria — Plan 212 owns that deeper screening.
     tables (not independent evidence), and publishing a restricted tabulated value unless
     passed through a deliberately lossy transform. The delivery itself is **unpublishable**;
     never check an excerpt into the repo.
-  - **264** — QC rules select on network, not only parameter and cadence — `DRAFT`,
-    `blocks: [268]`. Adds a network dimension with most-specific-wins so a DHM rule set does
-    not collide with the Swiss one, plus a fail-closed policy for a rule set that resolves
-    nothing and the `rule_version` correction (D5, closed: fix it). **D4 open** —
-    configuration composition. Four rounds have each found a wrong repository claim in it;
-    the golden fixture in T4 must be captured before any DHM row reaches `config.toml`.
+  - **264** — QC rules select on network, not only parameter and cadence — **COMPLETE**,
+    merged in PR #315 (`dbbea4d9`, 2026-09-26); `blocks: [268, 269]`. Adds network-specific
+    selection with generic fallback, threads the station-network mapping through the checker,
+    selection reporter and offline DHM mask, records configured rule versions on flags, and
+    enforces that QC rules live in the shared base configuration. D4 is closed: hydromet rules
+    extend that shared list. The Swiss selector-equivalence fixture is committed.
   - **269** — Per-station QC thresholds declared in onboarding configuration — `DRAFT`,
-    `blocks: [268]`, all 5 decisions closed. Delivers the surface the owner's 268 D14 decision
-    requires and that neither sibling owns: `StationQcOverride` is a bare dataclass and every
-    live caller hard-codes `overrides=[]`, so a per-station ceiling cannot be declared at all.
-    **Four independent reviews across two rounds, all NOT READY**; revision 3 (2026-09-11) is
-    **UNREVIEWED**. R1 found no task ever wrote a row → owner dropped the DB tier to match
-    `docs/spec/types-and-protocols.md` (TOML now, DB at v1). R2 found it resolved against
-    `station_by_id` (the onboarding **batch**, not the registry) — which on the 5-basin staging
-    overlay would have **refused onboarding outright** — plus a third production entrypoint
-    (`scripts/onboard.py`) and a false claim of independence from 264. ⭐ Owner 2026-09-11:
-    fail-hard **splits by call site** — strict in onboarding, degrade-and-log on scheduled
-    ingest, because there the trigger is DB state (a renamed station) and it would halt ingest
-    fleet-wide. 🪤 The config surface is **base-`config.toml` only**: an overlay declaring the
-    array replaces it wholesale (`config/_overlay.py:50-56`), the same trap 268 T7 routes around.
-    🔴 **The persisted DB tier is now UNOWNED, deferred to v1**; when it lands the schema model
-    is `station_thresholds`, **not** `forecast_qc_overrides` (no PK, no timestamps).
+    unblocked by PR #315; `blocks: [268]`. Delivers the missing configuration and resolution
+    path for station-specific observation thresholds, plus safe pending-network handling and an
+    edit-time validator. The onboarding QC path, persistence and API remain out of scope; the DB
+    tier is deferred to v1 and currently unowned. The latest round-6 review findings are folded;
+    exact-state re-review is pending before READY.
   - **303** — DHM subdaily precipitation and temperature QC rules — `DRAFT`,
     `depends_on: [264, 272]`, blocked on Plan 301 T1's source interval/cadence contract. Adds
     only the DHM-network rule rows Plan 272 D4 requires; Plan 301 must not enable rainfall before
@@ -808,8 +798,7 @@ exit criteria — Plan 212 owns that deeper screening.
   reading (Plan 313's arithmetic) — within 2 h ordinarily, **not bounded on the DHM catch-up
   path**. 🔴 Relies on 323's new guard that a reading passes only if some selected check could
   actually judge it (`no_check_could_run`). ⚠️ Cannot end the leftover for datum-less water
-  level — that is Plan 403. ⚠️ Touches the same `check` signature as 264's
-  in-flight rewrite.
+  level — that is Plan 403. ⚠️ Uses the network-aware `check` signature merged in PR #315.
 
 - **403** — [Give Swiss river stations their surveyed gauge-zero datum](403-swiss-river-gauge-zero-datums.md)
   — `DRAFT`, `depends_on: [323]`; **READY from both reviewers in rounds 10 and 11** (round 11
