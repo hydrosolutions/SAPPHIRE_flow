@@ -16,9 +16,8 @@ source: 2026-09-26 — the owner, after the round-5 review of Plans 323/400 foun
 
 ## Status
 
-**DRAFT.** Four review rounds have run (§ Review record); round 4 was Codex READY and Claude NOT
-READY, folded; **this fold is
-unreviewed.** ⛔ No implementation until an independent review of this exact state is complete and
+**DRAFT.** Five review rounds have run (§ Review record, rounds 6-10); **round 10 was READY from
+both reviewers**, with LOW findings folded since — **this fold is unreviewed.** ⛔ No implementation until an independent review of this exact state is complete and
 the orchestrator sets READY. **Implementation follows Plan 323** (`depends_on`): T4's before/after
 evidence reads 323's `observation_qc_unjudged` records. T1's sourcing needs no code and no deploy,
 so the yearbook values may be gathered earlier.
@@ -140,8 +139,10 @@ judges each reading on its own.
     have real water-level baselines (onboarding computes them once a datum exists,
     `services/onboarding.py:863-869`) that must never be deleted. Whether any lake has a datum today
     is unmeasured — T1 measures it. An unknown code is skipped and reported.
-  - **Units are validated.** The command and the new-river onboarding path refuse any unit outside
-    `SUPPORTED_WATER_LEVEL_UNITS` (`services/qc_datum.py:23`). Onboarding's own unit guard
+  - **Units are validated — for a river carrying a datum.** The command and the new-river
+    onboarding path refuse a datum whose unit is outside `SUPPORTED_WATER_LEVEL_UNITS`
+    (`services/qc_datum.py:23`); a river with no datum keeps unit `None`, as today
+    (`adapters/camelsch_adapter.py:178,189`). Onboarding's own unit guard
     (`services/onboarding.py:464-473`) fires only when `water_level` is a forecast target, which it
     never is for rivers, and `config/onboarding.py:168` accepts any string — so without this a river
     entry in `cm` would be stored, contradicting `docs/spec/config-reference.toml:269-271`.
@@ -168,9 +169,13 @@ judges each reading on its own.
   - **Clearing a wrong datum:** `--clear <code>` sets a river station's datum and unit back to
     `None` — no validation (there is nothing to validate against), same tenant check, same single
     transaction and a `STATION_DATUM_SET` audit row recording old → none. It honours `--apply` like
-    everything else (a dry run without it), and a lake or unknown code is refused and reported. Without it, onboarding can
-    no longer change a river's datum and an absent table entry does nothing, so a wrong datum found
-    in T4 would have no way back.
+    everything else (a dry run without it), and a lake or unknown code is refused and reported.
+    A `--clear` run does **only** the clear — it does not process the tables — and it **refuses**
+    while the code still has an entry in `[onboarding.water_level_datums_masl]`: otherwise the next
+    ordinary run would re-validate that entry and put the wrong datum back (a datum can pass the
+    14-day, 99% gate and still show up in T4's one-day check). The operator removes the entry in the
+    same change. Without `--clear`, onboarding can no longer change a river's datum and an absent
+    table entry does nothing, so a wrong datum found in T4 would have no way back.
   - ⛔ Re-running onboarding for 142 stations is rejected: it rewrites unrelated metadata and re-runs
     onboarding QC (§ 3).
 
@@ -204,7 +209,7 @@ against the station's own data — plus the three facts § 4 and § 5 left unmea
   - any river station that already has a datum set;
   - every **lake** station's datum and water-level baseline status. ⚠️ If lakes have no datum
     either, Plan 323 D4's unjudged leftover covers them too, and **no plan fills the lake table** —
-    record that beside the DHM note, as an unowned gap.
+    record that beside this plan's DHM bullet in § Explicitly out of scope, as an unowned gap.
 - The queries recorded here so they can be re-run.
 
 **Out.** ⛔ Any write to staging. ⛔ Adjusting a published datum to fit the data — a mismatch is
@@ -239,6 +244,8 @@ running stations table, through a write as guarded as onboarding's.
   `docs/spec/types-and-protocols.md:312-331` — the test's docstring requires all three together.
 - Onboarding on **update of an existing river** keeps its datum and unit (§ Design); lakes
   unchanged. `docs/spec/config-reference.toml:264`'s sentence says so.
+- Onboarding's unit guard (`services/onboarding.py:464-473`) extended to a river that carries a
+  datum (§ Design, Units).
 - `docs/spec/config-reference.toml` — the example gains a river station and the text says rivers now
   use it.
 
@@ -257,8 +264,10 @@ returns `water_level_datum_masl is None` today — it must fail on that value.
   range, or with fewer than 100 readings, is refused and reported; a stage-relative entry (`0.0`,
   `m`) validates and applies; a lake entry in the same tables is skipped and its datum and baselines
   are untouched; an unknown code is skipped and reported; `--clear` sets a river's datum and unit to
-  `None` with an audit row, writes nothing without `--apply`, and refuses a lake; a river entry with
-  unit `cm` is refused by both the command and new-river onboarding.
+  `None` with an audit row, writes nothing without `--apply`, refuses a lake, processes no table
+  entries, and refuses while the code still has a table entry; a river entry with unit `cm` is
+  refused by both the command and new-river onboarding, while a new river with no datum onboards
+  with unit `None`.
 - **Atomicity and the rejection audit, against real Postgres** (integration test — fakes have no
   transactions): with the audit insert forced to fail, both the original datum and the existing
   water-level baseline rows are still there afterwards; on success, all three changes are present;
@@ -379,3 +388,8 @@ orchestrator's host), then record the first full day after:
   (→ deleted; Codex found the same). Also: the terms check comes before any value is recorded
   (T1); river units validated (§ Design, T2); `--clear` honours `--apply` and refuses lakes; the
   doc sweep's other list copies; T3's "only way" scoped to existing rivers (Codex too).
+- **2026-09-26 — round 10: READY from both reviewers**; Claude's LOW findings folded: units are
+  validated only for a river carrying a datum (a datum-less river keeps unit `None`), and the
+  onboarding guard extension is named in T2; `--clear` runs alone and refuses while the table
+  still holds the entry, so it cannot be undone by the next run; the lake gap is recorded beside
+  this plan's own DHM bullet; § Status names the rounds as the record does.

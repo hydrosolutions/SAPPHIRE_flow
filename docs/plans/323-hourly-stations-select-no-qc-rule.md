@@ -17,9 +17,9 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Nine review rounds have run — a Claude review on 2026-09-25, then eight
+the orchestrator sets READY. Ten review rounds have run — a Claude review on 2026-09-25, then nine
 Claude + Codex rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Claude
-NOT READY; **rounds 8 and 9 were READY from both**, with LOW findings folded since (§ Review
+NOT READY; **rounds 8, 9 and 10 were READY from both**, with LOW findings folded since (§ Review
 record). Owner
 decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
 
@@ -455,7 +455,7 @@ alarmed on.
   `IngestResult.qc_unchecked` (`:63`, set at `:1044`, logged at `:1062`) beside a new
   `qc_unjudged`, and the `ingest.qc_complete` log (`:967`).
 - Text that would otherwise become false: the enum comment at `types/enums.py:229-235` ("unlike every
-  other member…") now describes two presence-type members; four comments that define
+  other member…") now describes two presence-type members; five comments that define
   `QC_UNCHECKED`/`QC_PASSED` by selection alone now also cover a selected rule that could not judge
   the reading — the `_aggregate_qc_status` docstring (`flows/ingest_observations.py:153-158`), the
   `QcStatus.QC_UNCHECKED` comment (`types/enums.py:10-12`), and in
@@ -681,3 +681,5 @@ returns the entry.
 - **2026-09-26 — round 9: READY from both reviewers**; Claude's two LOW findings folded: a fifth
   comment defining the statuses by selection alone (spec `aggregate_qc_status`, T4), and D4's
   "every water-level reading" → "most" (403 refuses some stations and excludes lakes and DHM).
+- **2026-09-26 — round 10: READY from both reviewers**; one LOW folded (T4's "four comments" now
+  lists five).
