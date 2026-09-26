@@ -96,7 +96,7 @@ Repository facts this plan relies on:
   `qc_rule_version`, `services/component_derivation.py:116`, `flows/ingest_observations.py:695`),
   `rule_version = "component_derivation/v1"`, possibly with status `qc_passed`, and
   `qc_rule_version = "component_derivation/v1"` (`services/component_derivation.py:30-31`,
-  `flows/ingest_observations.py:687-689`); its `detail` is JSON naming the component stations.
+  `flows/ingest_observations.py:694-696`); its `detail` is JSON naming the component stations.
   A flag's `rule_version`: since PR #315 every observation flag carries its configured rule's
   version (`services/qc.py:135,154,214,243,261,288`); **stored history** also holds the earlier code
   labels `"1.0"`/`"1.2"`; forecast flags carry `"1.0"`. The row's `qc_rule_version` stays a
@@ -244,9 +244,11 @@ plan, and T4 records it in `security.md` beside that section.
 
 The committed file's `info.version` is a hand-maintained constant (start `"1.0"`), never the package
 version. Additive changes (a new field, route or enum member) bump the minor number; any other change
-bumps the major number and is announced to the map session **before** deploy. The file never changes
-without a bump: **a CI check enforces it** (T4) by comparing the file with its merge-base copy. Plans 341 and 404, which regenerate the file, follow the
-same rule.
+bumps the major number and is announced to the map session **before** deploy. **CI fails** a pull
+request whose file differs from its merge-base copy without a greater version (T4). Whether a change
+is an addition (minor) or anything else (major) is a **review judgement**, not machine-checked (owner,
+2026-09-26). `main` has no branch protection, so the check blocks only because merges wait for green.
+Plans 341 and 404, which regenerate the file, follow the same rule.
 
 ## Endpoint contract
 
@@ -343,8 +345,9 @@ and a truthful `source`.
 
 **In:**
 - `config/qc_rules.py` and `config/forecast_qc_rules.py` — one public resolution function per set
-  (`SAPPHIRE_CONFIG` + overlays, else built-in default — the observation one **wraps
-  `load_qc_rules`**, so the overlay rejection of PR #315 is kept) returning the rule set **and** which branch
+  (`SAPPHIRE_CONFIG` + overlays, else built-in default — the observation one **takes over the body
+  of `load_qc_rules`**, which then delegates to it; it keeps the `load_merged_toml` path, so the
+  overlay rejection of PR #315 stays, and decides `source` at the section check) returning the rule set **and** which branch
   supplied it, including the missing-section fallback. The four loaders call them
   (behaviour-preserving): `flows/ingest_observations.py::_load_qc_rules`,
   `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules`,
@@ -428,12 +431,16 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   (REVIEW for the two new routes) and that an out-of-scope station returns 404 (detail routes) or a
   filtered result (the station list). A drift test in `tests/unit/api/` asserts the file equals the
   regenerated one, that the route list holds no other route, that every operation carries the
-  bearer requirement, and that `info.version` is the D14 constant. **D14 is enforced in CI**
-  by `scripts/check_map_contract_version.py`, a step in `.github/workflows/ci.yml` with the base
-  commit fetched (as `dependency-safety.yml:36-37` does): when the file differs from its merge-base
-  copy, its `info.version` must be greater, and a change other than an addition must raise the major
-  number. A test of the script proves a content change with an unchanged version fails, and a bumped
-  one passes. The generator also adds the
+  bearer requirement, and that `info.version` is the D14 constant. **D14's CI check**:
+  `tools/check_map_contract_version.py` (beside the repo's other CI-only gates), run as a step in
+  the `lint` job of `.github/workflows/ci.yml` on `pull_request` only, with `fetch-depth: 0` and
+  `--base-ref "${{ github.event.pull_request.base.sha }}"`; the script compares the file with its
+  copy at `git merge-base HEAD <base>`. Rules: a file absent at the base passes; an unchanged file
+  passes; a changed file passes only if its `info.version` is greater, compared as integer
+  `(major, minor)` tuples. Direct pushes to `main` are not checked — code, and so this generated
+  file, only reaches `main` through a pull request. The step is also recorded in
+  `docs/standards/cicd.md`'s `ci.yml` step table and in `tools/gate_parity_check.py`'s
+  `CI_ONLY_ALLOWLIST`. The generator also adds the
   400 (on the routes that parse query values, `api/routes/api_stations.py:136-151`) and 401/403/404
   responses (403 on the two REVIEW routes) referencing the existing `ErrorResponse`
   (`api/schemas.py:18`), since those errors use `{"error": …, "detail": null}` (`api/errors.py:10`)
@@ -483,13 +490,17 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
 
 **Out:** serving the schema; versioning the path (`/api/v2`).
 
-**Pre-change:** N/A — new artefact; the drift test is proven by renaming one `QcFlagResponse` field
-locally and watching it fail.
+**Pre-change:** N/A — new artefacts. The drift test is proven by renaming one `QcFlagResponse` field
+locally and watching it fail; the version check is proven by its own cases below, where the same
+changed file fails with an unchanged version and passes with a greater one.
 
-**Verification:** `uv run pytest tests/unit/api/ tests/unit/scripts/test_check_map_contract_version.py`
-including the drift test, the D14 version check and the route-matrix test; and a bounded inspection that the consumer page carries every caveat listed in In, and that
+**Verification:** `uv run pytest tests/unit/api/ tests/unit/tools/test_check_map_contract_version.py`
+including the drift test, the route-matrix test and the version-check cases — file absent at base →
+pass; unchanged → pass; changed with the same version → fail; changed with a greater version → pass;
+`1.9` → `1.10` counts as greater; and `uv run python tools/gate_parity_check.py` passes; and a bounded inspection that the consumer page carries every caveat listed in In, and that
 the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
-`conventions.md` routes and the D6 precondition are in the branch diff; that the two routes are
+`conventions.md` routes, the D6 precondition, the `ci.yml` step with its base fetch, the
+`cicd.md` step-table row and the `CI_ONLY_ALLOWLIST` entry are in the branch diff; that the two routes are
 classified in Plan 341's route inventory if it exists; and that Plan 341 still states, by content:
 the REVIEW-diagnostic classification, reviewer tokens see published values only, the contract's
 creation order, the gating of `qc_flags[].detail`, and that updates to the map contract follow D14.

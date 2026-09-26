@@ -196,7 +196,9 @@ create/grant and never enters a tenant-mode scope; admin with `scope_mode = 'ten
 `ck_access_tokens_role`, and the definitions of all three constraints read back with
 `pg_get_constraintdef` equal the readback **captured at the prior revision before upgrading** (Postgres
 normalises the text, so the comparison is readback against readback, not against the migration
-source).
+source); and a bounded inspection that `docs/standards/cicd.md` § Rollback carries T1's two DELETE
+statements and the `psql -U ${DB_USER:-sapphire}` command, placed after the backup restore and
+before the older image starts.
 
 ### T2 — the auth dependency and route classification
 
