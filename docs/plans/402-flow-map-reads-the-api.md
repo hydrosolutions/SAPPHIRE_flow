@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-25
 plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
-scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-bound reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
+scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-bound reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269), DHM/Nepal rules (303) or changes to network selection (264).
 risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
 depends_on: [401]
 blocks: [404]
@@ -60,13 +60,13 @@ Repository facts this plan relies on:
 
 - **Two QC rule sets.** Observation QC: `QcRuleSet`/`QcRuleId` (`types/domain.py:137`) — five
   kinds; severity in `services/qc.py`: `range_check` → `qc_failed`, the other four → `qc_suspect`.
-  Forecast QC: `ForecastQcRuleSet`/`ForecastQcRuleId` (`types/domain.py:235`) — seven kinds;
+  Forecast QC: `ForecastQcRuleSet`/`ForecastQcRuleId` (`types/domain.py:262`, set at `:283`) — seven kinds;
   severity in `services/forecast_qc.py`: `negative_value`, `range_check`, `quantile_crossing` →
   `qc_failed`; `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`
   → `qc_suspect`. **`range_check` exists in both.** Within one set a `rule_id` also repeats across
   parameters and cadences with different thresholds — e.g. observation `rate_of_change` is
   `max_rate = 50` at 600 s and `500` at 86400 s (`config/qc_rules.py`, `config.toml`). Thresholds
-  are `dict[str, float]` (`types/domain.py:151`), never null.
+  are `dict[str, float]` (`types/domain.py:152`), never null.
 - **What a stored flag does not record.** Neither an observation nor a forecast stores which
   thresholds or which cadence produced its flags. Observation cadence is **inferred** from the rows
   in the ingest window (`services/qc.py`, `infer_time_step`); the rule set in force can change
@@ -76,14 +76,14 @@ Repository facts this plan relies on:
   `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules` (`:70`, called `:240`;
   patched in `tests/unit/scripts/test_onboard_script.py`). Forecast rules:
   `flows/run_forecast_cycle.py::_load_forecast_qc_rules`. Each: `SAPPHIRE_CONFIG` set →
-  `load_*_qc_rules` — observation rules from the **base file only** (since PR #315 an overlay that
-  sets `qc_rules` is rejected, `config/_overlay.py`), forecast rules from the base file plus
+  `load_*_qc_rules` — observation rules effectively from the base file (the overlays are still read,
+  but since PR #315 `load_merged_toml` rejects an overlay that sets `qc_rules`, `config/_overlay.py:22-26`), forecast rules from the base file plus
   `SAPPHIRE_CONFIG_OVERLAY` overlays — which **itself falls back to
   the built-in Swiss default when the merged file has no `[qc_rules]` / `[forecast_qc_rules]`
-  section** (`config/qc_rules.py:262`, tested at `tests/unit/config/test_qc_rules.py:199`); unset →
+  section** (`config/qc_rules.py:295`, tested at `tests/unit/config/test_qc_rules.py:269`); unset →
   built-in default. Ingest applies no per-station override (`overrides=[]`).
 - **Version labels.** An observation flag's `rule_version` is now its configured rule's version
-  (see the network bullet below); stored flags from before PR #315 carry the code labels `"1.2"`
+  (PR #315); stored flags from before PR #315 carry the code labels `"1.2"`
   (history `"1.0"`) for four kinds, and the configured version for `frozen_sensor` (Plan 324). The row's `qc_rule_version` is `"1.2"`,
   `"1.2-datum"` or `"1.2-datum-skip"` (`services/qc_datum.py:21-22`); `-datum` means water-level
   thresholds were applied to the value minus the station datum; `-datum-skip` means no datum exists,
@@ -91,12 +91,14 @@ Repository facts this plan relies on:
   (`services/qc_datum.py:24-40`). Responses serve raw values (m a.s.l.); the datum appears only
   inside a flag's `detail`. Forecast flags carry the forecast QC module's own `_RULE_VERSION` (`"1.0"`). **These labels are
   not a closed set:** rows written before Plan 324 hold `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`,
-  and every calculated-station observation carries a flag `rule_id = "upstream_propagated"`,
+  and every calculated-station observation **with a non-null value** carries a flag
+  `rule_id = "upstream_propagated"` (a missing derived point has no flags and a null
+  `qc_rule_version`, `services/component_derivation.py:116`, `flows/ingest_observations.py:695`),
   `rule_version = "component_derivation/v1"`, possibly with status `qc_passed`, and
   `qc_rule_version = "component_derivation/v1"` (`services/component_derivation.py:30-31`,
-  `flows/ingest_observations.py:687-689`); its `detail` is JSON naming the component stations.
+  `flows/ingest_observations.py:694-696`); its `detail` is JSON naming the component stations.
   A flag's `rule_version`: since PR #315 every observation flag carries its configured rule's
-  version (`services/qc.py:135,154,214,243,288`); **stored history** also holds the earlier code
+  version (`services/qc.py:135,154,214,243,261,288`); **stored history** also holds the earlier code
   labels `"1.0"`/`"1.2"`; forecast flags carry `"1.0"`. The row's `qc_rule_version` stays a
   processing-generation marker (`docs/architecture-context.md:2331`).
 - **Observation rule selection is by network too** (PR #315, Plan 264): `QcRuleParams.network`
@@ -165,7 +167,8 @@ it as unchecked, never passed.
 
 Severity is derived from code; missing baselines are shown as absent. A flag is matched to rules
 by **rule set, parameter, `rule_id` and — for observations — the station's network** (from
-`StationSummary`; a network rule wins over the generic one), and by cadence where it is known. For an observation the
+`StationSummary`; a network rule replaces the generic one **for the same `rule_id`, parameter and
+`time_step_seconds`** — at other cadences the generic rule remains a candidate), and by cadence where it is known. For an observation the
 cadence is not stored, so the map shows every matching rule of that set and parameter as a
 **candidate** (e.g. both `rate_of_change` rows), and labels the thresholds as the **current**
 configuration — not proof of what was in force when the flag was written. ⚠️ The map also adopted
@@ -241,9 +244,11 @@ plan, and T4 records it in `security.md` beside that section.
 
 The committed file's `info.version` is a hand-maintained constant (start `"1.0"`), never the package
 version. Additive changes (a new field, route or enum member) bump the minor number; any other change
-bumps the major number and is announced to the map session **before** deploy. The file never changes
-without a bump; the drift test asserts it. Plans 341 and 404, which regenerate the file, follow the
-same rule.
+bumps the major number and is announced to the map session **before** deploy. **CI fails** a pull
+request whose file differs from its merge-base copy without a greater version (T4). Whether a change
+is an addition (minor) or anything else (major) is a **review judgement**, not machine-checked (owner,
+2026-09-26). `main` has no branch protection, so the check blocks only because merges wait for green.
+Plans 341 and 404, which regenerate the file, follow the same rule.
 
 ## Endpoint contract
 
@@ -261,8 +266,9 @@ are plain `str` (see *Repository facts*).
 
 ObservationRuleSet / ForecastRuleSet (two models; `rule_id` is `Literal` over `QcRuleId` /
 `ForecastQcRuleId` respectively, so an observation block cannot hold a forecast rule; observation
-rows add `network: str | null` — null = applies to any network without a more specific rule — and
-the observation block's `selection` is `"parameter_cadence_network"`, most specific wins; the forecast
+rows add `network: str | null` — null = applies to any network without a network rule for the same
+`rule_id`, parameter and `time_step_seconds` — and the observation block's `selection` is
+`"parameter_cadence_network"`, a network rule replacing the generic one for that same key; the forecast
 block keeps `"parameter_and_cadence"`):
   { version,                                 # the set's version as resolved
     source: "config" | "builtin_default",   # which branch actually supplied the rules; never a path or overlay name
@@ -339,8 +345,9 @@ and a truthful `source`.
 
 **In:**
 - `config/qc_rules.py` and `config/forecast_qc_rules.py` — one public resolution function per set
-  (`SAPPHIRE_CONFIG` — base file only for observation rules, plus overlays for forecast rules — else
-  built-in default) returning the rule set **and** which branch
+  (`SAPPHIRE_CONFIG` + overlays, else built-in default — the observation one **takes over the body
+  of `load_qc_rules`**, which then delegates to it; it keeps the `load_merged_toml` path, so the
+  overlay rejection of PR #315 stays, and decides `source` at the section check) returning the rule set **and** which branch
   supplied it, including the missing-section fallback. The four loaders call them
   (behaviour-preserving): `flows/ingest_observations.py::_load_qc_rules`,
   `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules`,
@@ -359,7 +366,7 @@ the emitted status equals the severity constant fails on the missing constant, t
 once it exists — the constant describes the code, it does not change it; (2) a request to the route
 returns 404.
 
-**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns what the shared function returns (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. Reviewer and admin tokens → 200; consumer token → 403; no token → 401.
+**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns what the shared function returns (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. An overlay that sets `[qc_rules]` is still rejected through the shared function. Reviewer and admin tokens → 200; consumer token → 403; no token → 401.
 
 ### T2 — `GET /api/v1/stations/{id}/skill`
 
@@ -424,10 +431,16 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   (REVIEW for the two new routes) and that an out-of-scope station returns 404 (detail routes) or a
   filtered result (the station list). A drift test in `tests/unit/api/` asserts the file equals the
   regenerated one, that the route list holds no other route, that every operation carries the
-  bearer requirement, and that `info.version` is the D14 constant. **D14 is enforced by a
-  `{version: sha256}` table** in `api/map_contract.py`: the test asserts the committed file's hash is
-  the entry for its `info.version` and that no two versions share a hash — so any content change
-  needs a new version entry, and editing an old entry shows in the diff. The generator also adds the
+  bearer requirement, and that `info.version` is the D14 constant. **D14's CI check**:
+  `tools/check_map_contract_version.py` (beside the repo's other CI-only gates), run as a step in
+  the `lint` job of `.github/workflows/ci.yml` on `pull_request` only, with `fetch-depth: 0` and
+  `--base-ref "${{ github.event.pull_request.base.sha }}"`; the script compares the file with its
+  copy at `git merge-base HEAD <base>`. Rules: a file absent at the base passes; an unchanged file
+  passes; a changed file passes only if its `info.version` is greater, compared as integer
+  `(major, minor)` tuples. Direct pushes to `main` are not checked — code, and so this generated
+  file, only reaches `main` through a pull request. The step is also recorded in
+  `docs/standards/cicd.md`'s `ci.yml` step table and in `tools/gate_parity_check.py`'s
+  `CI_ONLY_ALLOWLIST`. The generator also adds the
   400 (on the routes that parse query values, `api/routes/api_stations.py:136-151`) and 401/403/404
   responses (403 on the two REVIEW routes) referencing the existing `ErrorResponse`
   (`api/schemas.py:18`), since those errors use `{"error": …, "detail": null}` (`api/errors.py:10`)
@@ -443,7 +456,8 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
   generations, not rule-set versions, and `-datum-skip` means two rules were skipped; since PR #315 a new observation flag's `rule_version` is its configured rule's version, but
   stored history holds code labels (`"1.0"`, `"1.2"`) and forecast flags carry `"1.0"` — so matching
-  never relies on it; observation rules can be network-specific, and the matching rule uses the
+  never relies on it; observation rules can be network-specific: a network rule replaces the
+  generic one only for the same `rule_id`, parameter and time step, and the matching rule uses the
   station's network;
   `score: null` means the skill score is undefined for that stratum; a `null` threshold is a
   non-finite configured value; on `-datum` rows and on water-level forecasts at a station with a
@@ -476,13 +490,17 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
 
 **Out:** serving the schema; versioning the path (`/api/v2`).
 
-**Pre-change:** N/A — new artefact; the drift test is proven by renaming one `QcFlagResponse` field
-locally and watching it fail.
+**Pre-change:** N/A — new artefacts. The drift test is proven by renaming one `QcFlagResponse` field
+locally and watching it fail; the version check is proven by its own cases below, where the same
+changed file fails with an unchanged version and passes with a greater one.
 
-**Verification:** `uv run pytest tests/unit/api/` including the drift test and the route-matrix
-test; and a bounded inspection that the consumer page carries every caveat listed in In, and that
+**Verification:** `uv run pytest tests/unit/api/ tests/unit/tools/test_check_map_contract_version.py`
+including the drift test, the route-matrix test and the version-check cases — file absent at base →
+pass; unchanged → pass; changed with the same version → fail; changed with a greater version → pass;
+`1.9` → `1.10` counts as greater; and `uv run python tools/gate_parity_check.py` passes; and a bounded inspection that the consumer page carries every caveat listed in In, and that
 the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
-`conventions.md` routes and the D6 precondition are in the branch diff; that the two routes are
+`conventions.md` routes, the D6 precondition, the `ci.yml` step with its base fetch, the
+`cicd.md` step-table row and the `CI_ONLY_ALLOWLIST` entry are in the branch diff; that the two routes are
 classified in Plan 341's route inventory if it exists; and that Plan 341 still states, by content:
 the REVIEW-diagnostic classification, reviewer tokens see published values only, the contract's
 creation order, the gating of `qc_flags[].detail`, and that updates to the map contract follow D14.
