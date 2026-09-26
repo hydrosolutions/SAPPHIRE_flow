@@ -756,8 +756,8 @@ exit criteria — Plan 212 owns that deeper screening.
   uniqueness, lead times, group state and rating curves.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
-  — `DRAFT`, no open decisions, `blocks: [400, 403]`; **round 8: READY from both reviewers**;
-  two LOW findings folded since (unreviewed). Found from a live Slack warning on
+  — `DRAFT`, no open decisions, `blocks: [400, 403]`; **rounds 8 and 9: READY from both
+  reviewers**; LOW findings folded since (unreviewed). Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
   earlier rows were fail-open passed (~1,277 readings never checked). Thresholds come from
@@ -794,12 +794,13 @@ exit criteria — Plan 212 owns that deeper screening.
   in-flight rewrite.
 
 - **403** — [Give Swiss river stations their surveyed gauge-zero datum](403-swiss-river-gauge-zero-datums.md)
-  — `DRAFT`, `depends_on: [323]`; three review rounds, NOT READY, folded (unreviewed);
+  — `DRAFT`, `depends_on: [323]`; four review rounds — round 4 Codex READY, Claude NOT READY —
+  folded (unreviewed);
   number granted by the owner 2026-09-26. BAFU delivers water level in
   m a.s.l., and the water-level range check is relative to the gauge zero; Plan 101 skips the
   datum-dependent rules "until the datum is set" — and for **rivers it never was**: CAMELS
-  onboarding forces `None` for every river, so water level on all ~142 Swiss stations is
-  checked only by neighbour-comparing rules (the root of Plan 323 D4's unjudged leftover).
+  onboarding forces `None` for every river, so water level on the Swiss river stations (most
+  of the ~142 delivering it) is checked only by neighbour-comparing rules (the root of Plan 323 D4's unjudged leftover).
   Sources each Pegelnullpunkt from the **hydrological yearbook** (owner), **validates it
   against the station's own readings** (a wrong datum fails every reading), stores it in the
   existing `[onboarding.water_level_datums_masl]` table, applies it to rivers, and sets it on

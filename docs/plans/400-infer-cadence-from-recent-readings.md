@@ -18,9 +18,9 @@ source: 2026-09-25 — the owner, after an independent review of Plan 323 found 
 
 **DRAFT — redesigned 2026-09-26.** The first draft widened the check window to 24 h. Both
 independent reviews found that doing so changes what the rules compare — not only how the interval
-is inferred — and the owner chose the narrower design below. Six review rounds have run (§ Review
-record), rounds 6 and 7 READY from both reviewers, with round 7's low findings folded since; **that fold is
-unreviewed.** ⛔ No implementation until
+is inferred — and the owner chose the narrower design below. Seven review rounds have run (§ Review
+record); rounds 6, 7 and 8 READY from both reviewers, and round 8 CLEAN on the text round 7's fold
+produced. Only this status paragraph and the review record have changed since. ⛔ No implementation until
 an independent review of this exact state is complete and the orchestrator sets READY. It runs
 **after Plan 323**.
 
@@ -414,3 +414,4 @@ alarm (Plan 323 D5) until Plan 403; and the cost and the § 3 exposure are measu
 - **2026-09-26 — round 7: READY from both reviewers (Claude with LOW findings), folded.** T2 In and
   T3 name Plan 323 T4's checker method, which `_run_qc_task` calls after 323; the no-silent-pass test
   asserts the task's outcome, not a record only the flow writes.
+- **2026-09-26 — round 8: READY from both reviewers, CLEAN** — no findings on the round-7 fold.

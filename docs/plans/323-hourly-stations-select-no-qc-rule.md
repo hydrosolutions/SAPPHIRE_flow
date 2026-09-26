@@ -17,9 +17,10 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 ## Status
 
 **DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Eight review rounds have run — a Claude review on 2026-09-25, then seven
+the orchestrator sets READY. Nine review rounds have run — a Claude review on 2026-09-25, then eight
 Claude + Codex rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Claude
-NOT READY; **round 8 was READY from both**, with LOW findings folded since (§ Review record). Owner
+NOT READY; **rounds 8 and 9 were READY from both**, with LOW findings folded since (§ Review
+record). Owner
 decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
@@ -264,7 +265,7 @@ only "not `RAW`" (T4 pins them).
 The owner moved the fix into this plan (T4) so no window exists in which hourly readings pass
 unjudged; Plan 400 relies on it. The lasting fix for Swiss water level is a datum — **Plan 403**
 (owner, 2026-09-26) onboards BAFU gauge-zero datums from the hydrological yearbook, after which
-`range_check` judges every water-level reading. ⚠️ **DHM is not covered by 403**: a gauge-zero-
+`range_check` judges most water-level readings (every validated river station's). ⚠️ **DHM is not covered by 403**: a gauge-zero-
 referenced DHM binding requires a null datum (`adapters/dhm.py:108-110`), so after T4 its
 water-level readings with no neighbour stay `QC_UNCHECKED`. **No plan owns that** — recorded for
 the owner; a likely fix is to treat a `gauge_zero` binding as datum 0 / unit `m` for QC.
@@ -458,8 +459,9 @@ alarmed on.
   `QC_UNCHECKED`/`QC_PASSED` by selection alone now also cover a selected rule that could not judge
   the reading — the `_aggregate_qc_status` docstring (`flows/ingest_observations.py:153-158`), the
   `QcStatus.QC_UNCHECKED` comment (`types/enums.py:10-12`), and in
-  `docs/spec/types-and-protocols.md` the `QC_UNCHECKED` comment (`:90-93`) and the `QualityChecker`
-  comment (`:757`); `ZeroRuleGroup`'s docstring
+  `docs/spec/types-and-protocols.md` the `QC_UNCHECKED` comment (`:90-93`), the `QualityChecker`
+  comment (`:757`) and the `aggregate_qc_status` docstring (`:526-533`, "ONLY when rules actually
+  ran"); `ZeroRuleGroup`'s docstring
   (`flows/ingest_observations.py:237-247`) and the `qc.no_rules_selected` log event
   (`flows/ingest_observations.py:514`) stay for the zero-rule reasons, and the unjudged case gets
   its own log event.
@@ -676,3 +678,6 @@ returns the entry.
   the watchdog-isolation stub must actually filter; `blocks` gains 403.
 - **2026-09-26 — round 8: READY from both reviewers**; Claude's two LOW findings folded: § Status's
   round tally, and four comments that define `QC_UNCHECKED`/`QC_PASSED` by selection alone (T4).
+- **2026-09-26 — round 9: READY from both reviewers**; Claude's two LOW findings folded: a fifth
+  comment defining the statuses by selection alone (spec `aggregate_qc_status`, T4), and D4's
+  "every water-level reading" → "most" (403 refuses some stations and excludes lakes and DHM).

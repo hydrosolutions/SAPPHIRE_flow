@@ -4,7 +4,7 @@ created: 2026-09-26
 revised: 2026-09-26
 plan: 403
 title: Give Swiss river stations their surveyed gauge-zero datum, so water level can be judged reading by reading
-scope: Source each Swiss river station's surveyed gauge-zero elevation (BAFU "Pegelnullpunkt") from the hydrological yearbook, classify and validate it against the station's own readings, store it through the existing `[onboarding.water_level_datums_masl]` mechanism, make CAMELS onboarding apply it to RIVER stations as it already does for lakes, and set it on existing station rows through a validated, tenant-checked, audited datum-only command rather than a re-onboarding. Once set, observation QC runs `range_check` on water level relative to the gauge zero, so a reading no longer needs a neighbour to be judged. NOT computing climatological baselines for water level (no plan), NOT re-QC of stored history, NOT DHM/Nepal datums (no plan owns them — Plan 323 D4), NOT rating curves, NOT any threshold value, NOT lakes (already supported).
+scope: Source each Swiss river station's surveyed gauge-zero elevation (BAFU "Pegelnullpunkt") from the hydrological yearbook, classify and validate it against the station's own readings, store it through the existing `[onboarding.water_level_datums_masl]` mechanism, make CAMELS onboarding apply it to RIVER stations as it already does for lakes, and set it on existing station rows through a validated, tenant-checked, audited datum-only command rather than a re-onboarding. Once set, observation QC runs `range_check` on water level relative to the gauge zero, so a reading no longer needs a neighbour to be judged. NOT computing climatological baselines for water level (no plan), NOT re-QC of stored history, NOT DHM/Nepal datums (no plan owns them — Plan 323 D4), NOT rating curves, NOT any threshold value, NOT lakes (their datum route is re-onboarding, which this plan keeps).
 depends_on: [323]
 blocks: []
 related: [101, 147, 218, 272, 323, 340, 400]
@@ -16,7 +16,8 @@ source: 2026-09-26 — the owner, after the round-5 review of Plans 323/400 foun
 
 ## Status
 
-**DRAFT.** Three review rounds have run (§ Review record), NOT READY, folded; **this fold is
+**DRAFT.** Four review rounds have run (§ Review record); round 4 was Codex READY and Claude NOT
+READY, folded; **this fold is
 unreviewed.** ⛔ No implementation until an independent review of this exact state is complete and
 the orchestrator sets READY. **Implementation follows Plan 323** (`depends_on`): T4's before/after
 evidence reads 323's `observation_qc_unjudged` records. T1's sourcing needs no code and no deploy,
@@ -135,8 +136,15 @@ judges each reading on its own.
     the station's readings (§ above) and refuses what fails.
   - **Population: RIVER stations only.** Each entry is looked up by `(code, network="bafu")`
     (`protocols/stores.py:629`); a station that is not `StationKind.RIVER` is skipped and reported —
-    ⛔ lakes already carry datums and their water-level baselines are real (onboarding computes
-    them), so they must never be touched. An unknown code is skipped and reported.
+    ⛔ lakes' datum route is re-onboarding, which this plan keeps, and a lake that has a datum may
+    have real water-level baselines (onboarding computes them once a datum exists,
+    `services/onboarding.py:863-869`) that must never be deleted. Whether any lake has a datum today
+    is unmeasured — T1 measures it. An unknown code is skipped and reported.
+  - **Units are validated.** The command and the new-river onboarding path refuse any unit outside
+    `SUPPORTED_WATER_LEVEL_UNITS` (`services/qc_datum.py:23`). Onboarding's own unit guard
+    (`services/onboarding.py:464-473`) fires only when `water_level` is a forecast target, which it
+    never is for rivers, and `config/onboarding.py:168` accepts any string — so without this a river
+    entry in `cm` would be stored, contradicting `docs/spec/config-reference.toml:269-271`.
   - **Tenant:** resolves the configured write principal as onboarding does
     (`services/write_principal.py:41`) and enforces the target's tenant
     (`enforce_tenant_isolation`, `:107`). The dry run uses a write-free pre-check, as
@@ -159,7 +167,8 @@ judges each reading on its own.
     count, the baselines that would be deleted, and every refusal with its reason.
   - **Clearing a wrong datum:** `--clear <code>` sets a river station's datum and unit back to
     `None` — no validation (there is nothing to validate against), same tenant check, same single
-    transaction and a `STATION_DATUM_SET` audit row recording old → none. Without it, onboarding can
+    transaction and a `STATION_DATUM_SET` audit row recording old → none. It honours `--apply` like
+    everything else (a dry run without it), and a lake or unknown code is refused and reported. Without it, onboarding can
     no longer change a river's datum and an absent table entry does nothing, so a wrong datum found
     in T4 would have no way back.
   - ⛔ Re-running onboarding for 142 stations is rejected: it rewrites unrelated metadata and re-runs
@@ -178,12 +187,13 @@ hydrological yearbook's station information.
 against the station's own data — plus the three facts § 4 and § 5 left unmeasured.
 
 **In.**
-- For every Swiss **river** station that delivers `water_level` (§ 1; lakes excluded — they already
-  have their mechanism): the Pegelnullpunkt from the yearbook's
-  station information, with edition, retrieval date, and page or URL; stations with no entry, or
-  whose gauge zero changed during the period covered, listed separately.
-- Whether the publication's terms allow publishing the values (this repository is public). If
-  not, stop and escalate to the owner before T2 (§ Design, Storage).
+- 🔴 **First, before any value is written anywhere in the repository:** whether the publication's
+  terms allow publishing the values (this repository is public, and so is this plan). If not, stop
+  and escalate to the owner before recording any value (§ Design, Storage).
+- For every Swiss **river** station that delivers `water_level` (§ 1; lakes excluded — their route is
+  re-onboarding): the Pegelnullpunkt from the yearbook's station information, with edition,
+  retrieval date, and page or URL; stations with no entry, or whose gauge zero changed during the
+  period covered, listed separately.
 - **Read-only, on staging:**
   - per station, the median of its measured (`source = measured`) water-level readings ⇒
     absolute or stage-relative (§ Design), and the datum that follows;
@@ -191,7 +201,10 @@ against the station's own data — plus the three facts § 4 and § 5 left unmea
     share inside −2 … 20 — the value the command's validation will compute;
   - any existing river water-level `clim_baselines` rows (§ 5);
   - any river station with a water-level model assignment (§ 4);
-  - any river station that already has a datum set.
+  - any river station that already has a datum set;
+  - every **lake** station's datum and water-level baseline status. ⚠️ If lakes have no datum
+    either, Plan 323 D4's unjudged leftover covers them too, and **no plan fills the lake table** —
+    record that beside the DHM note, as an unowned gap.
 - The queries recorded here so they can be re-run.
 
 **Out.** ⛔ Any write to staging. ⛔ Adjusting a published datum to fit the data — a mismatch is
@@ -208,8 +221,8 @@ the queries and get the same table.
 running stations table, through a write as guarded as onboarding's.
 
 **In.**
-- The T1 values in `[onboarding.water_level_datums_masl]` / `[onboarding.water_level_units]` (or the
-  host overlay, per T1), each with a comment naming its source.
+- The T1 values in `[onboarding.water_level_datums_masl]` / `[onboarding.water_level_units]`, each
+  with a comment naming its source.
 - `adapters/camelsch_adapter.py`: the RIVER branches (`:177-178`, `:188-189`) take datum and unit
   from the maps, as the LAKE branch does (`:171-172`).
 - `scripts/onboard.py:339-365` passes both maps.
@@ -244,7 +257,8 @@ returns `water_level_datum_masl is None` today — it must fail on that value.
   range, or with fewer than 100 readings, is refused and reported; a stage-relative entry (`0.0`,
   `m`) validates and applies; a lake entry in the same tables is skipped and its datum and baselines
   are untouched; an unknown code is skipped and reported; `--clear` sets a river's datum and unit to
-  `None` with an audit row.
+  `None` with an audit row, writes nothing without `--apply`, and refuses a lake; a river entry with
+  unit `cm` is refused by both the command and new-river onboarding.
 - **Atomicity and the rejection audit, against real Postgres** (integration test — fakes have no
   transactions): with the audit insert forced to fail, both the original datum and the existing
   water-level baseline rows are still there afterwards; on success, all three changes are present;
@@ -267,11 +281,14 @@ Protocol, Pg and fake) and the audit enum; `docs/touchpoint-maps.md` (observatio
 now carry a datum; the datum command and its validation); Stage 1 QC (step 2.3) in
 `docs/architecture-context.md`; `docs/handover/hydrology-operations.md` § "Observation ingest and
 quality control" and § 10 "Observation QC — What the Flags Mean" — the Swiss source, and the command
-as the only way to add or correct a datum; the tenant-isolation chokepoint lists in
-`docs/standards/security.md` (§ Tenant write-isolation, ~lines 109-113) and the
+as the only way to add, correct or clear an **existing Swiss river station's** datum (a new river
+takes it at onboarding; lakes keep re-onboarding); the write-path lists in `docs/standards/security.md`
+(`:74-77`, `:86`, and § Tenant write-isolation `:109-113`) and the
 `services/write_principal.py` module docstring (`:9-14`) — the command is a new write chokepoint;
 the audited-call-site list in `docs/spec/types-and-protocols.md` (~`:1389-1396`); the operator-script
-inventories in `docs/touchpoint-maps.md:842` and `docs/deployment/mac-mini-staging.md:772`.
+inventories in `docs/touchpoint-maps.md:842` and `docs/deployment/mac-mini-staging.md:769-801`
+(the script list, "all six scripts require `DATABASE_URL`" at `:779`, and the per-script
+`SAPPHIRE_CONFIG` note at `:801`).
 Plan 323's D4/D5 text already names this plan.
 
 **Out.** ⛔ Plan 101's archived text. ⛔ Documenting DHM datums.
@@ -355,3 +372,10 @@ orchestrator's host), then record the first full day after:
   `engine.begin()`, abort the run, real-Postgres test that the rejection row survives); the fallback
   storage — the host overlay — is public too (→ stop and escalate if publishing is not allowed); no
   way to clear a wrong datum (→ `--clear`); the audited-call-site list in the spec.
+- **2026-09-26 — round 9: Codex READY; Claude NOT READY (two MEDIUM); all folded, no decision
+  needed.** Claude: "lakes already carry datums" was unmeasured and the code suggests otherwise
+  (→ the reason restated as "their route is re-onboarding"; T1 measures lake datums and records an
+  unowned gap if they have none); T2 still offered the overlay fallback the storage fold removed
+  (→ deleted; Codex found the same). Also: the terms check comes before any value is recorded
+  (T1); river units validated (§ Design, T2); `--clear` honours `--apply` and refuses lakes; the
+  doc sweep's other list copies; T3's "only way" scoped to existing rivers (Codex too).
