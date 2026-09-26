@@ -9,6 +9,9 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 - **342** — [Alert evaluations and CHWRR warning decisions](342-chwrr-alert-evaluation-and-decisions.md) — `DRAFT`; high/low-flow evaluation ledger and human warning publish/dismiss history. Depends on 340 and 341.
 - **343** — [Operational post-event verification](343-operational-post-event-verification.md) — `DRAFT`; preliminary scoring, revisions, cases and corrective actions. Depends on 340, 341 and 342.
 - **344** — [Six-year evidence archive and replay](344-chwrr-evidence-archive-and-replay.md) — `DRAFT`; cold archive and diagnostic replay. Depends on 340–343; not required for first guarded CHWRR testing.
+- **401** — [A reviewer access token for the review dashboards](401-reviewer-access-token-role.md) — `DRAFT, HIGH RISK`; third HTTP token role — GET-only, tenant-scoped like a consumer, plus REVIEW routes — one per dashboard (BAFU/Swiss, Nepal). Amends Plan 147 G4's role list only; tokens stay GET-only; publishing is a named person (341); the DHM gauges get their own tenant (confirms Plan 268 D11) — until 268 T2b provisions it, dashboard tokens use an explicit station list. Review corrections folded; current text NOT yet re-reviewed. Blocks 402.
+- **402** — [The flow map reads the /api/v1 interface — QC rule sets, station skill, forecast QC flags, committed contract](402-flow-map-reads-the-api.md) — `DRAFT, HIGH RISK`; **depends on 401**. Review corrections folded; current text NOT yet re-reviewed; high-risk ⇒ one extra owner-commissioned review before READY. Decisions: map reads the API (snapshot stays v2), forecast rules served too, per-dashboard reviewer token, forecast QC flags visible to every role. Follow-on: Plan 404 (QC-rejected member/group forecasts are dropped today, so the map can never show them). Open: D9 — QC what-if dry run, recommended as a follow-on.
+- **404** — [Keep the member and group forecasts that QC rejects](404-store-qc-rejected-member-forecasts.md) — `DRAFT, HIGH RISK, unreviewed`; store them marked failed with flags and values (as Plan 253 OD-1 does for combined), fallback/alerting/combination unchanged, every "the forecast" reader excludes them explicitly. Follow-on to 402 (owner, 2026-09-26). Open: D2 who sees them, D3 group batches per station.
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
@@ -667,6 +670,25 @@ exit criteria — Plan 212 owns that deeper screening.
   be published at that key. ⇒ **The predicate should exclude any not-current state, not one named
   value.** ⚠️ Not urgent — 341 is `DRAFT — not implementable` — but the two sides should talk
   before either builds the status change. Neither plan's frontmatter mentions the other.
+
+- **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
+  — `READY` (owner instruction 2026-09-26; 5 review rounds — ⚠️ the final fold is checked AFTER implementation, per the owner), **no open decisions**. `cmal_small` was trained on ERA5-Land
+  and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
+  rather than onboard ERA5-Land.
+  ⭐ **Asks for NO new capability.** FI already defines `RetrainableModel.retrain()`,
+  aquacast already implements it with an identical signature, and
+  `assemble_group_training_data` already reads the same reanalysis binding the
+  operational path uses. 🔴 **SAP3 is the only side that does not participate** — no
+  call site anywhere, and the passthrough is missing at all four of our layers.
+  🔴 **Two blockers the review found**: the empty config mapping is hardcoded at
+  SEVEN sites, so there is no model-config channel at all (⚖️ D3 closed: supplied as
+  a run parameter; the channel is T2's, the RECORD is T4's); and **group training is broken
+  today** — the flow attaches no station-code resolver, so the adapter raises before
+  the model is reached, which is why no group artifact has ever been produced here.
+  ⚠️ ⚖️ D2 (closed: REFUSE) deliberately diverges from FI's suggested fall-back to
+  `train`. 🔴 A bare structural `isinstance` would silently defeat that refusal — the
+  adapter has no `__getattr__`, so support must be read off the INNER model.
+  **Related:** `docs/fi-issues/004` (neither item blocks this).
 
 - **329** — [The Forecast Lab snapshot cannot see a group-assigned model](329-the-snapshot-cannot-see-a-group-model.md)
   — `READY`, **no open decisions** (both closed by the owner 2026-09-25; 4 review rounds). Raised by the Flow Map session:

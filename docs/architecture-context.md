@@ -1865,7 +1865,7 @@ For the rare case where a model needs mixed spatial types (e.g. gridded precipit
 
 Two distinct domain types with different metadata, storage tables, and lifecycles:
 
-**`OperationalForecast`** — produced in real time by Flow 1. Has a publication lifecycle (`raw → reviewed → published`), forecaster adjustments, and operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`). Stored in `forecasts` + `forecast_values`.
+**`OperationalForecast`** — produced in real time by Flow 1. Carries operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`) in `forecasts` + `forecast_values`. The `raw → reviewed → published` lifecycle and forecaster adjustments are the broader design; Plan 340 does not implement a hydrologist review or publication route. Plan 341 proposes a separate human publication decision.
 
 **As-used evidence (Plan 340 T1).** New operational forecasts also write one
 `forecast_evidence` row in the same transaction as the forecast and its values.
@@ -1899,6 +1899,19 @@ artifact, image and a verified protected backup. Backup freshness is a separate
 live publication gate. The host `assess` command exposes both statuses and reasons;
 Plan 341 will determine the authenticated API presentation. Plan 344 supplies
 later cold archive and replay.
+
+For a post-event diagnosis, start from the forecast ID and read its original
+forecast values, evidence manifest, snapshot and `capture_status`. The snapshot
+records what the prediction received even if observations, QC rules, rating
+curves, thresholds or weather rows are subsequently corrected. Use the host
+`assess --forecast-id` command to inspect `effective_preservation_status`, its
+attestation ID and remaining reasons. `evidence_incomplete` identifies a known
+gap; a pre-0057 forecast has no capture row and cannot be reconstructed from
+later source records. An effective status of complete means the captured chain
+has been verified against retained material; it does not mean a diagnostic
+model replay or forecast verification has run. Plan 344 adds replay, while
+Plans 342/343 add alert decisions and outcome verification. Plan 340 does not
+publish forecasts or warnings.
 
 **`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
 
