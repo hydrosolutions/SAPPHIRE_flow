@@ -113,9 +113,10 @@ reclassified; Plan 402 adds the first two REVIEW routes.
 
 **A reviewer token gets no access to unpublished forecasts.** Where Plan 341's publication gate is
 active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes. The default
-is **no**; only Plan 341 may change it, by an explicit, recorded decision (T4 writes this default
-into 341). Reviewing unpublished candidates is the named hydrologist's job in 341. Note that 341's
-own word "reviewer" (`341:66`, `:82`) means that signed-in person, not this token role.
+is **no**; only Plan 341 may change it, by an explicit, recorded decision. Plan 341 already records
+this (PR #313): the reviewer token "sees only published values on ordinary forecast routes and cannot
+read this plan's unpublished candidates" (`341:28,30,48`), and its tests cover reviewer/consumer
+parity (`341:106`). Reviewing unpublished candidates is the named hydrologist's job in 341.
 
 ### D3 — publishing is a person, not a dashboard token. **⚖️ CLOSED — owner, 2026-09-26.**
 
@@ -247,12 +248,6 @@ roles, with GET-only unchanged.
 - Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
   `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
   `cli/access_tokens.py:1-6,588-590`.
-- **A note in `docs/plans/341-chwrr-forecast-publication-api.md`**: a third, non-admin service-token
-  role now exists; every published-only surface treats it like a consumer unless 341 explicitly
-  authorises it, by explicit decision — the default is no; 341's route-inventory tests include a
-  reviewer token; 341's own "reviewer(s)" (`:66`, `:82`) means the signed-in person, and `:82`'s RAW
-  access does not extend to the token role; the two-role descriptions at `:28` and `:45` are
-  superseded.
 
 **Out:** rewriting archived Plan 147.
 
@@ -262,8 +257,8 @@ roles, with GET-only unchanged.
 `grep -rniE 'two roles|two HTTP|third.{0,6}role|exactly two|consumer-only|consumer.{0,12}admin|CONSUMER.{0,40}ADMIN|create-admin' docs/ src/ --include='*.md' --include='*.py' | grep -v 'docs/plans/'`
 and read every hit: each must either name all three roles, or be one of the expected residual
 classes — a `create-admin` command line (bootstrap/rotation instructions), a legitimate per-role
-code branch, or an unrelated match (e.g. "exactly two sentences"). The Plan 341 note exists in the
-branch diff, and **each In-listed location is changed in the branch diff, checked item by item**
+code branch, or an unrelated match (e.g. "exactly two sentences"). Plan 341 still carries the reviewer
+default (`341:28,30,48,106`), and **each In-listed location is changed in the branch diff, checked item by item**
 (the grep alone cannot show that).
 
 ## Exit gates

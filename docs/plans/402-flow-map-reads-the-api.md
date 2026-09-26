@@ -427,29 +427,15 @@ locally and watching it fail.
 **Verification:** `uv run pytest tests/unit/api/` including the drift test and the route-matrix
 test; and a bounded inspection that the consumer page carries every caveat listed in In, and that
 the `security.md` REVIEW-class and D13 entries, the `touchpoint-maps.md` paragraph and the
-`conventions.md` routes are in the branch diff.
+`conventions.md` routes are in the branch diff, and Plan 341 still carries `341:28,30,48,102,104,106`
+as cited in T5.
 
-### T5 — cross-plan records for Plan 341
+### T5 — (removed)
 
-**Outcome:** Plan 341 knows (a) the two new routes are REVIEW-class internal diagnostic and carry no
-forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer token sees
-the same published forecast values as a same-scope consumer on ordinary routes, while only a named,
-station-granted hydrologist reads unpublished candidates on 341's review routes — the default Plan
-401 T4 records in 341, referenced here, not re-recorded; (c) `docs/spec/api-v1-map.openapi.json`
-and its drift test cover `/stations/{id}/forecasts` and `/forecasts/{id}` once this plan lands: if
-it lands first, 341 updates that file; if 341 lands first, T4 creates it from the then-current
-forecast schema — neither plan creates a duplicate map contract; (d) after T3,
-`qc_flags[].detail` on both forecast routes contains forecast values and, for
-`climatology_outlier`, observation-derived baseline statistics — so 341's published-only rule and
-its metadata-only tombstones must strip or gate that field.
-
-**In:** a note in `docs/plans/341-chwrr-forecast-publication-api.md`.
-
-**Out:** changing 341's human-only candidate-read decision.
-
-**Pre-change:** N/A — cross-plan record.
-
-**Verification:** bounded inspection of the note.
+Plan 341 already records everything this task was to add (PR #313, 2026-09-26): the two new routes
+are REVIEW-class diagnostics with no forecast values (`341:30`, `:106`); the reviewer token sees only
+published values (`:28,30,48`); the map contract's creation order (`:102`); and the gating of
+`qc_flags[].detail` (`:104`). T4's inspection checks those lines are still present.
 
 ### T6 — hand-over and durable records
 
@@ -469,7 +455,7 @@ staging checks (see *After staging deploy*).
 
 **Pre-change:** N/A — documentation and hand-over.
 
-**Verification:** the Plan 143, 251 and 341 notes and the README entry are in the feature-branch
+**Verification:** the Plan 143 and 251 notes and the README entry are in the feature-branch
 diff.
 
 ## Exit gates
@@ -541,7 +527,7 @@ After staging deploy (orchestrator), before the map is told:
 {
   "phases": [
     {"id": "phase-1", "tasks": ["T1", "T2", "T3"], "parallel": false},
-    {"id": "phase-2", "tasks": ["T4", "T5"], "depends_on": ["phase-1"]},
+    {"id": "phase-2", "tasks": ["T4"], "depends_on": ["phase-1"]},
     {"id": "phase-3", "tasks": ["T6"], "depends_on": ["phase-2"]}
   ]
 }
