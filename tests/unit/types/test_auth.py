@@ -65,6 +65,20 @@ class TestAccessTokenRoleTenantInvariant:
         token = _access_token(role=AccessTokenRole.ADMIN, tenant_id=None)
         assert token.role is AccessTokenRole.ADMIN
 
+    def test_reviewer_with_null_tenant_id_raises(self) -> None:
+        # Plan 401 T1: a reviewer is tenant-bound like a consumer — a
+        # tenantless reviewer would fall into the admin-like branch.
+        with pytest.raises(ValueError, match="role=reviewer requires a non-null"):
+            _access_token(role=AccessTokenRole.REVIEWER, tenant_id=None)
+
+    def test_reviewer_with_tenant_id_constructs(self) -> None:
+        token = _access_token(
+            role=AccessTokenRole.REVIEWER,
+            tenant_id=TenantId(uuid.uuid4()),
+            station_ids=frozenset({StationId(uuid.uuid4())}),
+        )
+        assert token.role is AccessTokenRole.REVIEWER
+
 
 class TestAccessTokenScopeModeInvariant:
     """Plan 215 D2.1: `scope_mode` defaults to `STATIONS` (matching every
@@ -92,6 +106,14 @@ class TestAccessTokenScopeModeInvariant:
     def test_consumer_with_tenant_scope_mode_constructs(self) -> None:
         token = _access_token(
             role=AccessTokenRole.CONSUMER,
+            tenant_id=TenantId(uuid.uuid4()),
+            scope_mode=ScopeMode.TENANT,
+        )
+        assert token.scope_mode is ScopeMode.TENANT
+
+    def test_reviewer_with_tenant_scope_mode_constructs(self) -> None:
+        token = _access_token(
+            role=AccessTokenRole.REVIEWER,
             tenant_id=TenantId(uuid.uuid4()),
             scope_mode=ScopeMode.TENANT,
         )

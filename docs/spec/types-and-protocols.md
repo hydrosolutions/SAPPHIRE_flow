@@ -301,11 +301,12 @@ class AuditActorType(Enum):
     API_KEY = "api_key"
     SYSTEM = "system"
 
-class AccessTokenRole(Enum):    # Plan 147 Slice C: v1.0 headless HTTP role model — exactly 2 roles, both GET-only
+class AccessTokenRole(Enum):    # Plan 147 Slice C + Plan 401 D1: v1.0 headless HTTP role model — 3 roles, all GET-only
     CONSUMER = "consumer"       # read, station-scoped (mode per ScopeMode — Plan 215 D2.1)
+    REVIEWER = "reviewer"       # read, scoped exactly like a consumer + the REVIEW routes (Plan 401)
     ADMIN = "admin"             # read, unscoped + CLI token/tenant management
 
-class ScopeMode(Enum):          # Plan 215 D2.1: how a consumer token's station_ids is resolved
+class ScopeMode(Enum):          # Plan 215 D2.1: how a consumer or reviewer token's station_ids is resolved
     STATIONS = "stations"       # default — reads the access_token_stations join
     TENANT = "tenant"           # derived at load time from stations.tenant_id; admin can never use this
 
@@ -1344,20 +1345,22 @@ class AccessToken:
     token_hash: str                      # HMAC-SHA-256(pepper, raw_secret) hex digest — R1
     key_prefix: str                      # fast pre-verification lookup key
     name: str
-    role: AccessTokenRole                # CONSUMER (station-scoped) | ADMIN (unscoped)
-    tenant_id: TenantId | None           # None = unscoped global-admin token
+    role: AccessTokenRole                # CONSUMER | REVIEWER (station-scoped, tenant-bound) | ADMIN (unscoped)
+    tenant_id: TenantId | None           # None = unscoped global-admin token; required for consumer/reviewer
     pepper_version: int                  # v1.x dual-pepper rotation forward hook
     expires_at: UtcDatetime              # mandatory (Plan 042:96)
     disabled_at: UtcDatetime | None      # None = active
     created_at: UtcDatetime
     last_used_at: UtcDatetime | None     # None = never used
-    station_ids: frozenset[StationId]    # scope, source depends on scope_mode (R2/D2.2); consumer-only
+    station_ids: frozenset[StationId]    # scope, source depends on scope_mode (R2/D2.2); consumer/reviewer only
     scope_mode: ScopeMode                # STATIONS (default, join) | TENANT (derived) — Plan 215 D2.1
 ```
 
 Module: `types/auth.py`. **Status**: **implemented** (Plan 147 Slice C, 2026-07-24; `scope_mode` added
-Plan 215, migration 0049). Table + migration 0047 (`access_tokens` + `access_token_stations`) plus 0049
-(`scope_mode` column + its two CHECK constraints); store
+Plan 215, migration 0049; `REVIEWER` added Plan 401, migration 0061). Table + migration 0047
+(`access_tokens` + `access_token_stations`) plus 0049 (`scope_mode` column + its two CHECK
+constraints) plus 0061 (the three role CHECKs re-created to admit `reviewer`: tenant-bound, either
+scope mode; downgrade refused while a reviewer row exists); store
 `store/access_token_store.py::PgAccessTokenStore` (scope-membership validated against the token's own
 `tenant_id` at `create_token`, raising `CrossTenantScopeError` on a cross-tenant station id — the SAME
 invariant `PgAccessTokenStore.grant_station` reuses, Plan 215 T1). `station_ids`' SOURCE branches on
@@ -1367,14 +1370,17 @@ invariant `PgAccessTokenStore.grant_station` reuses, Plan 215 T1). `station_ids`
 by `network`/`station_kind` — no materialised copy, so a station added to the tenant after the token
 existed is in scope immediately, and `_assert_stations_in_tenant` is skipped (the tenant predicate that
 produced the set IS the assertion). The FastAPI auth boundary
-(`api/security.py::require_principal`/`require_admin`) resolves a Bearer header to a `Principal`
+(`api/security.py::require_principal`/`require_reviewer`/`require_admin`) resolves a Bearer header to a `Principal`
 (a request-scoped API-boundary type, distinct from the persisted `AccessToken` row) on the request's
 own read connection — `Principal.station_in_scope` and every call site are UNCHANGED by `scope_mode`;
 they still receive a plain `frozenset[StationId]` and cannot tell which mode produced it.
-CLI: `python -m sapphire_flow.cli.access_tokens {create,list,revoke,create-admin,show,grant,
-revoke-station,set-scope-mode}` — the last four are Plan 215 (T1/T2/T6): a token's station scope now
-has a supported lifecycle (widen/narrow/re-source), not just create-with-scope and revoke-the-whole-
-token. Deferred to v1.x: `AccessTokenScope`'s parameter/geographic axes, in-place key rotation,
+`require_reviewer` (Plan 401) admits `Principal.can_review` (reviewer or admin) and refuses a consumer
+with 403; it checks the role only — a REVIEW route applies the station scope itself.
+CLI: `python -m sapphire_flow.cli.access_tokens {create,create-reviewer,list,revoke,create-admin,show,
+grant,revoke-station,set-scope-mode}` — `show`/`grant`/`revoke-station`/`set-scope-mode` are Plan 215
+(T1/T2/T6): a token's station scope now has a supported lifecycle (widen/narrow/re-source), not just
+create-with-scope and revoke-the-whole-token; they act on consumer and reviewer tokens alike.
+`create-reviewer` (Plan 401) mirrors `create` with `--tenant` required. Deferred to v1.x: `AccessTokenScope`'s parameter/geographic axes, in-place key rotation,
 dashboard key management.
 
 ```python
@@ -1415,8 +1421,8 @@ class WritePrincipal:
 ```
 
 Modules: `types/ids.py` (`PrincipalId`), `types/write_principal.py` (`WritePrincipal`). **Status**:
-**implemented** (Plan 147 Slice E, 2026-07-24). A THIRD principal kind — distinct from the two HTTP
-read roles (`AccessTokenRole.CONSUMER`/`ADMIN`) and never materialized from an `access_tokens` row
+**implemented** (Plan 147 Slice E, 2026-07-24). A separate principal kind — distinct from the three HTTP
+read roles (`AccessTokenRole.CONSUMER`/`REVIEWER`/`ADMIN`) and never materialized from an `access_tokens` row
 (read-only, G4) or from the target row being written. Built ONLY from config + a validated run
 identity: `services/write_principal.py::resolve_run_principal` resolves the `[deployment]` config
 block (`config/deployment_identity.py::DeploymentIdentityConfig` — `writable_tenants`/`global_admin`

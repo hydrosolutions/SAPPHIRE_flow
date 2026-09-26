@@ -2439,13 +2439,13 @@ that supersedes the design-intent sketch below it in most respects (see security
 subset for the authoritative v1.0 contract):
 
 ```
-access_tokens:                           # ACTUAL v1.0 shape (migration 0047 + 0049)
+access_tokens:                           # ACTUAL v1.0 shape (migrations 0047 + 0049 + 0061)
   id: UUID PK
   token_hash: TEXT UNIQUE                # HMAC-SHA-256(access_token_pepper, raw_secret) — NOT bcrypt (R1)
   key_prefix: TEXT                       # fast pre-verification lookup key, indexed
   name: TEXT
-  role: TEXT                             # 'consumer' | 'admin' — no JSONB scope, no created_by/users FK (headless)
-  tenant_id: UUID FK → tenants.id NULL   # NULL = unscoped global-admin token
+  role: TEXT                             # 'consumer' | 'reviewer' | 'admin' (reviewer: Plan 401, 0061) — no JSONB scope, no created_by/users FK (headless)
+  tenant_id: UUID FK → tenants.id NULL   # NULL = unscoped global-admin token; consumer/reviewer always set
   pepper_version: SMALLINT DEFAULT 1     # v1.x dual-pepper rotation forward hook
   expires_at: TIMESTAMPTZ                # mandatory
   disabled_at: TIMESTAMPTZ NULL          # NULL = active (NOT `revoked_at`)

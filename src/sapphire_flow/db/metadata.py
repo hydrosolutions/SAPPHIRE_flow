@@ -2116,10 +2116,11 @@ audit_log = sa.Table(
 # `fetch_by_key_prefix` uses `one_or_none()`; the CLI retries generation on
 # the near-impossible collision). G4 LOCKED role/tenant pairing is enforced
 # by `ck_access_tokens_role_tenant` (role=admin -> tenant_id IS NULL;
-# role=consumer -> tenant_id IS NOT NULL), mirroring
-# `AccessToken.__post_init__` + alembic 0047 so a tenantless consumer /
-# tenant-bound admin is structurally unrepresentable even for rows written
-# outside the dataclass.
+# role=consumer or reviewer -> tenant_id IS NOT NULL), mirroring
+# `AccessToken.__post_init__` + alembic 0047/0061 so a tenantless consumer or
+# reviewer / tenant-bound admin is structurally unrepresentable even for rows
+# written outside the dataclass. Three roles (Plan 401 D1, alembic 0061):
+# consumer, reviewer, admin — every one GET-only.
 access_tokens = sa.Table(
     "access_tokens",
     metadata,
@@ -2131,7 +2132,8 @@ access_tokens = sa.Table(
         "role",
         sa.Text,
         sa.CheckConstraint(
-            "role IN ('consumer', 'admin')", name="ck_access_tokens_role"
+            "role IN ('consumer', 'reviewer', 'admin')",
+            name="ck_access_tokens_role",
         ),
         nullable=False,
     ),
@@ -2156,7 +2158,7 @@ access_tokens = sa.Table(
     ),
     sa.CheckConstraint(
         "(role = 'admin' AND tenant_id IS NULL) OR "
-        "(role = 'consumer' AND tenant_id IS NOT NULL)",
+        "(role IN ('consumer', 'reviewer') AND tenant_id IS NOT NULL)",
         name="ck_access_tokens_role_tenant",
     ),
     sa.CheckConstraint(
@@ -2164,7 +2166,7 @@ access_tokens = sa.Table(
         name="ck_access_tokens_scope_mode",
     ),
     sa.CheckConstraint(
-        "scope_mode = 'stations' OR role = 'consumer'",
+        "scope_mode = 'stations' OR role IN ('consumer', 'reviewer')",
         name="ck_access_tokens_tenant_mode_is_consumer",
     ),
     sa.Index("ix_access_tokens_key_prefix", "key_prefix", unique=True),

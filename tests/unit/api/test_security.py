@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
 import pytest
+from fastapi import Depends
 
 from sapphire_flow.api.security import (
     PepperNotConfiguredError,
@@ -14,6 +15,7 @@ from sapphire_flow.api.security import (
     load_access_token_pepper,
     require_admin,
     require_principal,
+    require_reviewer,
     split_raw_token,
 )
 from sapphire_flow.types.enums import AccessTokenRole
@@ -165,6 +167,55 @@ class TestPrincipalStationInScope:
         p = _principal(station_ids=frozenset({sid}))
         assert p.station_in_scope(None) is False
 
+    def test_reviewer_is_scoped_like_a_consumer(self) -> None:
+        sid = StationId(uuid4())
+        p = _principal(role=AccessTokenRole.REVIEWER, station_ids=frozenset({sid}))
+        assert (
+            p.station_in_scope(sid),
+            p.station_in_scope(StationId(uuid4())),
+            p.station_in_scope(None),
+        ) == (True, False, False)
+
+
+class TestRoleGates:
+    """Plan 401 D2: which roles each gate admits — the reviewer dimension of
+    the route matrix. PRINCIPAL admits every role; REVIEW admits reviewer and
+    admin; ADMIN admits admin only."""
+
+    _ADMITTED: dict[str, frozenset[AccessTokenRole]] = {
+        "PRINCIPAL": frozenset(AccessTokenRole),
+        "REVIEW": frozenset({AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN}),
+        "ADMIN": frozenset({AccessTokenRole.ADMIN}),
+    }
+
+    @staticmethod
+    def _admits(gate: str, role: AccessTokenRole) -> bool:
+        from fastapi import HTTPException
+
+        principal = _principal(role=role)
+        check = {
+            "PRINCIPAL": lambda p: p,
+            "REVIEW": require_reviewer,
+            "ADMIN": require_admin,
+        }[gate]
+        try:
+            check(principal)
+        except HTTPException as exc:
+            assert exc.status_code == 403
+            return False
+        return True
+
+    @pytest.mark.parametrize("gate", ["PRINCIPAL", "REVIEW", "ADMIN"])
+    def test_gate_admits_exactly_its_roles(self, gate: str) -> None:
+        admitted = {role for role in AccessTokenRole if self._admits(gate, role)}
+        assert admitted == self._ADMITTED[gate]
+
+    def test_can_review_is_reviewer_or_admin(self) -> None:
+        assert {r for r in AccessTokenRole if _principal(role=r).can_review} == {
+            AccessTokenRole.REVIEWER,
+            AccessTokenRole.ADMIN,
+        }
+
 
 # ---------- FastAPI-level enforcement: NO dependency overrides ---------------
 # Uses a bare TestClient(app) — the shared tests/unit/api/conftest.py `client`
@@ -243,7 +294,7 @@ def _flat_dependant_calls(dependant: object) -> list[object]:
 
 
 def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str], str]:
-    """method+path -> "PUBLIC" | "PRINCIPAL" | "ADMIN", derived from each
+    """method+path -> "PUBLIC" | "PRINCIPAL" | "REVIEW" | "ADMIN", derived from each
     mounted route's actual dependency graph (not a hand-maintained belief
     about which router it lives in) — a route added to an existing router
     without `dependencies=[Depends(require_admin/require_principal)]`
@@ -275,11 +326,16 @@ def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str],
             tag = "PUBLIC"
         else:
             calls = _flat_dependant_calls(dependant)
-            tag = (
-                "ADMIN"
-                if require_admin in calls
-                else ("PRINCIPAL" if require_principal in calls else "PUBLIC")
-            )
+            # Most restrictive first: a `require_reviewer`/`require_admin`
+            # route also carries `require_principal` among its dependencies.
+            if require_admin in calls:
+                tag = "ADMIN"
+            elif require_reviewer in calls:
+                tag = "REVIEW"
+            elif require_principal in calls:
+                tag = "PRINCIPAL"
+            else:
+                tag = "PUBLIC"
         methods = getattr(route, "methods", None)
         if not methods:
             # A Mount / method-less route is still addressable — record it so
@@ -338,6 +394,35 @@ class TestRouteAuthMatrixExhaustive:
         actual = _classify_routes()
         public_routes = {path for path, tag in actual.items() if tag == "PUBLIC"}
         assert public_routes == {("GET", "/api/v1/health")}
+
+    def test_reviewer_reaches_every_non_admin_route_and_no_admin_route(self) -> None:
+        """Plan 401: the reviewer dimension. No REVIEW route exists until
+        Plan 402, so today a reviewer reaches exactly the PUBLIC and PRINCIPAL
+        routes; every ADMIN route stays closed to it."""
+        admitted = TestRoleGates._ADMITTED
+        reachable = {
+            route
+            for route, tag in _classify_routes().items()
+            if tag == "PUBLIC" or AccessTokenRole.REVIEWER in admitted[tag]
+        }
+        assert reachable == {
+            route for route, tag in self._EXPECTED.items() if tag != "ADMIN"
+        }
+
+    def test_a_require_reviewer_route_is_classified_review(self) -> None:
+        from fastapi import FastAPI
+
+        # `Depends` is imported at module level: the annotation is a string
+        # (`from __future__ import annotations`), resolved in module globals.
+        test_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+        @test_app.get("/review/{station_id}")
+        def _review(  # pragma: no cover - never called
+            station_id: str, principal: Annotated[Principal, Depends(require_reviewer)]
+        ) -> dict[str, str]:
+            return {}
+
+        assert _classify_routes(test_app) == {("GET", "/review/{station_id}"): "REVIEW"}
 
 
 class TestRouteMatrixCatchesUngatedRoutes:

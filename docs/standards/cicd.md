@@ -244,6 +244,28 @@ deployment's overlay, redeploy, and confirm the composed config shows the mount 
 
 No schema downgrade path — rollback = restore from backup + redeploy previous image tag. Migrations must be backwards-compatible for one version (additive only: new columns nullable, no destructive changes in a single release). This means the previous image tag can run against the new schema during the migration window.
 
+**Reviewer access tokens (Plan 401, migration `0061`)** — an image older than Plan 401
+cannot parse the `reviewer` role (it reads roles fail-closed), so a single reviewer row —
+revoked or not; `revoke` only sets `disabled_at` — crashes its token listing and turns a
+reviewer request into a 500 instead of a 401. **After any backup restore, and immediately
+before starting an image older than Plan 401, delete every reviewer token** as the
+database owner (the API role has no DELETE on `access_tokens`; there is no cascade, so the
+scope rows go first):
+
+```bash
+docker compose exec -T postgres psql -U ${DB_USER:-sapphire} -d sapphire
+```
+
+```sql
+DELETE FROM access_token_stations
+  WHERE token_id IN (SELECT id FROM access_tokens WHERE role = 'reviewer');
+DELETE FROM access_tokens WHERE role = 'reviewer';
+```
+
+Not before the restore — the restore would bring them back. `0061`'s `downgrade()` refuses
+while any reviewer row exists and prints these same statements; the migration never
+deletes tokens itself.
+
 **Two-release column tightening (Plan 115a/115c)** — `station_weather_sources.role`
 illustrates the additive-then-tighten pattern for a column that must eventually be
 `NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies
@@ -1072,12 +1094,12 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 
 ### Pepper rotation (all-token-reissue — v1.0 has no dual-pepper support)
 
-Because the v1.0 key set is small (a handful of Nepal/Swiss consumer + admin keys):
+Because the v1.0 key set is small (a handful of Nepal/Swiss consumer, reviewer and admin keys):
 
 1. Generate a new pepper: `openssl rand -base64 32 > ./secrets/access_token_pepper.new`.
 2. `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope_mode for re-creation. For a `'tenant'`-mode token, `show` additionally confirms it (`list`'s `scope=N station(s)` line is the SAME for either mode — it does not distinguish them on its own).
 3. Swap the pepper file (`mv ./secrets/access_token_pepper.new ./secrets/access_token_pepper`) and `docker compose up -d --build api` to pick it up.
-4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-admin` a replacement with the same name/role/tenant/station scope. A token recorded as `'tenant'`-mode needs ONE extra step here (Plan 215 T6) — the new token is born in `'stations'` mode (no `--scope-mode` flag on `create`), so re-run `set-scope-mode <new-token-id> tenant --yes-follow-the-whole-tenant` on it; this is a materially SMALLER step than re-materializing a `'stations'`-mode token's grant list, since it needs no per-station arguments at all. Distribute the new raw keys to consumers out of band.
+4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-reviewer`/`create-admin` (by its role — `consumer`/`reviewer`/`admin`) a replacement with the same name/role/tenant/station scope. A token recorded as `'tenant'`-mode needs ONE extra step here (Plan 215 T6) — the new token is born in `'stations'` mode (no `--scope-mode` flag on `create`/`create-reviewer`), so re-run `set-scope-mode <new-token-id> tenant --yes-follow-the-whole-tenant` on it; this is a materially SMALLER step than re-materializing a `'stations'`-mode token's grant list, since it needs no per-station arguments at all. Distribute the new raw keys to consumers — and each reviewer key to its dashboard's server-side configuration — out of band.
 5. Re-run step 4's watchdog admin token through the "First deploy" steps 3-5 above (the watchdog's probe token is itself an access token and must be reissued too — an admin token is always `'stations'`-mode, so this step never needs the extra `set-scope-mode` call).
 
 The `pepper_version` column on `access_tokens` is the forward hook for a v1.x zero-downtime
@@ -1092,8 +1114,11 @@ If only the watchdog's own admin token needs rotating (compromise suspected, rou
 
 ### Station scope management (Plan 215 T1/T2/T6, REALIZED)
 
-Widening or narrowing a live consumer token's scope no longer needs raw SQL, and no longer needs a
-reissue (which would change the token value and every consumer would 401 in the gap). All four
+Widening or narrowing a live consumer or reviewer token's scope no longer needs raw SQL, and no
+longer needs a reissue (which would change the token value and every consumer would 401 in the gap).
+Every command below acts on `reviewer` tokens (Plan 401) exactly as on `consumer` tokens; only admin
+tokens are refused. A reviewer token is issued with `create-reviewer --name <label> --tenant <code>
+[--station <uuid> ...]` (same runner as below; `--tenant` is required). All four
 commands run the same way as `create`/`list`/`revoke` (§ First deploy above) — via
 `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens <command> ...`:
 
@@ -1102,7 +1127,7 @@ commands run the same way as `create`/`list`/`revoke` (§ First deploy above) �
 | `show <token-id>` | Read-only. Prints name/role/tenant/status/expiry/`scope_mode`, and — for a `'stations'`-mode token — one line per in-scope station carrying BOTH its UUID and its `network/code` (the actually-unique pair), so the output round-trips straight back into `grant`/`revoke-station`. For a `'tenant'`-mode token it labels the listing as derived at load time, not a materialised grant list. |
 | `grant <token-id> <station-id>` | Widens a `'stations'`-mode token's scope by one station (UUID). Idempotent — granting an already-granted station is a no-op. Refuses an admin token and a `'tenant'`-mode token (the latter's scope already follows the whole tenant; there is nothing to add). |
 | `revoke-station <token-id> <station-id>` | Narrows a `'stations'`-mode token's scope by one station. Idempotent — revoking a station already out of scope succeeds and says so, rather than claiming a change that did not happen. Same admin/`'tenant'`-mode refusals as `grant`. |
-| `set-scope-mode <token-id> {stations\|tenant}` | Changes `scope_mode`. Switching TO `tenant` requires an explicit `--yes-follow-the-whole-tenant` flag (it prints the station count the token will follow first) and DELETES the token's now-obsolete `access_token_stations` grant rows in the same transaction as the mode flip — those rows would otherwise silently drift out of sync with what the tenant-derived scope actually resolves to. Switching FROM `tenant` back to `stations` does **not** snapshot the tenant back into grants — the token's scope goes to **empty** and the command says so; re-grant with `grant`. Refuses an admin token (mirrored by the DB CHECK `ck_access_tokens_tenant_mode_is_consumer`, which makes a tenant-mode admin row structurally unrepresentable even outside the CLI). |
+| `set-scope-mode <token-id> {stations\|tenant}` | Changes `scope_mode`. Switching TO `tenant` requires an explicit `--yes-follow-the-whole-tenant` flag (it prints the station count the token will follow first) and DELETES the token's now-obsolete `access_token_stations` grant rows in the same transaction as the mode flip — those rows would otherwise silently drift out of sync with what the tenant-derived scope actually resolves to. Switching FROM `tenant` back to `stations` does **not** snapshot the tenant back into grants — the token's scope goes to **empty** and the command says so; re-grant with `grant`. Refuses an admin token (mirrored by the DB CHECK `ck_access_tokens_tenant_mode_is_consumer` — despite its name it admits tenant mode for `consumer` and `reviewer` rows since migration `0061` — which makes a tenant-mode admin row structurally unrepresentable even outside the CLI). |
 
 Every write among the four (`grant`/`revoke-station`/`set-scope-mode`) appends one `audit_log` row
 (`API_KEY_SCOPE_CHANGED`) in the SAME transaction as its write — a failed audit insert rolls back
@@ -1119,6 +1144,13 @@ so it widens what the token can read through the endpoints with no eligibility f
 (`api_stations`/`api_forecasts`/`api_alerts`); weigh that against the operational cost of a forgotten
 per-station grant before choosing it (see `security.md` § v1.0 headless subset, "Scope contract
 narrowed to the station axis only for v1.0").
+
+**A dashboard token may use `'tenant'` mode only
+when every station in its tenant belongs to that dashboard's client** (Plan 401 D4). A token is bound
+to one tenant for life and cannot span or change tenants (`grant` refuses a station from another
+tenant). Until the rule holds, the token stays in `'stations'` mode with an explicit station list — in
+particular the Swiss dashboard's token (tenant `sapphire`) stays in `'stations'` mode while any
+non-Swiss station remains in `sapphire`. The Nepal dashboard's token binds to the DHM tenant only.
 
 ## DB role bootstrap (Plan 147 Slice D, REALIZED)
 

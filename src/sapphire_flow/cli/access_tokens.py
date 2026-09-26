@@ -1,9 +1,11 @@
 # pyright: reportUnknownMemberType=false
-"""Plan 147 Slice C + Plan 215: access-token CLI management (`042:69`,
-`create`/`list`/`revoke` + a `create-admin` bootstrap, plus Plan 215's
-`grant`/`revoke-station`/`show`/`set-scope-mode` — a token's station scope
-now has a supported lifecycle; in-place edit is no longer deferred to v1.x.
-In-place `rotate` (key rotation) is still deferred to v1.x.
+"""Plan 147 Slice C + Plan 215 + Plan 401: access-token CLI management
+(`042:69`, `create`/`list`/`revoke` + a `create-admin` bootstrap, plus Plan
+215's `grant`/`revoke-station`/`show`/`set-scope-mode` — a token's station
+scope now has a supported lifecycle; in-place edit is no longer deferred to
+v1.x — and Plan 401's `create-reviewer` for review-dashboard tokens; the
+scope verbs act on consumer and reviewer tokens alike). In-place `rotate`
+(key rotation) is still deferred to v1.x.
 
 Run via (note the `/entrypoint.sh` wrapper — REQUIRED):
 
@@ -15,9 +17,10 @@ Run via (note the `/entrypoint.sh` wrapper — REQUIRED):
 and the CLI raises `KeyError: 'DATABASE_URL'`. The access_token_pepper secret is
 mounted into the same `api` service, per `security.md` bootstrap.
 
-Every write subcommand (create/revoke/grant/revoke-station/set-scope-mode) and
-its `audit_log` insert share ONE RW transaction (Slice B atomicity rule) — a
-failed audit insert rolls back the whole change.
+Every write subcommand (create/create-reviewer/create-admin/revoke/grant/
+revoke-station/set-scope-mode) and its `audit_log` insert share ONE RW
+transaction (Slice B atomicity rule) — a failed audit insert rolls back the
+whole change.
 """
 
 from __future__ import annotations
@@ -430,6 +433,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_create.add_argument("--expires-days", type=int, default=DEFAULT_EXPIRES_DAYS)
 
+    p_reviewer = sub.add_parser(
+        "create-reviewer",
+        help="Create a reviewer access token for a review dashboard (Plan 401).",
+        description=(
+            "A reviewer token is GET-only and tenant-bound, scoped exactly like "
+            "a consumer token, and additionally reaches the REVIEW routes. It "
+            "never reaches an admin route."
+        ),
+    )
+    p_reviewer.add_argument("--name", required=True)
+    p_reviewer.add_argument(
+        "--tenant", required=True, help="Tenant code the token is bound to."
+    )
+    p_reviewer.add_argument(
+        "--station",
+        action="append",
+        default=[],
+        dest="stations",
+        help="Station UUID to scope this token to (repeatable).",
+    )
+    p_reviewer.add_argument("--expires-days", type=int, default=DEFAULT_EXPIRES_DAYS)
+
     p_admin = sub.add_parser(
         "create-admin",
         help="Bootstrap/mint an unscoped admin token.",
@@ -576,21 +601,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # create / create-admin (pepper already loaded + required above)
-    role = (
-        AccessTokenRole.ADMIN
-        if args.command == "create-admin"
-        else AccessTokenRole.CONSUMER
-    )
+    # create / create-reviewer / create-admin (pepper already loaded above)
+    role = {
+        "create-admin": AccessTokenRole.ADMIN,
+        "create-reviewer": AccessTokenRole.REVIEWER,
+    }.get(args.command, AccessTokenRole.CONSUMER)
     expires_at = ensure_utc(now + timedelta(days=args.expires_days))
     station_ids = frozenset(StationId(UUID(s)) for s in getattr(args, "stations", []))
 
     # G4 LOCKED: admin is always unscoped/global — `create-admin` has no
     # --tenant flag (see `AccessToken.__post_init__`), so `tenant_code` is
-    # only ever read for a consumer token below.
-    tenant_code = args.tenant if role is AccessTokenRole.CONSUMER else None
-    if role is AccessTokenRole.CONSUMER and tenant_code is None:
-        raise SystemExit("--tenant is required for a consumer token")
+    # read only for a tenant-bound (consumer or reviewer) token below.
+    tenant_code = args.tenant if role is not AccessTokenRole.ADMIN else None
+    if role is not AccessTokenRole.ADMIN and tenant_code is None:
+        raise SystemExit(f"--tenant is required for a {role.value} token")
 
     with engine.begin() as conn:
         tenant_id = _resolve_tenant(conn, tenant_code)
@@ -605,6 +629,13 @@ def main(argv: list[str] | None = None) -> int:
             now=now,
             pepper=pepper,
         )
+    log.info(
+        "access_token.created",
+        name=args.name,
+        role=role.value,
+        tenant_code=tenant_code,
+        station_count=len(station_ids),
+    )
 
     print(  # noqa: T201 - the raw key is shown ONCE, never persisted/logged
         f"Access token created ({role.value}). Store it now — it will not "

@@ -333,6 +333,15 @@ All human roles (org admin, IT admin, model admin, forecaster) require two-facto
 
 **Recommendation**: Assign at least two people to each role — especially org admin — to avoid single points of failure during staff transitions. If all org admins leave without creating a replacement, recovery requires shell access to the server to run the CLI bootstrap command again. Multiple users per role is fully supported and has no technical limitations.
 
+**Review dashboards (reviewer token, Plan 401).** Each of our review dashboards (the Swiss/BAFU one, the Nepal one) holds one **reviewer** token on its server — never in a browser. It reads what an API consumer with the same station scope reads — and, once Plan 402 adds them, will also read the review routes (QC rule sets, station skill) — and can change nothing: publishing a forecast is a named person's act, not a token's. Issue one on the server with:
+
+```bash
+docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create-reviewer \
+    --name "<dashboard label>" --tenant <tenant code> [--station <station UUID> ...]
+```
+
+`--tenant` is required; the token stays bound to that one tenant. Keep it on an explicit station list unless every station in the tenant belongs to that dashboard's client (`docs/standards/security.md` § Reviewer tokens).
+
 ### Bootstrap: Creating the First Admin Account
 
 After first boot, the system has no users. Run this command on the server to create the first org admin account:

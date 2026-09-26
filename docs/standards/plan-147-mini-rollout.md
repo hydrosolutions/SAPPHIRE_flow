@@ -323,6 +323,10 @@ the old image simply ignores them (it neither mounts the pepper nor reads the sc
    `$C exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create --name <n> --tenant sapphire --station <STATION_UUID> [--expires-days N]`
    (`cli/access_tokens.py:197-209`; note the `/entrypoint.sh` wrapper). Consumer tokens need the station **UUIDs** (not BAFU codes
    2009/2091) — look them up first: `... psql -c "SELECT id,name FROM stations;"`.
+   *(Added by Plan 401, after this rollout.)* A review dashboard gets a **reviewer** token instead of an
+   admin one: `$C exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create-reviewer --name <n> --tenant sapphire --station <STATION_UUID> [--expires-days N]`
+   — `--tenant` is required, and the `sapphire` token stays on an explicit station list while any
+   non-Swiss station remains in that tenant (`security.md` § Reviewer tokens).
 4. ⚠️ **Token expiry** — default 365 days (`cli/access_tokens.py:49,209,222`); override with
    `--expires-days` if a different rotation cadence is wanted.
 5. ⚠️ **`SAPPHIRE_CORS_ORIGINS`** — leave EMPTY for the LAN-only mini (recommended). Only set an

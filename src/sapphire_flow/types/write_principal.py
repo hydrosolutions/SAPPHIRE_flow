@@ -10,8 +10,9 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WritePrincipal:
     """Plan 147 Slice E (R5/G6 LOCKED): the tenant write-isolation
-    principal. A THIRD principal kind — distinct from the two HTTP read
-    roles (``AccessTokenRole.CONSUMER``/``ADMIN``) and NEVER materialized
+    principal. A separate principal kind — distinct from the three HTTP
+    read roles (``AccessTokenRole.CONSUMER``/``REVIEWER``/``ADMIN``) and
+    NEVER materialized
     from an ``access_tokens`` row (those are GET-only, G4) or from the
     target row being written.
 
