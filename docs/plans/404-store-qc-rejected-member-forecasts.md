@@ -63,8 +63,9 @@ fire. Their silence says nothing about the thresholds; the evidence simply does 
 - **Production store wiring.** The flow's store bundle is built in `flows/_db.py::make_pg_stores`
   (`:23-73`), which `setup_production_stores` (`:78-85`) calls with one shared AUTOCOMMIT connection
   and an engine created with `pool_pre_ping=True`. **Writers that matter take their own pooled
-  transaction**: `PgForecastStore`, `PgHindcastStore`, `PgStationGroupStore` and `AuditedWriter`
-  accept a `transaction_factory` defaulting to `conn.engine.begin`
+  transaction**: `PgForecastStore`, `PgHindcastStore` and `PgStationGroupStore`
+  accept a `transaction_factory` defaulting to `conn.engine.begin`, and `AuditedWriter` a `begin`
+  (`store/audited_writer.py:65`)
   (`store/forecast_store.py:122-136`); other stores' reads and writes go through the shared
   connection. No store sets a lock or statement timeout today. The API opens exactly one connection
   per request, shared by auth and the handler (`api/deps.py:26-37`).
@@ -111,9 +112,11 @@ lands first, Plan 341 already records that its activation wires this predicate a
 ### D5 — rejections are saved once, at the end of the run. **⚖️ CLOSED — owner, 2026-09-26.**
 
 The cycle collects each rejection in memory the moment it happens (so no early exit loses it) and
-writes them all in **one** short, time-limited transaction **after** the forecasts, alerts and the
-`FORECAST_FRESHNESS` heartbeat are written — also when the run is aborting. A locked or slow database
-can therefore never delay forecast delivery, alerts or the heartbeat. Trade-off accepted: if the run
+writes them all in **one** short, time-limited transaction as the run's last step: after the
+forecasts, alerts and whichever `FORECAST_FRESHNESS` heartbeat the run emits — and also when the run
+is aborting, including a `StoreError` exit that emits no heartbeat (heartbeat behaviour is
+unchanged). A locked, slow or unreachable database can therefore never delay forecast delivery,
+alerts or the heartbeat, and delays the run's own completion by at most the capture's time limits. Trade-off accepted: if the run
 crashes before that point, that run's rejections are lost; the crash itself is still logged.
 
 ## Record and route contract
@@ -137,8 +140,8 @@ crashes before that point, that run's rejections are lost; the crash itself is s
 | `qc_flags` | JSONB, the four-key flag shape, holding the parameter's flags — `[]` only for a passed or unchecked parameter |
 | `recorded_at` | server default `now()` |
 
-Index `(station_id, issued_at)`. One assignment's rows are written in **one statement** (all or
-none). Every parameter of a rejected assignment is recorded, each with its own `qc_status` and flags: QC now runs on **all** parameters before the verdict, which is unchanged (any failed
+Index `(station_id, issued_at)`. A run's rows are written in **one transaction** (all or
+none, D5). Every parameter of a rejected assignment is recorded, each with its own `qc_status` and flags: QC now runs on **all** parameters before the verdict, which is unchanged (any failed
 parameter still rejects the assignment).
 
 **Route** `GET /api/v1/stations/{id}/rejected-forecasts?[start=&end=][&model_id=][&limit=&offset=]`,
@@ -161,19 +164,23 @@ production for both the flow and the API.
 **In:** `db/metadata.py`; a new alembic migration (next free revision at implementation time);
 `tests/unit/db/test_alembic_head_release_b.py` (the head pin); the store Protocol in
 `protocols/stores.py` and its implementation under `store/`; the fake in `tests/fakes/fake_stores.py`;
-`flows/_db.py::make_pg_stores` and `api/deps.py`. The store follows the existing writer pattern: a
-`transaction_factory` defaulting to `conn.engine.begin`, so a write takes its own pooled transaction
-(the engine's `pool_pre_ping` replaces a dead connection), and that transaction begins with
-`SET LOCAL lock_timeout = '2s'` and `SET LOCAL statement_timeout = '5s'` (constants in the store).
-One write stores one run's whole batch (D5). The API reads through its request connection; the
+`flows/_db.py::make_pg_stores` and `api/deps.py`. The store follows the existing writer pattern of an
+injectable `transaction_factory`, but its production default is **not** the shared engine's
+`begin`: acquiring a pooled connection happens before any `SET LOCAL`, and replacing a dead one
+waits up to psycopg's default connect timeout of 130 s (`psycopg/conninfo.py:23`; the production
+URL sets none). `make_pg_stores` therefore builds the factory from a dedicated engine on the same
+URL with `poolclass=NullPool` and `connect_args={"connect_timeout": 5}` — one fresh, bounded
+connection per run — and the transaction begins with `SET LOCAL lock_timeout = '2s'` and
+`SET LOCAL statement_timeout = '5s'` (constants in the store). The shared engine is unchanged.
+One write stores one run's whole batch, all rows or none (D5). The API reads through its request connection; the
 timeouts belong to the worker's write path only. The migration also adds a **role-independent
 append-only guard** — triggers rejecting UPDATE, DELETE and TRUNCATE, as migration 0057 does for the
 evidence tables (`alembic/versions/0057_forecast_evidence.py:82-96`). The flow parameter
-`rejected_forecast_store` on `run_forecast_cycle_flow` (`flows/run_forecast_cycle.py:2323-2365`),
+`rejected_forecast_store` on `run_forecast_cycle_flow` (`flows/run_forecast_cycle.py:2323-2370`),
 read from the production bundle when stores are not injected (`:2405-2428`) — an injected caller that
 omits it gets no capture, which leaves the ~84 existing injected test calls unchanged; a flow
 parameter `id_gen: object | None = None`, resolved to `uuid4` in the body beside `clock`/`rng`
-(`flows/run_forecast_cycle.py:2338-2339`, `:2398-2401` — a callable default is not a valid Prefect
+(`flows/run_forecast_cycle.py:2340-2341`, `:2399-2402` — a callable default is not a valid Prefect
 deployment parameter), from which the flow mints `attempt_id`; grants in `docker/bootstrap-roles.sql`
 (worker INSERT; API SELECT; no UPDATE/DELETE/TRUNCATE for either); `docs/spec/types-and-protocols.md`,
 `docs/spec/database-schema.md`, and the grant matrix in `docs/conventions.md` § Service users.
@@ -183,7 +190,7 @@ deployment parameter), from which the flow mints `attempt_id`; grants in `docker
 **Pre-change:** with the Protocol and the fake in place, a store round-trip test against Postgres
 fails on the missing table.
 
-**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/ tests/integration/store/test_rejected_forecast_store.py` — store round-trips use the `transaction_factory` savepoint seam of the integration fixture (as `tests/integration/store/test_forecast_store.py:66` does), since that fixture rolls back an uncommitted outer transaction (`tests/integration/conftest.py:46-51`); against PostgreSQL: with another session holding a conflicting lock on `rejected_forecasts` (committed seed rows, explicit cleanup), a write fails with `lock_not_available` (SQLSTATE `55P03`) within the lock timeout; UPDATE, DELETE and TRUNCATE are refused by the guard even for the table-owning role; round-trip of an ensemble and a quantile row, including a single-step forecast, a `qc_suspect` sibling parameter with its flags, an out-of-set `qc_status` rejected by the CHECK, members with different timelines, one assignment's rows all written or none (a forced mid-statement failure against Postgres leaves no partial record), and one containing NaN, `inf` and `-inf`, preserving units, cadence and every value; upgrade and downgrade on an empty table; `tests/integration/db/test_role_bootstrap.py` extended: the worker can INSERT, the API can SELECT, and neither can UPDATE, DELETE or TRUNCATE (the precedent at `:381`); the production store bundle contains the new store.
+**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/ tests/integration/store/test_rejected_forecast_store.py` — store round-trips use the `transaction_factory` savepoint seam of the integration fixture (as `tests/integration/store/test_forecast_store.py:66` does), since that fixture rolls back an uncommitted outer transaction (`tests/integration/conftest.py:46-51`); against PostgreSQL: with another session holding a conflicting lock on `rejected_forecasts` (committed seed rows, explicit cleanup), a write fails with `lock_not_available` (SQLSTATE `55P03`) within the lock timeout; UPDATE, DELETE and TRUNCATE are refused by the guard even for the table-owning role; round-trip of an ensemble and a quantile row, including a single-step forecast, a `qc_suspect` sibling parameter with its flags, an out-of-set `qc_status` rejected by the CHECK, members with different timelines, a run's batch written all or none (a forced failure on a later assignment's insert leaves none of the run's rows, and `write_failed` is logged for every assignment of the batch), and one containing NaN, `inf` and `-inf`, preserving units, cadence and every value; upgrade and downgrade on an empty table; `tests/integration/db/test_role_bootstrap.py` extended: the worker can INSERT, the API can SELECT, and neither can UPDATE, DELETE or TRUNCATE (the precedent at `:381`); the production store bundle contains the new store.
 
 ### T2 — capture every rejection, change nothing else
 
@@ -215,7 +222,7 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   the flow, placed before the existing generic one, adds the payloads to the buffer and then takes the existing
   log-and-skip branch (`flows/run_forecast_cycle.py:3822-3838`) with the original's message, so the
   `error` field and the cycle's `errors` text are unchanged. A `StoreError` is never wrapped: no
-  store call happens inside the per-station loop (`services/run_group_forecast.py:265-381`; the
+  store call happens inside the per-station loop (`services/run_group_forecast.py:597-635`; the
   artifact fetch at `:482-510` precedes it), so one cannot follow a rejection, and any `StoreError`
   still propagates to the existing dedicated branch (`:3820`) exactly as today. The caller at
   `flows/run_forecast_cycle.py:3715` and `tests/unit/flows/test_run_forecast_cycle_group_fi_resolver.py`.
@@ -223,13 +230,15 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   payloads in an in-memory buffer **immediately after** each of `run_all_station_forecasts_per_track`,
   `run_all_station_forecasts`, `run_station_forecast` and `run_group_forecast` returns, before the
   cross-cycle preflight, the `all_models_failed` checks or any other exit; and **write the buffer once**
-  (D5), after the run's last `_emit_forecast_freshness_record` call (`:880`), in a `finally` so an
-  aborting run writes it too. The write is **best-effort**: a failure logs `rejected_forecast.write_failed` (warning; `attempt_id`,
+  (D5), in the flow's outermost `finally` (`:3940`, closing the `try` opened after `flow_t0` at `:2371`),
+  which runs after whichever heartbeat the run emitted (`:2617`, `:1924`, `:2907`, `:3779`, `:3893`)
+  — or none, on a `StoreError` exit — so an aborting run writes it too; the buffer, `attempt_id` and
+  store are bound before that `try`. The write is **best-effort**: a failure logs `rejected_forecast.write_failed` (warning; `attempt_id`,
   `station_id`, `model_id`, `group_id`, `error`; once per rejected assignment), never aborts the
   cycle, is never counted in `forecasts_stored`, and never goes through the group path's fatal store
   call. A missing store in the production bundle is an error at setup (T1), not a silent no-op.
-  Because the single write happens after forecasts, alerts and the heartbeat, on its own pooled
-  transaction with timeouts (T1), a blocked or broken capture write can neither delay them nor touch
+  Because the single write is the run's last step, on its own bounded connection and transaction
+  (T1), a blocked or broken capture write can neither delay them nor touch
   the shared connection. It is the one deliberate broad `except` on this path: T4 records the
   carve-out in `docs/conventions.md` § Flow-level strategy.
 - `docs/spec/types-and-protocols.md` — `AssignmentFailure`, `MultiModelForecastResult`, the
@@ -258,12 +267,14 @@ import or argument error.
 - the stored `qc_status` of an unchecked parameter is `qc_unchecked` even though its flags are `[]`;
 - a rejected ensemble whose members have different timelines round-trips with each member's own timestamps;
 - a rejected assignment with one failed and one suspect parameter records both, each with its own status and flags, on the member and the group path;
-- every write in one flow execution carries the same `attempt_id`;
+- every row written by one flow execution carries the same `attempt_id`;
 - a rejected ensemble containing NaN or `inf` is captured, not dropped by the best-effort write;
 - a re-run of the same cycle appends a second attempt and leaves Plan 327's classification of the stored forecasts unchanged;
 - a failed write of the record leaves the cycle's result and heartbeat unchanged;
 - the capture write is the last database write of the run: it happens after the forecasts, the alerts and the `FORECAST_FRESHNESS` record, and also runs when the flow aborts;
-- (integration, `test_forecast_cycle_rejected_capture_pg.py`, PostgreSQL, committed seed rows with explicit cleanup) a cycle run while another session holds a conflicting lock on `rejected_forecasts`: the capture write fails with `lock_not_available` and logs `rejected_forecast.write_failed` once per rejected assignment, while the run's successful forecasts and its `FORECAST_FRESHNESS` record were already written and the run's result is unchanged;
+- a member rejection buffered before a later group `StoreError`: the capture runs once, the original `StoreError` propagates, and heartbeat behaviour is unchanged (no heartbeat on that path);
+- with the capture factory pointed at a local socket that accepts and never answers, the flow completes within the connect timeout plus a margin, logs `rejected_forecast.write_failed`, and its result is unchanged;
+- (integration, `test_forecast_cycle_rejected_capture_pg.py`, PostgreSQL; only the parent seeds — stations, models, artifact — commit, with explicit cleanup; the forecast, pipeline-health and model-state stores use the rolled-back `db_connection` and its savepoint seam, because committed forecasts create undeletable evidence rows (`0057_forecast_evidence.py:82-96`, `0059_forecast_preservation.py:72-156`); only the rejected-forecast store uses a real committed transaction) a cycle run while another session holds a conflicting lock on `rejected_forecasts`: the capture write fails with `lock_not_available` and logs `rejected_forecast.write_failed` once per rejected assignment, while the run's successful forecasts and its `FORECAST_FRESHNESS` record were already written and the run's result is unchanged;
 - heartbeat: a cycle whose every assignment is rejected is CRITICAL; an explicit-cycle replay emits nothing; a genuine group forecast-store failure still forces CRITICAL;
 - a cycle with no rejection stores the same forecasts as today, compared with ids and timestamps normalised.
 
@@ -297,7 +308,7 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
+**Verification:** `uv run pytest tests/unit/api/test_api_rejected_forecasts.py tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
 
 ### T4 — documents
 
@@ -314,7 +325,9 @@ its level and kwargs: the two `qc_failed` events, now once per assignment with t
 each reworded to "no forecast or model-state write; the rejection is collected before the preflight
 and saved at the end of the run (Plan 404)" (`docs/standards/logging.md:300` already says "no forecast or state write"
 and stays true), and
-Plan 402's consumer-page line that rejected forecasts are not stored. Plan 341 already carries this plan's facts
+— if Plan 402's reply to the map session has not been sent yet — its exit-gate step 4 wording
+(`402:570-571`), so that the reply names this route instead of saying rejected forecasts are not
+stored. Plan 341 already carries this plan's facts
 (this REVIEW route carries values, withheld from reviewer tokens on a gated tenant; its activation
 wires D4's predicate; rejected member/group forecasts never enter `forecasts` — `341:84`, `:114`);
 T4 checks those lines are still there and does not restate them. `docs/conventions.md` § Flow-level
@@ -366,14 +379,19 @@ After staging deploy (orchestrator):
   them), D2 (a separate record, chosen after the first review found the `forecasts` table unsafe),
   D3 (per station), D4 (values withheld from reviewer tokens where Plan 341's gate is active; admins and Plan 341's granted hydrologists keep full access — owner, 2026-09-26, as PR #316 recorded in Plan 341).
 - 2026-09-26 — the owner-commissioned high-risk review (data and forecast-cycle safety) found that
-  capture writes on the shared flow connection could stall or break the cycle; the store now owns a
-  separate connection with lock and statement timeouts, with PostgreSQL tests for both cases.
+  capture writes on the shared flow connection could stall or break the cycle; the store was changed
+  to own a separate connection with lock and statement timeouts (superseded by D5 below).
 - 2026-09-26 — review of that fix found the held connection itself fragile, and the measured wiring
   wrong (forecast writers already take their own pooled transaction). Owner chose D5: rejections are
   collected in memory and saved once, after forecasts, alerts and the heartbeat, in one
   time-limited transaction following the existing writer pattern. Also: a role-independent
   append-only trigger, savepoint-seam store tests, a committed-seed lock test asserting SQLSTATE
   `55P03`, the conventions carve-out, and Plan 341's route line is `:114`.
+- 2026-09-26 — review of D5 (Claude, Codex, high-risk re-check): the capture connects through its
+  own bounded, unpooled connection (a pooled reconnect could wait 130 s); the write sits in the
+  flow's outermost `finally`, also after `StoreError` exits that emit no heartbeat; the atomic unit
+  is the run's batch; flow PG test commits only parent seeds; T3 names its test file; citations
+  corrected.
 
 ## Dependency graph
 
