@@ -237,7 +237,10 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   `AssignmentFailure`
   gains an optional rejected payload: artifact, issued time and, **per parameter**, `parameter`,
   `representation`, `units`, `time_step_seconds`, the raw values, the flags and an explicit
-  `qc_status`;
+  `qc_status`. The payload is a plain frozen container of objects the service already holds — no
+  `__post_init__` validation, no copying or encoding (encoding and validation happen only in
+  `write_batch`, T1) — so building it cannot raise and cannot change which forecasts are stored or
+  which group siblings are kept; the flow's collection is a plain append of it plus `attempt_id`.
   `run_station_forecast` (the PRIMARY wrapper) returns the rejected payloads alongside its result.
 - `services/run_group_forecast.py` — QC every parameter before the verdict in
   `_build_station_result` (`:287-318`, which today returns at the first failing one), and a new return
@@ -275,7 +278,8 @@ fails, and when a cross-cycle mismatch skips the station; the cycle otherwise be
   broad `except` on this path: T4 records the carve-out in `docs/conventions.md` § Flow-level
   strategy. Where `attempt_id` is minted, the flow binds it into the structlog context
   (`structlog.contextvars.bind_contextvars`, as it already does for `station_id` at `:3021`) and
-  unbinds it after the capture logging in the `finally`, so both `qc_failed` events,
+  unbinds it in its own `finally` at the end of the outermost `finally` — outside the
+  store/buffer condition and the carve-out `except`, so it runs on every exit — so both `qc_failed` events,
   `write_failed` and `write_timed_out` carry the same `attempt_id` as the stored rows.
 - `docs/spec/types-and-protocols.md` — `AssignmentFailure`, `MultiModelForecastResult`, the
   `run_station_forecast` return, and a new entry for the group outcome.
@@ -303,7 +307,9 @@ import or argument error.
 - the stored `qc_status` of an unchecked parameter is `qc_unchecked` even though its flags are `[]`;
 - a rejected ensemble whose members have different timelines round-trips with each member's own timestamps;
 - a rejected assignment with one failed and one suspect parameter records both, each with its own status and flags, on the member and the group path;
-- every row written by one flow execution carries the same `attempt_id`, and the run's `qc_failed`, `write_failed` and `write_timed_out` events carry that same `attempt_id`, so the three can be joined;
+- every row written by one flow execution carries the same `attempt_id`, and the run's `qc_failed`, `write_failed` and `write_timed_out` events carry that same `attempt_id`, so the three can be joined (captured with `structlog.testing.capture_logs(processors=[structlog.contextvars.merge_contextvars])`, since plain `capture_logs()` drops context variables);
+- after a returning run and after a raising run, `structlog.contextvars.get_contextvars()` holds no `attempt_id`, and two sequential in-process runs log different `attempt_id`s;
+- the payload types have no validation hook: a rejected assignment beside passing models, and a rejected group station beside passing siblings, leave the stored forecasts, the kept siblings and the result exactly as on the base branch;
 - a row-building failure in the capture on an aborting run still re-raises the original error, and on a normal run still returns the original result;
 - a rejected ensemble containing NaN or `inf` is captured, not dropped by the best-effort write;
 - a re-run of the same cycle appends a second attempt and leaves Plan 327's classification of the stored forecasts unchanged;
@@ -453,6 +459,10 @@ After staging deploy (orchestrator):
   transaction before COMMIT); the D6 test drives the real Postgres store; the flow-side capture sits
   in the single carve-out `except`; `attempt_id` is bound into the log context so rejection, timeout
   and stored rows can be joined; a Postgres read-path case; citations corrected.
+- 2026-09-26 — review round on `de9adc1a` (Codex CLEAN; high-risk re-check NO FINDINGS; Claude 2
+  minor): `attempt_id` is unbound on every exit, with tests that it does not leak and that the
+  log capture sees context variables; the rejected payload is a plain container that cannot raise,
+  so collecting it cannot change which forecasts or group siblings are stored.
 
 ## Dependency graph
 
