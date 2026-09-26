@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-24
 revised: 2026-09-26
 plan: 323
@@ -16,12 +16,16 @@ source: 2026-09-24 — the owner reported Slack warnings that BAFU observations 
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review of **this exact state** is complete and
-the orchestrator sets READY. Ten review rounds have run — a Claude review on 2026-09-25, then nine
-Claude + Codex rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Claude
-NOT READY; **rounds 8, 9 and 10 were READY from both**, with LOW findings folded since (§ Review
-record). Owner
-decisions changed on both days (D1, D2, D3), and D4 and D5 were added on 2026-09-26. **This state is unreviewed.**
+**READY** — set by the orchestrator on 2026-09-26, on the owner's confirmation and Codex's READY
+recommendation. Eleven review rounds ran — a Claude review on 2026-09-25, then ten Claude + Codex
+rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Claude NOT READY;
+**rounds 8-11 were READY from both, round 11 on the exact text this status change was applied to**
+(§ Review record). Owner decisions changed on both days (D1, D2, D3), and D4 and D5 were added on
+2026-09-26.
+
+⚠️ **T1 needs the staging store**, which is off the network while the owner is away from the office.
+T2 may not invent a number T1 has not produced (D1), so T1 is the first thing done once staging is
+reachable.
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
 *checkable*: about 95% of their checks will run real rules. It does **not** make the Plan 318
@@ -683,3 +687,6 @@ returns the entry.
   "every water-level reading" → "most" (403 refuses some stations and excludes lakes and DHM).
 - **2026-09-26 — round 10: READY from both reviewers**; one LOW folded (T4's "four comments" now
   lists five).
+- **2026-09-26 — round 11: READY from both reviewers, no findings on this plan** (the fold-check of
+  round 10's LOW). **Set READY by the orchestrator** on the owner's confirmation; Codex's readiness
+  advice: READY, no blockers — staging's absence schedules T1, it does not hold READY.
