@@ -451,7 +451,9 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   ⛔ **The index had gone stale again** — `open_decisions: [D1]` and "D1 asks what … means" both still
   present. *Third consecutive plan where a decision closure reached the plan and not the index. The
   value sweep caught it this time because I ran it before claiming the fold was done.*
-- **2026-09-26 — T1 IMPLEMENTED, FOUR commits, FOUR review rounds** (`git rev-list c0550d52^..87f1101b` = 4).
+- **2026-09-26 — T1 IMPLEMENTED, FOUR commits and FOUR review rounds THROUGH `87f1101b`**
+  (`git rev-list c0550d52^..87f1101b` = 4; the total grows with every later fold, so the boundary is
+  part of the claim — ⛔ *a bare "four" read as a current total, which it stopped being one commit later*).
   ⛔ *First written as "three commits, three review rounds" while the body below enumerated four — the
   same word-vs-arithmetic failure this plan already charges at the entry above ([[feedback_measure_dont_reason_about_operational_numbers]]).* ⭐ *Round 1 (`c0550d52`) fixed
   only the reason and was called done; **both** cross-checks returned INCOMPLETE and agreed on why —
@@ -502,3 +504,21 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   test-pinned. And "the only residual hits are history notes" was loose: Plan 399's requirement cells are
   a third category, legitimate because that plan is openly `PARTIALLY_IMPLEMENTED` and its own gap table
   records "Nothing compares them".*
+- **2026-09-26 — round 5 (on `475ccd42`, prose only): INCORRECT, two false statements, both mine.**
+  ⛔ *A round scoped to "is any statement here false?" found two — after four rounds of being told that
+  my prose overclaims where my code does not.*
+  - 🔴 **"AST-verified comment-and-docs only" was FALSE.** I ran the AST comparison on ONE file
+    (`store/model_artifact_warm_start.py`) and stated the conclusion about the whole commit. The
+    mandatory version bump changes an executable assignment — `__version__ = "0.1.999"` in
+    `src/sapphire_flow/__init__.py:1` — which no docstring-stripping can make identical.
+    ⭐ *The measurement was sound; the SCOPE I claimed for it was not*
+    ([[feedback_measure_in_the_tree_you_cite]]). The true statement is narrower: no logic changed in the
+    module under review, and the only other `src/` change is the version bump every commit carries.
+  - 🔴 **The count I had just "pinned to a command" was already stale.** `…^..87f1101b` = 4 was correct
+    for its range and wrong as a total one commit later. ⛔ *Pinning a number to a command does not make
+    it durable if the range's endpoint is the thing that moves.* Now states its boundary.
+  ⚖️ **The review loop STOPS here** — deliberately, not because it converged. Rounds 4 and 5 found no
+  code defect; both found only inaccurate sentences I wrote about correct code, each fold introducing a
+  new one. ⚠️ *That is a real pattern worth naming rather than iterating on: the code reached a reviewed,
+  green state at `87f1101b`, and everything after it is record-keeping. Further rounds on prose about
+  prose are churn, and the remaining risk is zero-behaviour by construction.*
