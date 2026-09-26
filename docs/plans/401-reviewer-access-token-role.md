@@ -61,8 +61,8 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
 - **The database pins the pairing**: `ck_access_tokens_role` (`role IN ('consumer','admin')`),
   `ck_access_tokens_role_tenant` (admin → no tenant; consumer → a tenant) and
   `ck_access_tokens_tenant_mode_is_consumer` (`scope_mode = 'stations' OR role = 'consumer'`)
-  (`db/metadata.py:2063-2102`; migrations 0047, 0049). `access_token_stations.token_id` has no
-  cascade (`db/metadata.py:2110-2117`). `AccessToken.__post_init__` (`types/auth.py:171-186`)
+  (`db/metadata.py:2134`, `:2157-2160`, `:2166-2169`; migrations 0047, 0049).
+  `access_token_stations.token_id` has no cascade (`db/metadata.py:2183`). `AccessToken.__post_init__` (`types/auth.py:171-186`)
   mirrors the constraints.
 - **Where the code branches on role — two kinds of site, both must be handled:**
   - Sites testing `is_admin` / `ADMIN` put a non-admin reviewer in the scoped branch — correct by
@@ -73,9 +73,9 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
     admin-like branch — and **must change**: `types/auth.py:172` (a tenant is required only for a
     consumer) and `cli/access_tokens.py:579-592` (role choice; `--tenant` read only for consumers).
   - Predicates that **fail closed** but are too strict and **must change**:
-    `ck_access_tokens_role_tenant` (`db/metadata.py:2090-2091`, admits only admin+NULL or
+    `ck_access_tokens_role_tenant` (`db/metadata.py:2157-2160`, admits only admin+NULL or
     consumer+tenant, so rejects every reviewer row) and `ck_access_tokens_tenant_mode_is_consumer`
-    (`:2099`, rejects a reviewer in tenant mode).
+    (`:2166-2169`, rejects a reviewer in tenant mode).
 - **Out-of-scope behaviour differs by route.** Detail routes return 404 for an out-of-scope
   station (`api/security.py::ensure_station_in_scope`); collection routes filter instead — the
   station list (`api/routes/api_stations.py:174`) and alerts, which answer an explicit
@@ -94,8 +94,8 @@ The Nepal deployment needs three kinds of access; this plan supplies exactly one
   image parses roles fail-closed with `AccessTokenRole(row["role"])`
   (`store/access_token_store.py:233`), so **any** reviewer row — revoked or not — makes its token
   listing crash and turns a reviewer request into a 500 instead of a 401.
-- Latest migration on main: `0059_forecast_preservation.py`; `tests/unit/db/test_alembic_head_release_b.py:86`
-  pins `_RELEASE_B_HEAD = "0059"`.
+- Latest migration on main: `0060_model_artifact_warm_start.py`; `tests/unit/db/test_alembic_head_release_b.py:89`
+  pins `_RELEASE_B_HEAD = "0060"` (other plans keep adding migrations; T1 takes the next free one).
 
 ## Owner decisions
 
@@ -115,8 +115,8 @@ reclassified; Plan 402 adds the first two REVIEW routes.
 forecasts.** (Where it is not, reviewers — like consumers — read forecasts as today.) There, a reviewer is gated exactly like a consumer on the forecast routes. The default
 is **no**; only Plan 341 may change it, by an explicit, recorded decision. Plan 341 already records
 this (PR #313): the reviewer token "sees only published values on ordinary forecast routes and cannot
-read this plan's unpublished candidates" (`341:28,30,48`), and its tests cover reviewer/consumer
-parity (`341:106`). Reviewing unpublished candidates is the named hydrologist's job in 341.
+read this plan's unpublished candidates" (`341:32,34,52`), and its tests cover reviewer/consumer
+parity (`341:114`). Reviewing unpublished candidates is the named hydrologist's job in 341.
 
 ### D3 — publishing is a person, not a dashboard token. **⚖️ CLOSED — owner, 2026-09-26.**
 
@@ -177,9 +177,10 @@ either scope mode; nothing about consumer or admin changes; the rollback procedu
   `tests/integration/db/test_migration_<rev>_reviewer_role.py`.
 - `store/access_token_store.py` — no logic change (it refuses only admin scopes); the comment at
   `:67-73` stops saying a scope belongs only to a consumer.
-- `docs/standards/cicd.md` § Rollback — **before redeploying an image older than this plan, delete
-  every reviewer token** with the same two statements and command, because that image cannot parse
-  the role.
+- `docs/standards/cicd.md` § Rollback — **after any backup restore and immediately before starting
+  an image older than this plan, delete every reviewer token** with the same two statements and
+  command, because that image cannot parse the role (deleting before the restore would let the
+  restore bring them back).
 
 **Out:** any change to consumer/admin rows or rules.
 
@@ -204,7 +205,8 @@ reviewer tokens behave exactly like consumers on every existing route; an out-of
 answers exactly like an absent one, for consumer and reviewer tokens.
 
 **In:** `api/security.py` — `Principal.can_review` (reviewer or admin) and `require_reviewer`;
-`station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW;
+`station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW, checked before PRINCIPAL (a `require_reviewer` route also carries
+`require_principal` among its dependencies);
 `TestRouteAuthMatrixExhaustive` gains a reviewer dimension. No REVIEW route exists until Plan 402,
 so the dependency is also exercised on a test-only app.
 `api/routes/api_forecasts.py` — `GET /api/v1/forecasts/{id}` answers an out-of-scope forecast with the
@@ -221,7 +223,8 @@ with `require_principal` admits a consumer (the test asserting 403 fails), and o
 gap. T2 switches both to `require_reviewer`. And the absent-vs-out-of-scope parity test on
 `GET /api/v1/forecasts/{id}` fails today — the bodies are "Forecast not found" vs "Station not found".
 
-**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — on the test-app REVIEW route, reviewer → 200 for an in-scope station and 404 for an out-of-scope
+**Verification:** `uv run pytest tests/unit/api/test_security.py tests/integration/api/test_access_token_auth.py` — `_classify_routes(test_app)` tags the test-app `require_reviewer` route REVIEW, not PRINCIPAL;
+on the test-app REVIEW route, reviewer → 200 for an in-scope station and 404 for an out-of-scope
 one (a REVIEW route applies the principal's station scope like any other); reviewer → 200 on every **GET** PRINCIPAL route for an in-scope station; for an out-of-scope station, 404 on detail routes and 200 with a filtered or empty result on collection routes (station list, alerts) — exactly what a consumer gets; the acknowledgement POST → 501, as for a consumer; 403 on every ADMIN route; consumer → 403 on a REVIEW route (test app); **reviewer → 200 on it**; admin → 200 on it; the station, alert and forecast-lab scope filters give a reviewer exactly a consumer's result for the same scope; for consumer and reviewer tokens, `GET /api/v1/forecasts/{id}` returns an identical status **and body** for an absent forecast and an out-of-scope one; the existing cross-tenant HTTP cases in `tests/integration/api/test_access_token_auth.py` (consumer-only at `:354`, `:555`) parameterized over consumer and reviewer — a station outside the token's tenant is rejected, and an out-of-band cross-tenant scope row yields 401.
 
 ### T3 — issuing and managing reviewer tokens
@@ -252,8 +255,9 @@ roles, with GET-only unchanged.
   held server-side by its dashboard; the consumer-surface sentence (`:48`); the scope rules worded
   for consumers only (`:57-59`); the CLI summary (`:204`); the REVIEW class, stating that every
   REVIEW route serving station data applies the principal's station scope (404 on detail routes,
-  filtering on collections), and that a REVIEW route serving forecast values applies Plan 341's
-  publication gate to reviewer tokens where it is active (Plan 404 D4; admins keep full access there, per Plan 341); and the D4 tenant-mode rule (tenant mode only when every station in
+  filtering on collections), and that a REVIEW route serving forecast values withholds those
+  values and flag `detail` from reviewer tokens where Plan 341's gate is active, still returning the
+  rule fields (Plan 404 D4); admins keep full access there (Plan 341); and the D4 tenant-mode rule (tenant mode only when every station in
   the tenant belongs to that dashboard's client; tokens cannot span or change tenants; the Nepal
   token binds to the DHM tenant).
 - `docs/standards/cicd.md` — the pepper-rotation re-creation step (`create`/`create-admin` →
@@ -268,7 +272,7 @@ roles, with GET-only unchanged.
   read roles" at `:1418-1419`, and `require_principal`/`require_admin` at `:1370` — add
   `require_reviewer`).
 - Docstrings and comments: `api/security.py:10-14,135-137`, `types/auth.py:129-155,185`,
-  `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2041-2053`,
+  `types/enums.py:331-350`, `types/write_principal.py:14`, `db/metadata.py:2110-2122`,
   `cli/access_tokens.py:1-6,588-590`.
 
 **Out:** rewriting archived Plan 147.
@@ -280,7 +284,7 @@ roles, with GET-only unchanged.
 and read every hit: each must either name all three roles, or be one of the expected residual
 classes — a `create-admin` command line (bootstrap/rotation instructions), a legitimate per-role
 code branch, or an unrelated match (e.g. "exactly two sentences"). Plan 341 still carries the reviewer
-default (`341:28,30,48,106`), and **each In-listed location is changed in the branch diff, checked item by item**
+default (`341:32,34,52,114`), and **each In-listed location is changed in the branch diff, checked item by item**
 (the grep alone cannot show that).
 
 ## Exit gates
