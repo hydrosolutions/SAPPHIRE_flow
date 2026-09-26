@@ -3,14 +3,14 @@ status: DRAFT
 created: 2026-09-26
 plan: 401
 title: A reviewer access token for the review dashboards — read everything a review needs, for one client's stations, write nothing
-scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 345). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do.
+scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do.
 risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
 depends_on: []
-blocks: [345]
-related: [042, 147, 215, 268, 341, 345]
+blocks: [402]
+related: [042, 147, 215, 268, 341, 402]
 open_decisions: []
 closed_decisions: [D1, D2, D3, D4]   # owner, 2026-09-26
-source: 2026-09-26 — owner, while reviewing Plan 345: "could we have a special user for the BAFU dashboard and the Nepal dashboard?" — to replace the admin token Plan 345 D11 had the map use.
+source: 2026-09-26 — owner, while reviewing Plan 402: "could we have a special user for the BAFU dashboard and the Nepal dashboard?" — to replace the admin token Plan 402 D11 had the map use.
 ---
 
 # Plan 401 — a reviewer access token for the review dashboards
@@ -24,7 +24,7 @@ implementation PR. All decisions are closed.
 
 ## Why this exists
 
-Plan 345 gives the flow map (the dashboard we use to demonstrate and review forecast products)
+Plan 402 gives the flow map (the dashboard we use to demonstrate and review forecast products)
 two new read routes — the QC rule sets and a station's skill — which a consumer token must not
 reach. With only two roles today, the map would have had to hold an **admin** token: it reaches
 every admin page and route and sees every station, so a Swiss dashboard would also see Nepal data.
@@ -105,7 +105,7 @@ token.** The name is `reviewer` (what the dashboards do); a dashboard deployment
 A reviewer token is tenant-bound, uses the consumer's scope rules unchanged (both `scope_mode`s,
 404 for an out-of-scope station), reaches every PRINCIPAL route exactly as a consumer does, and
 additionally reaches routes gated REVIEW. It never reaches an ADMIN route. No existing route is
-reclassified; Plan 345 adds the first two REVIEW routes.
+reclassified; Plan 402 adds the first two REVIEW routes.
 
 **A reviewer token gets no access to unpublished forecasts.** Where Plan 341's publication gate is
 active for a tenant, a reviewer is gated exactly like a consumer on the forecast routes. The default
@@ -186,7 +186,7 @@ reviewer tokens behave exactly like consumers on every existing route.
 
 **In:** `api/security.py` — `Principal.can_review` (reviewer or admin) and `require_reviewer`;
 `station_in_scope` unchanged. `tests/unit/api/test_security.py` — `_classify_routes` learns REVIEW;
-`TestRouteAuthMatrixExhaustive` gains a reviewer dimension. No REVIEW route exists until Plan 345,
+`TestRouteAuthMatrixExhaustive` gains a reviewer dimension. No REVIEW route exists until Plan 402,
 so the dependency is also exercised on a test-only app.
 
 **Out:** gating or reclassifying any existing route.

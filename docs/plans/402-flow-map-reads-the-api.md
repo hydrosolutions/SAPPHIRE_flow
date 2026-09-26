@@ -1,20 +1,20 @@
 ---
 status: DRAFT
 created: 2026-09-25
-plan: 345
+plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
 scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-scoped reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT per-station overrides (269) or network-specific rules (264/303).
 risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
 depends_on: [401]
 blocks: []
-related: [143, 147, 198, 235, 251, 253, 264, 269, 272, 303, 323, 324, 329, 340, 341]
+related: [143, 147, 198, 235, 251, 253, 264, 269, 272, 303, 323, 324, 329, 340, 341, 404]
 open_decisions: [D9]
 closed_decisions: [D1, D2, D3, D4, D5, D6, D7, D10, D12, D13]   # D2-D4 2026-09-25; the rest 2026-09-26
 superseded_decisions: [D8, D11]
 source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepal DHM: see which readings QC rejected and why, judge the thresholds, compare models' skill). 2026-09-26 — owner: the map reads the API, not an extended snapshot; then, instead of an admin token, a dedicated reviewer token per dashboard (Plan 401). Measured on origin/main and the staging database.
 ---
 
-# Plan 345 — the flow map reads the /api/v1 interface
+# Plan 402 — the flow map reads the /api/v1 interface
 
 ## Status
 
@@ -424,17 +424,20 @@ locally and watching it fail.
 ### T5 — cross-plan records for Plan 341
 
 **Outcome:** Plan 341 knows (a) the two new routes are REVIEW-class internal diagnostic and carry no
-forecast values, so its publication gate does not apply to them; (b) the reviewer-token default recorded
-in 341 by Plan 401 T4 applies to these routes too (not re-recorded here); (c)
-`docs/spec/api-v1-map.openapi.json` and its drift test already cover `/stations/{id}/forecasts` and
-`/forecasts/{id}`, so 341 updates that file rather than producing a second contract; (d) after T3,
+forecast values, so its publication gate does not apply to them; (b) Plan 401's reviewer token sees
+the same published forecast values as a same-scope consumer on ordinary routes, while only a named,
+station-granted hydrologist reads unpublished candidates on 341's review routes — the default Plan
+401 T4 records in 341, referenced here, not re-recorded; (c) `docs/spec/api-v1-map.openapi.json`
+and its drift test cover `/stations/{id}/forecasts` and `/forecasts/{id}` once this plan lands: if
+it lands first, 341 updates that file; if 341 lands first, T4 creates it from the then-current
+forecast schema — neither plan creates a duplicate map contract; (d) after T3,
 `qc_flags[].detail` on both forecast routes contains forecast values and, for
 `climatology_outlier`, observation-derived baseline statistics — so 341's published-only rule and
 its metadata-only tombstones must strip or gate that field.
 
 **In:** a note in `docs/plans/341-chwrr-forecast-publication-api.md`.
 
-**Out:** changing 341's design.
+**Out:** changing 341's human-only candidate-read decision.
 
 **Pre-change:** N/A — cross-plan record.
 
@@ -474,7 +477,7 @@ after the staging checks below pass (see *After staging deploy*), not by this ta
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/345-flow-map-reads-the-api.md
+uv run python scripts/check_readiness.py docs/plans/402-flow-map-reads-the-api.md
 ```
 
 After staging deploy (orchestrator), before the map is told:
@@ -506,22 +509,23 @@ After staging deploy (orchestrator), before the map is told:
 - Combined (pooled/BMA) forecast skill — its rows have no artifact, so the selection never serves
   them; staging holds none today.
 - Skill for any parameter other than discharge.
-- Surfacing QC-rejected member and group forecasts — they are not stored today. A separate
-  follow-on plan (owner, 2026-09-26) will store them marked failed, as combined forecasts already
-  are.
+- Surfacing QC-rejected member and group forecasts — they are not stored today. Plan 404
+  (owner, 2026-09-26) stores them marked failed, as combined forecasts already are.
 - A station in several groups that each hold an active artifact for the same model: the forecast
   path itself picks one arbitrarily, so "the artifact the forecast uses" is not defined there. A
   possible fault in forecasting, to be investigated separately (owner informed 2026-09-26).
 
 ## Changelog
 
+- 2026-09-26 — renumbered from 345 to 402 to resolve a plan-number conflict (owner); the old
+  filenames below are history only.
 - 2026-09-25 — drafted as a snapshot v3 extension. Decisions D2–D4.
 - 2026-09-26 — rewritten for the `/api/v1` interface (D1); file renamed from
   `345-forecast-lab-snapshot-v3-qc-and-skill.md`. Decisions D5–D7, D10, D12 (reviewer token,
   Plan 401; D11's admin token superseded), D13 (T3's fields visible to every role); D8 superseded.
   Nepal stations get their own tenant (Plan 401 D4).
-  QC-rejected member and group forecasts are not stored; surfacing them is a separate follow-on
-  plan (owner, 2026-09-26).
+  QC-rejected member and group forecasts are not stored; surfacing them is Plan 404
+  (owner, 2026-09-26).
 
 ## Dependency graph
 
