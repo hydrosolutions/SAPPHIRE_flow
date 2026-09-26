@@ -82,8 +82,9 @@ model state or the freshness heartbeat.
 For a tenant where Plan 341's publication gate is active, a **reviewer** token receives each
 rejection's `attempt_id`, station, model, issued time, parameter, `rule_id`, `rule_version` and
 `status` — no
-values and no flag `detail`. **Admin** tokens receive everything; whether Plan 341's signed-in
-hydrologist principal may read the full record is 341's decision. Where the gate is not active
+values and no flag `detail`. **Admin** tokens receive everything. Plan 341 now specifies that its
+named hydrologist with a current station `review` grant may read the full diagnostic record but
+cannot publish its ID; this human path is added when Plan 341 exists. Where the gate is not active
 (e.g. the Swiss deployment today), reviewers receive everything.
 
 **One named check decides "gated"**: a single predicate (e.g. `publication_gate_active(tenant_id)`)
@@ -206,13 +207,18 @@ active); `docs/conventions.md` § API routes; `docs/standards/security.md` (the 
 list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API paragraph). The gate
 predicate (D4). If Plan 341's route inventory and switch exist on the base branch, wire the
 predicate to the switch, classify this route there as a REVIEW diagnostic whose values follow D4,
-and extend its test.
+and extend its test. The route accepts a reviewer service token with D4 redaction, an admin token
+with full data, or, after Plan 341's human principal exists, a named human with a current station
+`review` grant and full diagnostic data. Deny consumers, revoked humans and out-of-scope humans.
+If this plan lands first, Plan 341 T3 adds the human authorization branch when it lands; if 341
+lands first, this T3 adds it here. Neither landing order permits a rejected-record ID on a forecast
+publication route.
 
 **Out:** any change to the forecast list or detail routes.
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values and flags (predicate answers no), 404 out of scope; with the predicate forced to yes, reviewer → rule fields and `attempt_id` only, no values and no `detail`, admin → everything; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route.
+**Verification:** `uv run pytest tests/unit/api/` — reviewer → 200 in scope with values and flags (predicate answers no), 404 out of scope; with the predicate forced to yes, reviewer → rule fields and `attempt_id` only, no values and no `detail`, admin → everything; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal.
 
 ### T4 — documents
 
