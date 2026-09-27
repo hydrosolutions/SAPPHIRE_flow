@@ -97,7 +97,9 @@ legitimate fix — declared here rather than hidden under a blanket claim.* ⭐ 
    `tests/unit/flows/test_onboard_model_flow.py` or `tests/unit/services/test_model_onboarding.py`
    asserts they still pass `{}`. ⚠️ *That bullet existed to prevent exactly this divergence.*
 9. ⚠️ **The § 11 resolver wiring — 399's headline blocker — is untested.** The wiring is real
-   (`flows/train_models.py:598-605`) but every retrain test injects a station-scoped fake straight
+   (`flows/train_models.py:639-644` — ⚠️ *cited as `:598-605` when this plan was written; T1-T3 landing
+   in the same file moved it, and T5 is ABOUT that block, so the stale citation mattered*) but every
+   retrain test injects a station-scoped fake straight
    into the flow; none goes through `discover_models()` / `adapt_if_fi`. ⛔ *Deleting the block fails
    no test, and the thing tests could most usefully have de-risked before the staging run is the one
    thing they do not cover.*
@@ -779,8 +781,12 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     `station_code_resolver required for GROUP input conversion / train / predict`.
   - ⚠️ *Two dead ends on the way, both in the requirement the fake FI model declares: discovery rejects
     an `InputRequirement` with no `future_known` ("cannot derive forecast horizon"), and the raw model
-    must declare `model_tier`/`alert_eligibility` for the classification check. Neither is a defect —
-    recorded because the next person writing a discovery-level test will hit both.*
+    must supply `model_tier`/`alert_eligibility` — ⚠️ *via EITHER the `MODEL_TIERS`/`ALERT_ELIGIBILITIES`
+    tables in `types/ids.py`, which are consulted FIRST, or the attribute as a fallback
+    (`model_registry.py:54-79`). "Must declare the attribute" is true only for a model id absent from
+    those tables, which is any new test model — both reviewers flagged the unqualified form, and they
+    were right: I wrote the lesson of the error I hit as though it were the whole rule.* Neither is a
+    defect — recorded because the next person writing a discovery-level test will hit both.
 
   🔬 **Two near-misses in my own MEASUREMENT, not in the code** — both would have reported success:
   a shell helper that never ran, so a mutation sweep printed NOTHING and could have been read as "no
@@ -788,3 +794,24 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   summary, which left two of the four sites unverified while looking verified. ⇒ *Caught by re-running
   with a tighter filter. [[feedback_well_formed_answers_to_the_wrong_question]] — an empty result is
   not a negative result.*
+- **2026-09-27 — T4/T5 review: both reviewers COMPLETE, no false statement found.** ⭐ *One reviewer
+  reproduced ALL SIX reds independently — the four per-site config mutations, the two
+  "site-never-reached" probes, and the wiring deletion — by shadowing `src/` through `PYTHONPATH`
+  rather than editing the repo, and confirmed the trained object is a genuine
+  `ForecastInterfaceAdapter` produced by discovery, not an injected fake.* Three items folded:
+  - 🔴 **"The raw model must declare `model_tier`/`alert_eligibility`" over-generalised** (both
+    reviewers). The registry consults the `MODEL_TIERS`/`ALERT_ELIGIBILITIES` tables FIRST and falls
+    back to the attribute. True for a model id absent from those tables — any new test model — false as
+    a universal rule. ⛔ *The habit worth naming: I hit an error, and wrote the error's lesson down as
+    though it were the whole rule. That is the same shape as every earlier over-claim in this plan.*
+  - 🧹 **Finding 9's own citation had gone stale**: the wiring block it cites as
+    `flows/train_models.py:598-605` now sits at `:639-644`, moved by T1-T3 landing in the same file.
+    ⚠️ *T5 is ABOUT that block, so of all the citations in this plan that was the one to keep current.*
+  - ⚖️ **One reviewer finding REJECTED, with the measurement**: "682 files formatted does not
+    reproduce". It does — `uv run ruff format --check src/ tests/` reports exactly `682 files already
+    formatted`. The reviewer's 683 counted `.py` files; ruff's own output is 682. 🔑 *But their
+    underlying point stands and is folded: a number quoted without its command is unverifiable even
+    when it is right* ([[feedback_bind_published_numbers_on_values]]).
+  ⚠️ *Also noted, no action: `args[2]` in the flow-half recorder is dead for today's all-keyword flow
+  sites (defensive, and shared with the service half); `_STATION` is used a few lines above its
+  definition (works, readability only); the three new files pass under random ordering.*
