@@ -2107,6 +2107,85 @@ audit_log = sa.Table(
     ),
 )
 
+# Plan 341 T1: one local human identity shared with the future session model.
+# External OIDC subjects and station grants are separate so neither a bearer
+# token nor an IdP group claim can grant publication by itself.
+users = sa.Table(
+    "users",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("username", sa.Text, nullable=True, unique=True),
+    sa.Column("display_name", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False, server_default="forecaster"),
+    sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.true()),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "role IN ('org_admin', 'it_admin', 'model_admin', 'forecaster')",
+        name="ck_users_role",
+    ),
+    sa.UniqueConstraint("id", "tenant_id", name="uq_users_id_tenant_id"),
+)
+
+user_external_identities = sa.Table(
+    "user_external_identities",
+    metadata,
+    sa.Column("issuer", sa.Text, nullable=False),
+    sa.Column("subject", sa.Text, nullable=False),
+    sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("issuer", "subject"),
+    sa.Index("ix_user_external_identities_user_id", "user_id"),
+)
+
+human_station_grants = sa.Table(
+    "human_station_grants",
+    metadata,
+    sa.Column("user_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("permission", sa.Text, nullable=False),
+    sa.Column(
+        "granted_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("user_id", "station_id", "permission"),
+    sa.ForeignKeyConstraint(
+        ["user_id", "tenant_id"],
+        ["users.id", "users.tenant_id"],
+        name="fk_human_station_grants_user_tenant",
+    ),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        name="fk_human_station_grants_station_tenant",
+    ),
+    sa.CheckConstraint(
+        "permission IN ('review', 'publish')", name="ck_human_station_grants_permission"
+    ),
+    sa.Index("ix_human_station_grants_station_id", "station_id"),
+)
+
 # Plan 147 Slice C: R1 LOCKED = HMAC-SHA-256 + a server-side pepper (NOT
 # bcrypt — matches the `refresh_tokens` keyed-hash precedent and avoids
 # per-request bcrypt CPU on the hot auth path). `tenant_id` NULL denotes an

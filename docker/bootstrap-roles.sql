@@ -152,6 +152,12 @@ GRANT INSERT, UPDATE ON access_tokens TO sapphire_api;
 -- delete now-obsolete grant rows, and ran as sapphire_api (the role the CLI
 -- connects as inside the `api` container) they need it.
 GRANT INSERT, DELETE ON access_token_stations TO sapphire_api;
+-- Plan 341 T1: the API container also hosts the audited hydrologist operator
+-- CLI. Runtime auth only SELECTs these tables; grant/revoke writes are scoped
+-- to this role and never to a worker or service token.
+GRANT INSERT, UPDATE ON users TO sapphire_api;
+GRANT INSERT ON user_external_identities TO sapphire_api;
+GRANT INSERT, DELETE ON human_station_grants TO sapphire_api;
 GRANT INSERT ON audit_log TO sapphire_api;
 
 -- sapphire_worker (conventions.md § Service users): the flow/CLI write paths
@@ -213,7 +219,8 @@ GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
 -- in-place upgrade converge here, same as the rest of this file); REVOKE of
 -- a privilege not held is a no-op, so a second run is a no-op too.
 -- Caught by a live docker-compose deploy rehearsal, not static review.
-REVOKE SELECT ON access_tokens, access_token_stations FROM sapphire_worker;
+REVOKE SELECT ON access_tokens, access_token_stations,
+    users, user_external_identities, human_station_grants FROM sapphire_worker;
 
 -- ── sapphire_backup: OWN CONVERGENCE BLOCK (Plan 162 T1) ────────────────────
 -- Deliberately NOT folded into the api/worker blanket-revoke block above —

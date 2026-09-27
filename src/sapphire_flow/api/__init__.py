@@ -7,6 +7,7 @@ from typing import cast
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.templating import Jinja2Templates
 
+from sapphire_flow.api.cors import ScopedCorsMiddleware, parse_exact_origin
 from sapphire_flow.api.deps import lifespan
 from sapphire_flow.api.errors import http_exception_handler, unhandled_exception_handler
 from sapphire_flow.api.security import require_admin, require_principal
@@ -41,20 +42,24 @@ cast("dict[str, object]", templates.env.globals)["prefect_ui_url"] = _PREFECT_UI
 # JS ride a browser-held bearer token. Reject "*" outright rather than
 # silently downgrading it.
 _cors_origins = os.environ.get("SAPPHIRE_CORS_ORIGINS", "")
-if _cors_origins:
+_human_origin = os.environ.get("SAPPHIRE_HUMAN_DASHBOARD_ORIGIN", "").strip()
+if _cors_origins or _human_origin:
     if _cors_origins.strip() == "*":
         raise RuntimeError(
             "SAPPHIRE_CORS_ORIGINS='*' is rejected once auth is enforced "
             "(security.md § CORS/CSRF) — set an explicit comma-separated "
             "origin list."
         )
-    from fastapi.middleware.cors import CORSMiddleware
-
     app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[o.strip() for o in _cors_origins.split(",")],
-        allow_methods=["GET"],
-        allow_headers=["*"],
+        ScopedCorsMiddleware,
+        consumer_origins=[
+            parse_exact_origin(origin.strip())
+            for origin in _cors_origins.split(",")
+            if origin.strip()
+        ],
+        human_dashboard_origin=parse_exact_origin(_human_origin)
+        if _human_origin
+        else None,
     )
 
 # --- Error handlers ---
