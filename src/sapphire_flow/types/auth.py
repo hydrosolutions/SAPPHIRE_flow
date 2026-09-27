@@ -132,7 +132,7 @@ class AccessToken:
     `token_hash` is the HMAC-SHA-256(pepper, raw_key) hex digest — never the
     raw key. `key_prefix` is the fast pre-verification lookup key.
     `tenant_id=None` denotes a global-admin token (unscoped). `station_ids`
-    is meaningful only for `CONSUMER`; empty means "sees nothing"
+    is meaningful only for `CONSUMER` and `REVIEWER`; empty means "sees nothing"
     (fail-closed, R2). Its SOURCE depends on `scope_mode`: in `'stations'`
     mode (the default, every pre-Plan-215 token) it is the token's
     `access_token_stations` scope join; in `'tenant'` mode it is DERIVED at
@@ -141,10 +141,11 @@ class AccessToken:
     in scope immediately (`store/access_token_store.py::_row_to_token`, D2.2).
 
     G4 LOCKED role/tenant pairing, enforced in `__post_init__` (mirrored by
-    a DB CHECK constraint, `alembic/versions/0047`, so the invariant holds
-    even for rows written outside this dataclass): `role=consumer` REQUIRES
-    a non-null `tenant_id` (every consumer token belongs to exactly one
-    tenant — there is no such thing as a tenantless consumer); `role=admin`
+    a DB CHECK constraint, `alembic/versions/0047` + `0061`, so the invariant
+    holds even for rows written outside this dataclass): `role=consumer` and
+    `role=reviewer` (Plan 401) REQUIRE a non-null `tenant_id` (every such
+    token belongs to exactly one tenant — a tenantless one would fall into
+    the admin-like branch); `role=admin`
     REQUIRES `tenant_id=None` (admin is always unscoped/global — a
     "tenant-bound admin" is not a representable state, since
     `Principal.is_admin` grants unrestricted global reads regardless of
@@ -169,10 +170,11 @@ class AccessToken:
     scope_mode: ScopeMode = ScopeMode.STATIONS
 
     def __post_init__(self) -> None:
-        if self.role is AccessTokenRole.CONSUMER and self.tenant_id is None:
+        if self.role is not AccessTokenRole.ADMIN and self.tenant_id is None:
             raise ValueError(
-                "AccessToken: role=consumer requires a non-null tenant_id "
-                "(G4 — every consumer token belongs to exactly one tenant)"
+                f"AccessToken: role={self.role.value} requires a non-null tenant_id "
+                "(G4 — every consumer or reviewer token belongs to exactly one "
+                "tenant)"
             )
         if self.role is AccessTokenRole.ADMIN and self.tenant_id is not None:
             raise ValueError(
@@ -182,6 +184,7 @@ class AccessToken:
         if self.role is AccessTokenRole.ADMIN and self.scope_mode is ScopeMode.TENANT:
             raise ValueError(
                 "AccessToken: role=admin cannot have scope_mode=tenant "
-                "(Plan 215 D2.1 — mirrors ck_access_tokens_tenant_mode_is_consumer; "
+                "(Plan 215 D2.1 — mirrors ck_access_tokens_tenant_mode_is_consumer, "
+                "which admits tenant mode for consumer and reviewer tokens only; "
                 "an admin token is already unscoped/global)"
             )

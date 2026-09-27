@@ -5,16 +5,20 @@ ONE transaction (Slice B atomicity rule). Plan 215 T1/T2/T6 extend this to
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.cli.access_tokens import (
+    _print_token_row,
     create_token,
     grant_station,
     list_tokens,
+    main,
     revoke_station,
     revoke_token,
     set_scope_mode,
@@ -30,6 +34,9 @@ from sapphire_flow.types.enums import AccessTokenRole, ScopeMode
 from sapphire_flow.types.ids import AccessTokenId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 _EXPIRES = ensure_utc(_NOW + timedelta(days=30))
@@ -625,3 +632,166 @@ class TestSetScopeMode:
         assert reloaded is not None
         assert reloaded.scope_mode is ScopeMode.STATIONS
         assert reloaded.station_ids == frozenset({station.id})
+
+
+class _ConnectionEngine:
+    """Stands in for `create_engine_from_env()` so `main()` runs inside the
+    rollback-isolated test connection instead of committing."""
+
+    def __init__(self, conn: sa.Connection) -> None:
+        self._conn = conn
+
+    @contextmanager
+    def begin(self) -> Iterator[sa.Connection]:
+        yield self._conn
+
+    connect = begin
+
+
+@pytest.fixture
+def cli_on_test_connection(
+    db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+) -> sa.Connection:
+    monkeypatch.setattr(
+        "sapphire_flow.cli.access_tokens.create_engine_from_env",
+        lambda: _ConnectionEngine(db_connection),
+    )
+    # main() reconfigures the process-global structlog config; keep it local.
+    monkeypatch.setattr(
+        "sapphire_flow.logging.configure_cli_logging", lambda *a, **k: None
+    )
+    return db_connection
+
+
+class TestCreateReviewerToken:
+    """Plan 401 T3: `create-reviewer` mirrors `create` — tenant required,
+    repeatable `--station`."""
+
+    def test_creates_a_tenant_bound_reviewer_with_its_scope(
+        self, cli_on_test_connection: sa.Connection
+    ) -> None:
+        conn = cli_on_test_connection
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(conn).store_station(station)
+
+        exit_code = main(
+            [
+                "create-reviewer",
+                "--name",
+                "swiss-dashboard",
+                "--tenant",
+                "sapphire",
+                "--station",
+                str(station.id),
+            ]
+        )
+
+        assert exit_code == 0
+        (token,) = [t for t in list_tokens(conn) if t.name == "swiss-dashboard"]
+        assert (token.role, token.tenant_id, token.station_ids) == (
+            AccessTokenRole.REVIEWER,
+            DEFAULT_TENANT_ID,
+            frozenset({station.id}),
+        )
+        rows = _audit_rows_for(conn, str(token.id))
+        assert [(r["event_type"], r["detail"]["role"]) for r in rows] == [
+            ("api_key_created", "reviewer")
+        ]
+
+    def test_refuses_without_a_tenant(
+        self,
+        cli_on_test_connection: sa.Connection,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(SystemExit):
+            main(["create-reviewer", "--name", "no-tenant"])
+        assert "the following arguments are required: --tenant" in (
+            capsys.readouterr().err
+        )
+        assert list_tokens(cli_on_test_connection) == []
+
+
+def _create_reviewer_token(conn: sa.Connection, *, name: str) -> AccessToken:
+    create_token(
+        conn,
+        name=name,
+        role=AccessTokenRole.REVIEWER,
+        tenant_id=DEFAULT_TENANT_ID,
+        tenant_code="sapphire",
+        station_ids=frozenset(),
+        expires_at=_EXPIRES,
+        now=_NOW,
+        pepper=_PEPPER,
+    )
+    (token,) = [t for t in list_tokens(conn) if t.name == name]
+    return token
+
+
+class TestManageReviewerToken:
+    """Plan 401 T3: grant, revoke-station, set-scope-mode, show and revoke act
+    on a reviewer token exactly as on a consumer token."""
+
+    def _scope(self, conn: sa.Connection, token_id: AccessTokenId) -> AccessToken:
+        token = PgAccessTokenStore(conn).fetch_token(token_id)
+        assert token is not None
+        return token
+
+    def test_grant_and_revoke_station_round_trip(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
+        token = _create_reviewer_token(db_connection, name="reviewer-grant")
+
+        grant_station(db_connection, token_id=token.id, station_id=station.id, now=_NOW)
+        granted = self._scope(db_connection, token.id).station_ids
+        revoke_station(
+            db_connection, token_id=token.id, station_id=station.id, now=_NOW
+        )
+
+        assert granted == frozenset({station.id})
+        assert self._scope(db_connection, token.id).station_ids == frozenset()
+
+    def test_set_scope_mode_round_trip(self, db_connection: sa.Connection) -> None:
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
+        token = _create_reviewer_token(db_connection, name="reviewer-mode")
+
+        set_scope_mode(
+            db_connection,
+            token_id=token.id,
+            target_mode=ScopeMode.TENANT,
+            now=_NOW,
+            confirmed=True,
+        )
+        in_tenant_mode = self._scope(db_connection, token.id)
+        set_scope_mode(
+            db_connection,
+            token_id=token.id,
+            target_mode=ScopeMode.STATIONS,
+            now=_NOW,
+            confirmed=False,
+        )
+        back = self._scope(db_connection, token.id)
+
+        assert in_tenant_mode.scope_mode is ScopeMode.TENANT
+        assert station.id in in_tenant_mode.station_ids
+        assert (back.scope_mode, back.station_ids) == (ScopeMode.STATIONS, frozenset())
+
+    def test_show_and_list_print_the_role(
+        self, db_connection: sa.Connection, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        token = _create_reviewer_token(db_connection, name="reviewer-show")
+
+        output = show_token(db_connection, token_id=token.id)
+        _print_token_row(token)
+
+        assert "role:        reviewer" in output
+        assert "role=reviewer" in capsys.readouterr().out
+
+    def test_revoke_disables_it(self, db_connection: sa.Connection) -> None:
+        token = _create_reviewer_token(db_connection, name="reviewer-revoke")
+
+        revoke_token(db_connection, token_id=token.id, now=_NOW)
+
+        assert self._scope(db_connection, token.id).disabled_at is not None

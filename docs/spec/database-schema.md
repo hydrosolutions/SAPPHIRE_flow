@@ -19,7 +19,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 8 tables removed entirely (see "Not in v0" below)
-- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation, and `audit_log` (Plan 147 Slice B) lands as an append-only substrate ahead of enforcement. Plan 147 Slice C then lands `access_tokens` + `access_token_stations` (v1.0-headless access-token auth, migration 0047) — REALIZED with a shape that supersedes the old v1.x-design-intent ERD sketch below (HMAC-SHA-256+pepper `token_hash`, a normalized `access_token_stations` scope join not JSONB, `role`/`tenant_id` not `consumer_name`/`created_by`, no `users` FK — v1.0 is headless, there is no `users` table yet). `users` / `refresh_tokens` — and the least-privilege DB role split (Slice D) — remain deferred ("Not in v0" below); DB-role enforcement of `access_tokens` grants is Slice D, not yet built.
+- `tenants` + station tenant IDs (Plan 147 Slice A), `audit_log` (Slice B), and `access_tokens` + `access_token_stations` (Slice C, migration 0047) are realized. The access-token schema uses an HMAC-SHA-256+pepper hash and normalized station scopes; it has no `users` FK. Plan 401 adds the reviewer token role (migration 0061). Plan 341 T1 adds minimal local `users`, external identities, and station grants (migration 0062). These later additions extend the original v0 schema diagram below; `refresh_tokens` and password/session login remain deferred.
 
 ```mermaid
 erDiagram
@@ -506,7 +506,7 @@ slice). `audit_log` (Plan 147 Slice B) is created early as an unused
 append-only substrate — no call site writes to it yet (Slice C wires token
 create/revoke, Slice E wires onboarding/promotion).
 
-### Not in v0 (7 tables added in v1)
+### Deferred from the original v0 design
 
 | Table | Why deferred | Reference |
 |-------|-------------|-----------|
@@ -514,8 +514,6 @@ create/revoke, Slice E wires onboarding/promotion).
 | `observation_versions` | Rating-curve reprocessing archive; no rating curves in v0 | Plan 035 Task 3 |
 | `forecast_adjustments` | No dashboard, no forecaster adjustments | v0-scope §A9 |
 | `dead_letter_queue` | No partitioning = no DLQ needed (plan 013: if partitioning is advanced, DLQ must be re-evaluated — see v0-scope §A1 DECISION) | v0-scope §A1 |
-| `users` | Auth deferred to v1 | v0-scope §B |
-| `access_tokens` | Auth deferred to v1 | v0-scope §B |
 | `refresh_tokens` | Auth deferred to v1 | v0-scope §B |
 
 ---
@@ -1045,7 +1043,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 
     %% ──────────────────────────────────────────────
-    %% AUTH DOMAIN — users/refresh_tokens are v1.x design intent (NOT built);
+    %% AUTH DOMAIN — full user sessions/refresh_tokens remain v1.x design intent;
     %% access_tokens/access_token_stations are REALIZED (Plan 147 Slice C,
     %% migration 0047) with a shape that supersedes the old design-intent
     %% access_tokens sketch (JSONB scope / consumer_name / created_by /
@@ -1072,8 +1070,8 @@ erDiagram
         TEXT token_hash UK "HMAC-SHA-256 + access_token_pepper, R1"
         TEXT key_prefix "indexed lookup"
         TEXT name
-        TEXT role "consumer | admin"
-        UUID tenant_id FK "NULL = unscoped global-admin"
+        TEXT role "consumer | reviewer | admin — reviewer: Plan 401, migration 0061"
+        UUID tenant_id FK "NULL = unscoped global-admin; consumer and reviewer always set"
         SMALLINT pepper_version "default 1 — v1.x dual-pepper rotation hook"
         TIMESTAMPTZ expires_at
         TIMESTAMPTZ disabled_at "NULL"
@@ -1126,8 +1124,9 @@ Plan 120 (basin/static package importer, Nepal v1) additively adds
 — already live in v0, see the v0 table inventory above. Plan 147 Slice B
 additively adds `audit_log` — also already live in v0 (as an unused
 append-only substrate; see the v0 table inventory note above), listed under
-the AUTH DOMAIN entities below alongside the still-deferred `users` /
-`access_tokens` / `refresh_tokens`. Plan 235 additively adds
+the AUTH DOMAIN entities below. `access_tokens` (Plan 147 Slice C) and the
+minimal local `users` / external identity / station-grant tables (Plan 341 T1)
+are now built; full user sessions and `refresh_tokens` remain deferred. Plan 235 additively adds
 `skill_generations` — the append-only publication ledger a generation
 identity needs (D1/D3): a row there is the ONLY thing that makes a
 generation's `skill_scores`/`skill_diagrams` rows current
@@ -1174,7 +1173,9 @@ STILL-ACTIVE artifact's generation for the same model.
 | 25 | `alerts` | UUID | no | Ops |
 | 26 | `pipeline_health` | BIGSERIAL | no | Ops |
 | 27 | `dead_letter_queue` | BIGSERIAL | no | Ops |
-| 28 | `users` | UUID | no | Auth (v1.x, not built) |
+| 28 | `users` | UUID | no | Auth (minimal OIDC-linked row REALIZED, Plan 341 T1; password/session fields deferred) |
+| 28a | `user_external_identities` | composite `(issuer, subject)` | no | Auth (REALIZED, Plan 341 T1) |
+| 28b | `human_station_grants` | composite `(user_id, station_id, permission)` | no | Auth (REALIZED, Plan 341 T1) |
 | 29 | `access_tokens` | UUID | no | Auth (REALIZED, Plan 147 Slice C, migration 0047) |
 | 29a | `access_token_stations` | composite | no | Auth (REALIZED, Plan 147 Slice C, migration 0047) |
 | 30 | `refresh_tokens` | UUID | no | Auth (v1.x, not built) |

@@ -328,23 +328,27 @@ class AuditActorType(Enum):
 
 
 class AccessTokenRole(Enum):
-    """Plan 147 Slice C: the v1.0 headless HTTP role model (G4) — exactly
-    two roles, both GET-only. `CONSUMER` is station-scoped (per
-    `access_token_stations`); `ADMIN` is unscoped read + CLI token/tenant
-    management. No third role (no session/operator role in v1.0)."""
+    """Plan 147 Slice C: the v1.0 headless HTTP role model (G4) — three
+    roles, all GET-only (Plan 401 D1 amended G4's role list, not GET-only).
+    `CONSUMER` is station-scoped and tenant-bound; `REVIEWER` is scoped
+    exactly like a consumer and additionally reaches the REVIEW routes (the
+    review dashboards' identity); `ADMIN` is unscoped read + CLI
+    token/tenant management. No session/operator role in v1.0."""
 
     CONSUMER = "consumer"
+    REVIEWER = "reviewer"
     ADMIN = "admin"
 
 
 class ScopeMode(Enum):
-    """Plan 215 D2.1: how a `consumer` token's station scope is resolved at
-    load time. `STATIONS` (the default, matches today's only behaviour) reads
-    `access_token_stations`. `TENANT` derives the scope from
+    """Plan 215 D2.1: how a `consumer` or `reviewer` token's station scope is
+    resolved at load time. `STATIONS` (the default, matches today's only
+    behaviour) reads `access_token_stations`. `TENANT` derives the scope from
     `stations.tenant_id = <token tenant>` at read time instead — no
     materialised rows, so a station added after the token is in scope
     immediately. An `admin` row can never be `TENANT`
-    (`ck_access_tokens_tenant_mode_is_consumer`, mirrored by
+    (`ck_access_tokens_tenant_mode_is_consumer` — which, despite its name,
+    admits consumer and reviewer rows since alembic 0061 — mirrored by
     `AccessToken.__post_init__`)."""
 
     STATIONS = "stations"
@@ -374,6 +378,8 @@ class AuditEventType(Enum):
     PASSWORD_CHANGED = "password_changed"
     USER_CREATED = "user_created"
     USER_DEACTIVATED = "user_deactivated"
+    HUMAN_IDENTITY_LINKED = "human_identity_linked"
+    HUMAN_GRANT_CHANGED = "human_grant_changed"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
     API_KEY_SCOPE_CHANGED = "api_key_scope_changed"

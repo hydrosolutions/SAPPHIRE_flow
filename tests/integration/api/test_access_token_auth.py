@@ -9,17 +9,28 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Annotated
+from uuid import UUID, uuid4
 
 import pytest
 import sqlalchemy as sa
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 
 from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_connection
-from sapphire_flow.api.security import hash_token, load_access_token_pepper
+from sapphire_flow.api.routes.forecast_lab import (
+    get_bafu_forecast_archive_path,
+    get_forecast_combination_strategy,
+)
+from sapphire_flow.api.security import (
+    Principal,
+    ensure_station_in_scope,
+    hash_token,
+    load_access_token_pepper,
+    require_reviewer,
+)
 from sapphire_flow.db.metadata import access_token_stations, access_tokens
 from sapphire_flow.store.access_token_store import (
     CrossTenantScopeError,
@@ -31,10 +42,15 @@ from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.alert import Alert
 from sapphire_flow.types.auth import AccessToken
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import AccessTokenRole, AlertStatus
+from sapphire_flow.types.enums import (
+    AccessTokenRole,
+    AlertStatus,
+    ModelCombinationStrategy,
+)
 from sapphire_flow.types.ids import AccessTokenId, AlertId, StationId, TenantId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID, Tenant
 from tests.conftest import make_alert, make_station_config
+from tests.integration.api.test_dashboard_forecasts import _seed_forecast, _seed_model
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -47,6 +63,11 @@ _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 _REAL_NOW = ensure_utc(datetime.now(UTC))
 _FUTURE = ensure_utc(_REAL_NOW + timedelta(days=30))
 _PAST = ensure_utc(_REAL_NOW - timedelta(days=1))
+
+# Plan 401: a reviewer token is tenant-bound and scoped exactly like a consumer.
+_TENANT_BOUND_ROLES = pytest.mark.parametrize(
+    "role", [AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER], ids=lambda r: r.value
+)
 
 
 def _seed_station(conn: sa.Connection, *, seed: int, tenant_id: TenantId) -> StationId:
@@ -351,8 +372,9 @@ class TestConsumerAlertPaginationAppliesScopeBeforeLimitOffset:
 
 
 class TestCrossTenantScopeRejectedAtCreate:
+    @_TENANT_BOUND_ROLES
     def test_station_outside_token_tenant_is_rejected(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
         other_tenant = Tenant(
             id=TenantId(uuid4()),
@@ -366,7 +388,7 @@ class TestCrossTenantScopeRejectedAtCreate:
         with pytest.raises(CrossTenantScopeError):
             _make_token(
                 db_connection,
-                role=AccessTokenRole.CONSUMER,
+                role=role,
                 tenant_id=DEFAULT_TENANT_ID,
                 station_ids=frozenset({sid}),
             )
@@ -454,6 +476,7 @@ class TestAdminGatedRoutesRejectConsumerAllowAdmin:
     structural route-matrix test in tests/unit/api/test_security.py, which
     proves the classification but doesn't fire real requests."""
 
+    @_TENANT_BOUND_ROLES
     @pytest.mark.parametrize("method,path", _ADMIN_GATED_ROUTE_SAMPLES)
     def test_consumer_is_forbidden(
         self,
@@ -461,10 +484,9 @@ class TestAdminGatedRoutesRejectConsumerAllowAdmin:
         db_connection: sa.Connection,
         method: str,
         path: str,
+        role: AccessTokenRole,
     ) -> None:
-        raw_key = _make_token(
-            db_connection, role=AccessTokenRole.CONSUMER, station_ids=frozenset()
-        )
+        raw_key = _make_token(db_connection, role=role, station_ids=frozenset())
         resp = client.request(method, path, headers=_auth(raw_key))
         assert resp.status_code == 403
 
@@ -553,7 +575,7 @@ class TestCrossTenantScopeRejectedOnLoad:
     silently authorizing the cross-tenant station."""
 
     def _seed_cross_tenant_scope_row(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> tuple[str, StationId]:
         # A consumer token in DEFAULT_TENANT_ID, initially validly scoped to an
         # in-tenant station...
@@ -562,7 +584,7 @@ class TestCrossTenantScopeRejectedOnLoad:
         )
         raw_key = _make_token(
             db_connection,
-            role=AccessTokenRole.CONSUMER,
+            role=role,
             tenant_id=DEFAULT_TENANT_ID,
             station_ids=frozenset({in_tenant_sid}),
         )
@@ -587,18 +609,20 @@ class TestCrossTenantScopeRejectedOnLoad:
         )
         return raw_key, foreign_sid
 
+    @_TENANT_BOUND_ROLES
     def test_load_raises_cross_tenant_scope_error(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
-        raw_key, _foreign = self._seed_cross_tenant_scope_row(db_connection)
+        raw_key, _foreign = self._seed_cross_tenant_scope_row(db_connection, role)
         prefix = raw_key.split(".")[0]
         with pytest.raises(CrossTenantScopeError):
             PgAccessTokenStore(db_connection).fetch_by_key_prefix(prefix)
 
+    @_TENANT_BOUND_ROLES
     def test_auth_fails_closed_with_401_not_authorized(
-        self, client: TestClient, db_connection: sa.Connection
+        self, client: TestClient, db_connection: sa.Connection, role: AccessTokenRole
     ) -> None:
-        raw_key, foreign_sid = self._seed_cross_tenant_scope_row(db_connection)
+        raw_key, foreign_sid = self._seed_cross_tenant_scope_row(db_connection, role)
         # The corrupt cross-tenant scope must NOT authorize the foreign
         # station — the whole token is rejected 401 (fail-closed).
         resp = client.get("/api/v1/stations", headers=_auth(raw_key))
@@ -607,3 +631,256 @@ class TestCrossTenantScopeRejectedOnLoad:
             f"/api/v1/stations/{foreign_sid}", headers=_auth(raw_key)
         )
         assert resp_foreign.status_code == 401
+
+
+# ---------- Plan 401 T2: the reviewer role ---------------------------------
+
+
+def _review_test_app(db_connection: sa.Connection) -> FastAPI:
+    """A test-only app standing for a REVIEW route — none exists until Plan
+    402. The route takes a station and applies the principal's scope like any
+    other station route."""
+    review_app = FastAPI()
+    review_app.state.access_token_pepper = load_access_token_pepper()
+
+    def _override_conn() -> Generator[sa.Connection, None, None]:
+        yield db_connection
+
+    review_app.dependency_overrides[get_connection] = _override_conn
+
+    @review_app.get("/review/stations/{station_id}")
+    def _review_station(
+        station_id: str, principal: Annotated[Principal, Depends(require_reviewer)]
+    ) -> dict[str, str]:
+        ensure_station_in_scope(principal, StationId(UUID(station_id)))
+        return {"station_id": station_id}
+
+    return review_app
+
+
+class TestReviewRouteGate:
+    """Plan 401 D2: a REVIEW route admits reviewer and admin tokens, refuses a
+    consumer with 403, and applies the principal's station scope."""
+
+    def _get(
+        self, db_connection: sa.Connection, raw_key: str, station_id: StationId
+    ) -> int:
+        with TestClient(_review_test_app(db_connection)) as c:
+            return c.get(
+                f"/review/stations/{station_id}", headers=_auth(raw_key)
+            ).status_code
+
+    def test_consumer_is_refused(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection, seed=50, tenant_id=DEFAULT_TENANT_ID)
+        raw_key = _make_token(
+            db_connection, role=AccessTokenRole.CONSUMER, station_ids=frozenset({sid})
+        )
+        assert self._get(db_connection, raw_key, sid) == 403
+
+    def test_reviewer_is_admitted_for_an_in_scope_station(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, seed=51, tenant_id=DEFAULT_TENANT_ID)
+        raw_key = _make_token(
+            db_connection, role=AccessTokenRole.REVIEWER, station_ids=frozenset({sid})
+        )
+        assert self._get(db_connection, raw_key, sid) == 200
+
+    def test_reviewer_gets_404_for_an_out_of_scope_station(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, seed=52, tenant_id=DEFAULT_TENANT_ID)
+        other = _seed_station(db_connection, seed=53, tenant_id=DEFAULT_TENANT_ID)
+        raw_key = _make_token(
+            db_connection, role=AccessTokenRole.REVIEWER, station_ids=frozenset({sid})
+        )
+        assert self._get(db_connection, raw_key, other) == 404
+
+    def test_admin_is_admitted(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection, seed=54, tenant_id=DEFAULT_TENANT_ID)
+        raw_key = _make_token(db_connection, role=AccessTokenRole.ADMIN, tenant_id=None)
+        assert self._get(db_connection, raw_key, sid) == 200
+
+
+@pytest.fixture
+def _forecast_lab_config() -> Generator[None, None, None]:
+    """The snapshot route's two config dependencies, without a config file."""
+    app.dependency_overrides[get_bafu_forecast_archive_path] = lambda: None
+    app.dependency_overrides[get_forecast_combination_strategy] = lambda: (
+        ModelCombinationStrategy.PRIMARY
+    )
+    yield
+    app.dependency_overrides.pop(get_bafu_forecast_archive_path, None)
+    app.dependency_overrides.pop(get_forecast_combination_strategy, None)
+
+
+_OBS_QUERY = "parameter=discharge&start=2025-01-01T00:00:00Z&end=2025-01-03T00:00:00Z"
+# Every GET PRINCIPAL route, by template (pinned against the live app below).
+_DETAIL_ROUTES: dict[str, str] = {
+    "/api/v1/stations/{station_id}": "/api/v1/stations/{sid}",
+    "/api/v1/stations/{station_id}/observations": (
+        "/api/v1/stations/{sid}/observations?" + _OBS_QUERY
+    ),
+    "/api/v1/stations/{station_id}/forecasts": "/api/v1/stations/{sid}/forecasts",
+    "/api/v1/forecasts/{forecast_id}": "/api/v1/forecasts/{fid}",
+    "/api/v1/forecast-lab/snapshot": (
+        "/api/v1/forecast-lab/snapshot?station_code={code}"
+    ),
+}
+_COLLECTION_ROUTES: dict[str, str] = {
+    "/api/v1/stations": "/api/v1/stations",
+    "/api/v1/alerts": "/api/v1/alerts?station_id={sid}",
+    "/api/v1/forecast-lab/snapshot": "/api/v1/forecast-lab/snapshot",
+}
+
+
+class _Scene:
+    def __init__(self, conn: sa.Connection) -> None:
+        self.in_scope = _seed_station(conn, seed=70, tenant_id=DEFAULT_TENANT_ID)
+        self.other = _seed_station(conn, seed=71, tenant_id=DEFAULT_TENANT_ID)
+        model_id = _seed_model(conn)
+        self.forecasts = {
+            sid: _seed_forecast(
+                conn, representation="members", station_id=sid, model_id=model_id
+            )
+            for sid in (self.in_scope, self.other)
+        }
+        alert_store = PgAlertStore(conn)
+        for seed, sid in ((70, self.in_scope), (71, self.other)):
+            alert_store.upsert_alert(
+                make_alert(station_id=sid, rng=random.Random(seed))
+            )
+        self.codes = {self.in_scope: "ST-70", self.other: "ST-71"}
+
+    def url(self, template: str, station_id: StationId) -> str:
+        return template.format(
+            sid=station_id,
+            fid=self.forecasts[station_id],
+            code=self.codes[station_id],
+        )
+
+
+def _comparable(resp: object) -> tuple[int, object]:
+    """Status plus body, with the snapshot's wall-clock fields dropped."""
+    status: int = resp.status_code  # type: ignore[attr-defined]
+    body = resp.json()  # type: ignore[attr-defined]
+    if isinstance(body, dict) and body.get("schema_version", "").startswith(
+        "forecast-lab-snapshot"
+    ):
+        body = [s["station"]["code"] for s in body["stations"]]
+    return status, body
+
+
+@pytest.mark.usefixtures("_forecast_lab_config")
+class TestReviewerOnPrincipalRoutes:
+    """Plan 401 D2: on every existing PRINCIPAL route a reviewer gets exactly
+    what a consumer with the same scope gets."""
+
+    def test_route_lists_cover_every_get_principal_route(self) -> None:
+        from tests.unit.api.test_security import _classify_routes
+
+        principal_gets = {
+            path
+            for (method, path), tag in _classify_routes().items()
+            if tag == "PRINCIPAL" and method == "GET"
+        }
+        assert principal_gets == set(_DETAIL_ROUTES) | set(_COLLECTION_ROUTES)
+
+    def _keys(self, conn: sa.Connection, scene: _Scene) -> dict[AccessTokenRole, str]:
+        return {
+            role: _make_token(conn, role=role, station_ids=frozenset({scene.in_scope}))
+            for role in (AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER)
+        }
+
+    @pytest.mark.parametrize("template", list(_DETAIL_ROUTES.values()))
+    def test_detail_route_in_scope_200_out_of_scope_404(
+        self, client: TestClient, db_connection: sa.Connection, template: str
+    ) -> None:
+        scene = _Scene(db_connection)
+        keys = self._keys(db_connection, scene)
+        reviewer = _auth(keys[AccessTokenRole.REVIEWER])
+
+        assert (
+            client.get(
+                scene.url(template, scene.in_scope), headers=reviewer
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(scene.url(template, scene.other), headers=reviewer).status_code
+            == 404
+        )
+
+    @pytest.mark.parametrize(
+        "template", list(_DETAIL_ROUTES.values()) + list(_COLLECTION_ROUTES.values())
+    )
+    def test_reviewer_matches_consumer(
+        self, client: TestClient, db_connection: sa.Connection, template: str
+    ) -> None:
+        scene = _Scene(db_connection)
+        keys = self._keys(db_connection, scene)
+
+        for station_id in (scene.in_scope, scene.other):
+            url = scene.url(template, station_id)
+            consumer = client.get(url, headers=_auth(keys[AccessTokenRole.CONSUMER]))
+            reviewer = client.get(url, headers=_auth(keys[AccessTokenRole.REVIEWER]))
+            assert _comparable(reviewer) == _comparable(consumer), url
+
+    def test_collections_filter_to_the_reviewer_scope(
+        self, client: TestClient, db_connection: sa.Connection
+    ) -> None:
+        scene = _Scene(db_connection)
+        reviewer = _auth(self._keys(db_connection, scene)[AccessTokenRole.REVIEWER])
+
+        stations = client.get("/api/v1/stations", headers=reviewer)
+        alerts_out = client.get(
+            f"/api/v1/alerts?station_id={scene.other}", headers=reviewer
+        )
+        snapshot = client.get("/api/v1/forecast-lab/snapshot", headers=reviewer)
+
+        assert [i["id"] for i in stations.json()["items"]] == [str(scene.in_scope)]
+        assert (alerts_out.status_code, alerts_out.json()["items"]) == (200, [])
+        assert _comparable(snapshot) == (200, ["ST-70"])
+
+    @_TENANT_BOUND_ROLES
+    def test_acknowledgement_post_is_501(
+        self, client: TestClient, db_connection: sa.Connection, role: AccessTokenRole
+    ) -> None:
+        raw_key = _make_token(db_connection, role=role, station_ids=frozenset())
+        resp = client.post(
+            f"/api/v1/alerts/{uuid4()}/acknowledge", headers=_auth(raw_key)
+        )
+        assert resp.status_code == 501
+
+
+class TestForecastDetailHidesOutOfScopeExistence:
+    """Security review 2026-09-26: an out-of-scope forecast must answer
+    exactly like an absent one — "Station not found" confirmed it exists."""
+
+    @_TENANT_BOUND_ROLES
+    def test_absent_and_out_of_scope_forecasts_answer_identically(
+        self, client: TestClient, db_connection: sa.Connection, role: AccessTokenRole
+    ) -> None:
+        in_scope = _seed_station(db_connection, seed=60, tenant_id=DEFAULT_TENANT_ID)
+        other = _seed_station(db_connection, seed=61, tenant_id=DEFAULT_TENANT_ID)
+        model_id = _seed_model(db_connection)
+        out_of_scope_forecast = _seed_forecast(
+            db_connection,
+            representation="members",
+            station_id=other,
+            model_id=model_id,
+        )
+        raw_key = _make_token(
+            db_connection, role=role, station_ids=frozenset({in_scope})
+        )
+
+        absent = client.get(f"/api/v1/forecasts/{uuid4()}", headers=_auth(raw_key))
+        hidden = client.get(
+            f"/api/v1/forecasts/{out_of_scope_forecast}", headers=_auth(raw_key)
+        )
+
+        assert (hidden.status_code, hidden.json()) == (
+            absent.status_code,
+            absent.json(),
+        )
+        assert absent.status_code == 404

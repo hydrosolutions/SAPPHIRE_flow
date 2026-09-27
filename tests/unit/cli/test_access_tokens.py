@@ -49,6 +49,10 @@ class TestCliFailsClosedWithoutPepperForEverySubcommand:
         with pytest.raises(PepperNotConfiguredError):
             main(["create", "--name", "x", "--tenant", "sapphire"])
 
+    def test_create_reviewer_fails_closed(self) -> None:
+        with pytest.raises(PepperNotConfiguredError):
+            main(["create-reviewer", "--name", "x", "--tenant", "sapphire"])
+
     def test_create_admin_fails_closed(self) -> None:
         with pytest.raises(PepperNotConfiguredError):
             main(["create-admin", "--name", "boot"])
@@ -141,3 +145,12 @@ class TestArgumentParsingForNewVerbs:
     def test_set_scope_mode_rejects_an_invalid_mode_choice(self) -> None:
         with pytest.raises(SystemExit):
             main(["set-scope-mode", str(uuid4()), "not-a-real-mode"])
+
+    def test_create_reviewer_requires_a_tenant(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            main(["create-reviewer", "--name", "x"])
+        assert "the following arguments are required: --tenant" in (
+            capsys.readouterr().err
+        )

@@ -311,6 +311,15 @@ services:
       # no CORS middleware — same-origin only. Set an explicit
       # comma-separated origin list for a browser-based consumer.
       SAPPHIRE_CORS_ORIGINS: ${SAPPHIRE_CORS_ORIGINS:-}
+      # Plan 341 T1: absent values leave named-human auth disabled. The real
+      # provider, MFA assurance and exact dashboard origin are activation inputs.
+      SAPPHIRE_HUMAN_OIDC_ISSUER: ${SAPPHIRE_HUMAN_OIDC_ISSUER:-}
+      SAPPHIRE_HUMAN_OIDC_AUDIENCE: ${SAPPHIRE_HUMAN_OIDC_AUDIENCE:-}
+      SAPPHIRE_HUMAN_OIDC_JWKS_URL: ${SAPPHIRE_HUMAN_OIDC_JWKS_URL:-}
+      SAPPHIRE_HUMAN_OIDC_ALGORITHM: ${SAPPHIRE_HUMAN_OIDC_ALGORITHM:-}
+      SAPPHIRE_HUMAN_OIDC_MFA_AMR: ${SAPPHIRE_HUMAN_OIDC_MFA_AMR:-}
+      SAPPHIRE_HUMAN_OIDC_MFA_ACR: ${SAPPHIRE_HUMAN_OIDC_MFA_ACR:-}
+      SAPPHIRE_HUMAN_DASHBOARD_ORIGIN: ${SAPPHIRE_HUMAN_DASHBOARD_ORIGIN:-}
     depends_on:
       postgres:
         condition: service_healthy

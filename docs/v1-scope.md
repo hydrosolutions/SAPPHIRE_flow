@@ -376,8 +376,9 @@ attached.
    processing. 🔴 **No CSV export exists today** — nothing in `api/routes/` produces one. This
    is new work, not wiring.
 3. **API access**, so they can experiment with retrieval. ✅ **Close to ready**: token-based
-   auth already exists with a station-scoped `consumer` role and an `admin` role, so issuing
-   DHM a scoped token is configuration rather than a build.
+   auth already exists with a station-scoped `consumer` role, a `reviewer` role for our review
+   dashboards (scoped like a consumer, plus the review routes — Plan 401) and an `admin` role, so
+   issuing DHM a scoped token is configuration rather than a build.
 
 **⛔ Their own dashboard is the destination, ours is a courtesy.** DHM plan to integrate our
 forecasts into their existing forecast dashboard. Ours is available to them if they want it,

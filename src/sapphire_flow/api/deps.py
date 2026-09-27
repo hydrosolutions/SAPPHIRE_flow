@@ -15,9 +15,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Plan 147 Slice C: fail-closed startup — the API refuses to boot
     # without a readable, non-empty pepper (R1). Imported lazily to avoid a
     # module import cycle (api.security imports api.deps.get_connection).
+    from sapphire_flow.api.human_auth import (
+        build_human_token_verifier,
+        load_oidc_config,
+    )
     from sapphire_flow.api.security import load_access_token_pepper
 
     app.state.access_token_pepper = load_access_token_pepper()
+    human_config = load_oidc_config()
+    app.state.human_oidc_verifier = (
+        build_human_token_verifier(human_config) if human_config is not None else None
+    )
     app.state.engine = create_engine_from_env()
     yield
     app.state.engine.dispose()

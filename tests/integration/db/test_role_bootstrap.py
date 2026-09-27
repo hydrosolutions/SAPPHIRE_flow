@@ -1666,3 +1666,165 @@ class TestPreExistingBackupRoleFullConvergence:
                 conn.execute(sa.text("DROP SCHEMA IF EXISTS evil_schema CASCADE"))
                 conn.execute(sa.text("DROP PROCEDURE IF EXISTS test_full_conv_proc()"))
                 _drop_sapphire_backup_role(conn)
+
+
+class TestHumanIdentityRoleBoundary:
+    def test_api_role_cannot_leave_publish_without_review(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.db.metadata import human_station_grants
+        from sapphire_flow.store.human_identity_store import PgHumanIdentityStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.human_auth import HumanPermission
+        from sapphire_flow.types.ids import StationId, UserId
+        from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+
+        station_id, other_id = StationId(uuid4()), StationId(uuid4())
+        with bootstrapped.owner_engine.begin() as conn:
+            for current in (station_id, other_id):
+                PgStationStore(conn).store_station(
+                    make_station_config(
+                        station_id=current, code=f"AUTH-{current.hex[:8]}"
+                    )
+                )
+        now = ensure_utc(datetime(2026, 9, 26, tzinfo=UTC))
+        user_id = UserId(uuid4())
+        engine = sa.create_engine(
+            bootstrapped.role_url("sapphire_api", "api-pw-initial")
+        )
+        try:
+            with engine.begin() as conn:
+                store = PgHumanIdentityStore(conn)
+                store.create_user(
+                    user_id=user_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    display_name="Invariant test",
+                    issuer="https://idp.example.org/",
+                    subject=str(user_id),
+                    now=now,
+                )
+                store.grant(user_id, station_id, HumanPermission.REVIEW, now=now)
+
+            with (
+                pytest.raises(sa.exc.IntegrityError, match="requires review grant"),
+                engine.begin() as conn,
+            ):
+                conn.execute(
+                    sa.insert(human_station_grants).values(
+                        user_id=user_id,
+                        tenant_id=DEFAULT_TENANT_ID,
+                        station_id=other_id,
+                        permission="publish",
+                        granted_at=now,
+                    )
+                )
+
+            with (
+                pytest.raises(sa.exc.IntegrityError, match="requires review grant"),
+                engine.begin() as conn,
+            ):
+                conn.execute(
+                    sa.text(
+                        "CREATE TEMP TABLE human_station_grants ("
+                        "user_id uuid, station_id uuid, permission text) "
+                        "ON COMMIT DROP"
+                    )
+                )
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO public.human_station_grants "
+                        "(user_id, tenant_id, station_id, permission, granted_at) "
+                        "VALUES (:user_id, :tenant_id, :station_id, 'publish', :now)"
+                    ),
+                    {
+                        "user_id": user_id,
+                        "tenant_id": DEFAULT_TENANT_ID,
+                        "station_id": other_id,
+                        "now": now,
+                    },
+                )
+
+            with engine.begin() as conn:
+                conn.execute(
+                    sa.insert(human_station_grants).values(
+                        user_id=user_id,
+                        tenant_id=DEFAULT_TENANT_ID,
+                        station_id=station_id,
+                        permission="publish",
+                        granted_at=now,
+                    )
+                )
+            with (
+                pytest.raises(sa.exc.IntegrityError, match="requires review grant"),
+                engine.begin() as conn,
+            ):
+                conn.execute(
+                    sa.delete(human_station_grants).where(
+                        human_station_grants.c.user_id == user_id,
+                        human_station_grants.c.station_id == station_id,
+                        human_station_grants.c.permission == "review",
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    def test_api_can_write_human_auth_while_worker_cannot_read_it(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.store.human_identity_store import PgHumanIdentityStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.human_auth import HumanPermission
+        from sapphire_flow.types.ids import StationId, UserId
+        from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+
+        station_id = StationId(uuid4())
+        with bootstrapped.owner_engine.begin() as conn:
+            station = make_station_config(
+                station_id=station_id, code=f"AUTH-{station_id.hex[:8]}"
+            )
+            PgStationStore(conn).store_station(station)
+
+        api_url = bootstrapped.role_url("sapphire_api", "api-pw-initial")
+        worker_url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        now = ensure_utc(datetime(2026, 9, 26, tzinfo=UTC))
+        user_id = UserId(uuid4())
+        api_engine = sa.create_engine(api_url)
+        try:
+            with api_engine.begin() as conn:
+                store = PgHumanIdentityStore(conn)
+                store.create_user(
+                    user_id=user_id,
+                    tenant_id=DEFAULT_TENANT_ID,
+                    display_name="Role test",
+                    issuer="https://idp.example.org/",
+                    subject=str(user_id),
+                    now=now,
+                )
+                store.grant(user_id, station_id, HumanPermission.REVIEW, now=now)
+                assert (
+                    store.resolve_principal(
+                        issuer="https://idp.example.org/", subject=str(user_id)
+                    )
+                    is not None
+                )
+        finally:
+            api_engine.dispose()
+
+        tables = ("users", "user_external_identities", "human_station_grants")
+        for table in tables:
+            assert bootstrapped.denied(worker_url, f"SELECT * FROM {table}")
+            assert not bootstrapped.denied(api_url, f"SELECT * FROM {table}")
+
+        repeat = bootstrapped.run_bootstrap(
+            "api-pw-initial", "worker-pw-initial", "backup-pw-initial"
+        )
+        assert repeat.returncode == 0, repeat.stderr
+        for table in tables:
+            assert bootstrapped.denied(worker_url, f"SELECT * FROM {table}")
+            assert not bootstrapped.denied(api_url, f"SELECT * FROM {table}")
