@@ -257,6 +257,21 @@ data_source = "camels-ch"          # v0: CAMELS-CH; v1+: "manual", "api"
 basin_ids = [                      # BAFU gauge IDs to onboard
     "2004", "2009", "2011",        # (167 EXACT_ID matches to LINDAS for v0 Swiss)
 ]
+# Network names whose station QC declarations may wait for registration.
+qc_pending_networks = []
+
+# Plan 269: per-station observation QC thresholds live ONLY in the shared base
+# config. Every block must name tenant_code explicitly. This example stays
+# commented so deployments without a declared threshold keep current QC output.
+# Water-level values use the datum-shifted, gauge-relative frame, not m a.s.l.
+# [[onboarding.station_qc_thresholds]]
+# tenant_code = "sapphire"
+# code = "2004"
+# network = "bafu"
+# rule_id = "range_check"
+# parameter = "water_level"
+# time_step_seconds = 600
+# thresholds = { value_max = 20.0 }  # example only; validate before enabling
 
 [onboarding.water_level_datums_masl]
 # Optional surveyed gauge-zero elevation (BAFU Pegelnullpunkt), keyed by station code.

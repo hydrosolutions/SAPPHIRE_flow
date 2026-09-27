@@ -288,7 +288,8 @@ below and §B.)
 ### Core entities
 - `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status`, `water_level_datum_masl`, and `water_level_unit` columns; unique constraint is `(network, code)`; `forecast_targets` is JSONB nullable (NULL for weather stations; e.g. `["discharge"]` or `["discharge","water_level"]`). Water-level QC preserves raw absolute values and subtracts the station datum before relative-stage rules; if the datum is missing, datum-dependent rules are skipped until metadata is filled and baselines can be recomputed. ⛔ **Consequence for anyone adding `water_level` to `forecast_targets`:** exactly three forecast QC rules can REJECT a forecast — `negative_value`, `range_check` and `quantile_crossing` (`services/forecast_qc.py:39,61,224`). Two of them are the datum-dependent ones (`services/qc_datum.py:15-17`), and the third fires only on a QUANTILES-representation ensemble (`forecast_qc.py:209`). So at a station with **no datum on file, a member-ensemble water-level forecast can be passed or flagged suspect but never rejected.** Other rules still run, but ⛔ **a `QC_PASSED` verdict there means only that the APPLICABLE rules raised no flag — it does not establish physical plausibility**, because an ensemble with no remaining flags is explicitly assigned `QC_PASSED` (`services/run_station_forecast.py:134-136`). 'We quality-check water level' and 'we can reject an implausible water-level forecast' are different claims, and only the first holds there. No station forecasts water level today (all 148 target discharge alone, measured 2026-09-04), so this is latent; fill the datum before enabling the target.
 - `basins` — as designed; includes `network` column; unique constraint is `(network, code)`
-- `station_thresholds` — as designed
+- `station_thresholds` — as designed; the store has no production writer for
+  alert danger levels. This is separate from observation QC threshold overrides.
 - `flow_regime_configs` — as designed
 
 ### Observations
@@ -307,7 +308,9 @@ below and §B.)
 ### Forecasts
 - `forecasts` — as designed; includes `qc_status` and `qc_flags` columns (migration 0012)
 - `forecast_values` — as designed but **not partitioned**
-- `forecast_qc_overrides` — per-station QC threshold overrides; unique on `(station_id, rule_id, parameter, time_step_seconds)` (migration 0012)
+- `forecast_qc_overrides` — per-station **forecast** QC threshold table; unique on
+  `(station_id, rule_id, parameter, time_step_seconds)` (migration 0012). It is
+  schema-only: every forecast QC call still supplies `qc_overrides=[]`.
 
 ### Hindcast
 - `hindcast_forecasts` — as designed but **not partitioned**; includes `qc_status` and `qc_flags` columns (migration 0012)

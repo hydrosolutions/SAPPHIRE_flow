@@ -25,6 +25,14 @@ def load_merged_toml(
                 "QC rules must be changed in the base config, not an overlay: "
                 f"{overlay_path}"
             )
+        onboarding = overlay_data.get("onboarding")
+        if isinstance(onboarding, dict):
+            for key in ("station_qc_thresholds", "qc_pending_networks"):
+                if key in onboarding:
+                    raise ValueError(
+                        f"onboarding.{key} must be changed in the base config, "
+                        f"not an overlay: {overlay_path}"
+                    )
         merged = _deep_merge(merged, overlay_data)
     return merged
 

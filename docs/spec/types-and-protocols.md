@@ -259,6 +259,11 @@ class PipelineCheckType(Enum):
         # noise at a handful of stations). No watchdog probe wired yet
         # (Plan 175 § Residual forks #1) — visible today only via
         # `/api/v1/health/detail` and the dashboard.
+    OBSERVATION_QC_THRESHOLD_CONFIG = "observation_qc_threshold_config"
+        # Plan 269: a rejected or not-applicable station QC threshold declaration.
+        # WARNING records are written by scheduled ingest, including on no-data
+        # runs; pending networks and onboarding stations are INFO logs only.
+        # The watchdog does not yet probe this type.
 
 class FetchOutcomeCause(Enum):
     # Per-station observation fetch failure taxonomy (Plans 175/300).
@@ -634,7 +639,8 @@ class QcRuleParams:
 - `frozen_sensor`: `tolerance`, `min_consecutive` (int stored as float), `exclude_at_or_below`
   (optional — a value at or below it never starts or extends a frozen run, e.g. `0.0` so
   precipitation's dry spells are not flagged; absent ⇒ every value is eligible, today's behaviour)
-- `spike`: `tolerance`
+- `spike`: `tolerance` or `max_delta` (absolute difference; the checker prefers
+  `max_delta` when both are present)
 - `gross_outlier`: `k_sigma`
 
 ### QcRuleSet
@@ -658,9 +664,26 @@ class QcRuleSet:
 
 ### StationQcOverride
 
-Per-station override of specific QC rule thresholds. Fields set to `None` inherit from
-the deployment-level `QcRuleSet`. Loaded from station onboarding TOML; v1 migrates to
-DB (dashboard-editable).
+Per-station override of the network-selected observation QC rule. Omitted threshold
+keys inherit from that rule. Plan 269 loads declarations from the shared base `config.toml`
+as `[[onboarding.station_qc_thresholds]]`; overlays cannot replace these blocks or
+`qc_pending_networks`. Every block names `tenant_code`, `code`, `network`, `rule_id`,
+`parameter`, `time_step_seconds` and a threshold table. Omit a threshold key to
+inherit it (TOML has no null). Resolution matches the station in the declared
+tenant, then the selected network rule, then validates the merged thresholds.
+The scheduled ingest path supplies the resulting overrides to the checker;
+station onboarding still supplies an empty list. A water-level threshold uses
+the datum-shifted gauge-relative frame. A future v1 table and change history
+remain unowned.
+
+The edit-time command is `uv run python scripts/onboard.py --validate-config
+config.toml`. It requires an explicit file with both `[onboarding]` and
+`[qc_rules]`, refuses an active overlay, reads the registry without writing,
+and rejects unknown stations unless `--allow-unonboarded-network NETWORK`
+explicitly waives an entirely unonboarded network. A valid declaration does
+not prove the adapter will deliver that parameter; scheduled QC applies it
+only when that series arrives. Plan 268's DHM discharge import has its own
+full-series QC pass because scheduled DHM ingest delivers water level only.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
