@@ -941,6 +941,10 @@ class TestDonorParamsPerClass:
         assert "params are UNKNOWN" not in reason
         assert "Genuinely unknown" not in reason
         assert "NO configuration overrides" in reason
+        # 🔴 The explicit NEGATION, which is the claim-level assertion the banned
+        # phrases only approximate. ⛔ Without it "a KNOWN-EMPTY run config, so its
+        # params are unknown" passes — measured by a reviewer.
+        assert "not an unknown one" in reason
 
     # ── the two exceptional states D1 did not classify ────────────────────────
     def test_a_donor_with_neither_row_asserts_no_origin(
@@ -961,10 +965,19 @@ class TestDonorParamsPerClass:
         assert reason is not None
         assert "neither a warm-start record nor a provenance row" in reason
         assert "No origin is inferred" in reason
-        # ⛔ THE CLAIM again: the sentence names the candidate origins in order to
-        # refuse them, so ban the ASSERTED form, not the words.
-        assert "so it was trained from scratch" not in reason
-        assert "or predates provenance capture. Whatever" not in reason
+        # 🔴 THE CLAIM, held properly. ⛔ Two negative assertions stood here banning
+        # strings that exist in NO version of this code — vacuous, and the comment
+        # above them claimed they guarded the claim while measuring as nothing. A
+        # reviewer proved it: "No origin is inferred: it was trained from scratch by
+        # SAP3." passed all of them.
+        #
+        # ⇒ What actually holds the claim is that ALL THREE candidate origins are
+        # named TOGETHER and called indistinguishable, so none can be singled out.
+        # Naming one alone now fails on the other two.
+        assert "trained from scratch by SAP3" in reason
+        assert "written directly through the artifact store" in reason
+        assert "predating provenance capture" in reason
+        assert "indistinguishable from this evidence" in reason
 
     def test_a_donor_with_both_rows_names_the_contradiction(
         self, db_connection: sa.Connection, tmp_path: Path

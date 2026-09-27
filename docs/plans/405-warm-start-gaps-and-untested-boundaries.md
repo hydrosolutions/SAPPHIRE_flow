@@ -869,8 +869,39 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
     first and never looking at the contradicting row. *The first is the inference-from-absence mistake
     this plan has now corrected three times — and I made it in the same commit where I flagged it as my
     pattern.*
-  - 🧹 Widening what the flow asks of its warm-start writer broke two unit stand-ins that lacked
+  - 🧹 Widening what the flow asks of its warm-start writer broke **ONE** unit stand-in that lacked
     `resolve_donor_params`. ⭐ *The healthy direction of that failure: the fake was missing something
     production requires, rather than permitting something production forbids.*
+    ⛔ *First written as "two" — FALSE, and a COUNT again. The second stand-in belongs to the
+    fresh-training test, and the flow reaches `resolve_donor_params` only inside
+    `if typed_base_artifact_id is not None and warm_start_writer is not None:`, so it is never called
+    there. Its added method RAISES on purpose: a defensive guard mirroring the config one, not a
+    repair. Caught by a reviewer, who proved it from the test passing at HEAD.*
   - ✅ **No existing test asserted the old constant** (measured: `grep` finds it nowhere in `tests/`),
     so removing it broke no assertion — which is itself the gap this task closes.
+- **2026-09-27 — T6 review: behaviour COMPLETE and CORRECT, prose INCORRECT.** ⭐ *The reviewer re-ran
+  all four mutations and the pre-change red independently, reproduced every gate number exactly, and
+  confirmed the plan amendment is purely additive with D1's section untouched by the diff. No
+  behavioural defect. Four findings, all mine, all folded:*
+  - 🔴 **A FALSE statement in a docstring added by the very commit that boasted of catching that slip.**
+    `flows/train_models.py` said the guarantee rests on "reading three branches"; the resolver has
+    FIVE, and my other two copies of the sentence say five. ⛔ *I confused the resolver's five BRANCHES
+    with D1's three CLASSES — and the commit message one screen away describes fixing the mirror image
+    of this in the store docstring. The one-site sweep, in both directions, in one commit.*
+  - 🔴 **"Broke TWO unit stand-ins" was FALSE — one.** The second belongs to the fresh-training test,
+    where the flow never reaches the params resolver; its added method raises on purpose, a defensive
+    guard, not a repair. *A COUNT again, which is now this plan's most repeated defect class.*
+  - 🔴 **TWO NEGATIVE ASSERTIONS WERE VACUOUS, and the comment above them claimed they guarded the
+    claim.** They banned strings present in NO version of the code. ⛔ *The reviewer proved it:
+    "No origin is inferred: it was trained from scratch by SAP3." passed all of them.* ⇒ Replaced with
+    what actually holds the claim — all THREE candidate origins named together and called
+    indistinguishable, so naming one alone fails on the other two. 🔬 **Verified against the reviewer's
+    own counterexample: that rewrite now FAILS.**
+    ⚠️ *This is the case I named in the proposal as my likeliest self-inflicted failure. I got it wrong
+    in the opposite direction from the one I predicted — not over-broad, but empty.*
+  - 🔴 **The empty-config test was phrase-exact, so "a KNOWN-EMPTY run config, so its params are
+    unknown" passed** (measured by the reviewer). Now asserts the explicit negation "not an unknown
+    one" is present. 🔬 **That rewrite now FAILS too.**
+  🔑 **The pattern across this whole plan, stated once: the mechanisms held under every review; the
+  prose about them did not, and the two recurring shapes are a COUNT I did not enumerate and a CLAIM
+  asserted from an absence.**

@@ -206,9 +206,12 @@ def _resolve_donor_config_or_refuse(
     one would bring back the exact late crash T1 removed — after a successful
     train and a stored artifact — through the params column instead.
     ⛔ *Chosen over "guarantee every class returns text": that guarantee rests on
-    reading three branches and being right about all of them, and this plan's
-    whole history is me being wrong about claims of that shape. The check costs
-    one line and removes the question.*
+    reading FIVE branches and being right about all of them, and this plan's whole
+    history is me being wrong about claims of that shape. The check costs one line
+    and removes the question.* ⚠️ *Said "three" here at first — the resolver's five
+    branches, confused with D1's three donor CLASSES, in a docstring added by the
+    same commit whose message boasted of catching that exact one-site slip
+    elsewhere.*
     """
     from sapphire_flow.store.model_artifact_warm_start import (
         check_config_provenance,
