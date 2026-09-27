@@ -494,13 +494,15 @@ def resolve_donor_params(
         )
 
     if inherited is not None:
-        if not isinstance(inherited.run_config, Mapping):
+        if not isinstance(inherited.run_config, Mapping) or any(
+            not isinstance(key, str) for key in inherited.run_config
+        ):
             return (
                 None,
-                "donor warm-start record carries a non-mapping run_config, so "
+                "donor warm-start record carries a malformed run_config, so "
                 "nothing here can say whether configuration overrides were "
                 "supplied. Recorded as UNKNOWN rather than asserting a known-"
-                "empty config.",
+                "empty or known-nonempty config.",
             )
         if inherited.run_config:
             return (
