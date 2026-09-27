@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE   # merged #323, 2026-09-27. ⛔ A merged plan left reading READY is a live order to an agent — the hazard this repo already booked.
 created: 2026-09-26
 plan: 405
 title: Four warm-start requirements that never shipped, and two boundaries nothing tests
