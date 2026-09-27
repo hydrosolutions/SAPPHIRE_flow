@@ -1368,6 +1368,19 @@ class TestWarmStartRetrainThroughTheFlow:
         ):
             _require_warm_start_writer(_IncompleteWriter())
 
+    def test_a_writer_with_non_callable_methods_is_rejected_early(self) -> None:
+        class _BadWriter:
+            record = None
+            resolve_donor_config = "not callable"
+
+            def resolve_donor_params(self, base_artifact_id: object) -> tuple:
+                return (None, None)
+
+        with pytest.raises(
+            TypeError, match="non-callable required members: record, resolve_donor_config"
+        ):
+            _require_warm_start_writer(_BadWriter())
+
     def test_naming_a_base_artifact_retrains_instead_of_training(self) -> None:
         """The whole point: a named donor routes to `retrain`, not `train`."""
         rng = random.Random(_RNG_SEED)

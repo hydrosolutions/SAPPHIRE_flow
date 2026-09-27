@@ -90,6 +90,18 @@ def _require_warm_start_writer(writer: object) -> WarmStartWriter:
             f"{methods}. Expected record(), resolve_donor_config(), and "
             "resolve_donor_params()."
         )
+    non_callable = [
+        method
+        for method in ("record", "resolve_donor_config", "resolve_donor_params")
+        if not callable(getattr(writer, method))
+    ]
+    if non_callable:
+        methods = ", ".join(non_callable)
+        raise TypeError(
+            "warm_start_writer has non-callable required members: "
+            f"{methods}. Expected record(), resolve_donor_config(), and "
+            "resolve_donor_params()."
+        )
     return cast(WarmStartWriter, writer)
 
 
