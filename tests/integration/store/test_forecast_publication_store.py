@@ -505,6 +505,9 @@ class TestPgForecastPublicationStore:
         self, db_connection: sa.Connection
     ) -> None:
         store, principal, forecast_id, _ = _seed(db_connection)
+        audit_count_before = db_connection.scalar(
+            sa.select(sa.func.count()).select_from(audit_log)
+        )
         first = _publish(store, principal, forecast_id)
         assert first.preservation_at_publish is PreservationAtPublish.BACKUP_PENDING
         selection = store.fetch_selection(first.key)
@@ -514,7 +517,7 @@ class TestPgForecastPublicationStore:
         audit_count = db_connection.scalar(
             sa.select(sa.func.count()).select_from(audit_log)
         )
-        assert audit_count == 1
+        assert audit_count == audit_count_before + 1
         assert (
             db_connection.scalar(
                 sa.select(sa.func.count()).select_from(forecast_publication_events)
@@ -657,6 +660,9 @@ class TestPgForecastPublicationStore:
         self, db_connection: sa.Connection
     ) -> None:
         store, principal, forecast_id, _ = _seed(db_connection)
+        audit_count_before = db_connection.scalar(
+            sa.select(sa.func.count()).select_from(audit_log)
+        )
         db_connection.execute(
             sa.text("""
             CREATE FUNCTION reject_test_publication_event() RETURNS trigger AS $$
@@ -679,11 +685,14 @@ class TestPgForecastPublicationStore:
             forecast_publication_selections,
             forecast_publication_decisions,
             forecast_publication_events,
-            audit_log,
         ):
             assert (
                 db_connection.scalar(sa.select(sa.func.count()).select_from(table)) == 0
             )
+        assert (
+            db_connection.scalar(sa.select(sa.func.count()).select_from(audit_log))
+            == audit_count_before
+        )
 
     def test_selection_foreign_key_rejects_mismatched_station(
         self, db_connection: sa.Connection

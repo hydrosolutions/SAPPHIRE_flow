@@ -26,8 +26,10 @@ time. `protected_backup_forecast_proofs` will hold append-only per-forecast
 host assessments; a composite FK binds each proof to the exact attestation,
 forecast and backup. A fresh assessment can point to the same attestation;
 old proof rows do not satisfy the publication freshness window. T2b fills
-that projection for every pending published
-forecast. Until it does, a captured forecast can record `backup_pending`
+that projection for every pending published forecast. The FK also makes a bare
+`TRUNCATE` of an attestation table fail before its append-only trigger; a
+`TRUNCATE ... CASCADE` requires privileges on the protected proof table.
+Until T2b, a captured forecast can record `backup_pending`
 only behind healthy global backup state; an overdue proof blocks new publish
 writes and creates a CRITICAL operations-health record. All CHWRR publication
 API paths and activation remain later Plan 341 tasks.
