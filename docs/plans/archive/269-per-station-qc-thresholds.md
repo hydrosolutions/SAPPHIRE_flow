@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-11
 revised: 2026-09-27
 plan: 269
@@ -32,13 +32,11 @@ source: 2026-09-11 — the owner's 2026-09-10 decision on Plan 268 D14 (per-stat
 
 ## Status
 
-**READY — owner authorized implementation 2026-09-27.** Plan 264 and its D4 policy are implemented and merged in PR #315
-(`dbbea4d9`, 2026-09-26). Network-specific rules live beside generic rules in the base
-configuration; station-specific thresholds remain this plan's `[[onboarding.station_qc_thresholds]]`
-surface. The independent Codex pass found no findings on the final design; the owner authorized
-READY and implementation after the latest Claude findings were folded in.
-
-Plan 272 no longer blocks this work (owner clarification, 2026-09-25).
+**COMPLETE — merged in PR #324 (`771c9473`, 2026-09-27).** The declared threshold
+surface, tenant/network-aware resolver, scheduled-ingest wiring, read-only validator,
+and documentation landed. The implementation received an independent Codex
+NO_FINDINGS review and passed CI. Plan 268 owns the six DHM threshold values and
+its separate full-series import QC pass.
 
 **Measured post-272 scheduled-ingest limitation (2026-09-25).** `_run_qc_task` normally fetches a
 two-hour lookback and one-hour lookahead. Only newly fetched DHM river **water-level** timestamps

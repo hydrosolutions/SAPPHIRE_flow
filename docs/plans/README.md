@@ -404,7 +404,7 @@ exit criteria — Plan 212 owns that deeper screening.
   different plan has an open decision.*
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
   together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
-  Plan 264 is **COMPLETE** (#315); Plans 268/269/301/303/304/315 remain DRAFT.
+  Plans 264 and 269 are **COMPLETE** (#315, #324); Plans 268/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
     `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
     review). Fifteen of sixteen decisions closed; **D14 reopened** — the DHM daily QC
@@ -419,12 +419,10 @@ exit criteria — Plan 212 owns that deeper screening.
     selection reporter and offline DHM mask, records configured rule versions on flags, and
     enforces that QC rules live in the shared base configuration. D4 is closed: hydromet rules
     extend that shared list. The Swiss selector-equivalence fixture is committed.
-  - **269** — Per-station QC thresholds declared in onboarding configuration — `DRAFT`,
-    unblocked by PR #315; `blocks: [268]`. Delivers the missing configuration and resolution
-    path for station-specific observation thresholds, plus safe pending-network handling and an
-    edit-time validator. The onboarding QC path, persistence and API remain out of scope; the DB
-    tier is deferred to v1 and currently unowned. The latest round-6 review findings are folded;
-    exact-state re-review is pending before READY.
+  - **269** — [Per-station QC thresholds declared in onboarding configuration](archive/269-per-station-qc-thresholds.md)
+    — **COMPLETE, ARCHIVED** (#324). Delivers tenant-aware threshold resolution for scheduled
+    observation ingest, pending-network diagnostics, and a read-only edit-time validator. The
+    onboarding QC path, persistence and API remain out of scope; the DB tier is deferred to v1.
   - **303** — DHM subdaily precipitation and temperature QC rules — `DRAFT`,
     `depends_on: [264, 272]`, blocked on Plan 301 T1's source interval/cadence contract. Adds
     only the DHM-network rule rows Plan 272 D4 requires; Plan 301 must not enable rainfall before
