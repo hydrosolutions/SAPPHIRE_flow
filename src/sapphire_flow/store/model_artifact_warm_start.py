@@ -19,6 +19,7 @@ Two things this records that nothing else can:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, assert_never
 
@@ -493,7 +494,7 @@ def resolve_donor_params(
         )
 
     if inherited is not None:
-        if not isinstance(inherited.run_config, dict):
+        if not isinstance(inherited.run_config, Mapping):
             return (
                 None,
                 "donor warm-start record carries a non-mapping run_config, so "
