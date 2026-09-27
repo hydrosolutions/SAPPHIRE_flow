@@ -48,7 +48,7 @@ only, no rule or threshold, and no skill. The owner's decision (D1): the map mov
 | forecasts, including combined ones, with QC status | `GET /api/v1/stations/{id}/forecasts` (`ForecastSummary`, no combination filter), `GET /api/v1/forecasts/{id}` — `qc_status` present | the forecast's `qc_flags` are not returned; `ForecastSummaryRow` (`types/forecast_summary.py`) does not carry them |
 | the QC rule sets and thresholds | nothing | **new endpoint** |
 | per-station skill rows | nothing — the only skill route, `GET /api/v1/models/{model_id}/skill-chart.json` (`api/routes/models.py:178`), is an admin-only per-model chart export | **new endpoint** |
-| a contract the map can pin | nothing — `openapi_url=None` (`api/__init__.py:31`, Plan 147 Slice C) deliberately publishes no schema | **commit one for the map's routes only** |
+| a contract the map can pin | nothing — `openapi_url=None` (`api/__init__.py:32`, Plan 147 Slice C) deliberately publishes no schema | **commit one for the map's routes only** |
 
 ## What is measured (2026-09-25, staging, read-only, discharge)
 
@@ -78,7 +78,7 @@ Repository facts this plan relies on:
   between the verdict and a later reading. Plan 340 captures the effective **forecast** QC
   parameters per forecast as evidence; nothing does so for observations.
 - **Four loaders, one pattern.** Observation rules: `flows/ingest_observations.py::_load_qc_rules`,
-  `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules` (`:70`, called `:240`;
+  `flows/onboard.py::_load_qc_rules`, `scripts/onboard.py::_load_qc_rules` (`:82`, called `:378`;
   patched in `tests/unit/scripts/test_onboard_script.py`). Forecast rules:
   `flows/run_forecast_cycle.py::_load_forecast_qc_rules`. Each: `SAPPHIRE_CONFIG` set →
   `load_*_qc_rules` — observation rules effectively from the base file (the overlays are still read,
@@ -112,14 +112,14 @@ Repository facts this plan relies on:
   not a closed set:** rows written before Plan 324 hold `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`,
   and every calculated-station observation **with a non-null value** carries a flag
   `rule_id = "upstream_propagated"` (a missing derived point has no flags and a null
-  `qc_rule_version`, `services/component_derivation.py:116`, `flows/ingest_observations.py:695`),
+  `qc_rule_version`, `services/component_derivation.py:116`, `flows/ingest_observations.py:822-824`),
   `rule_version = "component_derivation/v1"`, possibly with status `qc_passed`, and
   `qc_rule_version = "component_derivation/v1"` (`services/component_derivation.py:30-31`,
-  `flows/ingest_observations.py:694-696`); its `detail` is JSON naming the component stations.
+  `flows/ingest_observations.py:822-824`); its `detail` is JSON naming the component stations.
   A flag's `rule_version`: since PR #315 every observation flag carries its configured rule's
   version (`services/qc.py:135,154,214,243,261,288`); **stored history** also holds the earlier code
   labels `"1.0"`/`"1.2"`; forecast flags carry `"1.0"`. The row's `qc_rule_version` stays a
-  processing-generation marker (`docs/architecture-context.md:2331`).
+  processing-generation marker (`docs/architecture-context.md:2341`).
 - **Observation rule selection is by network too** (PR #315, Plan 264): `QcRuleParams.network`
   (`types/domain.py:153`); `QcRuleSet.rules_for` keeps rules whose network is null or matches the
   station's, and an exact network rule replaces the generic one with the same `rule_id`, parameter
@@ -138,10 +138,10 @@ Repository facts this plan relies on:
   `quantile_crossing` rejections of member and group forecasts can never be seen through the API.
 - **Skill.** `latest_generation_predicate` (`store/skill_store.py`) scopes by station, model,
   artifact, parameter, skill source and forcing type — not time step; harmless today (one cadence).
-  Combined (pooled/BMA) skill rows carry `model_artifact_id = NULL` (`db/metadata.py:1742-1748`).
+  Combined (pooled/BMA) skill rows carry `model_artifact_id = NULL` (`db/metadata.py:1899-1902`).
   `SkillScore.forcing_type` and `phase_offset_seconds` are nullable, `lead_time_hours` is not
   (`types/skill.py`); `model_artifacts.training_period_start/_end` are NOT NULL
-  (`db/metadata.py:936-937`).
+  (`db/metadata.py:1004-1005`).
 - **Which artifact a station's forecast uses.** `ModelArtifactStore.fetch_active_artifact_for_station`
   (`store/model_artifact_store.py:147-199`, called from `services/run_station_forecast.py:359`):
   the station's own active artifact first, otherwise an active group artifact of a group the station
@@ -150,7 +150,7 @@ Repository facts this plan relies on:
   of them arbitrarily (`order_by` on a constant priority, `limit(1)`,
   `store/model_artifact_store.py:183-190`), while a **group** model's forecast is run once per group
   (`services/run_group_forecast.py:483`). That case is out of scope here (see below).
-- **Auth surface.** `security.md:44-49` and the router comment at `api/__init__.py:64-70`: the
+- **Auth surface.** `security.md:100-104` and the router comment at `api/__init__.py:69-75`: the
   modern `/api/v1/stations|forecasts|alerts` API is the one surface a consumer token reaches; every
   other data route is admin-gated. `security.md` § Input-quality visibility (Plan 253 OD-2) records
   the owner's 2026-09-04 decision that threshold-bearing forecast input-quality detail is visible to
@@ -275,9 +275,10 @@ Plans 341 and 404, which regenerate the file, follow the same rule.
 
 Since PR #324 a station can carry its own observation QC thresholds, and the network-wide rules would
 then show the wrong limit for it. The owner chose to serve them: `GET /api/v1/qc/rules` takes an
-optional `station_id` and, with it, returns the observation rules as ingest applies them **at that
-station** — its network's rules with its own thresholds merged in, each row naming which thresholds
-came from the station (T1). Without `station_id` the response is unchanged and carries no station
+optional `station_id` and, with it, returns the observation rules for **that
+station** — its network's rules with the thresholds ingest applies there merged in, each row naming
+which thresholds came from the station and whether ingest skips the rule there, and the block saying
+whether ingest runs QC at that station at all (T1). Without `station_id` the response is unchanged and carries no station
 data. It is the current resolution, like the rest of the route: a stored flag still does not record
 which thresholds produced it.
 
@@ -315,17 +316,27 @@ block keeps `"parameter_and_cadence"`):
 `source` is `builtin_default` whenever the built-in rules were used — `SAPPHIRE_CONFIG` unset, **or**
 set but its merged file lacks the section.
 
-**`GET /api/v1/qc/rules?station_id=`** (D15) — the same document, except that the observation block
-holds only the rules selected for that station's network (`selection` unchanged), with the
-station's applied thresholds merged exactly as ingest merges them, and each observation row adds:
+**`GET /api/v1/qc/rules?station_id=`** (D15) — a **second response model**, `StationQcRulesResponse`
+(the global one stays `QcRulesResponse`; the operation's committed response is `oneOf` the two, and
+its description says the presence of `station_id` selects the station variant). The forecast block
+is the same (forecast QC applies no station overrides). The observation block holds only the rules
+selected for that station's network (`selection` unchanged), with the thresholds ingest applies
+there merged exactly as ingest merges them, and adds — all **required and non-nullable**:
 
 ```text
-    station_thresholds: [ name ]   # the threshold names whose value came from this station; [] when none
+  station_id,                                  # the requested station
+  station_qc: "judged" | "not_judged",         # whether ingest runs QC at this station at all
+                                               # (services/station_qc_overrides.py::is_ingest_station_judged)
+  rules: [ { ...,
+             station_thresholds: [ name ],     # names whose value came from this station; [] when none
+             skipped: "no_datum" | null } ]    # "no_datum": ingest skips this rule here — a water-level
+                                               # rule needing a datum at a station without one
+                                               # (services/qc_datum.py::obs_skipped_rules)
 ```
 
-The block also adds `station_id`. Only overrides that ingest would **apply** are merged — a declared
-block that ingest rejects or treats as not applicable (e.g. a non-operational station) is not shown.
-The forecast block is unchanged (forecast QC applies no station overrides).
+Only overrides that ingest **applies** are merged; a declared block that ingest rejects or does not
+apply is absent (it appears only in ingest's log and health record). A malformed `station_id` → 400 in
+the error envelope; an unknown station, or one outside a reviewer token's scope → 404.
 
 **`GET /api/v1/stations/{id}/skill[?model_id=]`** — the station's current skill:
 
@@ -385,8 +396,8 @@ is added to `tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive` as 
 
 **Outcome:** the endpoint serves both rule sets as the serving process resolves them now, through
 the same resolution functions every writing flow uses, each with a code-derived severity per rule
-and a truthful `source`; with `station_id`, the observation rules as ingest applies them at that
-station (D15).
+and a truthful `source`; with `station_id`, the observation rules for that station with the
+thresholds ingest applies there and the rules it skips there (D15).
 
 **In:**
 - `config/qc_rules.py` and `config/forecast_qc_rules.py` — one public resolution function per set
@@ -412,15 +423,22 @@ station (D15).
   group the blocks by tenant, look each tenant up, call `resolve_station_qc_overrides` with
   `is_ingest_qc_applicable`, classify pending / rejected / not applicable) moves here as one public
   function returning the existing `ThresholdConfigOutcome`; ingest calls it and keeps its own logging
-  and health record (`:497-501`, `:509`), behaviour-preserving. The route calls the same function with
+  and health record (`:497-501`, `:509`), behaviour-preserving; `ThresholdConfigOutcome`
+  (`flows/ingest_observations.py:427-432`) moves to `types/station_qc.py` with it, so the service
+  never imports a flow module. The route calls the same function with
   every station and the rule set it serves, keeps the overrides for the requested station, and merges
   them with `services/_qc_helpers.py::merge_thresholds` — the function QC itself uses — so the route
   cannot disagree with ingest. `api/deps.py` gains the tenant store (`PgTenantStore`, as
-  `flows/_db.py:73`). The route checks the station with `api/security.py::ensure_station_in_scope`
-  (`:245`) before resolving.
+  `flows/_db.py:73`). The route parses `station_id` with a `_parse_*`-style helper (as
+  `api/routes/api_stations.py:132-138` does for times) → 400 when malformed, checks it with
+  `api/security.py::ensure_station_in_scope` (`:245`), then fetches the station → 404 when unknown
+  (for an admin token too, whose scope admits every id), and derives `station_qc` from
+  `is_ingest_station_judged` and each row's `skipped` from `obs_skipped_rules(parameter,
+  station.water_level_datum_masl)` — the predicates ingest uses. `docs/touchpoint-maps.md`
+  § Observation QC threshold configuration (`:62-77`) names the new shared function and this reader.
 - A new reviewer-gated route module (e.g. `api/routes/api_review.py`, holding T2's route too),
   response models in `api/schemas.py`, registration in `api/__init__.py` with
-  `Depends(require_reviewer)`, and the router comment there (`:64-70`) naming the new REVIEW routes.
+  `Depends(require_reviewer)`, and the router comment there (`:69-75`) naming the new REVIEW routes.
 
 **Out:** editing any rule function, threshold, rule version or selection; publishing a path; any
 consumer-token access; the reviewer role itself (Plan 401); declaring, storing or changing
@@ -432,9 +450,11 @@ the emitted status equals the severity constant fails on the missing constant, t
 once it exists — the constant describes the code, it does not change it; (2) a request to the route
 returns 404; (3) the existing ingest tests for configured station thresholds
 (`tests/unit/flows/test_ingest_observations.py`, `tests/unit/services/test_station_qc_overrides.py`)
-pass before the extraction and unchanged after it.
+pass before the extraction and unchanged after it, plus a new log-capture test that
+ingest still emits `ingest.qc_threshold_pending` and `ingest.qc_threshold_unapplied` — written and
+passing before the extraction.
 
-**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/services/test_station_qc_overrides.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns the rule set that its public resolution function returns, with `SAPPHIRE_CONFIG` both set and unset (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. An overlay that sets `[qc_rules]` is still rejected through the path-taking shared part (and through the public function with `SAPPHIRE_CONFIG` set). Reviewer and admin tokens → 200; consumer token → 403; no token → 401. With `station_id` (D15): a station with a declared, applied `range_check` `value_max` gets that value in the row, `station_thresholds == ["value_max"]`, and its other thresholds unchanged; a `null` station value leaves the rule's value; the same config fed to ingest's `Stage1QualityChecker` flags exactly the observations the served thresholds predict (one test drives both from one config file); a station without a block gets its network's rules with `station_thresholds == []`; a block that ingest rejects or does not apply (non-operational station) is not merged; only the station's network rules are listed; the forecast block is unchanged; a reviewer token for a station outside its scope → 404, an unknown station → 404; without `station_id` the response is byte-identical to before.
+**Verification:** `uv run pytest tests/unit/services/test_qc.py tests/unit/services/test_forecast_qc.py tests/unit/config/test_qc_rules.py tests/unit/config/test_forecast_qc_rules.py tests/unit/flows/test_ingest_observations.py tests/unit/services/test_station_qc_overrides.py tests/unit/flows/test_onboard_flow.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/scripts/test_onboard_script.py tests/unit/api/` — for each set, three resolution cases: config file with the section → `config` and the file's rules; config file without the section → `builtin_default`; variable unset → `builtin_default`. Each of the four loaders returns the rule set that its public resolution function returns, with `SAPPHIRE_CONFIG` both set and unset (one test per loader, named in the PR). A rule set holding the same `rule_id` at two cadences returns both rows with their own thresholds; a set holding a generic and a network-specific rule for the same `rule_id` returns both rows with their `network`; a configured `nan`/`inf`/`-inf` threshold is served as `null` with valid JSON, and QC execution is unchanged; an observation block cannot validate a forecast `rule_id`. An overlay that sets `[qc_rules]` is still rejected through the path-taking shared part (and through the public function with `SAPPHIRE_CONFIG` set). Reviewer and admin tokens → 200; consumer token → 403; no token → 401. With `station_id` (D15): a station with a declared, applied `range_check` `value_max` gets that value in the row, `station_thresholds == ["value_max"]`, and its other thresholds unchanged; the same config fed to ingest's `Stage1QualityChecker` flags exactly the observations the served thresholds predict (one test drives both from one config file); a station without a block gets its network's rules with `station_thresholds == []`; blocks that ingest rejects or does not apply are not merged — a non-operational station (`station_qc: not_judged`) and a block whose `tenant_code` is not the station's tenant; a water-level station without a datum has `skipped: "no_datum"` on `range_check` and `gross_outlier` and `null` on the rest; only the station's network rules are listed; the forecast block is unchanged; a malformed `station_id` → 400 in the error envelope; an out-of-scope station → 404 for a reviewer token; an unknown station → 404 for a reviewer and an admin token; without `station_id` the response validates against `QcRulesResponse` and carries no `station_id`, `station_qc`, `station_thresholds` or `skipped` keys.
 
 ### T2 — `GET /api/v1/stations/{id}/skill`
 
@@ -493,7 +513,7 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   It builds the document with `fastapi.openapi.utils.get_openapi(routes=<explicit list>)` over
   exactly: `GET /api/v1/stations`, `/stations/{id}`, `/stations/{id}/observations`,
   `/stations/{id}/forecasts`, `/forecasts/{id}`, `/qc/rules`, `/stations/{id}/skill`. Because
-  `require_principal` reads the header from `Request` (`api/security.py:152-181`), the generator
+  `require_principal` reads the header from `Request` (`api/security.py:159`, `require_principal` `:169-228`), the generator
   sees no auth: the file **adds explicitly** a bearer `securityScheme` and a `security` requirement
   on every operation, and each operation's description states which token roles it admits
   (REVIEW for the two new routes) and that an out-of-scope station returns 404 (detail routes) or a
@@ -509,7 +529,8 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   file, only reaches `main` through a pull request. The step is also recorded in
   `docs/standards/cicd.md`'s `ci.yml` step table and in `tools/gate_parity_check.py`'s
   `CI_ONLY_ALLOWLIST`. The generator also adds the
-  400 (on the routes that parse query values, `api/routes/api_stations.py:136-151`) and 401/403/404
+  400 (on the routes that parse query values, `api/routes/api_stations.py:136-151`, and on
+  `/qc/rules` for a malformed `station_id`, D15) and 401/403/404
   responses (403 on the two REVIEW routes) referencing the existing `ErrorResponse`
   (`api/schemas.py:18`), since those errors use `{"error": …, "detail": null}` (`api/errors.py:10`)
   while 422 keeps FastAPI's `{"detail": [...]}`.
@@ -520,7 +541,10 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   whether higher or lower is better, and that `season` names are deployment-configured; that
   `/qc/rules` without `station_id` is deployment-global, the same document for every client's token,
   and that with `station_id` it shows the thresholds ingest currently applies at that station, the
-  station's own ones named in `station_thresholds` (D15); `qc_unchecked` ≠
+  station's own ones named in `station_thresholds`, a rule ingest skips there marked `skipped`, and
+  `station_qc: not_judged` where ingest runs no QC at all; `station_thresholds: []` means none is
+  applied — a declared block ingest rejected or does not apply is absent here and visible only in
+  ingest's health record (D15); `qc_unchecked` ≠
   passed; `raw` = not yet checked (so `qc_flags: []` on a `raw` forecast is not a pass); the matching rule of D4 (candidates; the rules served are the **current** resolution, not
   the thresholds behind past flags); severity; the `qc_rule_version` labels (`"1.2"`, `"1.2-datum"`,
   `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
@@ -614,14 +638,17 @@ After staging deploy (orchestrator), before the map is told:
    `cli/register_deployments.py`) and compare the returned sets — equal environment variables do
    not prove equal rules (bind-mounted file contents, and overlays for forecast rules, also decide). **Pass:** the
    observation sets from all three are equal, and the forecast sets from `api` and `prefect-worker`
-   are equal. Otherwise stop before step 4 and escalate.
+   are equal; likewise the shared station-threshold function's `overrides` are equal in `api` and
+   `prefect-worker-ingest` (D15 — the station blocks live in the same bind-mounted file). Otherwise
+   stop before step 4 and escalate.
 2. For one station, `/skill` row count equals a direct SQL count of the same selection, and every
    row's `model_artifact_id` equals what `fetch_active_artifact_for_station` currently returns for
    that row's model — choosing a station that is not in several groups holding an active artifact of
    the same model (there the pick is arbitrary), and whose group-assigned models have no active
    station-scoped artifact.
 3. A reviewer token (`--tenant sapphire`) **scoped to one station** → 200 on both new routes for
-   that station, and 404 on `/skill` for another **existing** station; a temporary consumer token
+   that station (and on `/qc/rules?station_id=` for it), and 404 on `/skill` and on
+   `/qc/rules?station_id=` for another **existing** station; a temporary consumer token
    created for this check → 403. Then **delete both tokens by id** (Plan 401's single-token
    procedure — never the role-wide statements).
 4. Only then does the orchestrator send the reply to the map session: endpoints,
@@ -677,6 +704,11 @@ After staging deploy (orchestrator), before the map is told:
   observation QC thresholds, contradicting this plan's measured fact. Owner chose D15: `/qc/rules`
   takes an optional `station_id` and then serves the thresholds ingest applies at that station, via
   ingest's own resolution moved into `services/station_qc_overrides.py`.
+- 2026-09-27 — D15 review (Claude, Codex, the API-contract reviewer): the station view is a second
+  response model with required fields; it marks rules ingest skips there (`skipped: no_datum`) and
+  stations ingest does not judge (`station_qc`); malformed id → 400, unknown → 404 for every token;
+  `ThresholdConfigOutcome` moves to `types/station_qc.py`; ingest's two log events are pinned before
+  the extraction; post-deploy checks cover D15; the touchpoint map is updated; citations refreshed.
 
 ## Dependency graph
 

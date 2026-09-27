@@ -374,11 +374,11 @@ its level and kwargs: the two `qc_failed` events, now once per assignment with t
 each reworded to "no forecast or model-state write; the rejection is collected before the preflight
 and saved at the end of the run (Plan 404)" (`docs/standards/logging.md:300` already says "no forecast or state write"
 and stays true), and
-the sentence Plan 402 puts on the consumer page `docs/spec/api-v1-review.md` (`402:475-476`: "a failed
+the sentence Plan 402 puts on the consumer page `docs/spec/api-v1-review.md` (Plan 402 T4's consumer-page item: "a failed
 member or group forecast is never stored"), which becomes "is never stored as a forecast; it is
 recorded on the rejected-forecast route"; and
 — if Plan 402's reply to the map session has not been sent yet — its exit-gate step 4 wording
-(`402:570-571`), so that the reply names this route instead of saying rejected forecasts are not
+(Plan 402's post-deploy step 4), so that the reply names this route instead of saying rejected forecasts are not
 stored. Plan 341 already carries this plan's facts
 (this REVIEW route carries values, withheld from reviewer tokens on a gated tenant; its activation
 wires D4's predicate; rejected member/group forecasts never enter `forecasts` — `341:84`, `:114`);
