@@ -2127,6 +2127,33 @@ Module: `types/skill.py`
 
 ## Protocols
 
+### CHWRR forecast publication ledger (Plan 341 T2)
+
+`types/forecast_publication.py` defines `PublicationKey`, `PublishRequest`,
+`WithdrawRequest`, `PublicationDecision` and `PublicationSelection` as frozen
+domain values. The action enum is `publish | withdraw`; a publish decision
+records `preservation_at_publish = verified | backup_pending`. Withdrawal
+requires a reason code (`incorrect_forecast | data_error | other`) and text.
+`PublicationDecisionId` is distinct from `ForecastId`.
+
+`PgForecastPublicationStore.publish(request, principal, decision_id, now)`
+rechecks the named human's current station `review` and `publish` grants,
+serializes the idempotency key and selection, locks the forecast row, rejects
+stale/superseded/QC-failed candidates, checks evidence and trusted backup
+health, then writes selection, decision, audit and feed event atomically.
+The evidence manifest carries the output row count and ordered SHA-256;
+publication recomputes and compares them. Trusted database lock functions
+hold the human/grant and forecast locks without general API UPDATE rights.
+A per-forecast proof assessment expires after the configured backup-health
+window and can be refreshed by appending a new host-only proof row.
+`withdraw(...)` retains history, tombstones the forecast ID, and clears the
+selection only if that ID is current; it works during backup outage. Exact
+actor/tenant/action/key replay follows authorization and precedes live
+eligibility checks. A changed payload or stale expected version conflicts.
+Linked current warnings block replacement/withdrawal until Plan 342 supplies
+the joint transaction. The T2 store has no HTTP route; T3 defines request and
+response schemas and consumer visibility.
+
 ### ForecastModel
 
 Moved from architecture-context.md "Model Protocol" section.

@@ -159,6 +159,15 @@ GRANT INSERT, UPDATE ON users TO sapphire_api;
 GRANT INSERT ON user_external_identities TO sapphire_api;
 GRANT INSERT, DELETE ON human_station_grants TO sapphire_api;
 GRANT INSERT ON audit_log TO sapphire_api;
+-- Plan 341 T2: only the API's verified-human path writes publication decisions.
+GRANT INSERT, UPDATE ON forecast_publication_selections TO sapphire_api;
+GRANT INSERT ON forecast_publication_decisions, forecast_publication_events TO sapphire_api;
+GRANT UPDATE ON forecast_publication_sequence TO sapphire_api;
+GRANT INSERT ON pipeline_health TO sapphire_api;
+GRANT EXECUTE ON FUNCTION public.lock_publication_grants(uuid,uuid,uuid)
+    TO sapphire_api;
+GRANT EXECUTE ON FUNCTION public.lock_publication_candidate(uuid)
+    TO sapphire_api;
 
 -- sapphire_worker (conventions.md § Service users): the flow/CLI write paths
 -- (onboarding, ingest, training, promotion, assignment) plus append-only
@@ -221,6 +230,51 @@ GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
 -- Caught by a live docker-compose deploy rehearsal, not static review.
 REVOKE SELECT ON access_tokens, access_token_stations,
     users, user_external_identities, human_station_grants FROM sapphire_worker;
+
+-- Plan 341 T2: host backup-health writer. Created without login so existing
+-- staging deployments need no new credential. During activation the operator
+-- enables LOGIN with a separate host-only password; bootstrap retains LOGIN
+-- on subsequent deploys while re-converging the narrow grants below.
+SELECT 'CREATE ROLE sapphire_publication_health NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_publication_health'
+)
+\gexec
+ALTER ROLE sapphire_publication_health NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS;
+SELECT format('REVOKE %I FROM sapphire_publication_health', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_publication_health'
+\gexec
+-- DROP OWNED removes stale column grants and default ACLs as well as table
+-- grants. Refuse to run it if this role unexpectedly owns an object.
+DO $$
+DECLARE
+    owned_objects integer;
+BEGIN
+    SELECT count(*) INTO owned_objects
+    FROM pg_catalog.pg_shdepend sd
+    JOIN pg_catalog.pg_roles r ON r.oid = sd.refobjid
+    WHERE r.rolname = 'sapphire_publication_health' AND sd.deptype = 'o';
+    IF owned_objects > 0 THEN
+        RAISE EXCEPTION 'sapphire_publication_health owns % object(s)', owned_objects;
+    END IF;
+END $$;
+DROP OWNED BY sapphire_publication_health;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_publication_health;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_publication_health;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_publication_health;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_publication_health;
+REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_publication_health;
+GRANT CONNECT ON DATABASE sapphire TO sapphire_publication_health;
+GRANT USAGE ON SCHEMA public TO sapphire_publication_health;
+GRANT SELECT, INSERT, UPDATE ON protected_backup_health TO sapphire_publication_health;
+GRANT SELECT ON forecast_preservation_attestations,
+    forecast_evidence TO sapphire_publication_health;
+GRANT SELECT, INSERT ON protected_backup_forecast_proofs TO sapphire_publication_health;
 
 -- ── sapphire_backup: OWN CONVERGENCE BLOCK (Plan 162 T1) ────────────────────
 -- Deliberately NOT folded into the api/worker blanket-revoke block above —

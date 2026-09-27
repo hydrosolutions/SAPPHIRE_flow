@@ -431,8 +431,8 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 |---|------|-------|-------|--------|
 | 3.1 | Display forecast cycle | `dashboard/` | Cycle time, station list | Visualizations: ensemble spread, model comparison |
 | 3.2 | Adjust forecast values | `api/` → `services/` | Forecaster edits + rationale | Adjustment record (append-only) |
-| 3.3 | Review (select model + confirm) | `api/` → `services/` | Model choice per station | Forecast status → `reviewed` |
-| 3.4 | Publish forecasts | `api/` → `services/` | Forecaster confirmation | Forecast status → `published` |
+| 3.3 | Review (select model + confirm) | `api/` → `services/` | Model choice per station | Named-human selection; CHWRR MVP does not change forecast status |
+| 3.4 | Publish forecasts | `api/` → `store/` | Hydrologist confirmation for one forecast ID | Append-only decision, current-selection update, audit and event |
 | 3.5 | Re-check alert thresholds | `services/` | Published (possibly adjusted) ensembles | Updated exceedance flags |
 | 3.6 | Raise / resolve alerts | `services/` | Exceedance flags, existing alerts | New/updated alert records |
 | 3.7 | Notify | `services/` | New/changed alerts | Notifications dispatched |
@@ -442,15 +442,14 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 
 - **3.1**: Read-only. Shows all models that ran for a station so the forecaster can compare. Each model displays a skill evidence badge derived from `skill_scores` (see "Skill evidence display convention") — e.g. "Verified (hindcast)", "Transfer only", or "Unvalidated". Also displays forcing time series (precipitation, temperature by default) alongside the hydrograph. Model admin configures which predictors are shown per station — all archived predictors are available.
 - **3.2**: Optional. Each adjustment is an immutable record (forecaster ID, timestamp, rationale). Original model output is never overwritten. Multiple adjustments can be made before publishing.
-- **3.3**: Review combines model selection and confirmation into one action. Forecaster picks the preferred model per station; status moves to `reviewed`. Optimistic locking on status transitions.
-- **3.4**: Publishes selected forecasts. Only `published` forecasts appear in the public API and bulletins.
+- **3.3–3.4 (CHWRR MVP)**: A named hydrologist with current station `review` and `publish` grants selects one immutable forecast ID per station, parameter and issue time. The decision ledger, not `forecasts.status`, is the publication authority. Plan 341 T2 implements the atomic store; the review and consumer API routes are T3. Bulletin publication remains separate.
 - **3.5–3.7**: Re-triggers the same threshold/alert logic from Flow 1 (steps 1.12–1.14) on the published values. Always runs here regardless of whether Flow 1 also checked on raw (see resolved decision at line 151). **Correction (Plan 253 T2a):** the prior text here claimed a QC-failed filter "same as the Flow 1 Phase C entry point" -- no such filter exists on either path. Flow 1's alert-eligible partition (`flows/run_forecast_cycle.py::_partition_alert_eligible_ensembles`) selects by `AlertEligibility` alone; a station-level `QC_FAILED` assignment is absent from the ensembles it partitions only because the assignment itself already failed upstream (fallback chain), not because of an explicit QC check at this step. Alerting re-pools member ensembles independently of the stored combined (`_pooled`/`_bma`) forecast (`services/alert_strategy.py::_pool_ensembles`) -- the combined forecast, including one stored `QC_FAILED` under OD-1, is not an alert input at all, so its QC status changes nothing about alerting on either flow.
 - **3.8**: On-demand — forecaster explicitly requests bulletin generation after publishing.
-- **Status transitions**: `raw → reviewed → published`. Review combines model selection and optional adjustments into one action. Adjustments are append-only audit records independent of status.
+- **Generation status**: `raw`, `reviewed`, `published` and `superseded` remain forecast-generation metadata. CHWRR publication and reasoned withdrawal live in a separate append-only ledger. An automatic retry may supersede a published source row without changing its human selection.
 
 #### Open decision
 
-- **Batch vs per-station publish**: Does the forecaster publish one station at a time or an entire cycle at once? Assumed per-cycle (review all, then publish batch). Needs confirmation with hydromet operations staff.
+- **CHWRR decision**: Publication is per forecast ID. A later batch action may invoke the same per-forecast contract.
 
 #### Sequencing
 
@@ -470,12 +469,12 @@ flowchart TD
     subgraph ReviewLoop ["Interactive review loop"]
         direction TB
         s3_2["3.2 Adjust forecast values<br/><i>optional, append-only record</i>"]
-        s3_3["3.3 Review: select model<br/>+ confirm per station<br/>(status → reviewed)"]
+        s3_3["3.3 Review: select one forecast<br/>per station/parameter/issue time"]
         s3_2 --> s3_3
         s3_3 --> s3_2
     end
 
-    s3_4["3.4 Publish forecasts<br/>(status → published)"]
+    s3_4["3.4 Publish one forecast ID<br/>(decision + selection ledger)"]
 
     subgraph PostPublish ["After publication (parallel)"]
         direction LR
@@ -1865,7 +1864,18 @@ For the rare case where a model needs mixed spatial types (e.g. gridded precipit
 
 Two distinct domain types with different metadata, storage tables, and lifecycles:
 
-**`OperationalForecast`** — produced in real time by Flow 1. Carries operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`) in `forecasts` + `forecast_values`. The `raw → reviewed → published` lifecycle and forecaster adjustments are the broader design; Plan 340 does not implement a hydrologist review or publication route. Plan 341 proposes a separate human publication decision.
+**`OperationalForecast`** — produced in real time by Flow 1. Carries operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`) in `forecasts` + `forecast_values`. Plan 341 T2 adds a separate named-human publication ledger without changing these forecast rows. Its review and consumer API routes remain T3.
+
+**Publication store (Plan 341 T2).** `forecast_publication_selections` keeps one persistent key `(tenant, station, parameter, issued_at)` and an independent version. A publish or same-key replacement locks the candidate forecast against automatic supersession, checks current human grants, QC, captured evidence and the host-written protected-backup health projection, then writes the selection, immutable decision, `audit_log` row and commit-ordered feed event in one transaction. A replacement retains the older forecast and its decision. A reasoned withdrawal tombstones that forecast ID across its publication history; it clears the pointer only when that ID is selected. Linked-warning changes fail closed pending Plan 342's joint transaction. Missing or stale backup health blocks new publication, while withdrawal remains available. This store is not exposed to CHWRR until Plan 341 T3/T2b and the deployment activation gates pass.
+
+New evidence manifests bind the count and SHA-256 of the ordered
+forecast-value set at storage time. Publication recomputes both before a new
+decision. Candidates captured before this binding require a fresh trusted
+protected attestation of their current values or a new forecast run.
+Narrow database functions lock current user/grant rows and the candidate
+forecast row without granting the API role UPDATE on those tables. A
+per-forecast protected proof must be fresh (initially within 36 hours) to
+count as `verified`; an old attestation alone is insufficient.
 
 **As-used evidence (Plan 340 T1).** New operational forecasts also write one
 `forecast_evidence` row in the same transaction as the forecast and its values.

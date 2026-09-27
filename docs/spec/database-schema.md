@@ -3,6 +3,37 @@
 Entity-relationship diagrams for the SAPPHIRE Flow PostgreSQL database.
 Derived from table definitions in `architecture-context.md` and scoping rules in `v0-scope.md`.
 
+### CHWRR publication extension (migration 0063, Plan 341 T2)
+
+The later CHWRR extension adds six tables without removing or changing any
+`forecasts` columns. `forecast_publication_selections` has primary key
+`(tenant_id, station_id, parameter, issued_at)`, a nullable selected forecast
+ID and an independent monotonic version. Composite foreign keys bind its
+tenant to the station and its selected forecast to the exact station,
+parameter and issue time. The empty row remains after withdrawal.
+
+`forecast_publication_decisions` retains immutable per-forecast publish,
+replacement and reasoned withdrawal records. Its actor/tenant/action/key
+unique constraint supports idempotent replay; a forecast ID can be withdrawn
+once and cannot be republished. `forecast_publication_events` keeps immutable
+feed events, with numbers allocated transactionally through the singleton
+`forecast_publication_sequence`. `audit_log` receives the same action in the
+same transaction. Neither `ForecastStatus` nor forecast values are changed.
+
+`protected_backup_health` is a singleton host-written projection of the
+latest verified restore, target separation, retention readiness and check
+time. `protected_backup_forecast_proofs` will hold append-only per-forecast
+host assessments; a composite FK binds each proof to the exact attestation,
+forecast and backup. A fresh assessment can point to the same attestation;
+old proof rows do not satisfy the publication freshness window. T2b fills
+that projection for every pending published forecast. The FK also makes a bare
+`TRUNCATE` of an attestation table fail before its append-only trigger; a
+`TRUNCATE ... CASCADE` requires privileges on the protected proof table.
+Until T2b, a captured forecast can record `backup_pending`
+only behind healthy global backup state; an overdue proof blocks new publish
+writes and creates a CRITICAL operations-health record. All CHWRR publication
+API paths and activation remain later Plan 341 tasks.
+
 ---
 
 ## v0 Schema (27 tables)

@@ -26,8 +26,9 @@ for every request, so disabling a user or revoking a grant takes effect on the
 next request. Operator-only CLI actions run inside the API container through
 `python -m sapphire_flow.cli.hydrologists --operator <handle> ...` and commit
 their user/grant change with a system-actor audit row; the handle is recorded
-in audit detail, not presented as a verified human UUID. T2/T3 will record
-verified hydrologist UUIDs for publication decisions.
+in audit detail, not presented as a verified human UUID. T2's publication
+store records the verified hydrologist UUID in its decision and audit row;
+T3 will expose the human write route.
 
 If all `SAPPHIRE_HUMAN_OIDC_*` values are absent, human authentication is off;
 a partial configuration fails API startup. Required values are `ISSUER`,
@@ -38,6 +39,24 @@ assurance policy and signing-key rollover must be verified before activation.
 GET/POST CORS permission under `/api/v1/review/forecasts`, for the named-human
 dashboard contract; other configured consumer origins retain GET only.
 No human review or publish route is mounted by T1.
+
+Plan 341 T2 adds a host-only `sapphire_publication_health` database role. It
+starts `NOLOGIN`; an operator enables a separate credential on the protected
+backup host only when the DHM target and retention policy are ready. It may
+write the derived backup-health/proof projection, but cannot publish forecasts.
+The API can read that projection and insert publication decisions, selections,
+audit and feed events, but cannot forge health/proof rows. Forecast workers
+cannot write either publication decisions or health. The backup host reads its
+database URL from an owner-only file; the credential is never mounted into API
+or worker containers. Missing, stale or unhealthy health fails closed for new
+publication; a reasoned withdrawal is still allowed. T2 implements no API
+publication route or CHWRR activation switch.
+Two scoped `SECURITY DEFINER` functions lock current human grants and the
+candidate forecast row inside a decision transaction. Execute rights go to
+`sapphire_api` only; it receives no UPDATE grant on `forecasts` or
+`human_station_grants`. The functions use fixed schema names and search path.
+A revocation waits for an in-flight decision to commit, or wins before its
+grant check.
 
 ### v1.0 headless subset (implemented, Plan 147 Slices A-E)
 

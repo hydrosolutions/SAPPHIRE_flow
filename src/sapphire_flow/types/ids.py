@@ -6,6 +6,7 @@ from sapphire_flow.types.enums import AlertEligibility, ModelTier
 StationId = NewType("StationId", UUID)
 BasinId = NewType("BasinId", UUID)
 ForecastId = NewType("ForecastId", UUID)
+PublicationDecisionId = NewType("PublicationDecisionId", UUID)
 HindcastForecastId = NewType("HindcastForecastId", UUID)
 ArtifactId = NewType("ArtifactId", UUID)
 AlertId = NewType("AlertId", UUID)

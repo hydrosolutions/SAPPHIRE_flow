@@ -387,8 +387,11 @@ class TestForecastEvidenceStore:
             "delete": f"DELETE FROM {table.name}",
             "truncate": f"TRUNCATE {table.name} CASCADE",
         }[action]
+        expected_error = (
+            "append-only|permission denied" if action == "truncate" else "append-only"
+        )
         with (
-            pytest.raises(sa.exc.DBAPIError, match="append-only"),
+            pytest.raises(sa.exc.DBAPIError, match=expected_error),
             db_connection.begin_nested(),
         ):
             db_connection.execute(sa.text(f"SET ROLE {role}"))
@@ -603,15 +606,21 @@ class TestForecastPreservation:
             ).effective_status
             is PreservationStatus.COMPLETE
         )
-        for statement in (
-            sa.update(forecast_preservation_attestations).values(
-                restored_at=datetime(2026, 9, 26, tzinfo=UTC)
+        for statement, expected_error in (
+            (
+                sa.update(forecast_preservation_attestations).values(
+                    restored_at=datetime(2026, 9, 26, tzinfo=UTC)
+                ),
+                "append-only",
             ),
-            sa.delete(forecast_preservation_attestations),
-            sa.text("TRUNCATE forecast_preservation_attestations"),
+            (sa.delete(forecast_preservation_attestations), "append-only"),
+            (
+                sa.text("TRUNCATE forecast_preservation_attestations"),
+                "append-only|cannot truncate",
+            ),
         ):
             with (
-                pytest.raises(sa.exc.DBAPIError, match="append-only"),
+                pytest.raises(sa.exc.DBAPIError, match=expected_error),
                 db_connection.begin_nested(),
             ):
                 db_connection.execute(statement)

@@ -32,6 +32,7 @@ from sapphire_flow.services.forecast_retry import (
     describe_difference,
 )
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
+from sapphire_flow.store.forecast_values_integrity import forecast_values_integrity
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -65,9 +66,9 @@ log = structlog.get_logger(__name__)
 def _is_current() -> sa.ColumnElement[bool]:
     """Plan 328 T3 — exclude a forecast that has been replaced.
 
-    ⛔ NOT a status whitelist: a whitelist would silently drop any status added
-    later (Plan 341's `withdrawn`, for one) from every current read. The
-    predicate names only the not-current state, exactly as
+    ⛔ NOT a status whitelist: publication withdrawal is in Plan 341's separate
+    decision ledger, not in ForecastStatus. This predicate names only the
+    generation not-current state, exactly as
     `uq_forecasts_station_model_issued_param` does.
     """
     return forecasts.c.status != ForecastStatus.SUPERSEDED.value
@@ -189,8 +190,11 @@ class PgForecastStore:
                         f"{reason};{contributor_gap}" if reason else contributor_gap
                     )
             manifest = json.loads(evidence.manifest_json)
+            value_count, value_hash = forecast_values_integrity(txn, forecast.id)
             manifest.update(
                 forecast_id=str(forecast.id),
+                forecast_values_count=value_count,
+                forecast_values_sha256=value_hash,
                 station_id=str(forecast.station_id),
                 parameter=forecast.ensemble.parameter,
                 issued_at=forecast.issued_at.isoformat(),

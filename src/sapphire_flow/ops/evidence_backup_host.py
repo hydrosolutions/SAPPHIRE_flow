@@ -29,6 +29,10 @@ from sapphire_flow.ops.protected_evidence_backup import (
     verify_image_directory,
     verify_separate_target,
 )
+from sapphire_flow.ops.publication_backup_health import (
+    read_health_database_url,
+    write_health_projection,
+)
 from sapphire_flow.services.forecast_preservation import assess_effective_preservation
 from sapphire_flow.types.forecast_evidence import (
     EvidenceStatus,
@@ -535,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--forecast-id", type=UUID)
     parser.add_argument("--backup-id", type=UUID)
     parser.add_argument("--compose-file", type=Path, default=Path("docker-compose.yml"))
+    parser.add_argument("--health-database-url-file", type=Path)
+    parser.add_argument("--retention-ready", action="store_true")
     parser.add_argument(
         "--rehearsal-script", type=Path, default=Path("scripts/restore-rehearsal.sh")
     )
@@ -555,6 +561,19 @@ def main(argv: list[str] | None = None) -> int:
             "backup_id": str(result.backup_id),
             "restored_at": result.restored_at.isoformat(),
         }
+        if args.health_database_url_file is not None:
+            health = latest_backup_health(
+                args.target,
+                database_volume=args.database_volume,
+                now=datetime.now(UTC),
+                max_age_hours=config.protected_backup_max_age_hours,
+            )
+            write_health_projection(
+                database_url=read_health_database_url(args.health_database_url_file),
+                health=health,
+                checked_at=datetime.now(UTC),
+                retention_ready=args.retention_ready,
+            )
     elif args.action == "health":
         health = latest_backup_health(
             args.target,
@@ -563,6 +582,13 @@ def main(argv: list[str] | None = None) -> int:
             max_age_hours=config.protected_backup_max_age_hours,
         )
         sys_result = {"status": health.status.value, "reason": health.reason}
+        if args.health_database_url_file is not None:
+            write_health_projection(
+                database_url=read_health_database_url(args.health_database_url_file),
+                health=health,
+                checked_at=now,
+                retention_ready=args.retention_ready,
+            )
         if health.status is not BackupProofStatus.VERIFIED:
             sys.stdout.write(json.dumps(sys_result) + "\n")
             return 1
