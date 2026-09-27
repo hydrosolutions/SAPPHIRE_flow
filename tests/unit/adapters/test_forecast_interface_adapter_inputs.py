@@ -611,8 +611,14 @@ def test_adapter_retrain_delivers_the_donor_and_a_non_default_config() -> None:
     assert call["base_artifact"] is donor
     assert call["config"] == config
     assert call["rng"] is rng
-    # …and the data was CONVERTED to FI inputs, not handed over raw.
-    assert isinstance(call["inputs"], fi_boundary.ModelInputs)
+    # …and the data was CONVERTED to FI inputs, not handed over raw. ⚠️ Asserted on
+    # CONTENT, not just the type: `isinstance(..., ModelInputs)` alone would hold for
+    # an empty conversion, and a reviewer was right that it read stronger than it was.
+    converted = call["inputs"]
+    assert isinstance(converted, fi_boundary.ModelInputs)
+    assert set(converted.stations) == {fi_boundary._STATION_SCOPE_KEY}  # noqa: SLF001
+    [dynamic] = converted.stations[fi_boundary._STATION_SCOPE_KEY].dynamic.values()  # noqa: SLF001
+    assert dynamic.data, "the converted inputs carry no dynamic data at all"
 
 
 def test_adapter_retrain_refuses_a_wrapped_model_that_cannot_retrain() -> None:
@@ -637,8 +643,10 @@ def test_adapter_retrain_refuses_a_wrapped_model_that_cannot_retrain() -> None:
         "serialize_artifact",
         "train",
     ):
-        assert hasattr(fake, member), f"fake is missing {member}, so the refusal "
-        "below could fire for that instead"
+        assert hasattr(fake, member), (
+            f"fake is missing {member}, so the refusal below could fire for that "
+            "instead of for the missing retrain"
+        )
 
     with pytest.raises(ConfigurationError, match="RetrainableModel"):
         adapter.retrain(

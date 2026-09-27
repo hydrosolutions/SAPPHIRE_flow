@@ -720,12 +720,20 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   dies.** ⭐ *The full sequence the task demands was followed in order, and each step MEASURED:*
   | step | measured |
   |---|---|
-  | gut BOTH `retrain` bodies, run § 6's selection | **883 passed, 1 skipped, 0 failed** — the mutation survived, so the coverage was genuinely absent |
+  | gut BOTH `retrain` bodies | **883 passed, 1 skipped, 0 failed** — the mutation survived, so the coverage was genuinely absent |
   | add the boundary tests | — |
   | gut the ADAPTER's `retrain` | 2 named tests fail |
   | gut the SHIM's `retrain` | 1 named test fails |
   | break the adapter's OWN `supports_warm_start` | the rewritten refusal test fails |
   | restore, re-run | **886 passed, 1 skipped** — 883 + exactly the 3 tests added |
+
+  🔑 **The selection for every number above is FOUR paths**, not § 6's three:
+  `uv run pytest tests/unit/services/test_training.py tests/unit/flows/test_train_models.py
+  tests/unit/adapters/ tests/unit/models/`. ⛔ *First labelled "§ 6's selection", which is FALSE:
+  § 6 names three paths and collects **727** at this commit, against **886** for the four.
+  Measured both. The widening is required — the shim tests live in `tests/unit/models/`, so § 6's
+  selection could not have shown the shim mutation either way — but the label has to name the command
+  that produced the number* ([[feedback_bind_published_numbers_on_values]]).
   - ⚖️ **§ 7 closed by the last row.** `_WrapperDefiningRetrainUnconditionally` RE-IMPLEMENTED
     `supports_warm_start` in its own body, so it asserted that the STAND-IN's copy of the rule worked
     and would have passed with the adapter's property deleted. Replaced with the REAL
