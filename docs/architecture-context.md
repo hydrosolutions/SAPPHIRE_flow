@@ -2405,7 +2405,10 @@ Unique `(observation_id, rating_curve_id)` — one archive row per producing-cur
 
 ## Authentication schemas
 
-v0 defers auth — tables are **not created** until auth is implemented (see `docs/v0-scope.md` §B). Add via Alembic migration when needed. See `docs/standards/security.md` for authentication flows, authorization matrix, and bootstrap process.
+v0 deferred human auth. Plan 341 T1 creates a minimal local `users` table,
+`user_external_identities` and `human_station_grants` for externally authenticated CHWRR
+hydrologists. The password/TOTP/session columns and routes below remain v1.x design intent;
+see `docs/standards/security.md` § CHWRR named-human foundation for the implemented boundary.
 
 ### `users` table
 

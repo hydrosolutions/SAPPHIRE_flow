@@ -6,6 +6,39 @@
 
 v0 defers auth — single-user, no access control. Everything below applies from v1.
 
+### CHWRR named-human foundation (Plan 341 T1)
+
+Plan 341 T1 adds the `users`, `user_external_identities` and
+`human_station_grants` tables without enabling forecast publication. These
+are the first columns of the planned local `users` model; password/TOTP
+sessions and user-management HTTP routes remain deferred. One local user UUID
+belongs to one tenant and may be linked to one or more exact `(issuer, sub)`
+OIDC identities. A signed access token must pass the configured HTTPS JWKS,
+issuer, API audience, RS256 or ES256 algorithm, required `iat`/`nbf`/`exp`,
+30-minute maximum lifetime, 60-second maximum clock skew and configured MFA
+`amr` or `acr` assurance value. An unlisted or disabled local user is denied.
+Service access tokens remain GET-only and cannot act as named humans.
+
+Station permissions are local `review` and `publish` grants. Publish requires
+an existing review grant; revoking review also removes publish. The database
+binds each grant to a user and station in the same tenant. The API loads grants
+for every request, so disabling a user or revoking a grant takes effect on the
+next request. Operator-only CLI actions run inside the API container through
+`python -m sapphire_flow.cli.hydrologists --operator <handle> ...` and commit
+their user/grant change with a system-actor audit row; the handle is recorded
+in audit detail, not presented as a verified human UUID. T2/T3 will record
+verified hydrologist UUIDs for publication decisions.
+
+If all `SAPPHIRE_HUMAN_OIDC_*` values are absent, human authentication is off;
+a partial configuration fails API startup. Required values are `ISSUER`,
+`AUDIENCE`, `JWKS_URL`, `ALGORITHM`, and at least one of `MFA_AMR` or `MFA_ACR`
+(comma-separated accepted claim values). The actual CHWRR provider, its MFA
+assurance policy and signing-key rollover must be verified before activation.
+`SAPPHIRE_HUMAN_DASHBOARD_ORIGIN` is an exact origin: only that origin gets
+GET/POST CORS permission under `/api/v1/review/forecasts`, for the named-human
+dashboard contract; other configured consumer origins retain GET only.
+No human review or publish route is mounted by T1.
+
 ### v1.0 headless subset (implemented, Plan 147 Slices A-E)
 
 Plan 147 (v1.0-headless, per `docs/plans/106-v1-critical-path-roadmap.md` D6) implements a
@@ -224,7 +257,7 @@ On first login, the org admin must change the temporary password.
 
 This command requires shell access to the production VM — equivalent to reading `/run/secrets/` directly. It is not a backdoor; it is a structured bootstrap that demands the same privilege level as direct database access.
 
-**v1.0 headless implementation (Plan 147 Slice C):** there is no `users` table yet (§ v1.0 headless
+**v1.0 headless implementation (Plan 147 Slice C):** at that stage there was no `users` table (§ v1.0 headless
 subset above) — the ACTUAL bootstrap command mints an **unscoped admin ACCESS TOKEN**, not a
 user+password+TOTP record:
 

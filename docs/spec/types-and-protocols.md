@@ -335,6 +335,8 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
+    HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
+    HUMAN_GRANT_CHANGED = "human_grant_changed"      # additive (Plan 341 T1)
 
 class StationOwnership(Enum):
     OWN = "own"
@@ -1338,10 +1340,12 @@ v0 defers auth. `AuditEntry` (below) is now **implemented** (Plan 147 Slice B, `
 is the append-only `audit_log` row type. `AccessToken` (below) is ALSO now **implemented** (Plan 147
 Slice C, `types/auth.py` + `types/enums.py::AccessTokenRole`) — but with a shape that **supersedes**
 the v1.x-design-intent sketch that used to live here (`consumer_name`/`AccessTokenScope`/`created_by`/
-`revoked_at`): v1.0 is headless (no `users` table yet), R1 LOCKED the hash to HMAC-SHA-256+pepper (not
+`revoked_at`): v1.0 was headless (no `users` table at that stage), R1 LOCKED the hash to HMAC-SHA-256+pepper (not
 bcrypt), and R2 LOCKED the scope carrier to a normalized `access_token_stations` join (not a JSONB
-`AccessTokenScope`, and station-axis only — parameter/geographic scope are v1.x). `User` remains
-design intent only (v1.x) — do not import it.
+`AccessTokenScope`, and station-axis only — parameter/geographic scope are v1.x). Plan 341 T1 now
+implements a minimal local `users` row, external OIDC identity links and station grants in
+`types/human_auth.py` / `store/human_identity_store.py`. The full session-oriented `User` type below
+remains design intent only; use the implemented `HumanUser` / `HumanPrincipal` types for T1.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -1354,8 +1358,28 @@ class User:
     created_at: UtcDatetime
 ```
 
-**Status** (`User` above): v1.x — deferred per Plan 042. Not implemented yet. Design intent only; do
-not import it.
+**Status** (`User` above): full password/session model remains deferred per Plan 042. Its table is
+partially realized by Plan 341 T1 with `id`, `tenant_id`, nullable `username`, `display_name`,
+`role`, `is_active` and timestamps. No password, TOTP or refresh-token columns exist yet.
+
+```python
+class HumanPermission(Enum):
+    REVIEW = "review"
+    PUBLISH = "publish"
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HumanPrincipal:
+    user_id: UserId
+    tenant_id: TenantId
+    grants: frozenset[StationGrant]
+
+    def allows(self, station_id: StationId, permission: HumanPermission) -> bool: ...
+```
+
+`HumanTokenVerifier` (`api/human_auth.py`) validates a configured OIDC access token, then
+`PgHumanIdentityStore.resolve_principal(issuer, subject)` loads the active local user and current
+grants. A publish permission requires review on the same station. Every human review/write route
+must use this dependency, not the GET-only `require_principal` service-token dependency.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)

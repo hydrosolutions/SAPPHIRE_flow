@@ -502,7 +502,10 @@ Three distinct destinations:
 | Audit log **(v1)** | `audit_log` DB table (INSERT-only) | Permanent | Security and compliance | "Who did what?" |
 | Pipeline health | `pipeline_health` DB table | 30 days | Flow 4 watchdog, `/api/v1/health/detail` | "Is the system healthy?" |
 
-In v0, only **application logs** and **pipeline health** are active. The audit log destination is not implemented until v1.
+The append-only `audit_log` is active (Plan 147 Slice B). Plan 341 T1 records
+operator creation, disable, identity-link and station-grant changes there with
+the operator handle in detail. It never logs OIDC access-token bytes. Verified
+human publication decisions and their user UUIDs are added by Plan 341 T2.
 
 Plan 100 forecast-feed resilience events that affect operator trust (for example fallback-only/suppressed forecast-alert conditions, dark station forecasts, and stale NWP grids) must have a queryable `pipeline_health` record in addition to any structlog event. These are operational health facts, not `AlertSource.PIPELINE` rows.
 

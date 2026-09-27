@@ -379,6 +379,8 @@ class AuditEventType(Enum):
     PASSWORD_CHANGED = "password_changed"
     USER_CREATED = "user_created"
     USER_DEACTIVATED = "user_deactivated"
+    HUMAN_IDENTITY_LINKED = "human_identity_linked"
+    HUMAN_GRANT_CHANGED = "human_grant_changed"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
     API_KEY_SCOPE_CHANGED = "api_key_scope_changed"
