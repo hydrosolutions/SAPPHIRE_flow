@@ -505,6 +505,18 @@ class ForecastInterfaceAdapter:
         return getattr(self._model, "config_hash", None)
 
     @property
+    def config_path(self) -> str | None:
+        """Plan 405 T2 — the companion to `config_hash` above, and for the same
+        reason: this class has no `__getattr__` passthrough, so without an
+        explicit property every wrapped model would report `None` and
+        warm-start provenance would keep recording a NULL config path forever.
+
+        ⛔ Not part of the FI protocol — a SAP3-side convention, like
+        `config_hash`. A model that declares no path simply yields `None`, and
+        the resolver then records NULL WITH A REASON rather than guessing."""
+        return getattr(self._model, "config_path", None)
+
+    @property
     def wrapped_model_class(self) -> str:
         model_type = type(self._model)
         return f"{model_type.__module__}.{model_type.__qualname__}"

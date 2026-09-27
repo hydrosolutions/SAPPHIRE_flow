@@ -621,6 +621,26 @@ def test_config_hash_is_none_when_the_wrapped_fi_model_does_not_declare_one() ->
     assert adapter.config_hash is None
 
 
+def test_config_path_is_forwarded_from_the_wrapped_fi_model() -> None:
+    """Plan 405 T2: warm-start provenance records the donor's config PATH, read
+    with `getattr(model, "config_path", None)` off whatever `discover_models()`
+    hands it — always this adapter for a real FI model. Without forwarding, every
+    warm-start row would keep recording a NULL path, which is the § 1 defect."""
+    fake_model = FakeFIForecastModel(_multi_product_requirement())
+    fake_model.config_path = "models/aquacast/configs/cmal_small.yaml"  # type: ignore[attr-defined]
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake_model)
+
+    assert adapter.config_path == "models/aquacast/configs/cmal_small.yaml"
+
+
+def test_config_path_is_none_when_the_wrapped_fi_model_does_not_declare_one() -> None:
+    """⛔ `None`, never a guess — the resolver then records NULL WITH A REASON."""
+    fake_model = FakeFIForecastModel(_multi_product_requirement())
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake_model)
+
+    assert adapter.config_path is None
+
+
 def test_adapter_init_raises_when_fi_version_check_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
