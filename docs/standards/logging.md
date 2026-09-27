@@ -245,6 +245,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 |---|---|---|
 | `forecast_evidence.capture_failed` | WARNING | Plan 340 T1: snapshot serialization failed; the forecast remains available but stores `evidence_incomplete` with the exception class. `error` records the failure detail; never log the observation or artifact payload. |
 | `evidence_backup.protected` | INFO | Plan 340 T2: a restored protected bundle and its append-only attestation were committed; record only `backup_id`, never payloads or credentials. |
+| `forecast_publication.overdue_health_write_failed` | ERROR | Plan 341 T2: a backup-pending publication exceeded its proof window and the separate operations-health insert failed. Never log forecast evidence or credentials. |
 | `model.onboarding_started` | INFO | Flow entry; bind `model_id` at this point |
 | `model.onboarding_unit_started` | INFO | Per-unit; with `station_id` (station-scoped) or `group_id` (group-scoped) |
 | `model.onboarding_unit_completed` | INFO | Per-unit timing summary |
@@ -272,6 +273,11 @@ representative forecast was attested, not that every captured forecast has a
 fresh protected proof. `forecast_evidence.capture_failed` is a
 forecast-specific diagnosis signal: inspect the immutable evidence reason,
 rather than logging input arrays or treating the forecast as reproducible.
+Plan 341 T2 also writes a CRITICAL `pipeline_health` record with
+`check_type=publication_proof_overdue`, backlog count and oldest pending time
+when an overdue proof blocks a new publication. The database event and
+append-only publication feed carry decision IDs and actor UUIDs, not input
+snapshots or model bytes. T2b extends the host proof for every pending ID.
 
 ### Canonical forecast cycle events (Flow 1)
 

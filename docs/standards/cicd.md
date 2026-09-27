@@ -1174,6 +1174,22 @@ and `conventions.md` § Service users for the human-readable table.
 
 Three DB password secrets exist, one per credential tier:
 
+**Plan 341 T2 publication health role:** `sapphire_publication_health` is
+bootstrapped `NOLOGIN` with only `protected_backup_health` write and
+per-forecast proof read/insert rights. Existing deployments need no new
+secret. At DHM activation, the operator sets a dedicated LOGIN/password and
+stores its full `postgresql+psycopg://` URL in an owner-only host file outside
+Compose. The host `evidence_backup_host backup|health` command accepts
+`--health-database-url-file` and `--retention-ready`; it verifies the
+protected target and writes the derived health row. The API and workers never
+receive that URL, and a missing health row blocks publish. Bootstrap
+reconverges grants on each deploy without resetting an activated login.
+The Mac mini has no separate protected target, so keep the health role
+unactivated there. Plan 341 T2b adds proof for every pending published ID;
+do not enable CHWRR publication after T2 alone. Migration 0063 is additive;
+the prior image can read existing forecast tables during rollback, but the
+publication switch must remain off if rolling back to a prior image.
+
 | Secret | Where | Purpose |
 |---|---|---|
 | `db_password` | Docker secret, `./secrets/db_password`, mounted into `postgres`, `prefect-server`, and `init` ONLY | The owner/migration superuser password (`${DB_USER:-sapphire}`). `init` uses it to run `alembic upgrade head` and the role-bootstrap SQL; `prefect-server` uses it against the separate `prefect` database (unchanged by this slice — `sapphire_prefect` residual, see `security.md` § Least-privilege DB roles). |

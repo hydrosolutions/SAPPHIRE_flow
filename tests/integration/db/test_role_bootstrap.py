@@ -270,6 +270,179 @@ class TestBootstrapCreatesBothRolesNonSuperuser:
             assert row.rolcreaterole is False
 
 
+class TestPublicationRoleBoundary:
+    def test_rebootstrap_revokes_stale_host_column_grant(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        with bootstrapped.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "GRANT UPDATE(status) ON forecasts TO sapphire_publication_health"
+                )
+            )
+        result = bootstrapped.run_bootstrap(
+            "api-pw-initial", "worker-pw-initial", "backup-pw-initial"
+        )
+        assert result.returncode == 0, result.stderr
+        with bootstrapped.owner_engine.connect() as conn:
+            assert (
+                conn.scalar(
+                    sa.text(
+                        "SELECT has_column_privilege('sapphire_publication_health', "
+                        "'forecasts', 'status', 'UPDATE')"
+                    )
+                )
+                is False
+            )
+
+    def test_api_role_can_publish_without_forecast_update_grant(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from sapphire_flow.store.forecast_publication_store import (
+            PgForecastPublicationStore,
+        )
+        from tests.integration.store.test_forecast_publication_store import (
+            _publish,
+            _seed,
+            _transaction,
+        )
+
+        with bootstrapped.owner_engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                _, principal, forecast_id, _ = _seed(conn)
+                conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+                store = PgForecastPublicationStore(
+                    conn, transaction_factory=lambda: _transaction(conn)
+                )
+                decision = _publish(store, principal, forecast_id)
+                assert decision.forecast_id == forecast_id
+                conn.execute(sa.text("RESET ROLE"))
+            finally:
+                transaction.rollback()
+
+    def test_host_health_role_starts_disabled_and_writes_only_health_projection(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        with bootstrapped.owner_engine.connect() as conn:
+            assert (
+                conn.scalar(
+                    sa.text(
+                        "SELECT rolcanlogin FROM pg_roles "
+                        "WHERE rolname = 'sapphire_publication_health'"
+                    )
+                )
+                is False
+            )
+            for role, table, privilege, expected in (
+                (
+                    "sapphire_publication_health",
+                    "protected_backup_health",
+                    "INSERT",
+                    True,
+                ),
+                (
+                    "sapphire_publication_health",
+                    "protected_backup_health",
+                    "UPDATE",
+                    True,
+                ),
+                (
+                    "sapphire_publication_health",
+                    "forecast_publication_decisions",
+                    "INSERT",
+                    False,
+                ),
+                ("sapphire_api", "protected_backup_health", "INSERT", False),
+                ("sapphire_api", "protected_backup_forecast_proofs", "INSERT", False),
+                ("sapphire_api", "forecast_publication_decisions", "INSERT", True),
+                ("sapphire_worker", "protected_backup_health", "INSERT", False),
+                ("sapphire_worker", "forecast_publication_decisions", "INSERT", False),
+            ):
+                assert (
+                    conn.scalar(
+                        sa.text(
+                            "SELECT has_table_privilege(:role, :table, :privilege)"
+                        ),
+                        {"role": role, "table": table, "privilege": privilege},
+                    )
+                    is expected
+                )
+
+    def test_host_writer_projects_verified_backup(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.ops.protected_evidence_backup import (
+            BackupHealth,
+            ImageArchive,
+            ProtectedBackupManifest,
+        )
+        from sapphire_flow.ops.publication_backup_health import write_health_projection
+        from sapphire_flow.types.forecast_preservation import BackupProofStatus
+
+        now = datetime(2026, 9, 27, tzinfo=UTC)
+        digest = "sha256:" + "a" * 64
+        manifest = ProtectedBackupManifest(
+            backup_id=uuid4(),
+            created_at=now,
+            restored_at=now,
+            database_dump_sha256="a" * 64,
+            database_dump_bytes=1,
+            image_archives=[
+                ImageArchive(
+                    image_digest=digest, archive_sha256="a" * 64, byte_length=1
+                )
+            ],
+            sample_forecast_id=uuid4(),
+            capture_manifest_sha256="a" * 64,
+            snapshot_sha256="a" * 64,
+            forecast_values_sha256="a" * 64,
+            artifact_sha256=None,
+            runtime_image_digest=digest,
+        )
+        health = BackupHealth(
+            status=BackupProofStatus.VERIFIED,
+            manifest=manifest,
+            manifest_sha256="b" * 64,
+            reason=None,
+        )
+        with bootstrapped.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "ALTER ROLE sapphire_publication_health LOGIN "
+                    "PASSWORD 'host-health-test'"
+                )
+            )
+        try:
+            write_health_projection(
+                database_url=bootstrapped.role_url(
+                    "sapphire_publication_health", "host-health-test"
+                ),
+                health=health,
+                checked_at=now,
+                retention_ready=True,
+            )
+            with bootstrapped.owner_engine.connect() as conn:
+                assert (
+                    conn.scalar(
+                        sa.text(
+                            "SELECT backup_id FROM protected_backup_health WHERE id=1"
+                        )
+                    )
+                    == manifest.backup_id
+                )
+            assert bootstrapped.denied(
+                bootstrapped.role_url("sapphire_api", "api-pw-initial"),
+                "UPDATE protected_backup_health SET status='invalid' WHERE id=1",
+            )
+        finally:
+            with bootstrapped.owner_engine.begin() as conn:
+                conn.execute(sa.text("ALTER ROLE sapphire_publication_health NOLOGIN"))
+
+
 class TestAppRolesCannotDropOrCreate:
     def test_sapphire_api_cannot_create_table(
         self, bootstrapped: _RoleBootstrapHarness
