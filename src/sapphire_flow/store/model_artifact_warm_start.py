@@ -73,7 +73,12 @@ def check_config_provenance(path: str | None, reason: str | None) -> None:
             "unknown (Plan 399 § 13); an unexplained NULL is how provenance "
             "becomes unrecoverable"
         )
-    if path is not None and reason is not None:
+    if path is not None and reason is not None and reason == "":
+        raise ValueError(
+            "base_config_path and base_config_unknown_reason cannot both be set — "
+            "a known path is not unknown"
+        )
+    if path is not None and reason:
         raise ValueError(
             "base_config_path and base_config_unknown_reason cannot both be set — "
             "a known path is not unknown"
@@ -88,7 +93,12 @@ def check_params_provenance(path: str | None, reason: str | None) -> None:
             "unknown (Plan 399 § 5a); UNKNOWN and known-absent are "
             "different states"
         )
-    if path is not None and reason is not None:
+    if path is not None and reason is not None and reason == "":
+        raise ValueError(
+            "base_params_path and base_params_unknown_reason cannot both be set — "
+            "a known path is not unknown"
+        )
+    if path is not None and reason:
         raise ValueError(
             "base_params_path and base_params_unknown_reason cannot both be set — "
             "a known path is not unknown"

@@ -91,6 +91,21 @@ class TestWarmStartRecordInvariants:
                 base_params_path="runs/2026-09-26/params.json",
             )
 
+    def test_a_known_config_path_with_an_empty_reason_is_refused(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="base_config_path and base_config_unknown_reason cannot both be set",
+        ):
+            WarmStartRecord(
+                artifact_id=_CHILD,
+                base_artifact_id=_BASE,
+                run_config={},
+                base_config_path="models/aquacast/configs/cmal_small.yaml",
+                base_config_sha256="c" * 64,
+                base_config_unknown_reason="",
+                base_params_path="runs/2026-09-26/params.json",
+            )
+
     def test_a_known_params_path_with_an_unknown_reason_is_refused(self) -> None:
         with pytest.raises(
             ValueError,
@@ -104,4 +119,19 @@ class TestWarmStartRecordInvariants:
                 base_config_sha256="c" * 64,
                 base_params_path="runs/2026-09-26/params.json",
                 base_params_unknown_reason="should not coexist with a known path",
+            )
+
+    def test_a_known_params_path_with_an_empty_reason_is_refused(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="base_params_path and base_params_unknown_reason cannot both be set",
+        ):
+            WarmStartRecord(
+                artifact_id=_CHILD,
+                base_artifact_id=_BASE,
+                run_config={},
+                base_config_path="models/aquacast/configs/cmal_small.yaml",
+                base_config_sha256="c" * 64,
+                base_params_path="runs/2026-09-26/params.json",
+                base_params_unknown_reason="",
             )
