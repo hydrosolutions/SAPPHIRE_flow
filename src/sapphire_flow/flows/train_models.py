@@ -496,7 +496,7 @@ def train_models_flow(
     forcing_store: object = None,
     forcing_source: object = None,
     lineage_writer: object = None,
-    warm_start_writer: WarmStartWriter | None = None,
+    warm_start_writer: object = None,
     models: dict | None = None,
     clock: object = None,
     rng: object = None,
@@ -804,8 +804,9 @@ def train_models_flow(
             tuple[str | None, str | None, str | None, str | None, str | None] | None
         ) = None
         if typed_base_artifact_id is not None and warm_start_writer is not None:
+            typed_warm_start_writer = cast(WarmStartWriter, warm_start_writer)
             donor_config = _resolve_donor_config_or_refuse(
-                warm_start_writer=warm_start_writer,
+                warm_start_writer=typed_warm_start_writer,
                 base_artifact_id=typed_base_artifact_id,
                 model=model_instance,
             )
@@ -870,8 +871,9 @@ def train_models_flow(
         # same pattern as basin lineage below. Only for a RETRAIN: a freshly
         # trained artifact has no donor and records nothing (T4).
         if donor_config is not None and warm_start_writer is not None:
+            typed_warm_start_writer = cast(WarmStartWriter, warm_start_writer)
             _record_warm_start_provenance(
-                warm_start_writer=warm_start_writer,
+                warm_start_writer=typed_warm_start_writer,
                 artifact_id=cast("ArtifactId", artifact_id),
                 base_artifact_id=cast("ArtifactId", typed_base_artifact_id),
                 donor_config=donor_config,

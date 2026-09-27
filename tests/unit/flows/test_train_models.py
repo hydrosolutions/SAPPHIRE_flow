@@ -1491,9 +1491,10 @@ class TestWarmStartRetrainThroughTheFlow:
             def resolve_donor_params(
                 self, base_artifact_id: object
             ) -> tuple[str | None, str | None]:
-                # Plan 405 T6 — the flow now resolves the PARAMS half before
-                # training too, so a stand-in writer owes this method.
-                return (None, "spy writer: donor params not resolved here")
+                return (
+                    None,
+                    "spy writer: donor params provenance for the recorded row",
+                )
 
             def record(self, record: object) -> None:
                 recorded.append(record)
@@ -1526,6 +1527,10 @@ class TestWarmStartRetrainThroughTheFlow:
         assert record.run_config == {  # type: ignore[attr-defined]
             "finetuning": {"strategy": "lora", "rank": 8}
         }
+        assert record.base_params_path is None  # type: ignore[attr-defined]
+        assert record.base_params_unknown_reason == (  # type: ignore[attr-defined]
+            "spy writer: donor params provenance for the recorded row"
+        )
 
     def test_ordinary_training_records_no_warm_start_provenance(self) -> None:
         """A freshly trained artifact has no donor, so nothing is recorded."""
