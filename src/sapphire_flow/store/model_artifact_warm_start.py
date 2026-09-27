@@ -508,9 +508,7 @@ def resolve_donor_params(
         None,
         "donor has neither a warm-start record nor a provenance row, so nothing "
         "recorded here says what it was trained with, and no params file path "
-        "exists. No origin is inferred: an artifact trained from scratch by SAP3, "
-        "one written directly through the artifact store, and one predating "
-        "provenance capture are indistinguishable from this evidence.",
+        "exists. No origin is inferred from that absence alone.",
     )
 
 

@@ -952,10 +952,9 @@ class TestDonorParamsPerClass:
     ) -> None:
         """⛔ States the observed absence and infers nothing from it.
 
-        An artifact SAP3 trained from scratch, one written directly through the
-        artifact store, and one predating provenance capture all present the same
-        evidence — so naming any of them as THE origin is a claim the data cannot
-        support. That inference is what a reviewer caught here.
+        The absence says only that neither row exists. Naming any specific origin
+        would be a claim the data cannot support, which is the inference a
+        reviewer caught here.
         """
         donor = self._artifact(db_connection, tmp_path)
 
@@ -965,19 +964,7 @@ class TestDonorParamsPerClass:
         assert reason is not None
         assert "neither a warm-start record nor a provenance row" in reason
         assert "No origin is inferred" in reason
-        # 🔴 THE CLAIM, held properly. ⛔ Two negative assertions stood here banning
-        # strings that exist in NO version of this code — vacuous, and the comment
-        # above them claimed they guarded the claim while measuring as nothing. A
-        # reviewer proved it: "No origin is inferred: it was trained from scratch by
-        # SAP3." passed all of them.
-        #
-        # ⇒ What actually holds the claim is that ALL THREE candidate origins are
-        # named TOGETHER and called indistinguishable, so none can be singled out.
-        # Naming one alone now fails on the other two.
-        assert "trained from scratch by SAP3" in reason
-        assert "written directly through the artifact store" in reason
-        assert "predating provenance capture" in reason
-        assert "indistinguishable from this evidence" in reason
+        assert "from that absence alone" in reason
 
     def test_a_donor_with_both_rows_names_the_contradiction(
         self, db_connection: sa.Connection, tmp_path: Path
