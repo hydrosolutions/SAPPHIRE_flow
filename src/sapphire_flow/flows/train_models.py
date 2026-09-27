@@ -4,7 +4,7 @@ import hashlib
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 from uuid import uuid4
 
 import structlog
@@ -59,6 +59,22 @@ if TYPE_CHECKING:
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
+
+
+class WarmStartWriter(Protocol):
+    def record(self, record: object) -> None: ...
+
+    def resolve_donor_params(
+        self, base_artifact_id: ArtifactId
+    ) -> tuple[str | None, str | None]: ...
+
+    def resolve_donor_config(
+        self,
+        base_artifact_id: ArtifactId,
+        *,
+        installed_config_path: str | None = None,
+        installed_config_sha256: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]: ...
 
 
 def _unit_shard(unit: TrainingUnit) -> str:
@@ -169,7 +185,7 @@ def _assemble_data_task(
 
 def _resolve_donor_config_or_refuse(
     *,
-    warm_start_writer: object,
+    warm_start_writer: WarmStartWriter,
     base_artifact_id: ArtifactId,
     model: object,
 ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
@@ -220,22 +236,20 @@ def _resolve_donor_config_or_refuse(
 
     installed_hash = getattr(model, "config_hash", None)
     installed_path = getattr(model, "config_path", None)
-    path, sha256, reason = warm_start_writer.resolve_donor_config(  # type: ignore[attr-defined]
+    path, sha256, reason = warm_start_writer.resolve_donor_config(
         base_artifact_id,
         installed_config_path=installed_path,
         installed_config_sha256=installed_hash,
     )
     check_config_provenance(path, reason)
-    params_path, params_reason = warm_start_writer.resolve_donor_params(  # type: ignore[attr-defined]
-        base_artifact_id
-    )
+    params_path, params_reason = warm_start_writer.resolve_donor_params(base_artifact_id)
     check_params_provenance(params_path, params_reason)
     return path, sha256, reason, params_path, params_reason
 
 
 def _record_warm_start_provenance(
     *,
-    warm_start_writer: object,
+    warm_start_writer: WarmStartWriter,
     artifact_id: ArtifactId,
     base_artifact_id: ArtifactId,
     donor_config: tuple[str | None, str | None, str | None, str | None, str | None],
@@ -256,7 +270,7 @@ def _record_warm_start_provenance(
     from sapphire_flow.store.model_artifact_warm_start import WarmStartRecord
 
     path, sha256, reason, params_path, params_reason = donor_config
-    warm_start_writer.record(  # type: ignore[attr-defined]
+    warm_start_writer.record(
         WarmStartRecord(
             artifact_id=artifact_id,
             base_artifact_id=base_artifact_id,
@@ -482,7 +496,7 @@ def train_models_flow(
     forcing_store: object = None,
     forcing_source: object = None,
     lineage_writer: object = None,
-    warm_start_writer: object = None,
+    warm_start_writer: WarmStartWriter | None = None,
     models: dict | None = None,
     clock: object = None,
     rng: object = None,
