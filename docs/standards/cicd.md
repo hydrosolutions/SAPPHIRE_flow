@@ -1154,6 +1154,16 @@ non-Swiss station remains in `sapphire`. The Nepal dashboard's token binds to th
 
 ## DB role bootstrap (Plan 147 Slice D, REALIZED)
 
+Plan 341 T1 extends this bootstrap after migration 0061: `sapphire_api` may
+read the three human identity/grant tables and use their limited insert,
+update and delete grants for the operator CLI. `sapphire_worker`'s broad
+SELECT is explicitly revoked on all three tables after the broad grant on
+every bootstrap run, including a repeated run after an in-place upgrade.
+The API Compose environment carries the optional OIDC issuer, audience, JWKS
+URL, algorithm, MFA claim values and exact dashboard origin. All remain empty
+on the Mac mini; an empty set leaves human auth disabled. This does not enable
+CHWRR publication, which remains subject to Plans 340/341/342 activation gates.
+
 The app no longer runs as the Postgres bootstrap superuser. Two least-privilege roles —
 `sapphire_api` and `sapphire_worker` — are created (or updated) by `docker/bootstrap-roles.sh`, run
 by the `init` service as the DB owner, immediately after `alembic upgrade head`
