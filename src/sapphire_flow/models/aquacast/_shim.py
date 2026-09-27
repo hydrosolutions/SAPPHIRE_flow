@@ -600,6 +600,26 @@ class AquacastShim:
         ).hexdigest()
 
     @property
+    def config_path(self) -> str:
+        """Plan 405 T2 — WHERE the vendored config lives, beside its hash.
+
+        ⭐ Evaluates the SAME `_config_path(type(self).CONFIG_FILENAME)`
+        EXPRESSION that `config_hash` digests — two call sites, one expression —
+        so the path and the hash cannot come to name different files. The
+        identical "there is no second source to keep in step" argument
+        `config_hash` makes above.
+
+        Warm-start provenance records this as an IMPORTED donor's config path
+        only once the hash has been checked against the donor's recorded one
+        (`store/model_artifact_warm_start.py::resolve_donor_config`). ⛔ An
+        unverified path would name a configuration the donor may never have
+        used, which is the trap Plan 399 § 13 exists to avoid. ⚠️ *Scoped to
+        "imported": a verified retrain's path is carried forward from its own
+        row, not taken from here.*
+        """
+        return str(_config_path(type(self).CONFIG_FILENAME))
+
+    @property
     def input_requirement(self) -> InputRequirement:
         return _canonical_requirement(self._inner.input_requirement)
 
