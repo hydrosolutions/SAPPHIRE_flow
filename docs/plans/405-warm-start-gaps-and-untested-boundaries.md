@@ -313,6 +313,21 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   carried none of D1's empty-config clause — verbatim the criticism this plan levels at its own draft
   in the D1(a) cell ("flagged in a footnote and then T6's In-list carried none of it"), moved from a
   footnote to a table cell.*
+- ⚖️ **TWO EXCEPTIONAL OBSERVED STATES, added 2026-09-27 — NOT a correction of D1's three.**
+  D1's three classes stand as written. But the resolver observes two further states, and T6's own rule
+  ("the recorded reason must be TRUE of the donor in hand") forbids giving either a sentence belonging
+  to one of the three:
+  | state | recorded |
+  |---|---|
+  | **NEITHER** a provenance row nor a warm-start record | the observed absence, and ⛔ **NO origin inferred** — an artifact trained from scratch, one written directly through the artifact store, and one predating provenance capture are indistinguishable from this evidence |
+  | **BOTH** rows present | the contradiction NAMED, asserting neither origin. ⚠️ *No constraint in `0048` or `0060` excludes the state* |
+  ⚖️ *Recorded as a scope EXTENSION, not a defect fold: an independent review ruled that rewriting
+  "THREE donor classes" as five would silently recast D1's deliberate split — the empty-config class is
+  the one D1 exists to settle — and it was right. The three-way classification is the owner's; these
+  two are states the code must survive.*
+  ⛔ *The neither-row sentence first INFERRED an origin from an absence, and the both-rows state was
+  resolved by checking provenance first and never reading the conflicting evidence. Both were review
+  findings; the second would not have been found otherwise.*
 - ⚖️ **Per D1(b): the path stays NULL with a per-class reason**, plus the note that the donor's own
   configuration is reachable via `base_artifact_id`. ⛔ *No migration and no schema change in this task —
   (a) was not taken.*
@@ -323,6 +338,12 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   task removes. ⇒ If any of the three classes can produce `""` or `None`, the late crash T1 fixed
   comes back through the params column — `check_params_provenance` exists and is callable, so the fix
   is one line either way. ⛔ *Decide which, do not leave it implicit.*
+  ⚖️ **DECIDED 2026-09-27 — the pre-training check was EXTENDED** (`check_params_provenance`, beside the
+  config one, before training and before the store). ⭐ *Chosen over "guarantee every branch returns
+  text": that guarantee rests on reading five branches and being right about all of them, and this
+  plan's history is a record of exactly that kind of claim being wrong. The check is one line.*
+  🔬 **Proven load-bearing**: removing it makes the flow TRAIN the model before failing — the test
+  fails on "the model was trained despite the refusal", not merely on "something raised".
 - 🔴 **The reason must NOT claim the configuration "is retrievable" when the donor's row holds `{}`.**
   *It IS retrievable, and it is empty — a different sentence. ⚠️ That is the known-empty vs
   unknown-effective distinction D1 settles; getting it wrong here relabels a known fact as unknown,
@@ -336,6 +357,12 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
 - All **THREE** donor classes produce DIFFERENT, accurate records — imported, retrain-with-content,
   and **retrain-with-`{}`** — asserted individually. ⛔ *Two cases would leave the third, which is the
   one D1 exists to settle, unasserted.*
+- **Plus the two exceptional states**, each asserted individually: neither-row (no origin claimed) and
+  both-rows (contradiction named, neither side taken).
+- 🔴 **Cases whose correct text CONTAINS the words they decline to assert must be asserted on the
+  CLAIM, not on substrings.** ⛔ *The empty-config sentence legitimately reads "not an unknown one", and
+  the neither-row sentence names the origins it refuses to infer — a substring ban fails on correct
+  text. I flagged this trap for one case and then wrote it into the other; a reviewer caught it.*
 - 🔴 **The recorded reason is true of the donor in hand**, checked by CONTENT, not merely non-constant.
   ⛔ *`base_params_path=None` already differs from the old constant, so "not the constant string" passes
   trivially.*
@@ -815,3 +842,35 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   ⚠️ *Also noted, no action: `args[2]` in the flow-half recorder is dead for today's all-keyword flow
   sites (defensive, and shared with the service half); `_STATION` is used a few lines above its
   definition (works, readability only); the three new files pass under random ordering.*
+- **2026-09-27 — T6 IMPLEMENTED. The plan's own enumeration was incomplete, and a review stopped me
+  overstepping while fixing it.**
+  - 🔴 **399's ONE constant params reason is gone**, replaced by a sentence per observed state. § 4 had
+    measured that constant already false: it called a retrain's configuration unknown while that
+    configuration sat in our own row.
+  - ⚖️ **D1's three classes are UNTOUCHED; two exceptional states were ADDED.** ⛔ *I proposed rewriting
+    "THREE donor classes" as five. An independent review of the PLAN ruled against it: the three-way
+    split is the owner's deliberate decision — the empty-config class is the one D1 exists to settle —
+    and rewriting it would recast that call as my correction.* 🔑 **I cited the repo's own rule (an
+    argued scope boundary is a decision, not a defect to fold) in the very request where I would have
+    broken it.**
+  - 🔬 **Five states, each asserted individually, each mutation MEASURED not predicted:**
+    | mutation | measured |
+    |---|---|
+    | collapse both-rows into the provenance branch | 1 failed / 26 passed — the both-rows test |
+    | restore the inferred origin in the neither-row case | 1 failed / 26 passed — the neither-row test |
+    | make the empty-config case claim UNKNOWN | 1 failed / 26 passed — the known-empty test |
+    | **remove the pre-training params check** | the flow TRAINS the model, then fails: *"the model was trained despite the refusal"* |
+    ⛔ *The last row is the only one that proves the check's PLACEMENT. My draft plan would have
+    asserted that returning `None` raises — which proves nothing, because the record invariant rejects
+    it later anyway, after a successful train. Same error as T1's ordering: "an error was raised" does
+    not say WHERE. The reviewer caught it in the plan, before I wrote the useless test.*
+  - 🔴 **Two review findings on the production half, both the same error**: the neither-row reason
+    INFERRED an origin from an absence, and the both-rows state was resolved by reading provenance
+    first and never looking at the contradicting row. *The first is the inference-from-absence mistake
+    this plan has now corrected three times — and I made it in the same commit where I flagged it as my
+    pattern.*
+  - 🧹 Widening what the flow asks of its warm-start writer broke two unit stand-ins that lacked
+    `resolve_donor_params`. ⭐ *The healthy direction of that failure: the fake was missing something
+    production requires, rather than permitting something production forbids.*
+  - ✅ **No existing test asserted the old constant** (measured: `grep` finds it nowhere in `tests/`),
+    so removing it broke no assertion — which is itself the gap this task closes.

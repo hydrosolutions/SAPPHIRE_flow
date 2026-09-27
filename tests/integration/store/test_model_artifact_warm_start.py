@@ -31,6 +31,7 @@ from sapphire_flow.store.model_artifact_warm_start import (
     fetch_warm_start,
     record_warm_start,
     resolve_donor_config,
+    resolve_donor_params,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
@@ -833,3 +834,157 @@ class TestComparingTheInstalledTemplate:
             "trained from scratch nor written directly"
         )
         assert "pre-dates" not in reason
+
+
+class TestDonorParamsPerClass:
+    """Plan 405 T6 / D1(b) — the params reason must be TRUE of the donor in hand.
+
+    399 used ONE constant sentence for every donor, and § 4 measured it already
+    false: it called a retrain's configuration unknown while that configuration sat
+    in our own row. D1's THREE classes are covered here, plus the TWO exceptional
+    observed states D1 did not classify and T6's truth rule forces handling.
+
+    ⛔ Cases 4 and 5 assert on the CLAIM, never on substrings: their correct text
+    legitimately contains the very words they decline to assert ("not an unknown
+    one"; the list of origins it refuses to infer). A substring assertion would fail
+    on correct text — which is the trap I flagged for one case and then wrote into
+    the other.
+    """
+
+    _PATH = "models/aquacast/configs/cmal_small.yaml"
+
+    def _artifact(self, conn: sa.Connection, tmp_path: Path) -> ArtifactId:
+        mid = _seed_model(conn)
+        sid = _seed_station(conn)
+        return _seed_artifact(conn, tmp_path, mid, sid)
+
+    def _with_provenance(self, conn: sa.Connection, aid: ArtifactId) -> None:
+        record_artifact_provenance(
+            conn,
+            ModelArtifactProvenance(
+                artifact_id=aid,
+                source_repository="hydrosolutions/aquacast",
+                source_commit="cafe",
+                config_hash="e" * 64,
+                imported_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+                imported_by="onboarding",
+                notes=None,
+            ),
+        )
+
+    def _with_warm_start(
+        self, conn: sa.Connection, tmp_path: Path, aid: ArtifactId, run_config: dict
+    ) -> None:
+        mid = _seed_model(conn)
+        sid = _seed_station(conn)
+        ancestor = _seed_artifact(conn, tmp_path, mid, sid)
+        record_warm_start(
+            conn,
+            WarmStartRecord(
+                artifact_id=aid,
+                base_artifact_id=ancestor,
+                run_config=run_config,
+                base_config_path=self._PATH,
+                base_config_sha256="f" * 64,
+                base_params_path=None,
+                base_params_unknown_reason="ancestor was imported",
+            ),
+        )
+
+    # ── D1's three classes ────────────────────────────────────────────────────
+    def test_an_imported_donor_is_named_as_imported(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        donor = self._artifact(db_connection, tmp_path)
+        self._with_provenance(db_connection, donor)
+
+        path, reason = resolve_donor_params(db_connection, donor)
+
+        assert path is None, "D1(b): the params path stays NULL for every class"
+        assert reason is not None
+        assert "IMPORTED" in reason
+        assert "trained outside this system" in reason
+
+    def test_a_retrain_with_a_config_says_the_settings_are_reachable(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        donor = self._artifact(db_connection, tmp_path)
+        self._with_warm_start(
+            db_connection, tmp_path, donor, {"finetuning": {"strategy": "last_layer"}}
+        )
+
+        path, reason = resolve_donor_params(db_connection, donor)
+
+        assert path is None
+        assert reason is not None
+        assert "WAS GIVEN a configuration" in reason
+        assert "base_artifact_id" in reason, (
+            "D1(b) requires recording that the donor's own configuration is "
+            "reachable through the link we keep to it"
+        )
+        assert "IMPORTED" not in reason
+
+    def test_a_retrain_with_an_empty_config_says_known_empty_not_unknown(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The class D1 exists to settle. `{}` is KNOWN-empty, not unknown."""
+        donor = self._artifact(db_connection, tmp_path)
+        self._with_warm_start(db_connection, tmp_path, donor, {})
+
+        path, reason = resolve_donor_params(db_connection, donor)
+
+        assert path is None
+        assert reason is not None
+        assert "KNOWN-EMPTY" in reason
+        # ⛔ THE CLAIM, not the word. The correct sentence contains "unknown" inside
+        # a negation ("not an unknown one"), so a substring ban would fail on it.
+        assert "params are UNKNOWN" not in reason
+        assert "Genuinely unknown" not in reason
+        assert "NO configuration overrides" in reason
+
+    # ── the two exceptional states D1 did not classify ────────────────────────
+    def test_a_donor_with_neither_row_asserts_no_origin(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """⛔ States the observed absence and infers nothing from it.
+
+        An artifact SAP3 trained from scratch, one written directly through the
+        artifact store, and one predating provenance capture all present the same
+        evidence — so naming any of them as THE origin is a claim the data cannot
+        support. That inference is what a reviewer caught here.
+        """
+        donor = self._artifact(db_connection, tmp_path)
+
+        path, reason = resolve_donor_params(db_connection, donor)
+
+        assert path is None
+        assert reason is not None
+        assert "neither a warm-start record nor a provenance row" in reason
+        assert "No origin is inferred" in reason
+        # ⛔ THE CLAIM again: the sentence names the candidate origins in order to
+        # refuse them, so ban the ASSERTED form, not the words.
+        assert "so it was trained from scratch" not in reason
+        assert "or predates provenance capture. Whatever" not in reason
+
+    def test_a_donor_with_both_rows_names_the_contradiction(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 The state neither D1 nor T6 enumerated, and which no schema forbids.
+
+        ⛔ The first implementation checked provenance FIRST and so called such a
+        donor externally trained without ever looking at the conflicting warm-start
+        evidence. Found only by review.
+        """
+        donor = self._artifact(db_connection, tmp_path)
+        self._with_provenance(db_connection, donor)
+        self._with_warm_start(db_connection, tmp_path, donor, {"strategy": "lora"})
+
+        path, reason = resolve_donor_params(db_connection, donor)
+
+        assert path is None
+        assert reason is not None
+        assert "BOTH" in reason
+        assert "contradictory origins" in reason
+        # ⛔ It must not pick a side — neither the import claim nor the retrain one.
+        assert "trained outside this system" not in reason
+        assert "WAS GIVEN a configuration" not in reason

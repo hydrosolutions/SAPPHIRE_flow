@@ -1488,6 +1488,13 @@ class TestWarmStartRetrainThroughTheFlow:
             ) -> tuple[str | None, str | None, str | None]:
                 return ("configs/cmal_small.yaml", "a" * 64, None)
 
+            def resolve_donor_params(
+                self, base_artifact_id: object
+            ) -> tuple[str | None, str | None]:
+                # Plan 405 T6 — the flow now resolves the PARAMS half before
+                # training too, so a stand-in writer owes this method.
+                return (None, "spy writer: donor params not resolved here")
+
             def record(self, record: object) -> None:
                 recorded.append(record)
 
@@ -1527,6 +1534,9 @@ class TestWarmStartRetrainThroughTheFlow:
         class _SpyWriter:
             def resolve_donor_config(self, *a: object, **k: object) -> tuple:
                 raise AssertionError("must not resolve a donor for fresh training")
+
+            def resolve_donor_params(self, *a: object, **k: object) -> tuple:
+                raise AssertionError("must not resolve donor params for fresh training")
 
             def record(self, record: object) -> None:
                 recorded.append(record)

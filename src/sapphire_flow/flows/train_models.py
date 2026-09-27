@@ -172,8 +172,8 @@ def _resolve_donor_config_or_refuse(
     warm_start_writer: object,
     base_artifact_id: ArtifactId,
     model: object,
-) -> tuple[str | None, str | None, str | None]:
-    """Plan 405 T1 — resolve the donor's config BEFORE training, and refuse here.
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Plan 405 T1 — resolve the donor's provenance BEFORE training, and refuse here.
 
     ⭐ **Why before.** The resolved triple has to satisfy `WarmStartRecord`'s
     invariant, and that was previously discovered by CONSTRUCTING the record —
@@ -199,8 +199,21 @@ def _resolve_donor_config_or_refuse(
     ⚠️ A model that declares neither yields `None` for both, and the resolver
     then records NULL WITH A REASON rather than guessing — a missing hash is not
     a mismatch.
+
+    ⭐ **Plan 405 T6 — the PARAMS half is resolved and checked here too.** Until T6
+    the params reason was a hardcoded non-empty constant built at the record site,
+    which made checking it pointless; now it varies per donor class, so an empty
+    one would bring back the exact late crash T1 removed — after a successful
+    train and a stored artifact — through the params column instead.
+    ⛔ *Chosen over "guarantee every class returns text": that guarantee rests on
+    reading three branches and being right about all of them, and this plan's
+    whole history is me being wrong about claims of that shape. The check costs
+    one line and removes the question.*
     """
-    from sapphire_flow.store.model_artifact_warm_start import check_config_provenance
+    from sapphire_flow.store.model_artifact_warm_start import (
+        check_config_provenance,
+        check_params_provenance,
+    )
 
     installed_hash = getattr(model, "config_hash", None)
     installed_path = getattr(model, "config_path", None)
@@ -210,7 +223,11 @@ def _resolve_donor_config_or_refuse(
         installed_config_sha256=installed_hash,
     )
     check_config_provenance(path, reason)
-    return path, sha256, reason
+    params_path, params_reason = warm_start_writer.resolve_donor_params(  # type: ignore[attr-defined]
+        base_artifact_id
+    )
+    check_params_provenance(params_path, params_reason)
+    return path, sha256, reason, params_path, params_reason
 
 
 def _record_warm_start_provenance(
@@ -218,19 +235,24 @@ def _record_warm_start_provenance(
     warm_start_writer: object,
     artifact_id: ArtifactId,
     base_artifact_id: ArtifactId,
-    donor_config: tuple[str | None, str | None, str | None],
+    donor_config: tuple[str | None, str | None, str | None, str | None, str | None],
     run_config: dict,
 ) -> None:
     """Plan 399 T3/T4 — record what this artifact was fine-tuned FROM.
 
-    ⛔ Plan 405 T1 — `donor_config` is the triple ALREADY resolved and validated
-    before training. It is threaded in, never re-resolved: re-resolving here
+    ⛔ Plan 405 T1 — `donor_config` carries values ALREADY resolved and validated
+    before training. They are threaded in, never re-resolved: re-resolving here
     would move the raise rather than remove it, and the record would be built
     from a second read that is not the one the refusal decision was made on.
+
+    ⭐ Plan 405 T6 — the params reason is now PER DONOR CLASS and arrives the same
+    way. ⛔ *It was one hardcoded sentence for every donor, and § 4 measured that
+    sentence already false: it called a retrain's configuration unknown while that
+    configuration sat in our own row.*
     """
     from sapphire_flow.store.model_artifact_warm_start import WarmStartRecord
 
-    path, sha256, reason = donor_config
+    path, sha256, reason, params_path, params_reason = donor_config
     warm_start_writer.record(  # type: ignore[attr-defined]
         WarmStartRecord(
             artifact_id=artifact_id,
@@ -239,12 +261,8 @@ def _record_warm_start_provenance(
             base_config_path=path,
             base_config_sha256=sha256,
             base_config_unknown_reason=reason,
-            base_params_path=None,
-            base_params_unknown_reason=(
-                "SAP3 has never recorded training params for any artifact "
-                "before Plan 399 T2; this donor's params are UNKNOWN, not "
-                "known-absent"
-            ),
+            base_params_path=params_path,
+            base_params_unknown_reason=params_reason,
         )
     )
 
@@ -765,7 +783,9 @@ def train_models_flow(
         # provenance is an integrity failure like the SHA-256 mismatch further
         # down, not a per-unit data shortfall, so it must abort the run loudly
         # rather than be recorded as one failed unit and continued past.
-        donor_config: tuple[str | None, str | None, str | None] | None = None
+        donor_config: (
+            tuple[str | None, str | None, str | None, str | None, str | None] | None
+        ) = None
         if typed_base_artifact_id is not None and warm_start_writer is not None:
             donor_config = _resolve_donor_config_or_refuse(
                 warm_start_writer=warm_start_writer,

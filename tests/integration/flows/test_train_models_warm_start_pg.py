@@ -445,3 +445,88 @@ class TestRetrainOfARetrainThroughTheFlow:
         assert "produced by SAP3" in reason
         assert "carries no config path" in reason
         assert "recorded in its provenance" not in reason
+
+
+class TestDonorParamsThroughTheFlow:
+    """Plan 405 T6 — the params reason reaches the record, and an empty one is
+    refused BEFORE anything is trained or stored."""
+
+    _INSTALLED = "models/aquacast/configs/cmal_small.yaml"
+
+    def test_a_retrain_records_a_params_reason_true_of_its_donor(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """The donor here is IMPORTED, so the recorded reason must say so — not the
+        one constant sentence 399 used for every donor."""
+        model_id = _seed_model(db_connection)
+        station_id = _seed_station(db_connection)
+        gen0 = _seed_imported_donor(db_connection, tmp_path, model_id, station_id)
+
+        results = TestRetrainOfARetrainThroughTheFlow._run(
+            db_connection,
+            tmp_path,
+            model_id=model_id,
+            station_id=station_id,
+            base_artifact_id=gen0,
+            writer=PgWarmStartWriter(db_connection),
+        )
+
+        assert results[0].error is None, results[0].error
+        got = fetch_warm_start(db_connection, results[0].artifact_id)
+        assert got is not None
+        assert got.base_params_path is None, "D1(b): the path stays NULL"
+        reason = got.base_params_unknown_reason
+        assert reason is not None
+        assert "IMPORTED" in reason
+        # ⛔ 399's constant, which was false for a retrain donor, is gone.
+        assert "has never recorded training params" not in reason
+
+    def test_an_empty_params_reason_is_refused_before_training_or_storage(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """🔴 THE test that proves the pre-training params check is load-bearing.
+
+        ⛔ Returning `None` and merely asserting "something raised" would NOT prove
+        it: `WarmStartRecord`'s invariant would reject an unexplained NULL later
+        anyway, AFTER a successful train and a stored artifact. *Same distinction as
+        T1's ordering — "an error was raised" does not prove WHERE.* So this asserts
+        the model was never invoked and no artifact row appeared. Remove the
+        `check_params_provenance` call from the flow and this fails.
+        """
+        model_id = _seed_model(db_connection)
+        station_id = _seed_station(db_connection)
+        gen0 = _seed_imported_donor(db_connection, tmp_path, model_id, station_id)
+
+        class _EmptyParamsWriter(PgWarmStartWriter):
+            def resolve_donor_params(
+                self, base_artifact_id: ArtifactId
+            ) -> tuple[str | None, str | None]:
+                # A NULL path with NO reason — what the invariant rejects.
+                return (None, None)
+
+        model = _Unit._retrainable_model()
+        type(model).seen_base = None
+        before = db_connection.execute(
+            sa.select(sa.func.count()).select_from(model_artifacts)
+        ).scalar_one()
+
+        with pytest.raises(
+            ValueError, match="base_params_path is NULL without a reason"
+        ):
+            TestRetrainOfARetrainThroughTheFlow._run(
+                db_connection,
+                tmp_path,
+                model_id=model_id,
+                station_id=station_id,
+                base_artifact_id=gen0,
+                writer=_EmptyParamsWriter(db_connection),
+                model=model,
+            )
+
+        assert type(model).seen_base is None, (
+            "the model was trained despite the refusal"
+        )
+        after = db_connection.execute(
+            sa.select(sa.func.count()).select_from(model_artifacts)
+        ).scalar_one()
+        assert after == before, "an artifact was stored despite the refusal"

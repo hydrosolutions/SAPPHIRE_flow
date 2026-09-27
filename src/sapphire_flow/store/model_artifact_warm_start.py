@@ -419,6 +419,91 @@ def resolve_donor_config(
     )
 
 
+def resolve_donor_params(
+    conn: sa.Connection, base_artifact_id: ArtifactId
+) -> tuple[str | None, str | None]:
+    """Plan 405 T6 / D1(b) — the donor's TRAINING-PARAMS identity.
+
+    Returns `(path, reason)`. ⚖️ **The path is ALWAYS NULL, by decision.** The
+    column asks WHERE a params file is; no donor class has one. What varies — and
+    what 399 got wrong by using ONE constant for all of them — is the REASON, and
+    T6's rule is that it must be true of the donor in hand.
+
+    ⚖️ **D1's THREE donor classes, plus TWO exceptional observed states.** D1
+    classifies imported, retrain-with-content and retrain-with-`{}`, and that
+    three-way split stands — the empty-config class is the one D1 exists to settle.
+    ⛔ *Not "five classes correcting three": an independent review of the plan ruled
+    that rewriting it that way would recast a deliberate decision as my correction,
+    and it was right.* The two states below are ones the code must SURVIVE, not a
+    reclassification, and each needs its own sentence because T6's rule forbids a
+    reason false of the donor at hand:
+
+    * **NEITHER row** — nothing here records what it was trained with. ⛔ *No
+      origin is inferred. An earlier version of this branch said "trained from
+      scratch by SAP3 or predates provenance capture", which INFERS an origin from
+      an absence: an artifact written directly through the artifact store has
+      neither row too. Caught in review — and it is the same inference-from-absence
+      error this plan has already corrected twice.*
+    * **BOTH rows** — contradictory origins. ⛔ *The first version checked
+      provenance FIRST and so called such a donor externally trained without ever
+      looking at the conflicting warm-start evidence. Nothing in the schema
+      excludes the state (no constraint in `0048` or `0060`), so it is named rather
+      than assumed away — the same treatment `resolve_donor_config` gives its own
+      contradictory record.*
+    """
+    from sapphire_flow.store.model_artifact_provenance import fetch_artifact_provenance
+
+    provenance = fetch_artifact_provenance(conn, base_artifact_id)
+    inherited = fetch_warm_start(conn, base_artifact_id)
+
+    if provenance is not None and inherited is not None:
+        return (
+            None,
+            "donor carries BOTH an import provenance row AND a warm-start record "
+            "— contradictory origins, and nothing here can say which describes "
+            "its training params. Recorded as UNKNOWN rather than asserting "
+            "either one.",
+        )
+    if provenance is not None:
+        return (
+            None,
+            "donor was IMPORTED into SAP3: it was trained outside this system, "
+            "its training params were never recorded here, and no params file "
+            "path exists to record. Genuinely unknown.",
+        )
+
+    if inherited is not None:
+        if inherited.run_config:
+            return (
+                None,
+                "donor is a SAP3 retrain that WAS GIVEN a configuration. No "
+                "params FILE exists — the settings are stored as values, not as "
+                "a file — and they are reachable through this row's "
+                "base_artifact_id.",
+            )
+        # ⚖️ D1: `{}` is KNOWN-EMPTY, not unknown. The flow normalises "nothing
+        # supplied" to it deliberately, so the row accurately records what the
+        # model was given. ⛔ Calling this unknown relabels a known fact, which is
+        # the defect § 4 already has.
+        return (
+            None,
+            "donor is a SAP3 retrain that was given NO configuration overrides: "
+            "a KNOWN-EMPTY run config, not an unknown one. The empty mapping "
+            "itself is recorded on the donor's row, reachable through this row's "
+            "base_artifact_id. ⛔ Not 'unknown' — the caller supplied nothing and "
+            "that is a fact, not a gap.",
+        )
+
+    return (
+        None,
+        "donor has neither a warm-start record nor a provenance row, so nothing "
+        "recorded here says what it was trained with, and no params file path "
+        "exists. No origin is inferred: an artifact trained from scratch by SAP3, "
+        "one written directly through the artifact store, and one predating "
+        "provenance capture are indistinguishable from this evidence.",
+    )
+
+
 class PgWarmStartWriter:
     """Thin flow-facing adapter around `record_warm_start` — the
     ``warm_start_writer`` object `train_models_flow` calls right after storing a
@@ -434,6 +519,11 @@ class PgWarmStartWriter:
 
     def record(self, record: WarmStartRecord) -> None:
         record_warm_start(self._conn, record)
+
+    def resolve_donor_params(
+        self, base_artifact_id: ArtifactId
+    ) -> tuple[str | None, str | None]:
+        return resolve_donor_params(self._conn, base_artifact_id)
 
     def resolve_donor_config(
         self,
