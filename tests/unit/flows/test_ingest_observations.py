@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -9,6 +10,7 @@ import pytest
 
 import sapphire_flow.flows.ingest_observations as ingest_module
 from sapphire_flow.adapters.replay.station import ReplayStationAdapter
+from sapphire_flow.config.qc_rules import load_qc_rules
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
@@ -22,8 +24,6 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
 from sapphire_flow.types.observation import RawObservation
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sapphire_flow.types.ids import StationId
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeStationDataSource
@@ -154,6 +154,44 @@ def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore
 
 
 class TestIngestObservationsFlow:
+    def test_no_station_thresholds_preserve_live_config_qc_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        station = make_station_config(code="2135")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        observations = [
+            _make_obs(station.id, "discharge", 100001.0, offset_minutes=minute)
+            for minute in (10, 0)
+        ]
+        rules = load_qc_rules(Path(__file__).resolve().parents[3] / "config.toml")
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(observations),
+            qc_rules=rules,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_failed == 2
+        assert [
+            (obs.qc_status, [(flag.rule_id, flag.detail) for flag in obs.qc_flags])
+            for obs in sorted(obs_store.observations(), key=lambda obs: obs.timestamp)
+        ] == [
+            (
+                QcStatus.QC_FAILED,
+                [("range_check", "value 100001.0 outside [0.0, 100000.0]")],
+            ),
+            (
+                QcStatus.QC_FAILED,
+                [("range_check", "value 100001.0 outside [0.0, 100000.0]")],
+            ),
+        ]
+
     def test_station_network_selects_network_specific_rule(self) -> None:
         bafu = make_station_config(
             code="2135", name="Aare Bern", network="bafu", rng=random.Random(1)
