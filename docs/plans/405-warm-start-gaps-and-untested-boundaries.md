@@ -716,3 +716,30 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   rounds. ⇒ **T3 onward: state behaviour, cite the test, and do not write reachability arguments into
   comments.** *A claim about what CANNOT happen requires enumerating every route, and on this evidence
   I should assume I have not.*
+- **2026-09-27 — T3 IMPLEMENTED. Both retrain boundaries now have tests that die when the boundary
+  dies.** ⭐ *The full sequence the task demands was followed in order, and each step MEASURED:*
+  | step | measured |
+  |---|---|
+  | gut BOTH `retrain` bodies, run § 6's selection | **883 passed, 1 skipped, 0 failed** — the mutation survived, so the coverage was genuinely absent |
+  | add the boundary tests | — |
+  | gut the ADAPTER's `retrain` | 2 named tests fail |
+  | gut the SHIM's `retrain` | 1 named test fails |
+  | break the adapter's OWN `supports_warm_start` | the rewritten refusal test fails |
+  | restore, re-run | **886 passed, 1 skipped** — 883 + exactly the 3 tests added |
+  - ⚖️ **§ 7 closed by the last row.** `_WrapperDefiningRetrainUnconditionally` RE-IMPLEMENTED
+    `supports_warm_start` in its own body, so it asserted that the STAND-IN's copy of the rule worked
+    and would have passed with the adapter's property deleted. Replaced with the REAL
+    `ForecastInterfaceAdapter`; the mutation above proves the difference.
+  - 🔴 **A NEAR-MISS I caught by running my own test**: the first refusal test passed **for the wrong
+    reason.** FI's `RetrainableModel` protocol requires `artifact_scope`, `deserialize_artifact`,
+    `input_requirement`, `predict`, `retrain`, `serialize_artifact`, `train` — and the recording fake
+    has no `predict`, so the `isinstance` refusal fired on THAT, not on the missing `retrain`. ⛔ *A
+    pass indistinguishable from a correct one.* Fixed by adding a fake that satisfies every member
+    except the one under test, with the membership asserted in the test so the refusal can fire for
+    one cause only. *[[feedback_red_first_must_prove_the_fault]] — the reason matters, not the colour.*
+  - ⚖️ **The shim is exercised WITHOUT the `aquacast` extra**, per the task's decided option:
+    `_shim_with_fake_inner` builds the REAL `AquacastShim` around a fake inner, bypassing `__init__`,
+    the only code that imports `aquacast`. `_FakeInner` gained the `retrain` surface the shim binds to.
+  - ⛔ **Delegation alone was not accepted as sufficient**: the shim test asserts the DELIVERED inputs
+    are unit-translated (1.0 m³/s over 864 km² must arrive as 0.1 mm/day), so a pass-through
+    delegation fails it — the same bar `train`'s existing test set.

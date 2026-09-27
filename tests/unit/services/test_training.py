@@ -7,6 +7,10 @@ from uuid import UUID
 import polars as pl
 import pytest
 
+from sapphire_flow.adapters.forecast_interface import (
+    FIArtifactScope,
+    ForecastInterfaceAdapter,
+)
 from sapphire_flow.exceptions import TenantIsolationError, WarmStartUnsupportedError
 from sapphire_flow.services.training import (
     promote_artifact,
@@ -24,6 +28,12 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from sapphire_flow.types.write_principal import WritePrincipal
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import FakeAuditLogStore, FakeModelArtifactStore
+from tests.unit.adapters.test_forecast_interface_adapter_inputs import (
+    PredictingRecordingFIForecastModel,
+)
+from tests.unit.adapters.test_forecast_interface_adapter_inputs import (
+    _requirement as _fi_requirement,
+)
 
 _START = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
 _END = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
@@ -493,29 +503,27 @@ class TestWarmStartRefusal:
         support must be read off the inner model via `supports_warm_start`.
         """
 
-        class _WrapperDefiningRetrainUnconditionally:
-            """Stands in for `ForecastInterfaceAdapter`: no `__getattr__`."""
-
-            def __init__(self, inner: object) -> None:
-                self._model = inner
-
-            @property
-            def supports_warm_start(self) -> bool:
-                return callable(getattr(self._model, "retrain", None))
-
-            def retrain(self, *a: object, **k: object) -> object:  # always defined
-                return self._model.retrain(*a, **k)  # type: ignore[attr-defined]
-
-            def serialize_artifact(self, artifact: object) -> bytes:
-                return b""
-
-        wrapped = _WrapperDefiningRetrainUnconditionally(FakeStationForecastModel())
-        # The trap: the wrapper DOES have a callable `retrain`.
-        assert callable(wrapped.retrain)
-        # …and is nonetheless refused, because the INNER model has none.
+        # 🔴 Plan 405 T3 — the REAL adapter, not a stand-in. This test previously
+        # defined `_WrapperDefiningRetrainUnconditionally`, which RE-IMPLEMENTED
+        # `supports_warm_start` in its own body: it therefore asserted that the
+        # stand-in's copy of the rule worked, and would have passed with the
+        # adapter's own property deleted. § 7 of Plan 405 measured that; 399's
+        # changelog claimed all three stand-ins were replaced, and two were.
+        adapter = ForecastInterfaceAdapter(
+            PredictingRecordingFIForecastModel(
+                _fi_requirement(),
+                artifact_scope=FIArtifactScope.STATION,
+            )
+        )
+        # The trap, on the real class: the adapter DOES have a callable `retrain`,
+        # because it defines one unconditionally — so a structural `isinstance`
+        # check would report support for every FI model.
+        assert callable(adapter.retrain)
+        assert adapter.supports_warm_start is False
+        # …and it is nonetheless refused, because the INNER model has no `retrain`.
         with pytest.raises(WarmStartUnsupportedError):
             retrain_station_model(
-                model=wrapped,  # type: ignore[arg-type]
+                model=adapter,  # type: ignore[arg-type]
                 base_artifact=object(),
                 data=_make_training_data(),
                 params={},

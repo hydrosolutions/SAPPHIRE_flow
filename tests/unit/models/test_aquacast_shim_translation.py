@@ -201,17 +201,20 @@ class _FakeInner:
         input_requirement: fi.InputRequirement,
         predict_result: fi.ModelResult | None = None,
         train_result: object = None,
+        retrain_result: object = None,
         hindcast_result: fi.ModelResult | None = None,
     ) -> None:
         self.input_requirement = input_requirement
         self.artifact_scope = fi.ArtifactScope.GROUP
         self.predict_calls: list[dict[str, Any]] = []
         self.train_calls: list[dict[str, Any]] = []
+        self.retrain_calls: list[dict[str, Any]] = []
         self.hindcast_calls: list[dict[str, Any]] = []
         self.serialize_calls: list[object] = []
         self.deserialize_calls: list[bytes] = []
         self._predict_result = predict_result
         self._train_result = train_result
+        self._retrain_result = retrain_result
         self._hindcast_result = hindcast_result
 
     def predict(
@@ -235,6 +238,24 @@ class _FakeInner:
     def train(self, inputs: fi.ModelInputs, *, config: object, rng: object) -> object:
         self.train_calls.append({"inputs": inputs, "config": config, "rng": rng})
         return self._train_result
+
+    def retrain(
+        self,
+        base_artifact: object,
+        inputs: fi.ModelInputs,
+        *,
+        config: object,
+        rng: object,
+    ) -> object:
+        self.retrain_calls.append(
+            {
+                "base_artifact": base_artifact,
+                "inputs": inputs,
+                "config": config,
+                "rng": rng,
+            }
+        )
+        return self._retrain_result
 
     def serialize_artifact(self, artifact: object) -> bytes:
         self.serialize_calls.append(artifact)
@@ -440,6 +461,55 @@ class TestFISurfaceDelegation:
         assert len(shim._inner.predict_calls) == 1  # noqa: SLF001
         assert shim._inner.predict_calls[0]["issue_datetime"] is _ISSUE  # noqa: SLF001
         assert shim._inner.predict_calls[0]["rng"] is rng  # noqa: SLF001
+
+    def test_retrain_reaches_the_inner_model_with_the_base_artifact_and_config(
+        self,
+    ) -> None:
+        """Plan 405 T3 — the shim's `retrain`, which no test touched.
+
+        Measured before writing this: with the shim's `retrain` body replaced by
+        `raise AssertionError`, the whole selection
+        (`tests/unit/services/test_training.py tests/unit/flows/test_train_models.py
+        tests/unit/adapters/ tests/unit/models/`) still passed — 883 tests, 0
+        failures. The boundary was entirely unexercised.
+
+        ⚠️ Runs WITHOUT the `aquacast` extra: `_shim_with_fake_inner` builds the REAL
+        `AquacastShim` around a fake inner, bypassing the only code that imports
+        `aquacast` (`__init__`). ⛔ Asserting delegation alone would not be enough —
+        the DELIVERED inputs must be translated, so a pass-through fails too.
+        """
+        donor, produced = object(), object()
+        shim = _shim_with_fake_inner(retrain_result=produced)
+        rng = Random(0)
+        inputs = fi.ModelInputs(
+            stations={
+                "gauge-a": _canonical_station_inputs(
+                    area_km2=864.0, discharge_m3_s=1.0, precip_mm=5.0, temp_c=-2.0
+                )
+            }
+        )
+
+        result = shim.retrain(donor, inputs, config={"strategy": "last_layer"}, rng=rng)
+
+        assert len(shim._inner.retrain_calls) == 1  # noqa: SLF001
+        call = shim._inner.retrain_calls[0]  # noqa: SLF001
+        # 🔑 The DONOR reaches the inner model, and is the same object.
+        assert call["base_artifact"] is donor
+        # …and the caller's non-default config arrives byte-identical.
+        assert call["config"] == {"strategy": "last_layer"}
+        assert call["rng"] is rng
+        assert result is produced
+
+        # ⛔ Translated, not passed through — the same assertions `train` earns.
+        received = call["inputs"]
+        [dyn] = received.stations["gauge-a"].dynamic.values()
+        [spatial] = dyn.data.values()
+        past = spatial.past_known["aquacast"]
+        assert "mean_temperature" in past
+        assert "temperature" not in past
+        assert past["discharge"].unit is fi.Unit.MM_PER_DAY
+        # 1.0 m3/s over 864 km2 is exactly 0.1 mm/day; a pass-through gives 1.0.
+        assert past["discharge"].data["discharge"][0] == pytest.approx(0.1)
 
     def test_train_reaches_the_inner_model_and_delivers_translated_inputs(
         self,

@@ -66,6 +66,60 @@ class RecordingFIForecastModel:
         return raw
 
 
+class PredictingRecordingFIForecastModel(RecordingFIForecastModel):
+    """Everything FI's `RetrainableModel` protocol requires EXCEPT `retrain`.
+
+    🔴 Plan 405 T3 — this class exists because of a near-miss. The protocol's members
+    are `artifact_scope`, `deserialize_artifact`, `input_requirement`, `predict`,
+    `retrain`, `serialize_artifact`, `train` — and `RecordingFIForecastModel` has no
+    `predict`. A refusal test built on it would have raised `ConfigurationError` for
+    the WRONG REASON (a missing `predict`, not a missing `retrain`) and looked
+    identical to a passing one. ⇒ The refusal case must satisfy every member but the
+    one under test."""
+
+    def predict(
+        self,
+        artifact: object,
+        *,
+        inputs: fi_boundary.ModelInputs,
+        issue_datetime: object,
+        rng: random.Random,
+    ) -> object:
+        raise NotImplementedError("not exercised: these tests never predict")
+
+
+class RetrainRecordingFIForecastModel(PredictingRecordingFIForecastModel):
+    """The same surface WITH `retrain`, recording the call, so the adapter's
+    `retrain` is asserted on DELEGATION rather than on method presence."""
+
+    def __init__(
+        self,
+        input_requirement: fi_boundary.InputRequirement,
+        artifact_scope: fi_boundary.FIArtifactScope = fi_boundary.FIArtifactScope.GROUP,
+    ) -> None:
+        super().__init__(input_requirement, artifact_scope)
+        self.retrain_calls: list[dict[str, object]] = []
+        self.retrained_artifact = object()
+
+    def retrain(
+        self,
+        base_artifact: object,
+        inputs: fi_boundary.ModelInputs,
+        *,
+        config: object,
+        rng: random.Random,
+    ) -> object:
+        self.retrain_calls.append(
+            {
+                "base_artifact": base_artifact,
+                "inputs": inputs,
+                "config": config,
+                "rng": rng,
+            }
+        )
+        return self.retrained_artifact
+
+
 def _target(unit: fi_boundary.Unit) -> fi_boundary.TargetSpec:
     return fi_boundary.TargetSpec(
         unit=unit,
@@ -523,3 +577,73 @@ def test_past_only_second_branch_rejected_at_every_delivery_entry_point() -> Non
     # The fake implements no `predict`, so reaching the model at all would
     # raise AttributeError rather than the guard's error — the assertions
     # above therefore also prove the model was never invoked.
+
+
+def test_adapter_retrain_delivers_the_donor_and_a_non_default_config() -> None:
+    """Plan 405 T3 — `ForecastInterfaceAdapter.retrain`, which no test touched.
+
+    Measured before writing this: with the adapter's `retrain` body replaced by
+    `raise AssertionError`, the selection
+    (`tests/unit/services/test_training.py tests/unit/flows/test_train_models.py
+    tests/unit/adapters/ tests/unit/models/`) still passed — 883 tests, 0 failures.
+    """
+    fake = RetrainRecordingFIForecastModel(
+        _requirement(),
+        artifact_scope=fi_boundary.FIArtifactScope.STATION,
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake)
+    rng = random.Random(7)
+    donor = object()
+    config = {"finetuning": {"strategy": "last_layer", "lr": 0.0001}}
+
+    produced = adapter.retrain(
+        donor,  # type: ignore[arg-type]
+        _station_training_data(static=None),
+        config,  # type: ignore[arg-type]
+        rng,
+    )
+
+    assert produced is fake.retrained_artifact
+    assert len(fake.retrain_calls) == 1
+    call = fake.retrain_calls[0]
+    # 🔑 The donor object itself, and the caller's config byte-identical — a
+    # hardcoded `{}` (which every onboarding site still passes) would fail here.
+    assert call["base_artifact"] is donor
+    assert call["config"] == config
+    assert call["rng"] is rng
+    # …and the data was CONVERTED to FI inputs, not handed over raw.
+    assert isinstance(call["inputs"], fi_boundary.ModelInputs)
+
+
+def test_adapter_retrain_refuses_a_wrapped_model_that_cannot_retrain() -> None:
+    """The library-level backstop: FI's own `RetrainableModel` contract.
+
+    ⛔ Not a fall-back to `train` — Plan 399 D2. The service layer refuses first;
+    this is what holds if a caller reaches the adapter directly.
+    """
+    fake = PredictingRecordingFIForecastModel(
+        _requirement(),
+        artifact_scope=fi_boundary.FIArtifactScope.STATION,
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake)
+    # 🔴 The refusal must be about `retrain` ALONE: this fake satisfies every other
+    # member of FI's protocol, so the isinstance check can fail for one reason only.
+    assert not hasattr(fake, "retrain")
+    for member in (
+        "artifact_scope",
+        "deserialize_artifact",
+        "input_requirement",
+        "predict",
+        "serialize_artifact",
+        "train",
+    ):
+        assert hasattr(fake, member), f"fake is missing {member}, so the refusal "
+        "below could fire for that instead"
+
+    with pytest.raises(ConfigurationError, match="RetrainableModel"):
+        adapter.retrain(
+            object(),  # type: ignore[arg-type]
+            _station_training_data(static=None),
+            {},  # type: ignore[arg-type]
+            random.Random(0),
+        )
