@@ -23,7 +23,7 @@ review and its re-checks (on `de9adc1a`: Codex clean, high-risk reviewer no find
 reviewer's two minors folded, and focused Codex checks of that fold clean on `899e3078`). High risk
 (a new table, live writes from the forecast cycle and an external-facing route, `docs/workflow.md`
 § High-risk work): the implementation PR needs one more owner-commissioned review before it is
-opened. Depends on Plan 401 (merged, #320) and Plan 402 (READY, not yet built). All decisions
+opened. Depends on Plan 401 (merged, #320) and Plan 402 (not yet built). All decisions
 (D1-D6) are closed.
 
 ## Why this exists
