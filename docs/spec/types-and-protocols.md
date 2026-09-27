@@ -330,6 +330,8 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
+    HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
+    HUMAN_GRANT_CHANGED = "human_grant_changed"      # additive (Plan 341 T1)
 
 class StationOwnership(Enum):
     OWN = "own"

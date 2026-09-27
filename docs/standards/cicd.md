@@ -1154,7 +1154,7 @@ non-Swiss station remains in `sapphire`. The Nepal dashboard's token binds to th
 
 ## DB role bootstrap (Plan 147 Slice D, REALIZED)
 
-Plan 341 T1 extends this bootstrap after migration 0061: `sapphire_api` may
+Plan 341 T1 extends this bootstrap after migration 0062: `sapphire_api` may
 read the three human identity/grant tables and use their limited insert,
 update and delete grants for the operator CLI. `sapphire_worker`'s broad
 SELECT is explicitly revoked on all three tables after the broad grant on

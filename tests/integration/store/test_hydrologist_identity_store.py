@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -15,6 +17,7 @@ from sapphire_flow.api.human_auth import (
     require_human_principal,
     require_human_station_permission,
 )
+from sapphire_flow.cli import hydrologists
 from sapphire_flow.cli.hydrologists import (
     change_hydrologist_grant,
     create_hydrologist,
@@ -284,6 +287,84 @@ class TestHumanIdentityStore:
 
 
 class TestOperatorAudit:
+    def test_cli_grant_revoke_and_identity_link_are_audited(
+        self, db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        user_id = _user(db_connection)
+        station_id = _station(db_connection)
+
+        class TestEngine:
+            @contextmanager
+            def begin(self) -> Iterator[sa.Connection]:
+                with db_connection.begin_nested():
+                    yield db_connection
+
+            def dispose(self) -> None:
+                pass
+
+        monkeypatch.setattr(hydrologists, "create_engine_from_env", TestEngine)
+
+        def run_cli(*arguments: str) -> None:
+            monkeypatch.setattr(
+                sys,
+                "argv",
+                ["hydrologists", "--operator", "test-operator", *arguments],
+            )
+            hydrologists.main()
+
+        run_cli("grant", str(user_id), str(station_id), "review")
+        run_cli("grant", str(user_id), str(station_id), "publish")
+        run_cli("revoke", str(user_id), str(station_id), "review")
+        run_cli(
+            "link-identity",
+            str(user_id),
+            "--issuer",
+            _ISSUER,
+            "--subject",
+            "second-subject",
+        )
+
+        assert (
+            db_connection.execute(
+                sa.select(human_station_grants.c.user_id).where(
+                    human_station_grants.c.user_id == user_id
+                )
+            ).all()
+            == []
+        )
+        assert (
+            db_connection.execute(
+                sa.select(user_external_identities.c.subject).where(
+                    user_external_identities.c.user_id == user_id,
+                    user_external_identities.c.subject == "second-subject",
+                )
+            ).scalar_one()
+            == "second-subject"
+        )
+        events = db_connection.execute(
+            sa.select(
+                audit_log.c.event_type, audit_log.c.actor_type, audit_log.c.detail
+            )
+            .where(
+                audit_log.c.target_type == "user", audit_log.c.target_id == str(user_id)
+            )
+            .order_by(audit_log.c.id)
+        ).all()
+        assert [row.event_type for row in events] == [
+            "human_grant_changed",
+            "human_grant_changed",
+            "human_grant_changed",
+            "human_identity_linked",
+        ]
+        assert [row.detail.get("action") for row in events] == [
+            "grant",
+            "grant",
+            "revoke",
+            None,
+        ]
+        assert all(row.actor_type == "system" for row in events)
+        assert all(row.detail["operator"] == "test-operator" for row in events)
+
     def test_create_grant_and_disable_are_audited(
         self, db_connection: sa.Connection
     ) -> None:

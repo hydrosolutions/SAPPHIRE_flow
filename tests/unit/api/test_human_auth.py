@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from jwt import PyJWKClient
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     import sqlalchemy as sa
+    from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
     from cryptography.hazmat.primitives.asymmetric.rsa import (
         RSAPrivateKey,
         RSAPublicKey,
@@ -40,11 +41,11 @@ _AUDIENCE = "sapphire-flow-api"
 
 @dataclass(frozen=True)
 class _Key:
-    key: RSAPublicKey
+    key: RSAPublicKey | EllipticCurvePublicKey
 
 
 class _KeyClient:
-    def __init__(self, public_key: RSAPublicKey) -> None:
+    def __init__(self, public_key: RSAPublicKey | EllipticCurvePublicKey) -> None:
         self.public_key = public_key
 
     def get_signing_key_from_jwt(self, token: str) -> _Key:
@@ -89,6 +90,44 @@ def _token(
 
 
 class TestHumanTokenVerifier:
+    def test_accepts_es256_token_with_acr_assurance(self) -> None:
+        private = ec.generate_private_key(ec.SECP256R1())
+        config = OidcConfig(
+            issuer=_ISSUER,
+            audience=_AUDIENCE,
+            jwks_url=f"{_ISSUER}.well-known/jwks.json",
+            algorithm="ES256",
+            mfa_amr_values=frozenset(),
+            mfa_acr_values=frozenset({"urn:mfa"}),
+        )
+        verifier = HumanTokenVerifier(
+            config, key_client=_KeyClient(private.public_key()), clock=lambda: _NOW
+        )
+        good = jwt.encode(
+            _claims(amr=[], acr="urn:mfa"),
+            private,
+            algorithm="ES256",
+            headers={"kid": "ec1"},
+        )
+        assert verifier.verify(good).subject == "hydrologist-17"
+        weak = jwt.encode(
+            _claims(amr=[], acr="urn:password"),
+            private,
+            algorithm="ES256",
+            headers={"kid": "ec1"},
+        )
+        with pytest.raises(HumanAuthError, match="MFA assurance"):
+            verifier.verify(weak)
+
+    def test_rejects_token_without_amr_or_acr(
+        self, token_setup: tuple[HumanTokenVerifier, RSAPrivateKey]
+    ) -> None:
+        verifier, private = token_setup
+        claims = _claims()
+        del claims["amr"]
+        with pytest.raises(HumanAuthError, match="MFA assurance"):
+            verifier.verify(_token(private, claims))
+
     def test_unknown_key_ids_do_not_refetch_jwks_each_time(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
