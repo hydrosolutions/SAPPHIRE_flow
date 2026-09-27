@@ -2217,12 +2217,23 @@ structural check is `True` for **every** FI model, including one whose inner mod
 cannot retrain, and the refusal never fires for the only case it exists for. Ask
 `services/training.py::supports_warm_start()`, which reads the INNER model through
 the adapter's `supports_warm_start` proxy (the same precedent as its `config_hash`
-proxy).
+and `config_path` proxies — Plan 405 T2 added the latter so the donor's config
+PATH can be recorded; without an explicit property it reads `None` for every FI
+model).
 
 **Provenance.** A retrained artifact records what it came from in
 `model_artifact_warm_start` (Plan 399, migration 0060) — the donor artifact, the
 donor's config path and hash, the donor's params path, and the config the run
-used. A SIDE TABLE: `model_artifacts` gains no column. The donor reference is
+used. ⭐ **Plan 405 T2**: where the donor's hash is COMPARABLE — an imported
+donor, or a retrain whose own record was verified when it was produced — a
+mismatch against the installed template raises `ConfigurationError` before
+training. ⚠️ **A path is never recorded on a MISMATCH — but "only on a match" is
+too strong**: a verified retrain's carried path comes forward even when the model
+declares no hash to compare, and for an IMPORTED donor with no declared hash the
+path is withheld with a reason. ⚠️ For a retrain whose own record carries a NULL
+path — or, unreachably, both a path and an "unknown" reason — the carried hash
+describes an ANCESTOR or is self-contradictory, so there is nothing valid to
+compare and the record stays NULL-with-a-reason. A SIDE TABLE: `model_artifacts` gains no column. The donor reference is
 `RESTRICT` — deleting a base artifact something was fine-tuned from is refused,
 because a cascade would destroy the only answer to "what was this fine-tuned
 from?". UNKNOWN and known-absent are distinct states and each NULL carries a
