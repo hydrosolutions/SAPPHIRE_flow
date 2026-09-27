@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import polars as pl
 import pytest
 
 import sapphire_flow.flows.ingest_observations as ingest_module
 from sapphire_flow.adapters.replay.station import ReplayStationAdapter
+from sapphire_flow.config.qc_rules import load_qc_rules
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
@@ -18,12 +21,18 @@ from sapphire_flow.flows.ingest_observations import (
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
-from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
+from sapphire_flow.types.enums import (
+    GaugingStatus,
+    ObservationSource,
+    PipelineCheckType,
+    QcStatus,
+    StationKind,
+)
+from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.observation import RawObservation
+from sapphire_flow.types.tenant import Tenant
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sapphire_flow.types.ids import StationId
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeStationDataSource
@@ -31,7 +40,9 @@ from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeClimBaselineStore,
     FakeObservationStore,
+    FakePipelineHealthStore,
     FakeStationStore,
+    FakeTenantStore,
 )
 
 _NOW = ensure_utc(datetime(2026, 4, 8, 14, 20, tzinfo=UTC))
@@ -154,6 +165,261 @@ def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore
 
 
 class TestIngestObservationsFlow:
+    def test_rejected_declaration_does_not_block_valid_qc_and_survives_early_return(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "typo"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        station = make_station_config(code="2135")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        health = FakePipelineHealthStore()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(
+                [_make_obs(station.id, "discharge", 20.0, minute) for minute in (10, 0)]
+            ),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        assert result.qc_failed == 2
+        assert result.qc_threshold_rejected == 1
+        records = health.fetch_recent(PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG)
+        assert len(records) == 1
+        assert "station_not_found" in records[0].detail["rejected"][0]
+
+        no_data = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([]),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+        assert no_data.qc_threshold_rejected == 1
+
+    def test_thresholds_apply_to_each_tenant_without_changing_undeclared_station(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "chwrr"\ncode = "447"\nnetwork = "dhm"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 15.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        chwrr_id = TenantId(UUID("00000000-0000-0000-0000-000000000002"))
+        tenant_store = FakeTenantStore()
+        tenant_store.store_tenant(
+            Tenant(id=chwrr_id, code="chwrr", name="CHWRR", created_at=_NOW)
+        )
+        declared_swiss = make_station_config(code="2135", rng=random.Random(1))
+        undeclared_swiss = make_station_config(code="2136", rng=random.Random(2))
+        declared_dhm = make_station_config(
+            code="447", network="dhm", tenant_id=chwrr_id, rng=random.Random(3)
+        )
+        stations = (declared_swiss, undeclared_swiss, declared_dhm)
+        station_store = FakeStationStore()
+        for station in stations:
+            station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        observations = [
+            _make_obs(station.id, "discharge", 20.0, minute)
+            for station in stations
+            for minute in (10, 0)
+        ]
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=tenant_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(observations),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_failed == 4
+        by_station = {
+            station.id: {
+                obs.qc_status
+                for obs in obs_store.observations()
+                if obs.station_id == station.id
+            }
+            for station in stations
+        }
+        assert by_station[declared_swiss.id] == {QcStatus.QC_FAILED}
+        assert by_station[declared_dhm.id] == {QcStatus.QC_FAILED}
+        assert by_station[undeclared_swiss.id] == {QcStatus.QC_PASSED}
+
+    def test_declared_threshold_changes_scheduled_qc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n"
+            "[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        station = make_station_config(code="2135")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(
+                [_make_obs(station.id, "discharge", 20.0, minute) for minute in (10, 0)]
+            ),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_failed == 2
+        assert all(
+            "outside [0.0, 10.0]" in flag.detail
+            for observation in obs_store.observations()
+            for flag in observation.qc_flags
+        )
+
+    def test_calculated_threshold_reports_not_applicable_before_early_return(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n"
+            "[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "CALC"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(code="CALC", gauging_status=GaugingStatus.CALCULATED)
+        )
+        health = FakePipelineHealthStore()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([]),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        assert result.qc_threshold_not_applicable == 1
+        records = health.fetch_recent(PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG)
+        assert len(records) == 1
+        assert records[0].detail["not_applicable"] == ["sapphire/bafu/CALC"]
+
+    def test_unprovisioned_pending_network_has_no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n"
+            '[onboarding]\nqc_pending_networks = ["dhm"]\n'
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "chwrr"\ncode = "447"\nnetwork = "dhm"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        health = FakePipelineHealthStore()
+
+        result = ingest_observations_flow(
+            station_store=FakeStationStore(),
+            tenant_store=FakeTenantStore(),
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([]),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        assert result.qc_threshold_pending == 1
+        assert result.qc_threshold_rejected == 0
+        assert not health.fetch_recent(
+            PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG
+        )
+
+    def test_no_station_thresholds_preserve_live_config_qc_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        station = make_station_config(code="2135")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        observations = [
+            _make_obs(station.id, "discharge", 100001.0, offset_minutes=minute)
+            for minute in (10, 0)
+        ]
+        rules = load_qc_rules(Path(__file__).resolve().parents[3] / "config.toml")
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(observations),
+            qc_rules=rules,
+            clock=_fixed_clock,
+        )
+
+        assert result.qc_failed == 2
+        assert [
+            (obs.qc_status, [(flag.rule_id, flag.detail) for flag in obs.qc_flags])
+            for obs in sorted(obs_store.observations(), key=lambda obs: obs.timestamp)
+        ] == [
+            (
+                QcStatus.QC_FAILED,
+                [("range_check", "value 100001.0 outside [0.0, 100000.0]")],
+            ),
+            (
+                QcStatus.QC_FAILED,
+                [("range_check", "value 100001.0 outside [0.0, 100000.0]")],
+            ),
+        ]
+
     def test_station_network_selects_network_specific_rule(self) -> None:
         bafu = make_station_config(
             code="2135", name="Aare Bern", network="bafu", rng=random.Random(1)

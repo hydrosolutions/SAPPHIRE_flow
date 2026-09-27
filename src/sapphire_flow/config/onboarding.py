@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
@@ -47,6 +47,71 @@ class CalculatedStationSpec:
     # (services.tenant_boundary.resolve_tenant_code) — an unknown code is a hard
     # ConfigurationError, never a silent Swiss default.
     tenant_code: str = DEFAULT_TENANT_CODE
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationQcThresholdSpec:
+    tenant_code: str
+    code: str
+    network: str
+    rule_id: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float]
+
+
+_THRESHOLD_KEYS: dict[str, frozenset[str]] = {
+    "range_check": frozenset({"value_min", "value_max"}),
+    "rate_of_change": frozenset({"max_rate"}),
+    "frozen_sensor": frozenset({"tolerance", "min_consecutive", "exclude_at_or_below"}),
+    "spike": frozenset({"max_delta", "tolerance"}),
+    "gross_outlier": frozenset({"k_sigma"}),
+}
+
+
+class _StationQcThresholdModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_code: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+    network: str = Field(min_length=1)
+    rule_id: str
+    parameter: str = Field(min_length=1)
+    time_step_seconds: int = Field(gt=0, strict=True)
+    thresholds: dict[str, float]
+
+    @field_validator("thresholds", mode="before")
+    @classmethod
+    def _numeric_thresholds(cls, value: object) -> object:
+        if not isinstance(value, dict) or not value:
+            raise ValueError("thresholds must be a nonempty table")
+        values = cast("dict[object, object]", value)
+        if any(
+            not isinstance(key, str)
+            or not isinstance(item, (int, float))
+            or isinstance(item, bool)
+            or not math.isfinite(item)
+            for key, item in values.items()
+        ):
+            raise ValueError("thresholds must contain finite numeric values")
+        return values
+
+    @model_validator(mode="after")
+    def _rule_thresholds(self) -> _StationQcThresholdModel:
+        allowed = _THRESHOLD_KEYS.get(self.rule_id)
+        if allowed is None:
+            raise ValueError(f"unknown QC rule_id {self.rule_id!r}")
+        unexpected = self.thresholds.keys() - allowed
+        if unexpected:
+            raise ValueError(f"invalid threshold keys: {sorted(unexpected)}")
+        if "min_consecutive" in self.thresholds:
+            count = self.thresholds["min_consecutive"]
+            if count <= 0 or not count.is_integer():
+                raise ValueError("min_consecutive must be a positive whole number")
+        for key in ("max_rate", "max_delta", "tolerance", "k_sigma"):
+            if key in self.thresholds and self.thresholds[key] < 0:
+                raise ValueError(f"{key} must be non-negative")
+        return self
 
 
 class _ComponentModel(BaseModel):
@@ -105,6 +170,8 @@ class OnboardingConfig:
     water_level_datums_masl: dict[str, float] | None = None
     water_level_units: dict[str, str] | None = None
     calculated: tuple[CalculatedStationSpec, ...] = ()
+    station_qc_thresholds: tuple[StationQcThresholdSpec, ...] = ()
+    qc_pending_networks: tuple[str, ...] = ()
     # Plan 147 Slice A: the deployment tenant (raw config CODE) that every
     # bulk-imported station is stamped with. Resolved once, at the onboarding
     # boundary, to a TenantId — an unknown code is a hard error.
@@ -137,6 +204,53 @@ def _parse_calculated(section: dict[str, Any]) -> tuple[CalculatedStationSpec, .
     return tuple(specs)
 
 
+def _parse_station_qc_thresholds(
+    section: dict[str, Any],
+) -> tuple[StationQcThresholdSpec, ...]:
+    raw: object = section.get("station_qc_thresholds", [])
+    if not isinstance(raw, list):
+        raise ValueError("onboarding.station_qc_thresholds must be an array of tables")
+    specs: list[StationQcThresholdSpec] = []
+    seen: set[tuple[str, str, str, str, str, int]] = set()
+    for entry in cast("list[object]", raw):
+        model = _StationQcThresholdModel.model_validate(entry)
+        key = (
+            model.tenant_code,
+            model.network,
+            model.code,
+            model.rule_id,
+            model.parameter,
+            model.time_step_seconds,
+        )
+        if key in seen:
+            raise ValueError(f"duplicate station QC threshold: {key!r}")
+        seen.add(key)
+        specs.append(
+            StationQcThresholdSpec(
+                tenant_code=model.tenant_code,
+                code=model.code,
+                network=model.network,
+                rule_id=model.rule_id,
+                parameter=model.parameter,
+                time_step=timedelta(seconds=model.time_step_seconds),
+                thresholds=model.thresholds,
+            )
+        )
+    return tuple(specs)
+
+
+def _parse_pending_networks(section: dict[str, Any]) -> tuple[str, ...]:
+    raw: object = section.get("qc_pending_networks", [])
+    if not isinstance(raw, list):
+        raise ValueError("onboarding.qc_pending_networks must be an array of names")
+    items = cast("list[object]", raw)
+    if any(not isinstance(network, str) or not network for network in items):
+        raise ValueError("onboarding.qc_pending_networks must be an array of names")
+    if len(items) != len(set(items)):
+        raise ValueError("duplicate onboarding.qc_pending_networks entry")
+    return tuple(cast("list[str]", items))
+
+
 def load_onboarding_config(
     config_path: str | Path | None = None,
 ) -> OnboardingConfig | None:
@@ -167,5 +281,7 @@ def load_onboarding_config(
         },
         water_level_units={str(code): str(unit) for code, unit in units_raw.items()},
         calculated=_parse_calculated(section),
+        station_qc_thresholds=_parse_station_qc_thresholds(section),
+        qc_pending_networks=_parse_pending_networks(section),
         tenant_code=str(section.get("tenant", DEFAULT_TENANT_CODE)),
     )

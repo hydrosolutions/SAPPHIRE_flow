@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,10 @@ import structlog
 
 from sapphire_flow.logging import configure_api_logging
 from sapphire_flow.services.onboarding import onboard_from_camelsch
+from sapphire_flow.services.station_qc_overrides import (
+    is_ingest_qc_applicable,
+    resolve_station_qc_overrides,
+)
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
 from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
@@ -49,7 +54,14 @@ from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 
 if TYPE_CHECKING:
+    from sapphire_flow.config.onboarding import (
+        OnboardingConfig,
+        StationQcThresholdSpec,
+    )
     from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
+    from sapphire_flow.types.domain import QcRuleSet
+    from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.tenant import Tenant
 
 configure_api_logging()
 log = structlog.get_logger(__name__)
@@ -104,6 +116,19 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Onboard CAMELS-CH stations into PostgreSQL.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        "--validate-config",
+        type=Path,
+        metavar="CONFIG_PATH",
+        help="Validate station QC thresholds against the registry without writing",
+    )
+    parser.add_argument(
+        "--allow-unonboarded-network",
+        action="append",
+        default=[],
+        metavar="NETWORK",
+        help="Permit missing stations only while this declared network is absent",
     )
     parser.add_argument(
         "--data-dir",
@@ -163,9 +188,122 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_threshold_declarations(
+    config: OnboardingConfig,
+    rule_set: QcRuleSet,
+    tenants: list[Tenant],
+    stations: list[StationConfig],
+    allowed_networks: list[str],
+) -> int:
+    from sapphire_flow.types.station_qc import StationQcRejectionKind as Reason
+
+    declared_networks = {spec.network for spec in config.station_qc_thresholds}
+    invalid_options = set(allowed_networks) - declared_networks
+    if invalid_options:
+        print(f"undeclared network option: {sorted(invalid_options)}", file=sys.stderr)
+        return 1
+    if any(not network for network in allowed_networks):
+        print("network option must not be empty", file=sys.stderr)
+        return 1
+    by_code = {tenant.code: tenant for tenant in tenants}
+    grouped: dict[str, list[StationQcThresholdSpec]] = defaultdict(list)
+    for spec in config.station_qc_thresholds:
+        grouped[spec.tenant_code].append(spec)
+    by_station = {(station.network, station.code): station for station in stations}
+    fatal = 0
+    for tenant_code, specs in grouped.items():
+        tenant = by_code.get(tenant_code)
+        tenant_id = tenant.id if tenant is not None else None
+        result = resolve_station_qc_overrides(
+            specs, stations, rule_set, is_ingest_qc_applicable, tenant_id=tenant_id
+        )
+        for rejection in result.rejected:
+            spec = rejection.spec
+            subject = f"{tenant_code}/{spec.network}/{spec.code}"
+            reasons = set(rejection.reasons)
+            tenant_has_network = any(
+                station.tenant_id == tenant_id and station.network == spec.network
+                for station in stations
+            )
+            network_anywhere = any(
+                station.network == spec.network for station in stations
+            )
+            waivable = spec.network in allowed_networks and (
+                (reasons == {Reason.STATION_NOT_FOUND} and not tenant_has_network)
+                or (reasons == {Reason.TENANT_NOT_FOUND} and not network_anywhere)
+            )
+            label = "PENDING" if waivable else "REJECTED"
+            reason_text = ", ".join(reason.value for reason in rejection.reasons)
+            print(f"{label} {subject}: {reason_text}")
+            fatal += not waivable
+        for spec in result.not_applicable:
+            subject = f"{tenant_code}/{spec.network}/{spec.code}"
+            station = by_station[(spec.network, spec.code)]
+            label = (
+                "PENDING"
+                if station.station_status.value == "onboarding"
+                else "NOT_APPLICABLE"
+            )
+            print(f"{label} {subject}")
+        for fan_out in result.fan_out:
+            print(
+                f"FAN_OUT {tenant_code}/{fan_out.spec.network}/{fan_out.spec.code}: "
+                f"{', '.join(fan_out.rule_versions)}"
+            )
+    return 1 if fatal else 0
+
+
+def _validate_config(path: Path, allowed_networks: list[str]) -> int:
+    from sapphire_flow.config._overlay import load_merged_toml
+    from sapphire_flow.config.onboarding import load_onboarding_config
+    from sapphire_flow.config.qc_rules import load_qc_rules
+    from sapphire_flow.store.tenant_store import PgTenantStore
+
+    if os.environ.get("SAPPHIRE_CONFIG_OVERLAY"):
+        print("unset SAPPHIRE_CONFIG_OVERLAY before validation", file=sys.stderr)
+        return 1
+    if not path.is_file():
+        print(f"config file not found: {path}", file=sys.stderr)
+        return 1
+    data = load_merged_toml(path, [])
+    if "onboarding" not in data or "qc_rules" not in data:
+        print("config needs explicit [onboarding] and [qc_rules]", file=sys.stderr)
+        return 1
+    config = load_onboarding_config(path)
+    if config is None or not config.station_qc_thresholds:
+        print("config has no station QC threshold blocks", file=sys.stderr)
+        return 1
+    rule_set = load_qc_rules(config_path=path)
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        print("DATABASE_URL is required for registry validation", file=sys.stderr)
+        return 1
+    engine = sa.create_engine(database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            tenants = PgTenantStore(conn).fetch_all_tenants()
+            stations = PgStationStore(conn).fetch_all_stations()
+    finally:
+        engine.dispose()
+    return _validate_threshold_declarations(
+        config, rule_set, tenants, stations, allowed_networks
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.allow_unonboarded_network and args.validate_config is None:
+        parser.error("--allow-unonboarded-network requires --validate-config")
+    if args.validate_config is not None:
+        try:
+            return _validate_config(
+                args.validate_config, args.allow_unonboarded_network
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"configuration validation failed: {exc}", file=sys.stderr)
+            return 1
 
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:

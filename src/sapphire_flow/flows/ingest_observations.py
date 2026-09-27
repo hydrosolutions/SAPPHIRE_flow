@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import structlog
 from prefect import flow, task
@@ -19,6 +19,11 @@ from sapphire_flow.services.qc_datum import (
     obs_skipped_rules,
     shift_observations_for_water_level_datum,
 )
+from sapphire_flow.services.station_qc_overrides import (
+    is_ingest_qc_applicable,
+    is_ingest_station_judged,
+    resolve_station_qc_overrides,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     GaugingStatus,
@@ -32,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sapphire_flow.config.dhm import DhmConfig
+    from sapphire_flow.config.onboarding import StationQcThresholdSpec
     from sapphire_flow.config.river_stations import HydroScraperConfig
     from sapphire_flow.protocols.adapters import BatchStationDataSource
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
@@ -40,7 +46,7 @@ if TYPE_CHECKING:
     from sapphire_flow.store.station_store import PgStationStore
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import QcRuleSet
+    from sapphire_flow.types.domain import QcRuleSet, StationQcOverride
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import (
         HydroScraperBatchResult,
@@ -49,6 +55,7 @@ if TYPE_CHECKING:
         StationFetchOutcome,
     )
     from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.station_qc import Resolution
 
 log = structlog.get_logger(__name__)
 
@@ -74,6 +81,9 @@ class IngestResult:
     # Plan 015 step 2.5 — calculated-station derivation (0 when no calculated stations).
     observations_derived: int = 0
     observations_missing: int = 0
+    qc_threshold_pending: int = 0
+    qc_threshold_rejected: int = 0
+    qc_threshold_not_applicable: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +424,122 @@ def _empty_qc_counts() -> dict[str, int]:
     }
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ThresholdConfigOutcome:
+    overrides: tuple[StationQcOverride, ...] = ()
+    pending: tuple[str, ...] = ()
+    rejected: tuple[str, ...] = ()
+    not_applicable: tuple[str, ...] = ()
+
+
+def _configured_station_qc(
+    all_stations: list[StationConfig],
+    qc_rules: QcRuleSet,
+    tenant_store: object | None,
+) -> ThresholdConfigOutcome:
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if config_path is None:
+        return ThresholdConfigOutcome()
+    from sapphire_flow.config.onboarding import load_onboarding_config
+    from sapphire_flow.types.station_qc import StationQcRejectionKind as Reason
+
+    config = load_onboarding_config(config_path)
+    if config is None or not config.station_qc_thresholds:
+        return ThresholdConfigOutcome()
+    if tenant_store is None:
+        raise ConfigurationError("tenant_store is required for station QC thresholds")
+
+    grouped: dict[str, list[StationQcThresholdSpec]] = {}
+    for spec in config.station_qc_thresholds:
+        grouped.setdefault(spec.tenant_code, []).append(spec)
+    by_station = {(s.network, s.code): s for s in all_stations}
+    overrides: list[StationQcOverride] = []
+    pending: list[str] = []
+    rejected: list[str] = []
+    not_applicable: list[str] = []
+    for tenant_code, specs in grouped.items():
+        tenant = tenant_store.fetch_tenant_by_code(tenant_code)  # type: ignore[attr-defined]
+        tenant_id = tenant.id if tenant is not None else None
+        resolution: Resolution = resolve_station_qc_overrides(
+            specs,
+            all_stations,
+            qc_rules,
+            is_ingest_qc_applicable,
+            tenant_id=tenant_id,
+        )
+        overrides.extend(resolution.overrides)
+        for rejection in resolution.rejected:
+            spec = rejection.spec
+            subject = f"{spec.tenant_code}/{spec.network}/{spec.code}"
+            reasons = set(rejection.reasons)
+            tenant_has_network = any(
+                s.tenant_id == tenant_id and s.network == spec.network
+                for s in all_stations
+            )
+            network_anywhere = any(s.network == spec.network for s in all_stations)
+            is_pending = spec.network in config.qc_pending_networks and (
+                (reasons == {Reason.STATION_NOT_FOUND} and not tenant_has_network)
+                or (reasons == {Reason.TENANT_NOT_FOUND} and not network_anywhere)
+            )
+            if is_pending:
+                pending.append(subject)
+            else:
+                reason_text = ",".join(reason.value for reason in rejection.reasons)
+                rejected.append(f"{subject}: {reason_text}")
+        for spec in resolution.not_applicable:
+            subject = f"{spec.tenant_code}/{spec.network}/{spec.code}"
+            station = by_station[(spec.network, spec.code)]
+            if station.station_status.value == "onboarding":
+                pending.append(subject)
+            else:
+                not_applicable.append(subject)
+
+    for subject in pending:
+        log.info("ingest.qc_threshold_pending", subject=subject)
+    for subject in (*rejected, *not_applicable):
+        log.warning("ingest.qc_threshold_unapplied", subject=subject)
+    return ThresholdConfigOutcome(
+        overrides=tuple(overrides),
+        pending=tuple(pending),
+        rejected=tuple(rejected),
+        not_applicable=tuple(not_applicable),
+    )
+
+
+def _append_threshold_config_health_record(
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    outcome: ThresholdConfigOutcome,
+) -> None:
+    if pipeline_health_store is None or not (
+        outcome.rejected or outcome.not_applicable
+    ):
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG,
+                checked_at=checked_at,
+                status=PipelineHealthStatus.WARNING,
+                subject="ingest_observations",
+                detail={
+                    "rejected": list(outcome.rejected),
+                    "not_applicable": list(outcome.not_applicable),
+                },
+                cycle_time=None,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort health record
+        log.warning("pipeline.health_record_write_failed", error=str(exc))
+
+
 @task(
     name="run-qc-and-update",
     task_run_name="run-qc-{station_id}-{parameter}",
@@ -431,6 +557,7 @@ def _run_qc_task(
     datum: float | None = None,
     context_window_hours: float = 2.0,
     fetched_times: tuple[UtcDatetime, ...] = (),
+    overrides: tuple[StationQcOverride, ...] = (),
 ) -> QcTaskOutcome:
     window_start = ensure_utc(now - timedelta(hours=context_window_hours))
     window_end = ensure_utc(now + timedelta(hours=1))
@@ -477,7 +604,7 @@ def _run_qc_task(
     flags = checker.check(
         observations=qc_observations,
         rule_set=qc_rules,
-        overrides=[],
+        overrides=list(overrides),
         baselines=baselines,
         station_networks=station_networks,
         skipped_rule_ids=obs_skipped_rules(parameter, datum),
@@ -748,6 +875,7 @@ def ingest_observations_flow(
     clock: object = None,
     formula_store: object = None,
     pipeline_health_store: object = None,
+    tenant_store: object = None,
     context_window_hours: float = 2.0,
     default_lookback_hours: float = 1.0,
 ) -> IngestResult:
@@ -766,6 +894,7 @@ def ingest_observations_flow(
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]
         alert_store = stores["alert_store"]  # type: ignore[assignment]
         formula_store = stores["formula_store"]  # type: ignore[assignment]
+        tenant_store = stores["tenant_store"]
         if pipeline_health_store is None:
             pipeline_health_store = stores["pipeline_health_store"]  # type: ignore[assignment]
 
@@ -821,20 +950,18 @@ def ingest_observations_flow(
         kind=StationKind.WEATHER
     )
     all_stations = [*river_stations, *lake_stations, *weather_stations]
+    threshold_config = _configured_station_qc(
+        all_stations, cast("QcRuleSet", qc_rules), tenant_store
+    )
+    _append_threshold_config_health_record(
+        pipeline_health_store, checked_at=now, outcome=threshold_config
+    )
     # D2: "gauged" is a discharge concept (does this river/lake station have
     # a rating curve?) — it does not apply to weather stations, which gate
     # on station_status alone. Applying the GAUGED filter uniformly would
     # let a WEATHER station pass by the `gauging_status` DEFAULT rather than
     # by decision (`Station.gauging_status` defaults to GAUGED).
-    eligible = [
-        s
-        for s in all_stations
-        if s.station_status.value == "operational"
-        and (
-            s.station_kind == StationKind.WEATHER
-            or s.gauging_status == GaugingStatus.GAUGED
-        )
-    ]
+    eligible = [s for s in all_stations if is_ingest_station_judged(s)]
 
     if not eligible:
         log.info("ingest.no_stations")
@@ -848,6 +975,9 @@ def ingest_observations_flow(
             qc_suspect=0,
             stations_failed=0,
             errors=(),
+            qc_threshold_pending=len(threshold_config.pending),
+            qc_threshold_rejected=len(threshold_config.rejected),
+            qc_threshold_not_applicable=len(threshold_config.not_applicable),
         )
 
     log.info("ingest.starting", stations=len(eligible))
@@ -899,6 +1029,9 @@ def ingest_observations_flow(
             qc_suspect=0,
             stations_failed=len(fetch_failed_station_ids),
             errors=fetch_errors,
+            qc_threshold_pending=len(threshold_config.pending),
+            qc_threshold_rejected=len(threshold_config.rejected),
+            qc_threshold_not_applicable=len(threshold_config.not_applicable),
         )
 
     # --- Step 2.2: Store raw observations ---
@@ -951,6 +1084,7 @@ def ingest_observations_flow(
                 datum=datums.get((station_id, parameter)),
                 context_window_hours=context_window_hours,
                 fetched_times=tuple(recovered_times.get((station_id, parameter), ())),
+                overrides=threshold_config.overrides,
             )
             totals["passed"] += counts.counts["passed"]
             totals["failed"] += counts.counts["failed"]
@@ -1060,6 +1194,9 @@ def ingest_observations_flow(
         errors=fetch_errors + tuple(errors),
         observations_derived=derived["derived"],
         observations_missing=derived["missing"],
+        qc_threshold_pending=len(threshold_config.pending),
+        qc_threshold_rejected=len(threshold_config.rejected),
+        qc_threshold_not_applicable=len(threshold_config.not_applicable),
     )
 
     log.info(
@@ -1077,6 +1214,9 @@ def ingest_observations_flow(
         stations_failed=result.stations_failed,
         observations_derived=result.observations_derived,
         observations_missing=result.observations_missing,
+        qc_threshold_pending=result.qc_threshold_pending,
+        qc_threshold_rejected=result.qc_threshold_rejected,
+        qc_threshold_not_applicable=result.qc_threshold_not_applicable,
     )
 
     return result

@@ -235,6 +235,7 @@ class PipelineCheckType(Enum):
     # which is why its watchdog probe is a PRESENCE probe and not a freshness
     # probe (Plan 318 T2).
     OBSERVATION_QC_UNCHECKED = "observation_qc_unchecked"
+    OBSERVATION_QC_THRESHOLD_CONFIG = "observation_qc_threshold_config"
 
 
 class NotificationChannel(Enum):

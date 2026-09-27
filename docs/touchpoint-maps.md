@@ -54,6 +54,27 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **LINDAS / BAFU observation ingest** — the shared rate limiter, the two LINDAS
   caller adapters, per-station fetch-failure reporting, and the two LINDAS-caller
   cron schedules.
+- **Observation QC threshold configuration** — base TOML declarations, registry
+  resolution, scheduled ingest and the read-only edit-time validator.
+
+---
+
+### Touchpoint map: Observation QC threshold configuration
+
+- Read `config/onboarding.py::load_onboarding_config`,
+  `config/_overlay.py::load_merged_toml`,
+  `services/station_qc_overrides.py::resolve_station_qc_overrides`,
+  `flows/ingest_observations.py::_configured_station_qc` and
+  `scripts/onboard.py::_validate_config` together.
+- Required block `tenant_code` scopes station lookup. Network-specific rules
+  resolve before station thresholds merge. Overlay blocks and pending-network
+  settings are rejected; ordinary onboarding tenant overlays remain allowed.
+- `services/onboarding.py` still passes `overrides=[]`. Scheduled DHM ingest
+  delivers water level only; Plan 268 owns full-series QC on delivered discharge.
+  Database persistence and change history for observation QC thresholds remain
+  unowned v1 work.
+- Verify parser, resolver, ingest-flow and validator tests, including the
+  no-declaration Swiss QC baseline and no-write validation path.
 
 ---
 

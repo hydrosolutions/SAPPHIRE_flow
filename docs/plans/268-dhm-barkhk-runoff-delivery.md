@@ -1073,18 +1073,14 @@ dependency vacuous. Adding to the base rule list is the route that genuinely req
 network dimension, because that is where DHM and Swiss rules coexist and would otherwise
 collide. **Not** an edit to `config/qc_rules.py`'s dead defaults, and **not** a separate TOML
 overlay (which replaces the list wholesale — 264's D4); **six per-station ceilings carrying D14's
-physical maxima** (the network rule alone cannot express six different maxima — see D14).
-**🔴 Reshaped by Plan 269, and NOT yet folded into this task's design.** The earlier text here
-read "six in-process `StationQcOverride` objects", which the owner's 2026-09-10 answer to D14
-rules out — an in-memory threshold cannot be onboarded or corrected. Plan 269 delivers them as
-**onboarding configuration blocks resolved through its validation boundary**. Two independent
-reviews of 269 (2026-09-11) found that leaving this sentence unchanged makes the
-`depends_on: [269]` edge **vacuous**, because this task's gate proves the merge by calling
-`merge_thresholds` directly — which passes identically for in-memory objects. **Before this task
-is READY it must:** declare the six ceilings as configuration, resolve them through Plan 269's
-boundary rather than constructing them, and state that the import CLI below may not build
-overrides in memory either. That CLI is a **third** QC call site which Plan 269 T3/T4 do not
-wire — this task owns it;
+provisional maxima** (the network rule alone cannot express six different maxima — see D14).
+Declare those ceilings as six `[[onboarding.station_qc_thresholds]]` blocks in the base config,
+each with the explicit D11 `tenant_code`. T7's import CLI must load and validate the declared
+configuration and call Plan 269's resolver for its full-series judged set. It must not construct
+overrides from hard-coded in-process values. Reject the import if resolution reports
+`TENANT_NOT_FOUND`, `TENANT_MISMATCH`, another rejection, or a not-applicable ceiling. Plan 269
+does not wire this import path; T7 owns that call site and verifies persisted QC on only the
+delivery-tagged cohort, preserving unrelated observations;
 contiguous-segment splitting before the checker is called, or elapsed-time awareness in the
 affected rules; `src/sapphire_flow/cli/import_dhm_delivery.py` (QC branch).
 **Out**: no new QC *rule kind* — the daily discharge rules already exist (four configured,
@@ -1105,11 +1101,12 @@ change is any existing row; Plan 264's network selection is what makes adding ro
   raise once Plan 264 T3 lands. **Segments shorter than two rows are excluded from QC and
   reported as excluded**, by count and by date, rather than being passed to a checker that
   cannot classify them. They are not `qc_passed`.
-- **Per-station ceilings actually apply.** Assert each station's **effective merged**
-  `value_max` equals that station's D14 figure — six distinct assertions — by calling
-  `services/_qc_helpers.py::merge_thresholds` directly. That is the only route that proves the
-  merge: asserting on the override objects proves nothing, and reading `QcFlag.detail` embeds a
-  discharge value and so collides with the no-values rule. The override must match on all four
+- **Per-station ceilings actually apply.** First load the six declared blocks from the base
+  config and resolve them for the D11 tenant through Plan 269's boundary, failing on any rejected
+  or not-applicable declaration. Then assert each station's **effective merged** `value_max`
+  equals that station's D14 figure — six distinct assertions — through
+  `services/_qc_helpers.py::merge_thresholds`. Reading `QcFlag.detail` embeds a discharge value
+  and collides with the no-values rule. The override must match on all four
   of `station_id`, `rule_id`, `parameter` and `time_step` — **a wrong `time_step` silently
   falls back to the 5,000 ceiling**, which is exactly the failure this gate exists to catch.
   A single shared DHM maximum must fail this.
