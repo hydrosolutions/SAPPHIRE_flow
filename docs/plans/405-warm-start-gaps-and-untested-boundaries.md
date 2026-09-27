@@ -690,8 +690,10 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   - 🔴 **"So NO import of any era lands here" was FALSE — and round 5 documented the counterexample
     itself, 350 lines away.** The import guard tests `is None` while this resolver gates on
     TRUTHINESS, so an import declaring `config_hash=""` writes `""` and does land there. ⛔ *I stated
-    an absolute and its exception in the same change and did not notice.* Narrowed at every site to
-    "no import declaring a NON-EMPTY hash".
+    an absolute and its exception in the same change and did not notice.* Narrowed to "no import declaring a NON-EMPTY hash" —
+    ⛔ *and "at every site" was itself FALSE: round 7 found the absolute still standing in a test
+    comment three lines below the assert round 6 edited, inside its own trailing context. Both round-7
+    reviewers found it independently.*
   - 🔴 **The reason STRING was wrong for that donor too** — a substantive defect, not wording: it
     attributed the shape to "trained from scratch, or written directly", and an empty-hash import is
     NEITHER, so the sentence stored in the database would have been false of the donor in hand. *That

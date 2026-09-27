@@ -787,7 +787,12 @@ class TestComparingTheInstalledTemplate:
         # "pre-dates Plan 399 T4" was PRESENT — so it pinned the false clause and
         # would have passed on any rewrite that merely appended a true one. The
         # reason must infer NO era at all: a from-scratch artifact has neither row
-        # today, and no import of any era reaches here.
+        # today, and no import declaring a NON-EMPTY hash reaches this exit.
+        # ⛔ Not "no import of any era", which is what this comment said until the
+        # seventh round — three lines below the assert the previous commit edited,
+        # inside its own trailing context, which is the same place the round-5
+        # failure hid. An import declaring `config_hash=""` DOES reach here; the
+        # test below pins exactly that.
         assert "pre-dates" not in reason, (
             "the era inference is back — twice now it has been wrong, once about "
             "the from-scratch donor and once about the import case"
@@ -798,11 +803,17 @@ class TestComparingTheInstalledTemplate:
     ) -> None:
         """🔴 The counterexample that made "no import of any era" false.
 
-        `import_external_artifact` refuses `config_hash is None`, but an empty
-        STRING passes that guard and is written verbatim — and this resolver gates
-        on truthiness, so it lands in the fallback exactly as a NULL would.
-        ⛔ Documented as prose in round 5 while the source comment still asserted
-        the absolute; pinned here so the claim and the code cannot drift again.
+        WHAT THIS PINS: the RESOLVER's treatment of an empty recorded hash — it is
+        absent for gating purposes, so the donor falls to the fallback exactly as a
+        NULL would, and the reason names its shape.
+
+        ⚠️ **WHAT IT DOES NOT PIN**: that `import_external_artifact` lets an empty
+        string through. This seeds the row directly via `record_artifact_provenance`,
+        not through the import service. That half rests on reading the guard —
+        `services/model_import.py` refuses `declared_config_hash is None` only, and
+        nothing validates non-emptiness on the way in — which is a measurement, not
+        a test. *Said explicitly because an earlier version of this docstring implied
+        the test covered both halves, and a reviewer was right to separate them.*
         """
         donor = self._imported_donor(db_connection, tmp_path, config_hash="")
 
