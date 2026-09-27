@@ -10,7 +10,7 @@ import pytest
 
 from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.flows.compute_skills import compute_skills_task
-from sapphire_flow.flows.train_models import train_models_flow
+from sapphire_flow.flows.train_models import _require_warm_start_writer, train_models_flow
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelArtifactStatus,
@@ -1354,6 +1354,19 @@ class TestWarmStartRetrainThroughTheFlow:
             flow_regime_store,
             forcing_source,
         )
+
+    def test_a_writer_missing_resolve_donor_params_is_rejected_early(self) -> None:
+        class _IncompleteWriter:
+            def record(self, record: object) -> None:
+                return None
+
+            def resolve_donor_config(self, *args: object, **kwargs: object) -> tuple:
+                return ("configs/cmal_small.yaml", "a" * 64, None)
+
+        with pytest.raises(
+            TypeError, match="resolve_donor_params"
+        ):
+            _require_warm_start_writer(_IncompleteWriter())
 
     def test_naming_a_base_artifact_retrains_instead_of_training(self) -> None:
         """The whole point: a named donor routes to `retrain`, not `train`."""

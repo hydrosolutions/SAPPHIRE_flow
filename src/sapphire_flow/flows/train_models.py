@@ -77,6 +77,22 @@ class WarmStartWriter(Protocol):
     ) -> tuple[str | None, str | None, str | None]: ...
 
 
+def _require_warm_start_writer(writer: object) -> WarmStartWriter:
+    missing = [
+        method
+        for method in ("record", "resolve_donor_config", "resolve_donor_params")
+        if not hasattr(writer, method)
+    ]
+    if missing:
+        methods = ", ".join(missing)
+        raise TypeError(
+            "warm_start_writer is missing required methods: "
+            f"{methods}. Expected record(), resolve_donor_config(), and "
+            "resolve_donor_params()."
+        )
+    return cast(WarmStartWriter, writer)
+
+
 def _unit_shard(unit: TrainingUnit) -> str:
     return str(unit.station_id) if unit.station_id is not None else str(unit.group_id)
 
@@ -804,7 +820,7 @@ def train_models_flow(
             tuple[str | None, str | None, str | None, str | None, str | None] | None
         ) = None
         if typed_base_artifact_id is not None and warm_start_writer is not None:
-            typed_warm_start_writer = cast(WarmStartWriter, warm_start_writer)
+            typed_warm_start_writer = _require_warm_start_writer(warm_start_writer)
             donor_config = _resolve_donor_config_or_refuse(
                 warm_start_writer=typed_warm_start_writer,
                 base_artifact_id=typed_base_artifact_id,
@@ -871,7 +887,7 @@ def train_models_flow(
         # same pattern as basin lineage below. Only for a RETRAIN: a freshly
         # trained artifact has no donor and records nothing (T4).
         if donor_config is not None and warm_start_writer is not None:
-            typed_warm_start_writer = cast(WarmStartWriter, warm_start_writer)
+            typed_warm_start_writer = _require_warm_start_writer(warm_start_writer)
             _record_warm_start_provenance(
                 warm_start_writer=typed_warm_start_writer,
                 artifact_id=cast("ArtifactId", artifact_id),
