@@ -165,6 +165,59 @@ def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore
 
 
 class TestIngestObservationsFlow:
+    def test_rejected_declaration_does_not_block_valid_qc_and_survives_early_return(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "typo"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        station = make_station_config(code="2135")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        health = FakePipelineHealthStore()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(
+                [_make_obs(station.id, "discharge", 20.0, minute) for minute in (10, 0)]
+            ),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        assert result.qc_failed == 2
+        assert result.qc_threshold_rejected == 1
+        records = health.fetch_recent(PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG)
+        assert len(records) == 1
+        assert "station_not_found" in records[0].detail["rejected"][0]
+
+        no_data = ingest_observations_flow(
+            station_store=station_store,
+            tenant_store=FakeTenantStore(),
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([]),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+        assert no_data.qc_threshold_rejected == 1
+
     def test_thresholds_apply_to_each_tenant_without_changing_undeclared_station(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

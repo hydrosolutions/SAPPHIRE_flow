@@ -27,6 +27,35 @@ def mod():
 
 
 class TestOnboardScriptMain:
+    @pytest.mark.parametrize(
+        "contents,diagnostic",
+        [
+            ('[qc_rules]\nversion = "test"\n', "explicit [onboarding]"),
+            ("[onboarding]\n", "explicit [onboarding] and [qc_rules]"),
+            (
+                '[onboarding]\n[qc_rules]\nversion = "test"\n',
+                "no station QC threshold blocks",
+            ),
+        ],
+    )
+    def test_validator_refuses_empty_or_incomplete_config_before_database(
+        self,
+        mod,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        contents: str,
+        diagnostic: str,
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.setattr(mod.sa, "create_engine", MagicMock())
+        path = tmp_path / "candidate.toml"
+        path.write_text(contents)
+
+        assert mod.main(["--validate-config", str(path)]) == 1
+        assert diagnostic in capsys.readouterr().err
+        mod.sa.create_engine.assert_not_called()
+
     def test_validate_config_branch_does_not_start_onboarding(
         self, mod, monkeypatch, tmp_path: Path
     ) -> None:
