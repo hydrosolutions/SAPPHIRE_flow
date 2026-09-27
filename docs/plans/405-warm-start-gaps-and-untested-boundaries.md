@@ -751,3 +751,40 @@ D1 decides, the recorded reason must be TRUE of the donor in hand — § 4's is 
   - ⛔ **Delegation alone was not accepted as sufficient**: the shim test asserts the DELIVERED inputs
     are unit-translated (1.0 m³/s over 864 km² must arrive as 0.1 mm/day), so a pass-through
     delegation fails it — the same bar `train`'s existing test set.
+- **2026-09-27 — T4 and T5 IMPLEMENTED** (the plan's phase 3, run together).
+  **T4 — all four onboarding sites, each asserted individually, each with its own mutation red:**
+  | site | form | mutation → |
+  |---|---|---|
+  | `flows/onboard_model.py` station | `params={}` **keyword** | fails only `TestOnboardingFlowSites::test_the_station_site_…` |
+  | `flows/onboard_model.py` group | `params={}` **keyword** | fails only `…::test_the_group_site_…` |
+  | `services/model_onboarding.py` station | **POSITIONAL** `{}` | fails only `TestOnboardingServiceSites::test_the_station_site_…` |
+  | `services/model_onboarding.py` group | **POSITIONAL** `{}` | fails only `…::test_the_group_site_…` |
+  - ⚖️ **The positional/keyword split was the trap the task named, and it is real**: a recorder reading
+    `kwargs["params"]` alone would have covered two sites while appearing to cover four. Each recorder
+    captures BOTH forms.
+  - 🔴 **Every assertion pairs the value with a CALL COUNT.** *"Every captured call passed `{}`" is
+    vacuously true of zero captured calls* — which is what T4's Verification forbids, and what would
+    have happened silently had a unit been skipped before reaching the train step.
+  - ⚠️ Both `train_*_model` and `assemble_*_training_data` are imported INSIDE `onboard_model`, so they
+    are patched on their SOURCE modules. Assembly is stubbed: the site under test is the train call, and
+    real observations would only add ways to be skipped before reaching it.
+
+  **T5 — 399's headline blocker, covered through REAL discovery.**
+  - ⭐ `importlib.metadata.entry_points` is patched so the actual `discover_models()` loads a raw FI
+    model and actually calls `adapt_if_fi`. ⇒ The flow trains a REAL `ForecastInterfaceAdapter` with no
+    resolver of its own — production's shape. ⛔ *Every other train/retrain test injects
+    `models={...}`, so discovery never ran and the adapter was never the thing trained; that is exactly
+    why deleting the wiring failed no test.*
+  - 🔬 **The red is verbatim what the task demands**: with the wiring block deleted, the flow records
+    `station_code_resolver required for GROUP input conversion / train / predict`.
+  - ⚠️ *Two dead ends on the way, both in the requirement the fake FI model declares: discovery rejects
+    an `InputRequirement` with no `future_known` ("cannot derive forecast horizon"), and the raw model
+    must declare `model_tier`/`alert_eligibility` for the classification check. Neither is a defect —
+    recorded because the next person writing a discovery-level test will hit both.*
+
+  🔬 **Two near-misses in my own MEASUREMENT, not in the code** — both would have reported success:
+  a shell helper that never ran, so a mutation sweep printed NOTHING and could have been read as "no
+  failures"; and a filter that matched log lines containing `passed=True` instead of the pytest
+  summary, which left two of the four sites unverified while looking verified. ⇒ *Caught by re-running
+  with a tighter filter. [[feedback_well_formed_answers_to_the_wrong_question]] — an empty result is
+  not a negative result.*
