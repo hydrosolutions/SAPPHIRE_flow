@@ -71,7 +71,7 @@ fire. Their silence says nothing about the thresholds; the evidence simply does 
   (`store/audited_writer.py:65`; the forecast store's default at
   `store/forecast_store.py:122-136`); other stores' reads and writes go through the shared
   connection. No store sets a lock or statement timeout today. The API opens exactly one connection
-  per request, shared by auth and the handler (`api/deps.py:26-37`).
+  per request, shared by auth and the handler (`api/deps.py:34-47`).
 - **Plan 341's boundary** (`docs/plans/341-chwrr-forecast-publication-api.md`): a reviewer token
   sees only published values; Plan 402's two REVIEW routes are outside the publication gate because
   they carry no forecast values, while this route carries them and follows D4 (`341:84`);
@@ -167,8 +167,7 @@ parameter still rejects the assignment).
 REVIEW-gated (Plan 401), station-scoped; `start`/`end` filter `issued_at`, optional, default the last
 7 days ending at request time, `end` exclusive (Plan 402's query conventions); paginated with its own
 ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered newest first,
-`(issued_at DESC, recorded_at DESC, id DESC)` — like `/stations/{id}/forecasts`
-(`store/forecast_store.py:484`) — non-finite values in the same encoding, flags typed as Plan 402's
+`(issued_at DESC, recorded_at DESC, id DESC)` — non-finite values in the same encoding, flags typed as Plan 402's
 `QcFlagResponse`; values and `detail` withheld per D4. Added to Plan 402's committed map contract and its explicit route list.
 
 ## Tasks
@@ -342,10 +341,18 @@ list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API 
 predicate (D4). If Plan 341's route inventory and switch exist on the base branch, wire the
 predicate to the switch, classify this route there as a REVIEW diagnostic whose values follow D4,
 and extend its test. The route accepts a reviewer service token with D4 redaction, an admin token
-with full data, or, after Plan 341's human principal exists, a named human with a current station
-`review` grant and full diagnostic data. Deny consumers, revoked humans and out-of-scope humans.
-If this plan lands first, Plan 341 T3 adds the human authorization branch when it lands; if 341
-lands first, this T3 adds it here. Neither landing order permits a rejected-record ID on a forecast
+with full data, or a named human with a current station `review` grant and full diagnostic data.
+Deny consumers, revoked humans and out-of-scope humans. Plan 341's human principal is on `main`
+(#322), so this T3 adds the human branch: the two principals use different dependencies —
+`api/security.py::require_reviewer` (`:237`) accepts service-token principals only, and
+`api/human_auth.py::require_human_principal` (`:189`, then `require_human_station_permission` with
+`HumanPermission.REVIEW`, `:214`) accepts OIDC humans only — so the route is registered **outside**
+Plan 402's `require_reviewer` router, with one route-level dependency that authenticates whichever
+principal the bearer is. How the two bearer formats are told apart is fixed here and tested both
+ways: a service token never reaches the OIDC verifier, an OIDC token never reaches the access-token
+lookup, and a service-token request still succeeds when human authentication is disabled (today
+`require_human_principal` answers 503 then). If Plan 341 T3 has landed a shared dependency by then,
+this route uses it instead. Neither landing order permits a rejected-record ID on a forecast
 publication route.
 
 **Response item** (every field, ungated): `id`, `attempt_id`, `recorded_at`, `station_id`,
@@ -357,7 +364,7 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/test_api_rejected_forecasts.py tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. Where Plan 341's human principal is present, test a named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial; if 404 lands first, Plan 341 T3 owns the same tests when it adds that principal. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
+**Verification:** `uv run pytest tests/unit/api/test_api_rejected_forecasts.py tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. A named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial (Plan 341's human principal is on `main`); a service token → handled without touching the OIDC verifier, also with human authentication disabled; an OIDC token → never looked up as an access token. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
 
 ### T4 — documents
 
@@ -467,6 +474,9 @@ After staging deploy (orchestrator):
   minor): `attempt_id` is unbound on every exit, with tests that it does not leak and that the
   log capture sees context variables; the rejected payload is a plain container that cannot raise,
   so collecting it cannot change which forecasts or group siblings are stored.
+- 2026-09-28 — reconciled against main `bba8de3c` (Codex): Plan 341's human principal has landed,
+  so T3 adds the human branch here, with its own route-level dependency outside Plan 402's
+  `require_reviewer` router; two citations corrected. Plan design and decisions unchanged.
 
 ## Dependency graph
 
