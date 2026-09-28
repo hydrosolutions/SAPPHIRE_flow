@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-26
 plan: 404
 title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
-scope: Record every station (member) or group-station forecast whose forecast QC verdict is `qc_failed` — its values, units, cadence and every parameter's flags — in a separate rejected-forecast record, not in the `forecasts` table, and serve it through one REVIEW-gated `/api/v1` route, so the flow map can show what forecast QC rejected and why. Where Plan 341's publication gate is active for a tenant, a reviewer token sees which rule rejected a forecast but not its values. The forecast cycle's behaviour is otherwise unchanged — fallback, alerting, combination, model state, re-runs (Plans 327/328), the freshness heartbeat and every reader of `forecasts` see exactly what they see today. NOT any change to forecast QC rules, thresholds or verdicts; NOT combined forecasts (already stored failed, Plan 253 OD-1); NOT hindcasts; NOT backfilling earlier rejections; NOT publishing or alerting on a rejected forecast.
+scope: Record every station (member) or group-station forecast whose forecast QC verdict is `qc_failed` — its values, units, cadence and every parameter's flags — in a separate rejected-forecast record, not in the `forecasts` table, and serve it through one `/api/v1` route open to reviewer and admin service tokens and to named humans with a station review grant, so the flow map can show what forecast QC rejected and why. Where Plan 341's publication gate is active for a tenant, a reviewer token sees which rule rejected a forecast but not its values. The forecast cycle's behaviour is otherwise unchanged — fallback, alerting, combination, model state, re-runs (Plans 327/328), the freshness heartbeat and every reader of `forecasts` see exactly what they see today. NOT any change to forecast QC rules, thresholds or verdicts; NOT combined forecasts (already stored failed, Plan 253 OD-1); NOT hindcasts; NOT backfilling earlier rejections; NOT publishing or alerting on a rejected forecast.
 risk: high   # new table + migration, live-database writes, external-facing route (docs/workflow.md § High-risk work)
 depends_on: [401, 402]
 blocks: []
@@ -342,16 +342,22 @@ route-matrix class `REVIEW_OR_HUMAN` in `tests/unit/api/test_security.py`, recog
 `TestRoleGates._ADMITTED` (`:185-189`: reviewer and admin service tokens) and the reviewer-reach
 test — Plan 341's own human-only review class (`341:116`) stays separate; Plan 402's contract
 generator — this operation's description names both principals (a reviewer or admin service
-token, or a named-human OIDC bearer), and its 403 set and its 400 set (the route parses query
-values) gain this route; `api/cors.py` — the human-dashboard origin policy (`ScopedCorsMiddleware`,
-`:13`, `:62-68`, today only `/api/v1/review/forecasts`) also covers exactly
-`GET /api/v1/stations/{id}/rejected-forecasts` and its preflight, nothing else under
-`/api/v1/stations` (owner, 2026-09-28: a named human reads it from the browser dashboard); Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
+token, or a named-human OIDC bearer), and its 403, 400 and 404 sets gain this route (it parses `{id}` with Plan 402 T1's helper → 400 when
+malformed, and query values; 404 for an unknown, out-of-scope or ungranted station); `api/cors.py` —
+`ScopedCorsMiddleware` (`:13`, `:62-68`) sends exactly `/api/v1/stations/{id}/rejected-forecasts` to a
+**separate GET-only** `CORSMiddleware` for the human-dashboard origin (`allow_methods=["GET"]`,
+`Authorization` only, credentials allowed) — not the existing review policy, which also allows POST
+(`:46-56`); nothing else under `/api/v1/stations`; with `SAPPHIRE_HUMAN_DASHBOARD_ORIGIN` unset the
+path gets no CORS, as the review prefix does today (owner, 2026-09-28: a named human reads it from
+the browser dashboard); Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
 active; every parameter of a rejected assignment is returned — including `qc_passed` and `qc_suspect`
 ones — each with its own status; one rejection is the group `(attempt_id, station_id, model_id,
-group_id)`; `qc_unchecked` is not a pass; the query conventions above); `docs/conventions.md` § API routes; `docs/standards/security.md` (the REVIEW-class route
-list and D4's rule beside Plan 402's D13 entry); `docs/touchpoint-maps.md` (API paragraph). The gate
+group_id)`; `qc_unchecked` is not a pass; the query conventions above); `docs/conventions.md` § API routes; `docs/standards/security.md` (this route under the new `REVIEW_OR_HUMAN` class — reviewer or admin
+service token, or a granted human; the bearer's shape picks the verifier; one 401 — with D4's rule
+beside Plan 402's D13 entry, and the human-dashboard CORS paragraph, `security.md:38-41`, extended to
+exactly this GET path, noting it is the first mounted route that calls the OIDC verifier); Plan 402's
+consumer-page sentence naming the routes that answer 400 gains this route; `docs/touchpoint-maps.md` (API paragraph). The gate
 predicate (D4). If Plan 341's route inventory and switch exist on the base branch, wire the
 predicate to the switch, classify this route there as a REVIEW diagnostic whose values follow D4,
 and extend its test. The route accepts a reviewer service token with D4 redaction, an admin token
@@ -374,8 +380,10 @@ a service token never reaches the OIDC verifier, an OIDC token never reaches the
 a bearer with no dot or three or more dots → 401 with neither called, a service-token request still
 succeeds with human authentication disabled, identical 401 bodies across the failure cases, and
 CORS — the human-dashboard origin is allowed on this route's GET and preflight, another origin is
-refused, and that origin is still refused on another `/api/v1/stations` route. If Plan 341 T3 has landed a shared dependency by then,
-this route uses it instead. Neither landing order permits a rejected-record ID on a forecast
+refused, that origin is still refused on another `/api/v1/stations` route, and a POST preflight on this
+route is refused. The service branch is `require_reviewer(require_principal(request, conn))`, called
+directly. A shared dependency from Plan 341 T3 may replace this one only if it has exactly this
+contract (both principals, the shape rule, one 401, no 503). Neither landing order permits a rejected-record ID on a forecast
 publication route.
 
 **Response item** (every field, ungated): `id`, `attempt_id`, `recorded_at`, `station_id`,
@@ -387,7 +395,7 @@ item with `withheld: true`, `values: null` and every flag's `detail: null`; noth
 
 **Pre-change:** a request to the route returns 404.
 
-**Verification:** `uv run pytest tests/unit/api/test_api_rejected_forecasts.py tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. A named human with a current station `review` grant → full record, and a revoked or out-of-scope human → denial (Plan 341's human principal is on `main`); a service token → handled without touching the OIDC verifier, also with human authentication disabled; an OIDC token → never looked up as an access token. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
+**Verification:** `uv run pytest tests/unit/api/test_api_rejected_forecasts.py tests/unit/api/` — reviewer → 200 in scope with values, flags and `withheld: false` (predicate answers no) and 404 for an out-of-scope station; admin → 200 for any existing station; reviewer and admin → 404 for an unknown station; no token → 401; `model_id` and `start`/`end` filter, the default window is the last 7 days and `end` is exclusive; with the predicate forced to yes, reviewer → the full item with `withheld: true`, `values: null` and every `detail: null`, admin → everything; items come newest first, `(issued_at DESC, recorded_at DESC, id DESC)`; non-finite values round-trip in their encoding; `limit` above 50 is refused; consumer → 403; `limit`/`offset` paginate; the drift test covers the route. With the gate predicate forced to yes, a named human with a current station `review` grant → the full record while a reviewer token gets `withheld: true`; a deactivated human → 401, a revoked grant or an out-of-scope station → 404; an OIDC-shaped bearer with human authentication disabled → 401 with the same body as every other authentication failure (never 503); a malformed `{id}` → 400; `TestRoleGates` gains `REVIEW_OR_HUMAN` in its gate map and parametrisation through a request-level adapter, so the class's admitted service roles are exercised, not only declared; a service token → handled without touching the OIDC verifier, also with human authentication disabled; an OIDC token → never looked up as an access token. Where Plan 341's publication routes exist, a `rejected_forecasts` id submitted to publish or replace is refused, leaving the selection and decision ledger unchanged.
 
 ### T4 — documents
 
@@ -506,6 +514,11 @@ After staging deploy (orchestrator):
   Owner: a named human reads the route from the browser dashboard. T3 now names
   `require_reviewer_or_human`, a `REVIEW_OR_HUMAN` matrix class, the exact CORS addition, and one 401
   for every authentication failure (no 503). The forecast-cycle design and D1-D6 are unchanged.
+- 2026-09-28 — second independent review (Claude, Codex): a separate GET-only CORS policy for this
+  path (the review policy also allows POST); the route joins the 400/404 sets and parses `{id}`;
+  sharper auth tests (gate forced on, deactivated 401 vs revoked 404, OIDC disabled → 401, the new
+  class exercised in `TestRoleGates`); a Plan 341 dependency may replace this one only with the same
+  contract; scope and `security.md` wording updated.
 
 ## Dependency graph
 
