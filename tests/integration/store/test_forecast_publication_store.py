@@ -525,6 +525,14 @@ class TestPgForecastPublicationStore:
                 restored_at=overdue_at - timedelta(hours=1),
             )
         )
+        existing_health_ids = set(
+            db_connection.scalars(
+                sa.select(pipeline_health.c.id).where(
+                    pipeline_health.c.check_type == "publication_proof_overdue"
+                )
+            )
+        )
+        created_health_ids: set[int] = set()
         try:
             with pytest.raises(PublicationBackupOverdueError):
                 _publish(
@@ -537,11 +545,26 @@ class TestPgForecastPublicationStore:
                 )
         finally:
             with db_connection.engine.begin() as cleanup:
+                created_health_ids = (
+                    set(
+                        cleanup.scalars(
+                            sa.select(pipeline_health.c.id).where(
+                                pipeline_health.c.check_type
+                                == "publication_proof_overdue",
+                                pipeline_health.c.checked_at == overdue_at,
+                                pipeline_health.c.subject
+                                == "forecast_publication_proofs",
+                            )
+                        )
+                    )
+                    - existing_health_ids
+                )
                 cleanup.execute(
                     sa.delete(pipeline_health).where(
-                        pipeline_health.c.check_type == "publication_proof_overdue"
+                        pipeline_health.c.id.in_(created_health_ids)
                     )
                 )
+        assert len(created_health_ids) == 1
 
     def test_replacement_keeps_history_and_historical_withdrawal(
         self, db_connection: sa.Connection
