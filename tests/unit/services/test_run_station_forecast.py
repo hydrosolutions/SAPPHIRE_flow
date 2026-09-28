@@ -246,7 +246,7 @@ class TestHappyPath:
         _seed_artifact(store, _MODEL_ID_A)
         model = _RecordingStationModel()
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(
@@ -267,6 +267,7 @@ class TestHappyPath:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         assert isinstance(result, StationForecastResult)
@@ -300,7 +301,7 @@ class TestHappyPath:
             _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=1), b"warm_state"
         )
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=meta,
@@ -319,6 +320,7 @@ class TestHappyPath:
             rng=_RNG,
             model_state_store=state_store,
         )
+        result = _outcome.result
 
         assert result is not None
         fc = result.forecasts[0]
@@ -335,7 +337,7 @@ class TestHappyPath:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -355,6 +357,7 @@ class TestHappyPath:
             model_state_store=FakeModelStateStore(),
             water_level_datum_masl=260.0,
         )
+        result = _outcome.result
 
         assert result is not None
         forecast = result.forecasts[0]
@@ -365,7 +368,7 @@ class TestHappyPath:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -385,6 +388,7 @@ class TestHappyPath:
             model_state_store=FakeModelStateStore(),
             water_level_datum_masl=None,
         )
+        result = _outcome.result
 
         assert result is not None
         assert result.forecasts[0].qc_status == QcStatus.QC_PASSED
@@ -409,7 +413,7 @@ class TestMultiModelFallback:
             def deserialize_artifact(self, raw: bytes) -> object:
                 return raw
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -434,6 +438,7 @@ class TestMultiModelFallback:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         assert result.model_id == _MODEL_ID_B
@@ -443,7 +448,7 @@ class TestMultiModelFallback:
         _seed_artifact(store, _MODEL_ID_A)
         _seed_artifact(store, _MODEL_ID_B)
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -468,6 +473,7 @@ class TestMultiModelFallback:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         assert result.model_id == _MODEL_ID_A
@@ -530,7 +536,7 @@ class TestQcFailureFallback:
 
         checker = _FirstFailThenPassChecker()
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -555,6 +561,7 @@ class TestQcFailureFallback:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         assert result.model_id == _MODEL_ID_B
@@ -611,6 +618,169 @@ class TestQcFailureFallback:
         assert isinstance(failure, rsf_module.AssignmentFailure)
         assert failure.cause is rsf_module.AssignmentFailureCause.QC_FAILED
 
+    def test_rejected_payload_records_the_failed_parameter(self) -> None:
+        """Plan 404 T2: a QC_FAILED assignment's `.rejected` payload carries
+        the station/model identity, the issue time, and every parameter's
+        own verdict and flags — here a single-parameter model, so exactly
+        one."""
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        class _AlwaysFailChecker:
+            def check(self, ensemble, rule_set, overrides, baselines) -> list[QcFlag]:  # noqa: ANN001
+                return [
+                    QcFlag(
+                        rule_id="range_check",
+                        rule_version="1.0",
+                        status=QcStatus.QC_FAILED,
+                        detail="out of range",
+                    )
+                ]
+
+        with capture_logs() as logs:
+            result = _run_all(
+                assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+                models={_MODEL_ID_A: FakeStationForecastModel()},
+                store=store,
+                qc_checker=_AlwaysFailChecker(),
+            )
+
+        failure = result.failed_models[_MODEL_ID_A]
+        assert failure.rejected is not None
+        assert failure.rejected.station_id == _STATION_ID
+        assert failure.rejected.model_id == _MODEL_ID_A
+        assert failure.rejected.group_id is None
+        assert len(failure.rejected.parameters) == 1
+        param = failure.rejected.parameters[0]
+        assert param.qc_status == QcStatus.QC_FAILED
+        assert param.ensemble.parameter == "discharge"
+        assert param.qc_flags[0].detail == "out of range"
+
+        qc_failed_events = [
+            log_entry
+            for log_entry in logs
+            if log_entry["event"] == "run_station_forecast.qc_failed"
+        ]
+        assert len(qc_failed_events) == 1
+        assert qc_failed_events[0]["parameters"] == ["discharge"]
+
+    def test_multi_parameter_model_records_every_parameter_and_only_lists_failed_ones(
+        self,
+    ) -> None:
+        """A model whose SECOND parameter is the one that fails QC: BOTH
+        parameters are recorded (each with its own verdict), but the log
+        event's `parameters` names only the failed one."""
+
+        class _TwoParamModel(FakeStationForecastModel):
+            def predict(self, artifact, inputs, rng, prior_state=None):  # noqa: ANN001
+                ensembles, state = super().predict(
+                    artifact, inputs, rng, prior_state=prior_state
+                )
+                discharge = ensembles["discharge"]
+                water_level = dataclasses.replace(
+                    discharge, parameter="water_level", units="m"
+                )
+                return ({"discharge": discharge, "water_level": water_level}, state)
+
+        class _FailWaterLevelChecker:
+            def check(
+                self, ensemble, rule_set, overrides, baselines, skipped_rule_ids=None
+            ) -> list[QcFlag]:  # noqa: ANN001
+                if ensemble.parameter == "water_level":
+                    return [
+                        QcFlag(
+                            rule_id="range_check",
+                            rule_version="1.0",
+                            status=QcStatus.QC_FAILED,
+                            detail="water level out of range",
+                        )
+                    ]
+                return []
+
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        with capture_logs() as logs:
+            result = _run_all(
+                assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+                models={_MODEL_ID_A: _TwoParamModel()},
+                store=store,
+                qc_checker=_FailWaterLevelChecker(),
+            )
+
+        failure = result.failed_models[_MODEL_ID_A]
+        assert failure.rejected is not None
+        by_param = {p.ensemble.parameter: p for p in failure.rejected.parameters}
+        assert set(by_param) == {"discharge", "water_level"}
+        assert by_param["discharge"].qc_status == QcStatus.QC_PASSED
+        assert by_param["water_level"].qc_status == QcStatus.QC_FAILED
+
+        qc_failed_events = [
+            log_entry
+            for log_entry in logs
+            if log_entry["event"] == "run_station_forecast.qc_failed"
+        ]
+        assert qc_failed_events[0]["parameters"] == ["water_level"]
+
+    def test_error_in_a_later_parameter_after_an_earlier_failure_is_unchecked(
+        self,
+    ) -> None:
+        """Plan 404 T2: once `discharge` has failed, an error checking the
+        REMAINING parameter (`water_level`) is caught, logged, and recorded
+        QC_UNCHECKED — never turned into UNEXPECTED_EXCEPTION, never
+        escaping the assignment."""
+
+        class _TwoParamModel(FakeStationForecastModel):
+            def predict(self, artifact, inputs, rng, prior_state=None):  # noqa: ANN001
+                ensembles, state = super().predict(
+                    artifact, inputs, rng, prior_state=prior_state
+                )
+                discharge = ensembles["discharge"]
+                water_level = dataclasses.replace(
+                    discharge, parameter="water_level", units="m"
+                )
+                return ({"discharge": discharge, "water_level": water_level}, state)
+
+        class _FailDischargeErrorOnWaterLevelChecker:
+            def check(
+                self, ensemble, rule_set, overrides, baselines, skipped_rule_ids=None
+            ) -> list[QcFlag]:  # noqa: ANN001
+                if ensemble.parameter == "discharge":
+                    return [
+                        QcFlag(
+                            rule_id="range_check",
+                            rule_version="1.0",
+                            status=QcStatus.QC_FAILED,
+                            detail="discharge out of range",
+                        )
+                    ]
+                raise RuntimeError("boom checking water_level")
+
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        with capture_logs() as logs:
+            result = _run_all(
+                assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+                models={_MODEL_ID_A: _TwoParamModel()},
+                store=store,
+                qc_checker=_FailDischargeErrorOnWaterLevelChecker(),
+            )
+
+        failure = result.failed_models[_MODEL_ID_A]
+        assert failure.cause is rsf_module.AssignmentFailureCause.QC_FAILED
+        assert failure.rejected is not None
+        by_param = {p.ensemble.parameter: p for p in failure.rejected.parameters}
+        assert by_param["discharge"].qc_status == QcStatus.QC_FAILED
+        assert by_param["water_level"].qc_status == QcStatus.QC_UNCHECKED
+        assert by_param["water_level"].qc_flags == ()
+
+        unchecked_events = [
+            log_entry
+            for log_entry in logs
+            if log_entry["event"] == "run_station_forecast.qc_parameter_unchecked"
+        ]
+        assert len(unchecked_events) == 1
+        assert unchecked_events[0]["parameter"] == "water_level"
+
 
 class TestAllModelsFail:
     def test_returns_none_when_all_models_fail(self) -> None:
@@ -631,7 +801,7 @@ class TestAllModelsFail:
             def deserialize_artifact(self, raw: bytes) -> object:
                 return raw
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -656,13 +826,14 @@ class TestAllModelsFail:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is None
 
     def test_returns_none_when_no_artifact(self) -> None:
         store = FakeModelArtifactStore()  # no artifacts seeded
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -681,6 +852,7 @@ class TestAllModelsFail:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is None
 
@@ -688,7 +860,7 @@ class TestAllModelsFail:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -707,6 +879,7 @@ class TestAllModelsFail:
             rng=_RNG,
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is None
 
@@ -1673,7 +1846,7 @@ class TestPerAssignmentWarmUpState:
         )
 
         with capture_logs() as logs:
-            result = run_station_forecast(
+            _outcome = run_station_forecast(
                 station_id=_STATION_ID,
                 inputs=_make_inputs(),
                 input_metadata=_make_metadata(),
@@ -1698,6 +1871,7 @@ class TestPerAssignmentWarmUpState:
                 rng=random.Random(42),
                 model_state_store=state_store,
             )
+            result = _outcome.result
 
         # The primary is STILL returned — the guard did not abort the station.
         assert result is not None
@@ -2260,7 +2434,7 @@ class TestClockSensitiveGolden:
         _seed_artifact(store, _MODEL_ID_A)
         clock, calls = _ticking_clock(_NOW, timedelta(seconds=1))
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=_make_inputs(),
             input_metadata=_make_metadata(),
@@ -2279,6 +2453,7 @@ class TestClockSensitiveGolden:
             rng=random.Random(42),
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         # D2/D4: an empty state store returns COLD_START WITHOUT consulting
@@ -2393,7 +2568,7 @@ class TestContextInputsIsTheSingleInputAuthority:
 
         spy_model = _InputSpyModel()
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=raw_inputs,
             input_metadata=_make_metadata(),
@@ -2412,6 +2587,7 @@ class TestContextInputsIsTheSingleInputAuthority:
             rng=random.Random(42),
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         # predict() must receive context.inputs, NOT the raw `inputs` param.
@@ -2448,7 +2624,7 @@ class TestContextInputsIsTheSingleInputAuthority:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
 
-        result = run_station_forecast(
+        _outcome = run_station_forecast(
             station_id=_STATION_ID,
             inputs=raw_inputs,
             input_metadata=_make_metadata(),
@@ -2467,6 +2643,7 @@ class TestContextInputsIsTheSingleInputAuthority:
             rng=random.Random(42),
             model_state_store=FakeModelStateStore(),
         )
+        result = _outcome.result
 
         assert result is not None
         # `_EnsembleValueSpyModel.predict` echoes the future_dynamic

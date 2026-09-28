@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from sapphire_flow.exceptions import (
     DiskSoftLimitError,
     ForecastCycleAbortedError,
     ForecastRetryConflictError,
+    GroupForecastError,
     NoCycleAvailableError,
     StoreError,
 )
@@ -108,11 +110,15 @@ if TYPE_CHECKING:
         NwpGridStore,
         ObservationStore,
         RatingCurveStore,
+        RejectedForecastStore,
         StationGroupStore,
         StationStore,
         WeatherForecastStore,
     )
-    from sapphire_flow.services.run_station_forecast import StationForecastResult
+    from sapphire_flow.services.run_station_forecast import (
+        AssignmentFailure,
+        StationForecastResult,
+    )
     from sapphire_flow.services.track_assembly import AssignmentRunInput
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
@@ -127,6 +133,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.rating_curve import RatingCurve
+    from sapphire_flow.types.rejected_forecast import RejectedForecastEntry
     from sapphire_flow.types.station import (
         ModelAssignment,
         StationConfig,
@@ -134,6 +141,106 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+# Plan 404 D6 — the hard OVERALL limit on the end-of-run rejected-forecast
+# capture write: resolving the host, connecting, the timeouts, the inserts
+# and the commit, all bounded together. Read at CALL TIME inside
+# `_capture_rejected_forecasts` (never bound as a default argument), so a
+# test can shorten it by monkeypatching this module attribute.
+REJECTED_CAPTURE_DEADLINE_S = 10.0
+
+
+def _collect_rejected_forecasts(
+    buffer: list[RejectedForecastEntry],
+    attempt_id: UUID,
+    failed_models: dict[ModelId, AssignmentFailure],
+) -> None:
+    """Plan 404 T2 — called immediately after each of
+    `run_all_station_forecasts_per_track`, `run_all_station_forecasts` and
+    the PRIMARY-mode `run_station_forecast` wrapper returns, BEFORE the
+    cross-cycle preflight, the `all_models_failed` checks, or any other
+    exit — so no early exit ever loses a rejection (D5)."""
+    from sapphire_flow.types.rejected_forecast import RejectedForecastEntry
+
+    for failure in failed_models.values():
+        if failure.rejected is not None:
+            buffer.append(
+                RejectedForecastEntry(attempt_id=attempt_id, payload=failure.rejected)
+            )
+
+
+class _RejectedCaptureHolder:
+    """Plan 404 D6 — the daemon thread's outcome, read by the flow thread
+    AFTER `.join()`. The capture thread itself never logs, so every capture
+    log line is emitted on the flow thread, with its structlog context
+    (including `attempt_id`)."""
+
+    __slots__ = ("error",)
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+
+
+def _run_rejected_capture(
+    store: RejectedForecastStore,
+    buffer: list[RejectedForecastEntry],
+    abandon: threading.Event,
+    holder: _RejectedCaptureHolder,
+) -> None:
+    try:
+        store.write_batch(buffer, abandon=abandon)
+    except Exception as exc:  # reported via `holder`, never raised on this thread
+        holder.error = exc
+
+
+def _capture_rejected_forecasts(
+    store: RejectedForecastStore | None,
+    buffer: list[RejectedForecastEntry],
+) -> None:
+    """Plan 404 D5/D6 — the run's LAST database write, on its own bounded
+    connection/transaction (T1), best-effort: a failure or timeout here never
+    raises past this function, never touches `forecasts_stored`, and is not
+    counted in the group path's fatal store call. A run with no rejection
+    (`store is None` — an injected caller that omitted it — or an empty
+    buffer) opens no capture connection at all."""
+    if store is None or not buffer:
+        return
+    # The one deliberate broad `except` on this path (docs/conventions.md §
+    # Flow-level strategy): optional diagnostics written after the run's
+    # real outputs must never replace an in-flight exception or turn a
+    # returned result into a raise.
+    try:
+        abandon = threading.Event()
+        holder = _RejectedCaptureHolder()
+        thread = threading.Thread(
+            target=_run_rejected_capture,
+            args=(store, buffer, abandon, holder),
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=REJECTED_CAPTURE_DEADLINE_S)
+        if thread.is_alive():
+            abandon.set()
+            log.warning(
+                "rejected_forecast.write_timed_out",
+                assignment_count=len(buffer),
+            )
+            return
+        if holder.error is not None:
+            for entry in buffer:
+                log.warning(
+                    "rejected_forecast.write_failed",
+                    station_id=str(entry.payload.station_id),
+                    model_id=str(entry.payload.model_id),
+                    group_id=(
+                        str(entry.payload.group_id)
+                        if entry.payload.group_id is not None
+                        else None
+                    ),
+                    error=str(holder.error),
+                )
+    except Exception as exc:
+        log.warning("rejected_forecast.write_failed", error=str(exc))
 
 
 def _bind_rating_curve(
@@ -2362,10 +2469,21 @@ def run_forecast_cycle_flow(
     # malformed value instead of admitting it as an unchecked `object` and
     # failing later, deep inside T8b, when a policy attribute is accessed.
     forcing_resolution_policy: ForcingResolutionPolicy | None = None,
+    # Plan 404 T1/T2: the rejected-forecast capture store. `None` (an
+    # injected caller that omits it, or a test) gets no capture — a missing
+    # store in the PRODUCTION bundle is an error at setup (`flows/_db.py`),
+    # never a silent no-op here.
+    rejected_forecast_store: object | None = None,
+    # Plan 404 T2: mints `attempt_id` — one per cycle execution, distinguishing
+    # a Plan 327 resume or Plan 328 retry of the same cycle. A callable
+    # default is not a valid Prefect deployment parameter, so this resolves
+    # to `uuid4` in the body, beside `clock`/`rng`.
+    id_gen: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
     created_http_client: Any = None
+    rejected_buffer: list[RejectedForecastEntry] = []
     try:
         station_store = cast("StationStore | None", station_store)
         obs_store = cast("ObservationStore | None", obs_store)
@@ -2390,11 +2508,24 @@ def run_forecast_cycle_flow(
         gateway_polygon_store = cast(
             "GatewayPolygonBindingStoreLike | None", gateway_polygon_store
         )
+        rejected_forecast_store = cast(
+            "RejectedForecastStore | None", rejected_forecast_store
+        )
+        id_gen = cast("Callable[[], UUID] | None", id_gen)
 
         if clock is None:
             clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
         if rng is None:
             rng = random.Random()
+        if id_gen is None:
+            id_gen = uuid4
+
+        # Plan 404 T2 — one attempt_id per cycle execution, minted here (once)
+        # and bound into the structlog context for the whole run, so the
+        # run's `qc_failed`, `write_failed`/`write_timed_out` events and its
+        # stored rows can all be joined by `attempt_id`.
+        attempt_id = id_gen()
+        structlog.contextvars.bind_contextvars(attempt_id=str(attempt_id))
 
         # --- Production setup ---
         _conn: object = None
@@ -2419,6 +2550,9 @@ def run_forecast_cycle_flow(
             forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
             gateway_polygon_store = cast(
                 "GatewayPolygonBindingStoreLike", stores["gateway_polygon_store"]
+            )
+            rejected_forecast_store = cast(
+                "RejectedForecastStore", stores["rejected_forecast_store"]
             )
 
         if config is None:
@@ -2994,6 +3128,7 @@ def run_forecast_cycle_flow(
             run_station_forecast,
         )
         from sapphire_flow.types.enums import ModelCombinationStrategy
+        from sapphire_flow.types.rejected_forecast import RejectedForecastEntry
 
         # stations_failed / errors accumulate from the up-front forecast-binding
         # resolution above (Phase A containment) as well as this loop.
@@ -3047,6 +3182,9 @@ def run_forecast_cycle_flow(
                         rng=rng,
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
+                    )
+                    _collect_rejected_forecasts(
+                        rejected_buffer, attempt_id, multi_result.failed_models
                     )
 
                     # D11: the cross-cycle combination preflight — installed
@@ -3349,7 +3487,7 @@ def run_forecast_cycle_flow(
                     # only what gets persisted differs. Do not read this branch as
                     # "one model runs" — that misreading produced a wrong scaling
                     # measurement (Plan 203).
-                    fc_result = run_station_forecast(
+                    fc_outcome = run_station_forecast(
                         station_id=sid,
                         inputs=inputs,
                         input_metadata=input_metadata,
@@ -3369,8 +3507,11 @@ def run_forecast_cycle_flow(
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
+                    _collect_rejected_forecasts(
+                        rejected_buffer, attempt_id, fc_outcome.failed_models
+                    )
 
-                    if fc_result is None:
+                    if fc_outcome.result is None:
                         reason = "all_models_failed"
                         _record_station_dark(
                             pipeline_health_store,
@@ -3390,6 +3531,7 @@ def run_forecast_cycle_flow(
                         structlog.contextvars.unbind_contextvars("station_id")
                         continue
 
+                    fc_result = fc_outcome.result
                     _, n_stored = _store_station_forecasts(
                         forecast_store,  # type: ignore[arg-type]
                         fc_result.forecasts,
@@ -3440,6 +3582,9 @@ def run_forecast_cycle_flow(
                         rng=rng,
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
+                    )
+                    _collect_rejected_forecasts(
+                        rejected_buffer, attempt_id, multi_result.failed_models
                     )
 
                     if multi_result.primary_model_id is None:
@@ -3707,7 +3852,7 @@ def run_forecast_cycle_flow(
                         continue
 
                     group_inputs, metadata_by_station = group_inputs_result
-                    group_results = run_group_forecast(
+                    group_outcome = run_group_forecast(
                         group=restricted_group,
                         group_inputs=group_inputs,
                         metadata_by_station=metadata_by_station,
@@ -3726,8 +3871,14 @@ def run_forecast_cycle_flow(
                         rng=rng,  # type: ignore[arg-type]
                         water_level_datums_masl=water_level_datums_masl,
                     )
+                    for rejected_payload in group_outcome.rejected:
+                        rejected_buffer.append(
+                            RejectedForecastEntry(
+                                attempt_id=attempt_id, payload=rejected_payload
+                            )
+                        )
 
-                    for sid, result in group_results.items():
+                    for sid, result in group_outcome.results.items():
                         # Plan 327 T2: the GROUP path is deliberately NOT the
                         # station path. An IDENTICAL re-run (decision-table
                         # row 4) now returns the stored identity and no longer
@@ -3809,11 +3960,36 @@ def run_forecast_cycle_flow(
 
                     log.info(
                         "forecast_cycle.group_completed",
-                        stations_forecast=len(group_results),
+                        stations_forecast=len(group_outcome.results),
                         duration_ms=round((time.perf_counter() - group_t0) * 1000, 1),
                     )
                 except StoreError:
                     raise
+                except GroupForecastError as exc:
+                    # Plan 404 T2 — `run_group_forecast` raised this instead
+                    # of returning (a later station raised an ordinary error
+                    # after an earlier one was QC-rejected): `exc.rejected`
+                    # carries every rejection its per-station loop gathered
+                    # before the raise, which would otherwise be lost — a
+                    # normal return's rejections are buffered below instead
+                    # (`group_outcome.rejected`), never reaching this branch.
+                    # The group is skipped exactly as the generic handler
+                    # does, with the SAME logged text (the original
+                    # exception, not this wrapper).
+                    for rejected_payload in exc.rejected:
+                        rejected_buffer.append(
+                            RejectedForecastEntry(
+                                attempt_id=attempt_id, payload=rejected_payload
+                            )
+                        )
+                    log.warning(
+                        "forecast_cycle.group_forecast_failed",
+                        error=str(exc.original),
+                    )
+                    errors.append(
+                        f"Group forecast failed for {group.id}: {exc.original}"
+                    )
+                    continue
                 except Exception as exc:
                     # Fixer round (blocker, take 3): a fatal store_forecast
                     # failure (ANY exception type, not just StoreError —
@@ -3933,5 +4109,20 @@ def run_forecast_cycle_flow(
 
         return result
     finally:
-        if created_http_client is not None:
-            created_http_client.close()
+        # Plan 404 D5/D6 — the capture write is the run's LAST database
+        # write: it runs here, after whichever `FORECAST_FRESHNESS` heartbeat
+        # this run emitted (or none, on a `StoreError`/other abort that skips
+        # `return result` above), so it can never delay forecast delivery,
+        # alerts or the heartbeat. Only `rejected_buffer` is bound before the
+        # outer `try` — `attempt_id` may not be (an exception raised before
+        # it was minted), so nothing here depends on it being bound; each
+        # buffered entry already carries its own copy.
+        try:
+            if created_http_client is not None:
+                created_http_client.close()
+            _capture_rejected_forecasts(rejected_forecast_store, rejected_buffer)  # type: ignore[arg-type]
+        finally:
+            # Runs on every exit, regardless of whether attempt_id was ever
+            # bound (unbinding an unbound key is a no-op), so a later
+            # in-process run never inherits this run's attempt_id.
+            structlog.contextvars.unbind_contextvars("attempt_id")

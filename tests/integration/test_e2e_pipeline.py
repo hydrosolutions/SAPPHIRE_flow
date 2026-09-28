@@ -672,7 +672,7 @@ class TestE2ePipeline:
                     # COLD_START, byte-identical to the manual metadata above
                     # (Plan 148 T2 item 8).
                     model_state_store=FakeModelStateStore(),
-                )
+                ).result
 
                 if result_fc is not None:
                     for forecast in result_fc.forecasts:

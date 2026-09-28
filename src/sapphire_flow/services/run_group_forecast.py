@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import polars as pl
 import structlog
 
-from sapphire_flow.exceptions import ModelOutputError, StoreError
+from sapphire_flow.exceptions import GroupForecastError, ModelOutputError, StoreError
 from sapphire_flow.services.forecast_evidence import capture_group_evidence
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
@@ -17,13 +18,9 @@ from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
 )
-from sapphire_flow.services.qc_datum import (
-    add_forecast_datum_details,
-    forecast_skipped_rules,
-    shift_ensemble_for_water_level_datum,
-)
 from sapphire_flow.services.run_station_forecast import (
     StationForecastResult,
+    check_forecast_parameter,
     worst_qc_status,
 )
 from sapphire_flow.types.domain import aggregate_input_quality
@@ -31,6 +28,10 @@ from sapphire_flow.types.enums import ArtifactScope, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import ForecastId
 from sapphire_flow.types.model import GroupModelInputs
+from sapphire_flow.types.rejected_forecast import (
+    RejectedAssignmentPayload,
+    RejectedParameterPayload,
+)
 
 if TYPE_CHECKING:
     import random
@@ -69,6 +70,26 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _STATION_ID_COLUMN = "station_id"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _StationResultOutcome:
+    """Plan 404 T2 — `_build_station_result`'s return: a passing station's
+    result, or (on QC_FAILED) `None` plus its rejected payload. Exactly one
+    of the two is set."""
+
+    result: StationForecastResult | None
+    rejected: RejectedAssignmentPayload | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupForecastOutcome:
+    """Plan 404 T2 — `run_group_forecast`'s return: passing stations' results
+    AND every rejected station's payload, D3 (group rejections are per
+    station)."""
+
+    results: dict[StationId, StationForecastResult]
+    rejected: tuple[RejectedAssignmentPayload, ...] = ()
 
 
 def _station_id_first(df: pl.DataFrame) -> pl.DataFrame:
@@ -283,39 +304,82 @@ def _build_station_result(
     config: DeploymentConfig,
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
-) -> StationForecastResult | None:
+) -> _StationResultOutcome:
+    # Plan 404 T2 — QC runs on EVERY parameter before the verdict (mirrors
+    # `run_station_forecast.py::check_forecast_parameter`'s member-path
+    # restructuring). `rejected_parameters` carries every parameter's own
+    # verdict + flags, for the rejected-forecast record if this station ends
+    # up QC_FAILED; unused (discarded) on a passing station. Once a
+    # parameter has failed, an error anywhere in a REMAINING parameter's
+    # block is logged and that parameter is recorded QC_UNCHECKED — never
+    # escaping this function (it never drops the whole group).
     all_flags: dict[str, list[QcFlag]] = {}
+    rejected_parameters: list[RejectedParameterPayload] = []
+    failed_params: list[str] = []
+    verdict_failed = False
     for param, ensemble in ensembles.items():
         datum = water_level_datum_masl if param == "water_level" else None
-        qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
-        skipped_rules = forecast_skipped_rules(param, datum)
-        if skipped_rules:
-            flags = qc_checker.check(
-                qc_ensemble,
-                qc_rules,
-                qc_overrides,
-                baselines,
-                skipped_rule_ids=skipped_rules,
-            )
+        if verdict_failed:
+            try:
+                flags = check_forecast_parameter(
+                    ensemble,
+                    param,
+                    datum,
+                    qc_checker,
+                    qc_rules,
+                    qc_overrides,
+                    baselines,
+                )
+            except Exception as exc:
+                log.error(
+                    "run_group_forecast.qc_parameter_unchecked",
+                    station_id=str(station_id),
+                    model_id=str(assignment.model_id),
+                    parameter=param,
+                    error=str(exc),
+                )
+                all_flags[param] = []
+                rejected_parameters.append(
+                    RejectedParameterPayload(
+                        ensemble=ensemble, qc_status=QcStatus.QC_UNCHECKED, qc_flags=()
+                    )
+                )
+                continue
         else:
-            flags = qc_checker.check(qc_ensemble, qc_rules, qc_overrides, baselines)
-        flags = add_forecast_datum_details(
-            flags,
-            raw_ensemble=ensemble,
-            shifted_ensemble=qc_ensemble,
-            datum=datum,
-        )
+            flags = check_forecast_parameter(
+                ensemble, param, datum, qc_checker, qc_rules, qc_overrides, baselines
+            )
+
         all_flags[param] = flags
         worst = worst_qc_status(flags)
-        if worst == QcStatus.QC_FAILED:
-            log.warning(
-                "run_group_forecast.qc_failed",
-                station_id=str(station_id),
-                group_id=str(assignment.group_id),
-                model_id=str(assignment.model_id),
-                parameter=param,
+        rejected_parameters.append(
+            RejectedParameterPayload(
+                ensemble=ensemble, qc_status=worst, qc_flags=tuple(flags)
             )
-            return None
+        )
+        if worst == QcStatus.QC_FAILED:
+            verdict_failed = True
+            failed_params.append(param)
+
+    if verdict_failed:
+        log.warning(
+            "run_group_forecast.qc_failed",
+            station_id=str(station_id),
+            group_id=str(assignment.group_id),
+            model_id=str(assignment.model_id),
+            parameters=failed_params,
+        )
+        return _StationResultOutcome(
+            result=None,
+            rejected=RejectedAssignmentPayload(
+                station_id=station_id,
+                model_id=assignment.model_id,
+                model_artifact_id=artifact_id,
+                issued_at=group_inputs.issue_time,
+                group_id=assignment.group_id,
+                parameters=tuple(rejected_parameters),
+            ),
+        )
 
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
@@ -379,13 +443,16 @@ def _build_station_result(
             )
         )
 
-    return StationForecastResult(
-        station_id=station_id,
-        model_id=assignment.model_id,
-        artifact_id=artifact_id,
-        forecasts=forecasts,
-        new_state=new_state,
-        ensembles=dict(ensembles),
+    return _StationResultOutcome(
+        result=StationForecastResult(
+            station_id=station_id,
+            model_id=assignment.model_id,
+            artifact_id=artifact_id,
+            forecasts=forecasts,
+            new_state=new_state,
+            ensembles=dict(ensembles),
+        ),
+        rejected=None,
     )
 
 
@@ -442,12 +509,12 @@ def run_group_forecast(
     id_gen: Callable[[], UUID],
     rng: random.Random,
     water_level_datums_masl: dict[StationId, float | None] | None = None,
-) -> dict[StationId, StationForecastResult]:
+) -> GroupForecastOutcome:
     # Plan 090 D1/D2/D3 (GROUP path): before predict_batch, a group model that
     # declares future NWP forcing must have adequate coverage for EVERY member
     # station it forecasts — else predict_batch would emit a truncated batch. On
-    # shortfall for any station, skip the group model gracefully (return {}) so
-    # the fallback chain still runs, mirroring the STATION path.
+    # shortfall for any station, skip the group model gracefully (empty
+    # outcome) so the fallback chain still runs, mirroring the STATION path.
     future_features = model.data_requirements.future_dynamic_features
     if future_features:
         # Plan 159 T0d (INTERIM): a model's declared horizon may be a CEILING rather
@@ -477,7 +544,7 @@ def run_group_forecast(
                     available_steps=coverage.available_steps,
                     detail=coverage.detail,
                 )
-                return {}
+                return GroupForecastOutcome(results={})
 
     try:
         artifact_result = artifact_store.fetch_active_artifact(
@@ -499,7 +566,7 @@ def run_group_forecast(
             model_id=str(assignment.model_id),
             error=str(exc),
         )
-        return {}
+        return GroupForecastOutcome(results={})
 
     if artifact_result is None:
         log.warning(
@@ -507,7 +574,7 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
         )
-        return {}
+        return GroupForecastOutcome(results={})
 
     artifact_id, artifact_bytes = artifact_result
     rng_state = rng.getstate()
@@ -539,7 +606,7 @@ def run_group_forecast(
                 iq_config=config.input_quality,
             ),
         )
-        return {}
+        return GroupForecastOutcome(results={})
     except StoreError:
         raise
     except Exception as exc:
@@ -560,7 +627,7 @@ def run_group_forecast(
                 iq_config=config.input_quality,
             ),
         )
-        return {}
+        return GroupForecastOutcome(results={})
 
     expected_station_ids = set(group_inputs.station_ids)
     if not batch_result:
@@ -600,6 +667,7 @@ def run_group_forecast(
         )
 
     results: dict[StationId, StationForecastResult] = {}
+    rejected_payloads: list[RejectedAssignmentPayload] = []
     for station_id, (ensembles, new_state) in batch_result.items():
         input_metadata = metadata_by_station.get(station_id)
         if station_id not in expected_station_ids or input_metadata is None:
@@ -610,28 +678,44 @@ def run_group_forecast(
                 station_id=str(station_id),
             )
             continue
-        station_result = _build_station_result(
-            station_id=station_id,
-            assignment=assignment,
-            artifact_id=artifact_id,
-            group_inputs=group_inputs,
-            input_metadata=input_metadata,
-            data_requirements=model.data_requirements,
-            ensembles=ensembles,
-            new_state=new_state,
-            evidence=evidence,
-            qc_checker=qc_checker,
-            qc_rules=qc_rules,
-            qc_overrides=qc_overrides,
-            baselines=baselines_by_station.get(station_id, []),
-            water_level_datum_masl=(water_level_datums_masl or {}).get(station_id),
-            nwp_cycle_reference_time=nwp_cycle_reference_time,
-            nwp_cycle_source=nwp_cycle_source,
-            config=config,
-            clock=clock,
-            id_gen=id_gen,
-        )
-        if station_result is not None:
-            results[station_id] = station_result
+        # Plan 404 T2 — a station RAISING here (an ordinary, unanticipated
+        # error, not a QC rejection — `_build_station_result` never raises
+        # for a QC_FAILED parameter, only returns it) must not silently drop
+        # an EARLIER station's already-collected rejection. `GroupForecastError`
+        # carries `rejected_payloads` gathered so far plus the original
+        # exception; the flow's handler buffers them and skips the group
+        # exactly as the pre-Plan-404 generic handler did.
+        try:
+            outcome = _build_station_result(
+                station_id=station_id,
+                assignment=assignment,
+                artifact_id=artifact_id,
+                group_inputs=group_inputs,
+                input_metadata=input_metadata,
+                data_requirements=model.data_requirements,
+                ensembles=ensembles,
+                new_state=new_state,
+                evidence=evidence,
+                qc_checker=qc_checker,
+                qc_rules=qc_rules,
+                qc_overrides=qc_overrides,
+                baselines=baselines_by_station.get(station_id, []),
+                water_level_datum_masl=(water_level_datums_masl or {}).get(station_id),
+                nwp_cycle_reference_time=nwp_cycle_reference_time,
+                nwp_cycle_source=nwp_cycle_source,
+                config=config,
+                clock=clock,
+                id_gen=id_gen,
+            )
+        except Exception as exc:
+            raise GroupForecastError(
+                f"station {station_id} raised while building its group result: {exc}",
+                rejected=tuple(rejected_payloads),
+                original=exc,
+            ) from exc
+        if outcome.rejected is not None:
+            rejected_payloads.append(outcome.rejected)
+        if outcome.result is not None:
+            results[station_id] = outcome.result
 
-    return results
+    return GroupForecastOutcome(results=results, rejected=tuple(rejected_payloads))
