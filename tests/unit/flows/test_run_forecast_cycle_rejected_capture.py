@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 from uuid import uuid4
 
+import httpx
+import pytest
 import structlog.testing
 
 from sapphire_flow.exceptions import CaptureAbandonedError
@@ -32,8 +36,7 @@ from tests.conftest import make_forecast_ensemble
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    import pytest
+    from pathlib import Path
 
 
 class _StubStore:
@@ -165,6 +168,35 @@ class TestCaptureRejectedForecasts:
         ]
         assert len(failed_events) == 2
 
+    def test_thread_start_failure_logs_write_failed_once_per_buffered_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Code review finding, 2026-09-28: the outer `except Exception`
+        (covering `thread.start()`/`.join()` themselves raising, as opposed
+        to the thread's OWN write failing) is a DIFFERENT code path from
+        `test_store_failure_logs_write_failed_once_per_buffered_entry`
+        above — it shares `_log_rejected_write_failed`, but nothing had
+        driven it with more than a hypothetical one-entry buffer before."""
+
+        def _start_that_fails(self: threading.Thread) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(threading.Thread, "start", _start_that_fails)
+        store = _StubStore(behavior="succeed")
+        entries = [
+            RejectedForecastEntry(attempt_id=uuid4(), payload=_payload()),
+            RejectedForecastEntry(attempt_id=uuid4(), payload=_payload()),
+        ]
+        with structlog.testing.capture_logs() as logs:
+            flow_module._capture_rejected_forecasts(store, entries)
+        failed_events = [
+            log_entry
+            for log_entry in logs
+            if log_entry["event"] == "rejected_forecast.write_failed"
+        ]
+        assert len(failed_events) == 2
+        assert store.calls == []
+
     def test_deadline_exceeded_sets_abandon_and_logs_timed_out_once(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -222,3 +254,130 @@ class TestCaptureRejectedForecasts:
         finally:
             block_event.set()
             releaser.join(timeout=1)
+
+
+class TestCaptureRunsEvenWhenClosingTheHttpClientRaises:
+    """Code review finding, 2026-09-28 (P1): `_capture_rejected_forecasts`
+    sat in the SAME `try` as `created_http_client.close()` in the flow's
+    outermost `finally`, so a `close()` failure skipped the D5/D6 write
+    entirely. This drives a REAL `run_forecast_cycle_flow()` run — the only
+    way `created_http_client` is ever non-`None` is the flow building its
+    own `MeteoSwissNwpAdapter` (no injected `adapter=`), mirroring
+    `test_run_forecast_cycle.py::test_constructs_meteoswiss_adapter_when_
+    config_enabled` — with a QC rule set that rejects the station's only
+    model, and `httpx.Client.close` patched to raise."""
+
+    def test_close_failure_does_not_skip_the_capture_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
+        from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet
+        from tests.fakes.fake_stores import (
+            FakeAlertStore,
+            FakeBasinStore,
+            FakeClimBaselineStore,
+            FakeForecastStore,
+            FakeHistoricalForcingStore,
+            FakeModelArtifactStore,
+            FakeModelStateStore,
+            FakeObservationStore,
+            FakePipelineHealthStore,
+            FakeStationStore,
+            FakeWeatherForecastStore,
+        )
+        from tests.unit.flows.test_run_forecast_cycle import (
+            _MODEL_ID,
+            _build_station_and_stores,
+            _clock,
+            _make_config,
+            _SmallFakeModel,
+            _write_forecast_cycle_config,
+        )
+
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            f"""
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "{tmp_path / "scratch"}"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        class _PatchedMeteoSwissNwpAdapter:
+            def __init__(self, *, http_client: object, **kwargs: object) -> None:
+                pass
+
+            def fetch_forecasts(
+                self, station_configs: object, cycle_time: object
+            ) -> dict[object, object]:
+                return {}
+
+        def _raising_close(self: object) -> None:
+            raise RuntimeError("boom: connection pool teardown failed")
+
+        monkeypatch.setattr(httpx.Client, "close", _raising_close)
+
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            FakeHistoricalForcingStore(),
+        )
+        capture_store = _StubStore(behavior="succeed")
+        all_reject_qc_rules = ForecastQcRuleSet(
+            version="test-all-reject",
+            rules=(
+                ForecastQcRuleParams(
+                    rule_id="range_check",
+                    rule_version="1.0",
+                    parameter="discharge",
+                    time_step=timedelta(hours=1),  # matches _SmallFakeModel's step
+                    thresholds={"value_min": 1000.0, "value_max": 2000.0},
+                ),
+            ),
+        )
+
+        with (
+            patch(
+                "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+                _PatchedMeteoSwissNwpAdapter,
+            ),
+            pytest.raises(RuntimeError, match="boom: connection pool teardown"),
+        ):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=FakeModelStateStore(),
+                artifact_store=artifact_store,
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                pipeline_health_store=FakePipelineHealthStore(),
+                models={_MODEL_ID: _SmallFakeModel()},
+                config=_make_config(),
+                qc_rules=all_reject_qc_rules,
+                clock=_clock,
+                rejected_forecast_store=capture_store,
+            )
+
+        # The close() failure propagates (unchanged, pre-existing Python
+        # try/finally semantics — this fold does not and cannot suppress
+        # it), but capture STILL ran before it did.
+        assert capture_store.committed is True
+        assert len(capture_store.calls) == 1

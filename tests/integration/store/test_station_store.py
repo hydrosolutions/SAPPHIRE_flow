@@ -175,7 +175,12 @@ class TestFetchAllWithKindFilter:
 
     def test_empty_returns_empty_list(self, db_connection: sa.Connection) -> None:
         store = PgStationStore(db_connection)
-        result = store.fetch_all_stations(kind=StationKind.RIVER)
+        # LAKE, not RIVER: Plan 404's e2e capture test permanently commits a
+        # RIVER station on a separate, non-rolled-back connection (its
+        # `rejected_forecasts` row is append-only and FK-RESTRICTs deleting
+        # the parent), so RIVER is no longer guaranteed empty session-wide.
+        # Nothing in the default (non-`live`) suite ever commits LAKE.
+        result = store.fetch_all_stations(kind=StationKind.LAKE)
         assert result == []
 
 

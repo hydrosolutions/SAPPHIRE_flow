@@ -26,10 +26,11 @@ its seeds ARE cleaned up.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import polars as pl
 import sqlalchemy as sa
 import structlog.testing
 
@@ -44,9 +45,13 @@ from sapphire_flow.store.rejected_forecast_store import (
     rejected_capture_transaction_factory,
 )
 from sapphire_flow.store.station_store import PgStationStore
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet
+from sapphire_flow.types.ensemble import ForecastEnsemble
+from sapphire_flow.types.enums import PipelineCheckType
 from sapphire_flow.types.ids import ModelId, StationId
 from tests.fakes.fake_adapters import FakeWeatherForecastSource
+from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeBasinStore,
@@ -82,6 +87,66 @@ _ALL_REJECT_QC_RULES = ForecastQcRuleSet(
         ),
     ),
 )
+
+
+class _AlwaysPassingModel(FakeStationForecastModel):
+    """A constant 1500.0 — deterministically INSIDE `_ALL_REJECT_QC_RULES`'s
+    passing band ([1000, 2000]), so this model's forecast is stored while
+    `_SmallFakeModel`'s (uniform(1, 50)) is rejected by the SAME global rule
+    set — proving a rejection's capture failure does not touch a sibling
+    station's successful write (review finding, 2026-09-28)."""
+
+    from sapphire_flow.types.model import (
+        ModelDataRequirements as _ModelDataRequirements,
+    )
+
+    alert_eligibility = _SmallFakeModel.alert_eligibility
+    data_requirements = _ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=_SmallFakeModel.data_requirements.spatial_input_type,
+    )
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: object,
+        rng: object,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        rows = [
+            {
+                "valid_time": ensure_utc(
+                    datetime.fromtimestamp(
+                        inputs.issue_time.timestamp()  # type: ignore[attr-defined]
+                        + (step + 1) * inputs.time_step.total_seconds(),  # type: ignore[attr-defined]
+                        tz=UTC,
+                    )
+                ),
+                "member_id": m,
+                "value": 1500.0,
+            }
+            for step in range(inputs.forecast_horizon_steps)  # type: ignore[attr-defined]
+            for m in range(21)
+        ]
+        df = pl.DataFrame(rows).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ens = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,  # type: ignore[attr-defined]
+            issued_at=inputs.issue_time,  # type: ignore[attr-defined]
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,  # type: ignore[attr-defined]
+            values=df,
+        )
+        return ({"discharge": ens}, b"fake_state")
 
 
 def _fakes() -> dict[str, Any]:
@@ -128,6 +193,13 @@ def _commit_parents(
             )
         )
         for artifact_id, record in fakes["artifact_store"]._records.items():
+            if record.model_id != model_id:
+                # Two stations calling this against the SAME shared
+                # `fakes["artifact_store"]` — only commit THIS pair's
+                # artifact each time, or the second call re-inserts the
+                # first's and hits `model_artifacts_pkey` (review round,
+                # 2026-09-28).
+                continue
             conn.execute(
                 sa.insert(model_artifacts).values(
                     id=artifact_id,
@@ -265,6 +337,23 @@ class TestRejectedCaptureLockConflictAgainstRealFlow:
         )
         _commit_parents(db_engine, fakes, station_id, model_id)
 
+        # A SECOND station whose model's output the SAME global QC rule set
+        # PASSES (review finding, 2026-09-28) — proves the capture failure
+        # for the first station's rejection does not touch a sibling
+        # station's successful write or the cycle's freshness heartbeat.
+        passing_station_id = StationId(uuid4())
+        passing_model_id = ModelId("p404-e2e-lock-passing-model")
+        _build_station_and_stores(
+            passing_station_id,
+            passing_model_id,
+            fakes["station_store"],
+            fakes["obs_store"],
+            fakes["nwp_store"],
+            fakes["artifact_store"],
+            fakes["forcing_store"],
+        )
+        _commit_parents(db_engine, fakes, passing_station_id, passing_model_id)
+
         read_conn = db_engine.connect()
         capture_store = PgRejectedForecastStore(
             read_conn,
@@ -291,7 +380,10 @@ class TestRejectedCaptureLockConflictAgainstRealFlow:
                     forcing_store=fakes["forcing_store"],
                     pipeline_health_store=fakes["pipeline_health_store"],
                     adapter=FakeWeatherForecastSource(result={}),
-                    models={model_id: _SmallFakeModel()},
+                    models={
+                        model_id: _SmallFakeModel(),
+                        passing_model_id: _AlwaysPassingModel(),
+                    },
                     config=_make_config(),
                     qc_rules=_ALL_REJECT_QC_RULES,
                     clock=_clock,
@@ -303,12 +395,21 @@ class TestRejectedCaptureLockConflictAgainstRealFlow:
             blocker.close()
 
         # The run's own outcome is untouched by the capture failure: the
-        # station going "dark" (its sole model is QC-rejected — pre-existing
-        # behaviour, see the sibling test above) is the SAME either way,
-        # lock conflict or not — the capture failure adds no error of its
-        # own to the result.
+        # rejected station going "dark" (its sole model is QC-rejected —
+        # pre-existing behaviour, see the sibling test above) is the SAME
+        # either way, lock conflict or not — the capture failure adds no
+        # error of its own to the result. Meanwhile the SECOND station's
+        # forecast was stored and the freshness heartbeat was written,
+        # exactly as the plan requires ("the run's successful forecasts and
+        # its FORECAST_FRESHNESS record were already written").
         assert result.stations_failed == 1
+        assert result.forecasts_stored == 1
         assert sum("write_failed" in err or "lock" in err for err in result.errors) == 0
+        heartbeats = fakes["pipeline_health_store"].fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(heartbeats) == 1
+        assert heartbeats[0].detail["forecasts_stored"] == 1
 
         write_failed = [
             e for e in logs if e.get("event") == "rejected_forecast.write_failed"
@@ -328,3 +429,4 @@ class TestRejectedCaptureLockConflictAgainstRealFlow:
             read_conn.close()
 
         _cleanup_parents(db_engine, station_id, model_id)
+        _cleanup_parents(db_engine, passing_station_id, passing_model_id)
