@@ -360,7 +360,7 @@ separate `prefect` database.
 |------|-------------|
 | `sapphire_api` | Broad `SELECT`; scoped writes to access-token tables and Plan 341 T1's `users`, `user_external_identities` and `human_station_grants` for operator CLI changes. Plan 341 T2 adds selection update, publication decision/event insert, sequence update and `pipeline_health` insert for the named-human publication store. `audit_log` is INSERT-only. The role cannot write `forecasts`, `alerts` or protected-backup health/proofs; HTTP service tokens remain GET-only. |
 | `sapphire_worker` | Broad `SELECT` except all access-token and human identity/grant tables, explicitly revoked after the blanket grant on each bootstrap. Domain write grants remain listed in `docker/bootstrap-roles.sql`; no human identity/grant writes are allowed. |
-| `sapphire_publication_health` | Plan 341 T2 host-only role, created `NOLOGIN` until activated with a separate credential. May read evidence/attestations and write the protected backup-health/proof projection; cannot write human publication decisions. |
+| `sapphire_publication_health` | Plan 341 T2/T2b host-only role, created `NOLOGIN` until activated with a separate credential. May read evidence, attestations and publication decisions to compute the backlog, and write only the protected backup-health/proof projection; cannot write human publication decisions. |
 | `sapphire_prefect` | Full access to `prefect` database only — **UNCHANGED by Slice D** (still the owner/migration credential via `docker/init-db.sh`; realizing a distinct scoped `sapphire_prefect` role is a documented residual, not in this slice's scope). |
 
 ---

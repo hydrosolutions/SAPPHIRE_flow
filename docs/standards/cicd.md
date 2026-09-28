@@ -1176,8 +1176,8 @@ and `conventions.md` § Service users for the human-readable table.
 Three DB password secrets exist, one per credential tier:
 
 **Plan 341 T2 publication health role:** `sapphire_publication_health` is
-bootstrapped `NOLOGIN` with only `protected_backup_health` write and
-per-forecast proof read/insert rights. Existing deployments need no new
+bootstrapped `NOLOGIN` with only `protected_backup_health` write,
+per-forecast proof read/insert and publication-decision read rights. Existing deployments need no new
 secret. At DHM activation, the operator sets a dedicated LOGIN/password and
 stores its full `postgresql+psycopg://` URL in an owner-only host file outside
 Compose. The host `evidence_backup_host backup|health` command accepts
@@ -1187,7 +1187,7 @@ receive that URL, and a missing health row blocks publish. Bootstrap
 reconverges grants on each deploy without resetting an activated login.
 The Mac mini has no separate protected target, so keep the health role
 unactivated there. Plan 341 T2b adds proof for every pending published ID;
-do not enable CHWRR publication after T2 alone. Migration 0063 is additive;
+do not enable CHWRR publication after T2 alone. Migrations 0063–0064 are additive;
 the prior image can read existing forecast tables during rollback, but the
 publication switch must remain off if rolling back to a prior image.
 
@@ -1257,10 +1257,20 @@ verification. `--compose-file`, `--config` and `--rehearsal-script` can override
 checkout defaults. Backups use a host lock, a full custom-format `pg_dump`, immutable
 Docker image IDs, and a disposable database restore. Each successful bundle has a
 `backup-<UUID>.dump` and matching `.json` manifest, plus content-verified image archives
-in `images/`. The restore checks a representative forecast, hashed output values, snapshot and
-artifact bytes; Docker loads each pinned image archive and checks its image ID. A
-preservation attestation is appended for that earlier forecast only after these checks.
-The manifest becomes visible to the health check only after attestation succeeds.
+in `images/`. The restore checks a representative forecast and every pending
+published ID in the exported database snapshot: hashed output values, snapshot
+and artifact bytes, and runtime image identity. Docker loads each pinned image
+archive and checks its image ID. The host appends an attestation for the sample
+and each pending publication only after these checks. A manifest stays
+`backup-<UUID>.pending.json` until every attestation is reconciled; only the
+final `.json` is visible to health. The pending manifest itself is written to
+a temporary file and atomically renamed, so an interrupted write cannot become
+a discoverable pending manifest. A publication after the snapshot cutoff
+remains pending for the next run, including a later publication of the same
+forecast ID. `reconcile` can finish an interrupted pending
+manifest without repeating the dump.
+An explicit reconciliation failure projects invalid health and pending IDs
+through the restricted host role, just as a failed scheduled backup does.
 
 Before starting a forecast worker, build its final image, obtain its immutable image ID
 with `docker image inspect`, set that value in `SAPPHIRE_IMAGE_DIGEST`, and recreate the
@@ -1276,9 +1286,19 @@ Run the same command with `health` after each scheduled backup and monitor its e
 and JSON `status` (`verified`, `missing`, `stale`, `invalid`). It verifies the latest
 manifest, dump and image hashes, the distinct device, and the configured
 `protected_backup_max_age_hours` (36 by default). A failed run or unhealthy result must
-alert operations. Plans 341/342 must call the fail-closed publication gate before
+alert operations. The restricted projection also reports pending and overdue counts, oldest
+pending time, failed forecast IDs, last backup attempt and retry due time.
+The retry due time advances only after an actual backup or reconciliation
+attempt; if it is in the past, the retry is overdue. Configure
+`publication_proof_window_hours` (36 by default) and
+`publication_proof_retry_hours` (24 by default) for CHWRR. An overdue proof
+blocks new publish writes and makes the host health command exit nonzero even
+when the representative backup is otherwise healthy. Plans 341/342 must call the fail-closed publication gate before
 enabling a CHWRR publish path; T2 ships the gate but no publication API. This is separate
 from the existing generic backup watchdog.
+Plan 341 T3 must pass `publication_proof_window_hours` into the API's
+`PgForecastPublicationStore`; until that route exists, the store's default is
+36 hours.
 Use `assess --forecast-id <UUID>` with the same target and database-volume arguments
 to read a forecast's immutable capture status, derived effective preservation status,
 attestation ID and remaining reasons. This is a host operator read path; Plan 341
@@ -1405,10 +1425,10 @@ clean restore, check `health` is `verified` within the configured freshness
 window, and inspect `assess --forecast-id` for representative first-run
 forecasts. Capture-time `evidence_incomplete` remains visible even if an
 image-byte-only gap is later covered by an attestation. A complete assessment
-does not prove deterministic model replay or outcome verification. This T2
-backup attests one representative forecast per bundle. Before activation,
-Plan 341 must demonstrate that every forecast published with backup proof
-pending is later checked and attested, with an overdue deadline alert and a
-gate on further publish writes. An individual forecast may still be published
+does not prove deterministic model replay or outcome verification. Plan 341 T2b
+checks and attests every pending published forecast in the restored dump, with
+an overdue deadline alert and a gate on further publish writes. Before
+activation, measure a six-station run and restore on the DHM target, and confirm
+that the daily interval clears the expected backlog. An individual forecast may still be published
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.

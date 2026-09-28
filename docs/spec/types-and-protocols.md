@@ -2167,8 +2167,10 @@ health, then writes selection, decision, audit and feed event atomically.
 The evidence manifest carries the output row count and ordered SHA-256;
 publication recomputes and compares them. Trusted database lock functions
 hold the human/grant and forecast locks without general API UPDATE rights.
-A per-forecast proof assessment expires after the configured backup-health
-window and can be refreshed by appending a new host-only proof row.
+A per-forecast proof assessment is valid for a pending publish decision only
+when it names that exact decision ID. It does not expire merely because the
+backup ages; current global backup health has its own freshness window. A later
+`backup_pending` publication of the same forecast needs a later decision-linked proof.
 `withdraw(...)` retains history, tombstones the forecast ID, and clears the
 selection only if that ID is current; it works during backup outage. Exact
 actor/tenant/action/key replay follows authorization and precedes live
@@ -2176,6 +2178,18 @@ eligibility checks. A changed payload or stale expected version conflicts.
 Linked current warnings block replacement/withdrawal until Plan 342 supplies
 the joint transaction. The T2 store has no HTTP route; T3 defines request and
 response schemas and consumer visibility.
+
+**Pending publication preservation (Plan 341 T2b).** The backup worker exports
+a repeatable-read database snapshot, enumerates every unproved publication
+decision ID and forecast ID in that snapshot and passes the snapshot ID to
+`pg_dump`. Manifest schema 2 records those IDs, publication time and exact capture, snapshot,
+output, artifact and runtime-image identities. A clean restore verifies each
+chain and the complete pending-ID set before the host appends individual
+attestations. The host-only projection links each verified proof row to its
+captured decision ID and records backlog status in one transaction. A later
+publication of the same forecast cannot inherit an earlier decision's proof.
+A publication after the dump cutoff stays pending
+for the next backup; a pending manifest can be reconciled after an interruption.
 
 ### ForecastModel
 

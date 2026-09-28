@@ -608,9 +608,8 @@ class PgForecastPublicationStore:
         pending = forecast_publication_decisions.alias("pending")
         proof_exists = sa.exists(
             sa.select(protected_backup_forecast_proofs.c.id).where(
-                protected_backup_forecast_proofs.c.forecast_id == pending.c.forecast_id,
-                protected_backup_forecast_proofs.c.verified_at
-                >= now - self._backup_max_age,
+                protected_backup_forecast_proofs.c.publication_decision_id
+                == pending.c.id,
                 protected_backup_forecast_proofs.c.verified_at <= now,
             )
         )

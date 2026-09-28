@@ -273,7 +273,7 @@ GRANT CONNECT ON DATABASE sapphire TO sapphire_publication_health;
 GRANT USAGE ON SCHEMA public TO sapphire_publication_health;
 GRANT SELECT, INSERT, UPDATE ON protected_backup_health TO sapphire_publication_health;
 GRANT SELECT ON forecast_preservation_attestations,
-    forecast_evidence TO sapphire_publication_health;
+    forecast_evidence, forecast_publication_decisions TO sapphire_publication_health;
 GRANT SELECT, INSERT ON protected_backup_forecast_proofs TO sapphire_publication_health;
 
 -- ── sapphire_backup: OWN CONVERGENCE BLOCK (Plan 162 T1) ────────────────────

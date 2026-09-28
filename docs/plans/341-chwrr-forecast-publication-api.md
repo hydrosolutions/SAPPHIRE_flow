@@ -103,6 +103,12 @@ Test a stored `qc_failed` forecast with valid evidence and healthy backup, using
 
 ### T3 — Review writes and publication reads
 
+**Configuration handoff from T2b.** When constructing the publication store for
+the API, pass `DeploymentConfig.protected_backup_max_age_hours` and
+`publication_proof_window_hours` into its backup-health and pending-proof
+windows. T2b's host projection already uses the configured proof window;
+the T2 store's 36-hour constructor default is only a test/default fallback.
+
 **Outcome.** The dashboard can inspect candidates, publish a new or replacement forecast, or withdraw a current selection; activated CHWRR consumer reads use human publication selections and retain earlier publications.
 
 **In / Out.** In: review and consumer API routes/schemas, store queries, generated OpenAPI, cache invalidation, all forecast-capable API/legacy JSON/forecast-lab/export surfaces, dashboard handoff contract and tenant-scoped activation switch. If Plan 402 has already landed, update its `docs/spec/api-v1-map.openapi.json` and drift test for shared forecast routes, following Plan 402 D14: a non-additive change is a major version bump announced to the map session before deploy. If 341 lands first, document the forecast contract in `docs/spec/types-and-protocols.md` and generated OpenAPI; Plan 402 T4 then creates its map contract from the current schema. Do not create a second map contract. Out: `sapphire-flow-map` repository, bulk publish, public anonymous feed. Every activated CHWRR PRINCIPAL forecast route, including legacy `data.json` and forecast-lab if offered to consumers or reviewers, uses the publication selection or historical ledger rather than `forecasts.status = 'published'`; a reviewer token cannot turn an ordinary route into a RAW view. Explicit human review routes retain RAW access to unpublished CHWRR candidates, and separately authorized internal diagnostics may retain RAW access for other tenants. Plan 402's two REVIEW routes have no forecast values and remain outside this gate. Plan 401 is therefore not a prerequisite for T1/T2/T3's human review/write path. Current list/latest exclude replaced IDs, while historical detail serves replaced IDs with original values. Historical CHWRR consumer responses include withdrawn tombstones but never withdrawn values.
