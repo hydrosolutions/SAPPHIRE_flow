@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE   # outcome achieved 2026-09-28 by ONE direct-to-main commit, not by executing this plan. THREE independent reviews said the apparatus was disproportionate; the T1 site list became the commit's checklist.
 created: 2026-09-28
 plan: 500
 title: Plan 399's record still asserts seven defects the code no longer has
@@ -15,7 +15,20 @@ source: 2026-09-28 — found while auditing a stale local checkout; the same aud
 
 ## Status
 
-**DRAFT.** ⛔ No implementation until an independent review and a READY flip.
+**COMPLETE — but NOT by being executed.** ⚖️ Three independent reviews (facts / executability /
+big-picture, 2026-09-28) converged: the diagnosis was right and the remedy disproportionate.
+
+- **facts**: 5 false claims, 6 imprecise — including TWO counts stated without enumerating them, in a
+  plan about that failure, and a `status:` replacement target quoted non-verbatim, so the central edit
+  would not have matched the file.
+- **executability**: NOT EXECUTABLE — a verification bullet citing a grep the fold had already removed;
+  `status: BLOCKED   # comment` breaks the readiness parser (the value becomes the whole string).
+- **big-picture**: displacement activity. **126 docs-only commits on `main` since 2026-09-25 against 1
+  touching code.** The same author had reconciled a LARGER plan (268, 1037 lines) in ONE direct commit
+  45 minutes before drafting this one.
+
+⇒ **The work was done as one commit.** This file is kept for its measured site list and its findings,
+and because deleting the record of a wrong turn is how the same turn gets taken again.
 
 ## Why this plan exists
 

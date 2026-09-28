@@ -1,9 +1,9 @@
 ---
-status: PARTIALLY_IMPLEMENTED   # four code gaps + two missing test sets, see Status
+status: PARTIAL   # one outcome left: the staging run (precondition: deploy). Code gaps closed by Plan 405 (#323). ⛔ PARTIALLY_IMPLEMENTED was never a canonical value.
 created: 2026-09-25
 plan: 399
 title: SAP3 never calls the warm-start retrain both sides already implement
-scope: Make SAP3 able to fine-tune an existing model artifact — the FI `RetrainableModel.retrain()` capability check, the passthrough down to the model, a channel for the fine-tuning config (there is none today), base-artifact selection, and recording which artifact a retrained one came from. NOT the FI contract changes in fi-issue 004 (a typed training failure, FI-side parent identity), NOT the fine-tuning STRATEGY surface (owner: accepted as opaque config for v1), NOT judging whether a retrained model is good (that is skill comparison, ours and outside this plan), NOT ERA5-Land onboarding (deliberately superseded by this approach).
+scope: Make SAP3 able to fine-tune an existing model artifact — the FI `RetrainableModel.retrain()` capability check, the passthrough down to the model, a channel for the fine-tuning config (there was none when this was written; #314 shipped it), base-artifact selection, and recording which artifact a retrained one came from. NOT the FI contract changes in fi-issue 004 (a typed training failure, FI-side parent identity), NOT the fine-tuning STRATEGY surface (owner: accepted as opaque config for v1), NOT judging whether a retrained model is good (that is skill comparison, ours and outside this plan), NOT ERA5-Land onboarding (deliberately superseded by this approach).
 depends_on: []
 blocks: []
 related: [262, 307, 329]
@@ -25,29 +25,35 @@ plan asserts that did NOT ship, THREE verification bullets never written (an ear
 CRASHES. The status is corrected below rather than quietly amended, because this plan is now the
 record of what exists.*
 
-🔴 **WHAT REMAINS — EIGHT items, not one.** ⛔ *An earlier version said SEVEN, counting only two
-unwritten verification bullets. There are THREE — B3 below was in no table at all.*
+⚖️ **WHAT REMAINS — ONE OUTCOME: the staging run**, with deployment as its precondition (§ C).
+⛔ **A1-A4 and B1-B3 are CLOSED by Plan 405 (#323, merged 2026-09-27)** and each is marked below with
+its closing artifact. *They are kept, struck through in prose, because the tables were evidence and
+the evidence of their closure belongs in the same place.*
+⚠️ *This block read "EIGHT items, not one" until 2026-09-28 — for four days after seven of them
+shipped. The index was corrected on 09-27 and this file was not; the commit that corrected the index
+claimed in its title that it had corrected this one too.*
 
 **A. Four CODE gaps the plan asserts as done:**
 | # | the plan says | what shipped |
 |---|---|---|
-| A1 | *"the vendored config differs from the donor's recorded hash ⇒ **REFUSED**, naming both hashes"* | 🔴 **Nothing compares them.** `resolve_donor_config` accepts `installed_config_sha256` (`store/model_artifact_warm_start.py:123`) and never reads it — a dead parameter. No comparison helper, no refusal, and ⛔ **no test of `resolve_donor_config` at all.** |
+| A1 | *"the vendored config differs from the donor's recorded hash ⇒ **REFUSED**, naming both hashes"* | ⚖️ **CLOSED #323** — `_refuse_changed_template` (`store/model_artifact_warm_start.py:159`), tests in `TestComparingTheInstalledTemplate`. *Was:* 🔴 **Nothing compares them.** `resolve_donor_config` accepts `installed_config_sha256` (`store/model_artifact_warm_start.py:123`) and never reads it — a dead parameter. No comparison helper, no refusal, and ⛔ **no test of `resolve_donor_config` at all.** |
 | A2 | § 13 row 2 — a donor *"produced by SAP3 after T4"* resolves from T4's record | 🔴 **Ordinary training writes NO record** (`flows/train_models.py` gates the recorder on a donor being named), and `base_artifact_id` is NOT NULL, so an ordinarily-trained artifact **cannot** have one. ⇒ Row 2 covers **only a retrain-of-a-retrain**, which the plan never said. |
-| A3 | D1 — the base config path, *"meaningful ONLY while the two agree"* | 🔴 **The path is NEVER recorded, for any donor, ever.** The flow hardcodes `installed_config_path=None`, so `base_config_path` is always NULL. ⚠️ *The installed path is trivially available — the flow already reads `model.config_hash` beside it.* |
-| A4 | T4 — *"INSPECT this donor's provenance before concluding NULL"* | 🔴 **No inspection.** A constant reason string is written for every donor — and that string ("SAP3 has never recorded training params for any artifact") **became false the moment this merged**: a retrained donor's `run_config` IS recorded. |
+| A3 | D1 — the base config path, *"meaningful ONLY while the two agree"* | ⚖️ **CLOSED #323** — the flow passes `getattr(model, "config_path", None)` (`flows/train_models.py:222`) and records it on a verified match. *Was:* 🔴 **The path is NEVER recorded, for any donor, ever.** The flow hardcodes `installed_config_path=None`, so `base_config_path` is always NULL. ⚠️ *The installed path is trivially available — the flow already reads `model.config_hash` beside it.* |
+| A4 | T4 — *"INSPECT this donor's provenance before concluding NULL"* | ⚖️ **CLOSED #323** — `resolve_donor_params` (`store/model_artifact_warm_start.py:422`) classifies per donor state. *Was:* 🔴 **No inspection.** A constant reason string is written for every donor — and that string ("SAP3 has never recorded training params for any artifact") **became false the moment this merged**: a retrained donor's `run_config` IS recorded. |
 
-🔴 **A2's consequence is a CRASH, demonstrated:** resolving a retrained donor returns
-`(path=None, sha=<hash>, reason=None)` — the inherited reason is **dropped** — and
-`WarmStartRecord.__post_init__` then raises *"base_config_path is NULL without a reason"*.
-⛔ **It raises AFTER the new artifact has been stored**, so a second-generation fine-tune leaves a
-saved model with no provenance and an error.
+⚖️ **CLOSED (#323).** *Was: "A2's consequence is a CRASH, demonstrated — resolving a retrained donor
+returns `(path=None, sha=<hash>, reason=None)`, the inherited reason dropped, and
+`WarmStartRecord.__post_init__` then raises AFTER the new artifact has been stored."* ⇒ The inherited
+branch now derives a reason true of the immediate donor
+(`store/model_artifact_warm_start.py:375`), and resolution+refusal moved BEFORE training, so a
+refusal persists nothing.
 
 **B. THREE verification bullets never written:**
 | # | the bullet | reality |
 |---|---|---|
-| B1 | T1: a non-default config *"asserted at BOTH boundaries"*, and an FI model without retrain *"WRAPPED IN THE ADAPTER"* refused | 🔴 **No test touches `ForecastInterfaceAdapter.retrain` or the shim's `retrain`.** The wrapped-adapter test uses a local stand-in that **re-implements the capability check in its own body** — ⛔ *verbatim the anti-pattern this plan's own changelog claims was deleted.* |
-| B2 | T2: *"Assert the no-config case on BOTH"* — the training flow AND the four onboarding sites | 🔴 **Only the training-flow half shipped.** ⚠️ *Which is precisely the divergence the bullet was written to prevent, and it had already been re-litigated three times.* |
-| B3 | T3 Pre-change: *"A RED test at the FLOW level, through `discover_models()` / `adapt_if_fi` … must fail with the resolver error today"* | 🔴 **Never written.** Every retrain test injects a station-scoped fake straight into the flow; deleting the resolver wiring fails no test. ⛔ *This bullet was in NO item table until now — the count said "two" while three were missing, so the one covering THIS plan's headline blocker went unlisted.* |
+| B1 | T1: a non-default config *"asserted at BOTH boundaries"*, and an FI model without retrain *"WRAPPED IN THE ADAPTER"* refused | ⚖️ **CLOSED #323** — both boundaries tested, and the refusal rewritten against the REAL adapter. *Was:* 🔴 **No test touches `ForecastInterfaceAdapter.retrain` or the shim's `retrain`.** The wrapped-adapter test uses a local stand-in that **re-implements the capability check in its own body** — ⛔ *verbatim the anti-pattern this plan's own changelog claims was deleted.* |
+| B2 | T2: *"Assert the no-config case on BOTH"* — the training flow AND the four onboarding sites | ⚖️ **CLOSED #323** — all four sites, keyword and positional, two classes in two files. *Was:* 🔴 **Only the training-flow half shipped.** ⚠️ *Which is precisely the divergence the bullet was written to prevent, and it had already been re-litigated three times.* |
+| B3 | T3 Pre-change: *"A RED test at the FLOW level, through `discover_models()` / `adapt_if_fi` … must fail with the resolver error today"* | ⚖️ **CLOSED #323** — `tests/unit/flows/test_resolver_wiring_through_discovery.py`; deleting the wiring fails it with the resolver error. *Was:* 🔴 **Never written.** Every retrain test injects a station-scoped fake straight into the flow; deleting the resolver wiring fails no test. ⛔ *This bullet was in NO item table until now — the count said "two" while three were missing, so the one covering THIS plan's headline blocker went unlisted.* |
 
 **C. And the staging run, unchanged:**
 > T3: *"One real run on staging"* — ⛔ **not done.** The host has been unreachable all session
@@ -57,7 +63,10 @@ saved model with no provenance and an error.
 > merge — so the retrain path has never met a real model. Unit and integration tests prove the
 > mechanism; only this proves the thing works.
 
-⚠️ **Also pending: the mini runs 0.1.986 and `main` is at 0.1.994** — this merge is NOT deployed.
+⚠️ **PRECONDITION, still open: the mini runs 0.1.986 while `main` is at 0.1.1016** — not deployed.
+⛔ *The figure read "`main` is at 0.1.994" until 2026-09-28; a version number in prose goes stale on
+every release.* ⚠️ **Not reachable is not the same as down**: `192.168.1.136` is a LAN address, so a
+timeout from off-site says nothing about the host ([[reference_macmini_ssh_access]]).
 ⛔ *Merging is never deploying ([[project_qc_cadence_is_inferred_not_declared]]'s lesson).*
 
 ⭐ **Verified before merge:** the full unit suite; the CI shard that had failed, reproduced locally
@@ -65,9 +74,12 @@ saved model with no provenance and an error.
 mutation checks on the flow and service lines — including flipping the donor FK to `CASCADE`, which
 fails the delete-refusal test, so `RESTRICT` is proven rather than merely written.
 ⛔ **An earlier version of this sentence said "mutation checks on each changed line". THAT IS FALSE.**
-*Neither the adapter's nor the shim's `retrain` is touched by any test. **Measured 2026-09-26:
-replacing the adapter's `retrain` body with `raise AssertionError` leaves 723 tests PASSING.** I
-mutated where my tests happened to look and then generalised (B1).*
+*⚖️ **CLOSED (#323)** — both boundaries now have tests that fail when the body is gutted
+(`tests/unit/adapters/test_forecast_interface_adapter_inputs.py:582`,
+`tests/unit/models/test_aquacast_shim_translation.py:465`). **Measured 2026-09-26:
+replacing the adapter's `retrain` body with `raise AssertionError` left 723 tests PASSING** — that
+dated measurement stands as the finding it was. I mutated where my tests happened to look and then
+generalised (B1).*
 
 ⚠️ **Three CI failures preceded the merge, all the same shape** — a FAKE more permissive than the
 real thing: the fake store's own SHA-256 check masked the flow's new guard; the `aquacast` extra is
@@ -83,7 +95,7 @@ trust a green unit run for a schema or shim change.*
 2026-09-25, D3 on 2026-09-26. **Five review rounds.** ⚠️ *An earlier version claimed "nine independent reviews"; the changelog
 records **six** passes, and per this project's own rule the RECORD is what stands.*
 
-⚠️ **Stated plainly: the round-5 fold itself is UNREVIEWED.** *The two round-5 reviewers read
+⚖️ **WAS: "the round-5 fold itself is UNREVIEWED."** ⛔ *No longer true — the post-merge reviews it names as the mitigation have since happened, and Plan 405 reviewed this code again after every fold.* *The two round-5 reviewers read
 `b8465e6c`; this state adds that fold — including four newly-MADE decisions (the donor-config
 resolution table, the changed-template refusal, `RESTRICT` parent retention, and the four-row abort
 rule).* ⇒ 🔑 **The owner directed that the plan AND the diff be independently checked AFTER
@@ -191,7 +203,10 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
 10. **Group training has never actually run here.** Of **903** artifacts on staging, exactly **one**
     is group-scoped — `cmal_small`, and it was **imported**, not trained. ⚠️ *So T3's path is
     unexercised in production, and the plan must not assume it works because tests pass.*
-11. 🔴 **AND THERE IS A REASON IT NEVER RAN — group training is BROKEN TODAY.**
+11. ⚖️ **WAS: "AND THERE IS A REASON IT NEVER RAN — group training is BROKEN TODAY."** ⛔ **Fixed by
+    #314**: the flow attaches the resolver (`flows/train_models.py:661`), and #323 added the test that
+    fails when that wiring is deleted. *Kept as the problem statement — ⛔ NOT a current fact. It
+    asserted a standing production blocker for four days after the blocker was removed.*
     `flows/train_models.py:435` calls `discover_models()`; `services/model_registry.py:158` wraps
     each with **`adapt_if_fi(raw_instance)`** and attaches **no station-code resolver**; the adapter
     needs one for every GROUP path and raises `ConfigurationError`
@@ -244,7 +259,7 @@ FI **v0.1.20**, aquacast **0.1.356**, `origin/main`, and the live staging DB —
     | donor | where its config identity comes from |
     |---|---|
     | imported | its provenance row's `config_hash` |
-    | produced by SAP3 **after T4**, **AND itself a retrain** | the record T4 wrote when SAP3 produced it. 🔴 **NOT every SAP3-produced donor**: ordinary training writes no record (the recorder is gated on a donor being named, and `base_artifact_id` is NOT NULL), so an ordinarily-trained artifact falls to row 3. ⛔ *An earlier version said "produced by SAP3 after T4" unqualified — reviewed as unreachable, and it is, for ordinary training.* ⚠️ **And the reachable case CRASHES today — Status A2.** |
+    | produced by SAP3 **after T4**, **AND itself a retrain** | the record T4 wrote when SAP3 produced it. 🔴 **NOT every SAP3-produced donor**: ordinary training writes no record (the recorder is gated on a donor being named, and `base_artifact_id` is NOT NULL), so an ordinarily-trained artifact falls to row 3. ⛔ *An earlier version said "produced by SAP3 after T4" unqualified — reviewed as unreachable, and it is, for ordinary training.* ⚖️ **The reachable case was a CRASH until #323 — see Status A2, now closed.** |
     | produced by SAP3 **before T4** | **NULL, with the reason recorded** — the same discipline § 5a applies to the params path |
     ⛔ **Never fall back to hashing today's installed template.** *That is this section's own trap, and
     it would pass a naive check while naming the wrong configuration.*

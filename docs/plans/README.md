@@ -654,19 +654,13 @@ exit criteria — Plan 212 owns that deeper screening.
   remains published until a human replaces or withdraws it, even if automatic retry supersedes
   its generation row. See Plan 328 § Resolved boundary with Plan 341.
 
-- **500** — [Plan 399's record still asserts seven defects the code no longer has](500-reconcile-399-against-the-merged-code.md)
-  — `DRAFT`, **`open_decisions: [D1]`**, `related: [399, 405]`. Plan 405 (#323) closed seven of 399's
-  eight remaining items; **399's own document still describes all seven in the PRESENT TENSE** — "Nothing
-  compares them … a dead parameter", "The path is NEVER recorded, for any donor, ever", "No test touches
-  `ForecastInterfaceAdapter.retrain`". ⛔ *An agent opening 399 reads live defects, and the cheapest
-  correct response is to re-implement finished work.* ⭐ **What is new in this hazard: the stale text is
-  not the status label but the EVIDENCE TABLES**, which read as measurements and so convince more than a
-  label would. 🔑 All seven measured closed against `main`; 399 has ONE open OUTCOME — the staging
-  run — with DEPLOYMENT as its precondition (`399:60`, whose own version figures are stale). ⛔ *First
-  written as "the ONE genuine remainder", which absorbed the deployment line silently.* ⚠️ **Two kinds of stale text, treated differently** — live claims
-  are corrected, dated CHANGELOG findings are history and stay. 🔴 **399's `status: PARTIALLY_IMPLEMENTED` is NOT a canonical value** — it is the only
-  plan in the corpus using it. D1 asks which canonical status it takes (recommend: `BLOCKED`, which
-  says the true thing in the field built for it rather than in prose).
+- **500** — [Plan 399's record still asserts seven defects the code no longer has](archive/500-reconcile-399-against-the-merged-code.md)
+  — **`COMPLETE`, ARCHIVED** — ⛔ *not by being executed.* Three independent reviews (facts /
+  executability / big-picture) found 5 false claims, a non-executable task set, and that the remedy was
+  disproportionate: **126 docs-only commits on `main` since 2026-09-25 against 1 touching code.** ⇒ The
+  reconciliation was done as ONE direct-to-main commit, which is what the repo's convention and this
+  author's own precedent (plan 268, 1037 lines, one commit, 45 minutes earlier) already said.
+  ⭐ *Kept, not deleted: the site list was sound and is the record of a wrong turn.*
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](archive/405-warm-start-gaps-and-untested-boundaries.md)
   — **`COMPLETE`, ARCHIVED** (merged #323, 2026-09-27, 0.1.1014). All six tasks shipped; each was
   independently reviewed after every fold, and several reviews changed the implementation.
@@ -685,15 +679,15 @@ exit criteria — Plan 212 owns that deeper screening.
   stays with 399 and is still outstanding.**
 
 - **399** — [SAP3 never calls the warm-start retrain both sides already implement](399-wire-warm-start-retrain.md)
-  — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)** but **`PARTIALLY_IMPLEMENTED`**. ⛔ *An
+  — ⚖️ **MERGED 2026-09-26 (#314, 0.1.994, migration 0060)**, now **`PARTIAL`** — ⛔ *it read the non-canonical `PARTIALLY_IMPLEMENTED` until 2026-09-28; 399 was the only plan in the corpus using a value in no allowed list.* ⛔ *An
   earlier version of this entry said "T1/T2/T4 complete, ONE thing remains" — **false**; a post-merge
   review against the shipped code found four requirements that never shipped and THREE verification
   bullets never written.* ⚖️ **SEVEN of its eight remaining items are CLOSED by Plan 405 (#323, 2026-09-27)** — the four gaps
   and three unwritten verification bullets. ⇒ **ONE item remains here: the staging run.**
   ⛔ *This entry read "EIGHT items remain" until 405 merged; leaving it would send the next reader
   hunting work that is done.* ⛔ *An earlier
-  version said "seven remain, six carried" — the pre-fold arithmetic, from counting two bullets.* 🔴 *A retrain-of-a-retrain currently CRASHES after
-  storing the artifact.* ⚠️ **NOT deployed** — the mini runs 0.1.986. `cmal_small` was trained on ERA5-Land
+  version said "seven remain, six carried" — the pre-fold arithmetic, from counting two bullets.* ⚖️ *Was: a retrain-of-a-retrain CRASHES after storing the
+  artifact — **fixed by #323**, not a current fact.* ⚠️ **NOT deployed** — the mini runs 0.1.986 against `main` at 0.1.1016. ⚠️ *Unreachable from off-site is NOT an outage: it is a LAN address.* `cmal_small` was trained on ERA5-Land
   and is served MeteoSwiss forcing; the owner chose to fine-tune on Swiss forcing
   rather than onboard ERA5-Land.
   ⭐ **Asks for NO new capability.** FI already defines `RetrainableModel.retrain()`,
