@@ -237,7 +237,11 @@ class TestPgModelArtifactStore:
         `fetch_active_artifact_for_station` for a station-scoped artifact, a
         group-scoped one, AND a station holding both" — the "holding both"
         case only existed for the byte-returning method before (review
-        finding, 2026-09-28)."""
+        finding, 2026-09-28). BOTH artifacts stay ACTIVE (a superseded group
+        artifact would not exercise real precedence — a fold-review finding
+        against the first version of this test, 2026-09-28), so the ID-only
+        method must actually prefer the station scope over a group artifact
+        that is still a live candidate."""
         station_id = _seed_station(db_connection)
         group_id = _seed_group(db_connection, station_id)
         model_id = _seed_model(db_connection)
@@ -247,7 +251,6 @@ class TestPgModelArtifactStore:
             model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
         )
         store.transition_artifact_status(group_aid, ModelArtifactStatus.ACTIVE)
-        store.transition_artifact_status(group_aid, ModelArtifactStatus.SUPERSEDED)
 
         station_aid, _ = store.store_artifact(
             model_id, b"station_bytes", _T0, _T1, _T2, station_id=station_id
