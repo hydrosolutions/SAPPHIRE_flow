@@ -598,6 +598,69 @@ class TestForecastEvidenceRoleGrants:
             engine.dispose()
 
 
+class TestRejectedForecastsRoleGrants:
+    """Plan 404 T1 — the append-only `rejected_forecasts` record: worker
+    INSERT-only, api SELECT-only (via the blanket grant), neither role gets
+    UPDATE/DELETE/TRUNCATE — mirrors `TestForecastEvidenceRoleGrants` above."""
+
+    def test_worker_can_insert_api_can_select(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        with bootstrapped.owner_engine.begin() as conn:
+            for role, table, privilege, want in (
+                ("sapphire_worker", "rejected_forecasts", "INSERT", True),
+                ("sapphire_worker", "rejected_forecasts", "SELECT", True),
+                ("sapphire_worker", "rejected_forecasts", "UPDATE", False),
+                ("sapphire_worker", "rejected_forecasts", "DELETE", False),
+                ("sapphire_api", "rejected_forecasts", "SELECT", True),
+                ("sapphire_api", "rejected_forecasts", "INSERT", False),
+                ("sapphire_api", "rejected_forecasts", "UPDATE", False),
+                ("sapphire_api", "rejected_forecasts", "DELETE", False),
+            ):
+                assert (
+                    conn.scalar(
+                        sa.text(
+                            "SELECT has_table_privilege(:role, :table, :privilege)"
+                        ),
+                        {"role": role, "table": table, "privilege": privilege},
+                    )
+                    is want
+                )
+
+    @pytest.mark.parametrize(
+        "role,password",
+        (
+            ("sapphire_api", "api-pw-initial"),
+            ("sapphire_worker", "worker-pw-initial"),
+        ),
+    )
+    @pytest.mark.parametrize("action", ("UPDATE", "DELETE", "TRUNCATE"))
+    def test_service_roles_cannot_mutate_rejected_forecasts(
+        self,
+        bootstrapped: _RoleBootstrapHarness,
+        role: str,
+        password: str,
+        action: str,
+    ) -> None:
+        url = bootstrapped.role_url(role, password)
+        statement = (
+            "UPDATE rejected_forecasts SET recorded_at = now()"
+            if action == "UPDATE"
+            else "DELETE FROM rejected_forecasts"
+            if action == "DELETE"
+            else "TRUNCATE rejected_forecasts"
+        )
+        engine = sa.create_engine(url)
+        try:
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                engine.begin() as conn,
+            ):
+                conn.execute(sa.text(statement))
+        finally:
+            engine.dispose()
+
+
 class TestPerTableGrantsAreNotBlanket:
     """The core F3(b) invariant: SELECT is broad, but write access is scoped
     per table — a role must not silently gain UPDATE/DELETE everywhere."""

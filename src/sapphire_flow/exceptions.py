@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from sapphire_flow.services.forecast_retry import ForecastRetryRow
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ForecastId, ModelId, StationId
+    from sapphire_flow.types.rejected_forecast import RejectedAssignmentPayload
 
 
 class SapphireError(Exception):
@@ -242,6 +243,38 @@ class TenantIsolationError(SapphireError):
     BEFORE the write happens (no domain-state change); the rejection is
     additionally recorded as a persisted ``audit_log`` event by the caller
     (see ``services/write_principal.py::enforce_tenant_isolation``)."""
+
+
+class GroupForecastError(SapphireError):
+    """Plan 404 T2 — a later group station raised an ordinary (unexpected)
+    error in `services/run_group_forecast.py`'s per-station loop, AFTER an
+    earlier station in the same group was already QC-rejected. Carries the
+    rejected payloads gathered so far (`rejected`) and the original
+    exception (`original`), so the flow's handler can both buffer the
+    earlier rejection(s) and log/report the SAME text the pre-Plan-404
+    generic handler did — the group is still skipped exactly as before."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rejected: tuple[RejectedAssignmentPayload, ...],
+        original: Exception,
+    ) -> None:
+        super().__init__(message)
+        self.rejected = rejected
+        self.original = original
+
+
+class CaptureAbandonedError(SapphireError):
+    """Plan 404 D6 — the end-of-run rejected-forecast capture write's caller
+    (the flow) gave up waiting before the store's transaction reached
+    ``COMMIT``. The store checks a shared ``threading.Event`` INSIDE the
+    transaction, immediately before ``COMMIT``, and raises this to roll the
+    batch back rather than let a merely-slow write land after it was already
+    logged as timed out. Never raised once ``COMMIT`` has actually been
+    sent — that attempt's outcome is then unknown but atomic (the whole
+    batch, never a partial one)."""
 
 
 class ForecastCycleAbortedError(SapphireError):

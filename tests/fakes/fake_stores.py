@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading  # noqa: TC003
 from collections.abc import (
+    Callable,  # noqa: TC003
     Collection,  # noqa: TC003 — runtime isinstance/set use in fetch_observations
     Sequence,  # noqa: TC003
 )
@@ -16,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from sapphire_flow.exceptions import (
     ArtifactIntegrityError,
+    CaptureAbandonedError,
     ConfigurationError,
     ConflictError,
     ForecastRetryConflictError,
@@ -39,9 +42,11 @@ from sapphire_flow.types.domain import (  # noqa: TC001
     QcFlag,
     StationThreshold,
 )
+from sapphire_flow.types.ensemble import ForecastEnsemble  # noqa: TC001
 from sapphire_flow.types.enums import (
     AlertSource,
     AlertStatus,
+    EnsembleRepresentation,
     FlowRegime,
     ForcingType,
     ForecastStatus,
@@ -89,6 +94,7 @@ from sapphire_flow.types.ids import (
     ObservationVersionId,
     PackageId,
     RatingCurveId,
+    RejectedForecastId,
     StationGroupId,
     StationId,
     TenantId,
@@ -106,6 +112,10 @@ from sapphire_flow.types.observation import (  # noqa: TC001
 )
 from sapphire_flow.types.pipeline import PipelineHealthRecord  # noqa: TC001
 from sapphire_flow.types.rating_curve import RatingCurve  # noqa: TC001
+from sapphire_flow.types.rejected_forecast import (  # noqa: TC001
+    PersistedRejectedForecast,
+    RejectedForecastEntry,
+)
 from sapphire_flow.types.skill import (  # noqa: TC001
     FlowRegimeConfig,
     SkillDiagram,
@@ -2255,3 +2265,91 @@ class FakeNwpGridStore:
         if key not in self._archives:
             raise StoreError(f"No archived forecast for {key}")
         return self._archives[key]
+
+
+def _fake_encode_series(
+    ensemble: ForecastEnsemble,
+) -> dict[str, tuple[tuple[UtcDatetime, float], ...]]:
+    """Groups an ensemble's rows into `PersistedRejectedForecast.values`'
+    shape — a plain, un-JSON-encoded mirror of
+    `store/rejected_forecast_store.py::_encode_series` +
+    `_decode_series` composed, since the fake never round-trips through
+    JSONB."""
+    is_members = ensemble.representation == EnsembleRepresentation.MEMBERS
+    key_col = "member_id" if is_members else "quantile"
+    series: dict[str, list[tuple[UtcDatetime, float]]] = {}
+    for row in ensemble.values.sort([key_col, "valid_time"]).iter_rows(named=True):
+        key = str(row[key_col])
+        series.setdefault(key, []).append((ensure_utc(row["valid_time"]), row["value"]))
+    return {key: tuple(points) for key, points in series.items()}
+
+
+class FakeRejectedForecastStore:
+    """Plan 404 T1/T2 — mirrors `PgRejectedForecastStore.write_batch`'s
+    all-or-none, abandon-checked-before-commit contract (D5/D6), so a flow
+    test exercising the capture path proves the same behaviour a Postgres
+    round-trip would. `clock` stands in for the DB's `recorded_at` server
+    default."""
+
+    def __init__(self, *, clock: Callable[[], UtcDatetime] | None = None) -> None:
+        self._clock = (
+            clock if clock is not None else lambda: ensure_utc(datetime.now(UTC))
+        )
+        self._rows: list[PersistedRejectedForecast] = []
+        self.write_batch_calls: int = 0
+
+    def write_batch(
+        self,
+        entries: Sequence[RejectedForecastEntry],
+        *,
+        abandon: threading.Event,
+    ) -> None:
+        rows: list[PersistedRejectedForecast] = []
+        for entry in entries:
+            payload = entry.payload
+            for param in payload.parameters:
+                ensemble = param.ensemble
+                rows.append(
+                    PersistedRejectedForecast(
+                        id=RejectedForecastId(uuid4()),
+                        attempt_id=entry.attempt_id,
+                        recorded_at=self._clock(),
+                        station_id=payload.station_id,
+                        model_id=payload.model_id,
+                        model_artifact_id=payload.model_artifact_id,
+                        group_id=payload.group_id,
+                        issued_at=payload.issued_at,
+                        parameter=ensemble.parameter,
+                        representation=ensemble.representation,
+                        units=ensemble.units,
+                        time_step_seconds=int(ensemble.time_step.total_seconds()),
+                        qc_status=param.qc_status,
+                        qc_flags=param.qc_flags,
+                        values=_fake_encode_series(ensemble),
+                    )
+                )
+        if abandon.is_set():
+            raise CaptureAbandonedError(
+                "rejected-forecast capture abandoned before commit"
+            )
+        self.write_batch_calls += 1
+        self._rows.extend(rows)
+
+    def fetch_rejected_forecasts(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        model_id: ModelId | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[PersistedRejectedForecast], int]:
+        matches = [
+            row
+            for row in self._rows
+            if row.station_id == station_id
+            and start <= row.issued_at < end
+            and (model_id is None or row.model_id == model_id)
+        ]
+        matches.sort(key=lambda r: (r.issued_at, r.recorded_at, r.id), reverse=True)
+        return matches[offset : offset + limit], len(matches)

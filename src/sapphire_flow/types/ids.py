@@ -15,6 +15,9 @@ ObservationId = NewType("ObservationId", UUID)
 ObservationVersionId = NewType("ObservationVersionId", UUID)
 FormulaId = NewType("FormulaId", UUID)
 ForecastAdjustmentId = NewType("ForecastAdjustmentId", UUID)
+# Plan 404 T1 — a QC-rejected member/group-station forecast row, kept in its
+# own append-only record rather than `forecasts` (D2).
+RejectedForecastId = NewType("RejectedForecastId", UUID)
 UserId = NewType("UserId", UUID)
 AccessTokenId = NewType("AccessTokenId", UUID)
 RefreshTokenId = NewType("RefreshTokenId", UUID)

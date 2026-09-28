@@ -1281,6 +1281,76 @@ forecast_values = sa.Table(
     ),
 )
 
+# Plan 404 T1: a member or group-station forecast QC rejected — its own
+# append-only record, never `forecasts` (D2). `attempt_id` distinguishes a
+# Plan 327 resume or Plan 328 retry of the same cycle; `values` holds the
+# RAW ensemble (undatumed), keyed by member id or quantile level, each series
+# with its own `[valid_time, value]` timeline — the evidence non-finite
+# encoding (`services/forecast_evidence.py`) applies per value.
+rejected_forecasts = sa.Table(
+    "rejected_forecasts",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("attempt_id", UUID(as_uuid=True), nullable=False),
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("model_id", sa.Text, sa.ForeignKey("models.id"), nullable=False),
+    sa.Column(
+        "model_artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id"),
+        nullable=True,
+    ),
+    sa.Column(
+        "group_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("station_groups.id"),
+        nullable=True,
+    ),
+    sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("units", sa.Text, nullable=False),
+    sa.Column(
+        "representation",
+        sa.Text,
+        sa.CheckConstraint(
+            "representation IN ('members', 'quantiles')",
+            name="ck_rejected_forecasts_representation",
+        ),
+        nullable=False,
+    ),
+    # Every new rejected row has a known cadence (unlike `forecasts`, which
+    # allows NULL only for legacy rows — Plan 241 T4).
+    sa.Column("time_step_seconds", sa.Integer, nullable=False),
+    sa.Column("values", JSONB, nullable=False),
+    sa.Column(
+        "qc_status",
+        sa.Text,
+        sa.CheckConstraint(
+            "qc_status IN ('qc_failed', 'qc_suspect', 'qc_passed', 'qc_unchecked')",
+            name="ck_rejected_forecasts_qc_status",
+        ),
+        nullable=False,
+    ),
+    sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
+    sa.Column(
+        "recorded_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "time_step_seconds > 0", name="ck_rejected_forecasts_time_step_positive"
+    ),
+)
+
+sa.Index(
+    "ix_rejected_forecasts_station_issued_at",
+    rejected_forecasts.c.station_id,
+    rejected_forecasts.c.issued_at,
+)
+
 forecast_evidence_blobs = sa.Table(
     "forecast_evidence_blobs",
     metadata,

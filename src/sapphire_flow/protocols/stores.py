@@ -9,6 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import Collection, Mapping, Sequence
     from datetime import date
     from pathlib import Path
@@ -88,6 +89,10 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.rating_curve import RatingCurve
+    from sapphire_flow.types.rejected_forecast import (
+        PersistedRejectedForecast,
+        RejectedForecastEntry,
+    )
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
     from sapphire_flow.types.station import (
         GatewayPolygonBindingRow,
@@ -248,6 +253,38 @@ class ForecastStore(Protocol):
         to: it is the forecast rows themselves, never the best-effort
         `FORECAST_FRESHNESS` heartbeat, which can silently fail to append
         and leave a stale marker behind."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class RejectedForecastStore(Protocol):
+    """Plan 404 T1 — the append-only record for a QC-rejected member or
+    group-station forecast, never `forecasts` (D2)."""
+
+    def write_batch(
+        self,
+        entries: Sequence[RejectedForecastEntry],
+        *,
+        abandon: threading.Event,
+    ) -> None:
+        """One run's whole batch, all rows or none (D5). Builds the rows
+        (value encoding included), inserts them, then — still inside the
+        transaction — checks `abandon` and raises `CaptureAbandonedError` if
+        it is set, immediately before `COMMIT` (D6), so a save the caller
+        gave up waiting on never lands after being logged as timed out."""
+        raise NotImplementedError
+
+    def fetch_rejected_forecasts(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        model_id: ModelId | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[PersistedRejectedForecast], int]:
+        """`start <= issued_at < end` (half-open); newest first —
+        `(issued_at DESC, recorded_at DESC, id DESC)`."""
         raise NotImplementedError
 
 
