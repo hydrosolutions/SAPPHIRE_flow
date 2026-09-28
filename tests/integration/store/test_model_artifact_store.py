@@ -230,6 +230,38 @@ class TestPgModelArtifactStore:
         assert forecast_path_result[0] == aid
         assert store.fetch_active_artifact_id_for_station(station_id, model_id) == aid
 
+    def test_fetch_active_artifact_id_for_station_direct_beats_group(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """T2 Verification: "the ID-only method agrees with
+        `fetch_active_artifact_for_station` for a station-scoped artifact, a
+        group-scoped one, AND a station holding both" — the "holding both"
+        case only existed for the byte-returning method before (review
+        finding, 2026-09-28)."""
+        station_id = _seed_station(db_connection)
+        group_id = _seed_group(db_connection, station_id)
+        model_id = _seed_model(db_connection)
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        group_aid, _ = store.store_artifact(
+            model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
+        )
+        store.transition_artifact_status(group_aid, ModelArtifactStatus.ACTIVE)
+        store.transition_artifact_status(group_aid, ModelArtifactStatus.SUPERSEDED)
+
+        station_aid, _ = store.store_artifact(
+            model_id, b"station_bytes", _T0, _T1, _T2, station_id=station_id
+        )
+        store.transition_artifact_status(station_aid, ModelArtifactStatus.ACTIVE)
+
+        byte_result = store.fetch_active_artifact_for_station(station_id, model_id)
+        assert byte_result is not None
+        assert byte_result[0] == station_aid
+        assert (
+            store.fetch_active_artifact_id_for_station(station_id, model_id)
+            == station_aid
+        )
+
     def test_fetch_active_artifact_id_for_station_none(
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:
