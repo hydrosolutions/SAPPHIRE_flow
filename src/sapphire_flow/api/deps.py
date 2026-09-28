@@ -68,6 +68,7 @@ def get_stores(
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
+    from sapphire_flow.store.tenant_store import PgTenantStore
 
     artifact_dir = resolve_artifact_dir()
 
@@ -90,4 +91,8 @@ def get_stores(
         # nothing else in the API used them before.
         "basin_store": PgBasinStore(conn),
         "provenance_store": PgArtifactProvenanceStore(conn),
+        # Plan 402 T1: GET /api/v1/qc/rules?station_id= resolves a declared
+        # block's tenant the same way ingest does
+        # (services/station_qc_overrides.py::resolve_configured_station_qc).
+        "tenant_store": PgTenantStore(conn),
     }

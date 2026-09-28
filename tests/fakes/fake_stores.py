@@ -533,6 +533,7 @@ class FakeForecastStore:
                 created_at=f.created_at,
                 input_quality=f.input_quality,
                 input_quality_flags=f.input_quality_flags,
+                qc_flags=f.qc_flags,
             )
             for f in self._forecasts.values()
             if f.station_id == station_id
@@ -1364,6 +1365,16 @@ class FakeModelArtifactStore:
                 if result is not None:
                     return result
         return None
+
+    def fetch_active_artifact_id_for_station(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+    ) -> ArtifactId | None:
+        # Plan 402 T2: shares `fetch_active_artifact_for_station`'s
+        # resolution, minus the bytes.
+        found = self.fetch_active_artifact_for_station(station_id, model_id)
+        return found[0] if found is not None else None
 
     def fetch_artifact_record(
         self, artifact_id: ArtifactId

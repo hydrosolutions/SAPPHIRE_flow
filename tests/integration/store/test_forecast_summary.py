@@ -12,7 +12,7 @@ from sapphire_flow.db.metadata import model_artifacts, models
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.domain import InputQualityFlag
+from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
@@ -102,6 +102,7 @@ def _make_forecast(
     rng: random.Random | None = None,
     input_quality: InputQualityLevel | None = None,
     input_quality_flags: tuple[InputQualityFlag, ...] = (),
+    qc_flags: tuple[QcFlag, ...] = (),
 ) -> OperationalForecast:
     rng = rng or random.Random(42)
     ensemble = make_forecast_ensemble(
@@ -131,6 +132,7 @@ def _make_forecast(
         updated_at=_NOW,
         input_quality=input_quality,
         input_quality_flags=input_quality_flags,
+        qc_flags=qc_flags,
     )
 
 
@@ -166,6 +168,39 @@ class TestFetchSummariesRoundTrip:
         assert s.nwp_cycle_source is NwpCycleSource.PRIMARY
         assert isinstance(s, ForecastSummaryRow)
         assert not hasattr(s, "ensemble")
+
+    def test_qc_flags_round_trip_through_postgres(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 402 T3: `qc_flags` on the served forecast list must survive a
+        REAL Postgres round trip, not only the fake store — a bug in
+        `PgForecastStore._row_to_summary`'s `qc_flags` parsing would leave
+        production lists silently empty while the fake-backed route tests
+        stayed green (review finding, 2026-09-28)."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        flags = (
+            QcFlag(
+                rule_id="range_check",
+                rule_version="1.0",
+                status=QcStatus.QC_FAILED,
+                detail="value 600.0 outside [0.0, 500.0]",
+            ),
+        )
+        fc = _make_forecast(sid, mid, aid, issued_at=_ISSUED_A, qc_flags=flags)
+        store.store_forecast(fc)
+
+        start = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
+        end = ensure_utc(datetime(2025, 1, 2, 0, tzinfo=UTC))
+        summaries, total = store.fetch_forecast_summaries(sid, start, end)
+
+        assert total == 1
+        assert summaries[0].qc_flags == flags
 
 
 class TestFetchSummariesFilterModel:

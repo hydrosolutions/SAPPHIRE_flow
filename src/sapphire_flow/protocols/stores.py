@@ -549,6 +549,15 @@ class ModelArtifactStore(Protocol):
     ) -> tuple[ArtifactId, bytes] | None:
         raise NotImplementedError
 
+    def fetch_active_artifact_id_for_station(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+    ) -> ArtifactId | None:
+        """Plan 402 T2: the same resolution as
+        `fetch_active_artifact_for_station`, without the artifact bytes."""
+        raise NotImplementedError
+
     def fetch_artifact_record(
         self, artifact_id: ArtifactId
     ) -> ModelArtifactRecord | None:

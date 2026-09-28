@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TCH003  # runtime use: isinstance narrowing
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -8,6 +9,7 @@ import polars as pl
 from sapphire_flow.services._qc_helpers import merge_thresholds
 from sapphire_flow.types.domain import (
     ClimBaseline,
+    ForecastQcRuleId,
     ForecastQcRuleParams,
     ForecastQcRuleSet,
     QcFlag,
@@ -16,10 +18,27 @@ from sapphire_flow.types.domain import (
 from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.ids import StationId
 
 _RULE_VERSION = "1.0"
+
+# Plan 402 T1: the status each forecast rule kind emits when it flags. It
+# DESCRIBES the `_apply_*` functions below (a test runs each kind against a
+# violating input and compares) — the rules do not read it.
+FORECAST_QC_SEVERITY: Mapping[ForecastQcRuleId, QcStatus] = MappingProxyType(
+    {
+        "negative_value": QcStatus.QC_FAILED,
+        "range_check": QcStatus.QC_FAILED,
+        "flat_ensemble": QcStatus.QC_SUSPECT,
+        "ensemble_spread": QcStatus.QC_SUSPECT,
+        "climatology_outlier": QcStatus.QC_SUSPECT,
+        "temporal_consistency": QcStatus.QC_SUSPECT,
+        "quantile_crossing": QcStatus.QC_FAILED,
+    }
+)
 
 
 def _apply_negative_value(

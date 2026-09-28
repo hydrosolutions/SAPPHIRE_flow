@@ -227,6 +227,81 @@ class TestGetForecast:
             assert len(values) == 5
 
 
+class TestForecastDetailQcFlags:
+    """Plan 402 T3: like input_quality (Plan 253 T1c), `_to_forecast_detail`
+    builds its response explicitly — it does not inherit `qc_flags` wiring
+    for free from `_to_forecast_summary`, so it needs its own proof."""
+
+    def test_flagged_forecast_returns_its_flags(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.domain import QcFlag
+        from sapphire_flow.types.enums import QcStatus
+
+        station = make_station_config(rng=random.Random(1))
+        fc = replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(2)),
+            qc_flags=(
+                QcFlag(
+                    rule_id="range_check",
+                    rule_version="1.0",
+                    status=QcStatus.QC_SUSPECT,
+                    detail="forecast flag",
+                ),
+            ),
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.status_code == 200
+        flags = resp.json()["qc_flags"]
+        assert len(flags) == 1
+        assert flags[0] == {
+            "rule_id": "range_check",
+            "rule_version": "1.0",
+            "status": "qc_suspect",
+            "detail": "forecast flag",
+        }
+
+    def test_unflagged_forecast_returns_empty_list(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fc = _make_operational_forecast(station_id=station.id, rng=random.Random(2))
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.json()["qc_flags"] == []
+
+    def test_consumer_sees_qc_flags_too(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        """D13: qc_flags is visible to every authenticated role."""
+        from sapphire_flow.api import app
+        from sapphire_flow.api.security import Principal, require_principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+
+        station = make_station_config(rng=random.Random(1))
+        fc = _make_operational_forecast(station_id=station.id, rng=random.Random(2))
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        app.dependency_overrides[require_principal] = lambda: Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=None,
+            station_ids=frozenset({station.id}),
+        )
+        try:
+            resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        finally:
+            app.dependency_overrides.pop(require_principal, None)
+        assert resp.status_code == 200
+        assert "qc_flags" in resp.json()
+
+
 class TestForecastDetailInputQuality:
     """Plan 253 T1c: the detail serializer is separate from ForecastSummary
     and builds its response explicitly — it does NOT inherit the fields for

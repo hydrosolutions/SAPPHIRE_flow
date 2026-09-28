@@ -2918,6 +2918,8 @@ class ForecastStore(Protocol):
         # Plan 328 T3: DELIBERATELY UNFILTERED — this is the record listing and
         # each row carries its own status. It is also how a SUPERSEDED
         # forecast's id is discovered for by-id access.
+        # Plan 402 T3: ForecastSummaryRow gained qc_flags: tuple[QcFlag, ...] = ()
+        # — [] when none, visible to every authenticated role (D13).
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
     ) -> UtcDatetime | None: ...
@@ -3193,6 +3195,14 @@ class ModelArtifactStore(Protocol):
     ) -> tuple[ArtifactId, bytes] | None: ...
         # Convenience: resolves station's group membership for group-scoped models.
         # Checks station-scoped first, then group-scoped. Used by Flow 1 step 1.7.
+    def fetch_active_artifact_id_for_station(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+    ) -> ArtifactId | None: ...
+        # Plan 402 T2: the same resolution as fetch_active_artifact_for_station,
+        # sharing its query, without reading the artifact bytes. Used by
+        # GET /api/v1/stations/{id}/skill (services/skill_read.py).
     def fetch_artifact_record(self, artifact_id: ArtifactId) -> ModelArtifactRecord | None: ...
         # Returns full metadata record (status, training period, audit trail).
         # Use when you need metadata without deserializing the artifact bytes.

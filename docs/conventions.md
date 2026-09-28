@@ -51,6 +51,10 @@ GET    /api/v1/forecasts/{id}                   # forecast detail with ensemble 
 POST   /api/v1/forecasts/{id}/adjust            # apply adjustment (v1 — requires Flow 3)
 PATCH  /api/v1/forecasts/{id}/status            # transition status (v1 — requires Flow 3)
 
+# Review (Plan 401/402): REVIEW-gated — a reviewer or admin token only (403 for consumer)
+GET    /api/v1/qc/rules                         # both QC rule sets as resolved now; ?station_id= for that station's merged thresholds (D15)
+GET    /api/v1/stations/{id}/skill              # the station's current skill rows on the artifact its forecast uses
+
 # Alerts
 GET    /api/v1/alerts                           # list alerts (filterable by status, source)
 POST   /api/v1/alerts/{id}/acknowledge          # v1.0 (Plan 147 Slice C): REMOVED from the surface, returns 501 — needs a v1.x session token + Flow 3

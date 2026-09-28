@@ -299,6 +299,97 @@ class TestListObservations:
         assert isinstance(item["qc_flags"], list)
         assert item["qc_flags"][0]["rule_version"] == "2.0.0"
 
+    def test_qc_flags_json_is_byte_identical_for_a_calculated_station_row(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        """Plan 402 T3 Verification: typing qc_flags must not change the wire
+        JSON for a calculated-station observation (`upstream_propagated`,
+        status qc_passed, detail naming the component stations)."""
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        obs = make_observation(
+            station_id=station.id,
+            parameter="discharge",
+            timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
+            rng=random.Random(2),
+        )
+        obs = replace(
+            obs,
+            qc_flags=[
+                QcFlag(
+                    rule_id="upstream_propagated",
+                    rule_version="component_derivation/v1",
+                    status=QcStatus.QC_PASSED,
+                    detail='{"components": ["A", "B"]}',
+                )
+            ],
+            qc_rule_version="component_derivation/v1",
+        )
+        fake_stores["obs_store"].store_observations([obs])
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/observations",
+            params={
+                "parameter": "discharge",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+        item = resp.json()[0]
+        assert item["qc_flags"] == [
+            {
+                "rule_id": "upstream_propagated",
+                "rule_version": "component_derivation/v1",
+                "status": "qc_passed",
+                "detail": '{"components": ["A", "B"]}',
+            }
+        ]
+        assert item["qc_rule_version"] == "component_derivation/v1"
+
+    def test_qc_flags_json_is_byte_identical_for_a_pre_324_row(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        obs = make_observation(
+            station_id=station.id,
+            parameter="water_level",
+            timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
+            rng=random.Random(3),
+        )
+        obs = replace(
+            obs,
+            qc_flags=[
+                QcFlag(
+                    rule_id="range_check",
+                    rule_version="1.1-datum",
+                    status=QcStatus.QC_FAILED,
+                    detail="pre-324 stored flag",
+                )
+            ],
+            qc_rule_version="1.1-datum",
+        )
+        fake_stores["obs_store"].store_observations([obs])
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/observations",
+            params={
+                "parameter": "water_level",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+        item = resp.json()[0]
+        assert item["qc_flags"] == [
+            {
+                "rule_id": "range_check",
+                "rule_version": "1.1-datum",
+                "status": "qc_failed",
+                "detail": "pre-324 stored flag",
+            }
+        ]
+        assert item["qc_rule_version"] == "1.1-datum"
+
     def test_missing_required_params(self, client: TestClient) -> None:
         resp = client.get(f"/api/v1/stations/{uuid4()}/observations")
         assert resp.status_code == 422
@@ -390,6 +481,113 @@ class TestListForecasts:
         body = resp.json()
         assert body["items"] == []
         assert body["total"] == 0
+
+
+class TestListForecastsQcFlags:
+    """Plan 402 T3: the station forecast LIST must carry qc_flags too —
+    ForecastSummaryRow (not just ForecastDetail)."""
+
+    def test_flagged_forecast_returns_its_flags(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+
+        fc = replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(2)),
+            qc_flags=(
+                QcFlag(
+                    rule_id="ensemble_spread",
+                    rule_version="1.0",
+                    status=QcStatus.QC_SUSPECT,
+                    detail="suspect spread",
+                ),
+            ),
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forecasts",
+            params={"start": "2024-12-31T00:00:00Z", "end": "2025-01-02T00:00:00Z"},
+        )
+        assert resp.status_code == 200
+        flags = resp.json()["items"][0]["qc_flags"]
+        assert flags == [
+            {
+                "rule_id": "ensemble_spread",
+                "rule_version": "1.0",
+                "status": "qc_suspect",
+                "detail": "suspect spread",
+            }
+        ]
+
+    def test_unflagged_forecast_returns_empty_list(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        fc = _make_operational_forecast(station_id=station.id, rng=random.Random(2))
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forecasts",
+            params={"start": "2024-12-31T00:00:00Z", "end": "2025-01-02T00:00:00Z"},
+        )
+        assert resp.json()["items"][0]["qc_flags"] == []
+
+
+class TestObservationQcRuleVersion:
+    """Plan 402 T3: ObservationResponse.qc_rule_version — the stored value,
+    null when none is stored."""
+
+    def test_returns_stored_qc_rule_version(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        obs = make_observation(
+            station_id=station.id,
+            parameter="discharge",
+            timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
+            rng=random.Random(2),
+        )
+        obs = replace(obs, qc_rule_version="1.2-datum")
+        fake_stores["obs_store"].store_observations([obs])
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/observations",
+            params={
+                "parameter": "discharge",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()[0]["qc_rule_version"] == "1.2-datum"
+
+    def test_null_when_none_stored(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        obs = make_observation(
+            station_id=station.id,
+            parameter="discharge",
+            timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
+            rng=random.Random(2),
+        )
+        obs = replace(obs, qc_rule_version=None)
+        fake_stores["obs_store"].store_observations([obs])
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/observations",
+            params={
+                "parameter": "discharge",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+        assert resp.json()[0]["qc_rule_version"] is None
 
 
 class TestListForecastsInputQuality:

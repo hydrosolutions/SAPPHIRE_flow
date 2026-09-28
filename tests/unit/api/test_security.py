@@ -385,6 +385,8 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/alerts"): "PRINCIPAL",
         ("POST", "/api/v1/alerts/{alert_id}/acknowledge"): "PRINCIPAL",
         ("GET", "/api/v1/forecast-lab/snapshot"): "PRINCIPAL",
+        ("GET", "/api/v1/qc/rules"): "REVIEW",
+        ("GET", "/api/v1/stations/{station_id}/skill"): "REVIEW",
     }
 
     def test_every_mounted_route_matches_the_expected_classification(self) -> None:
@@ -396,9 +398,9 @@ class TestRouteAuthMatrixExhaustive:
         assert public_routes == {("GET", "/api/v1/health")}
 
     def test_reviewer_reaches_every_non_admin_route_and_no_admin_route(self) -> None:
-        """Plan 401: the reviewer dimension. No REVIEW route exists until
-        Plan 402, so today a reviewer reaches exactly the PUBLIC and PRINCIPAL
-        routes; every ADMIN route stays closed to it."""
+        """Plan 401/402: the reviewer dimension. A reviewer reaches PUBLIC,
+        PRINCIPAL and REVIEW routes (Plan 402 added the first two REVIEW
+        routes); every ADMIN route stays closed to it."""
         admitted = TestRoleGates._ADMITTED
         reachable = {
             route

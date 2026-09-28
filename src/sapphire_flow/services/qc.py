@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from itertools import groupby
 from statistics import median
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from sapphire_flow.exceptions import ConfigurationError
@@ -10,6 +11,7 @@ from sapphire_flow.services._qc_helpers import merge_thresholds
 from sapphire_flow.types.domain import (
     ClimBaseline,
     QcFlag,
+    QcRuleId,
     QcRuleParams,
     QcRuleSet,
     StationQcOverride,
@@ -21,6 +23,19 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.ids import ObservationId, StationId
     from sapphire_flow.types.observation import Observation
+
+# Plan 402 T1: the status each rule kind emits when it flags a reading. It
+# DESCRIBES the `_apply_*` functions below (a test runs each kind against a
+# violating input and compares) — the rules do not read it.
+OBSERVATION_QC_SEVERITY: Mapping[QcRuleId, QcStatus] = MappingProxyType(
+    {
+        "range_check": QcStatus.QC_FAILED,
+        "rate_of_change": QcStatus.QC_SUSPECT,
+        "spike": QcStatus.QC_SUSPECT,
+        "gross_outlier": QcStatus.QC_SUSPECT,
+        "frozen_sensor": QcStatus.QC_SUSPECT,
+    }
+)
 
 
 def _merge_thresholds(

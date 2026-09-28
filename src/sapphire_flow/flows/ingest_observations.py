@@ -20,9 +20,8 @@ from sapphire_flow.services.qc_datum import (
     shift_observations_for_water_level_datum,
 )
 from sapphire_flow.services.station_qc_overrides import (
-    is_ingest_qc_applicable,
     is_ingest_station_judged,
-    resolve_station_qc_overrides,
+    resolve_configured_station_qc,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sapphire_flow.config.dhm import DhmConfig
-    from sapphire_flow.config.onboarding import StationQcThresholdSpec
     from sapphire_flow.config.river_stations import HydroScraperConfig
     from sapphire_flow.protocols.adapters import BatchStationDataSource
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
@@ -55,7 +53,7 @@ if TYPE_CHECKING:
         StationFetchOutcome,
     )
     from sapphire_flow.types.station import StationConfig
-    from sapphire_flow.types.station_qc import Resolution
+    from sapphire_flow.types.station_qc import ThresholdConfigOutcome
 
 log = structlog.get_logger(__name__)
 
@@ -92,14 +90,10 @@ class IngestResult:
 
 
 def _load_qc_rules() -> QcRuleSet:
-    from sapphire_flow.config.qc_rules import load_qc_rules
+    from sapphire_flow.config.qc_rules import resolve_qc_rules
 
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is not None:
-        return load_qc_rules(config_path)
-    from sapphire_flow.config.qc_rules import _default_swiss_qc_rules
-
-    return _default_swiss_qc_rules()
+    rule_set, _source = resolve_qc_rules()
+    return rule_set
 
 
 def _load_adapter_config() -> HydroScraperConfig | DhmConfig:
@@ -424,86 +418,21 @@ def _empty_qc_counts() -> dict[str, int]:
     }
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class ThresholdConfigOutcome:
-    overrides: tuple[StationQcOverride, ...] = ()
-    pending: tuple[str, ...] = ()
-    rejected: tuple[str, ...] = ()
-    not_applicable: tuple[str, ...] = ()
-
-
 def _configured_station_qc(
     all_stations: list[StationConfig],
     qc_rules: QcRuleSet,
     tenant_store: object | None,
 ) -> ThresholdConfigOutcome:
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is None:
-        return ThresholdConfigOutcome()
-    from sapphire_flow.config.onboarding import load_onboarding_config
-    from sapphire_flow.types.station_qc import StationQcRejectionKind as Reason
-
-    config = load_onboarding_config(config_path)
-    if config is None or not config.station_qc_thresholds:
-        return ThresholdConfigOutcome()
-    if tenant_store is None:
-        raise ConfigurationError("tenant_store is required for station QC thresholds")
-
-    grouped: dict[str, list[StationQcThresholdSpec]] = {}
-    for spec in config.station_qc_thresholds:
-        grouped.setdefault(spec.tenant_code, []).append(spec)
-    by_station = {(s.network, s.code): s for s in all_stations}
-    overrides: list[StationQcOverride] = []
-    pending: list[str] = []
-    rejected: list[str] = []
-    not_applicable: list[str] = []
-    for tenant_code, specs in grouped.items():
-        tenant = tenant_store.fetch_tenant_by_code(tenant_code)  # type: ignore[attr-defined]
-        tenant_id = tenant.id if tenant is not None else None
-        resolution: Resolution = resolve_station_qc_overrides(
-            specs,
-            all_stations,
-            qc_rules,
-            is_ingest_qc_applicable,
-            tenant_id=tenant_id,
-        )
-        overrides.extend(resolution.overrides)
-        for rejection in resolution.rejected:
-            spec = rejection.spec
-            subject = f"{spec.tenant_code}/{spec.network}/{spec.code}"
-            reasons = set(rejection.reasons)
-            tenant_has_network = any(
-                s.tenant_id == tenant_id and s.network == spec.network
-                for s in all_stations
-            )
-            network_anywhere = any(s.network == spec.network for s in all_stations)
-            is_pending = spec.network in config.qc_pending_networks and (
-                (reasons == {Reason.STATION_NOT_FOUND} and not tenant_has_network)
-                or (reasons == {Reason.TENANT_NOT_FOUND} and not network_anywhere)
-            )
-            if is_pending:
-                pending.append(subject)
-            else:
-                reason_text = ",".join(reason.value for reason in rejection.reasons)
-                rejected.append(f"{subject}: {reason_text}")
-        for spec in resolution.not_applicable:
-            subject = f"{spec.tenant_code}/{spec.network}/{spec.code}"
-            station = by_station[(spec.network, spec.code)]
-            if station.station_status.value == "onboarding":
-                pending.append(subject)
-            else:
-                not_applicable.append(subject)
-
-    for subject in pending:
+    """Plan 402 T1: the resolution itself now lives in
+    `services/station_qc_overrides.py::resolve_configured_station_qc` (so a
+    route can call it too, without a flow-module import); ingest keeps only
+    its own logging, unchanged."""
+    outcome = resolve_configured_station_qc(all_stations, qc_rules, tenant_store)
+    for subject in outcome.pending:
         log.info("ingest.qc_threshold_pending", subject=subject)
-    for subject in (*rejected, *not_applicable):
+    for subject in (*outcome.rejected, *outcome.not_applicable):
         log.warning("ingest.qc_threshold_unapplied", subject=subject)
-    return ThresholdConfigOutcome(
-        overrides=tuple(overrides),
-        pending=tuple(pending),
-        rejected=tuple(rejected),
-        not_applicable=tuple(not_applicable),
-    )
+    return outcome
 
 
 def _append_threshold_config_health_record(

@@ -144,11 +144,15 @@ class PgModelArtifactStore:
         stored = self._read_and_verify(aid, row["artifact_path"], row["sha256_hash"])
         return (aid, stored)
 
-    def fetch_active_artifact_for_station(
+    def _active_artifact_row_for_station(
         self,
         station_id: StationId,
         model_id: ModelId,
-    ) -> tuple[ArtifactId, bytes] | None:
+    ) -> sa.engine.row.RowMapping | None:
+        """The query `fetch_active_artifact_for_station` and
+        `fetch_active_artifact_id_for_station` (Plan 402 T2) share — the
+        station's own active artifact first, else an active group artifact of
+        a group the station belongs to."""
         # Branch 1 (priority 0): direct station-scoped match
         direct = sa.select(
             model_artifacts.c.id,
@@ -190,13 +194,30 @@ class PgModelArtifactStore:
             .order_by(union_stmt.c.priority)
             .limit(1)
         )
+        return self._conn.execute(stmt).mappings().one_or_none()
 
-        row = self._conn.execute(stmt).mappings().one_or_none()
+    def fetch_active_artifact_for_station(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+    ) -> tuple[ArtifactId, bytes] | None:
+        row = self._active_artifact_row_for_station(station_id, model_id)
         if row is None:
             return None
         aid = ArtifactId(row["id"])
         stored = self._read_and_verify(aid, row["artifact_path"], row["sha256_hash"])
         return (aid, stored)
+
+    def fetch_active_artifact_id_for_station(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+    ) -> ArtifactId | None:
+        """Plan 402 T2: the same resolution as
+        `fetch_active_artifact_for_station`, minus the artifact-bytes read —
+        the skill endpoint needs only the id."""
+        row = self._active_artifact_row_for_station(station_id, model_id)
+        return ArtifactId(row["id"]) if row is not None else None
 
     def fetch_artifact_record(
         self, artifact_id: ArtifactId

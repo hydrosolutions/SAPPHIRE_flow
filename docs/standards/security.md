@@ -161,7 +161,10 @@ to a browser.
   data applies the principal's station scope itself — 404 on detail routes, filtering on collections.
   A REVIEW route serving forecast values withholds those values and the flag `detail` from reviewer
   tokens where Plan 341's publication gate is active, still returning the rule fields (Plan 404 D4);
-  admins keep full access there (Plan 341).
+  admins keep full access there (Plan 341). `GET /api/v1/qc/rules` without `station_id` is
+  deployment-global and station-agnostic (no scope check applies — it carries no station data); with
+  `station_id` it is station-scoped exactly like any other detail route: 404 for an out-of-scope or
+  unknown station (D15). `GET /api/v1/stations/{id}/skill` is station-scoped the same way.
 - **No unpublished forecasts, no writes.** Where Plan 341's gate is active a reviewer token is gated
   exactly like a consumer on the forecast routes; only Plan 341 may change that default. Publishing
   and withdrawal are a named, signed-in person's act (Plan 341), never a token's (Plan 401 D3).
@@ -397,6 +400,21 @@ sensitive and that a forecaster looking at a degraded forecast needs to see why:
 `GET /api/v1/stations/{id}/forecasts` and `GET /api/v1/forecasts/{id}` both expose them to
 `consumer`, `reviewer` and `admin` alike. This knowingly supersedes 023:128-143 — record it here so the next
 reader does not mistake the dropped prerequisite for an oversight.
+
+**Plan 402 D13 (2026-09-26):** the same reasoning extends to QC. `ForecastSummary.qc_flags` /
+`ForecastDetail.qc_flags` (added to routes consumers already read) and `ObservationResponse.qc_rule_version`
+are visible, unfiltered, to **every authenticated role** — `consumer`, `reviewer` and `admin` alike. This
+is the **one** change Plan 402 makes to what a `consumer` token can read; every other new field/route in
+that plan is either REVIEW-gated (`/qc/rules`, `/skill`) or additive-and-already-visible.
+
+**Plan 402 D6 — carried forward, not decided here.** The Nepal region-bundle draft forbids copying QC
+flag `detail` verbatim for restricted DHM data. Under Plan 401 D12 the Swiss dashboard cannot see Nepal
+stations, and the Nepal dashboard sees only its own client's data — so the exposure left is to a
+**Nepal consumer token** (a third party): observation flag `detail` today, and forecast flag `detail`
+after Plan 402 T3 (the latter includes observation-derived baseline statistics for
+`climatology_outlier`). **Before DHM observations are readable by a Nepal consumer token, the owner
+must decide whether observation and forecast flag `detail` is stripped for consumers on that network**
+(recorded in Plan 143, DHM onboarding).
 
 ## Secrets management
 
