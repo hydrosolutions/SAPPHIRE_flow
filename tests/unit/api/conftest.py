@@ -69,23 +69,29 @@ class AckAwareFakeAlertStore(FakeAlertStore):
 
 @pytest.fixture
 def fake_stores() -> dict[str, Any]:
+    # Plan 329 — the snapshot reads group assignments too. `api/deps.py`
+    # already supplies this key in production; without it here, every
+    # forecast-lab route test fails on a missing key. `artifact_store` needs
+    # the SAME instance passed in below: `FakeModelArtifactStore`'s
+    # group-scoped-artifact fallback (Plan 402 T2) is a no-op without it —
+    # unlike `PgModelArtifactStore`'s single SQL query in production, which
+    # always sees the group tables (review finding, 2026-09-28: this gap
+    # meant no fake-store test could ever exercise the group-fallback path).
+    group_store = FakeStationGroupStore()
     return {
         "station_store": FakeStationStore(),
         "obs_store": FakeObservationStore(),
         "forecast_store": FakeForecastStore(),
         "forcing_store": FakeHistoricalForcingStore(),
         "alert_store": AckAwareFakeAlertStore(),
-        "artifact_store": FakeModelArtifactStore(),
+        "artifact_store": FakeModelArtifactStore(group_store=group_store),
         "pipeline_health_store": FakePipelineHealthStore(),
         # Plan 198 T5 — services/forecast_lab/db_sources.py needs these two;
         # no other route reads them from the stores dict.
         "model_store": FakeModelStore(),
         "basin_store": FakeBasinStore(),
         "provenance_store": FakeArtifactProvenanceStore(),
-        # Plan 329 — the snapshot reads group assignments too. `api/deps.py`
-        # already supplies this key in production; without it here, every
-        # forecast-lab route test fails on a missing key.
-        "group_store": FakeStationGroupStore(),
+        "group_store": group_store,
         # Plan 402 T1/T2 — GET /api/v1/qc/rules?station_id= and
         # GET /api/v1/stations/{id}/skill need these two; no other route
         # reads them from the stores dict.

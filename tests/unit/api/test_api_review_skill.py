@@ -14,9 +14,13 @@ from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     SkillSource,
 )
-from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.skill import SkillScore
-from sapphire_flow.types.station import ModelAssignment
+from sapphire_flow.types.station import (
+    GroupModelAssignment,
+    ModelAssignment,
+    StationGroup,
+)
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
@@ -87,6 +91,40 @@ def _seed_station_with_active_artifact(fake_stores: dict, *, model_id: ModelId):
     return station, aid
 
 
+def _seed_station_with_group_artifact(fake_stores: dict, *, model_id: ModelId):
+    """A model assigned to the station only THROUGH a group (Plan 329), with
+    no station-scoped artifact of its own — the group-fallback case T2's
+    Verification requires and the plain station fixture above cannot cover
+    (review finding, 2026-09-28)."""
+    station = make_station_config(code="SKILL-GROUP")
+    fake_stores["station_store"].store_station(station)
+    group = StationGroup(
+        id=StationGroupId(uuid4()),
+        name="skill-group",
+        station_ids=frozenset({station.id}),
+        created_at=_TRAINED,
+    )
+    fake_stores["group_store"].store_group(group)
+    fake_stores["group_store"].seed_group_model_assignment(
+        group.id,
+        model_id,
+        GroupModelAssignment(
+            group_id=group.id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=0,
+            created_at=_TRAINED,
+        ),
+    )
+    artifact_store = fake_stores["artifact_store"]
+    aid, _ = artifact_store.store_artifact(
+        model_id, b"group_bytes", _T0, _T1, _TRAINED, group_id=group.id
+    )
+    artifact_store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+    return station, aid
+
+
 class TestStationSkill:
     def test_malformed_station_id_is_400(self, client: TestClient) -> None:
         resp = client.get("/api/v1/stations/not-a-uuid/skill")
@@ -137,6 +175,97 @@ class TestStationSkill:
         assert row["training_period_start"] is not None
         assert row["metric"] == "nse"
         assert row["score"] == 0.8
+
+    def test_eval_window_starting_exactly_at_training_period_end_overlaps(
+        self, client: TestClient, fake_stores: dict
+    ) -> None:
+        """T2 Verification: "an eval window starting exactly at
+        `training_period_end` is `overlaps_training_period`" — a shared
+        instant is not "no shared instant" (review finding, 2026-09-28)."""
+        model_id = ModelId("skill_test_boundary_model")
+        station, aid = _seed_station_with_active_artifact(
+            fake_stores, model_id=model_id
+        )
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=model_id,
+                    model_artifact_id=aid,
+                    generation_id=None,
+                    eval_period_start=_T1,  # == training_period_end
+                    eval_period_end=_T1 + timedelta(days=10),
+                )
+            ]
+        )
+
+        resp = client.get(f"/api/v1/stations/{station.id}/skill")
+        assert resp.status_code == 200
+        rows = resp.json()["rows"]
+        assert len(rows) == 1
+        assert rows[0]["evaluated_on"] == "overlaps_training_period"
+
+    def test_headline_and_stratified_rows_both_present_in_order(
+        self, client: TestClient, fake_stores: dict
+    ) -> None:
+        """T2 Verification: "stratified and headline rows both present, in
+        the specified order" — previously untested (review finding,
+        2026-09-28). `_sort_key`'s `_null_first` sorts a null `season`
+        before a set one, so headline comes first."""
+        model_id = ModelId("skill_test_strat_model")
+        station, aid = _seed_station_with_active_artifact(
+            fake_stores, model_id=model_id
+        )
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=model_id,
+                    model_artifact_id=aid,
+                    generation_id=None,
+                    season="winter",
+                ),
+                _make_score(
+                    station_id=station.id,
+                    model_id=model_id,
+                    model_artifact_id=aid,
+                    generation_id=None,
+                    season=None,
+                ),
+            ]
+        )
+
+        resp = client.get(f"/api/v1/stations/{station.id}/skill")
+        assert resp.status_code == 200
+        rows = resp.json()["rows"]
+        assert len(rows) == 2
+        assert [r["season"] for r in rows] == [None, "winter"]
+
+    def test_group_only_assignment_uses_the_group_artifact(
+        self, client: TestClient, fake_stores: dict
+    ) -> None:
+        """T2 Verification: the ID-only method agrees with the byte-returning
+        one for a GROUP-scoped artifact too — proven end to end through the
+        route, not only at the store layer (review finding, 2026-09-28)."""
+        model_id = ModelId("skill_test_group_model")
+        station, aid = _seed_station_with_group_artifact(fake_stores, model_id=model_id)
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=model_id,
+                    model_artifact_id=aid,
+                    generation_id=None,
+                )
+            ]
+        )
+
+        resp = client.get(f"/api/v1/stations/{station.id}/skill")
+        assert resp.status_code == 200
+        rows = resp.json()["rows"]
+        assert len(rows) == 1
+        assert rows[0]["model_id"] == str(model_id)
+        assert rows[0]["model_artifact_id"] == str(aid)
 
     def test_score_from_a_different_artifact_is_excluded(
         self, client: TestClient, fake_stores: dict
