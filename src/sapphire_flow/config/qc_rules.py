@@ -3,13 +3,19 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
     load_merged_toml,
 )
 from sapphire_flow.types.domain import QcRuleId, QcRuleParams, QcRuleSet
+
+# Plan 402 T1: which branch actually supplied a resolved rule set — "config"
+# (the merged TOML declared the section) or "builtin_default" (the variable
+# was unset, or the merged file simply has no section). Served verbatim as
+# `source` on `GET /api/v1/qc/rules`.
+QcRuleSource = Literal["config", "builtin_default"]
 
 _VALID_RULE_IDS: frozenset[str] = frozenset(
     {
@@ -280,21 +286,41 @@ def _default_swiss_qc_rules() -> QcRuleSet:
     )
 
 
-def load_qc_rules(config_path: Path | str | None = None) -> QcRuleSet:
-    if config_path is None:
-        env_path = os.environ.get("SAPPHIRE_CONFIG")
-        if env_path is None:
-            raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
-        config_path = env_path
-    path = Path(config_path)
+def _resolve_qc_rules_from_path(path: Path) -> tuple[QcRuleSet, QcRuleSource]:
+    """The shared part every caller (the raise-on-missing loader below, and
+    `resolve_qc_rules`'s SAPPHIRE_CONFIG branch) funnels through — keeps the
+    PR #315 overlay rejection and decides `source` at the `qc_rules` section
+    check (Plan 402 T1)."""
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
     data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
 
     qc_section = data.get("qc_rules")
     if qc_section is None:
-        return _default_swiss_qc_rules()
+        return _default_swiss_qc_rules(), "builtin_default"
 
     version = qc_section.get("version", "1.0.0")
     rules = tuple(_parse_rule(r) for r in qc_section.get("rules", []))
-    return QcRuleSet(version=version, rules=rules)
+    return QcRuleSet(version=version, rules=rules), "config"
+
+
+def load_qc_rules(config_path: Path | str | None = None) -> QcRuleSet:
+    if config_path is None:
+        env_path = os.environ.get("SAPPHIRE_CONFIG")
+        if env_path is None:
+            raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
+        config_path = env_path
+    rule_set, _source = _resolve_qc_rules_from_path(Path(config_path))
+    return rule_set
+
+
+def resolve_qc_rules() -> tuple[QcRuleSet, QcRuleSource]:
+    """The one public resolution function (Plan 402 T1): reads
+    `SAPPHIRE_CONFIG` itself, returns `builtin_default` when it is unset,
+    and otherwise calls the same shared part `load_qc_rules` uses — so every
+    caller (the four loaders, and `GET /api/v1/qc/rules`) resolves rules
+    identically."""
+    env_path = os.environ.get("SAPPHIRE_CONFIG")
+    if env_path is None:
+        return _default_swiss_qc_rules(), "builtin_default"
+    return _resolve_qc_rules_from_path(Path(env_path))

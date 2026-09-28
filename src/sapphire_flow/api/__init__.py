@@ -10,7 +10,11 @@ from fastapi.templating import Jinja2Templates
 from sapphire_flow.api.cors import ScopedCorsMiddleware, parse_exact_origin
 from sapphire_flow.api.deps import lifespan
 from sapphire_flow.api.errors import http_exception_handler, unhandled_exception_handler
-from sapphire_flow.api.security import require_admin, require_principal
+from sapphire_flow.api.security import (
+    require_admin,
+    require_principal,
+    require_reviewer,
+)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 # localhost fallback is for local dev; production sets PREFECT_UI_URL
@@ -73,6 +77,10 @@ app.add_exception_handler(Exception, unhandled_exception_handler)  # type: ignor
 # in full rather than individually scope-filtered. The modern `/api/v1/...`
 # JSON API (api_stations/api_forecasts/api_alerts) is the one surface a
 # `consumer` token can reach, with per-endpoint station-scope filtering.
+# Plan 401/402: `api_review` (`GET /api/v1/qc/rules[?station_id=]`,
+# `GET /api/v1/stations/{id}/skill`) is REVIEW-gated — a reviewer or admin
+# token only, still applying the principal's station scope where it serves
+# station data.
 from sapphire_flow.api.routes.dashboard import router as dashboard_router  # noqa: E402
 from sapphire_flow.api.routes.forecasts import router as forecasts_router  # noqa: E402
 from sapphire_flow.api.routes.health import (  # noqa: E402
@@ -95,6 +103,7 @@ app.include_router(models_router, dependencies=[Depends(require_admin)])
 
 import sapphire_flow.api.routes.api_alerts as _api_alerts  # noqa: E402
 import sapphire_flow.api.routes.api_forecasts as _api_fcst  # noqa: E402
+import sapphire_flow.api.routes.api_review as _api_review  # noqa: E402
 import sapphire_flow.api.routes.api_stations as _api_stn  # noqa: E402
 import sapphire_flow.api.routes.forecast_lab as _forecast_lab  # noqa: E402
 
@@ -104,3 +113,5 @@ app.include_router(_api_alerts.router, dependencies=[Depends(require_principal)]
 # Plan 198 T5 — Forecast Lab snapshot export, same auth surface as the
 # other `/api/v1/...` consumer routes above.
 app.include_router(_forecast_lab.router, dependencies=[Depends(require_principal)])
+# Plan 402 — REVIEW-gated: reviewer or admin token only (Plan 401).
+app.include_router(_api_review.router, dependencies=[Depends(require_reviewer)])

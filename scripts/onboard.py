@@ -80,15 +80,10 @@ def _run_migrations(engine: sa.Engine) -> None:
 
 
 def _load_qc_rules():  # type: ignore[no-untyped-def]
-    from sapphire_flow.config.qc_rules import load_qc_rules
+    from sapphire_flow.config.qc_rules import resolve_qc_rules
 
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is not None:
-        return load_qc_rules(config_path)
-    # No config file — use built-in Swiss defaults by side-stepping the env check
-    from sapphire_flow.config.qc_rules import _default_swiss_qc_rules
-
-    return _default_swiss_qc_rules()
+    rule_set, _source = resolve_qc_rules()
+    return rule_set
 
 
 def _print_result(result) -> None:  # type: ignore[no-untyped-def]

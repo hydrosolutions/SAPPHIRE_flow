@@ -57,14 +57,10 @@ def _download_task(data_dir: str) -> str:
 
 
 def _load_qc_rules() -> object:
-    from sapphire_flow.config.qc_rules import load_qc_rules
+    from sapphire_flow.config.qc_rules import resolve_qc_rules
 
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is not None:
-        return load_qc_rules(config_path)
-    from sapphire_flow.config.qc_rules import _default_swiss_qc_rules
-
-    return _default_swiss_qc_rules()
+    rule_set, _source = resolve_qc_rules()
+    return rule_set
 
 
 def _resolve_default_camels_dir() -> str:

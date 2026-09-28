@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
@@ -14,6 +14,9 @@ from sapphire_flow.types.domain import (
     ForecastQcRuleParams,
     ForecastQcRuleSet,
 )
+
+# Plan 402 T1 — see `config/qc_rules.py::QcRuleSource`; the forecast twin.
+ForecastQcRuleSource = Literal["config", "builtin_default"]
 
 _VALID_RULE_IDS: frozenset[str] = frozenset(
     {
@@ -249,21 +252,38 @@ def _default_swiss_forecast_qc_rules() -> ForecastQcRuleSet:
     )
 
 
-def load_forecast_qc_rules(config_path: Path | str | None = None) -> ForecastQcRuleSet:
-    if config_path is None:
-        env_path = os.environ.get("SAPPHIRE_CONFIG")
-        if env_path is None:
-            raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
-        config_path = env_path
-    path = Path(config_path)
+def _resolve_forecast_qc_rules_from_path(
+    path: Path,
+) -> tuple[ForecastQcRuleSet, ForecastQcRuleSource]:
+    """The shared part (Plan 402 T1) — see
+    `config/qc_rules.py::_resolve_qc_rules_from_path`, the observation twin."""
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
     data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
 
     qc_section = data.get("forecast_qc_rules")
     if qc_section is None:
-        return _default_swiss_forecast_qc_rules()
+        return _default_swiss_forecast_qc_rules(), "builtin_default"
 
     version = qc_section.get("version", "1.0.0")
     rules = tuple(_parse_rule(r) for r in qc_section.get("rules", []))
-    return ForecastQcRuleSet(version=version, rules=rules)
+    return ForecastQcRuleSet(version=version, rules=rules), "config"
+
+
+def load_forecast_qc_rules(config_path: Path | str | None = None) -> ForecastQcRuleSet:
+    if config_path is None:
+        env_path = os.environ.get("SAPPHIRE_CONFIG")
+        if env_path is None:
+            raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
+        config_path = env_path
+    rule_set, _source = _resolve_forecast_qc_rules_from_path(Path(config_path))
+    return rule_set
+
+
+def resolve_forecast_qc_rules() -> tuple[ForecastQcRuleSet, ForecastQcRuleSource]:
+    """The one public resolution function (Plan 402 T1) — see
+    `config/qc_rules.py::resolve_qc_rules`, the forecast twin."""
+    env_path = os.environ.get("SAPPHIRE_CONFIG")
+    if env_path is None:
+        return _default_swiss_forecast_qc_rules(), "builtin_default"
+    return _resolve_forecast_qc_rules_from_path(Path(env_path))

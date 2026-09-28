@@ -38,3 +38,14 @@ class Resolution:
     rejected: tuple[StationQcRejection, ...]
     not_applicable: tuple[StationQcThresholdSpec, ...]
     fan_out: tuple[StationQcFanOut, ...]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ThresholdConfigOutcome:
+    """Plan 402 T1: moved from `flows/ingest_observations.py` so
+    `services/station_qc_overrides.py` never imports a flow module."""
+
+    overrides: tuple[StationQcOverride, ...] = ()
+    pending: tuple[str, ...] = ()
+    rejected: tuple[str, ...] = ()
+    not_applicable: tuple[str, ...] = ()

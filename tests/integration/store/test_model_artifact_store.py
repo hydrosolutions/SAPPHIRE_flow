@@ -192,6 +192,53 @@ class TestPgModelArtifactStore:
         assert result[0] == station_aid
         assert result[1] == b"station_bytes"
 
+    def test_fetch_active_artifact_id_for_station_direct(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        model_id = _seed_model(db_connection)
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        aid, _ = store.store_artifact(
+            model_id, b"direct_id_bytes", _T0, _T1, _T2, station_id=station_id
+        )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+
+        assert store.fetch_active_artifact_id_for_station(station_id, model_id) == aid
+
+    def test_fetch_active_artifact_id_for_station_agrees_with_group_fallback(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """Plan 402 T2 Pre-change: for a group-scope model assigned directly
+        to a station (no station-scoped artifact of its own), the ID-only
+        method must return the SAME group artifact the forecast path
+        (`fetch_active_artifact_for_station`) returns."""
+        station_id = _seed_station(db_connection)
+        group_id = _seed_group(db_connection, station_id)
+        model_id = _seed_model(db_connection, scope="group")
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        aid, _ = store.store_artifact(
+            model_id, b"group_id_bytes", _T0, _T1, _T2, group_id=group_id
+        )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+
+        forecast_path_result = store.fetch_active_artifact_for_station(
+            station_id, model_id
+        )
+        assert forecast_path_result is not None
+        assert forecast_path_result[0] == aid
+        assert store.fetch_active_artifact_id_for_station(station_id, model_id) == aid
+
+    def test_fetch_active_artifact_id_for_station_none(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        model_id = _seed_model(db_connection)
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        assert store.fetch_active_artifact_id_for_station(station_id, model_id) is None
+
     def test_fetch_artifact_record(
         self, db_connection: sa.Connection, tmp_path: Path
     ) -> None:

@@ -25,8 +25,10 @@ from tests.fakes.fake_stores import (
     FakeModelStore,
     FakeObservationStore,
     FakePipelineHealthStore,
+    FakeSkillStore,
     FakeStationGroupStore,
     FakeStationStore,
+    FakeTenantStore,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +86,11 @@ def fake_stores() -> dict[str, Any]:
         # already supplies this key in production; without it here, every
         # forecast-lab route test fails on a missing key.
         "group_store": FakeStationGroupStore(),
+        # Plan 402 T1/T2 — GET /api/v1/qc/rules?station_id= and
+        # GET /api/v1/stations/{id}/skill need these two; no other route
+        # reads them from the stores dict.
+        "tenant_store": FakeTenantStore(),
+        "skill_store": FakeSkillStore(),
     }
 
 

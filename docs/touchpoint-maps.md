@@ -63,9 +63,12 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 
 - Read `config/onboarding.py::load_onboarding_config`,
   `config/_overlay.py::load_merged_toml`,
-  `services/station_qc_overrides.py::resolve_station_qc_overrides`,
+  `services/station_qc_overrides.py::resolve_station_qc_overrides` and
+  `resolve_configured_station_qc` (Plan 402 T1 — the shared resolution
   `flows/ingest_observations.py::_configured_station_qc` and
-  `scripts/onboard.py::_validate_config` together.
+  `GET /api/v1/qc/rules?station_id=` (`api/routes/api_review.py`) both call;
+  ingest alone still owns the two `ingest.qc_threshold_*` log events and the
+  pipeline-health record) and `scripts/onboard.py::_validate_config` together.
 - Required block `tenant_code` scopes station lookup. Network-specific rules
   resolve before station thresholds merge. Overlay blocks and pending-network
   settings are rejected; ordinary onboarding tenant overlays remain allowed.
@@ -73,8 +76,11 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
   delivers water level only; Plan 268 owns full-series QC on delivered discharge.
   Database persistence and change history for observation QC thresholds remain
   unowned v1 work.
-- Verify parser, resolver, ingest-flow and validator tests, including the
-  no-declaration Swiss QC baseline and no-write validation path.
+- The reader (`/qc/rules?station_id=`) mirrors scheduled ingest only: a block
+  ingest rejects or does not apply is absent from the response, exactly as it
+  is absent from ingest's own effect — never a second, divergent resolution.
+- Verify parser, resolver, ingest-flow, route and validator tests, including
+  the no-declaration Swiss QC baseline and no-write validation path.
 
 ---
 

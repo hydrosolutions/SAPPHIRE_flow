@@ -844,15 +844,10 @@ def _load_recap_staleness_threshold_hours(config_path: str | None) -> float | No
 
 
 def _load_forecast_qc_rules() -> ForecastQcRuleSet:
-    from sapphire_flow.config.forecast_qc_rules import (
-        _default_swiss_forecast_qc_rules,  # pyright: ignore[reportPrivateUsage]
-        load_forecast_qc_rules,
-    )
+    from sapphire_flow.config.forecast_qc_rules import resolve_forecast_qc_rules
 
-    config_path = os.environ.get("SAPPHIRE_CONFIG")
-    if config_path is not None:
-        return load_forecast_qc_rules(config_path)
-    return _default_swiss_forecast_qc_rules()
+    rule_set, _source = resolve_forecast_qc_rules()
+    return rule_set
 
 
 def _resolve_cycle_time(
