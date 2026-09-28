@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-25
 plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
@@ -18,15 +18,14 @@ source: 2026-09-25 — request from the SAPPHIRE-flow-map session (audience Nepa
 
 ## Status
 
-**DRAFT — HIGH RISK — returned from READY on 2026-09-27 for one material change, reviewed and
-folded since (see Changelog); needs a review of the exact current text before READY.** PR #324 (Plan 269) made ingest apply per-station observation QC thresholds, so the
-rules this plan served could differ from those applied at a station; the owner chose to serve them
-(D15). It was READY on 2026-09-26 after the ordinary Claude + Codex rounds, the owner-commissioned
-API-contract review, and a final check of the exact text (Claude and Codex both clean on
-`296f20a6`); the changed text needs a review round before it is READY again. High risk (an external-facing
-API contract, `docs/workflow.md` § High-risk work): the implementation PR needs one more
-owner-commissioned review before it is opened. D9 (a QC what-if dry run) stays open as a separate
-follow-on and does not block this plan. This plan **depends on Plan 401**, merged (#320).
+**READY — HIGH RISK.** Set 2026-09-28 by the orchestrator session on the owner's instruction. It was
+READY on 2026-09-26, returned to DRAFT on 2026-09-27 for D15 (PR #324 made ingest apply per-station
+observation QC thresholds; the owner chose to serve them), then reviewed through a D15 round, a
+reconciliation against `main`, and three independent Claude + Codex pairs the owner asked for (the
+last: Codex clean; Claude's minors folded, and focused Codex checks of that fold clean on `fd914ae6`).
+High risk (an external-facing API contract, `docs/workflow.md` § High-risk work): the implementation
+PR needs one more owner-commissioned review before it is opened. D9 (a QC what-if dry run) stays open
+as a separate follow-on and does not block this plan. Depends on Plan 401, merged (#320).
 
 ## Why this exists
 
