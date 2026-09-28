@@ -176,6 +176,33 @@ assignment while the station **also** holds an active station-scoped
 artifact of it — the forecast uses the group artifact, but this route's
 skill rows come from the station-scoped one (the two can disagree).
 
+`season` is a plain string, not a closed `Literal` — the deployment
+configures its own season names (`architecture-context.md`); do not
+hardcode a fixed set of seasons in the map.
+
+**Metrics** (`metric` values actually emitted, `services/skill/service.py`),
+each in the served parameter's unit (discharge m³/s, water level m) unless
+noted:
+
+| `metric` | direction | notes |
+|---|---|---|
+| `crps` | lower is better | Continuous Ranked Probability Score |
+| `nse` | higher is better | Nash-Sutcliffe Efficiency, dimensionless, max 1.0 |
+| `kge` | higher is better | Kling-Gupta Efficiency, dimensionless, max 1.0 |
+| `pbias` | closer to 0 is better | percent bias, `%`, signed — neither higher nor lower alone is "better" |
+| `mae` | lower is better | Mean Absolute Error |
+| `sharpness_p10_p90`, `sharpness_p25_p75` | narrower is more informative | ensemble spread width — only "better" alongside good calibration; a narrow but wrong ensemble is worse than a wide correct one |
+| `ensemble_range` | context-dependent | full ensemble spread |
+| `peak_timing_error` | closer to 0 is better | hours, signed (early/late) |
+| `bss_danger_<level>` | higher is better | Brier Skill Score for that danger level, dimensionless, max 1.0 |
+| `pod_danger_<level>` | higher is better | probability of detection, 0-1 |
+| `far_danger_<level>` | lower is better | false alarm ratio, 0-1 |
+| `csi_danger_<level>` | higher is better | critical success index, 0-1 |
+
+`docs/architecture-context.md` § S.4 carries the full definitions and
+interpretation-band literature references (Moriasi et al. 2007) — this
+table is the map's quick-reference, not the source of truth.
+
 ## Observations and forecasts (existing routes, D13's two additive fields)
 
 `GET /api/v1/stations/{id}/observations` and the forecast routes are
