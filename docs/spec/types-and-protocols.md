@@ -4786,6 +4786,23 @@ per-assignment backstop `try` that converts an unanticipated exception into
 `AssignmentFailure(cause=AssignmentFailureCause.UNEXPECTED_EXCEPTION, ...)` rather than letting it escape and darken
 the whole station.
 
+**Plan 404 T2 (landed):** `AssignmentFailure` gains one field,
+`rejected: RejectedAssignmentPayload | None = None`, set only for a
+`QC_FAILED` cause (see "RejectedForecast" above) — every other cause
+leaves it `None`. The PRIMARY-mode wrapper `run_station_forecast` (same
+module) no longer returns `StationForecastResult | None`; it returns
+`PrimaryForecastOutcome(result: StationForecastResult | None,
+failed_models: dict[ModelId, AssignmentFailure])`, so a rejected
+assignment's payload is no longer discarded on that path. The group path's
+`run_group_forecast` (`services/run_group_forecast.py`) likewise no longer
+returns a bare `dict[StationId, StationForecastResult]`; it returns
+`GroupForecastOutcome(results: dict[StationId, StationForecastResult],
+rejected: tuple[RejectedAssignmentPayload, ...] = ())` — one entry per
+rejected station (D3), or raises `GroupForecastError` (carrying the
+rejections gathered so far plus the original exception) if a later
+station's build raised an ordinary error after an earlier one was already
+rejected.
+
 ### Forecast combination service
 
 Module: `services/forecast_combination.py`
