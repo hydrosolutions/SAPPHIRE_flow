@@ -16,6 +16,14 @@ source: 2026-09-04 — owner decision OD-1a in Plan 253, taken once review estab
 **DRAFT — not reviewed.** Split out of Plan 253 on 2026-09-04 by owner decision, so that a versioned
 external-format change does not ride on a persistence fix.
 
+**Plan 402 status note (2026-09-28):** Plan 402 T3 adds typed `qc_flags` (and, for observations,
+`qc_rule_version`) to the existing `/api/v1` forecast/observation responses — every authenticated
+role, including consumer tokens (D13). This is a **member/single-model and combined-forecast**
+surface reached through `/api/v1`, not the Forecast Lab snapshot (`forecast-lab-snapshot/v2`, which
+this plan targets and which stays unchanged). It may cover this plan's purpose for a consumer reading
+the API directly instead of the snapshot; the owner decides whether this plan is still needed, or is
+narrowed to the snapshot-specific gap, separately.
+
 ## Why this exists
 
 Plan 253 makes a combined (`_pooled`) forecast that fails QC **stored, marked failed** rather than

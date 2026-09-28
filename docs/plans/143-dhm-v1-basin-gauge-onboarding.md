@@ -19,6 +19,16 @@ the orchestrator sets it READY. The sequence deliberately waits for the complete
 QC ladder and Plan 268 station import before it assigns forecast targets or runs
 onboarding QC.
 
+**Plan 402 D6 (2026-09-26), carried forward — not decided here.** Once DHM
+observations are readable by a Nepal *consumer* access token (a third party, not
+the Nepal review dashboard), their QC flag `detail` is served verbatim by
+`/api/v1` (observation flags today; forecast flags too since Plan 402 T3) —
+for `climatology_outlier` this includes observation-derived baseline
+statistics. **Before that read path is exposed, the owner must decide whether
+observation and forecast flag `detail` is stripped for consumer tokens on the
+DHM network.** This plan's onboarding steps should not treat that exposure as
+already resolved.
+
 ## Problem and measured boundary
 
 The deployed `onboard-stations` Prefect flow is the CAMELS-CH onboarding path. It
