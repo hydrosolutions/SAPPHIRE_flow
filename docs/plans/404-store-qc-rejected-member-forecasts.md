@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-26
 plan: 404
 title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
@@ -17,16 +17,15 @@ source: 2026-09-26 — found by the round-5 review of Plan 402 — a rejected me
 
 ## Status
 
-**DRAFT — HIGH RISK — returned from READY on 2026-09-28** because T3's authentication changed:
-Plan 341's human principal merged, so the review route now accepts a named human as well as a
-reviewer token (a new combined sign-in, route class and browser rule, owner 2026-09-28). That change
-needs its own review before READY. It was READY on 2026-09-27, set by the orchestrator session on the
-owner's instruction after the ordinary Claude + Codex rounds, the owner-commissioned data- and forecast-cycle-safety
-review and its re-checks (on `de9adc1a`: Codex clean, high-risk reviewer no findings; the Claude
-reviewer's two minors folded, and focused Codex checks of that fold clean on `899e3078`). High risk
+**READY — HIGH RISK.** Set 2026-09-28 by the orchestrator session on the owner's instruction. It was
+READY on 2026-09-27 and returned to DRAFT on 2026-09-28 when T3's authentication changed (Plan 341's
+human principal merged, so the route also admits a named human, from the browser dashboard — owner,
+2026-09-28); that change went through three independent Claude + Codex pairs the owner asked for (the
+last: Codex clean; Claude's minors folded, and focused Codex checks clean on `fd914ae6`). The
+forecast-cycle design (D1-D6) is unchanged since its data- and forecast-cycle-safety review. High risk
 (a new table, live writes from the forecast cycle and an external-facing route, `docs/workflow.md`
 § High-risk work): the implementation PR needs one more owner-commissioned review before it is
-opened. Depends on Plan 401 (merged, #320) and Plan 402 (not yet built). All decisions
+opened. Depends on Plan 401 (merged, #320) and Plan 402 (READY, not yet built). All decisions
 (D1-D6) are closed.
 
 ## Why this exists
