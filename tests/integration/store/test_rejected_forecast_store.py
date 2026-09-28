@@ -516,10 +516,33 @@ class TestRejectedCaptureTransactionFactory:
         factory = rejected_capture_transaction_factory(db_engine.url)
         with factory() as conn:
             assert isinstance(conn.engine.pool, NullPool)
-            assert conn.engine.url.query.get("connect_timeout") is None
-        # connect_args are engine-level, not surfaced on the URL; assert via
-        # the underlying dialect's connect kwargs instead.
-        engine = sa.create_engine(
-            db_engine.url, poolclass=NullPool, connect_args={"connect_timeout": 5}
-        )
-        assert engine.pool.__class__ is NullPool
+
+    def test_production_builder_passes_nullpool_and_connect_timeout(
+        self, db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding, 2026-09-28: the previous version of this test
+        asserted `NullPool`/`connect_timeout` on a SEPARATE engine the test
+        itself built with those kwargs — it would still pass if the
+        PRODUCTION builder dropped either. Spy on `sa.create_engine` as the
+        module under test calls it, so this fails if the real call changes."""
+        from sqlalchemy.pool import NullPool
+
+        from sapphire_flow.store import rejected_forecast_store as store_module
+
+        calls: list[tuple[object, dict[str, object]]] = []
+        real_create_engine = sa.create_engine
+
+        def _spy(url: object, **kwargs: object) -> sa.Engine:
+            calls.append((url, kwargs))
+            return real_create_engine(url, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(store_module.sa, "create_engine", _spy)
+
+        factory = rejected_capture_transaction_factory(db_engine.url)
+        with factory() as conn:
+            assert isinstance(conn.engine.pool, NullPool)
+
+        assert len(calls) == 1
+        _, kwargs = calls[0]
+        assert kwargs["poolclass"] is NullPool
+        assert kwargs["connect_args"] == {"connect_timeout": 5}
