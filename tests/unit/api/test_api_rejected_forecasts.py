@@ -448,11 +448,19 @@ class TestGetRejectedForecasts:
         station = make_station_config(code="RF-4")
         rejected_fake_stores["station_store"].store_station(station)
         store = rejected_fake_stores["rejected_forecast_store"]
+        # The default-window sub-case below has no `start`/`end`, so the
+        # route compares against the REAL clock (`datetime.now(UTC)`, not
+        # injectable here — matches the rest of this API surface, e.g. the
+        # skill route). A row at the fixed `_NOW` would fall out of "the
+        # last 7 days" once real time passed it — review finding,
+        # 2026-09-28 — so this one row is seeded relative to the real clock
+        # instead; every other sub-case below compares fixed `_NOW`-relative
+        # windows against fixed `_NOW`-relative data and is unaffected.
         _seed_rejected_entry(
             store,
             station_id=station.id,
             model_id=ModelId("model-a"),
-            issued_at=_NOW,
+            issued_at=ensure_utc(datetime.now(UTC)) - timedelta(hours=1),
         )
         _seed_rejected_entry(
             store,
