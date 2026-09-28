@@ -533,6 +533,7 @@ class FakeForecastStore:
                 created_at=f.created_at,
                 input_quality=f.input_quality,
                 input_quality_flags=f.input_quality_flags,
+                qc_flags=f.qc_flags,
             )
             for f in self._forecasts.values()
             if f.station_id == station_id

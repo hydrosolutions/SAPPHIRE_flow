@@ -19,6 +19,7 @@ from sapphire_flow.api.schemas import (
     ModelAssignmentResponse,
     ObservationResponse,
     PaginatedResponse,
+    QcFlagResponse,
     StationDetail,
     StationSummary,
     ThresholdResponse,
@@ -81,6 +82,15 @@ def _to_weather_source_response(ws: Any) -> WeatherSourceResponse:
     )
 
 
+def _to_qc_flag_response(f: Any) -> QcFlagResponse:
+    return QcFlagResponse(
+        rule_id=f.rule_id,
+        rule_version=f.rule_version,
+        status=f.status.value,
+        detail=f.detail,
+    )
+
+
 def _to_observation_response(o: Any) -> ObservationResponse:
     return ObservationResponse(
         id=str(o.id),
@@ -90,15 +100,8 @@ def _to_observation_response(o: Any) -> ObservationResponse:
         value=o.value,
         source=o.source.value,
         qc_status=o.qc_status.value,
-        qc_flags=[
-            {
-                "rule_id": f.rule_id,
-                "rule_version": f.rule_version,
-                "status": f.status.value,
-                "detail": f.detail,
-            }
-            for f in o.qc_flags
-        ],
+        qc_flags=[_to_qc_flag_response(f) for f in o.qc_flags],
+        qc_rule_version=o.qc_rule_version,
     )
 
 
@@ -126,6 +129,7 @@ def _to_forecast_summary(row: Any) -> ForecastSummary:
         ]
         if row.input_quality is not None
         else None,
+        qc_flags=[_to_qc_flag_response(f) for f in row.qc_flags],
     )
 
 

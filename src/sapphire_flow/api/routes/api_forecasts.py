@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from sapphire_flow.api.deps import get_stores
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
-from sapphire_flow.api.schemas import EnsembleResponse, ForecastDetail
+from sapphire_flow.api.schemas import EnsembleResponse, ForecastDetail, QcFlagResponse
 from sapphire_flow.api.security import Principal, require_principal
 from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
@@ -84,6 +84,15 @@ def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
         else None,
         updated_at=f.updated_at,
         ensemble=_to_ensemble_response(f.ensemble),
+        qc_flags=[
+            QcFlagResponse(
+                rule_id=flag.rule_id,
+                rule_version=flag.rule_version,
+                status=flag.status.value,
+                detail=flag.detail,
+            )
+            for flag in f.qc_flags
+        ],
     )
 
 

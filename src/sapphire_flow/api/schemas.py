@@ -13,6 +13,23 @@ from sapphire_flow.types.domain import ForecastQcRuleId, QcRuleId  # noqa: TC001
 
 T = TypeVar("T")
 
+# --- Plan 402 T3: typed flags, additive QC fields ------------------------
+
+# A `QcFlag` never carries `raw`/`missing` (`types/domain.py:94-101` rejects
+# them — RAW means QC has not run, MISSING is set directly on observations).
+_QcFlagStatus = Literal["qc_passed", "qc_suspect", "qc_failed", "qc_unchecked"]
+# The row-level `qc_status` CAN hold `raw`/`missing`, which a flag cannot.
+_QcStatusLiteral = Literal[
+    "raw", "qc_passed", "qc_suspect", "qc_failed", "missing", "qc_unchecked"
+]
+
+
+class QcFlagResponse(BaseModel):
+    rule_id: str
+    rule_version: str
+    status: _QcFlagStatus
+    detail: str | None = None
+
 
 class PaginatedResponse(BaseModel, Generic[T]):
     items: list[T]
@@ -87,8 +104,12 @@ class ObservationResponse(BaseModel):
     parameter: str
     value: float | None = None
     source: str
-    qc_status: str
-    qc_flags: list[dict[str, object]]
+    qc_status: _QcStatusLiteral
+    qc_flags: list[QcFlagResponse]
+    # Plan 402 T3: the stored value (`"1.2"`, `"1.2-datum"`, …) — a code
+    # generation marker, not a rule-set version (see Repository facts);
+    # `null` when none is stored.
+    qc_rule_version: str | None = None
 
 
 class ForecastSummary(BaseModel):
@@ -100,7 +121,7 @@ class ForecastSummary(BaseModel):
     parameter: str
     representation: str
     status: str
-    qc_status: str
+    qc_status: _QcStatusLiteral
     nwp_cycle_source: str
     created_at: datetime
     # Plan 253 T1c / OD-2: visible to every authenticated role, no
@@ -109,6 +130,8 @@ class ForecastSummary(BaseModel):
     # distinct from an assessed forecast with zero flags ([]).
     input_quality: str | None = None
     input_quality_flags: list[dict[str, object]] | None = None
+    # Plan 402 T3: [] when none — visible to every authenticated role (D13).
+    qc_flags: list[QcFlagResponse] = []
 
 
 class EnsembleResponse(BaseModel):
@@ -185,18 +208,6 @@ class HealthDetailResponse(BaseModel):
     items: list[PipelineHealthRecordResponse]
     total: int
     limit: int
-
-
-# --- Plan 402 T3: typed flags, additive fields --------------------------
-
-_QcFlagStatus = Literal["qc_passed", "qc_suspect", "qc_failed", "qc_unchecked"]
-
-
-class QcFlagResponse(BaseModel):
-    rule_id: str
-    rule_version: str
-    status: _QcFlagStatus
-    detail: str | None = None
 
 
 # --- Plan 402 T1: GET /api/v1/qc/rules -----------------------------------

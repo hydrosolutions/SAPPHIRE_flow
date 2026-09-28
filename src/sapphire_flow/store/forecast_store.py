@@ -769,6 +769,21 @@ def _parse_input_quality_flags(raw: object) -> tuple[InputQualityFlag, ...]:
     )
 
 
+def _parse_qc_flags(raw: object) -> tuple[QcFlag, ...]:
+    """Plan 402 T3: the same parse `_rows_to_domain` uses for a forecast's
+    stored `qc_flags` — shared here so `ForecastSummaryRow` carries them too."""
+    items: list[dict[str, object]] = raw or []  # type: ignore[assignment]
+    return tuple(
+        QcFlag(
+            rule_id=f["rule_id"],  # type: ignore[arg-type]
+            rule_version=f["rule_version"],  # type: ignore[arg-type]
+            status=QcStatus(f["status"]),
+            detail=f.get("detail"),  # type: ignore[arg-type]
+        )
+        for f in items
+    )
+
+
 def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     header = rows[0]
     representation = EnsembleRepresentation(header["representation"])
@@ -884,15 +899,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
         created_at=utc_from_row(header["created_at"]),
         updated_at=utc_from_row(header["updated_at"]),
         qc_status=QcStatus(header["qc_status"]),
-        qc_flags=tuple(
-            QcFlag(
-                rule_id=f["rule_id"],
-                rule_version=f["rule_version"],
-                status=QcStatus(f["status"]),
-                detail=f.get("detail"),
-            )
-            for f in (header["qc_flags"] or [])
-        ),
+        qc_flags=_parse_qc_flags(header["qc_flags"]),
         input_quality=(
             InputQualityLevel(header["input_quality"])
             if header.get("input_quality") is not None
@@ -933,4 +940,5 @@ def _row_to_summary(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
             else None
         ),
         input_quality_flags=_parse_input_quality_flags(row.get("input_quality_flags")),
+        qc_flags=_parse_qc_flags(row.get("qc_flags")),
     )

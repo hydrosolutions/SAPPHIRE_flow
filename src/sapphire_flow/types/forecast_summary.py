@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import InputQualityFlag
+    from sapphire_flow.types.domain import InputQualityFlag, QcFlag
     from sapphire_flow.types.enums import (
         EnsembleRepresentation,
         ForecastStatus,
@@ -30,3 +30,6 @@ class ForecastSummaryRow:
     created_at: UtcDatetime
     input_quality: InputQualityLevel | None = None
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
+    # Plan 402 T3: the forecast's QC flags — [] when none, distinct from
+    # `raw` (not yet checked). Visible to every authenticated role (D13).
+    qc_flags: tuple[QcFlag, ...] = ()

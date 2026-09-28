@@ -2904,6 +2904,8 @@ class ForecastStore(Protocol):
         # Plan 328 T3: DELIBERATELY UNFILTERED — this is the record listing and
         # each row carries its own status. It is also how a SUPERSEDED
         # forecast's id is discovered for by-id access.
+        # Plan 402 T3: ForecastSummaryRow gained qc_flags: tuple[QcFlag, ...] = ()
+        # — [] when none, visible to every authenticated role (D13).
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
     ) -> UtcDatetime | None: ...
