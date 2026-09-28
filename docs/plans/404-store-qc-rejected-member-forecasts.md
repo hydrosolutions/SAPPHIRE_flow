@@ -420,7 +420,10 @@ recorded on the rejected-forecast route"; and
 stored. Plan 341 already carries this plan's facts
 (this REVIEW route carries values, withheld from reviewer tokens on a gated tenant; its activation
 wires D4's predicate; rejected member/group forecasts never enter `forecasts` — `341:84`, `:114`);
-T4 checks those lines are still there and does not restate them. `docs/conventions.md` § Flow-level
+T4 checks those lines are still there and does not restate them, except one sentence it updates:
+`341:114` becomes "if Plan 404 has landed, its route already admits the station-granted human
+through `require_reviewer_or_human` (matrix class `REVIEW_OR_HUMAN`, GET-only CORS); this plan only
+wires D4's predicate and may replace that dependency only with the identical contract". `docs/conventions.md` § Flow-level
 strategy (`:285`) records the one carve-out: the end-of-run capture write catches any exception and
 logs it, because it is optional diagnostics written after the run's real outputs.
 
@@ -519,6 +522,8 @@ After staging deploy (orchestrator):
   sharper auth tests (gate forced on, deactivated 401 vs revoked 404, OIDC disabled → 401, the new
   class exercised in `TestRoleGates`); a Plan 341 dependency may replace this one only with the same
   contract; scope and `security.md` wording updated.
+- 2026-09-28 — third independent review (Codex CLEAN; Claude 1 minor here): T4 updates `341:114`,
+  which still told Plan 341 T3 to add a human branch and classify the route as REVIEW.
 
 ## Dependency graph
 

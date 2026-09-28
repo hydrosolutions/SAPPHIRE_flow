@@ -339,8 +339,10 @@ All five are **required**; only `skipped` and `water_level_datum_masl` are nulla
                                                # (services/station_qc_overrides.py::is_ingest_station_judged);
                                                # an eligible station can still leave a reading qc_unchecked
                                                # when no cadence can be inferred or no rule matches
-  water_level_datum_masl: number | null,       # the station's datum; water-level thresholds apply to
-                                               # value minus it (served readings are m a.s.l.)
+  water_level_datum_masl: number | null,       # non-null: served readings are m a.s.l. and water-level
+                                               # thresholds apply to value minus it; null: the
+                                               # datum-dependent rules are skipped and readings may be
+                                               # gauge-relative (adapters/dhm.py:105-110)
   observation: { ..., rules: [ { ...,
              station_thresholds: [ name ],     # names whose value came from this station; [] when none
              skipped: "no_datum" | null } ]    # "no_datum": ingest skips this rule here — a water-level
@@ -359,10 +361,13 @@ while they stay `onboarding`. An invalid onboarding config (e.g. a duplicate blo
 `load_onboarding_config` for the station variant, as it fails ingest: 500 in the error envelope.
 
 **DHM stations (owner, 2026-09-28).** For the six DHM stations the station view therefore shows the
-network limits (`station_qc: not_judged`) while their delivered history carries flags from the
-station ceilings. The owner kept this view: the DHM feed moves to the DHM API (the water-level
-adapter of Plan 300, complete), and once those stations are operational scheduled ingest judges them
-and the view reflects it. Until then the consumer page says so, and the reply to the map (post-deploy
+network limits (`station_qc: not_judged`), while — once Plan 268 T7 has run — their delivered
+discharge history carries flags from the station ceilings. The owner kept this view: the DHM feed moves
+to the DHM API, which will change this anyway. Promotion to `operational` needs the Plan 300
+activation follow-on, not only the finished water-level adapter (`300:502-506`); and scheduled DHM
+ingest judges **water level** only (`docs/touchpoint-maps.md:73`), so discharge ceilings shown after
+promotion apply to no scheduled reading — discharge there comes only from Plan 268's import until a
+rating path exists. Until then the consumer page says so, and the reply to the map (post-deploy
 step 4) names it. Only overrides that ingest
 **applies** are merged; a declared block that ingest rejects or does not
 apply is absent — a pending block appears only in ingest's log, a rejected or not-applicable one also
@@ -571,7 +576,8 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   (`api/schemas.py:18`), since those errors use `{"error": …, "detail": null}` (`api/errors.py:10`)
   while 422 keeps FastAPI's `{"detail": [...]}`.
 - `docs/spec/api-v1-review.md`, a short consumer page: the D14 version rule; the error envelope
-  (400/401/403/404) and the 422 exception; query conventions — ISO-8601 times with naive meaning UTC, `end` exclusive,
+  (400/401/403/404) and the 422 exception, and that the `/qc/rules` station variant answers 500 when
+  the server's station-threshold configuration is invalid while the deployment variant still works; query conventions — ISO-8601 times with naive meaning UTC, `end` exclusive,
   the `parameter` values, the forecast list's default window (last 7 days to request time), `limit`
   ceilings, observations unpaginated; the skill metrics the service emits, each with its unit and
   whether higher or lower is better, and that `season` names are deployment-configured; that
@@ -582,13 +588,15 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   without the station's own thresholds — read again once the station is judged); a malformed station
   id on the existing `/stations/{id}` routes returns 500 today — only `/stations/{id}/skill` and
   `/qc/rules` answer 400; a client tells the variants apart by `scope`; `judged` means eligible for scheduled-ingest QC, not that
-  every reading was checked; water-level thresholds in the station view apply to the reading minus
-  `water_level_datum_masl`; `station_thresholds: []` means none is
+  every reading was checked; water-level thresholds in the station view apply to the reading minus a non-null
+  `water_level_datum_masl`, and a null one at a water-level station means the datum-dependent rules
+  are skipped (also the forecast datum rules, which the forecast block does not mark); `station_thresholds: []` means none is
   applied — a declared block ingest has not applied is absent here (a pending one is only in
   ingest's log, a rejected or not-applicable one also in its health record); the station view mirrors
   scheduled ingest only — history checked at onboarding used the network thresholds, and history
-  checked by a delivery import (the six DHM stations, Plan 268 T7) used their declared ceilings, so
-  the view's limits are not those behind that history's flags (D15); `qc_unchecked` ≠
+  checked by a delivery import (the six DHM stations, once Plan 268 T7 has run) used their declared
+  ceilings, so the view's limits are not those behind that history's flags; scheduled DHM ingest
+  judges water level only (D15); `qc_unchecked` ≠
   passed; `raw` = not yet checked (so `qc_flags: []` on a `raw` forecast is not a pass); the matching rule of D4 (candidates; the rules served are the **current** resolution, not
   the thresholds behind past flags); severity; the `qc_rule_version` labels (`"1.2"`, `"1.2-datum"`,
   `"1.2-datum-skip"`, and pre-324 `"1.0"`, `"1.1-datum"`, `"1.1-datum-skip"`) are code
@@ -616,7 +624,8 @@ mechanism, Plan 198 D15). `openapi_url` stays `None`; nothing is served.
   for a model reached through a group assignment while the station also holds an active
   station-scoped artifact of it, the forecast uses the group artifact but the skill rows come from
   the station artifact.
-- `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, D13's
+- `docs/standards/security.md` — the two routes in the REVIEW class Plan 401 introduces, with
+  `/qc/rules?station_id=` station-scoped (serving station data; 404 out of scope, D15), D13's
   visibility decision beside § Input-quality visibility, and D6's precondition next to it (before
   DHM observations are readable by a Nepal consumer token, the owner decides whether flag `detail` is
   stripped for consumers on that network); the `docs/touchpoint-maps.md` API
@@ -701,7 +710,8 @@ After staging deploy (orchestrator), before the map is told:
    `docs/spec/api-v1-map.openapi.json`, the reviewer token (one per dashboard, issued with
    `python -m sapphire_flow.cli.access_tokens create-reviewer`) and that it must stay server-side,
    the D4 matching rule and its limits, `/qc/rules?station_id=` for a station's own thresholds (D15) and
-   that for the six DHM stations it shows the network limits until they are operational, `score: null`, that QC-rejected member and group forecasts
+   that for the six DHM stations it shows the network limits until they are operational (which needs the
+   Plan 300 activation follow-on) and that scheduled DHM ingest judges water level only, `score: null`, that QC-rejected member and group forecasts
    are not stored (Plan 404), the `time_step_seconds` correction, the in-sample label, and that the
    snapshot stays v2 for archived BAFU forecasts — checked against the committed contract file.
    **The raw token is never in the reply.** It also tells the region-bundle v3 draft's owning
@@ -774,6 +784,10 @@ After staging deploy (orchestrator), before the map is told:
   scheduled-ingest QC; the station view adds a nullable `water_level_datum_masl` (water-level
   thresholds apply to value minus the datum); rows in config order; the 500 on an invalid config is
   tested; Status and one citation corrected.
+- 2026-09-28 — third independent review (Codex CLEAN; Claude 3 minor here): the DHM paragraph was
+  wrong that promotion alone lets scheduled ingest judge those stations — it needs Plan 300's
+  activation follow-on and judges water level only; the datum field's null case; the station
+  variant's 500 and station scope reach the consumer page and `security.md`.
 
 ## Dependency graph
 
