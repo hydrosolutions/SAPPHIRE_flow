@@ -11,6 +11,9 @@ Rules:
   * the file byte-identical to the merge-base copy -> pass (unchanged)
   * the file changed with a version > the merge-base's -> pass
   * the file changed with a version <= the merge-base's -> FAIL
+  * the file present at the merge-base and absent at HEAD -> FAIL (a PR
+    deleting the committed contract is not a version bump — review finding,
+    2026-09-28)
 
 Direct pushes to `main` are not checked — code (and so this generated file)
 only reaches `main` through a pull request (hold-at-PR, CLAUDE.md § Version
@@ -69,8 +72,14 @@ def main(argv: list[str] | None = None) -> int:
 
     head_path = Path(_FILE)
     if not head_path.is_file():
-        print(f"{_FILE}: absent at HEAD — nothing to check.")
-        return 0
+        if base_text is None:
+            print(f"{_FILE}: absent at HEAD and at the merge-base — nothing to check.")
+            return 0
+        print(
+            f"{_FILE}: present at the merge-base ({merge_base}) but absent at "
+            "HEAD — a PR must not delete the committed map contract."
+        )
+        return 1
     head_text = head_path.read_text()
 
     if base_text is None:

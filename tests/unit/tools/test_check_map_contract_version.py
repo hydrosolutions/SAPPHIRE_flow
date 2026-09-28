@@ -144,3 +144,40 @@ class TestCheckMapContractVersion:
 
         monkeypatch.chdir(repo)
         assert main(["--base-ref", base_sha]) == 0
+
+    def test_deleted_at_head_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A PR that deletes the committed contract must not silently pass
+        (review finding, 2026-09-28): the absent-at-HEAD short circuit ran
+        before checking whether the file existed at the merge-base."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+        _write_contract(repo, _DOC_V1)
+        base_sha = _commit(repo, "base")
+
+        (repo / _FILE).unlink()
+        _commit(repo, "delete contract")
+
+        monkeypatch.chdir(repo)
+        assert main(["--base-ref", base_sha]) == 1
+        assert "absent at HEAD" in capsys.readouterr().out
+
+    def test_absent_at_both_ends_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n")
+        base_sha = _commit(repo, "base")
+
+        (repo / "README.md").write_text("unrelated\n")
+        _commit(repo, "unrelated change")
+
+        monkeypatch.chdir(repo)
+        assert main(["--base-ref", base_sha]) == 0
