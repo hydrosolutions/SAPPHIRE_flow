@@ -193,6 +193,23 @@ def _run_rejected_capture(
         holder.error = exc
 
 
+def _log_rejected_write_failed(
+    buffer: list[RejectedForecastEntry], error: BaseException
+) -> None:
+    for entry in buffer:
+        log.warning(
+            "rejected_forecast.write_failed",
+            station_id=str(entry.payload.station_id),
+            model_id=str(entry.payload.model_id),
+            group_id=(
+                str(entry.payload.group_id)
+                if entry.payload.group_id is not None
+                else None
+            ),
+            error=str(error),
+        )
+
+
 def _capture_rejected_forecasts(
     store: RejectedForecastStore | None,
     buffer: list[RejectedForecastEntry],
@@ -227,20 +244,13 @@ def _capture_rejected_forecasts(
             )
             return
         if holder.error is not None:
-            for entry in buffer:
-                log.warning(
-                    "rejected_forecast.write_failed",
-                    station_id=str(entry.payload.station_id),
-                    model_id=str(entry.payload.model_id),
-                    group_id=(
-                        str(entry.payload.group_id)
-                        if entry.payload.group_id is not None
-                        else None
-                    ),
-                    error=str(holder.error),
-                )
+            _log_rejected_write_failed(buffer, holder.error)
     except Exception as exc:
-        log.warning("rejected_forecast.write_failed", error=str(exc))
+        # Review finding, 2026-09-28: starting or joining the thread itself
+        # (rather than the thread's own work) raising must still log once
+        # per buffered assignment — the same reconciliation-by-assignment
+        # promise the `holder.error` branch above keeps.
+        _log_rejected_write_failed(buffer, exc)
 
 
 def _bind_rating_curve(
@@ -4121,9 +4131,16 @@ def run_forecast_cycle_flow(
         # it was minted), so nothing here depends on it being bound; each
         # buffered entry already carries its own copy.
         try:
-            if created_http_client is not None:
-                created_http_client.close()
-            _capture_rejected_forecasts(rejected_forecast_store, rejected_buffer)  # type: ignore[arg-type]
+            try:
+                if created_http_client is not None:
+                    created_http_client.close()
+            finally:
+                # Capture must run even if closing the HTTP client raises —
+                # review finding, 2026-09-28: nesting it after `close()` in
+                # the SAME `try` let a `close()` failure skip the D5/D6 write
+                # entirely, on exactly the abort path D5 says must still
+                # capture.
+                _capture_rejected_forecasts(rejected_forecast_store, rejected_buffer)  # type: ignore[arg-type]
         finally:
             # Runs on every exit, regardless of whether attempt_id was ever
             # bound (unbinding an unbound key is a no-op), so a later
