@@ -114,7 +114,9 @@ that answers **no** until Plan 341 provides its tenant activation switch, and th
 The route consults nothing else. **Both landing orders are covered:** if Plan 341 lands first, T3
 wires the predicate to its switch and classifies this route in 341's route inventory; if this plan
 lands first, Plan 341 already records that its activation wires this predicate and applies D4
-(`341:84`, `:114`); T4 only checks those lines are present.
+(`341:84`, `:114`). T4 checks `341:84` and, when this plan lands, updates `341:114`: that line is
+correct until then (it tells Plan 341 what to do if this route is not yet present), and wrong only
+after this plan has built the human branch itself.
 
 ### D5 — rejections are saved once, at the end of the run. **⚖️ CLOSED — owner, 2026-09-26.**
 
