@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DRAFT
 created: 2026-09-26
 plan: 404
 title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
@@ -17,8 +17,11 @@ source: 2026-09-26 — found by the round-5 review of Plan 402 — a rejected me
 
 ## Status
 
-**READY — HIGH RISK.** Set 2026-09-26 by the orchestrator session on the owner's instruction,
-after the ordinary Claude + Codex rounds, the owner-commissioned data- and forecast-cycle-safety
+**DRAFT — HIGH RISK — returned from READY on 2026-09-28** because T3's authentication changed:
+Plan 341's human principal merged, so the review route now accepts a named human as well as a
+reviewer token (a new combined sign-in, route class and browser rule, owner 2026-09-28). That change
+needs its own review before READY. It was READY on 2026-09-27, set by the orchestrator session on the
+owner's instruction after the ordinary Claude + Codex rounds, the owner-commissioned data- and forecast-cycle-safety
 review and its re-checks (on `de9adc1a`: Codex clean, high-risk reviewer no findings; the Claude
 reviewer's two minors folded, and focused Codex checks of that fold clean on `899e3078`). High risk
 (a new table, live writes from the forecast cycle and an external-facing route, `docs/workflow.md`
@@ -96,7 +99,8 @@ every other field, including `id`, `model_artifact_id`, `group_id` and `qc_statu
 the values and flag `detail` are withheld. **Admin** tokens receive everything
 (owner, 2026-09-26, as PR #316 recorded in Plan 341's *Rejected-record visibility*). Plan 341 also
 specifies that its named hydrologist with a current station `review` grant may read the full
-diagnostic record but cannot publish its ID; this human path is added when Plan 341 exists. Where
+diagnostic record but cannot publish its ID; T3 adds this human path (Plan 341's human principal is
+on `main`, #322). Where
 the gate is not active (e.g. the Swiss deployment today), reviewer and admin tokens receive
 everything.
 
@@ -164,7 +168,8 @@ none, D5). Every parameter of a rejected assignment is recorded, each with its o
 parameter still rejects the assignment).
 
 **Route** `GET /api/v1/stations/{id}/rejected-forecasts?[start=&end=][&model_id=][&limit=&offset=]`,
-REVIEW-gated (Plan 401), station-scoped; `start`/`end` filter `issued_at`, optional, default the last
+gated by `require_reviewer_or_human` (a reviewer or admin service token, or a named human with a
+current station `review` grant, T3), station-scoped; `start`/`end` filter `issued_at`, optional, default the last
 7 days ending at request time, `end` exclusive (Plan 402's query conventions); paginated with its own
 ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), every item carrying `attempt_id`, `recorded_at` and `withheld`, ordered newest first,
 `(issued_at DESC, recorded_at DESC, id DESC)` — non-finite values in the same encoding, flags typed as Plan 402's
@@ -331,9 +336,17 @@ import or argument error.
 **Outcome:** `GET /api/v1/stations/{id}/rejected-forecasts` serves the record per D4.
 
 **In:** the route in its own router beside Plan 402's REVIEW routes — not under their
-`require_reviewer` registration (see below); response models reusing `QcFlagResponse`; the
-route-matrix entry (REVIEW); Plan 402's contract generator — its per-route role descriptions and its
-REVIEW 403 set and its 400 set (the route parses query values) gain this third REVIEW route; Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
+`require_reviewer` registration (see below); response models reusing `QcFlagResponse`; a new
+route-matrix class `REVIEW_OR_HUMAN` in `tests/unit/api/test_security.py`, recognised by
+`_classify_routes` (`:296-346`, checked before `REVIEW`, so an ungated route still reads `PUBLIC`),
+`TestRoleGates._ADMITTED` (`:185-189`: reviewer and admin service tokens) and the reviewer-reach
+test — Plan 341's own human-only review class (`341:116`) stays separate; Plan 402's contract
+generator — this operation's description names both principals (a reviewer or admin service
+token, or a named-human OIDC bearer), and its 403 set and its 400 set (the route parses query
+values) gain this route; `api/cors.py` — the human-dashboard origin policy (`ScopedCorsMiddleware`,
+`:13`, `:62-68`, today only `/api/v1/review/forecasts`) also covers exactly
+`GET /api/v1/stations/{id}/rejected-forecasts` and its preflight, nothing else under
+`/api/v1/stations` (owner, 2026-09-28: a named human reads it from the browser dashboard); Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
 active; every parameter of a rejected assignment is returned — including `qc_passed` and `qc_suspect`
 ones — each with its own status; one rejection is the group `(attempt_id, station_id, model_id,
@@ -352,9 +365,16 @@ Plan 402's `require_reviewer` router, with one route-level dependency that authe
 principal the bearer is. The bearer's shape decides, with no fallback to the other verifier after a
 failure: exactly one `.` is a service token (`prefix.secret`, both `token_urlsafe`, which never
 contains a dot — `api/security.py:99-107`), exactly two `.` (three JWT segments) is an OIDC token, any
-other shape → 401. Tested both ways: a service token never reaches the OIDC verifier, an OIDC token never reaches the access-token
-lookup, and a service-token request still succeeds when human authentication is disabled (today
-`require_human_principal` answers 503 then). If Plan 341 T3 has landed a shared dependency by then,
+other shape → 401 without calling either verifier. Every authentication failure on this route is the
+same 401 in the error envelope — whichever verifier ran, and also for an OIDC-shaped bearer while
+human authentication is disabled (the route does not pass on `require_human_principal`'s 503, so an
+unauthenticated caller learns nothing about the configuration); a deactivated human → 401; a revoked
+grant or an out-of-scope station → 404. The dependency lives in `api/review_auth.py` (new). Tested:
+a service token never reaches the OIDC verifier, an OIDC token never reaches the access-token lookup,
+a bearer with no dot or three or more dots → 401 with neither called, a service-token request still
+succeeds with human authentication disabled, identical 401 bodies across the failure cases, and
+CORS — the human-dashboard origin is allowed on this route's GET and preflight, another origin is
+refused, and that origin is still refused on another `/api/v1/stations` route. If Plan 341 T3 has landed a shared dependency by then,
 this route uses it instead. Neither landing order permits a rejected-record ID on a forecast
 publication route.
 
@@ -480,8 +500,12 @@ After staging deploy (orchestrator):
 - 2026-09-28 — reconciled against main `bba8de3c` (Codex): Plan 341's human principal has landed,
   so T3 adds the human branch here, with its own route-level dependency outside Plan 402's
   `require_reviewer` router; two citations corrected. Focused checks (Claude, Codex): the bearer's
-  shape (one dot vs three JWT segments) picks the verifier, with no fallback. Plan design and
-  decisions unchanged.
+  shape (one dot vs three JWT segments) picks the verifier, with no fallback.
+- 2026-09-28 — independent review of the changes since READY (Claude, Codex): the new sign-in had no
+  route-matrix class and no browser (CORS) rule, and its error codes were loose. Returned to DRAFT.
+  Owner: a named human reads the route from the browser dashboard. T3 now names
+  `require_reviewer_or_human`, a `REVIEW_OR_HUMAN` matrix class, the exact CORS addition, and one 401
+  for every authentication failure (no 503). The forecast-cycle design and D1-D6 are unchanged.
 
 ## Dependency graph
 
