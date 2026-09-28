@@ -84,6 +84,7 @@ class TestQcRulesResponseMatchesExactlyOneBranch:
         self, response_schema: dict[str, Any]
     ) -> None:
         example = QcRulesResponse(
+            scope="deployment",
             observation=ObservationQcRuleSetResponse(
                 version="1.0.0", source="builtin_default", rules=[]
             ),
@@ -101,6 +102,7 @@ class TestQcRulesResponseMatchesExactlyOneBranch:
         self, response_schema: dict[str, Any]
     ) -> None:
         example = StationQcRulesResponse(
+            scope="station",
             station_id="00000000-0000-0000-0000-000000000001",
             station_qc="judged",
             water_level_datum_masl=None,
@@ -130,3 +132,50 @@ class TestQcRulesResponseMatchesExactlyOneBranch:
             schema=response_schema,
             resolver=jsonschema.RefResolver.from_schema(response_schema),
         )
+
+
+class TestQcRulesDiscriminatorIsActuallyRequired:
+    """The `oneOf`/`discriminator` on `/qc/rules` is only usable by an
+    external client if the discriminator field is REQUIRED, not merely
+    present-with-a-default: a pydantic default on the discriminator field is
+    omitted from the generated `required` list, so a payload missing `scope`
+    would validate against both branches and the `oneOf` would discriminate
+    nothing (review finding, 2026-09-28)."""
+
+    @pytest.fixture
+    def response_schema(self) -> dict[str, Any]:
+        committed = _load_committed()
+        operation = committed["paths"]["/api/v1/qc/rules"]["get"]
+        schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        return {**schema, "components": committed["components"]}
+
+    def test_scope_is_required_on_both_branches(self) -> None:
+        committed = _load_committed()
+        schemas = committed["components"]["schemas"]
+        assert "scope" in schemas["QcRulesResponse"]["required"]
+        assert "scope" in schemas["StationQcRulesResponse"]["required"]
+
+    def test_station_row_skipped_is_required(self) -> None:
+        committed = _load_committed()
+        schemas = committed["components"]["schemas"]
+        assert "skipped" in schemas["StationObservationQcRuleResponse"]["required"]
+
+    def test_a_deployment_payload_missing_scope_matches_no_branch(
+        self, response_schema: dict[str, Any]
+    ) -> None:
+        example = QcRulesResponse(
+            scope="deployment",
+            observation=ObservationQcRuleSetResponse(
+                version="1.0.0", source="builtin_default", rules=[]
+            ),
+            forecast=ForecastQcRuleSetResponse(
+                version="1.0.0", source="builtin_default", rules=[]
+            ),
+        ).model_dump(mode="json")
+        del example["scope"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                instance=example,
+                schema=response_schema,
+                resolver=jsonschema.RefResolver.from_schema(response_schema),
+            )

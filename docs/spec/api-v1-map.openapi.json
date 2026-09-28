@@ -851,12 +851,12 @@
           },
           "scope": {
             "const": "deployment",
-            "default": "deployment",
             "title": "Scope",
             "type": "string"
           }
         },
         "required": [
+          "scope",
           "observation",
           "forecast"
         ],
@@ -1271,7 +1271,8 @@
           "network",
           "severity",
           "thresholds",
-          "station_thresholds"
+          "station_thresholds",
+          "skipped"
         ],
         "title": "StationObservationQcRuleResponse",
         "type": "object"
@@ -1322,7 +1323,6 @@
           },
           "scope": {
             "const": "station",
-            "default": "station",
             "title": "Scope",
             "type": "string"
           },
@@ -1351,6 +1351,7 @@
           }
         },
         "required": [
+          "scope",
           "station_id",
           "station_qc",
           "water_level_datum_masl",

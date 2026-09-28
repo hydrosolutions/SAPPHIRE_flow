@@ -250,7 +250,12 @@ class ForecastQcRuleSetResponse(BaseModel):
 
 
 class QcRulesResponse(BaseModel):
-    scope: Literal["deployment"] = "deployment"
+    # D15/oneOf: no default — a discriminator field with a pydantic default is
+    # OMITTED from the committed OpenAPI `required` list, so an external
+    # client's schema validator cannot use it to pick a branch. This model is
+    # only ever built by our own code (api/routes/api_review.py), which
+    # always passes `scope` explicitly.
+    scope: Literal["deployment"]
     observation: ObservationQcRuleSetResponse
     forecast: ForecastQcRuleSetResponse
 
@@ -259,8 +264,9 @@ class StationObservationQcRuleResponse(ObservationQcRuleResponse):
     # names whose value came from this station's declared override; [] = none.
     station_thresholds: list[str]
     # "no_datum": a water-level rule needing a datum at a station without one
-    # — ingest skips it there (services/qc_datum.py::obs_skipped_rules).
-    skipped: Literal["no_datum"] | None = None
+    # — ingest skips it there (services/qc_datum.py::obs_skipped_rules). No
+    # default: required (nullable) per D15, not optional (see `scope` above).
+    skipped: Literal["no_datum"] | None
 
 
 class StationObservationQcRuleSetResponse(BaseModel):
@@ -271,7 +277,8 @@ class StationObservationQcRuleSetResponse(BaseModel):
 
 
 class StationQcRulesResponse(BaseModel):
-    scope: Literal["station"] = "station"
+    # No default — see QcRulesResponse.scope above.
+    scope: Literal["station"]
     station_id: str
     # "judged": ELIGIBLE for scheduled-ingest QC (an eligible station can
     # still leave a reading qc_unchecked when no cadence/rule matches).

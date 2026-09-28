@@ -207,6 +207,7 @@ def get_qc_rules(
 
     if station_id is None:
         return QcRulesResponse(
+            scope="deployment",
             observation=_build_observation_rule_set(
                 observation_rule_set, observation_source
             ),
@@ -226,6 +227,7 @@ def get_qc_rules(
     station_overrides = [o for o in outcome.overrides if o.station_id == sid]
 
     return StationQcRulesResponse(
+        scope="station",
         station_id=str(sid),
         station_qc="judged" if is_ingest_station_judged(station) else "not_judged",
         water_level_datum_masl=station.water_level_datum_masl,
