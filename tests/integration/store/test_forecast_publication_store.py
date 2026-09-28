@@ -525,15 +525,23 @@ class TestPgForecastPublicationStore:
                 restored_at=overdue_at - timedelta(hours=1),
             )
         )
-        with pytest.raises(PublicationBackupOverdueError):
-            _publish(
-                store,
-                principal,
-                second_id,
-                expected_selection_version=3,
-                idempotency_key="after-cutoff",
-                now=overdue_at,
-            )
+        try:
+            with pytest.raises(PublicationBackupOverdueError):
+                _publish(
+                    store,
+                    principal,
+                    second_id,
+                    expected_selection_version=3,
+                    idempotency_key="after-cutoff",
+                    now=overdue_at,
+                )
+        finally:
+            with db_connection.engine.begin() as cleanup:
+                cleanup.execute(
+                    sa.delete(pipeline_health).where(
+                        pipeline_health.c.check_type == "publication_proof_overdue"
+                    )
+                )
 
     def test_replacement_keeps_history_and_historical_withdrawal(
         self, db_connection: sa.Connection
