@@ -43,7 +43,8 @@ No human review or publish route is mounted by T1.
 Plan 341 T2 adds a host-only `sapphire_publication_health` database role. It
 starts `NOLOGIN`; an operator enables a separate credential on the protected
 backup host only when the DHM target and retention policy are ready. It may
-write the derived backup-health/proof projection, but cannot publish forecasts.
+write the derived backup-health/proof projection and read publication decisions
+to calculate the backlog, but cannot publish forecasts.
 The API can read that projection and insert publication decisions, selections,
 audit and feed events, but cannot forge health/proof rows. Forecast workers
 cannot write either publication decisions or health. The backup host reads its
@@ -51,6 +52,11 @@ database URL from an owner-only file; the credential is never mounted into API
 or worker containers. Missing, stale or unhealthy health fails closed for new
 publication; a reasoned withdrawal is still allowed. T2 implements no API
 publication route or CHWRR activation switch.
+Plan 341 T2b records exact per-forecast attestations and decision-linked proof
+checks for all pending published IDs in a consistent dump; `sapphire_api` and
+`sapphire_worker` cannot forge either proof or global health. Pending manifests
+on the protected target are excluded from healthy status until reconciliation
+finishes their attestations.
 Two scoped `SECURITY DEFINER` functions lock current human grants and the
 candidate forecast row inside a decision transaction. Execute rights go to
 `sapphire_api` only; it receives no UPDATE grant on `forecasts` or

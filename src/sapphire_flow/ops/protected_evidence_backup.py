@@ -23,12 +23,49 @@ if TYPE_CHECKING:
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MANIFEST_NAME = re.compile(r"backup-[0-9a-f-]{36}\.json")
+_PENDING_MANIFEST_NAME = re.compile(r"backup-[0-9a-f-]{36}\.pending\.json")
 
 
 class ImageArchive(BaseModel):
     image_digest: str
     archive_sha256: str
     byte_length: int = Field(ge=1)
+
+
+class PublishedForecastProof(BaseModel):
+    forecast_id: UUID
+    publication_decision_ids: list[UUID] = Field(min_length=1)
+    published_at: datetime
+    capture_manifest_sha256: str
+    snapshot_sha256: str
+    forecast_values_sha256: str
+    artifact_sha256: str | None
+    runtime_image_digest: str
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        if len(set(self.publication_decision_ids)) != len(
+            self.publication_decision_ids
+        ):
+            raise ValueError("duplicate publication decision in protected manifest")
+        hashes = (
+            self.capture_manifest_sha256,
+            self.snapshot_sha256,
+            self.forecast_values_sha256,
+        )
+        if self.artifact_sha256 is not None:
+            hashes += (self.artifact_sha256,)
+        if any(_SHA256.fullmatch(value) is None for value in hashes):
+            raise ValueError("invalid published forecast proof SHA256")
+        if _IMAGE_DIGEST.fullmatch(self.runtime_image_digest) is None:
+            raise ValueError("invalid published forecast runtime image digest")
+        if self.published_at.tzinfo is None:
+            raise ValueError("published forecast time needs a UTC offset")
+        return self
+
+
+def _empty_published_forecasts() -> list[PublishedForecastProof]:
+    return []
 
 
 class ProtectedBackupManifest(BaseModel):
@@ -45,6 +82,9 @@ class ProtectedBackupManifest(BaseModel):
     forecast_values_sha256: str
     artifact_sha256: str | None
     runtime_image_digest: str
+    published_forecasts: list[PublishedForecastProof] = Field(
+        default_factory=_empty_published_forecasts
+    )
 
     @model_validator(mode="after")
     def validate_digests(self) -> Self:
@@ -57,16 +97,34 @@ class ProtectedBackupManifest(BaseModel):
         ]
         if self.artifact_sha256 is not None:
             hashes.append(self.artifact_sha256)
+        for forecast in self.published_forecasts:
+            hashes.extend(
+                (
+                    forecast.capture_manifest_sha256,
+                    forecast.snapshot_sha256,
+                    forecast.forecast_values_sha256,
+                )
+            )
+            if forecast.artifact_sha256 is not None:
+                hashes.append(forecast.artifact_sha256)
         if any(_SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("invalid protected backup SHA256")
-        digests = [self.runtime_image_digest]
+        digests = [
+            self.runtime_image_digest,
+            *(forecast.runtime_image_digest for forecast in self.published_forecasts),
+        ]
         digests.extend(item.image_digest for item in self.image_archives)
         if any(_IMAGE_DIGEST.fullmatch(value) is None for value in digests):
             raise ValueError("invalid protected backup image digest")
-        if self.runtime_image_digest not in {
-            item.image_digest for item in self.image_archives
-        }:
-            raise ValueError("sample runtime image is not archived")
+        archived = {item.image_digest for item in self.image_archives}
+        if any(digest not in archived for digest in digests):
+            raise ValueError("published runtime image is not archived")
+        if len({item.forecast_id for item in self.published_forecasts}) != len(
+            self.published_forecasts
+        ):
+            raise ValueError("duplicate published forecast in protected manifest")
+        if self.schema_version == 1 and self.published_forecasts:
+            raise ValueError("version 1 protected manifest cannot list publications")
         return self
 
 
@@ -80,6 +138,46 @@ class BackupHealth:
     def proof(self) -> BackupProof:
         if self.manifest is None:
             return BackupProof(status=self.status)
+        return self.proof_for(ForecastId(self.manifest.sample_forecast_id))
+
+    def proof_for(self, forecast_id: ForecastId) -> BackupProof:
+        if self.manifest is None:
+            return BackupProof(status=self.status)
+        candidate = next(
+            (
+                item
+                for item in self.manifest.published_forecasts
+                if item.forecast_id == forecast_id
+            ),
+            None,
+        )
+        if candidate is None and self.manifest.sample_forecast_id != forecast_id:
+            return BackupProof(status=BackupProofStatus.MISSING)
+        capture_manifest_sha256 = (
+            candidate.capture_manifest_sha256
+            if candidate is not None
+            else self.manifest.capture_manifest_sha256
+        )
+        snapshot_sha256 = (
+            candidate.snapshot_sha256
+            if candidate is not None
+            else self.manifest.snapshot_sha256
+        )
+        forecast_values_sha256 = (
+            candidate.forecast_values_sha256
+            if candidate is not None
+            else self.manifest.forecast_values_sha256
+        )
+        artifact_sha256 = (
+            candidate.artifact_sha256
+            if candidate is not None
+            else self.manifest.artifact_sha256
+        )
+        runtime_image_digest = (
+            candidate.runtime_image_digest
+            if candidate is not None
+            else self.manifest.runtime_image_digest
+        )
         return BackupProof(
             status=self.status,
             backup_id=self.manifest.backup_id,
@@ -89,12 +187,12 @@ class BackupHealth:
                 (item.image_digest, item.archive_sha256)
                 for item in self.manifest.image_archives
             ),
-            sample_forecast_id=ForecastId(self.manifest.sample_forecast_id),
-            capture_manifest_sha256=self.manifest.capture_manifest_sha256,
-            snapshot_sha256=self.manifest.snapshot_sha256,
-            forecast_values_sha256=self.manifest.forecast_values_sha256,
-            artifact_sha256=self.manifest.artifact_sha256,
-            runtime_image_digest=self.manifest.runtime_image_digest,
+            sample_forecast_id=forecast_id,
+            capture_manifest_sha256=capture_manifest_sha256,
+            snapshot_sha256=snapshot_sha256,
+            forecast_values_sha256=forecast_values_sha256,
+            artifact_sha256=artifact_sha256,
+            runtime_image_digest=runtime_image_digest,
             restored_at=self.manifest.restored_at,
         )
 
@@ -292,20 +390,31 @@ def verify_protected_backup(
     database_volume: Path,
     now: datetime,
     max_age_hours: int | None,
+    allow_pending: bool = False,
 ) -> BackupHealth:
     try:
         verify_separate_target(target, database_volume)
         if (
             manifest_path.parent.resolve() != target.resolve()
-            or _MANIFEST_NAME.fullmatch(manifest_path.name) is None
+            or not (
+                _MANIFEST_NAME.fullmatch(manifest_path.name)
+                or (
+                    allow_pending
+                    and _PENDING_MANIFEST_NAME.fullmatch(manifest_path.name)
+                )
+            )
             or not _regular_file(manifest_path)
         ):
             raise ValueError("protected backup manifest is missing or misplaced")
         raw = manifest_path.read_bytes()
         manifest = ProtectedBackupManifest.model_validate_json(raw)
-        if manifest.schema_version != 1:
+        if manifest.schema_version not in (1, 2):
             raise ValueError("unsupported protected backup manifest version")
-        if manifest_path.name != f"backup-{manifest.backup_id}.json":
+        expected_name = f"backup-{manifest.backup_id}"
+        if manifest_path.name not in (
+            f"{expected_name}.json",
+            f"{expected_name}.pending.json" if allow_pending else "",
+        ):
             raise ValueError("protected backup ID does not match filename")
         if manifest.restored_at.tzinfo is None or manifest.created_at.tzinfo is None:
             raise ValueError("protected backup times need UTC offsets")
@@ -366,7 +475,11 @@ def latest_backup_health(
             reason="protected_backup_target_missing",
         )
     manifests = sorted(
-        target.glob("backup-*.json"),
+        (
+            path
+            for path in target.glob("backup-*.json")
+            if _MANIFEST_NAME.fullmatch(path.name)
+        ),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

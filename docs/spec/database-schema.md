@@ -3,7 +3,7 @@
 Entity-relationship diagrams for the SAPPHIRE Flow PostgreSQL database.
 Derived from table definitions in `architecture-context.md` and scoping rules in `v0-scope.md`.
 
-### CHWRR publication extension (migration 0063, Plan 341 T2)
+### CHWRR publication extension (migrations 0063–0064, Plan 341 T2/T2b)
 
 The later CHWRR extension adds six tables without removing or changing any
 `forecasts` columns. `forecast_publication_selections` has primary key
@@ -22,14 +22,17 @@ same transaction. Neither `ForecastStatus` nor forecast values are changed.
 
 `protected_backup_health` is a singleton host-written projection of the
 latest verified restore, target separation, retention readiness and check
-time. `protected_backup_forecast_proofs` will hold append-only per-forecast
+time. Migration 0064 adds pending and overdue counts, oldest pending time, last
+backup attempt time and retry due time (`next_retry_at`)
+and failed forecast IDs. `protected_backup_forecast_proofs` holds append-only per-forecast
 host assessments; a composite FK binds each proof to the exact attestation,
 forecast and backup. A fresh assessment can point to the same attestation;
-old proof rows do not satisfy the publication freshness window. T2b fills
-that projection for every pending published forecast. The FK also makes a bare
+old proof rows do not satisfy a later publication decision: migration 0064
+links each new proof to the exact decision ID captured in the dump. T2b fills the projection for every pending
+published forecast in the restored dump. The FK also makes a bare
 `TRUNCATE` of an attestation table fail before its append-only trigger; a
 `TRUNCATE ... CASCADE` requires privileges on the protected proof table.
-Until T2b, a captured forecast can record `backup_pending`
+An eligible captured forecast can record `backup_pending`
 only behind healthy global backup state; an overdue proof blocks new publish
 writes and creates a CRITICAL operations-health record. All CHWRR publication
 API paths and activation remain later Plan 341 tasks.

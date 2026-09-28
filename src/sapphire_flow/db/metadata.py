@@ -1397,7 +1397,20 @@ protected_backup_health = sa.Table(
     sa.Column("target_separate", sa.Boolean, nullable=False),
     sa.Column("retention_ready", sa.Boolean, nullable=False),
     sa.Column("manifest_sha256", sa.Text, nullable=True),
+    sa.Column("pending_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("overdue_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("oldest_pending_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("failed_forecasts", JSONB, nullable=False, server_default="'[]'::jsonb"),
     sa.CheckConstraint("id = 1", name="ck_protected_backup_health_singleton"),
+    sa.CheckConstraint(
+        "pending_count >= 0", name="ck_protected_backup_health_pending_count"
+    ),
+    sa.CheckConstraint(
+        "overdue_count >= 0 AND overdue_count <= pending_count",
+        name="ck_protected_backup_health_overdue_count",
+    ),
     sa.CheckConstraint(
         "status IN ('verified', 'missing', 'stale', 'invalid')",
         name="ck_protected_backup_health_status",
@@ -1418,6 +1431,17 @@ protected_backup_forecast_proofs = sa.Table(
     sa.Column("attestation_id", UUID(as_uuid=True), nullable=False),
     sa.Column("backup_id", UUID(as_uuid=True), nullable=False),
     sa.Column("verified_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("publication_decision_id", UUID(as_uuid=True), nullable=True),
+    sa.ForeignKeyConstraint(
+        ["publication_decision_id"],
+        ["forecast_publication_decisions.id"],
+        name="fk_protected_proof_publication_decision",
+    ),
+    sa.UniqueConstraint(
+        "publication_decision_id",
+        "attestation_id",
+        name="uq_protected_proof_decision_attestation",
+    ),
     sa.ForeignKeyConstraint(
         ["attestation_id", "forecast_id", "backup_id"],
         [

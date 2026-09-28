@@ -20,16 +20,20 @@ from pydantic import BaseModel
 
 from sapphire_flow.config.deployment import load_config
 from sapphire_flow.ops.protected_evidence_backup import (
+    BackupHealth,
     ImageArchive,
     ProtectedBackupManifest,
+    PublishedForecastProof,
     attestation_backup_health,
     file_sha256,
     latest_backup_health,
     verify_image_archive,
     verify_image_directory,
+    verify_protected_backup,
     verify_separate_target,
 )
 from sapphire_flow.ops.publication_backup_health import (
+    PublicationBacklog,
     read_health_database_url,
     write_health_projection,
 )
@@ -161,7 +165,7 @@ def _verify_running_worker_image(compose_file: Path) -> None:
         raise RuntimeError("forecast worker image digest is not bound to its image")
 
 
-def _dump(compose_file: Path, path: Path) -> None:
+def _dump(compose_file: Path, path: Path) -> list[PublishedForecastProof]:
     with path.open("wb") as output:
         result = subprocess.run(  # noqa: S603 — fixed command shape
             _compose_command(compose_file, "prefect-worker-backup", "dump"),
@@ -177,6 +181,18 @@ def _dump(compose_file: Path, path: Path) -> None:
             "protected pg_dump failed: "
             + result.stderr.decode("utf-8", errors="replace")[:1000]
         )
+    marker = "SAPPHIRE_PUBLICATION_SNAPSHOT_V1 "
+    lines = result.stderr.decode("utf-8", errors="replace").splitlines()
+    snapshots = [line.removeprefix(marker) for line in lines if line.startswith(marker)]
+    if len(snapshots) != 1:
+        raise RuntimeError("protected dump lacks its publication snapshot")
+    raw: object = json.loads(snapshots[0])
+    if not isinstance(raw, list):
+        raise RuntimeError("publication snapshot is not a list")
+    return [
+        PublishedForecastProof.model_validate(item)
+        for item in cast("list[object]", raw)
+    ]
 
 
 def _archive_image(target: Path, image_digest: str) -> ImageArchive:
@@ -255,6 +271,7 @@ def _verify_restored_chain(
     sample: _Sample,
     images: list[ImageArchive],
     rehearsal_script: Path,
+    published: list[PublishedForecastProof] | None = None,
 ) -> None:
     environment = {
         **os.environ,
@@ -265,12 +282,42 @@ def _verify_restored_chain(
         "SAPPHIRE_EVIDENCE_FORECAST_VALUES_SHA256": sample.forecast_values_sha256,
         "SAPPHIRE_EVIDENCE_RUNTIME_IMAGE_DIGEST": sample.runtime_image_digest,
     }
-    subprocess.run(  # noqa: S603 — operator-selected checked-in script
-        ["bash", str(rehearsal_script), str(dump)],
-        env=environment,
-        check=True,
-        timeout=1200,
-    )
+    expectations: Path | None = None
+    try:
+        if published is not None:
+            fd, name = tempfile.mkstemp(prefix="published-proof-", dir=dump.parent)
+            expectations = Path(name)
+            with os.fdopen(fd, "w") as stream:
+                for item in published:
+                    stream.write(
+                        "|".join(
+                            (
+                                str(item.forecast_id),
+                                item.capture_manifest_sha256,
+                                item.snapshot_sha256,
+                                item.artifact_sha256 or "-",
+                                item.forecast_values_sha256,
+                                item.runtime_image_digest,
+                                ",".join(
+                                    str(decision_id)
+                                    for decision_id in item.publication_decision_ids
+                                ),
+                            )
+                        )
+                        + "\n"
+                    )
+                stream.flush()
+                os.fsync(stream.fileno())
+            environment["SAPPHIRE_PUBLICATION_EXPECTATIONS_FILE"] = str(expectations)
+        subprocess.run(  # noqa: S603 — operator-selected checked-in script
+            ["bash", str(rehearsal_script), str(dump)],
+            env=environment,
+            check=True,
+            timeout=1200,
+        )
+    finally:
+        if expectations is not None:
+            expectations.unlink(missing_ok=True)
     for image in images:
         archive = dump.parent / "images" / f"{image.image_digest[7:]}.tar"
         subprocess.run(  # noqa: S603 — fixed docker argv
@@ -318,6 +365,106 @@ def _attest(
         input=json.dumps(payload).encode(),
         check=True,
         timeout=120,
+    )
+
+
+def _attest_published(
+    compose_file: Path,
+    manifest: ProtectedBackupManifest,
+    manifest_sha256: str,
+    item: PublishedForecastProof,
+) -> None:
+    image = next(
+        archive
+        for archive in manifest.image_archives
+        if archive.image_digest == item.runtime_image_digest
+    )
+    payload = {
+        "forecast_id": str(item.forecast_id),
+        "backup_id": str(manifest.backup_id),
+        "capture_manifest_sha256": item.capture_manifest_sha256,
+        "snapshot_sha256": item.snapshot_sha256,
+        "forecast_values_sha256": item.forecast_values_sha256,
+        "artifact_sha256": item.artifact_sha256,
+        "runtime_image_digest": item.runtime_image_digest,
+        "backup_manifest_sha256": manifest_sha256,
+        "database_dump_sha256": manifest.database_dump_sha256,
+        "image_archive_sha256": image.archive_sha256,
+        "restored_at": manifest.restored_at.isoformat(),
+    }
+    subprocess.run(  # noqa: S603 — fixed command shape
+        _compose_command(compose_file, "prefect-worker", "attest"),
+        input=json.dumps(payload).encode(),
+        check=True,
+        timeout=120,
+    )
+
+
+def _add_backlog_result(result: dict[str, object], backlog: PublicationBacklog) -> None:
+    result.update(
+        pending_count=backlog.pending_count,
+        overdue_count=backlog.overdue_count,
+        oldest_pending_at=(
+            backlog.oldest_pending_at.isoformat()
+            if backlog.oldest_pending_at is not None
+            else None
+        ),
+        next_retry_at=(
+            backlog.next_retry_at.isoformat()
+            if backlog.next_retry_at is not None
+            else None
+        ),
+        last_attempt_at=(
+            backlog.last_attempt_at.isoformat()
+            if backlog.last_attempt_at is not None
+            else None
+        ),
+        failed_forecasts=[str(item) for item in backlog.failed_forecasts],
+    )
+
+
+def _write_pending_manifest(
+    target: Path, manifest: ProtectedBackupManifest
+) -> tuple[Path, str]:
+    pending = target / f"backup-{manifest.backup_id}.pending.json"
+    fd, name = tempfile.mkstemp(prefix="manifest-", suffix=".tmp", dir=target)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(manifest.model_dump_json().encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        digest = file_sha256(temporary)
+        os.replace(temporary, pending)
+        _fsync_directory(target)
+        return pending, digest
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _project_failed_run(
+    credential_file: Path | None,
+    *,
+    checked_at: datetime,
+    retry_hours: int,
+    proof_window_hours: int,
+    reason: str,
+) -> None:
+    if credential_file is None:
+        return
+    write_health_projection(
+        database_url=read_health_database_url(credential_file),
+        health=BackupHealth(
+            status=BackupProofStatus.INVALID,
+            manifest=None,
+            manifest_sha256=None,
+            reason=reason,
+        ),
+        checked_at=checked_at,
+        retention_ready=False,
+        retry_hours=retry_hours,
+        proof_window_hours=proof_window_hours,
+        attempted_at=checked_at,
     )
 
 
@@ -383,7 +530,7 @@ def assess_forecast_preservation(
             target=target,
             database_volume=database_volume,
             now=now,
-        ).proof()
+        ).proof_for(forecast_id)
         candidate = assess_effective_preservation(
             forecast_id, evidence, attestation, proof
         )
@@ -412,8 +559,20 @@ def reconcile_restored_backup(
     rehearsal_script: Path,
     now: datetime,
 ) -> ProtectedBackupManifest:
-    health = attestation_backup_health(
-        backup_id, target=target, database_volume=database_volume, now=now
+    pending_path = target / f"backup-{backup_id}.pending.json"
+    health = (
+        verify_protected_backup(
+            pending_path,
+            target=target,
+            database_volume=database_volume,
+            now=now,
+            max_age_hours=None,
+            allow_pending=True,
+        )
+        if pending_path.exists()
+        else attestation_backup_health(
+            backup_id, target=target, database_volume=database_volume, now=now
+        )
     )
     manifest = health.manifest
     if (
@@ -436,8 +595,17 @@ def reconcile_restored_backup(
         sample=sample,
         images=manifest.image_archives,
         rehearsal_script=rehearsal_script,
+        published=(
+            manifest.published_forecasts if manifest.schema_version == 2 else None
+        ),
     )
     _attest(compose_file, manifest, health.manifest_sha256)
+    for item in manifest.published_forecasts:
+        if item.forecast_id != manifest.sample_forecast_id:
+            _attest_published(compose_file, manifest, health.manifest_sha256, item)
+    if pending_path.exists():
+        os.replace(pending_path, target / f"backup-{backup_id}.json")
+        _fsync_directory(target)
     return manifest
 
 
@@ -453,6 +621,18 @@ def create_protected_backup(
 ) -> ProtectedBackupManifest:
     verify_separate_target(target, database_volume)
     with _target_lock(target):
+        for pending in sorted(target.glob("backup-*.pending.json")):
+            pending_id = UUID(
+                pending.name.removeprefix("backup-").removesuffix(".pending.json")
+            )
+            reconcile_restored_backup(
+                backup_id=pending_id,
+                target=target,
+                database_volume=database_volume,
+                compose_file=compose_file,
+                rehearsal_script=rehearsal_script,
+                now=now,
+            )
         return _create_protected_backup_locked(
             target=target,
             compose_file=compose_file,
@@ -482,10 +662,12 @@ def _create_protected_backup_locked(
     os.close(fd)
     temp = Path(temp_name)
     try:
-        _dump(compose_file, temp)
+        published = _dump(compose_file, temp)
         after = _describe(compose_file)
         image_digests = sorted(
-            set(after.image_digests) | {before.sample.runtime_image_digest}
+            set(after.image_digests)
+            | {before.sample.runtime_image_digest}
+            | {item.runtime_image_digest for item in published}
         )
         images = [_archive_image(target, digest) for digest in image_digests]
         _verify_restored_chain(
@@ -493,11 +675,13 @@ def _create_protected_backup_locked(
             sample=before.sample,
             images=images,
             rehearsal_script=rehearsal_script,
+            published=published,
         )
         os.replace(temp, dump)
         _fsync_directory(target)
         restored_at = clock()
         manifest = ProtectedBackupManifest(
+            schema_version=2,
             backup_id=backup_id,
             created_at=now,
             restored_at=restored_at,
@@ -510,20 +694,23 @@ def _create_protected_backup_locked(
             forecast_values_sha256=before.sample.forecast_values_sha256,
             artifact_sha256=before.sample.artifact_sha256,
             runtime_image_digest=before.sample.runtime_image_digest,
+            published_forecasts=published,
         )
         manifest_path = target / f"backup-{backup_id}.json"
-        fd, temp_name = tempfile.mkstemp(prefix="manifest-", suffix=".tmp", dir=target)
-        os.close(fd)
-        temp_manifest = Path(temp_name)
+        pending_manifest = _write_pending_manifest(target, manifest)
         try:
-            temp_manifest.write_bytes(manifest.model_dump_json().encode())
-            with temp_manifest.open("rb") as stream:
-                os.fsync(stream.fileno())
-            _attest(compose_file, manifest, file_sha256(temp_manifest))
-            os.replace(temp_manifest, manifest_path)
+            pending_path, manifest_sha256 = pending_manifest
+            _attest(compose_file, manifest, manifest_sha256)
+            for item in published:
+                if item.forecast_id != manifest.sample_forecast_id:
+                    _attest_published(compose_file, manifest, manifest_sha256, item)
+            os.replace(pending_path, manifest_path)
             _fsync_directory(target)
-        finally:
-            temp_manifest.unlink(missing_ok=True)
+        except Exception:
+            log.exception(
+                "evidence_backup.attestation_pending", backup_id=str(backup_id)
+            )
+            raise
         log.info("evidence_backup.protected", backup_id=str(backup_id))
         return manifest
     finally:
@@ -548,16 +735,26 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     now = datetime.now(UTC)
     if args.action == "backup":
-        result = create_protected_backup(
-            target=args.target,
-            database_volume=args.database_volume,
-            compose_file=args.compose_file,
-            rehearsal_script=args.rehearsal_script,
-            now=now,
-            backup_id=uuid4(),
-            clock=lambda: datetime.now(UTC),
-        )
-        sys_result = {
+        try:
+            result = create_protected_backup(
+                target=args.target,
+                database_volume=args.database_volume,
+                compose_file=args.compose_file,
+                rehearsal_script=args.rehearsal_script,
+                now=now,
+                backup_id=uuid4(),
+                clock=lambda: datetime.now(UTC),
+            )
+        except Exception:
+            _project_failed_run(
+                args.health_database_url_file,
+                checked_at=datetime.now(UTC),
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
+                reason="protected_backup_run_failed",
+            )
+            raise
+        sys_result: dict[str, object] = {
             "backup_id": str(result.backup_id),
             "restored_at": result.restored_at.isoformat(),
         }
@@ -568,12 +765,16 @@ def main(argv: list[str] | None = None) -> int:
                 now=datetime.now(UTC),
                 max_age_hours=config.protected_backup_max_age_hours,
             )
-            write_health_projection(
+            backlog = write_health_projection(
                 database_url=read_health_database_url(args.health_database_url_file),
                 health=health,
                 checked_at=datetime.now(UTC),
                 retention_ready=args.retention_ready,
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
+                attempted_at=datetime.now(UTC),
             )
+            _add_backlog_result(sys_result, backlog)
     elif args.action == "health":
         health = latest_backup_health(
             args.target,
@@ -583,12 +784,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys_result = {"status": health.status.value, "reason": health.reason}
         if args.health_database_url_file is not None:
-            write_health_projection(
+            backlog = write_health_projection(
                 database_url=read_health_database_url(args.health_database_url_file),
                 health=health,
                 checked_at=now,
                 retention_ready=args.retention_ready,
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
             )
+            _add_backlog_result(sys_result, backlog)
         if health.status is not BackupProofStatus.VERIFIED:
             sys.stdout.write(json.dumps(sys_result) + "\n")
             return 1
@@ -605,21 +809,63 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if args.backup_id is None:
             parser.error("reconcile requires --backup-id")
-        manifest = reconcile_restored_backup(
-            backup_id=args.backup_id,
-            target=args.target,
-            database_volume=args.database_volume,
-            compose_file=args.compose_file,
-            rehearsal_script=args.rehearsal_script,
-            now=now,
-        )
+        try:
+            manifest = reconcile_restored_backup(
+                backup_id=args.backup_id,
+                target=args.target,
+                database_volume=args.database_volume,
+                compose_file=args.compose_file,
+                rehearsal_script=args.rehearsal_script,
+                now=now,
+            )
+        except Exception:
+            _project_failed_run(
+                args.health_database_url_file,
+                checked_at=datetime.now(UTC),
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
+                reason="protected_reconciliation_failed",
+            )
+            raise
         sys_result = {
             "backup_id": str(manifest.backup_id),
             "forecast_id": str(manifest.sample_forecast_id),
             "reconciled": True,
         }
+        if args.health_database_url_file is not None:
+            credential = read_health_database_url(args.health_database_url_file)
+            recovered = attestation_backup_health(
+                manifest.backup_id,
+                target=args.target,
+                database_volume=args.database_volume,
+                now=now,
+            )
+            write_health_projection(
+                database_url=credential,
+                health=recovered,
+                checked_at=now,
+                retention_ready=args.retention_ready,
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
+                attempted_at=now,
+            )
+            current = latest_backup_health(
+                args.target,
+                database_volume=args.database_volume,
+                now=now,
+                max_age_hours=config.protected_backup_max_age_hours,
+            )
+            backlog = write_health_projection(
+                database_url=credential,
+                health=current,
+                checked_at=now,
+                retention_ready=args.retention_ready,
+                retry_hours=config.publication_proof_retry_hours,
+                proof_window_hours=config.publication_proof_window_hours,
+            )
+            _add_backlog_result(sys_result, backlog)
     sys.stdout.write(json.dumps(sys_result) + "\n")
-    return 0
+    return 1 if sys_result.get("overdue_count", 0) else 0
 
 
 if __name__ == "__main__":

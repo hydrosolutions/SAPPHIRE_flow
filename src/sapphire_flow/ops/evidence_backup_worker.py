@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from sapphire_flow.db.engine import create_engine_from_env
 from sapphire_flow.flows.backup import build_pg_child_env
+from sapphire_flow.ops.protected_evidence_backup import PublishedForecastProof
 from sapphire_flow.store.forecast_preservation_store import (
     PgForecastPreservationStore,
 )
@@ -21,6 +22,7 @@ from sapphire_flow.types.forecast_preservation import PreservationAttestation
 from sapphire_flow.types.ids import ForecastId
 
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_SNAPSHOT_MARKER = "SAPPHIRE_PUBLICATION_SNAPSHOT_V1 "
 
 
 class AttestationInput(BaseModel):
@@ -102,16 +104,90 @@ def _describe() -> int:
 
 
 def _dump() -> int:
-    result = subprocess.run(  # noqa: S603 — fixed pg_dump argv
-        ["pg_dump", "--format=custom"],
-        env=build_pg_child_env(),
-        stdout=sys.stdout.buffer,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=1800,
-    )
+    env = build_pg_child_env()
+    with psycopg.connect(
+        host=env["PGHOST"],
+        port=env["PGPORT"],
+        user=env["PGUSER"],
+        dbname=env["PGDATABASE"],
+        password=env["PGPASSWORD"],
+    ) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        snapshot_row = conn.execute("SELECT pg_export_snapshot()").fetchone()
+        if snapshot_row is None:
+            raise RuntimeError("database snapshot export failed")
+        pending_rows = conn.execute(
+            "SELECT d.forecast_id, array_agg(d.id ORDER BY d.id) AS decision_ids, "
+            "min(d.created_at) AS published_at, "
+            "e.manifest_json, e.snapshot_sha256, e.artifact_sha256, "
+            "(SELECT count(*) FROM forecast_values v "
+            "WHERE v.forecast_id = d.forecast_id) AS value_count, "
+            "(SELECT encode(sha256(convert_to(COALESCE(jsonb_agg("
+            "jsonb_build_array(v.id, v.issued_at, v.valid_time, "
+            "v.lead_time_hours, v.member_id, v.quantile, v.value) "
+            "ORDER BY v.id)::text, '[]'), 'UTF8')), 'hex') "
+            "FROM forecast_values v WHERE v.forecast_id = d.forecast_id) "
+            "AS values_hash "
+            "FROM forecast_publication_decisions d "
+            "LEFT JOIN forecast_evidence e ON e.forecast_id = d.forecast_id "
+            "WHERE d.action = 'publish' "
+            "AND d.preservation_at_publish = 'backup_pending' "
+            "AND NOT EXISTS (SELECT 1 FROM protected_backup_forecast_proofs p "
+            "WHERE p.publication_decision_id = d.id) "
+            "GROUP BY d.forecast_id, e.manifest_json, e.snapshot_sha256, "
+            "e.artifact_sha256 ORDER BY d.forecast_id"
+        ).fetchall()
+        pending: list[PublishedForecastProof] = []
+        for (
+            forecast_id,
+            decision_ids,
+            published_at,
+            raw,
+            snapshot_sha,
+            artifact_sha,
+            count,
+            values_hash,
+        ) in pending_rows:
+            if raw is None or snapshot_sha is None or count < 1:
+                raise RuntimeError(
+                    f"pending publication {forecast_id} lacks retained evidence"
+                )
+            try:
+                manifest = json.loads(raw)
+                pending.append(
+                    PublishedForecastProof(
+                        forecast_id=forecast_id,
+                        publication_decision_ids=decision_ids,
+                        published_at=published_at,
+                        capture_manifest_sha256=hashlib.sha256(
+                            raw.encode()
+                        ).hexdigest(),
+                        snapshot_sha256=snapshot_sha,
+                        forecast_values_sha256=values_hash,
+                        artifact_sha256=artifact_sha,
+                        runtime_image_digest=manifest["runtime_image_digest"],
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"pending publication {forecast_id} has invalid capture"
+                ) from exc
+        result = subprocess.run(  # noqa: S603 — fixed pg_dump argv
+            ["pg_dump", "--format=custom", f"--snapshot={snapshot_row[0]}"],
+            env=env,
+            stdout=sys.stdout.buffer,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=1800,
+        )
     if result.returncode != 0:
         sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
+    else:
+        sys.stderr.write(
+            _SNAPSHOT_MARKER
+            + json.dumps([item.model_dump(mode="json") for item in pending])
+            + "\n"
+        )
     return result.returncode
 
 
@@ -212,10 +288,10 @@ def _attest() -> int:
     engine = create_engine_from_env()
     try:
         with engine.begin() as conn:
-            PgForecastPreservationStore(conn).append(attestation)
+            attestation_id = PgForecastPreservationStore(conn).append(attestation)
     finally:
         engine.dispose()
-    sys.stdout.write(str(attestation.id))
+    sys.stdout.write(str(attestation_id))
     return 0
 
 

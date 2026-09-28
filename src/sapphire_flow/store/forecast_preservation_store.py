@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
@@ -12,12 +13,15 @@ from sapphire_flow.db.metadata import (
 from sapphire_flow.types.forecast_preservation import PreservationAttestation
 from sapphire_flow.types.ids import ForecastId
 
+if TYPE_CHECKING:
+    from uuid import UUID
+
 
 class PgForecastPreservationStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
 
-    def append(self, attestation: PreservationAttestation) -> None:
+    def append(self, attestation: PreservationAttestation) -> UUID:
         row = (
             self._conn.execute(
                 sa.select(forecast_evidence).where(
@@ -34,7 +38,13 @@ class PgForecastPreservationStore:
             or row["artifact_sha256"] != attestation.artifact_sha256
             or json.loads(row["manifest_json"]).get("runtime_image_digest")
             != attestation.runtime_image_digest
-            or row["reason"] != "runtime_image_bytes_unpinned"
+            or (
+                row["status"] != "complete"
+                and not (
+                    row["status"] == "evidence_incomplete"
+                    and row["reason"] == "runtime_image_bytes_unpinned"
+                )
+            )
         ):
             raise ValueError("preservation attestation does not match capture")
         restored_chain = (
@@ -52,7 +62,8 @@ class PgForecastPreservationStore:
                     "AS values_hash "
                     "FROM forecast_evidence e "
                     "JOIN forecast_evidence_blobs s ON s.sha256 = e.snapshot_sha256 "
-                    "JOIN forecast_evidence_blobs a ON a.sha256 = e.artifact_sha256 "
+                    "LEFT JOIN forecast_evidence_blobs a "
+                    "ON a.sha256 = e.artifact_sha256 "
                     "WHERE e.forecast_id = :forecast_id"
                 ),
                 {"forecast_id": attestation.forecast_id},
@@ -96,7 +107,7 @@ class PgForecastPreservationStore:
                 raise ValueError(
                     "preservation attestation conflicts with existing proof"
                 )
-            return
+            return existing["id"]
         self._conn.execute(
             sa.insert(forecast_preservation_attestations).values(
                 id=attestation.id,
@@ -113,6 +124,7 @@ class PgForecastPreservationStore:
                 restored_at=attestation.restored_at,
             )
         )
+        return attestation.id
 
     def latest(self, forecast_id: ForecastId) -> PreservationAttestation | None:
         row = (
