@@ -257,7 +257,7 @@ there.
 
 ## Rejected forecasts (`GET /api/v1/stations/{id}/rejected-forecasts`, Plan 404)
 
-Every member or group-station forecast forecast QC rejected for this
+Every member or group-station forecast QC rejected for this
 station, in the query window — the record `forecasts` never gets, since a
 `QC_FAILED` assignment is never stored there (D1/D2). **Every parameter of
 a rejected assignment is returned, including `qc_passed` and `qc_suspect`

@@ -76,7 +76,13 @@ def upgrade() -> None:
 
     # Role-independent append-only guard — mirrors migration 0057's
     # `forecast_evidence`/`forecast_evidence_blobs` triggers: UPDATE, DELETE
-    # and TRUNCATE are refused even for the table-owning role.
+    # and TRUNCATE are refused even for the table-owning role, THROUGH
+    # ORDINARY DML. This is not a guarantee against the owning role's own DDL
+    # — `ALTER TABLE rejected_forecasts DISABLE TRIGGER ...` bypasses any
+    # trigger for whoever holds that privilege (high-risk review finding,
+    # 2026-09-28; Postgres has no trigger-level guard against its own owner's
+    # DDL). The trust boundary is operational: nothing but a migration should
+    # ever hold or use the table-owning role's credentials.
     op.execute("""
         CREATE FUNCTION reject_rejected_forecast_mutation() RETURNS trigger AS $$
         BEGIN
