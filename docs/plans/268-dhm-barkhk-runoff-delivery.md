@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-10
 revised: 2026-09-28
 plan: 268
@@ -20,6 +20,7 @@ reviews:
   - "codex 2026-09-25 — NEEDS_CHANGES on SHA 5cb0fa23; stale migration rationale corrected and focused recheck passed; later D14 threshold revision needs full exact-state review"
   - "claude 2026-09-25 — NEEDS_CHANGES; cross-plan D4 gate, QC pending-state and T7 validator-contract findings; folded, exact-state re-review pending"
   - "codex 2026-09-28 — NO_FINDINGS on SHA cb769d7b; tenant authority, real-data acceptance, collision isolation and pending-state checked"
+  - "claude 2026-09-28 — READY/NO_FINDINGS on SHA d19ba637; tenant authority, cross-plan behavior, shared writer and task gates checked"
 open_decisions: []
 depends_on: [264, 269]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
@@ -32,11 +33,11 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 
 ## Status
 
-**DRAFT — NOT READY.** The owner selected provisional loose-first thresholds under D14.
+**READY.** The owner selected provisional loose-first thresholds under D14.
 Plans 264 and 269 are implemented and merged (#315 and #324). T7 can use their
 network-aware rule selection and tenant-aware threshold resolver; their merge is no longer
-an implementation gate. An independent Codex review found no issues in this revision;
-an independent Claude review of the exact text is still required before READY.
+an implementation gate. Independent Codex and Claude reviews found no substantive issues
+in the reconciled plan. T8's restricted-data operator acceptance remains post-merge.
 
 ## What arrived
 
