@@ -661,11 +661,12 @@ exit criteria — Plan 212 owns that deeper screening.
   `ForecastInterfaceAdapter.retrain`". ⛔ *An agent opening 399 reads live defects, and the cheapest
   correct response is to re-implement finished work.* ⭐ **What is new in this hazard: the stale text is
   not the status label but the EVIDENCE TABLES**, which read as measurements and so convince more than a
-  label would. 🔑 All seven measured closed against `main` (`81bc9861`); the staging run is the ONE
-  genuine remainder and 399 keeps it. ⚠️ **Two kinds of stale text, treated differently** — live claims
-  are corrected, dated CHANGELOG findings are history and stay. D1 asks where the staging run lives now
-  that it is 399's only item (recommend: stays, with the status line saying it is blocked on the host,
-  not on code).
+  label would. 🔑 All seven measured closed against `main`; 399 has ONE open OUTCOME — the staging
+  run — with DEPLOYMENT as its precondition (`399:60`, whose own version figures are stale). ⛔ *First
+  written as "the ONE genuine remainder", which absorbed the deployment line silently.* ⚠️ **Two kinds of stale text, treated differently** — live claims
+  are corrected, dated CHANGELOG findings are history and stay. 🔴 **399's `status: PARTIALLY_IMPLEMENTED` is NOT a canonical value** — it is the only
+  plan in the corpus using it. D1 asks which canonical status it takes (recommend: `BLOCKED`, which
+  says the true thing in the field built for it rather than in prose).
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](archive/405-warm-start-gaps-and-untested-boundaries.md)
   — **`COMPLETE`, ARCHIVED** (merged #323, 2026-09-27, 0.1.1014). All six tasks shipped; each was
   independently reviewed after every fold, and several reviews changed the implementation.
