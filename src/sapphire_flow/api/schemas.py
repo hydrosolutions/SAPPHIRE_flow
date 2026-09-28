@@ -333,3 +333,45 @@ class StationSkillResponse(BaseModel):
         "latest_generation_on_forecast_artifact"
     )
     rows: list[SkillRowResponse]
+
+
+# --- Plan 404 T3: GET /api/v1/stations/{id}/rejected-forecasts -----------
+
+_RejectedQcStatusLiteral = Literal[
+    "qc_failed", "qc_suspect", "qc_passed", "qc_unchecked"
+]
+_RepresentationLiteral = Literal["members", "quantiles"]
+
+
+class NonFiniteValue(BaseModel):
+    """The evidence non-finite encoding (`services/forecast_evidence.py`),
+    reused at the wire boundary: `repr(value)` is one of `nan`, `inf`,
+    `-inf`."""
+
+    nonfinite: Literal["nan", "inf", "-inf"]
+
+
+class RejectedForecastValuePoint(BaseModel):
+    valid_time: datetime
+    value: float | NonFiniteValue
+
+
+class RejectedForecastResponse(BaseModel):
+    id: str
+    attempt_id: str
+    recorded_at: datetime
+    station_id: str
+    model_id: str
+    model_artifact_id: str | None
+    group_id: str | None
+    issued_at: datetime
+    parameter: str
+    representation: _RepresentationLiteral
+    units: str
+    time_step_seconds: int
+    qc_status: _RejectedQcStatusLiteral
+    qc_flags: list[QcFlagResponse]
+    # None only when `withheld` is true (D4) — keyed by member id or
+    # quantile level (as a string), each series its own timeline.
+    values: dict[str, list[RejectedForecastValuePoint]] | None
+    withheld: bool

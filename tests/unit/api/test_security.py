@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi import Depends
 
+from sapphire_flow.api.review_auth import require_reviewer_or_human
 from sapphire_flow.api.security import (
     PepperNotConfiguredError,
     Principal,
@@ -185,6 +186,10 @@ class TestRoleGates:
     _ADMITTED: dict[str, frozenset[AccessTokenRole]] = {
         "PRINCIPAL": frozenset(AccessTokenRole),
         "REVIEW": frozenset({AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN}),
+        # Plan 404 T3: the SERVICE-token dimension of REVIEW_OR_HUMAN admits
+        # the same two roles as REVIEW — the route also admits a granted
+        # human, which this table (keyed by AccessTokenRole) cannot express.
+        "REVIEW_OR_HUMAN": frozenset({AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN}),
         "ADMIN": frozenset({AccessTokenRole.ADMIN}),
     }
 
@@ -196,6 +201,13 @@ class TestRoleGates:
         check = {
             "PRINCIPAL": lambda p: p,
             "REVIEW": require_reviewer,
+            # Plan 404 T3 — a request-level adapter: once a bearer resolves
+            # to a service `Principal` (the shape check and the token/scope
+            # lookup already ran), `require_reviewer_or_human`'s SERVICE
+            # branch is exactly `require_reviewer(principal)` — reusing it
+            # here exercises the class's admitted service roles instead of
+            # only declaring them in `_ADMITTED`.
+            "REVIEW_OR_HUMAN": require_reviewer,
             "ADMIN": require_admin,
         }[gate]
         try:
@@ -205,7 +217,9 @@ class TestRoleGates:
             return False
         return True
 
-    @pytest.mark.parametrize("gate", ["PRINCIPAL", "REVIEW", "ADMIN"])
+    @pytest.mark.parametrize(
+        "gate", ["PRINCIPAL", "REVIEW", "REVIEW_OR_HUMAN", "ADMIN"]
+    )
     def test_gate_admits_exactly_its_roles(self, gate: str) -> None:
         admitted = {role for role in AccessTokenRole if self._admits(gate, role)}
         assert admitted == self._ADMITTED[gate]
@@ -328,8 +342,16 @@ def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str],
             calls = _flat_dependant_calls(dependant)
             # Most restrictive first: a `require_reviewer`/`require_admin`
             # route also carries `require_principal` among its dependencies.
+            # `require_reviewer_or_human` is checked before `require_reviewer`
+            # (Plan 404 T3): it calls `require_reviewer`/`require_principal`
+            # DIRECTLY (not via a second `Depends`), so those never appear as
+            # sub-dependencies of a REVIEW_OR_HUMAN route — but the check is
+            # still ordered defensively, so an ungated route still reads
+            # PUBLIC either way.
             if require_admin in calls:
                 tag = "ADMIN"
+            elif require_reviewer_or_human in calls:
+                tag = "REVIEW_OR_HUMAN"
             elif require_reviewer in calls:
                 tag = "REVIEW"
             elif require_principal in calls:
@@ -387,6 +409,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/forecast-lab/snapshot"): "PRINCIPAL",
         ("GET", "/api/v1/qc/rules"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/skill"): "REVIEW",
+        ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"): "REVIEW_OR_HUMAN",
     }
 
     def test_every_mounted_route_matches_the_expected_classification(self) -> None:
