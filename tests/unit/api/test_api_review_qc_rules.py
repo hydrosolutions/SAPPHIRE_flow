@@ -251,6 +251,50 @@ class TestStationScope:
         assert row["station_thresholds"] == []
         assert row["thresholds"]["value_max"] == 100000.0
 
+    def test_network_rule_replaces_generic_at_one_cadence_generic_remains_at_another(
+        self, client: TestClient, fake_stores: dict, tmp_path: Path, monkeypatch
+    ) -> None:
+        station = make_station_config(code="DHM-1", network="dhm")
+        fake_stores["station_store"].store_station(station)
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n"
+            "[qc_rules]\n"
+            'version = "network-test"\n'
+            "[[qc_rules.rules]]\n"
+            'rule_id = "range_check"\nrule_version = "1.0"\n'
+            'parameter = "discharge"\ntime_step_seconds = 600\n'
+            "thresholds = { value_min = 0.0, value_max = 100.0 }\n"
+            "[[qc_rules.rules]]\n"
+            'rule_id = "range_check"\nrule_version = "1.0"\n'
+            'parameter = "discharge"\ntime_step_seconds = 600\n'
+            'network = "dhm"\n'
+            "thresholds = { value_min = 0.0, value_max = 200.0 }\n"
+            "[[qc_rules.rules]]\n"
+            'rule_id = "range_check"\nrule_version = "1.0"\n'
+            'parameter = "discharge"\ntime_step_seconds = 86400\n'
+            "thresholds = { value_min = 0.0, value_max = 300.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+
+        resp = client.get("/api/v1/qc/rules", params={"station_id": str(station.id)})
+        assert resp.status_code == 200
+        rows = [
+            r
+            for r in resp.json()["observation"]["rules"]
+            if r["rule_id"] == "range_check" and r["parameter"] == "discharge"
+        ]
+        # Exactly two rows: the dhm-specific one at 600s (the generic 600s
+        # row is REPLACED, not additionally listed), and the generic 86400s
+        # row (no network-specific rule exists there).
+        assert len(rows) == 2
+        row_600 = next(r for r in rows if r["time_step_seconds"] == 600)
+        row_86400 = next(r for r in rows if r["time_step_seconds"] == 86400)
+        assert row_600["network"] == "dhm"
+        assert row_600["thresholds"]["value_max"] == 200.0
+        assert row_86400["network"] is None
+        assert row_86400["thresholds"]["value_max"] == 300.0
+
     def test_not_judged_station_is_not_judged_and_has_no_station_thresholds(
         self, client: TestClient, fake_stores: dict, tmp_path: Path, monkeypatch
     ) -> None:
