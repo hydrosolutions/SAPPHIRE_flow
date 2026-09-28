@@ -406,13 +406,10 @@ exit criteria — Plan 212 owns that deeper screening.
   together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
   Plans 264 and 269 are **COMPLETE** (#315, #324); Plans 268/301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
-    `DRAFT`, `depends_on: [264, 269]`. Five review rounds folded (2× Codex, 2× Claude, 1 set
-    review). Fifteen of sixteen decisions closed; **D14 reopened** — the DHM daily QC
-    threshold calibration, which needs a hydrologist for the values and must avoid three
-    traps: deriving a threshold from the record it judges (circular), reusing the rating
-    tables (not independent evidence), and publishing a restricted tabulated value unless
-    passed through a deliberately lossy transform. The delivery itself is **unpublishable**;
-    never check an excerpt into the repo.
+    `DRAFT`, `depends_on: [264, 269]` (both merged). D14's generous first-pass QC
+    thresholds are settled for controlled testing; narrowing awaits further data and
+    hydrologist review. The current draft needs exact-state Claude and Codex review before
+    READY. The delivery is **unpublishable**; never check an excerpt into the repo.
   - **264** — QC rules select on network, not only parameter and cadence — **COMPLETE**,
     merged in PR #315 (`dbbea4d9`, 2026-09-26); `blocks: [268, 269]`. Adds network-specific
     selection with generic fallback, threads the station-network mapping through the checker,
