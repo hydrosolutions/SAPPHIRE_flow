@@ -882,14 +882,22 @@ coordinator);
 `tests/fakes/fake_stores.py` — **not read-only**: T3 adds the delivery column and this task
 owns the observation-side delivery delete, batch collision preflight, fake behavior, and import
 writes. `tests/integration/store/test_observation_store_upsert.py` covers the PostgreSQL writer;
+`tests/integration/cli/test_import_dhm_delivery.py` (new) covers replacement atomicity and
+is extended in T7 for the coordinated QC pass;
 `tests/unit/flows/test_ingest_observations_dhm.py` covers scheduled-ingest collision handling.
 The previous revision's "no change expected" was left standing after D6 said it could not be.
 `src/sapphire_flow/flows/ingest_observations.py` reports the station-specific storage failure
 and must not run QC for the rejected station batch.
+T4 adds the tenant-row `FOR UPDATE` method to `src/sapphire_flow/store/tenant_store.py`,
+`src/sapphire_flow/protocols/stores.py`, and `tests/fakes/fake_stores.py`; T7
+reuses it. The replacement coordinator acquires it before any delivery-scoped read or write.
 For initial import and replacement, stage and validate the complete curve and observation
 payloads before mutation. The replacement coordinator then opens one `engine.begin()`
 transaction, constructs both stores with that same SQLAlchemy connection, deletes the tagged
 delivery rows, calls T3 to insert all curves and T4 to insert all observations, and commits once.
+Before reading or changing delivery rows, it locks the D11 tenant row `FOR UPDATE` through a
+shared tenant-store method. T7 takes that same lock for its full QC pass, so replacement
+cannot delete or recreate rows while QC classifies them.
 The stores and import functions must not open nested transactions or commit themselves. Thus a
 failure at any T3/T4 step restores the old delivery. QC runs only after commit.
 **State which writer is used and why.** Choose `store_raw_observations` — it is the honest
@@ -998,7 +1006,14 @@ restricted-file guard before implementation fixtures or code are added.
 `QC_PASSED` only when applicable rules actually ran and passed; unclassifiable rows remain
 `QC_UNCHECKED` and are reported, never counted as passed.
 
-**In**: add DHM-network daily-discharge rules to the existing `config.toml` and
+T7 adds a delivery-scoped observation-store QC update, with Protocol and fake counterparts.
+The scoped update requires observation ID and delivery
+ID, returns whether exactly one row was updated, and leaves the general `update_qc` API
+unchanged. Verify locking and affected-row behavior against PostgreSQL.
+
+**In**: add the delivery-scoped QC update to `src/sapphire_flow/store/observation_store.py`,
+`src/sapphire_flow/protocols/stores.py`, and `tests/fakes/fake_stores.py`; add DHM-network
+daily-discharge rules to the existing `config.toml` and
 `docs/spec/config-reference.toml` rule lists without changing Swiss rows or their per-rule
 versions. Keep both files' DHM rule definitions and shared `[qc_rules].version` identical.
 Advance that version from
@@ -1059,6 +1074,14 @@ group with no runnable rules is persisted as `QC_UNCHECKED`. Report those groups
 segments by station, date range, and count. T7 is not complete while any delivered row is
 unaccounted for or any row is described as checked without a rule execution.
 
+Run the entire delivery QC pass in one caller-owned database transaction. Acquire the same
+D11 tenant-row lock as T4 before fetching the delivery cohort, preflight rules and ceilings,
+classify the cohort, and write every status through the delivery-scoped store update. Require
+exactly one affected row for every intended observation ID; any missing row, changed delivery
+ID, or exception rolls back all QC statuses and flags. Commit only after the persisted
+delivery-tagged cohort and status totals match the intended IDs. A later replacement resets
+its new rows to `RAW` and must rerun T7 under D6.
+
 **Verification**:
 
 - Exercise the actual config loader, resolver and checker path; assert each of the six stations
@@ -1084,6 +1107,9 @@ unaccounted for or any row is described as checked without a rule execution.
   rows evaluated, flags raised, excluded short segments, and explains that D14 `rate_of_change`
   is non-discriminating at this setting: it cannot flag a pair both within the configured range.
   Do not publish delivered values or restricted rating-table data.
+- Inject a failure after some QC updates and assert no status or flag from that pass survives.
+  In a PostgreSQL integration test, overlap T7 with T4 replacement and assert their tenant
+  lock serializes the operations; an update that affects zero rows must fail and roll back.
 - Seed an unrelated observation on one of the six stations with a non-delivery ID and an
   existing QC status. Assert T7 neither changes its status nor includes it in checker groups;
   rate and spike comparisons use only rows from this delivery.
