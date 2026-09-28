@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-09-10
-revised: 2026-09-27
+revised: 2026-09-28
 plan: 268
 reviews:
   - "codex 2026-09-10 — NOT READY, 5 blockers; all verified, folded"
@@ -19,6 +19,7 @@ reviews:
   - "codex 2026-09-25 — NEEDS_CHANGES on SHA f2ff783c; shared QC rule-set version bump finding folded"
   - "codex 2026-09-25 — NEEDS_CHANGES on SHA 5cb0fa23; stale migration rationale corrected and focused recheck passed; later D14 threshold revision needs full exact-state review"
   - "claude 2026-09-25 — NEEDS_CHANGES; cross-plan D4 gate, QC pending-state and T7 validator-contract findings; folded, exact-state re-review pending"
+  - "codex 2026-09-28 — NO_FINDINGS on SHA cb769d7b; tenant authority, real-data acceptance, collision isolation and pending-state checked"
 open_decisions: []
 depends_on: [264, 269]
 title: DHM Barkhk delivery — parse, verify and import six Koshi/Narayani gauges
@@ -34,8 +35,8 @@ source: 2026-09-10 — measured directly against the delivered files (README.md:
 **DRAFT — NOT READY.** The owner selected provisional loose-first thresholds under D14.
 Plans 264 and 269 are implemented and merged (#315 and #324). T7 can use their
 network-aware rule selection and tenant-aware threshold resolver; their merge is no longer
-an implementation gate. This reconciled revision still needs independent Claude and Codex
-reviews of the exact text before the orchestrator may set READY.
+an implementation gate. An independent Codex review found no issues in this revision;
+an independent Claude review of the exact text is still required before READY.
 
 ## What arrived
 
@@ -349,7 +350,7 @@ That is a sound call, and it is not free — it makes **re-importability a desig
 **The author's first attempt at that requirement was wrong, and both round-2 passes caught it
 independently.** The plan claimed that because `source` is part of the observations natural
 key, a re-import "upserts in place". The natural key is
-`(station_id, timestamp, parameter, source)` (`db/metadata.py:570-576`) — **`timestamp` is in
+`(station_id, timestamp, parameter, source)` (`db/metadata.py::uq_observations_natural_key`) — **`timestamp` is in
 it**. A boundary correction changes every timestamp, so a re-import inserts a second ~99,246
 rows under new keys and leaves the originals as orphans. The claimed property holds only for
 a re-run that changes nothing, which is precisely *not* the scenario it was written for.
@@ -358,7 +359,7 @@ The curve side is worse: `store_rating_curve` is a plain `sa.insert`
 (`store/rating_curve_store.py:22-36`) against `UNIQUE (station_id, version)`, so T3 cannot be
 re-run even once — the second attempt raises. And the curves cannot simply be deleted first,
 because `observations` carries a composite FK to `rating_curves` with **no `ondelete`**
-(`db/metadata.py:547-552`): once T4 has landed, curve deletion is blocked until the
+(`db/metadata.py`, observations-to-rating-curves FK): once T4 has landed, curve deletion is blocked until the
 observations go.
 
 **The requirement is therefore an explicit atomic replacement procedure, not an upsert.** First
@@ -431,7 +432,7 @@ is hypothetical.
 The conclusion nevertheless stands, on one verified leg:
 
 - **The label is an identity, not an annotation.** `source` is part of
-  `uq_observations_natural_key` (`db/metadata.py:570-577`), which is exactly what
+  `uq_observations_natural_key` (`db/metadata.py`), which is exactly what
   `store_observations` upserts on. Choosing wrong is therefore not a later `UPDATE` — it is
   a delete plus a re-insert of the full ~99,246-row import. The owner should price the
   decision at that, not at the cost of an edit.
@@ -452,15 +453,14 @@ throughout, with `rating_curve_id` populated as pure provenance wherever a curve
 day and NULL for the 4,629 days where none does. It records everything we know — including
 the curve link — and claims nothing we do not.
 
-**Documentation consequence, found in round 2 and missed by every pass before it:** the
-`Observation` descriptions at `docs/spec/types-and-protocols.md:859` and `:870` and the
-observation schema at `docs/architecture-context.md:2234` restrict `rating_curve_id` to
-rating-curve-derived observations. `docs/spec/database-schema.md:14` and `:134` label
-`rating_curve_id` absent from the v0 scope even though the implemented schema below includes
-it; T6 must make those historical scope notes explicit rather than current-schema claims.
-This import lands ~94,617 rows that contradicts the derived-only observation descriptions.
-The `observation_versions.rating_curve_id` description at
-`docs/spec/database-schema.md:707` remains correct and must not be changed. The contract is worth widening
+**Documentation consequence:** the `RawObservation` and `Observation` definitions in
+`docs/spec/types-and-protocols.md` and the observations schema in
+`docs/architecture-context.md` restrict `rating_curve_id` to rating-curve-derived
+observations. The historical v0 scope note and diagram comment in
+`docs/spec/database-schema.md` label that field absent from v0 even though the implemented
+schema includes it; T6 makes their historical scope explicit. This import lands ~94,617 rows
+that contradict the derived-only descriptions. The `observation_versions.rating_curve_id`
+description remains correct and must not be changed. The contract is worth widening
 rather than the decision reversing — provenance and derivation are genuinely different
 claims, and the schema already permits the distinction — but it must be **written down**,
 not left as an undocumented exception. T6 carries it.
@@ -493,20 +493,23 @@ overtaken by D12: our own QC runs over the whole series anyway, so if the value 
 anomalous the range rule will say so on its own terms — which is a better outcome than a
 hand-made flag, because it is the same judgement applied to all 99,246 values.
 
-**D11 — what "side dataset" means. CLOSED: a new tenant in the existing database.**
-D5 said "side dataset first" and the author never defined it. The second review found the
-phrase appears nowhere in the repository outside this plan, and that the gap is not
-cosmetic: `stations.tenant_id` is NOT NULL with no server default (`db/metadata.py:292-297`)
-and `services/tenant_boundary.py:12` hard-errors on an unknown tenant code, so T2b cannot
-insert a station without an answer. **CLOSED: a new tenant in the existing database** (owner, 2026-09-10) — real isolation for
-restricted data without standing up separate infrastructure, matching how the schema already
-partitions. T2b provisions it; the six stations stay at `onboarding` status regardless.
+**D11 — the Nepal tenant and station identity. CLOSED by owner, 2026-09-28.**
+Use tenant code `chwrr`, display name `CHWRR Nepal`, in the existing Mac-mini staging
+database. This separates restricted Nepal records from Swiss data without a second database.
+The six `network = dhm` station rows are also the intended future operational CHWRR rows.
+Plan 143 consumes these same records for basin, forcing and target preparation; station
+promotion is outside both plans and must never register a second copy. The
+global `(network, code)` uniqueness constraint reserves these six identities in this database.
+T2b refuses a pre-existing code owned by another tenant and requires explicit reconciliation
+before import; it never adopts or duplicates that row. Until promotion, all six remain
+`onboarding`. T2a's artifact records the exact tenant code and display name. T2b provisions
+it fetch-before-create because `store_tenant` is a plain insert.
 
-**Round 2 addition — the tenant needs an identity, not just a topology.** T2b cannot say
-"the tenant D11 names" if D11 names none. Fix the code and display name in T2a's artifact
-alongside the stations, and provision **fetch-before-create**: `store_tenant` is a plain
-insert, so re-running T2b would otherwise fail on the second attempt — the same class of
-defect D6 hit on curves.
+The checked-in Swiss deployment permits writes only to `sapphire`. Tenant creation therefore
+requires an explicitly authorized one-time global-admin bootstrap run. Later station, curve,
+observation, and QC commands resolve a `chwrr`-scoped `WritePrincipal` from deployment
+configuration and call `enforce_tenant_isolation` before mutation. Neither the station row
+nor a read-only API token grants write authority.
 
 **D12 — what QC status the imported rows carry. CLOSED, and the answer is better than the
 recommendation it replaced: run our own daily QC over the series.**
@@ -524,7 +527,7 @@ to run QC on a daily series.
 
 **🔴 Earlier revisions used the wrong rule set for their evidence.** They read
 `config/qc_rules.py`'s `_default_swiss_qc_rules()` as though it were selected by the checked-in
-configuration. It is not: `config.toml:207` supplies `[qc_rules]` and defines 26 rules (the
+configuration. It is not: `config.toml` supplies `[qc_rules]` and defines 26 rules (the
 function defines 28). The built-ins remain runtime fallbacks when `SAPPHIRE_CONFIG` is unset.
 Against the checked-in configuration as it stood before PR #298, the daily discharge tier was
 **four rules, not five**. The thresholds and QC measurements below are a **pre-PR #298
@@ -573,7 +576,7 @@ imports at `RAW` — honestly unchecked, because at that instant it is — and *
 QC pass that assigns the real status. A pilot reads the data only after T7.
 
 **D13 — interpolation method. CLOSED: linear.**
-T3 requires all 112 curves to pass the converter "with the interpolation actually selected",
+T8 requires all 112 curves to pass the converter "with the interpolation actually selected",
 and the method was never selected. Measured for this decision: **no tabulated discharge in
 any of the 7,869 points is zero or negative**, so log-linear is representable and the data
 does not force the choice. **CLOSED: linear** (owner, 2026-09-10) — it matches the column default
@@ -613,17 +616,19 @@ limits, or evidence that a value below them is correct. They may let gross error
 are for controlled test and model-development use; do not rely on them for operational decisions.
 Do not derive any threshold from rating-table points. Reassess and narrow thresholds with DHM
 after reviewing additional records and observed QC outcomes. No hydrologist-approval gate remains
-for these initial test values. The merged Plan 269 classifies the
-six declarations as pending INFO while the target tenant has no DHM stations, and while matching
-stations remain `onboarding`; these expected lifecycle states do not create a warning health
-record. The scheduled-ingest pending state requires `dhm` in `onboarding.qc_pending_networks`. An unknown DHM code remains a warning-level rejection once any DHM station is
-registered, so a typo cannot hide as pending. T7's direct import must resolve all six ceilings as
-applicable before any QC write. Plan 269's edit-time validator remains strict by default. On any
-deployment where the DHM stations are not registered, run it with
-`--allow-unonboarded-network dhm`; the opt-in reports the six declarations as pending only if the
-target tenant has no DHM stations, while still rejecting invalid rules, parameters, cadences and
-thresholds. This applies wherever the shared config is validated on a deployment without the DHM
-stations, regardless of whether T2b has run elsewhere.
+for these initial test values. The merged Plan 269 reports the six declarations as pending INFO
+when tenant `chwrr` exists but has no DHM station, or when that tenant does not exist and the
+database has no DHM station anywhere. Matching `chwrr` stations still in `onboarding` are also
+pending. If `chwrr` is absent while another tenant already has a DHM station, the declarations
+are **rejected**, produce WARNING health records on every scheduled run, and fail the edit-time
+validator even with `--allow-unonboarded-network dhm`. T7 adds `dhm` to
+`onboarding.qc_pending_networks`; before rolling that shared config onto such a database,
+bootstrap the empty `chwrr` tenant or defer the config rollout. Do not normalize a permanent
+warning. Once any `chwrr` DHM station exists, an unknown code is a warning-level rejection,
+so a typo cannot hide as pending. T7's direct import must resolve all six ceilings as
+applicable before any QC write. Plan 269's edit-time validator stays strict by default;
+the opt-in pending mode applies only under the conditions above and still rejects invalid
+rules, parameters, cadences and thresholds.
 
 T7 declares station ceilings through the merged Plan 264/269 configuration interface and adds the
 DHM network rules to the configured rule set; it constructs no hard-coded overrides. Plan 269 owns the
@@ -666,27 +671,20 @@ T7 claimed it could add a DHM daily rule set "beside" the Swiss one without chan
 behaviour. Both round-2 passes found that is not achievable as stated, for two independent
 reasons:
 
-- `rules_for` matches on **parameter and time step only** (`types/domain.py:160-167`) — no
-  network, tenant or station dimension. Put DHM daily discharge rules in the same rule set
-  and *both* fire on any daily discharge series, with `aggregate_qc_status` taking the worst.
-  At the time this design was reviewed, the pre-#298 5,000 m³/s Swiss ceiling flagged the
-  monsoon peaks, so the calibration would achieve nothing.
-- The config route is worse. `load_qc_rules` returns the Swiss defaults **only when no
-  `[qc_rules]` section exists** (`config/qc_rules.py:263-268`), and the overlay's `_deep_merge`
-  replaces lists wholesale (`config/_overlay.py:44-56`). A DHM rule set delivered through TOML
-  would therefore **delete** the Swiss rules for that deployment — while T7's proposed gate
-  ("the Swiss defaults are byte-identical") still passes, because the default *function* is
-  untouched.
+- Before Plan 264, `rules_for` matched only parameter and cadence. DHM daily rules in the
+  same list would therefore have run on Swiss stations. The merged selector now also takes
+  `network` and replaces generic rows of the same rule, parameter and cadence where a DHM
+  row exists (`types/domain.py::QcRuleSet.rules_for`).
+- The TOML overlay merge replaces a rule array wholesale. Plan 264 now rejects any
+  `[qc_rules]` section in an overlay, so T7 adds DHM rows only to the shared base list.
 
 **CLOSED: teach the rules which network they apply to** (owner, 2026-09-10) — the selector
 dimension, not the in-process workaround the author recommended. It is the better answer: the
 collision is a real limitation for any deployment serving two networks, not an artefact of
 this import, and the workaround would have left it in place for the next caller to rediscover.
 
-**It changes shared code the running Swiss deployment depends on, so it is its own plan:
-Plan 264, which now blocks this one's QC task.** That is a deliberate split — the regression
-risk to a live QC path deserves its own review and rollout rather than a paragraph inside a
-data-import plan. T7 consumes the result; it does not build it.
+**Plan 264 implemented this shared selector in PR #315.** Its Swiss regression risk received
+separate review and rollout. T7 consumes the result; it does not build it.
 
 ## Tasks
 
@@ -715,7 +713,9 @@ dataclasses, with no I/O and no DB dependency. Malformed input raises a typed er
 that is neither header nor data is never silently skipped.
 **In**: `src/sapphire_flow/adapters/dhm_files.py`;
 `tests/unit/adapters/test_dhm_files.py`; synthetic fixtures under
-`tests/fixtures/dhm/` (hand-written, never delivered content).
+`tests/fixtures/dhm/` (hand-written, never delivered content; names such as
+`synthetic_daily_flow.txt` and `synthetic_rating_tables.txt`, outside T0's blocked
+`DFL_*.txt` and `RT_*.txt` patterns).
 **Out**: no store writes, no station resolution, no timestamp policy — T1 yields dates and
 values as delivered; the UTC boundary belongs to T3/T4 and follows D6's working assumption.
 **Verification**: `uv run pytest tests/unit/adapters/test_dhm_files.py` — covering a
@@ -734,7 +734,7 @@ Station codes and station-list metadata are publishable (D5); the measurements a
 `tests/unit/config/test_dhm_station_metadata.py`.
 **Out**: no DB writes.
 **Verification**: `uv run pytest tests/unit/config/test_dhm_station_metadata.py` — asserts
-the artifact carries the D11 tenant code and display name, and all six stations carry, and are
+the artifact carries tenant code `chwrr` and display name `CHWRR Nepal`, and all six stations carry, and are
 well-formed in, every station column `stations` requires NOT NULL: `code`,
 `name`, `location` (lon/lat in range, to become POINT srid 4326), `station_kind = river`,
 `network = dhm`, `timezone = Asia/Kathmandu`, `measured_parameters = ["discharge"]` (the
@@ -750,12 +750,25 @@ transcribed reference, and do not imply a station field for it.
 
 ### T2b — Station registration in the side-dataset tenant
 
-**Outcome**: six `stations` rows exist where T3 and T4 can reference them. Added after the
+**Outcome**: a guarded, repeatable command can create the six `stations` rows that T3 and T4
+will reference; T8 executes it on staging. Added after the
 first review found nothing created them; bounded after the second found it could not be
 implemented as first written.
-**In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (station branch), tenant and station
-stores, and the T2a metadata artifact. The command fetches or creates the D11 tenant from its
-code and display name, then writes the six station records with the resolved tenant ID. It does
+**In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (tenant bootstrap and station branches),
+`config/overlays/chwrr-import.toml` (new, `[deployment]` only, setting
+`writable_tenants = ["chwrr"]`), tenant and station stores, and the T2a metadata artifact.
+The bootstrap command creates tenant `chwrr` only when the explicit deployment identity
+has `global_admin = true`; it refuses the normal Swiss and CHWRR-scoped identities. It
+checks that identity directly before tenant creation because resolving a principal for
+`chwrr` requires the tenant to exist already. Because
+`resolve_run_principal` validates declared writable tenant codes before resolving the run,
+normal CHWRR authority cannot bootstrap an as-yet-unknown tenant. The operator supplies a
+temporary, out-of-repo admin deployment overlay with `global_admin = true` and
+`writable_tenants = []`, uses it only for this one command, then removes it. No global-admin
+profile is checked in. The station command uses the checked-in CHWRR import overlay, resolves
+a `chwrr`-bound principal, calls `enforce_tenant_isolation` on the resolved tenant ID before
+any station write, and refuses the Swiss-only base identity. It fetches or creates no other
+tenant and writes the six station records with the resolved ID. It does
 not call the public CAMELS-CH onboarding entry point or the private general onboarding flow:
 this delivery has no verified basin, forcing, or MeteoSwiss backfill inputs for that workflow.
 It creates no substitute basin or forcing records.
@@ -767,8 +780,11 @@ D14 rules on that single-row group. T7 independently runs QC over the full deliv
 and does not require forecast targets or operational promotion. Promotion remains out of scope.
 T2b performs no QC; T7 applies the provisional D14 DHM rules after observations are imported.
 T2b keeps `forecast_targets` unset so these stations remain onboarding.
-**Verification**: `uv run python -m sapphire_flow.cli.import_dhm_delivery stations --dry-run`
-then without it; after running against the D11 tenant, six rows exist with the expected
+**PR-time verification**: synthetic tenant/station store tests prove bootstrap requires
+global-admin identity, `stations --tenant chwrr` refuses the Swiss-only base config and a
+wrong target tenant before mutation, and the CHWRR deployment overlay grants only `chwrr`
+write authority. The real command sequence and database assertions run in T8, not CI.
+After the operator run, six rows exist with the expected
 codes, `network = dhm`, `station_status = onboarding`, and the D11 tenant's resolved
 `tenant_id`. If a station with the same network and code already exists, require that it belongs
 to the D11 tenant; otherwise create it. Because
@@ -777,12 +793,12 @@ if that code exists elsewhere; never reassign or silently reuse another tenant's
 Re-running it produces no duplicate rows **and no tenant duplicate** (`store_tenant` is a plain
 insert — idempotency does not come free, so provision fetch-before-create); and
 **`forecast_targets` is NULL on all six**. Include a cross-tenant same-code refusal test.
-**Pre-change**: N/A — new path. **Depends on T2a. Unblocked** — D11 selects a new tenant in
-the existing database; T2b provisions it and inserts against it.
+**Pre-change**: N/A — new path. **Depends on T2a.** T2b implements the registration path;
+T8 executes it against Mac-mini staging after merge.
 
 ### T3 — Rating curve import
 
-**Outcome**: 112 curves stored with unique per-station `version` values in delivery chronology,
+**Outcome**: an importer can store the 112 curves with unique per-station `version` values in delivery chronology,
 DHM's type label kept as
 provenance, half-open validity derived from DHM's inclusive end date, and no station left
 with an open-ended curve.
@@ -833,13 +849,12 @@ by T3, T4, T5 and T7);
 - `uv run pytest tests/unit/db/test_alembic_head_release_b.py` after bumping the head pin.
 - Test that an FK-restricted curve delete is translated to the actionable D6 error, and that
   a curves-only delete transaction restores the delivery curves after an injected failure.
-- Import assertions: all 112 pass `RatingConverter.from_curve` under the D13 interpolation;
-  this delivery's versions are consecutive in date order per station, start after the maximum
-  surviving version, and have no gaps; DHM's type label round-trips through store and read-back;
-  every imported curve has a non-null `valid_to`; with a surviving same-station curve at a
-  sentinel version and a non-overlapping validity window, the first imported version is the
-  next value and that curve remains unchanged. Exercise the same local-date conversion cases listed in T4 through the rating
-  curve validity-boundary path, especially 1986-01-01's first valid local instant.
+- PR-time synthetic assertions: `RatingConverter.from_curve` accepts valid points and rejects
+  invalid ones under D13; imported versions are consecutive after any surviving same-station
+  version; type labels round-trip through store/read-back; every imported curve has a non-null
+  `valid_to`; overlap resolution and the 1986 local-day boundary match D2/D6. The assertion
+  that **all 112 delivered curves** convert and round-trip runs in T8 after T4's coordinator
+  exists. T3 has no standalone real-data commit command or real-data exit gate.
 **Where deletion lives.** Neither store exposes a delete today
 (`store/rating_curve_store.py:18-36`, `store/observation_store.py:33-64`), so the replacement
 needs one. Add bounded, delivery-scoped delete operations to both stores and their Protocols
@@ -873,7 +888,8 @@ UTC; assert that explicitly on the three known overlap days.
 
 ### T4 — Daily discharge import
 
-**Outcome**: 99,246 observations, no row for any missing day, no `MISSING`-status rows, each
+**Outcome**: the replacement command can import 99,246 observations, no row for any missing
+day and no `MISSING`-status rows, each
 labelled `MANUAL_IMPORT` with the covering curve recorded as provenance (D7) and imported at
 `RAW` — genuinely unchecked at that instant. T7 assigns the real quality status.
 **In**: `src/sapphire_flow/cli/import_dhm_delivery.py` (observation branch and atomic replacement
@@ -884,10 +900,17 @@ owns the observation-side delivery delete, batch collision preflight, fake behav
 writes. `tests/integration/store/test_observation_store_upsert.py` covers the PostgreSQL writer;
 `tests/integration/cli/test_import_dhm_delivery.py` (new) covers replacement atomicity and
 is extended in T7 for the coordinated QC pass;
-`tests/unit/flows/test_ingest_observations_dhm.py` covers scheduled-ingest collision handling.
-The previous revision's "no change expected" was left standing after D6 said it could not be.
-`src/sapphire_flow/flows/ingest_observations.py` reports the station-specific storage failure
-and must not run QC for the rejected station batch.
+`src/sapphire_flow/exceptions.py` defines a typed delivery-collision error;
+`tests/unit/flows/test_ingest_observations_dhm.py` and
+`tests/unit/flows/test_ingest_observations.py` cover scheduled-ingest collision handling and
+Swiss continuity; `src/sapphire_flow/services/onboarding.py` and
+`tests/unit/services/test_onboarding.py` cover its existing per-station writer call.
+The store rejects a whole batch with that typed error before writing any row. Scheduled ingest
+keeps its normal bulk call; only on this error does it retry one station at a time, report the
+colliding station as failed, and omit its rows from the later QC cohort while storing and
+checking other stations, including Swiss ones. Other storage errors retain their existing
+handling. Onboarding already writes per station; a collision fails only that station and its
+later stations continue. No caller may treat a short returned ID list as a complete success.
 T4 adds the tenant-row `FOR UPDATE` method to `src/sapphire_flow/store/tenant_store.py`,
 `src/sapphire_flow/protocols/stores.py`, and `tests/fakes/fake_stores.py`; T7
 reuses it. The replacement coordinator acquires it before any delivery-scoped read or write.
@@ -895,6 +918,10 @@ For initial import and replacement, stage and validate the complete curve and ob
 payloads before mutation. The replacement coordinator then opens one `engine.begin()`
 transaction, constructs both stores with that same SQLAlchemy connection, deletes the tagged
 delivery rows, calls T3 to insert all curves and T4 to insert all observations, and commits once.
+Before any mutation, resolve the `chwrr`-scoped principal from the explicit import config
+and deployment-only overlay and enforce tenant isolation for the target tenant. A Swiss-only
+or missing deployment identity fails before deletion. The CLI reads its DB URL from the
+host's `DATABASE_URL`; it must never print credentials.
 Before reading or changing delivery rows, it locks the D11 tenant row `FOR UPDATE` through a
 shared tenant-store method. T7 takes that same lock for its full QC pass, so replacement
 cannot delete or recreate rows while QC classifies them.
@@ -922,19 +949,21 @@ can occupy an intended key.
 from this delivery. For conflict updates, compare delivery IDs with NULL-safe equality
 (`IS NOT DISTINCT FROM`): NULL matches NULL, so ordinary ingest corrections still update
 ordinary rows; this delivery's ID matches itself; another delivery's ID never matches. Include
-`delivery_id` in inserted/upserted values. Add a regression test proving a regular-ingest
-correction with NULL delivery IDs still updates the existing row. Convert each delivered date
+`delivery_id` in inserted/upserted values. Test that a normal NULL-tagged ingest correction
+still updates, that a single tagged collision in a multi-station scheduled batch leaves
+unaffected Swiss rows stored and QC-eligible, and that onboarding continues with its next
+station after a collision. Convert each delivered date
 to the first valid instant of that Nepali local date and then to UTC through `ZoneInfo`, not a
 fixed offset, before storage. On 1986-01-01 local midnight was skipped; use the first valid
 instant, 00:15 Asia/Kathmandu (`1985-12-31T18:30:00Z`).
 Assert those four mappings for both observation timestamps and curve validity boundaries:
 `1970-01-01` → `1969-12-31T18:30:00Z`, `1986-01-01` →
 `1985-12-31T18:30:00Z` (first valid local instant 00:15), `1986-01-02` → `1986-01-01T18:15:00Z`, and
-`2000-01-01` → `1999-12-31T18:15:00Z`. Per-station stored row count equals
-T5's exact re-measured count for that station; no row exists on any gap day T5 reports; the count of
-values outside their curve's range equals T5's count (currently 1, imported as delivered per
-D10); every row is `MANUAL_IMPORT` at `RAW`, carrying a curve id wherever T5 says a curve
-covers the day and NULL on the 4,629 days it says none does. In the **boundary-change
+`2000-01-01` → `1999-12-31T18:15:00Z`. PR-time synthetic tests prove that missing dates
+produce no row, `MANUAL_IMPORT` rows begin at `RAW`, a covering curve ID is stored when one
+exists and NULL otherwise, and the D10 out-of-range policy preserves the supplied value.
+The real per-station counts, gaps, one out-of-range value and 4,629 curve-less rows are
+checked during T8's operator run against T5's fresh aggregates. In the **boundary-change
 rehearsal** D6 requires — **stopping at T4** — an unrelated manual observation at an overlapping
 natural key with a NULL/different delivery tag makes the replacement abort before any write.
 For the successful path, import under boundary A, replace under boundary B, and assert no row
@@ -968,9 +997,11 @@ curve-less days and out-of-range values; first and last dates; gap start dates a
 curve validity windows and point counts; per-file value-precision percentages. **No stage value
 or discharge value** may appear in output
 or failure diagnostics.
-**Verification**: `uv run python scripts/dhm_delivery/remeasure.py --check` exits 0 when its
-data-derived aggregates match their tables in this plan, excluding the historical D12 QC flag
-counts, and prints a diff and exits non-zero when they do not. QC flag counts are excluded:
+**PR-time verification**: synthetic fixtures prove `--check` accepts matching aggregates and
+reports a mismatch without printing values. T8 runs
+`uv run python scripts/dhm_delivery/remeasure.py --input-dir <restricted-dir> --check`
+against the real delivery outside CI; it compares data-derived aggregates to this plan's
+tables, excluding historical D12 QC flag counts. QC flag counts are excluded:
   the D12 counts use a pre-#298 rule set, and current QC acceptance belongs to T7 tests using the
   provisional D14 DHM rules, not a fixed count table.
 **Pre-change**: N/A. **Depends on T1 and T3** — curve-bound counts use the parsed rating
@@ -984,10 +1015,9 @@ behavior. Run after T3, T4, and T7 so it describes the implemented contract.
 fields, delivery
 scoped delete operations on both store Protocols, and NULL-safe observation conflict updates;
 `docs/spec/database-schema.md` — the new observations and rating_curves columns and constraints,
-the observation `rating_curve_id` description at line 680 so it covers provenance as well as
-derivation, and the historical v0 scope notes at lines 14 and 134 so they do not read as current
-schema claims. Leave line 707 unchanged: its `observation_versions.rating_curve_id` description
-is correct;
+the `observations.rating_curve_id` field description so it covers provenance as well as
+derivation, and the historical v0 scope note and diagram comment so they do not read as
+current-schema claims. Leave the `observation_versions.rating_curve_id` description unchanged;
 `docs/spec/config-reference.toml` — mirror the DHM QC rule rows and version in `config.toml`;
 `docs/architecture-context.md` — the observations and rating_curves schemas (including
 `delivery_id` and rating-type provenance), the delivery-scoped delete behavior, the local-day
@@ -1002,7 +1032,7 @@ restricted-file guard before implementation fixtures or code are added.
 
 ### T7 — DHM daily QC rules and import-time QC
 
-**Outcome**: the import assigns honest QC states to every delivered observation. A row is
+**Outcome**: the QC command can assign honest states to every delivered observation. A row is
 `QC_PASSED` only when applicable rules actually ran and passed; unclassifiable rows remain
 `QC_UNCHECKED` and are reported, never counted as passed.
 
@@ -1052,8 +1082,13 @@ ceiling is a local onboarding override. Each station
 must resolve exactly one instance of each of the three DHM rules, with its own ceiling
 applicable. Reject a nonempty `Resolution.rejected`, `not_applicable`, or `fan_out` before any
 QC write; fan-out means one ceiling could apply to multiple rule versions. Reject a non-empty
-`SAPPHIRE_CONFIG_OVERLAY` for this command so the validated explicit file is the actual rule
-source. Plan 264 D4 is closed: shared base configuration carries the
+`SAPPHIRE_CONFIG_OVERLAY` for this command unless it names the checked-in
+`config/overlays/chwrr-import.toml` and that file contains only `[deployment]` with
+`writable_tenants = ["chwrr"]`. This permits CHWRR write authority without letting an
+overlay alter QC rules, ceilings, or the inherited onboarding tenant. Resolve the
+`chwrr`-scoped principal and enforce tenant isolation before QC updates; reject the Swiss
+base identity and any unscoped/global-admin identity for this routine import.
+Plan 264 D4 is closed: shared base configuration carries the
 network rules and Plan 269 supplies per-station ceilings. Both interfaces are now on `main`;
 use them directly while keeping the effective rules exactly at the D14 values above.
 `resolve_station_qc_overrides` accepts tenant-scoped specs, station configurations, the rule
@@ -1102,8 +1137,9 @@ its new rows to `RAW` and must rerun T7 under D6.
   the effective configured version of its producing rule, and for discharge verify the row-level
   `qc_rule_version` is the Plan 324 generation marker `"1.2"`; it is distinct from both the
   per-rule flag versions and `[qc_rules].version`.
-- Verify persisted row statuses in the database: status totals account for every imported row
-  and no unchecked row is counted as passed. The run report names each resolved/skipped rule,
+- Verify persisted row statuses on synthetic integration data: totals account for every
+  imported row and no unchecked row is counted as passed. T8 repeats the database check on
+  the real delivery. The run report names each resolved/skipped rule,
   rows evaluated, flags raised, excluded short segments, and explains that D14 `rate_of_change`
   is non-discriminating at this setting: it cannot flag a pair both within the configured range.
   Do not publish delivered values or restricted rating-table data.
@@ -1116,12 +1152,64 @@ its new rows to `RAW` and must rerun T7 under D6.
 - Add focused tests for the import CLI configuration and QC path, including a synthetic RED test showing that network selection applies the DHM range ceiling
   only to DHM stations while preserving the current Swiss result.
 - Add refusal tests for an unset explicit config, a config missing the DHM rows, a missing
-  station ceiling, a rejected ceiling, a not-applicable ceiling, nonempty `fan_out`, and a non-empty
-  `SAPPHIRE_CONFIG_OVERLAY`; each asserts no QC status write occurs. The overlay case proves
-  an extra config file cannot silently change the rules used for this delivery.
+  station ceiling, a rejected ceiling, a not-applicable ceiling, nonempty `fan_out`, a Swiss-only
+  or unscoped principal, and any overlay other than the deployment-only CHWRR import overlay;
+  each asserts no QC status write occurs. The permitted overlay must leave effective QC rules
+  and threshold declarations identical to the base file.
 
 **Depends on T4.** Plan 264's selector and Plan 269's resolver are merged prerequisites,
 not remaining work in this plan.
+
+### T8 — Restricted-delivery staging acceptance (operator run after merge)
+
+**Outcome**: the six `chwrr` stations, 112 curves and 99,246 daily observations are present
+in the existing Mac-mini staging database, and the delivery cohort has persisted QC statuses.
+This is the real-data acceptance for T2b/T3/T4/T5/T7, not a PR or CI gate. The implementation
+PR uses synthetic fixtures and the full test suite; no delivered file enters the repository.
+
+**Target and inputs**: a checkout of the merged code on the Mac mini, the staging database
+selected by its secret-backed `DATABASE_URL`, `SAPPHIRE_CONFIG` set to the deployed base
+`config.toml`, and `DHM_DELIVERY_DIR` set to the restricted delivery directory mounted
+outside the checkout. The CLI exposes
+`bootstrap-tenant`, `stations`, `replace`, and `qc` subcommands with `--tenant chwrr`;
+`replace` takes `--input-dir`, and every writing subcommand has `--dry-run`. Commands report
+aggregates and IDs only, never stage/discharge values, rating points, or DB credentials.
+
+**Operator sequence**:
+
+1. Confirm the target is the shared Mac-mini staging database, the required migration is at
+   its single head, and no other tenant owns any of the six `(dhm, code)` identities. If
+   `chwrr` is absent, run
+   `uv run python -m sapphire_flow.cli.import_dhm_delivery bootstrap-tenant --tenant chwrr --dry-run`
+   and then without `--dry-run`, with a temporary, out-of-repo
+   deployment overlay containing `[deployment] global_admin = true` and
+   `writable_tenants = []`; verify the admin identity before creating the tenant, then remove
+   that overlay. Do not use this identity for station or data writes.
+2. Set `SAPPHIRE_CONFIG_OVERLAY` to the checked-in CHWRR deployment-only overlay. Run
+   `uv run python -m sapphire_flow.cli.import_dhm_delivery stations --tenant chwrr --dry-run`,
+   then the same command without `--dry-run`. Read back the six station rows, their tenant,
+   onboarding status, network and unset forecast targets.
+3. Run `uv run python scripts/dhm_delivery/remeasure.py --input-dir "$DHM_DELIVERY_DIR" --check`.
+   Compare the aggregate report with this plan. Run
+   `uv run python -m sapphire_flow.cli.import_dhm_delivery replace --tenant chwrr --input-dir "$DHM_DELIVERY_DIR" --dry-run`;
+   this executes the full T4 transaction and rolls it back, including conversion and
+   store/read-back checks for all 112 curves. Then run `replace` without `--dry-run`. Confirm
+   exact per-station counts, gap dates, curve coverage, rating-type labels and delivery tags
+   against the fresh re-measure, including the single out-of-range value and 4,629 curve-less
+   observations. Check all imported observations are `RAW` before QC.
+4. With the deployment overlay temporarily unset, run
+   `uv run python scripts/onboard.py --validate-config config.toml` against
+   the base config and staging database; its six onboarding declarations may read PENDING but
+   none may be REJECTED or FAN_OUT. Restore the CHWRR overlay and run
+   `uv run python -m sapphire_flow.cli.import_dhm_delivery qc --tenant chwrr --dry-run`,
+   then without `--dry-run`. Read back the delivery-tagged cohort: every intended row has its
+   persisted QC status/version, status totals equal the imported count, no unrelated row
+   changed, and the aggregate run report names skipped/unclassifiable rules and segments.
+
+Any failed comparison stops the sequence. The operator keeps the aggregate report and exact
+software/config versions with the staging handover, without attaching restricted measurements.
+No task or plan is COMPLETE merely because the synthetic PR tests pass.
+**Depends on T0–T7 landing and staging deployment.** Production activation is out of scope.
 
 ```json
 {
@@ -1133,14 +1221,16 @@ not remaining work in this plan.
     { "id": "phase-5", "tasks": ["T5"], "depends_on": ["phase-4"] },
     { "id": "phase-6", "tasks": ["T4"], "depends_on": ["phase-5"] },
     { "id": "phase-7", "tasks": ["T7"], "depends_on": ["phase-6"] },
-    { "id": "phase-8", "tasks": ["T6"], "depends_on": ["phase-7"] }
+    { "id": "phase-8", "tasks": ["T6"], "depends_on": ["phase-7"] },
+    { "id": "phase-9", "tasks": ["T8"], "depends_on": ["phase-8"] }
   ]
 }
 ```
 
 T0 installs the publication guard before implementation files appear. T1 and T2a are independent;
 T2b creates the stations required by T3. T5 runs after T3 so curve-bound counts use the shared
-boundary helper. T6 runs last so documentation describes the completed code. T7 uses the
+boundary helper. T6 closes the code/documentation PR; T8 is the post-merge Mac-mini operator
+acceptance. T7 uses the
 provisional D14 thresholds and the interfaces merged under Plans 264 and 269. The
 Swiss-equivalence test is `tests/unit/services/test_qc_swiss_equivalence.py`.
 The phase order is also the **re-import order** (D6):
