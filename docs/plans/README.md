@@ -654,6 +654,18 @@ exit criteria — Plan 212 owns that deeper screening.
   remains published until a human replaces or withdraws it, even if automatic retry supersedes
   its generation row. See Plan 328 § Resolved boundary with Plan 341.
 
+- **500** — [Plan 399's record still asserts seven defects the code no longer has](500-reconcile-399-against-the-merged-code.md)
+  — `DRAFT`, **`open_decisions: [D1]`**, `related: [399, 405]`. Plan 405 (#323) closed seven of 399's
+  eight remaining items; **399's own document still describes all seven in the PRESENT TENSE** — "Nothing
+  compares them … a dead parameter", "The path is NEVER recorded, for any donor, ever", "No test touches
+  `ForecastInterfaceAdapter.retrain`". ⛔ *An agent opening 399 reads live defects, and the cheapest
+  correct response is to re-implement finished work.* ⭐ **What is new in this hazard: the stale text is
+  not the status label but the EVIDENCE TABLES**, which read as measurements and so convince more than a
+  label would. 🔑 All seven measured closed against `main` (`81bc9861`); the staging run is the ONE
+  genuine remainder and 399 keeps it. ⚠️ **Two kinds of stale text, treated differently** — live claims
+  are corrected, dated CHANGELOG findings are history and stay. D1 asks where the staging run lives now
+  that it is 399's only item (recommend: stays, with the status line saying it is blocked on the host,
+  not on code).
 - **405** — [Four warm-start requirements that never shipped, and two boundaries nothing tests](archive/405-warm-start-gaps-and-untested-boundaries.md)
   — **`COMPLETE`, ARCHIVED** (merged #323, 2026-09-27, 0.1.1014). All six tasks shipped; each was
   independently reviewed after every fold, and several reviews changed the implementation.
