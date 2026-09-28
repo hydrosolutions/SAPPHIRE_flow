@@ -1910,6 +1910,15 @@ live publication gate. The host `assess` command exposes both statuses and reaso
 Plan 341 will determine the authenticated API presentation. Plan 344 supplies
 later cold archive and replay.
 
+Plan 341 T2b uses one repeatable-read snapshot for the pending publication
+list and database dump. The protected manifest names every pending publication
+decision ID, forecast ID and its expected evidence, output and image hashes. The clean restore
+checks all of them before appending individual attestations and publishing the
+host-only proof/backlog projection. Replaced and withdrawn IDs remain in this
+preservation obligation. A decision committed after the snapshot remains pending
+until a later backup, even if the same forecast ID was proved earlier. Global
+backup health must still be fresh for a new publish.
+
 For a post-event diagnosis, start from the forecast ID and read its original
 forecast values, evidence manifest, snapshot and `capture_status`. The snapshot
 records what the prediction received even if observations, QC rules, rating

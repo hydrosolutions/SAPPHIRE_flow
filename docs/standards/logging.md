@@ -245,6 +245,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 |---|---|---|
 | `forecast_evidence.capture_failed` | WARNING | Plan 340 T1: snapshot serialization failed; the forecast remains available but stores `evidence_incomplete` with the exception class. `error` records the failure detail; never log the observation or artifact payload. |
 | `evidence_backup.protected` | INFO | Plan 340 T2: a restored protected bundle and its append-only attestation were committed; record only `backup_id`, never payloads or credentials. |
+| `evidence_backup.attestation_pending` | ERROR | A restored bundle still needs one or more append-only attestations; record only `backup_id`. The pending manifest is reconciled on the next run. |
 | `forecast_publication.overdue_health_write_failed` | ERROR | Plan 341 T2: a backup-pending publication exceeded its proof window and the separate operations-health insert failed. Never log forecast evidence or credentials. |
 | `model.onboarding_started` | INFO | Flow entry; bind `model_id` at this point |
 | `model.onboarding_unit_started` | INFO | Per-unit; with `station_id` (station-scoped) or `group_id` (group-scoped) |
@@ -268,16 +269,21 @@ Rules:
 
 The host backup CLI also returns JSON status and a nonzero exit code for missing,
 stale or invalid backup health. Monitor the scheduled command's result as an
-operations signal; `evidence_backup.protected` proves only that one
-representative forecast was attested, not that every captured forecast has a
-fresh protected proof. `forecast_evidence.capture_failed` is a
+operations signal; `evidence_backup.protected` confirms the representative
+forecast and all pending published decisions in that dump were attested. It
+does not prove every captured but unpublished forecast. `forecast_evidence.capture_failed` is a
 forecast-specific diagnosis signal: inspect the immutable evidence reason,
 rather than logging input arrays or treating the forecast as reproducible.
 Plan 341 T2 also writes a CRITICAL `pipeline_health` record with
 `check_type=publication_proof_overdue`, backlog count and oldest pending time
 when an overdue proof blocks a new publication. The database event and
 append-only publication feed carry decision IDs and actor UUIDs, not input
-snapshots or model bytes. T2b extends the host proof for every pending ID.
+snapshots or model bytes. The host health JSON and restricted database
+projection expose pending and overdue counts, oldest pending time, failed forecast IDs,
+last backup attempt and retry due time; monitor a nonzero host exit as an
+operations failure. T2b
+attests every pending ID in the restored dump, including replaced or withdrawn
+publications.
 
 ### Canonical forecast cycle events (Flow 1)
 

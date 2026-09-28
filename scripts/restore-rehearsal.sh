@@ -216,28 +216,24 @@ fi
 # moved on is semantically wrong for a historical dump anyway.
 echo "note: no source-database comparison — content assertions plus alembic_version only" >&2
 
-# Plan 340 T2: an operator-supplied evidence forecast ID turns this into a
-# content restore proof for the snapshot, artifact, output and image identity.
-if [[ -n "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
-    evidence_id="${SAPPHIRE_EVIDENCE_FORECAST_ID}"
-    expected_manifest="${SAPPHIRE_EVIDENCE_CAPTURE_MANIFEST_SHA256:?}"
-    expected_snapshot="${SAPPHIRE_EVIDENCE_SNAPSHOT_SHA256:?}"
-    expected_artifact="${SAPPHIRE_EVIDENCE_ARTIFACT_SHA256:?}"
-    expected_values="${SAPPHIRE_EVIDENCE_FORECAST_VALUES_SHA256:?}"
-    expected_image="${SAPPHIRE_EVIDENCE_RUNTIME_IMAGE_DIGEST:?}"
+verify_evidence_chain() {
+    local evidence_id="$1" expected_manifest="$2" expected_snapshot="$3"
+    local expected_artifact="$4" expected_values="$5" expected_image="$6"
+    local evidence_row got_manifest got_snapshot got_snapshot_bytes
+    local got_artifact got_artifact_bytes got_image output_count got_values
     [[ "${evidence_id}" =~ ^[0-9a-f-]{36}$ \
         && "${expected_manifest}" =~ ^[0-9a-f]{64}$ \
         && "${expected_snapshot}" =~ ^[0-9a-f]{64}$ \
-        && "${expected_artifact}" =~ ^[0-9a-f]{64}$ \
+        && ( "${expected_artifact}" == "-" || "${expected_artifact}" =~ ^[0-9a-f]{64}$ ) \
         && "${expected_values}" =~ ^[0-9a-f]{64}$ \
         && "${expected_image}" =~ ^sha256:[0-9a-f]{64}$ ]] \
-        || fail "invalid evidence restore-check identifier or digest"
+        || fail "invalid evidence restore-check identifier or digest for ${evidence_id}"
     evidence_row="$(psql_exec "
         SELECT encode(sha256(convert_to(e.manifest_json, 'UTF8')), 'hex')
             || '|' || e.snapshot_sha256
             || '|' || encode(sha256(s.payload), 'hex')
-            || '|' || e.artifact_sha256
-            || '|' || encode(sha256(a.payload), 'hex')
+            || '|' || coalesce(e.artifact_sha256, '-')
+            || '|' || coalesce(encode(sha256(a.payload), 'hex'), '-')
         || '|' || (e.manifest_json::jsonb ->> 'runtime_image_digest')
         || '|' || (SELECT count(*) FROM forecast_values v
                         WHERE v.forecast_id = e.forecast_id)
@@ -249,10 +245,10 @@ if [[ -n "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
                    FROM forecast_values v WHERE v.forecast_id = e.forecast_id)
         FROM forecast_evidence e
         JOIN forecast_evidence_blobs s ON s.sha256 = e.snapshot_sha256
-        JOIN forecast_evidence_blobs a ON a.sha256 = e.artifact_sha256
+        LEFT JOIN forecast_evidence_blobs a ON a.sha256 = e.artifact_sha256
         JOIN forecasts f ON f.id = e.forecast_id
         WHERE e.forecast_id = '${evidence_id}'
-    " "${DB_NAME}")" || fail "restored evidence chain query failed"
+    " "${DB_NAME}")" || fail "restored evidence chain query failed for ${evidence_id}"
     IFS='|' read -r got_manifest got_snapshot got_snapshot_bytes \
         got_artifact got_artifact_bytes got_image output_count got_values <<< "${evidence_row}"
     [[ "${got_manifest}" == "${expected_manifest}" \
@@ -263,8 +259,66 @@ if [[ -n "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
         && "${got_image}" == "${expected_image}" \
         && "${output_count}" =~ ^[1-9][0-9]*$ \
         && "${got_values}" == "${expected_values}" ]] \
-        || fail "restored forecast evidence/output chain does not match capture"
+        || fail "restored forecast evidence/output chain does not match capture for ${evidence_id}"
+}
+
+# Plan 340 T2 keeps the representative sample; Plan 341 T2b checks every
+# pending published ID from the exact exported snapshot used by pg_dump.
+if [[ -n "${SAPPHIRE_EVIDENCE_FORECAST_ID:-}" ]]; then
+    verify_evidence_chain \
+        "${SAPPHIRE_EVIDENCE_FORECAST_ID}" \
+        "${SAPPHIRE_EVIDENCE_CAPTURE_MANIFEST_SHA256:?}" \
+        "${SAPPHIRE_EVIDENCE_SNAPSHOT_SHA256:?}" \
+        "${SAPPHIRE_EVIDENCE_ARTIFACT_SHA256:?}" \
+        "${SAPPHIRE_EVIDENCE_FORECAST_VALUES_SHA256:?}" \
+        "${SAPPHIRE_EVIDENCE_RUNTIME_IMAGE_DIGEST:?}"
     CHECKS_DONE="${CHECKS_DONE}, forecast evidence/output/artifact/image identity"
+fi
+
+if [[ -n "${SAPPHIRE_PUBLICATION_EXPECTATIONS_FILE:-}" ]]; then
+    expectations="${SAPPHIRE_PUBLICATION_EXPECTATIONS_FILE}"
+    [[ -f "${expectations}" && ! -L "${expectations}" ]] \
+        || fail "publication expectations file is missing or unsafe"
+    expected_ids=""
+    expected_decisions=""
+    while IFS='|' read -r evidence_id expected_manifest expected_snapshot \
+        expected_artifact expected_values expected_image decision_ids; do
+        verify_evidence_chain "${evidence_id}" "${expected_manifest}" \
+            "${expected_snapshot}" "${expected_artifact}" "${expected_values}" \
+            "${expected_image}"
+        expected_ids="${expected_ids:+${expected_ids},}${evidence_id}"
+        [[ "${decision_ids}" =~ ^[0-9a-f-]{36}(,[0-9a-f-]{36})*$ ]] \
+            || fail "invalid publication decision IDs for ${evidence_id}"
+        expected_decisions="${expected_decisions:+${expected_decisions},}${decision_ids}"
+    done < "${expectations}"
+    restored_ids="$(psql_exec "
+        SELECT coalesce(string_agg(id::text, ',' ORDER BY id::text), '')
+        FROM (
+            SELECT DISTINCT d.forecast_id AS id
+            FROM forecast_publication_decisions d
+            WHERE d.action = 'publish'
+              AND d.preservation_at_publish = 'backup_pending'
+              AND NOT EXISTS (
+                  SELECT 1 FROM protected_backup_forecast_proofs p
+                  WHERE p.publication_decision_id = d.id
+              )
+        ) pending
+    " "${DB_NAME}")" || fail "restored pending-publication query failed"
+    [[ "${expected_ids}" == "${restored_ids}" ]] \
+        || fail "restored pending-publication IDs differ from dump snapshot"
+    restored_decisions="$(psql_exec "
+        SELECT coalesce(string_agg(d.id::text, ',' ORDER BY d.forecast_id::text, d.id::text), '')
+        FROM forecast_publication_decisions d
+        WHERE d.action = 'publish'
+          AND d.preservation_at_publish = 'backup_pending'
+          AND NOT EXISTS (
+              SELECT 1 FROM protected_backup_forecast_proofs p
+              WHERE p.publication_decision_id = d.id
+          )
+    " "${DB_NAME}")" || fail "restored pending-decision query failed"
+    [[ "${expected_decisions}" == "${restored_decisions}" ]] \
+        || fail "restored pending-publication decisions differ from dump snapshot"
+    CHECKS_DONE="${CHECKS_DONE}, all pending published forecasts"
 fi
 
 PASS=1

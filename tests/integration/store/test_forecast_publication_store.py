@@ -185,6 +185,7 @@ def _insert_proof(
     forecast_id: ForecastId,
     *,
     verified_at: UtcDatetime,
+    publication_decision_id: PublicationDecisionId | None = None,
 ) -> None:
     evidence = (
         connection.execute(
@@ -225,6 +226,7 @@ def _insert_proof(
             attestation_id=attestation_id,
             backup_id=backup_id,
             verified_at=verified_at,
+            publication_decision_id=publication_decision_id,
         )
     )
 
@@ -439,6 +441,99 @@ class TestPgForecastPublicationStore:
                         pipeline_health.c.check_type == "publication_proof_overdue"
                     )
                 )
+
+    def test_old_proof_satisfies_earlier_decision_after_backup_window(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store, principal, first_id, station_id = _seed(db_connection)
+        second_id = _add_candidate(db_connection, station_id)
+        first = _publish(store, principal, first_id)
+        _insert_proof(
+            db_connection,
+            first_id,
+            verified_at=ensure_utc(_NOW + timedelta(hours=1)),
+            publication_decision_id=first.id,
+        )
+        later = ensure_utc(_NOW + timedelta(hours=50))
+        db_connection.execute(
+            sa.update(protected_backup_health).values(
+                checked_at=later - timedelta(minutes=5),
+                restored_at=later - timedelta(hours=1),
+            )
+        )
+        decision = _publish(
+            store,
+            principal,
+            second_id,
+            expected_selection_version=1,
+            idempotency_key="after-old-proof",
+            now=later,
+        )
+        assert decision.forecast_id == second_id
+
+    def test_reselected_forecast_needs_its_own_post_dump_decision_proof(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store, principal, first_id, station_id = _seed(db_connection)
+        second_id = _add_candidate(db_connection, station_id)
+        first = _publish(store, principal, first_id)
+        second = _publish(
+            store,
+            principal,
+            second_id,
+            expected_selection_version=1,
+            idempotency_key="second",
+        )
+        for forecast_id, decision_id in (
+            (first_id, first.id),
+            (second_id, second.id),
+        ):
+            _insert_proof(
+                db_connection,
+                forecast_id,
+                verified_at=ensure_utc(_NOW + timedelta(hours=1)),
+                publication_decision_id=decision_id,
+            )
+        republished_at = ensure_utc(_NOW + timedelta(hours=40))
+        db_connection.execute(
+            sa.update(protected_backup_health).values(
+                checked_at=republished_at - timedelta(minutes=5),
+                restored_at=republished_at - timedelta(hours=1),
+            )
+        )
+        republished = _publish(
+            store,
+            principal,
+            first_id,
+            expected_selection_version=2,
+            idempotency_key="first-again",
+            now=republished_at,
+        )
+        assert (
+            republished.preservation_at_publish is PreservationAtPublish.BACKUP_PENDING
+        )
+        _insert_proof(
+            db_connection,
+            first_id,
+            verified_at=ensure_utc(_NOW + timedelta(hours=41)),
+            publication_decision_id=first.id,
+        )
+        overdue_at = ensure_utc(_NOW + timedelta(hours=80))
+        db_connection.execute(
+            sa.update(protected_backup_health).values(
+                checked_at=overdue_at - timedelta(minutes=5),
+                restored_at=overdue_at - timedelta(hours=1),
+            )
+        )
+        with pytest.raises(PublicationBackupOverdueError):
+            _publish(
+                store,
+                principal,
+                second_id,
+                expected_selection_version=3,
+                idempotency_key="after-cutoff",
+                now=overdue_at,
+            )
 
     def test_replacement_keeps_history_and_historical_withdrawal(
         self, db_connection: sa.Connection

@@ -91,6 +91,8 @@ class DeploymentConfig(BaseModel):
     # that later archive; it does not enable any deletion in this release.
     evidence_retention_days: int = Field(default=2192, ge=2192)
     protected_backup_max_age_hours: int = Field(default=36, gt=0)
+    publication_proof_window_hours: int = Field(default=36, gt=0)
+    publication_proof_retry_hours: int = Field(default=24, gt=0)
 
     # Plan 095: hot window (days) for the raw NWP grid-cube zarrs under
     # nwp_grid_archive_base_path. Supersedes weather_hot_days for the raw-grid
