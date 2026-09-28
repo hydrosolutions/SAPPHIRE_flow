@@ -221,6 +221,37 @@ class TestStationScope:
         assert daily_row["station_thresholds"] == []
         assert daily_row["thresholds"]["value_max"] == 100000.0
 
+    def test_two_station_thresholds_on_one_rule_are_listed_sorted(
+        self, client: TestClient, fake_stores: dict, tmp_path: Path, monkeypatch
+    ) -> None:
+        """T1 Verification: "two station thresholds on one rule are listed
+        in sorted order" — previously untested (review finding, 2026-09-28)."""
+        station = make_station_config(code="2135", network="bafu")
+        fake_stores["station_store"].store_station(station)
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\n"
+            "thresholds = { value_min = 1.0, value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+
+        resp = client.get("/api/v1/qc/rules", params={"station_id": str(station.id)})
+        assert resp.status_code == 200
+        row = next(
+            r
+            for r in resp.json()["observation"]["rules"]
+            if r["rule_id"] == "range_check"
+            and r["parameter"] == "discharge"
+            and r["time_step_seconds"] == 600
+        )
+        assert row["station_thresholds"] == ["value_max", "value_min"]
+        assert row["thresholds"]["value_max"] == 10.0
+        assert row["thresholds"]["value_min"] == 1.0
+
     def test_undeclared_station_gets_network_rules_with_no_station_thresholds(
         self, client: TestClient, fake_stores: dict, tmp_path: Path, monkeypatch
     ) -> None:
@@ -396,3 +427,94 @@ class TestStationScope:
             "error": "internal_server_error",
             "detail": None,
         }
+
+
+class TestRouteAgreesWithIngest:
+    """T1 Verification (Plan 402): "the same config file drives the ingest
+    flow with fakes ... and the route, and ingest flags exactly the
+    observations the served thresholds predict." Both sides resolve rules
+    through `resolve_qc_rules()` and merge overrides through the SAME
+    `services/station_qc_overrides.py` function the route uses — this test
+    is the end-to-end proof that the two agree, not just a code-sharing
+    argument (review finding, 2026-09-28)."""
+
+    def test_station_threshold_determines_the_same_verdict_ingest_reaches(
+        self,
+        client: TestClient,
+        fake_stores: dict,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from sapphire_flow.config.qc_rules import resolve_qc_rules
+        from sapphire_flow.flows.ingest_observations import ingest_observations_flow
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import ObservationSource, QcStatus
+        from sapphire_flow.types.observation import RawObservation
+        from tests.fakes.fake_adapters import FakeStationDataSource
+        from tests.fakes.fake_stores import FakeClimBaselineStore, FakeObservationStore
+
+        station = make_station_config(code="2135", network="bafu")
+        fake_stores["station_store"].store_station(station)
+
+        # The built-in default's range_check/discharge/600s value_max is
+        # 100000.0 (config/qc_rules.py) — a station override of 10.0 is what
+        # must decide the verdict for a 20.0 reading, not the network default.
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "max_retention_days = 730\n[onboarding]\n"
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "sapphire"\ncode = "2135"\nnetwork = "bafu"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = { value_max = 10.0 }\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+
+        rule_set, _ = resolve_qc_rules()
+        now = ensure_utc(datetime(2026, 4, 8, 14, 20, tzinfo=UTC))
+        obs_store = FakeObservationStore()
+        result = ingest_observations_flow(
+            station_store=fake_stores["station_store"],
+            tenant_store=fake_stores["tenant_store"],
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(
+                [
+                    RawObservation(
+                        station_id=station.id,
+                        timestamp=ensure_utc(now - timedelta(minutes=offset)),
+                        parameter="discharge",
+                        value=20.0,
+                        source=ObservationSource.MEASURED,
+                    )
+                    for offset in (10, 0)
+                ]
+            ),
+            qc_rules=rule_set,
+            clock=lambda: now,
+        )
+        assert result.qc_failed == 2
+        stored = obs_store.fetch_observations(
+            station.id,
+            "discharge",
+            now - timedelta(hours=1),
+            now + timedelta(minutes=1),
+        )
+        assert len(stored) == 2
+        assert all(s.qc_status is QcStatus.QC_FAILED for s in stored)
+        assert any(f.rule_id == "range_check" for s in stored for f in s.qc_flags)
+
+        resp = client.get("/api/v1/qc/rules", params={"station_id": str(station.id)})
+        assert resp.status_code == 200
+        row = next(
+            r
+            for r in resp.json()["observation"]["rules"]
+            if r["rule_id"] == "range_check"
+            and r["parameter"] == "discharge"
+            and r["time_step_seconds"] == 600
+        )
+        # The threshold the route reports is EXACTLY the one that decided
+        # ingest's verdict above — not the network default (100000.0).
+        assert row["thresholds"]["value_max"] == 10.0
+        assert row["station_thresholds"] == ["value_max"]
