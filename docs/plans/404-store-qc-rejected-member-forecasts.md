@@ -330,7 +330,8 @@ import or argument error.
 
 **Outcome:** `GET /api/v1/stations/{id}/rejected-forecasts` serves the record per D4.
 
-**In:** the route next to Plan 402's REVIEW routes; response models reusing `QcFlagResponse`; the
+**In:** the route in its own router beside Plan 402's REVIEW routes — not under their
+`require_reviewer` registration (see below); response models reusing `QcFlagResponse`; the
 route-matrix entry (REVIEW); Plan 402's contract generator — its per-route role descriptions and its
 REVIEW 403 set and its 400 set (the route parses query values) gain this third REVIEW route; Plan 402's map contract file and explicit route list, with its version bumped per Plan 402 D14 (a new route is additive: minor); the consumer page
 `docs/spec/api-v1-review.md` (rejected forecasts live here; values withheld where Plan 341's gate is
@@ -348,8 +349,10 @@ Deny consumers, revoked humans and out-of-scope humans. Plan 341's human princip
 `api/human_auth.py::require_human_principal` (`:189`, then `require_human_station_permission` with
 `HumanPermission.REVIEW`, `:214`) accepts OIDC humans only — so the route is registered **outside**
 Plan 402's `require_reviewer` router, with one route-level dependency that authenticates whichever
-principal the bearer is. How the two bearer formats are told apart is fixed here and tested both
-ways: a service token never reaches the OIDC verifier, an OIDC token never reaches the access-token
+principal the bearer is. The bearer's shape decides, with no fallback to the other verifier after a
+failure: exactly one `.` is a service token (`prefix.secret`, both `token_urlsafe`, which never
+contains a dot — `api/security.py:99-107`), exactly two `.` (three JWT segments) is an OIDC token, any
+other shape → 401. Tested both ways: a service token never reaches the OIDC verifier, an OIDC token never reaches the access-token
 lookup, and a service-token request still succeeds when human authentication is disabled (today
 `require_human_principal` answers 503 then). If Plan 341 T3 has landed a shared dependency by then,
 this route uses it instead. Neither landing order permits a rejected-record ID on a forecast
@@ -476,7 +479,9 @@ After staging deploy (orchestrator):
   so collecting it cannot change which forecasts or group siblings are stored.
 - 2026-09-28 — reconciled against main `bba8de3c` (Codex): Plan 341's human principal has landed,
   so T3 adds the human branch here, with its own route-level dependency outside Plan 402's
-  `require_reviewer` router; two citations corrected. Plan design and decisions unchanged.
+  `require_reviewer` router; two citations corrected. Focused checks (Claude, Codex): the bearer's
+  shape (one dot vs three JWT segments) picks the verifier, with no fallback. Plan design and
+  decisions unchanged.
 
 ## Dependency graph
 
