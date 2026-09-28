@@ -55,6 +55,9 @@ PATCH  /api/v1/forecasts/{id}/status            # transition status (v1 — requ
 GET    /api/v1/qc/rules                         # both QC rule sets as resolved now; ?station_id= for that station's merged thresholds (D15)
 GET    /api/v1/stations/{id}/skill              # the station's current skill rows on the artifact its forecast uses
 
+# Review (Plan 404): REVIEW_OR_HUMAN-gated — a reviewer/admin token OR a named human with a station `review` grant (403 for consumer)
+GET    /api/v1/stations/{id}/rejected-forecasts # every QC-rejected member/group-station forecast for this station — never stored in `forecasts`
+
 # Alerts
 GET    /api/v1/alerts                           # list alerts (filterable by status, source)
 POST   /api/v1/alerts/{id}/acknowledge          # v1.0 (Plan 147 Slice C): REMOVED from the surface, returns 501 — needs a v1.x session token + Flow 3
@@ -77,7 +80,10 @@ POST   /api/v1/access-tokens/{id}/regenerate
 **v1.0 headless auth (REALIZED, Plan 147 Slice C):** every route above except `GET /api/v1/health`
 requires a valid, non-expired, non-disabled `Authorization: Bearer <key>` access token (`consumer`,
 station-scoped; `reviewer`, scoped like a consumer plus the REVIEW routes — Plan 401; or `admin`,
-unscoped). Every token is GET-only. There is no `/access-tokens` HTTP management surface yet —
+unscoped). Every token is GET-only. `GET /api/v1/stations/{id}/rejected-forecasts` additionally
+admits a named human with a current station `review` grant (Plan 341) — `api/review_auth.py
+::require_reviewer_or_human`, matrix class REVIEW_OR_HUMAN, its own router outside `require_reviewer`'s
+(Plan 404 T3). There is no `/access-tokens` HTTP management surface yet —
 token lifecycle is CLI-only: `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens
 {create,create-reviewer,create-admin,list,revoke,show,grant,revoke-station,set-scope-mode}` (the `/entrypoint.sh` wrapper supplies `DATABASE_URL`, which
 `docker compose exec` otherwise skips). See `security.md` § v1.0 headless subset.
@@ -292,6 +298,15 @@ Expected failures (data/model issues) catch and try fallback model.
 Unexpected failures (TypeError, AttributeError) propagate to Prefect
 for logging and notification.
 
+**One deliberate carve-out** (Plan 404 D5/D6): the end-of-run
+rejected-forecast capture write (`flows/run_forecast_cycle.py
+::_capture_rejected_forecasts`) catches ANY exception and logs
+`rejected_forecast.write_failed`, rather than letting it propagate —
+because it is optional diagnostics written after the run's real outputs
+(forecasts, alerts, the `FORECAST_FRESHNESS` heartbeat), and must never
+replace an in-flight exception or turn a returned cycle result into a
+raise.
+
 ---
 
 ## ID conventions
@@ -358,8 +373,8 @@ separate `prefect` database.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | Broad `SELECT`; scoped writes to access-token tables and Plan 341 T1's `users`, `user_external_identities` and `human_station_grants` for operator CLI changes. Plan 341 T2 adds selection update, publication decision/event insert, sequence update and `pipeline_health` insert for the named-human publication store. `audit_log` is INSERT-only. The role cannot write `forecasts`, `alerts` or protected-backup health/proofs; HTTP service tokens remain GET-only. |
-| `sapphire_worker` | Broad `SELECT` except all access-token and human identity/grant tables, explicitly revoked after the blanket grant on each bootstrap. Domain write grants remain listed in `docker/bootstrap-roles.sql`; no human identity/grant writes are allowed. |
+| `sapphire_api` | Broad `SELECT` (including `rejected_forecasts`, read by the REVIEW_OR_HUMAN route — Plan 404 T1/T3); scoped writes to access-token tables and Plan 341 T1's `users`, `user_external_identities` and `human_station_grants` for operator CLI changes. Plan 341 T2 adds selection update, publication decision/event insert, sequence update and `pipeline_health` insert for the named-human publication store. `audit_log` is INSERT-only. The role cannot write `forecasts`, `alerts`, `rejected_forecasts` (INSERT-only for `sapphire_worker`, never `sapphire_api`) or protected-backup health/proofs; HTTP service tokens remain GET-only. |
+| `sapphire_worker` | Broad `SELECT` except all access-token and human identity/grant tables, explicitly revoked after the blanket grant on each bootstrap. Domain write grants remain listed in `docker/bootstrap-roles.sql`, including INSERT-only on `rejected_forecasts` (Plan 404 T1 — append-only, role-independent trigger refuses UPDATE/DELETE/TRUNCATE even for the table owner). No human identity/grant writes are allowed. |
 | `sapphire_publication_health` | Plan 341 T2/T2b host-only role, created `NOLOGIN` until activated with a separate credential. May read evidence, attestations and publication decisions to compute the backlog, and write only the protected backup-health/proof projection; cannot write human publication decisions. |
 | `sapphire_prefect` | Full access to `prefect` database only — **UNCHANGED by Slice D** (still the owner/migration credential via `docker/init-db.sh`; realizing a distinct scoped `sapphire_prefect` role is a documented residual, not in this slice's scope). |
 

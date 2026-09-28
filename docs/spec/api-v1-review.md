@@ -6,7 +6,7 @@ dashboard). The map reads `/api/v1` directly — not a snapshot document; see
 `forecast-lab-snapshot/v2` document, which stays exactly as it is (it still
 carries archived BAFU forecasts, which have no API route).
 
-The authoritative shape for the seven routes the map reads is the committed,
+The authoritative shape for the eight routes the map reads is the committed,
 drift-tested contract: `docs/spec/api-v1-map.openapi.json`
 (`api/map_contract.py::build_map_openapi()`, `tests/unit/api/test_map_contract.py`).
 This page explains conventions the schema alone does not — auth, error
@@ -31,8 +31,13 @@ after editing routes/schemas or bumping the constant.
 Every route below requires a Bearer access token (`security.md` §
 Authentication). `GET /api/v1/qc/rules` and `GET /api/v1/stations/{id}/skill`
 are **REVIEW-gated** (Plan 401): a `reviewer` or `admin` token only — a
-`consumer` token gets `403`. Every route applies the token's **station
-scope**: an out-of-scope or unknown station/forecast is `404` (never `403`
+`consumer` token gets `403`. `GET /api/v1/stations/{id}/rejected-forecasts`
+is **REVIEW_OR_HUMAN-gated** (Plan 404 T3): a `reviewer`/`admin` token OR a
+named human with a current station `review` grant (Plan 341) — a `consumer`
+token still gets `403`; the two principal kinds use different verifiers,
+picked from the bearer's shape, with a single shared `401` body on any
+failure. Every route applies the token's **station scope**: an out-of-scope
+or unknown station/forecast is `404` (never `403`
 — existence is not revealed outside scope); the station **list**
 (`GET /api/v1/stations`) is the one exception — it silently filters to the
 token's scoped stations rather than 404ing. **The raw token must stay
@@ -46,13 +51,15 @@ is different and NOT normalised: `{"detail": [...]}` — a list of validation
 errors, one per malformed/missing field.
 
 `GET /api/v1/stations`, `GET /api/v1/stations/{id}/observations`,
-`GET /api/v1/stations/{id}/forecasts`, `GET /api/v1/qc/rules` and
-`GET /api/v1/stations/{id}/skill` return `400` for a malformed query value
+`GET /api/v1/stations/{id}/forecasts`, `GET /api/v1/qc/rules`,
+`GET /api/v1/stations/{id}/skill` and `GET /api/v1/stations/{id}/rejected-forecasts`
+return `400` for a malformed query value
 or `station_id`. **`GET /api/v1/stations/{id}` and `GET /api/v1/forecasts/{id}`
 do not** — their path id is parsed unguarded today and a malformed one
-returns `500`, not `400`. Only `/qc/rules` (the station variant) and `/skill`
-were built with a guarded parse (Plan 402); the two pre-existing detail
-routes were left as they are (out of scope for this plan).
+returns `500`, not `400`. `/qc/rules` (the station variant), `/skill`
+(Plan 402) and `/rejected-forecasts` (Plan 404, reusing the same helper)
+were built with a guarded parse; the two pre-existing detail
+routes were left as they are (out of scope for those plans).
 
 `GET /api/v1/qc/rules?station_id=` additionally returns `500` — in the same
 `{"error": "internal_server_error", "detail": null}` shape — when the
@@ -235,17 +242,59 @@ Calculated-station observation flags (`rule_id: "upstream_propagated"`,
 match no configured rule; their `detail` is JSON naming the component
 stations, not a threshold.
 
-**A failed member or group forecast is never stored** — only a *combined*
+**A failed member or group forecast is never stored as a forecast; it is
+recorded on the rejected-forecast route** (Plan 404) — only a *combined*
 forecast is ever stored with a failed verdict — so the absence of
 `qc_failed` member/group forecasts through these routes says nothing about
-whether the thresholds are being exceeded; Plan 404 gives rejected member
-and group forecasts their own REVIEW route (rule fields only, no values or
-flag `detail`, on a gated tenant). A rejected *combined* forecast on a
-tenant where Plan 341's publication gate is active is visible only through
-Plan 341's human-review routes, never to a reviewer token — **on a gated
-tenant, the reviewer token sees only published forecasts, and a
-`qc_failed` forecast is never published**, so forecast QC failures are not
-visible through the ordinary forecast routes there.
+whether the thresholds are being exceeded; see `GET
+/api/v1/stations/{id}/rejected-forecasts` below for the full record. A
+rejected *combined* forecast on a tenant where Plan 341's publication gate
+is active is visible only through Plan 341's human-review routes, never to
+a reviewer token — **on a gated tenant, the reviewer token sees only
+published forecasts, and a `qc_failed` forecast is never published**, so
+forecast QC failures are not visible through the ordinary forecast routes
+there.
+
+## Rejected forecasts (`GET /api/v1/stations/{id}/rejected-forecasts`, Plan 404)
+
+Every member or group-station forecast forecast QC rejected for this
+station, in the query window — the record `forecasts` never gets, since a
+`QC_FAILED` assignment is never stored there (D1/D2). **Every parameter of
+a rejected assignment is returned, including `qc_passed` and `qc_suspect`
+ones — each with its own status**; `qc_unchecked` means a later parameter's
+block errored after an earlier one had already failed and is never read as
+a pass. One rejection is the group `(attempt_id, station_id, model_id,
+group_id)` — `group_id` is `null` for a member (station) rejection.
+`attempt_id` distinguishes a Plan 327 resume or Plan 328 retry of the same
+cycle; `recorded_at` is the server-side write time (distinct from
+`issued_at`, the cycle's issue time). `values` is keyed by member id or
+quantile level (as a string), each an array of `{valid_time, value}`
+points — each series keeps its OWN timeline (members may have different
+valid-time sets); non-finite values use the same encoding as forecast
+evidence (`{"nonfinite": "nan" | "inf" | "-inf"}`).
+
+**Gated by `require_reviewer_or_human`** (Plan 404 T3): a reviewer or admin
+service token, OR a named human with a current station `review` grant
+(Plan 341) — a consumer token gets `403`. Where Plan 341's publication gate
+is active for the tenant, a **reviewer** service token's items carry
+`withheld: true`, `values: null` and every flag's `detail: null` — every
+other field, including `id`, `model_artifact_id`, `group_id` and
+`qc_status`, is still returned. **Admin** tokens and a **granted human**
+always see the full record (`withheld: false`). Where the gate is not
+active (the Swiss deployment today), reviewer and admin tokens both see
+everything.
+
+Query conventions match the rest of this page: `start`/`end` optional,
+default the last 7 days ending at request time, `end` exclusive;
+`model_id` filters to one model. Paginated with its OWN ceiling —
+`limit` default 20, capped at 50 (not 200 like the other list routes),
+since each item carries a full ensemble. Items are ordered newest first,
+`(issued_at DESC, recorded_at DESC, id DESC)`. A malformed `station_id`
+is `400`; an unknown or out-of-scope/ungranted station is `404`.
+
+This route is **never** a source of a publishable forecast ID: neither
+landing order (this plan or Plan 341) permits a `rejected_forecasts` id on
+a forecast publication route.
 
 ## Forecast flag `detail` — data sensitivity carried forward, not decided here
 

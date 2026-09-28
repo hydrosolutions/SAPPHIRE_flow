@@ -22,7 +22,7 @@ from fastapi.routing import APIRoute
 from sapphire_flow.api import app
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "1.0"
+MAP_CONTRACT_VERSION = "1.1"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
 # other route may appear in the committed file.
@@ -35,12 +35,22 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/forecasts/{forecast_id}"),
         ("GET", "/api/v1/qc/rules"),
         ("GET", "/api/v1/stations/{station_id}/skill"),
+        # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
+        ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"),
     }
 )
 
 # The two REVIEW-gated routes (Plan 401/402) — reviewer or admin token only.
 _REVIEW_PATHS: frozenset[str] = frozenset(
     {"/api/v1/qc/rules", "/api/v1/stations/{station_id}/skill"}
+)
+
+# The REVIEW_OR_HUMAN-gated route (Plan 404 T3) — a reviewer/admin service
+# token OR a named human with a current station `review` grant; a consumer
+# token still gets 403, same as the REVIEW_PATHS above, but the wording names
+# both principals.
+_REVIEW_OR_HUMAN_PATHS: frozenset[str] = frozenset(
+    {"/api/v1/stations/{station_id}/rejected-forecasts"}
 )
 
 # Every route in _MAP_ROUTES except the station LIST parses at least one
@@ -56,6 +66,7 @@ _400_PATHS: frozenset[str] = frozenset(
         "/api/v1/stations/{station_id}/forecasts",
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
+        "/api/v1/stations/{station_id}/rejected-forecasts",
     }
 )
 
@@ -70,6 +81,7 @@ _404_PATHS: frozenset[str] = frozenset(
         "/api/v1/forecasts/{forecast_id}",
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
+        "/api/v1/stations/{station_id}/rejected-forecasts",
     }
 )
 
@@ -113,6 +125,18 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "uses. REVIEW-gated: a reviewer or admin token only (403 for a "
         "consumer token). An out-of-scope station is 404 for a reviewer "
         "token, an unknown one 404 for a reviewer or admin token, a "
+        "malformed one 400."
+    ),
+    ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"): (
+        "Every QC-rejected member or group-station forecast for this "
+        "station in the query window — never stored in `forecasts` (Plan "
+        "404 D1/D2). Admits a reviewer or admin service token, OR a named "
+        "human with a current station `review` grant (403 for a consumer "
+        "token). Where a tenant's publication gate (Plan 341) is active, a "
+        "reviewer token's items are withheld: values and flag detail are "
+        "null; admin and a granted human always see the full record. An "
+        "out-of-scope or ungranted station is 404 for a reviewer/human, an "
+        "unknown one 404 for a reviewer, admin or granted human, a "
         "malformed one 400."
     ),
 }
@@ -186,6 +210,10 @@ def build_map_openapi() -> dict[str, Any]:
             responses["401"] = _error_response("Missing or invalid access token.")
             if path in _REVIEW_PATHS:
                 responses["403"] = _error_response("Reviewer or admin token required.")
+            if path in _REVIEW_OR_HUMAN_PATHS:
+                responses["403"] = _error_response(
+                    "Reviewer or admin token, or a granted human, required."
+                )
             if path in _404_PATHS:
                 responses["404"] = _error_response(
                     "Unknown or out-of-scope station/forecast — the same "

@@ -3191,7 +3191,10 @@ def run_forecast_cycle_flow(
                     # BEFORE every in-scope persist call for this station
                     # (single-model AND combination arms both), never at the
                     # combination point itself, so a mismatch never leaves a
-                    # partial write already committed.
+                    # partial write already committed: no forecast or
+                    # model-state write; the rejection (if any, collected
+                    # above) is collected before this preflight and saved at
+                    # the end of the run (Plan 404).
                     cycle_check = resolve_combined_forcing_cycle(
                         multi_result.combinable_results
                     )

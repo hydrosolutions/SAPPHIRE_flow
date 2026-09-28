@@ -176,7 +176,11 @@ for model in station_scoped_models:
     station_results = forecast_station.map(inputs)  # each loads its own artifact
 
 # Step 1.10: Forecast QC — per-assignment; QC_FAILED is handled at the assignment
-    # (station -> next model, group -> dropped, combined -> stored marked failed).
+    # (station -> next model, group -> rejects only that station, per station,
+    # combined -> stored marked failed). Neither station nor group is
+    # "dropped" silently: both are recorded, with every parameter's own
+    # verdict, in the separate append-only rejected_forecasts record
+    # (Plan 404 D1-D3) — never in forecasts.
     # NOTE: there is no separate QC filter at the Phase C entry point; that gate
     # partitions by AlertEligibility alone (Plan 253 T3a corrected this claim).
 # rule_set, overrides, baselines batch pre-fetched at flow start.
@@ -184,10 +188,14 @@ for model in station_scoped_models:
 #   station  -> run_station_forecast returns AssignmentFailure(QC_FAILED);
 #               the assignment never yields an ensemble, so nothing reaches
 #               all_ensembles and the flow tries the next model by priority.
-#   group    -> run_group_forecast returns no forecast for that station.
+#               No forecast or model-state write; the rejection is collected
+#               before the preflight and saved at the end of the run (Plan 404).
+#   group    -> run_group_forecast returns no forecast for that station
+#               (per station, D3) — likewise recorded, not dropped.
 #   combined -> QC'd in build_combined_forecasts, STORED marked QC_FAILED
 #               (Plan 253 OD-1) and excluded from the Forecast Lab (OD-1a).
 #               The combined product is never an alert input either way.
+#               Out of Plan 404's scope (already stored failed).
 
 check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — partitions by AlertEligibility ONLY; there is no qc_status predicate here
 ```
