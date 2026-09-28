@@ -642,3 +642,77 @@ class TestIntegration:
         rs = QcRuleSet(version="1.0", rules=(rule,))
         result = _check(checker, _with_cadence(obs), rs, [], [])
         assert result[obs.id] == []
+
+
+def _violations(
+    rule_id: str,
+) -> tuple[list[Observation], QcRuleParams, list[ClimBaseline]]:
+    """One input per rule kind that the rule flags (Plan 402 T1)."""
+    doy = _T0.timetuple().tm_yday
+    match rule_id:
+        case "range_check":
+            return (
+                _with_cadence(_make_obs(-1.0)),
+                _rule("range_check", {"value_min": 0.0, "value_max": 10.0}),
+                [],
+            )
+        case "rate_of_change":
+            return (
+                [_make_obs(10.0, 0), _make_obs(100.0, 1)],
+                _rule("rate_of_change", {"max_rate": 5.0}),
+                [],
+            )
+        case "spike":
+            return (
+                [_make_obs(10.0, 0), _make_obs(12.1, 1), _make_obs(10.2, 2)],
+                _rule("spike", {"max_delta": 1.0}),
+                [],
+            )
+        case "gross_outlier":
+            baseline = ClimBaseline(
+                station_id=_STATION,
+                parameter=_PARAM,
+                day_of_year=doy,
+                rolling_mean=10.0,
+                rolling_std=2.0,
+                sample_count=30,
+            )
+            return (
+                _with_cadence(_make_obs(100.0)),
+                _rule("gross_outlier", {"k_sigma": 3.0}),
+                [baseline],
+            )
+        case "frozen_sensor":
+            return (
+                [_make_obs(10.0, i) for i in range(4)],
+                _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3}),
+                [],
+            )
+    raise AssertionError(f"no violating input for {rule_id}")
+
+
+class TestObservationQcSeverity:
+    """Plan 402 T1: the severity constant the rules endpoint serves describes
+    what each rule kind actually emits — it does not change the rules."""
+
+    def test_covers_every_rule_kind(self) -> None:
+        from typing import get_args
+
+        from sapphire_flow.services.qc import OBSERVATION_QC_SEVERITY
+        from sapphire_flow.types.domain import QcRuleId
+
+        assert set(OBSERVATION_QC_SEVERITY) == set(get_args(QcRuleId))
+
+    @pytest.mark.parametrize(
+        "rule_id",
+        ["range_check", "rate_of_change", "spike", "gross_outlier", "frozen_sensor"],
+    )
+    def test_emitted_status_equals_the_constant(self, rule_id: str) -> None:
+        from sapphire_flow.services.qc import OBSERVATION_QC_SEVERITY
+
+        observations, rule, baselines = _violations(rule_id)
+        result = _check(
+            Stage1QualityChecker(), observations, _rule_set(rule), [], baselines
+        )
+        statuses = {flag.status for flags in result.values() for flag in flags}
+        assert statuses == {OBSERVATION_QC_SEVERITY[rule_id]}

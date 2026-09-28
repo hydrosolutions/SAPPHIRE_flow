@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import polars as pl
+import pytest
 
 from sapphire_flow.services.forecast_qc import (
     ForecastOutputQualityChecker,
@@ -439,3 +440,87 @@ class TestForecastQcOverrideMerging:
         assert len(flags) == 1
         assert flags[0].rule_id == "range_check"
         assert flags[0].status == QcStatus.QC_FAILED
+
+
+def _forecast_violation(rule_id: str) -> tuple[ForecastEnsemble, ForecastQcRuleParams]:
+    """One input per forecast rule kind that the rule flags (Plan 402 T1)."""
+    match rule_id:
+        case "negative_value":
+            return (
+                _make_members_ensemble([[10.0, -5.0, 30.0], [15.0, 25.0, 35.0]]),
+                _make_rule("negative_value", {"value_min": 0.0}),
+            )
+        case "range_check":
+            return (
+                _make_members_ensemble([[600.0, 600.0, 600.0], [600.0, 600.0, 600.0]]),
+                _make_rule("range_check", {"value_min": 0.0, "value_max": 500.0}),
+            )
+        case "flat_ensemble":
+            return (
+                _make_members_ensemble([[50.0, 50.0, 50.0], [50.0, 50.0, 50.0]]),
+                _make_rule("flat_ensemble", {"tolerance": 0.001}),
+            )
+        case "ensemble_spread":
+            return (
+                _make_members_ensemble(
+                    [[50.0, 50.001, 50.002, 50.003], [50.0, 50.001, 50.002, 50.003]]
+                ),
+                _make_rule(
+                    "ensemble_spread",
+                    {"min_spread_ratio": 0.5, "max_spread_ratio": 10.0},
+                ),
+            )
+        case "climatology_outlier":
+            return (
+                _make_members_ensemble(
+                    [[500.0, 500.0, 500.0, 500.0], [500.0, 500.0, 500.0, 500.0]]
+                ),
+                _make_rule("climatology_outlier", {"k_sigma": 6.0}),
+            )
+        case "temporal_consistency":
+            return (
+                _make_members_ensemble([[48.0, 50.0, 52.0], [998.0, 1000.0, 1002.0]]),
+                _make_rule("temporal_consistency", {"max_rate": 200.0}),
+            )
+        case "quantile_crossing":
+            normal = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+            crossed = [10.0, 20.0, 30.0, 40.0, 35.0, 60.0, 70.0, 80.0, 90.0]
+            return (
+                _make_quantiles_ensemble([normal, crossed]),
+                _make_rule("quantile_crossing", {}),
+            )
+    raise AssertionError(f"no violating input for {rule_id}")
+
+
+class TestForecastQcSeverity:
+    """Plan 402 T1: the forecast severity constant describes what each rule
+    kind emits — it does not change the rules."""
+
+    def test_covers_every_rule_kind(self) -> None:
+        from typing import get_args
+
+        from sapphire_flow.services.forecast_qc import FORECAST_QC_SEVERITY
+        from sapphire_flow.types.domain import ForecastQcRuleId
+
+        assert set(FORECAST_QC_SEVERITY) == set(get_args(ForecastQcRuleId))
+
+    @pytest.mark.parametrize(
+        "rule_id",
+        [
+            "negative_value",
+            "range_check",
+            "flat_ensemble",
+            "ensemble_spread",
+            "climatology_outlier",
+            "temporal_consistency",
+            "quantile_crossing",
+        ],
+    )
+    def test_emitted_status_equals_the_constant(self, rule_id: str) -> None:
+        from sapphire_flow.services.forecast_qc import FORECAST_QC_SEVERITY
+
+        ensemble, rule = _forecast_violation(rule_id)
+        flags = ForecastOutputQualityChecker().check(
+            ensemble, _make_ruleset(rule), [], [_make_baseline()]
+        )
+        assert [flag.status for flag in flags] == [FORECAST_QC_SEVERITY[rule_id]]

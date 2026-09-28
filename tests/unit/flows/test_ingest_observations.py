@@ -382,6 +382,60 @@ class TestIngestObservationsFlow:
             PipelineCheckType.OBSERVATION_QC_THRESHOLD_CONFIG
         )
 
+    def test_threshold_outcomes_are_logged_by_ingest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 402 T1 pins ingest's two log events before the resolution moves
+        into `services/station_qc_overrides.py`: a pending block is logged at
+        info, a rejected or not-applicable one at warning."""
+        from structlog.testing import capture_logs
+
+        config = tmp_path / "config.toml"
+        block = (
+            "[[onboarding.station_qc_thresholds]]\n"
+            'tenant_code = "{tenant}"\ncode = "{code}"\nnetwork = "{network}"\n'
+            'rule_id = "range_check"\nparameter = "discharge"\n'
+            "time_step_seconds = 600\nthresholds = {{ value_max = 10.0 }}\n"
+        )
+        config.write_text(
+            "max_retention_days = 730\n"
+            '[onboarding]\nqc_pending_networks = ["dhm"]\n'
+            + block.format(tenant="chwrr", code="447", network="dhm")
+            + block.format(tenant="sapphire", code="typo", network="bafu")
+            + block.format(tenant="sapphire", code="CALC", network="bafu")
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(code="CALC", gauging_status=GaugingStatus.CALCULATED)
+        )
+
+        with capture_logs() as logs:
+            ingest_observations_flow(
+                station_store=station_store,
+                tenant_store=FakeTenantStore(),
+                obs_store=FakeObservationStore(),
+                baseline_store=FakeClimBaselineStore(),
+                adapter=FakeStationDataSource([]),
+                qc_rules=_QC_RULES,
+                clock=_fixed_clock,
+                pipeline_health_store=FakePipelineHealthStore(),
+            )
+
+        assert [
+            (entry["event"], entry["log_level"], entry["subject"])
+            for entry in logs
+            if entry["event"].startswith("ingest.qc_threshold_")
+        ] == [
+            ("ingest.qc_threshold_pending", "info", "chwrr/dhm/447"),
+            (
+                "ingest.qc_threshold_unapplied",
+                "warning",
+                "sapphire/bafu/typo: station_not_found",
+            ),
+            ("ingest.qc_threshold_unapplied", "warning", "sapphire/bafu/CALC"),
+        ]
+
     def test_no_station_thresholds_preserve_live_config_qc_details(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
