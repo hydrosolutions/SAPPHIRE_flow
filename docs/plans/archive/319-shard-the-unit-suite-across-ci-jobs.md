@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE   # landed by #302 (`7f7a0a00`), verified on `main` 2026-09-28. ⛔ A merged plan left reading READY is a live order to an agent — the hazard this repo already booked.
 created: 2026-09-24
 plan: 319
 title: Shard the unit suite across parallel CI jobs

@@ -815,8 +815,15 @@ exit criteria — Plan 212 owns that deeper screening.
   datum 0 / `m`. ⚠️ River water-level
   baselines are still never computed, so `gross_outlier` stays inert there.
 
-- **319** — [Shard the unit suite across parallel CI jobs](319-shard-the-unit-suite-across-ci-jobs.md)
-  — `READY`, both owner decisions closed 2026-09-24 (four shards; the shards'
+- **319** — [Shard the unit suite across parallel CI jobs](archive/319-shard-the-unit-suite-across-ci-jobs.md)
+  — **`COMPLETE`, ARCHIVED** (landed by #302, `7f7a0a00`; status verified against `main` 2026-09-28).
+  ⛔ *Read `READY` for four days after its work was on `main` — the stale-status hazard, found while
+  auditing an unrelated checkout.* Verified present on `main` before archiving: the four-shard matrix
+  `[scripts, services, adapters-flows, rest]`, `tools/unit_shards.py` with its node-id partition check,
+  `tests/unit/tools/test_unit_shards.py` (union equals the unsharded collection; a node in two shards
+  and a node in none are both reported), the Plan 201 canary still sequential and once, and the
+  `unit-coverage` job stitching the shards back into one number (D2).
+  ⚖️ Both owner decisions were closed 2026-09-24 (four shards; the shards'
   coverage stitched back into one number; ⛔ no threshold introduced — none
   exists today). Follows PR #300, which fixed test-worker ISOLATION and so made
   CI reliable without making it faster: CI already ran `-n auto`, and the gap is
