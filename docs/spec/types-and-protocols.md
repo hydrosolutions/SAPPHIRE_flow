@@ -1966,6 +1966,129 @@ pre-0057 forecast is not inferred to be complete from current observation or
 weather tables. This contract supports diagnosis of as-used inputs, not an
 implemented model replay or outcome-verification service.
 
+### RejectedForecast (Plan 404 T1/T2)
+
+A QC-rejected member or group-station forecast (`QC_FAILED`) is never a
+`forecasts` row (D1/D2) — it is recorded, every parameter's own verdict and
+flags, in the separate append-only `rejected_forecasts` table.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RejectedParameterPayload:
+    """One parameter of a rejected assignment. `ensemble` is the RAW
+    ensemble, as `forecasts` would store it — not the datum-shifted copy
+    QC checked. Built by the service the moment a rejection happens: no
+    __post_init__ validation, no copying — building this cannot raise."""
+    ensemble: ForecastEnsemble
+    qc_status: QcStatus
+    qc_flags: tuple[QcFlag, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RejectedAssignmentPayload:
+    """A rejected member or group-station forecast assignment (D1-D3).
+    group_id is None for a member (station) rejection."""
+    station_id: StationId
+    model_id: ModelId
+    model_artifact_id: ArtifactId | None
+    issued_at: UtcDatetime
+    parameters: tuple[RejectedParameterPayload, ...]
+    group_id: StationGroupId | None = None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RejectedForecastEntry:
+    """One buffered rejection, tagged with the flow run's attempt_id (D5) —
+    the unit RejectedForecastStore.write_batch accepts."""
+    attempt_id: UUID
+    payload: RejectedAssignmentPayload
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PersistedRejectedForecast:
+    """One row of rejected_forecasts, as a read returns it. `values` is
+    keyed by member id or quantile level (as a string), each holding its
+    OWN (valid_time, value) pairs in chronological order — series need not
+    share a timeline."""
+    id: RejectedForecastId
+    attempt_id: UUID
+    recorded_at: UtcDatetime
+    station_id: StationId
+    model_id: ModelId
+    model_artifact_id: ArtifactId | None
+    group_id: StationGroupId | None
+    issued_at: UtcDatetime
+    parameter: str
+    representation: EnsembleRepresentation
+    units: str
+    time_step_seconds: int
+    qc_status: QcStatus
+    qc_flags: tuple[QcFlag, ...]
+    values: dict[str, tuple[tuple[UtcDatetime, float], ...]]
+```
+
+Module: `types/rejected_forecast.py`.
+
+**RejectedForecastStore Protocol** (`protocols/stores.py`):
+
+```python
+@runtime_checkable
+class RejectedForecastStore(Protocol):
+    def write_batch(
+        self, entries: Sequence[RejectedForecastEntry], *, abandon: threading.Event
+    ) -> None: ...
+        # One run's whole batch, all rows or none (D5). Builds the rows
+        # (value encoding included), inserts them, then — still inside the
+        # transaction — checks `abandon` and raises `CaptureAbandonedError`
+        # if set, immediately before COMMIT (D6).
+
+    def fetch_rejected_forecasts(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        model_id: ModelId | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[PersistedRejectedForecast], int]: ...
+        # start <= issued_at < end (half-open); newest first —
+        # (issued_at DESC, recorded_at DESC, id DESC).
+```
+
+`PgRejectedForecastStore` (`store/rejected_forecast_store.py`) is the
+production implementation. Its constructor's `transaction_factory` has NO
+default — every caller passes it explicitly: the flow's production bundle
+(`flows/_db.py::make_pg_stores`) builds one dedicated `NullPool` engine via
+`rejected_capture_transaction_factory(url)` (a 5s connect timeout, never
+the shared AUTOCOMMIT connection); `api/deps.py` passes `None` — the API
+never writes this store, and a write on a store built with `None` raises
+`ConfigurationError`. The migration (0065) adds a role-independent
+append-only guard (UPDATE/DELETE/TRUNCATE refused even for the table
+owner, mirroring migration 0057's `forecast_evidence` trigger).
+`sapphire_worker` gets INSERT only; `sapphire_api` reads via its existing
+blanket SELECT.
+
+**Flow-side capture (D5/D6, `flows/run_forecast_cycle.py`).** The flow
+mints one `attempt_id` per execution (bound into the structlog context for
+the run's duration), collects rejected payloads into an in-memory buffer
+immediately after each of `run_all_station_forecasts_per_track`,
+`run_all_station_forecasts`, the PRIMARY-mode `run_station_forecast`
+wrapper and `run_group_forecast` returns — before any early exit — and
+writes the whole buffer once, in the flow's outermost `finally`, after
+whichever `FORECAST_FRESHNESS` heartbeat the run emitted (or none, on an
+aborting exit). The write runs on a daemon thread the flow joins for at
+most `REJECTED_CAPTURE_DEADLINE_S` (10s, read at call time — never a
+default argument); a timeout sets a shared `threading.Event` and logs
+`rejected_forecast.write_timed_out` without waiting further — the store
+checks that event just before `COMMIT` and rolls back if set. A store
+failure logs `rejected_forecast.write_failed` once per buffered entry. The
+capture is best-effort: it can never affect `forecasts_stored`, alerting
+or the cycle's own result — the ONE deliberate broad `except` on the flow
+path (`docs/conventions.md` § Flow-level strategy). On the group path, an
+error in a later station's build after an earlier one was already
+rejected raises `GroupForecastError` (carrying the rejections gathered so
+far plus the original exception) rather than losing them silently.
+
 ### HindcastForecast
 
 Wraps `hindcast_forecasts` + `hindcast_values`. No publication lifecycle.
