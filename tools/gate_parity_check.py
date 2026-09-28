@@ -27,6 +27,15 @@ import yaml
 CI_ONLY_ALLOWLIST: dict[tuple[str, str], str] = {
     # ── ci.yml / lint ────────────────────────────────────────────────────────
     # (uv sync --frozen is covered-by-uv-sync; ruff steps are covered-by-check)
+    # Plan 402 T4 (D14): requires a PR base SHA
+    # (${{ github.event.pull_request.base.sha }}) and runs on pull_request
+    # only; run locally as 'uv run python tools/check_map_contract_version.py
+    # --base-ref <base-sha>' against any base commit.
+    ("ci", "Check map contract version"): (
+        "requires a PR base SHA (${{ github.event.pull_request.base.sha }}); "
+        "run locally as 'uv run python tools/check_map_contract_version.py "
+        "--base-ref <base-sha>' against any base commit"
+    ),
     # ── ci.yml / unit ────────────────────────────────────────────────────────
     ("ci", "Install system deps for cfgrib / rioxarray / exactextract"): (
         "system-package install (libeccodes0 libexpat1 libgeos-c1v5), "

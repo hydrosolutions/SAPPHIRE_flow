@@ -49,6 +49,19 @@ def _to_ensemble_response(e: ForecastEnsemble) -> EnsembleResponse:
     )
 
 
+def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
+    # `flag: Any` (not `QcFlag`) deliberately, matching
+    # `api_stations.py::_to_qc_flag_response`: `QcFlag.__post_init__`
+    # already forbids `raw`/`missing` at construction, a domain invariant
+    # pyright cannot see through `QcStatus.value`'s full Literal.
+    return QcFlagResponse(
+        rule_id=flag.rule_id,
+        rule_version=flag.rule_version,
+        status=flag.status.value,
+        detail=flag.detail,
+    )
+
+
 def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
     return ForecastDetail(
         id=str(f.id),
@@ -84,15 +97,7 @@ def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
         else None,
         updated_at=f.updated_at,
         ensemble=_to_ensemble_response(f.ensemble),
-        qc_flags=[
-            QcFlagResponse(
-                rule_id=flag.rule_id,
-                rule_version=flag.rule_version,
-                status=flag.status.value,
-                detail=flag.detail,
-            )
-            for flag in f.qc_flags
-        ],
+        qc_flags=[_to_qc_flag_response(flag) for flag in f.qc_flags],
     )
 
 

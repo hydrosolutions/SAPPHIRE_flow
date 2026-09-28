@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+        # fetch-depth: 0 (full history) — Plan 402 T4's "Check map contract
+        # version" step below needs `git merge-base` against the PR base sha.
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
@@ -65,6 +69,13 @@ jobs:
       - run: shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/run-nepal-forcing.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh
       - run: uv run pyright --outputjson src/ > /tmp/pyright.json || true
       - run: uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
+      # Plan 402 T4 (D14): a PR that changes the committed flow-map OpenAPI
+      # contract must bump its info.version. PR-only — direct pushes to
+      # `main` never carry this file's changes except through a merged PR
+      # (hold-at-PR, CLAUDE.md § Version Bumping).
+      - name: Check map contract version
+        if: github.event_name == 'pull_request'
+        run: uv run python tools/check_map_contract_version.py --base-ref "${{ github.event.pull_request.base.sha }}"
       # A2 — Trivy filesystem scan. Reads uv.lock + pyproject.toml without
       # building the image, so dep-only PRs get fast feedback. Fails on HIGH
       # or CRITICAL vulnerabilities that have an available fix; unfixed CVEs

@@ -1,0 +1,2318 @@
+{
+  "components": {
+    "schemas": {
+      "EnsembleResponse": {
+        "properties": {
+          "forecast_horizon_steps": {
+            "title": "Forecast Horizon Steps",
+            "type": "integer"
+          },
+          "member_count": {
+            "title": "Member Count",
+            "type": "integer"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "representation": {
+            "title": "Representation",
+            "type": "string"
+          },
+          "series": {
+            "additionalProperties": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "title": "Series",
+            "type": "object"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          },
+          "units": {
+            "title": "Units",
+            "type": "string"
+          },
+          "valid_times": {
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "title": "Valid Times",
+            "type": "array"
+          }
+        },
+        "required": [
+          "representation",
+          "parameter",
+          "units",
+          "forecast_horizon_steps",
+          "time_step_seconds",
+          "member_count",
+          "valid_times",
+          "series"
+        ],
+        "title": "EnsembleResponse",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "ForecastDetail": {
+        "properties": {
+          "combination_strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Combination Strategy"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "ensemble": {
+            "$ref": "#/components/schemas/EnsembleResponse"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality Flags"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "nwp_cycle_reference_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nwp Cycle Reference Time"
+          },
+          "nwp_cycle_source": {
+            "title": "Nwp Cycle Source",
+            "type": "string"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "qc_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "enum": [
+              "raw",
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "missing",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "representation": {
+            "title": "Representation",
+            "type": "string"
+          },
+          "source_model_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Model Ids"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "warm_up_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warm Up Source"
+          }
+        },
+        "required": [
+          "id",
+          "station_id",
+          "model_id",
+          "model_tier",
+          "issued_at",
+          "parameter",
+          "representation",
+          "status",
+          "qc_status",
+          "nwp_cycle_source",
+          "created_at",
+          "version",
+          "updated_at",
+          "ensemble"
+        ],
+        "title": "ForecastDetail",
+        "type": "object"
+      },
+      "ForecastQcRuleResponse": {
+        "properties": {
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "rule_id": {
+            "enum": [
+              "negative_value",
+              "range_check",
+              "flat_ensemble",
+              "ensemble_spread",
+              "climatology_outlier",
+              "temporal_consistency",
+              "quantile_crossing"
+            ],
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "qc_failed",
+              "qc_suspect"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Thresholds",
+            "type": "object"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "parameter",
+          "time_step_seconds",
+          "severity",
+          "thresholds"
+        ],
+        "title": "ForecastQcRuleResponse",
+        "type": "object"
+      },
+      "ForecastQcRuleSetResponse": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastQcRuleResponse"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "selection": {
+            "const": "parameter_and_cadence",
+            "default": "parameter_and_cadence",
+            "title": "Selection",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "config",
+              "builtin_default"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "source",
+          "rules"
+        ],
+        "title": "ForecastQcRuleSetResponse",
+        "type": "object"
+      },
+      "ForecastSummary": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality Flags"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "nwp_cycle_source": {
+            "title": "Nwp Cycle Source",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "qc_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "enum": [
+              "raw",
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "missing",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "representation": {
+            "title": "Representation",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "station_id",
+          "model_id",
+          "model_tier",
+          "issued_at",
+          "parameter",
+          "representation",
+          "status",
+          "qc_status",
+          "nwp_cycle_source",
+          "created_at"
+        ],
+        "title": "ForecastSummary",
+        "type": "object"
+      },
+      "GeoCoordResponse": {
+        "properties": {
+          "altitude_masl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Altitude Masl"
+          },
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lon": {
+            "title": "Lon",
+            "type": "number"
+          }
+        },
+        "required": [
+          "lon",
+          "lat"
+        ],
+        "title": "GeoCoordResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ModelAssignmentResponse": {
+        "properties": {
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "time_step_hours": {
+            "title": "Time Step Hours",
+            "type": "number"
+          }
+        },
+        "required": [
+          "model_id",
+          "model_tier",
+          "time_step_hours",
+          "status",
+          "priority"
+        ],
+        "title": "ModelAssignmentResponse",
+        "type": "object"
+      },
+      "ObservationQcRuleResponse": {
+        "properties": {
+          "network": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "rule_id": {
+            "enum": [
+              "range_check",
+              "rate_of_change",
+              "spike",
+              "gross_outlier",
+              "frozen_sensor"
+            ],
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "qc_failed",
+              "qc_suspect"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Thresholds",
+            "type": "object"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "parameter",
+          "time_step_seconds",
+          "network",
+          "severity",
+          "thresholds"
+        ],
+        "title": "ObservationQcRuleResponse",
+        "type": "object"
+      },
+      "ObservationQcRuleSetResponse": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationQcRuleResponse"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "selection": {
+            "const": "parameter_cadence_network",
+            "default": "parameter_cadence_network",
+            "title": "Selection",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "config",
+              "builtin_default"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "source",
+          "rules"
+        ],
+        "title": "ObservationQcRuleSetResponse",
+        "type": "object"
+      },
+      "ObservationResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "qc_flags": {
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_rule_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Rule Version"
+          },
+          "qc_status": {
+            "enum": [
+              "raw",
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "missing",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "id",
+          "station_id",
+          "timestamp",
+          "parameter",
+          "source",
+          "qc_status",
+          "qc_flags"
+        ],
+        "title": "ObservationResponse",
+        "type": "object"
+      },
+      "PaginatedResponse_ForecastSummary_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "PaginatedResponse[ForecastSummary]",
+        "type": "object"
+      },
+      "PaginatedResponse_StationSummary_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StationSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "PaginatedResponse[StationSummary]",
+        "type": "object"
+      },
+      "QcFlagResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "qc_unchecked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "status"
+        ],
+        "title": "QcFlagResponse",
+        "type": "object"
+      },
+      "QcRulesResponse": {
+        "properties": {
+          "forecast": {
+            "$ref": "#/components/schemas/ForecastQcRuleSetResponse"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/ObservationQcRuleSetResponse"
+          },
+          "scope": {
+            "const": "deployment",
+            "default": "deployment",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "observation",
+          "forecast"
+        ],
+        "title": "QcRulesResponse",
+        "type": "object"
+      },
+      "SkillRowResponse": {
+        "properties": {
+          "computation_version": {
+            "title": "Computation Version",
+            "type": "integer"
+          },
+          "eval_period_end": {
+            "format": "date-time",
+            "title": "Eval Period End",
+            "type": "string"
+          },
+          "eval_period_start": {
+            "format": "date-time",
+            "title": "Eval Period Start",
+            "type": "string"
+          },
+          "evaluated_on": {
+            "enum": [
+              "training_period",
+              "outside_training_period",
+              "overlaps_training_period"
+            ],
+            "title": "Evaluated On",
+            "type": "string"
+          },
+          "flow_regime": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "high",
+                  "flood"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Regime"
+          },
+          "forcing_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "nwp_archive",
+                  "reanalysis"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forcing Type"
+          },
+          "generation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Id"
+          },
+          "lead_time_hours": {
+            "title": "Lead Time Hours",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "model_artifact_id": {
+            "title": "Model Artifact Id",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "phase_offset_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Offset Seconds"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "skill_source": {
+            "enum": [
+              "hindcast_nwp_archive",
+              "hindcast_reanalysis",
+              "operational",
+              "transfer_validation"
+            ],
+            "title": "Skill Source",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          },
+          "training_period_end": {
+            "format": "date-time",
+            "title": "Training Period End",
+            "type": "string"
+          },
+          "training_period_start": {
+            "format": "date-time",
+            "title": "Training Period Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id",
+          "model_artifact_id",
+          "generation_id",
+          "skill_source",
+          "forcing_type",
+          "computation_version",
+          "time_step_seconds",
+          "phase_offset_seconds",
+          "eval_period_start",
+          "eval_period_end",
+          "training_period_start",
+          "training_period_end",
+          "evaluated_on",
+          "lead_time_hours",
+          "season",
+          "flow_regime",
+          "metric",
+          "score",
+          "sample_size"
+        ],
+        "title": "SkillRowResponse",
+        "type": "object"
+      },
+      "StationDetail": {
+        "properties": {
+          "basin_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basin Id"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "forecast_targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Targets"
+          },
+          "gauging_status": {
+            "title": "Gauging Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoCoordResponse"
+          },
+          "measured_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Measured Parameters",
+            "type": "array"
+          },
+          "model_assignments": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAssignmentResponse"
+            },
+            "title": "Model Assignments",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          },
+          "no_floor": {
+            "title": "No Floor",
+            "type": "boolean"
+          },
+          "ownership": {
+            "title": "Ownership",
+            "type": "string"
+          },
+          "regulation_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regulation Type"
+          },
+          "station_kind": {
+            "title": "Station Kind",
+            "type": "string"
+          },
+          "station_status": {
+            "title": "Station Status",
+            "type": "string"
+          },
+          "thresholds": {
+            "items": {
+              "$ref": "#/components/schemas/ThresholdResponse"
+            },
+            "title": "Thresholds",
+            "type": "array"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "weather_sources": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherSourceResponse"
+            },
+            "title": "Weather Sources",
+            "type": "array"
+          },
+          "wigos_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wigos Id"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location",
+          "station_kind",
+          "station_status",
+          "network",
+          "ownership",
+          "measured_parameters",
+          "timezone",
+          "gauging_status",
+          "created_at",
+          "updated_at",
+          "no_floor",
+          "thresholds",
+          "model_assignments",
+          "weather_sources"
+        ],
+        "title": "StationDetail",
+        "type": "object"
+      },
+      "StationObservationQcRuleResponse": {
+        "properties": {
+          "network": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "rule_id": {
+            "enum": [
+              "range_check",
+              "rate_of_change",
+              "spike",
+              "gross_outlier",
+              "frozen_sensor"
+            ],
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "qc_failed",
+              "qc_suspect"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "const": "no_datum",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped"
+          },
+          "station_thresholds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Station Thresholds",
+            "type": "array"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Thresholds",
+            "type": "object"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "parameter",
+          "time_step_seconds",
+          "network",
+          "severity",
+          "thresholds",
+          "station_thresholds"
+        ],
+        "title": "StationObservationQcRuleResponse",
+        "type": "object"
+      },
+      "StationObservationQcRuleSetResponse": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/StationObservationQcRuleResponse"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "selection": {
+            "const": "parameter_cadence_network",
+            "default": "parameter_cadence_network",
+            "title": "Selection",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "config",
+              "builtin_default"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "source",
+          "rules"
+        ],
+        "title": "StationObservationQcRuleSetResponse",
+        "type": "object"
+      },
+      "StationQcRulesResponse": {
+        "properties": {
+          "forecast": {
+            "$ref": "#/components/schemas/ForecastQcRuleSetResponse"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/StationObservationQcRuleSetResponse"
+          },
+          "scope": {
+            "const": "station",
+            "default": "station",
+            "title": "Scope",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "station_qc": {
+            "enum": [
+              "judged",
+              "not_judged"
+            ],
+            "title": "Station Qc",
+            "type": "string"
+          },
+          "water_level_datum_masl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Water Level Datum Masl"
+          }
+        },
+        "required": [
+          "station_id",
+          "station_qc",
+          "water_level_datum_masl",
+          "observation",
+          "forecast"
+        ],
+        "title": "StationQcRulesResponse",
+        "type": "object"
+      },
+      "StationSkillResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SkillRowResponse"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "selection": {
+            "const": "latest_generation_on_forecast_artifact",
+            "default": "latest_generation_on_forecast_artifact",
+            "title": "Selection",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "rows"
+        ],
+        "title": "StationSkillResponse",
+        "type": "object"
+      },
+      "StationSummary": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoCoordResponse"
+          },
+          "measured_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Measured Parameters",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          },
+          "ownership": {
+            "title": "Ownership",
+            "type": "string"
+          },
+          "station_kind": {
+            "title": "Station Kind",
+            "type": "string"
+          },
+          "station_status": {
+            "title": "Station Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location",
+          "station_kind",
+          "station_status",
+          "network",
+          "ownership",
+          "measured_parameters"
+        ],
+        "title": "StationSummary",
+        "type": "object"
+      },
+      "ThresholdResponse": {
+        "properties": {
+          "danger_level": {
+            "title": "Danger Level",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "danger_level",
+          "parameter",
+          "value",
+          "source"
+        ],
+        "title": "ThresholdResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WeatherSourceResponse": {
+        "properties": {
+          "extraction_type": {
+            "title": "Extraction Type",
+            "type": "string"
+          },
+          "nwp_source": {
+            "title": "Nwp Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nwp_source",
+          "extraction_type",
+          "status"
+        ],
+        "title": "WeatherSourceResponse",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
+    "title": "SAPPHIRE Flow \u2014 flow map contract",
+    "version": "1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/forecasts/{forecast_id}": {
+      "get": {
+        "description": "Forecast detail, with typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown forecast is 404. A malformed forecast_id is unguarded today and returns 500, not 400.",
+        "operationId": "get_forecast_api_v1_forecasts__forecast_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "forecast_id",
+            "required": true,
+            "schema": {
+              "title": "Forecast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Forecast",
+        "tags": [
+          "api-forecasts"
+        ]
+      }
+    },
+    "/api/v1/qc/rules": {
+      "get": {
+        "description": "Both QC rule sets as the serving process resolves them now. REVIEW-gated: a reviewer or admin token only (403 for a consumer token). Without station_id: deployment-wide, no station data. With station_id: the observation rules for that station, with the thresholds ingest applies there merged in \u2014 an out-of-scope station is 404 for a reviewer token, an unknown one 404 for a reviewer or admin token, a malformed one 400.",
+        "operationId": "get_qc_rules_api_v1_qc_rules_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "station_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Station Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "deployment": "#/components/schemas/QcRulesResponse",
+                      "station": "#/components/schemas/StationQcRulesResponse"
+                    },
+                    "propertyName": "scope"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/QcRulesResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StationQcRulesResponse"
+                    }
+                  ],
+                  "title": "Response Get Qc Rules Api V1 Qc Rules Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Qc Rules",
+        "tags": [
+          "api-review"
+        ]
+      }
+    },
+    "/api/v1/stations": {
+      "get": {
+        "description": "Lists stations. A consumer, reviewer or admin token may call this; a consumer/reviewer token's result is silently filtered to its scoped stations rather than 404ing.",
+        "operationId": "list_stations_api_v1_stations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_StationSummary_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List Stations",
+        "tags": [
+          "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}": {
+      "get": {
+        "description": "Station detail. Any authenticated token role may call this; an out-of-scope or unknown station is 404. A malformed station_id is unguarded today and returns 500, not 400.",
+        "operationId": "get_station_api_v1_stations__station_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Station",
+        "tags": [
+          "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/forecasts": {
+      "get": {
+        "description": "Forecast summaries for a station, with QC status and typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown station is 404.",
+        "operationId": "list_forecasts_api_v1_stations__station_id__forecasts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parameter",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Parameter"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "description": "Return only forecasts assessed PARTIAL or DEGRADED input quality (Plan 253 OD-2). Forecasts with no assessment recorded (unknown) are never included.",
+            "in": "query",
+            "name": "degraded_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only forecasts assessed PARTIAL or DEGRADED input quality (Plan 253 OD-2). Forecasts with no assessment recorded (unknown) are never included.",
+              "title": "Degraded Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_ForecastSummary_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List Forecasts",
+        "tags": [
+          "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/observations": {
+      "get": {
+        "description": "Observations for a station and parameter window, with QC status and typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown station is 404.",
+        "operationId": "list_observations_api_v1_stations__station_id__observations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parameter",
+            "required": true,
+            "schema": {
+              "title": "Parameter",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "title": "End",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "qc_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Qc Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ObservationResponse"
+                  },
+                  "title": "Response List Observations Api V1 Stations  Station Id  Observations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List Observations",
+        "tags": [
+          "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/skill": {
+      "get": {
+        "description": "The station's current skill rows on the artifact its forecast uses. REVIEW-gated: a reviewer or admin token only (403 for a consumer token). An out-of-scope station is 404 for a reviewer token, an unknown one 404 for a reviewer or admin token, a malformed one 400.",
+        "operationId": "get_station_skill_api_v1_stations__station_id__skill_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationSkillResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Station Skill",
+        "tags": [
+          "api-review"
+        ]
+      }
+    }
+  }
+}
