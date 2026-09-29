@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-23
 revised: 2026-09-29
 plan: 143
@@ -14,9 +14,10 @@ related: [082, 117, 139, 264, 269, 272, 301, 304, 315, 316, 317, 318]
 
 ## Status
 
-**DRAFT.** Reconciled against remote `main` at `90aebc56` on 2026-09-29.
-This is a planning update, not implementation or staging acceptance. Independent
-review remains required; only the orchestrator sets READY.
+**READY.** Set on the owner's explicit instruction on 2026-09-29 after independent
+Claude and Codex reviews recommended READY with no remaining findings. Reconciled
+against remote `main` at `90aebc56`; freshness checked before implementation.
+This status authorizes implementation, not staging acceptance.
 
 | Prerequisite | State at this revision | Remaining gate for Plan 143 |
 |---|---|---|
