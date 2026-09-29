@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.config.qc_rules import load_qc_rules
 from sapphire_flow.flows.ingest_observations import (
     _run_qc_task,
@@ -213,6 +215,89 @@ class TestFirstReadingsAfterAnOutage:
 
         assert outcome.unjudged_groups == ()
         assert _by_minutes(store)[20].qc_status is QcStatus.QC_PASSED
+
+
+class TestHourlyDatumlessWaterLevel:
+    """Plan 323 T2 with T4: the hourly rows exist, so an hourly datum-less
+    water-level group selects `rate_of_change` and `spike` — and the reading that
+    has no predecessor in the window is unchecked, not passed."""
+
+    def test_the_oldest_hourly_reading_is_unchecked_with_its_reason(self) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        [earlier] = store.store_raw_observations([_raw(station_id, 60, 500.00)])
+        store.update_qc(earlier, QcStatus.QC_UNCHECKED, [])
+        store.store_raw_observations([_raw(station_id, 0, 500.05)])
+
+        outcome = _run_task(store, station_id)
+
+        rows = _by_minutes(store)
+        assert rows[60].qc_status is QcStatus.QC_UNCHECKED
+        assert rows[0].qc_status is QcStatus.QC_PASSED
+        [group] = outcome.unjudged_groups
+        assert group.observation_ids == (rows[60].id,)
+        assert group.inferred_time_step_seconds == 3600.0
+        assert outcome.zero_rule_groups == ()
+
+    def test_a_reading_that_jumps_beyond_the_hourly_limit_is_flagged(self) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        store.store_raw_observations(
+            [_raw(station_id, 60, 500.0), _raw(station_id, 0, 500.6)]
+        )
+
+        _run_task(store, station_id)
+
+        assert _by_minutes(store)[0].qc_status is QcStatus.QC_SUSPECT
+
+
+class TestHourlyVerdictsAreStored:
+    """Plan 323 T2: through `_run_qc_task`, ordinary hourly readings are stored
+    `QC_PASSED` and an impossible one `QC_FAILED` — the status the plan asks for,
+    not only which rule flagged. `range_check` judges the oldest reading too, so
+    every reading gets a verdict (no datum is involved for these parameters)."""
+
+    @pytest.mark.parametrize(
+        ("parameter", "ordinary"), (("discharge", 3.0), ("water_temperature", 5.0))
+    )
+    def test_ordinary_readings_are_stored_passed(
+        self, parameter: str, ordinary: float
+    ) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        store.store_raw_observations(
+            [
+                _raw(station_id, 60, ordinary, parameter),
+                _raw(station_id, 0, ordinary + 0.1, parameter),
+            ]
+        )
+
+        _run_task(store, station_id, parameter=parameter)
+
+        rows = _by_minutes(store)
+        assert [rows[m].qc_status for m in (60, 0)] == [QcStatus.QC_PASSED] * 2
+
+    @pytest.mark.parametrize(
+        ("parameter", "ordinary", "impossible"),
+        (("discharge", 3.0, -1.0), ("water_temperature", 5.0, 55.0)),
+    )
+    def test_an_impossible_reading_is_stored_failed(
+        self, parameter: str, ordinary: float, impossible: float
+    ) -> None:
+        station_id = _station().id
+        store = FakeObservationStore()
+        store.store_raw_observations(
+            [
+                _raw(station_id, 60, ordinary, parameter),
+                _raw(station_id, 0, impossible, parameter),
+            ]
+        )
+
+        _run_task(store, station_id, parameter=parameter)
+
+        rows = _by_minutes(store)
+        assert rows[60].qc_status is QcStatus.QC_PASSED
+        assert rows[0].qc_status is QcStatus.QC_FAILED
 
 
 def _frozen_rule(min_consecutive: int) -> QcRuleParams:

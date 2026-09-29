@@ -1304,6 +1304,15 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `IngestResult.qc_unjudged`, apart from the zero-rule `qc_unchecked` (zero-rule wins).
   Reach: datum-less water level — every Swiss river station today — after any gap.
   Asserted in `tests/unit/flows/test_ingest_observations_unjudged.py`
+- Plan 323 T2: observation QC declares **eleven 3600 s rows** (discharge, water_level:
+  `range_check`, `rate_of_change`, `spike`, `gross_outlier`; water_temperature: no `spike`; no
+  `frozen_sensor` — D2), so an hourly group no longer selects zero rules. They are network-less
+  rows, `rule_version` `"1.0.0"`, and must stay identical across `config.toml`,
+  `docs/spec/config-reference.toml` and `_default_swiss_qc_rules()` (rule-set `version`
+  `1.2.0` in the two TOML files; the fallback keeps `1.0.0`). Two values are derived from 26.9 days
+  of hourly history and are provisional (water_temperature `max_rate` 2.358, discharge `spike`
+  `tolerance` 0.75); the rest copy the 600 s row. Asserted in
+  `tests/unit/config/test_qc_rules.py::TestHourlyRules`
 - Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
   RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
   `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`
