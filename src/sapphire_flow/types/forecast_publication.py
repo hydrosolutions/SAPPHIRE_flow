@@ -120,6 +120,14 @@ class PublicationSelection:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class PublicationEvent:
+    sequence: int
+    event_type: PublicationEventType
+    decision: PublicationDecision
+    withdrawn: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ProtectedBackupHealth:
     status: BackupProofStatus
     backup_id: UUID | None

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # NOT moved under TYPE_CHECKING (would trip ruff TC001): these are `Literal`
 # type aliases, not classes — pydantic resolves them at class-body evaluation
@@ -132,6 +132,16 @@ class ForecastSummary(BaseModel):
     input_quality_flags: list[dict[str, object]] | None = None
     # Plan 402 T3: [] when none — visible to every authenticated role (D13).
     qc_flags: list[QcFlagResponse] = []
+    # Null on deployments where human publication has not been activated.
+    publication_state: (
+        Literal["unpublished", "selected", "replaced", "withdrawn"] | None
+    ) = None
+    publication_decision_id: str | None = None
+    selection_version: int | None = None
+    published_at: datetime | None = None
+    preservation_at_publish: Literal["verified", "backup_pending"] | None = None
+    forecast_status: str | None = None
+    forecast_version: int | None = None
 
 
 class EnsembleResponse(BaseModel):
@@ -155,6 +165,91 @@ class ForecastDetail(ForecastSummary):
     source_model_ids: list[str] | None = None
     updated_at: datetime
     ensemble: EnsembleResponse
+
+
+class PublicationDecisionResponse(BaseModel):
+    id: str
+    station_id: str
+    parameter: str
+    issued_at: datetime
+    forecast_id: str
+    actor_user_id: str
+    action: Literal["publish", "withdraw"]
+    selection_version: int
+    forecast_version: int
+    preservation_at_publish: Literal["verified", "backup_pending"] | None
+    replaced_forecast_id: str | None
+    replaced_decision_id: str | None
+    reason_code: Literal["incorrect_forecast", "data_error", "other"] | None
+    reason_text: str | None
+    created_at: datetime
+
+
+class ReviewForecast(ForecastDetail):
+    capture_status: str
+    effective_preservation_status: str
+    attestation_id: str | None
+    remaining_reasons: list[str]
+    decisions: list[PublicationDecisionResponse]
+
+
+class PublishForecastRequest(BaseModel):
+    expected_forecast_version: int = Field(ge=1)
+    expected_selection_version: int | None = Field(default=None, ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class WithdrawForecastRequest(BaseModel):
+    expected_selection_version: int = Field(ge=1)
+    reason_code: Literal["incorrect_forecast", "data_error", "other"]
+    reason_text: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+    @field_validator("reason_text")
+    @classmethod
+    def _nonblank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("withdrawal reason text is required")
+        return value.strip()
+
+
+class PublicationHistoryItem(BaseModel):
+    sequence: int
+    event_type: Literal["published", "replaced", "withdrawn"]
+    decision: PublicationDecisionResponse
+    forecast: ForecastDetail | None
+    publication_state: Literal["selected", "replaced", "withdrawn"]
+
+
+class PublicationHistoryPage(BaseModel):
+    items: list[PublicationHistoryItem]
+    next_cursor: str | None
+
+
+class PublicationChangeEvent(BaseModel):
+    sequence: int
+    event_type: Literal["published", "replaced", "withdrawn"]
+    decision_id: str
+    station_id: str
+    forecast_id: str
+    replaced_forecast_id: str | None
+    created_at: datetime
+    withdrawn: bool
+
+
+class PublicationChangePage(BaseModel):
+    items: list[PublicationChangeEvent]
+    next_cursor: str | None
+
+
+class PublicationTombstone(BaseModel):
+    forecast_id: str
+    station_id: str
+    parameter: str
+    issued_at: datetime
+    publication_state: Literal["withdrawn"] = "withdrawn"
+    decision_id: str
+    withdrawn_at: datetime
 
 
 class AlertResponse(BaseModel):

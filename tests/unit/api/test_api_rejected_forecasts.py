@@ -339,8 +339,10 @@ def _override_principal(app: FastAPI, principal: object) -> None:
 def _clear_overrides() -> Iterator[None]:
     yield
     from sapphire_flow.api import app
+    from sapphire_flow.api.publication_gate import get_publication_gate
 
     app.dependency_overrides.pop(require_reviewer_or_human, None)
+    app.dependency_overrides.pop(get_publication_gate, None)
 
 
 class TestGetRejectedForecasts:
@@ -509,15 +511,17 @@ class TestGetRejectedForecasts:
         self,
         client: TestClient,
         rejected_fake_stores: dict,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from sapphire_flow.api import app
-        from sapphire_flow.api.routes import api_rejected_forecasts as route_module
-
-        monkeypatch.setattr(
-            route_module, "publication_gate_active", lambda tenant_id: True
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
         )
+
         station = make_station_config(code="RF-5")
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
         rejected_fake_stores["station_store"].store_station(station)
         _seed_rejected_entry(
             rejected_fake_stores["rejected_forecast_store"], station_id=station.id
@@ -533,6 +537,7 @@ class TestGetRejectedForecasts:
         resp = client.get(f"/api/v1/stations/{station.id}/rejected-forecasts")
         item = resp.json()["items"][0]
         assert item["withheld"] is True
+        assert resp.headers["cache-control"] == "no-store"
         assert item["values"] is None
         assert item["qc_flags"][0]["detail"] is None
         # every other field is still present
@@ -652,17 +657,19 @@ class TestGetRejectedForecasts:
         self,
         client: TestClient,
         rejected_fake_stores: dict,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from sapphire_flow.api import app
-        from sapphire_flow.api.routes import api_rejected_forecasts as route_module
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
 
         # Gate forced ON: a reviewer service token would be withheld, but a
         # granted human still sees everything (D4).
-        monkeypatch.setattr(
-            route_module, "publication_gate_active", lambda tenant_id: True
-        )
         station = make_station_config(code="RF-10")
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
         rejected_fake_stores["station_store"].store_station(station)
         _seed_rejected_entry(
             rejected_fake_stores["rejected_forecast_store"], station_id=station.id

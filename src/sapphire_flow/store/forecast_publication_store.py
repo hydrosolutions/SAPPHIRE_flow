@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,7 @@ from sapphire_flow.types.forecast_publication import (
     PreservationAtPublish,
     PublicationAction,
     PublicationDecision,
+    PublicationEvent,
     PublicationEventType,
     PublicationKey,
     PublicationSelection,
@@ -65,6 +67,15 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CandidateAssessment:
+    capture_status: str
+    preservation_status: str
+    attestation_id: str | None
+    remaining_reasons: tuple[str, ...]
+    preservation_at_publish: PreservationAtPublish | None
 
 
 class PublicationConflictError(ValueError):
@@ -386,6 +397,16 @@ class PgForecastPublicationStore:
             return None
         return self._selection_from_row(key, row)
 
+    def lock_read_snapshot(self) -> None:
+        # Writers UPDATE this singleton immediately before commit. Holding a
+        # shared lock until the request ends prevents a withdrawal from
+        # committing between selection and value serialization.
+        self._conn.execute(
+            sa.select(forecast_publication_sequence.c.next_value)
+            .where(forecast_publication_sequence.c.id == 1)
+            .with_for_update(read=True)
+        ).scalar_one()
+
     def fetch_decisions(self, forecast_id: ForecastId) -> list[PublicationDecision]:
         rows = (
             self._conn.execute(
@@ -402,6 +423,166 @@ class PgForecastPublicationStore:
             .all()
         )
         return [_decision_from_row(row) for row in rows]
+
+    def fetch_selected_ids(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        *,
+        model_id: str | None = None,
+        parameter: str | None = None,
+        degraded_only: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ForecastId], int]:
+        selection = forecast_publication_selections
+        filters = [
+            selection.c.station_id == station_id,
+            selection.c.issued_at >= start,
+            selection.c.issued_at < end,
+            selection.c.selected_forecast_id.is_not(None),
+        ]
+        if model_id is not None:
+            filters.append(forecasts.c.model_id == model_id)
+        if parameter is not None:
+            filters.append(selection.c.parameter == parameter)
+        if degraded_only:
+            filters.append(forecasts.c.input_quality.in_(("partial", "degraded")))
+        source = selection.join(
+            forecasts, forecasts.c.id == selection.c.selected_forecast_id
+        )
+        total = self._conn.execute(
+            sa.select(sa.func.count()).select_from(source).where(*filters)
+        ).scalar_one()
+        ids = self._conn.execute(
+            sa.select(selection.c.selected_forecast_id)
+            .select_from(source)
+            .where(*filters)
+            .order_by(
+                selection.c.issued_at.desc(), selection.c.selected_forecast_id.desc()
+            )
+            .limit(limit)
+            .offset(offset)
+        ).scalars()
+        return [ForecastId(value) for value in ids], total
+
+    def fetch_latest_selected_id(
+        self, station_id: StationId, parameter: str
+    ) -> ForecastId | None:
+        selection = forecast_publication_selections
+        value = self._conn.execute(
+            sa.select(selection.c.selected_forecast_id)
+            .where(
+                selection.c.station_id == station_id,
+                selection.c.parameter == parameter,
+                selection.c.selected_forecast_id.is_not(None),
+            )
+            .order_by(
+                selection.c.issued_at.desc(), selection.c.selected_forecast_id.desc()
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        return ForecastId(value) if value is not None else None
+
+    def fetch_events(
+        self,
+        *,
+        after_sequence: int,
+        limit: int,
+        tenant_ids: frozenset[TenantId],
+        station_ids: frozenset[StationId] | None = None,
+    ) -> list[PublicationEvent]:
+        if not tenant_ids:
+            return []
+        decision = forecast_publication_decisions
+        event = forecast_publication_events
+        withdrawal = decision.alias("withdrawal")
+        withdrawn = sa.exists(
+            sa.select(withdrawal.c.id).where(
+                withdrawal.c.forecast_id == event.c.forecast_id,
+                withdrawal.c.action == PublicationAction.WITHDRAW.value,
+            )
+        )
+        query = (
+            sa.select(
+                *decision.c,
+                event.c.sequence,
+                event.c.event_type,
+                withdrawn.label("withdrawn"),
+            )
+            .join(event, event.c.decision_id == decision.c.id)
+            .where(
+                event.c.sequence > after_sequence,
+                decision.c.tenant_id.in_(tenant_ids),
+            )
+            .order_by(event.c.sequence)
+            .limit(limit)
+        )
+        if station_ids is not None:
+            if not station_ids:
+                return []
+            query = query.where(decision.c.station_id.in_(station_ids))
+        rows = self._conn.execute(query).mappings().all()
+        return [
+            PublicationEvent(
+                sequence=row["sequence"],
+                event_type=PublicationEventType(row["event_type"]),
+                decision=_decision_from_row(row),
+                withdrawn=row["withdrawn"],
+            )
+            for row in rows
+        ]
+
+    def assess_candidate(
+        self, forecast_id: ForecastId, now: UtcDatetime
+    ) -> CandidateAssessment:
+        evidence = self._conn.execute(
+            sa.select(forecast_evidence.c.status).where(
+                forecast_evidence.c.forecast_id == forecast_id
+            )
+        ).scalar_one_or_none()
+        if evidence is None:
+            return CandidateAssessment(
+                capture_status="missing",
+                preservation_status="unavailable",
+                attestation_id=None,
+                remaining_reasons=("forecast has no captured evidence",),
+                preservation_at_publish=None,
+            )
+        try:
+            self._require_backup_health(self._conn, now)
+            self._require_no_overdue_proofs(self._conn, now)
+            preservation = self._preservation_at_publish(self._conn, forecast_id, now)
+        except PublicationUnavailableError as exc:
+            return CandidateAssessment(
+                capture_status=evidence,
+                preservation_status="unavailable",
+                attestation_id=None,
+                remaining_reasons=(str(exc),),
+                preservation_at_publish=None,
+            )
+        if preservation is PreservationAtPublish.BACKUP_PENDING:
+            return CandidateAssessment(
+                capture_status=evidence,
+                preservation_status="backup_pending",
+                attestation_id=None,
+                remaining_reasons=(),
+                preservation_at_publish=preservation,
+            )
+        attestation_id = self._conn.execute(
+            sa.select(protected_backup_forecast_proofs.c.attestation_id)
+            .where(protected_backup_forecast_proofs.c.forecast_id == forecast_id)
+            .order_by(protected_backup_forecast_proofs.c.verified_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return CandidateAssessment(
+            capture_status=evidence,
+            preservation_status="verified",
+            attestation_id=str(attestation_id) if attestation_id is not None else None,
+            remaining_reasons=(),
+            preservation_at_publish=preservation,
+        )
 
     def _forecast_header(
         self, txn: sa.Connection, forecast_id: ForecastId, *, lock: bool = False

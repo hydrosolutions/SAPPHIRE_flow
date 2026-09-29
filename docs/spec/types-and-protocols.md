@@ -1298,6 +1298,81 @@ Module: `api/model_visibility.py`. This is a query/render-time visibility facet,
 not a DB column. Station `no_floor` is likewise derived at query time from active
 `climatology_fallback` artifact presence.
 
+### Forecast publication API (Plan 341 T3)
+
+Publication is a separate, append-only human decision ledger; generation
+`forecasts.status` remains `raw` or `superseded`. T3's operational tenant gate is
+disabled in the released build. A nonempty `publication_active_tenant_ids` config
+value fails startup; tests inject an active gate. Plan 342 owns the first live
+activation and its warning/backup readiness checks.
+
+The API loads `SAPPHIRE_CONFIG` and uses its `protected_backup_max_age_hours`
+and `publication_proof_window_hours` when constructing the publication store.
+Without this config, ordinary inactive-tenant reads remain available and
+publication-dependent requests return 503.
+
+Named OIDC humans with a current station `review` grant may call
+`GET /api/v1/review/forecasts?station_id=<UUID>&start=<ISO>&end=<ISO>&limit=50&offset=0`
+and `GET /api/v1/review/forecasts/{forecast_id}`. The list window must be positive
+and at most 31 days. Each response carries full forecast values and QC/input
+quality fields, generation `forecast_status`/`forecast_version`,
+`publication_state`, `selection_version`, decision history, evidence
+`capture_status`, `effective_preservation_status`, `attestation_id` and
+`remaining_reasons`. A `publish` grant also requires `review` and permits:
+
+| Method and path | JSON request | JSON result |
+|---|---|---|
+| `POST /api/v1/review/forecasts/{id}/publish` | `expected_forecast_version` (positive integer), `expected_selection_version` (null only for a never-created key), `idempotency_key` (1–128 characters) | A decision with ID, actor user ID, station/parameter/issue time, forecast ID/version, selection version, replacement link, `preservation_at_publish` and timestamp. |
+| `POST /api/v1/review/forecasts/{id}/withdraw` | `expected_selection_version`, `idempotency_key`, `reason_code` (`incorrect_forecast`, `data_error`, `other`), nonblank `reason_text` | The reasoned withdrawal decision. |
+
+Both writes use the publication store's separate transaction, current grant
+recheck, candidate lock and optimistic versions. A stale selection or candidate
+returns 409; missing/out-of-scope returns 404; backup/evidence or activation
+unavailability returns 503. A linked current warning blocks withdrawal and
+same-key replacement until Plan 342 adds its joint transaction. No service
+token, including a reviewer or admin token, can enter the named-human routes.
+
+For an activated tenant, consumer, reviewer and admin service tokens share the
+same publication visibility on ordinary routes. Station scope still applies to
+consumer/reviewer tokens; admin is unscoped. `GET /api/v1/stations/{id}/forecasts`
+returns one selected ID per issue time and filters/paginates **after** selecting.
+`GET /api/v1/forecasts/{id}` returns values for selected and historical replaced
+IDs, even when the generation row is `superseded`; an unpublished ID returns
+404. A withdrawn ID returns HTTP 410 with only `forecast_id`, `station_id`,
+`parameter`, `issued_at`, `publication_state`, `decision_id`, and `withdrawn_at`.
+QC details and forecast values are absent from that tombstone. The selected
+forecast from the latest issue time is
+`GET /api/v1/stations/{id}/forecasts/latest-published?parameter=<name>`.
+
+`GET /api/v1/stations/{id}/forecast-publications?cursor=<opaque>&limit=50`
+returns bounded decision history. Each item carries its decision and original
+forecast values unless that ID was withdrawn; every occurrence of a withdrawn
+ID is a metadata-only history item. `GET /api/v1/forecast-publications` returns
+the station-scoped change feed, including publication, replacement and
+withdrawal links for downstream cache invalidation. Both feeds order by the
+transactionally allocated publication sequence, not by timestamp; `next_cursor`
+is an opaque base64 encoding of the last sequence (or the input position when
+the page is empty). A withdrawal event invalidates the forecast ID across all
+earlier decision IDs. History and feed access is authenticated. The Forecast Lab
+snapshot route denies an entire request containing an activated station before
+assembling RAW values. Legacy HTML and `/data.json` forecast views remain
+admin-only internal RAW diagnostics. Forecast-bearing API responses, including
+404 and 410 responses, set `Cache-Control: no-store`; downstream consumers use
+the sequence feed to invalidate any separately retained copies.
+
+Gated consumer reads hold a shared lock on the publication sequence row
+through response assembly. Publication and withdrawal transactions update
+that row before commit, so a withdrawal cannot commit midway through a
+response assembled from several database queries.
+
+Plan 404's `GET /api/v1/stations/{id}/rejected-forecasts` uses the same
+tenant gate through `PublicationGate.active`. For an activated tenant its
+reviewer service-token response withholds values and QC detail; a granted
+named human and an admin keep the full diagnostic view. The rejected route
+also receives `Cache-Control: no-store`. The committed map contract is version
+2.0 because activated publication changes existing forecast list/detail
+visibility; map consumers need notice before that activation.
+
 ### FlowRunState
 
 Enum representing the state of a Prefect flow run.

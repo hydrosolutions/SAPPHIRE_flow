@@ -20,6 +20,7 @@ from sapphire_flow.db.metadata import (
     forecast_publication_decisions,
     forecast_publication_events,
     forecast_publication_selections,
+    forecasts,
     human_station_grants,
     pipeline_health,
     protected_backup_forecast_proofs,
@@ -53,6 +54,7 @@ from tests.conftest import make_station_config
 from tests.integration.store.test_forecast_evidence_store import _evidence
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
+    _ISSUED_B,
     _make_forecast,
     _seed_artifact,
     _seed_model,
@@ -232,6 +234,90 @@ def _insert_proof(
 
 
 class TestPgForecastPublicationStore:
+    def test_selected_reader_filters_counts_and_paginates_after_selection(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store, principal, first_id, station_id = _seed(db_connection)
+        second_id = _add_candidate(db_connection, station_id, issued_at=_ISSUED_B)
+        _publish(store, principal, first_id)
+        _publish(store, principal, second_id, idempotency_key="newer-issue")
+        start = ensure_utc(_ISSUED_A - timedelta(hours=1))
+        end = ensure_utc(_ISSUED_B + timedelta(hours=1))
+
+        first_page = store.fetch_selected_ids(station_id, start, end, limit=1, offset=0)
+        second_page = store.fetch_selected_ids(
+            station_id, start, end, limit=1, offset=1
+        )
+        filtered = store.fetch_selected_ids(
+            station_id, start, end, model_id="linreg_v2"
+        )
+
+        assert first_page == ([second_id], 2)
+        assert second_page == ([first_id], 2)
+        assert filtered == ([second_id], 1)
+        assert store.fetch_latest_selected_id(station_id, "discharge") == second_id
+
+    def test_selected_reader_keeps_superseded_id_until_human_replacement(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store, principal, forecast_a, station_id = _seed(db_connection)
+        forecast_b = _add_candidate(db_connection, station_id)
+        first = _publish(store, principal, forecast_a)
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == forecast_a)
+            .values(status="superseded", version=2)
+        )
+        start = ensure_utc(_ISSUED_A - timedelta(hours=1))
+        end = ensure_utc(_ISSUED_A + timedelta(hours=1))
+        selected, total = store.fetch_selected_ids(station_id, start, end)
+        assert (selected, total) == ([forecast_a], 1)
+        assert store.fetch_latest_selected_id(station_id, "discharge") == forecast_a
+
+        _publish(
+            store,
+            principal,
+            forecast_b,
+            expected_selection_version=first.selection_version,
+            idempotency_key="replace",
+        )
+        selected, total = store.fetch_selected_ids(station_id, start, end)
+        assert (selected, total) == ([forecast_b], 1)
+
+    def test_event_cursor_is_sequence_ordered_and_withdrawal_tombstones_history(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store, principal, forecast_id, station_id = _seed(db_connection)
+        first = _publish(store, principal, forecast_id)
+        store.withdraw(
+            WithdrawRequest(
+                forecast_id=forecast_id,
+                expected_selection_version=1,
+                reason_code=WithdrawalReasonCode.DATA_ERROR,
+                reason_text="rating curve corrected",
+                idempotency_key="withdraw-first",
+            ),
+            principal,
+            decision_id=PublicationDecisionId(uuid4()),
+            now=_NOW,
+        )
+        page_one = store.fetch_events(
+            after_sequence=0,
+            limit=1,
+            tenant_ids=frozenset({DEFAULT_TENANT_ID}),
+            station_ids=frozenset({station_id}),
+        )
+        page_two = store.fetch_events(
+            after_sequence=page_one[-1].sequence,
+            limit=1,
+            tenant_ids=frozenset({DEFAULT_TENANT_ID}),
+            station_ids=frozenset({station_id}),
+        )
+        assert page_one[0].decision.id == first.id
+        assert page_one[0].withdrawn is True
+        assert page_two[0].event_type.value == "withdrawn"
+        assert page_two[0].sequence > page_one[0].sequence
+
     def test_legacy_evidence_requires_fresh_attestation_and_then_publishes(
         self, db_connection: sa.Connection
     ) -> None:
