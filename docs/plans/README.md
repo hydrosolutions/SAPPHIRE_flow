@@ -590,7 +590,8 @@ exit criteria — Plan 212 owns that deeper screening.
   `fallback` cycle and the **00:00 slot silently drops to obs-only** (1 clean daily
   bucket short). Chosen direction = offset the schedule (opt B); documented, not urgent.
   Diagnosed 2026-07-13.
-- **049** — Cloudflare public URL + Entra SSO for staging — `DRAFT` — depends on 046.
+- **049** — Swiss demo backend: Cloudflare Tunnel + service-token Access for the Mac mini, so the flow-map Worker can read `/api/v1` — `DEFERRED` 2026-09-29 (v1 first; future shape = read-only Swiss copy on a Swiss cloud server, not a tunnel). Nepal half is Plan 511; `prefect-server` network fix is Plan 109.
+- **511** — Nepal instance on a cloud server (Caddy auto-TLS, DHM-tenant reviewer key, off-box backup) for the flow-map — `DRAFT`; provisioning only, waits on Nepal onboarding/feed tracks for content.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
   readiness. Docs-first; no change to the v1.0 Nepal critical path.

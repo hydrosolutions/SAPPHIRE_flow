@@ -11,6 +11,17 @@ source: docs/plans/162-robust-database-backup.md § D4 + "Owner context 2026-08-
 
 # Plan 208 — backups must leave the box
 
+> **⚠️ NEEDS UPDATE before implementation (owner, 2026-09-29).** The v1 Nepal staging host is now
+> **Infomaniak Public Cloud (Switzerland), not AWS** (Plan 511 D3), and its off-box archive target is
+> **Cloudflare R2** (S3-compatible; Plan 162 D4 already allows it). This plan still assumes AWS. Update:
+> (1) D3 — credentials come from an R2 access key stored as a Docker secret plus the R2 endpoint
+> address, not the instance/task role (Infomaniak has none); (2) keep the write-only key and
+> bucket-lifecycle-expiry principles, checking that R2 API tokens can be scoped to one bucket with
+> write-only access and that R2 lifecycle rules exist; (3) check whether R2 supports object lock /
+> retention, which Plan 340's protected-backup proofs need; (4) restate the "Owner context" decision
+> (AWS, S3). **Priority: backups are NOT a v1 staging blocker** (owner, 2026-09-29) — Plan 511's backup
+> task waits on this plan and does not gate the first Nepal staging forecasts.
+
 ## Status
 
 **DRAFT.** Not for implementation until the owner confirms.
