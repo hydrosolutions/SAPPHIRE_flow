@@ -103,6 +103,11 @@ NOT catch an aquacast model whose inner model lacks it; the service-layer refusa
 holds. Touch `adapters/forecast_interface.py`'s retrain/`supports_warm_start` and re-run
 `tests/unit/services/test_training.py` + `tests/unit/flows/test_train_models.py`.
 
+⚠️ **The fine-tuning strategy allowlist lives on the shim class (`AquacastShim.FINETUNE_STRATEGIES`),
+never in the vendored yaml.** `config_hash` is the SHA-256 of the yaml's bytes and a retrain refuses a
+donor whose recorded hash differs, so any yaml edit invalidates every imported donor. Operator
+procedure: `docs/runbooks/model-fine-tuning.md`.
+
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,
 prediction input assembly, model execution, or ModelFailure semantics. For
