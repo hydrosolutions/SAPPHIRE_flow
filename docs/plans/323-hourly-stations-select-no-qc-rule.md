@@ -23,8 +23,8 @@ rounds on 2026-09-26. Rounds 1-6 were NOT READY; round 7 was Codex READY and Cla
 (§ Review record). Owner decisions changed on both days (D1, D2, D3), and D4 and D5 were added on
 2026-09-26.
 
-⚠️ **T1 needs the staging store**, which is off the network while the owner is away from the office
-(about two days from 2026-09-26). T2 may not invent a number T1 has not produced (D1). ⇒ **Owner,
+⚠️ **T1 needed the staging store**, which was off the network while the owner was away from the office
+(about two days from 2026-09-26); **T1 has since been run (2026-09-29, § T1 result).** T2 may not invent a number T1 has not produced (D1). ⇒ **Owner,
 2026-09-26: build T4 first** — it needs no measured number. Its RED test therefore uses a case that
 exists on today's rule set (a 10-minute datum-less water-level group, § T4 Pre-change) instead of
 the hourly one, which becomes a T2 verification. All tasks stay on one branch and one PR, so T5's
@@ -33,13 +33,14 @@ the hourly one, which becomes a T2 verification. All tasks stay on one branch an
 📏 **T1 measured 2026-09-29** (§ T1 result). The five gauges have 26.9 days of hourly history, so every
 derived threshold is provisional. Two of the eleven D1 values are derived (water_temperature `max_rate`
 2.358, discharge `spike` `tolerance` 0.750); the rest are copied 600 s values. The premise D3 rested on
-**holds**: 95.1% of these stations' readings would find a 3600 s neighbour on the run that stores them
-(§ (10) estimated 95.3%). A first reading of the live zero-rule records looked like 57.7%, but those
-entries count runs, not readings, and are not comparable (§ T1 result).
+is **consistent with the new measurement**: 95.1% of these stations' readings had a stored hourly
+neighbour when they were stored (§ (10) estimated 95.3%) — a proxy for "the window infers 3600 s", not
+a replay of it (§ T1 result); T5 measures the real share. A first reading of the live zero-rule records
+looked like 57.7%, but those entries count runs, not readings, and are not comparable.
 
 🔄 **Reconciled with `main` on 2026-09-29 (after PRs #315, #324, #328, #332).** T4 is built and
 re-applied on top of that `main` — branch `feat/plan-323-t4-rebased`, reviewed READY by an independent
-Claude and by Codex on the rebased code; T1, T2, T3 and T5 are not built. What changed under this plan,
+Claude and by Codex on the rebased code; T1 is measured (§ T1 result); T2, T3 and T5 are not built. What changed under this plan,
 and what it changes for the tasks still to build:
 - **Selection is now per network** (#315): `resolve_selection`, `check` and T4's `check_with_coverage`
   take a required `station_networks` mapping, and `rules_for` lets a network-specific rule replace a
@@ -47,7 +48,8 @@ and what it changes for the tasks still to build:
   `network`, so they apply to every station; a later `network = "…"` row at 3600 s (303, for DHM)
   would replace them for that network. T2's selection test must pass a network for its station.
 - **Flags now carry their own rule's `rule_version`**; the module constant `_RULE_VERSION = "1.2"` is
-  gone. T2's eleven rows therefore need a `rule_version`: **`"1.0.0"`, as all 29 shipped rows use.**
+  gone. T2's eleven rows therefore need a `rule_version`: **`"1.0.0"`, as all 29 shipped rows use.** (`docs/spec/config-reference.toml` loads 31 rules and the
+  fallback 28: the three surfaces do not hold the same set, so T2 must not assume they do.)
   The rule set's own `version` moves when rows are added (#332 took it to `1.1.0` for its three DHM
   rows): **T2 sets it to `1.2.0`.** Both follow the precedent, not a new decision; the reviewer of T2
   should confirm them.
@@ -62,7 +64,8 @@ and what it changes for the tasks still to build:
   T2 and T4 now name the code by symbol.
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
-*checkable*: about 95% of their checks will run real rules. It does **not** make the Plan 318
+*checkable*: about 95% of their checks should run real rules (the § (10) estimate; the T1 proxy is
+consistent with it; T5 measures it). It does **not** make the Plan 318
 watchdog go quiet — § (10) measures why, and the owner accepted that leftover on 2026-09-25 (D3).
 Plan 400 is the follow-on that closes it.
 
@@ -127,8 +130,8 @@ All figures from the staging host, 2026-09-24, unless stated.
    (absolute) and otherwise reads `tolerance` (relative to the previous value). Discharge uses the
    relative form, water_level the absolute one. ⛔ *Checked because it looked like a defect. It is
    not — do not "fix" it.*
-8. ⚠️ **`frozen_sensor.min_consecutive` is a COUNT, not a duration.** 12 readings is 2 h at 600 s
-   and would be **12 h at 3600 s**. Carrying the number across unchanged silently changes what the
+8. ⚠️ **`frozen_sensor.min_consecutive` is a COUNT, not a duration.** 12 readings span 110 min at 600 s
+   and would span **11 h at 3600 s**. Carrying the number across unchanged silently changes what the
    rule means. This is the one threshold that cannot be copied even if D1 says "copy".
 9. **The forecast path is already safe.** Plan 316 (merged) routes an unchecked reading to
    forecasting marked `DEGRADED` and keeps it out of alerts, skill scoring and training. So this is
@@ -148,8 +151,9 @@ All figures from the staging host, 2026-09-24, unless stated.
     an estimate of the rate, not of the reason code an operator sees; T1 re-measures it from the
     live zero-rule records. Because the watchdog alerts whenever ANY zero-rule record exists in the last 6 h
     (`ops/watchdog.py:220`), replaying those misses against 5-minute watchdog ticks puts it in the
-    failing state **64% of the time, on 15 of 15 days**. ⇒ This plan cannot make the warning stop;
-    D3 records the owner's acceptance of that, and Plan 400 is the fix.
+    failing state **64% of the time, on 15 of 15 days** *in that replay* — evidence that residual warnings
+    are likely, not an established post-deploy schedule (§ T1 result). ⇒ This plan is not expected to
+    make the warning stop; D3 records the owner's acceptance of that, and Plan 400 is the fix.
 11. 🔴 **`frozen_sensor` cannot fire at hourly in that window.** `min_consecutive` counts distinct
     instants inside the fetched rows (`services/qc.py:152-210`), and the window holds at most three
     hourly readings. Any count above 3 is inert; a count of 3 means "flat for ~2-3 h", which in the
@@ -256,16 +260,17 @@ rather than introduce a `spike` check that exists nowhere else for temperature.
 skipped for a water-level station with no datum (D1), so its selection is 2 runnable rules, not 4.
 
 🔴 **Whichever plan adds hourly `frozen_sensor` must re-express `min_consecutive`, not copy it**
-(§ 8): it counts READINGS, so the 600 s value of 12 means 2 h there and would mean 12 h at 3600 s.
+(§ 8): it counts READINGS, so the 600 s value of 12 spans 110 min there and would span 11 h at 3600 s.
 And per D1's first hazard it must come from a stated percentile of the flat-run distribution, not
 from the longest run observed. T1 of this plan measures that distribution so the later plan need
 not.
 
 ### D3 — the checks that still find no rule. **⚖️ CLOSED — owner, 2026-09-25: accept the leftover here; fix the interval in Plan 400.**
 
-🔄 *Re-measured 2026-09-29 (§ T1 result): per reading, from production timestamps, 95.1% of readings
-would find a 3600 s neighbour on the run that stores them — the ~5% leftover this decision rested on
-holds. It is a per-reading figure; T5 measures the real one after deploy.*
+🔄 *Re-measured 2026-09-29 (§ T1 result): from production timestamps, 95.1% of readings had a stored
+hourly neighbour at the time they were stored — a neighbour-availability proxy that is consistent with
+the ~5% leftover this decision rested on, not a replay of the window. T5 measures the real figure after
+deploy; this decision is unchanged.*
 
 § (10) estimated that about 5% of hourly checks will still infer no cadence, or one no rule
 declares, because one missing reading in a two- or three-reading window leaves one reading or
@@ -373,7 +378,8 @@ threshold T2 writes can cite a row of it.
 - **The pre-deploy per-check share** — a diagnostic, not a gate, and measured before T2 only: the
   zero-rule health records (Plan 318) carry each group's reason and inferred seconds per run, and
   today every hourly group is in them, so the share of the five stations' entries with an inferred
-  cadence of exactly 3600 s is well defined. ⛔ It cannot be re-measured after T2: a group that
+  cadence of exactly 3600 s is well defined. ⚠️ *(Measured 2026-09-29: these entries count runs, not
+  readings, so this share is a diagnostic of timing only — § T1 result.)* ⛔ It cannot be re-measured after T2: a group that
   selects rules writes no record (`flows/ingest_observations.py:281`), so no denominator exists.
 - **Datum coverage, fleet-wide** (D4): the number of water-level groups whose station has no
   `water_level_datum_masl`, and which of the five are among them — so T4's extra `QC_UNCHECKED`
@@ -453,31 +459,42 @@ edge of a window is affected.
 Zero-rule records (`observation_qc_unchecked`), 2026-09-24 11:25 → 2026-09-29 12:55 UTC, the five
 stations' entries: **5,847 infer exactly 3600 s (57.7%) and 4,268 infer `None`
 (`no_cadence_inferable`)**; 14 infer 3300 s and 12 infer 3900 s. ⚠️ **These entries count runs, not
-readings.** Every measured hourly reading of these stations is still `QC_UNCHECKED`, and ingest picks
-up `QC_UNCHECKED` rows again on every run (`_QC_PICKUP_STATUSES`), so each 5-minute run re-logs the same
-unchecked readings: 1,154 runs with an entry × nine groups ≈ the 10,141 entries. After T2 a reading is
-checked once, on the run that stores it, and is then no longer pending, so the runs between arrivals log
-nothing. The 57.7% is therefore not comparable to § (10)'s 95.3% and neither refutes nor confirms it.
+readings.** Every measured hourly reading of these stations in the last 48 hours is still `QC_UNCHECKED` (all 45
+per series; older history is mixed, e.g. 2251 discharge has 475 passed and 116 unchecked), and ingest
+picks up `QC_UNCHECKED` rows still inside the 2 h window (or the fetched times) again on every run
+(`_QC_PICKUP_STATUSES`), so each 5-minute run re-logs the same unchecked readings: 1,154 runs with an
+entry × nine groups ≈ the 10,141 entries. After T2, a reading that receives a terminal verdict is no
+longer pending, so the runs between arrivals log nothing for it; a reading no rule can judge, or one
+after a missing hour that selects no rule, stays pending and is re-reported (T4 leaves unjudgeable
+readings pending on purpose). The 57.7% is therefore not comparable to § (10)'s 95.3% and neither refutes nor confirms it.
 What it does show is *when* the entries fall, by minute past the hour: `None` entries 1,604 (:00-:09),
 1,486 (:10-:19), 759 (:20-:29), then 137/140/142; 3600 s entries 0, 153, 1,097, then ~1,530 per bucket.
 
 **The per-reading figure that D3 rested on, re-measured from production timestamps (2026-09-29).**
 For each of the five stations' 4,111 measured readings in the last 20 days: would a reading exactly
 3600 s earlier or later, already stored at or before this reading's own `created_at`, be in the window
-on the run that stored it? **3,908 of 4,111 (95.1%) would**, against § (10)'s replay estimate of 95.3%
-— the premise D3 was decided on **holds**. Readings are stored a median of 25.0 min after their hour
+on the run that stored it? **3,908 of 4,111 (95.1%) do**, against § (10)'s replay estimate of 95.3% —
+**consistent with** the premise D3 was decided on; it does not establish it (limitations below). Readings are stored a median of 25.0 min after their hour
 (mean 23.9, p90 25.1) — that is when they reach our database (`created_at`), not when BAFU publishes
 them, which is not measured. A late newest reading is consistent with, and by the window definition
 sufficient for, runs in the first ~20 minutes seeing one reading and logging `None`; the data do not
-exclude other causes (the series also has real gaps, e.g. 30 two-hour gaps at 2251). ⚠️ This is an approximation (a neighbour at
-±3600 s standing in for "the window infers 3600 s"), not a replay of `infer_time_step`. The definitive
+exclude other causes (the series also has real gaps, e.g. 30 two-hour gaps at 2251). ⚠️ **This is a neighbour-availability proxy, not a replay.** It checks that a reading ±3600 s away was
+already stored; it does not check that the neighbour lies inside the QC window `[now − 2 h, now + 1 h)`
+of the run that stored the reading (a reading stored at 12:25 can match an already-stored 10:00 one
+that is outside `[10:25, …)`), does not compute the median gap `infer_time_step` uses (an extra off-grid
+timestamp can move it), and `created_at <= created_at` excludes a neighbour stored later in the same
+batch. It therefore can overstate (catch-up batches after gaps, a stray older row) and can understate
+(same-batch neighbours; an unchecked reading is re-picked while it stays in the window, so eventual
+coverage is higher than first-run coverage). The definitive
 figure is T5's per-reading share after deploy, with the post-deploy zero-rule records (T5 already
 requires their reasons); ⇒ the watchdog's behaviour after T2 is **not predicted from this data**.
 
-**Recorded queries, so the table can be re-run.** ⚠️ As-of 2026-09-29 ~13:00 UTC: the extraction had no
-upper bound and the health/datum/per-reading queries use `now()` or the record table's current
-contents, so a re-run later returns a longer history; to reproduce the printed baseline bound them at
-`timestamp < '2026-09-29 13:00+00'` / `checked_at < '2026-09-29 13:00+00'`. Extraction (mini, `docker compose exec -T postgres
+**Recorded queries, so the table can be re-run.** ⚠️ As-of instant **2026-09-29 13:00 UTC** (the
+extraction and queries ran between ~12:55 and ~14:50; the printed baseline is bounded at that instant
+by `< '2026-09-29 13:00+00'` below). The extraction itself had no upper bound in the run recorded here
+(the latest measured reading is 2026-09-29 12:00 UTC, so the bound changes nothing for it). The
+bounded per-reading and datum queries were re-run and return the printed figures (4,111 / 3,908 /
+95.1% / mean 23.9, p50 25.0, p90 25.1 min; 142 of 142). Extraction (mini, `docker compose exec -T postgres
 psql -U sapphire -d sapphire`):
 ```sql
 \copy (select s.code, o.parameter, o.source, o.timestamp, o.value, o.qc_status
@@ -490,22 +507,28 @@ select (extract(minute from r.checked_at)::int/10)*10 as minute_bucket,
        count(*) filter (where g->>'reason'='no_cadence_inferable') as none_inferable
 from pipeline_health r cross join lateral jsonb_array_elements(r.detail->'zero_rule_groups') g
 join stations s on s.id::text = g->>'station_id' and s.code in ('2251','2252','2319','2474','2623')
-where r.check_type='observation_qc_unchecked' group by 1 order by 1;
+where r.check_type='observation_qc_unchecked'
+  and r.checked_at >= '2026-09-24 11:25+00' and r.checked_at < '2026-09-29 13:00+00'
+  group by 1 order by 1;
 -- per-reading: would each reading find an hourly neighbour on the run that stored it? (last 20 days)
 with r as (select s.code, o.parameter, o.timestamp, o.created_at
            from observations o join stations s on s.id=o.station_id
            where s.code in ('2251','2252','2319','2474','2623') and o.source='measured'
-             and o.value is not null and o.timestamp > now() - interval '20 days'),
+             and o.value is not null
+             and o.timestamp > '2026-09-09 13:00+00' and o.timestamp < '2026-09-29 13:00+00'),
 x as (select a.*, exists (select 1 from r b where b.code=a.code and b.parameter=a.parameter
         and b.timestamp in (a.timestamp - interval '1 hour', a.timestamp + interval '1 hour')
         and b.created_at <= a.created_at) as has_hourly_neighbour from r a)
 select count(*), count(*) filter (where has_hourly_neighbour),
-       percentile_cont(0.5) within group (order by extract(epoch from (created_at - timestamp))/60) as p50_min_after_hour
+       avg(extract(epoch from (created_at - timestamp))/60) as mean_min,
+       percentile_cont(0.5) within group (order by extract(epoch from (created_at - timestamp))/60) as p50_min,
+       percentile_cont(0.9) within group (order by extract(epoch from (created_at - timestamp))/60) as p90_min
 from x;
 -- datum coverage
 select count(*) filter (where st.water_level_datum_masl is null) as no_datum, count(*) as total
 from (select distinct o.station_id from observations o where o.parameter='water_level'
-      and o.source='measured' and o.timestamp > now() - interval '2 days') w
+      and o.source='measured'
+      and o.timestamp > '2026-09-27 13:00+00' and o.timestamp < '2026-09-29 13:00+00') w
 join stations st on st.id = w.station_id;
 ```
 Analysis (Python, on the extracted CSV): keep `source='measured'` with non-null values, sort by
