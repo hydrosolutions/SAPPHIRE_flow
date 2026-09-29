@@ -243,7 +243,7 @@ class DeliveryObservationReader(PgObservationStore):
         source: ObservationSource | None = None,
     ) -> list[Observation]:
         rows = super().fetch_observations(
-            station_id, parameter, start, end, qc_status, source
+            station_id, parameter, start, end, qc_status=qc_status, source=source
         )
         return [
             r

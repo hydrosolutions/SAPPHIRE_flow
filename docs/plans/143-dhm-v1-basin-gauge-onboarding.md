@@ -33,6 +33,8 @@ state and bindings and releases the tenant lock at commit. Later failures retain
 earlier batches, while dry runs roll back every batch. Requalification treats
 station-specific missing or conflicting history bindings as holds and clears
 their discharge targets, while reporting all six gauges.
+The delivery reader forwards the training assembler's QC_PASSED filter and is
+included in the observation-consumer policy inventory.
 
 | Prerequisite | State at this revision | Remaining gate for Plan 143 |
 |---|---|---|
