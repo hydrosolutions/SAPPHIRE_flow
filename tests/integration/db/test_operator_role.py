@@ -246,6 +246,18 @@ _GUARD_REFUSES: dict[str, list[_Statement]] = {
         "ON CONFLICT (station_id, timestamp, parameter, source) "
         "DO UPDATE SET value = excluded.value"
     ],
+    "upsert-a-chwrr-candidate-over-a-swiss-row-by-primary-key": [
+        "INSERT INTO public.observations (id, station_id, timestamp, parameter, "
+        "value, source, delivery_id) VALUES (:swiss_obs_id, :s447, :t, "
+        "'discharge', 5.0, 'manual_import', :d) "
+        "ON CONFLICT (id) DO UPDATE SET value = excluded.value"
+    ],
+    "upsert-over-another-deliverys-row-at-a-chwrr-station": [
+        "INSERT INTO public.observations (id, station_id, timestamp, parameter, "
+        "value, source, delivery_id) VALUES (:other_obs_id, :s447, :t, "
+        "'discharge', 5.0, 'manual_import', :d) "
+        "ON CONFLICT (id) DO UPDATE SET value = excluded.value"
+    ],
     "clear-the-delivery-tag": [
         "UPDATE public.observations SET delivery_id = NULL WHERE delivery_id = :d"
     ],
@@ -342,6 +354,15 @@ class TestGuardRefusesEveryWriteOutsideTheDelivery:
             **db.ids,
             "other_tenant": db.scalar(
                 "SELECT id FROM tenants WHERE code = 'other-tenant'"
+            ),
+            "swiss_obs_id": db.scalar(
+                "SELECT id FROM observations WHERE station_id = :s "
+                "AND delivery_id IS NULL",
+                s=db.ids["swiss"],
+            ),
+            "other_obs_id": db.scalar(
+                "SELECT id FROM observations WHERE delivery_id = :o",
+                o=db.ids["other"],
             ),
         }
         outcome = db.attempt(_GUARD_REFUSES[name])
@@ -629,13 +650,23 @@ class TestBootstrapLoginHandling:
         )
         assert result.returncode == 0, result.stderr
         assert "unreadable" in result.stderr
+        assert (
+            db.scalar("SELECT rolcanlogin FROM pg_roles WHERE rolname = :r", r=OPERATOR)
+            is False
+        )
         assert not self._can_log_in(db)
+        assert not self._can_log_in(db, OPERATOR_PW)
 
     def test_an_empty_secret_leaves_the_role_without_login(
         self, db: OperatorDb
     ) -> None:
         db.bootstrap(operator_password="")
+        assert (
+            db.scalar("SELECT rolcanlogin FROM pg_roles WHERE rolname = :r", r=OPERATOR)
+            is False
+        )
         assert not self._can_log_in(db, "")
+        assert not self._can_log_in(db, OPERATOR_PW)
 
     def test_the_secret_enables_login_and_rotation_replaces_the_password(
         self, db: OperatorDb
@@ -700,6 +731,17 @@ def _trigger_definition(db: OperatorDb, name: str) -> str:
     )
 
 
+def _all_table_privileges(db: OperatorDb) -> dict[str, list[str]]:
+    """Privileges beyond PostGIS's own PUBLIC-readable catalog relations."""
+    public_postgis = {"geography_columns", "geometry_columns", "spatial_ref_sys"}
+    with db.owner.connect() as conn:
+        return {
+            table: privileges
+            for table, privileges in _signature(conn, OPERATOR).items()
+            if table not in public_postgis
+        }
+
+
 def _dml_privileges(db: OperatorDb) -> list[tuple[str, str]]:
     with db.owner.connect() as conn:
         held = _signature(conn, OPERATOR)
@@ -729,8 +771,12 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
             assert result.returncode == 0, result.stderr
             assert "guard trigger" in result.stderr
             assert _dml_privileges(db) == []
+            assert _all_table_privileges(db) == {}
             assert (
-                db.scalar("SELECT count(*) FROM pg_trigger WHERE tgname = :n", n="x")
+                db.scalar(
+                    "SELECT count(*) FROM pg_trigger WHERE tgname = :n",
+                    n=self._TRIGGER,
+                )
                 == 0
             )
             assert db.attempt(
@@ -764,11 +810,43 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
         with db.owner.begin() as conn:
             conn.execute(sa.text(f"ALTER TABLE {table} DISABLE TRIGGER {trigger}"))
         try:
+            assert (
+                db.scalar(
+                    "SELECT tgenabled FROM pg_trigger WHERE tgname = :n", n=trigger
+                )
+                == "D"
+            )
             db.bootstrap()
             assert _dml_privileges(db) == []
+            assert _all_table_privileges(db) == {}
         finally:
             with db.owner.begin() as conn:
                 conn.execute(sa.text(f"ALTER TABLE {table} ENABLE TRIGGER {trigger}"))
+            db.bootstrap()
+        assert _dml_privileges(db)
+
+    def test_a_guard_trigger_without_its_when_clause_counts_as_broken(
+        self, db: OperatorDb
+    ) -> None:
+        trigger = "trg_observations_operator_guard_insert"
+        definition = _trigger_definition(db, trigger)
+        assert "WHEN" in definition
+        with db.owner.begin() as conn:
+            conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+            conn.execute(
+                sa.text(
+                    f"CREATE TRIGGER {trigger} BEFORE INSERT ON observations "
+                    "FOR EACH ROW EXECUTE FUNCTION "
+                    "public.operator_guard_delivery_row()"
+                )
+            )
+        try:
+            db.bootstrap()
+            assert _all_table_privileges(db) == {}
+        finally:
+            with db.owner.begin() as conn:
+                conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+                conn.execute(sa.text(definition))
             db.bootstrap()
         assert _dml_privileges(db)
 
@@ -943,14 +1021,22 @@ class TestTenantLockIsSharedByEveryRole:
 
 
 class TestNoUnexpectedFunctionWritesTheGuardedTables:
-    def test_no_function_in_public_writes_the_guarded_tables(
-        self, db: OperatorDb
-    ) -> None:
+    """A static scan of function source text across every non-system schema. It
+    is NOT a dynamic-SQL detector: a function that builds its statement with
+    EXECUTE from strings is invisible to it."""
+
+    _NON_SYSTEM = (
+        "pronamespace NOT IN ('pg_catalog'::regnamespace, "
+        "'information_schema'::regnamespace) "
+        "AND pronamespace::regnamespace::text NOT LIKE 'pg_toast%'"
+    )
+
+    def test_no_function_writes_the_guarded_tables(self, db: OperatorDb) -> None:
         writers = db.scalar(
             "SELECT string_agg(proname, ', ') FROM pg_proc "
-            "WHERE pronamespace = 'public'::regnamespace "
+            f"WHERE {self._NON_SYSTEM} "
             "AND prosrc ~* '(insert into|update|delete from|truncate)\\s+"
-            "(only\\s+)?(public\\.)?(observations|rating_curves|stations)\\y'"
+            "(only\\s+)?([a-z_]+\\.)?(observations|rating_curves|stations)\\y'"
         )
         assert writers is None
 
@@ -959,9 +1045,122 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
     ) -> None:
         names = db.scalar(
             "SELECT string_agg(proname, ', ' ORDER BY proname) FROM pg_proc "
-            "WHERE pronamespace = 'public'::regnamespace AND prosecdef"
+            f"WHERE {self._NON_SYSTEM} AND prosecdef"
         )
         assert names == "lock_publication_candidate, lock_publication_grants"
+
+
+class TestCopyIsGuarded:
+    def _copy(self, db: OperatorDb, station: str) -> Outcome:
+        engine = db.engine()
+        raw = engine.raw_connection()
+        try:
+            cursor = raw.cursor()
+            try:
+                with cursor.copy(  # type: ignore[attr-defined]
+                    "COPY public.observations (id, station_id, timestamp, "
+                    "parameter, value, source, delivery_id) FROM STDIN"
+                ) as copy:
+                    copy.write_row(
+                        (
+                            uuid4(),
+                            db.ids[station],
+                            _T,
+                            "discharge",
+                            3.0,
+                            "manual_import",
+                            DELIVERY_ID,
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 - classify any driver error
+                return Outcome(
+                    ok=False,
+                    pgcode=getattr(exc, "sqlstate", None),
+                    message=str(exc),
+                )
+            finally:
+                raw.rollback()
+            return Outcome(ok=True, pgcode=None, message="")
+        finally:
+            raw.close()
+            engine.dispose()
+
+    def test_a_delivery_tagged_chwrr_row_is_accepted(self, db: OperatorDb) -> None:
+        assert self._copy(db, "s447").ok
+
+    def test_a_swiss_station_row_is_refused_by_the_guard(self, db: OperatorDb) -> None:
+        outcome = self._copy(db, "swiss")
+        assert outcome.refused_by_guard, outcome
+
+
+class TestTruncateTriggerRefusesEvenWithTheGrant:
+    @pytest.mark.parametrize("table", ["observations", "rating_curves", "stations"])
+    def test_the_guard_itself_refuses_truncate(
+        self, db: OperatorDb, table: str
+    ) -> None:
+        with _owner_ran(
+            db,
+            [f"GRANT TRUNCATE ON ALL TABLES IN SCHEMA public TO {OPERATOR}"],
+            [f"REVOKE TRUNCATE ON ALL TABLES IN SCHEMA public FROM {OPERATOR}"],
+        ):
+            outcome = db.attempt([f"TRUNCATE public.{table} CASCADE"])
+        assert outcome.refused_by_guard, outcome
+        assert "may not TRUNCATE" in outcome.message
+
+
+class TestOperatorTempTableDoesNotBlockTheBootstrap:
+    """An operator session that created a temp table and stays open must neither
+    abort `init` nor keep its privileges when the bootstrap converges."""
+
+    def _open_session_with_temp_table(
+        self, db: OperatorDb
+    ) -> tuple[sa.Engine, sa.Connection]:
+        engine = db.engine()
+        conn = engine.connect()
+        conn.execute(sa.text("CREATE TEMP TABLE scratch (id int)"))
+        conn.commit()
+        return engine, conn
+
+    def test_a_healthy_guard_still_bootstraps(self, db: OperatorDb) -> None:
+        engine, conn = self._open_session_with_temp_table(db)
+        try:
+            db.bootstrap()
+            assert _dml_privileges(db)
+            assert conn.scalar(sa.text("SELECT 1")) == 1
+        finally:
+            conn.close()
+            engine.dispose()
+
+    def test_a_broken_guard_revokes_the_open_sessions_privileges(
+        self, db: OperatorDb
+    ) -> None:
+        engine, conn = self._open_session_with_temp_table(db)
+        db.ids = {**db.ids, "t": _T}
+        try:
+            with _owner_ran(
+                db,
+                [
+                    "ALTER TABLE observations DISABLE TRIGGER "
+                    "trg_observations_operator_guard_insert"
+                ],
+                [
+                    "ALTER TABLE observations ENABLE TRIGGER "
+                    "trg_observations_operator_guard_insert"
+                ],
+            ):
+                db.bootstrap()
+                assert _all_table_privileges(db) == {}
+                with pytest.raises(sa.exc.ProgrammingError, match="permission denied"):
+                    conn.execute(
+                        sa.text(_INSERT_OBS.format(station="swiss", delivery="NULL")),
+                        db.ids,
+                    )
+                conn.rollback()
+        finally:
+            conn.close()
+            engine.dispose()
+            db.bootstrap()
+        assert _dml_privileges(db)
 
 
 def _stub_bin(directory: Path) -> Path:

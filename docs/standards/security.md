@@ -1177,6 +1177,12 @@ warning, and lets `init` continue (an aborted `init` would leave the whole stack
 migration's downgrade revokes the operator's DML **before** dropping the triggers, so the migration-only
 path leaves no unguarded interval.
 
+**Residual: forged audit rows.** `INSERT`-only on `audit_log` still lets the operator write rows with any `event_type` and `actor_type`; the append-only trigger stops edits, not forgeries. Attribution of who ran a job is deferred to v1.x.
+
+**Temporary tables.** An operator session may hold a temp table; the bootstrap's ownership preflight skips temporary relations (so it never aborts `init`) and revokes the role's privileges before that preflight runs, so an open session loses them at once. `DROP OWNED` may remove that session's temp table.
+
+**Overhead of the guard triggers (measured).** 20,000-row `store_raw_observations` batches into `observations` as a real `sapphire_worker`-style login, 7 runs each, medians: inserts 5.95 s / 5.89 s with the guard triggers vs 6.09 s / 5.89 s with them disabled; upserts 6.25 s / 6.33 s vs 6.40 s / 6.09 s. The `WHEN (session_user = ...)` clause showed no difference beyond run-to-run noise (about 4 %). Measured once on a laptop container with a single station and no concurrent load; nothing more is claimed.
+
 **Attribution.** Audit rows are written as the system actor (`AuditEventType.DELIVERY_IMPORTED`, counts
 only, in the mutation's own transaction; a failed audit write rolls the mutation back). They carry no
 operator identity; per-person attribution is deferred to v1.x. Rejections stay log-only.

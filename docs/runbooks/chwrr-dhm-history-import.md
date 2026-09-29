@@ -24,7 +24,7 @@ credential. It is created without login; an owner activates it once by creating
 delivery replacement, which also has rotation and the emergency revoke). A deploy
 without that overlay puts the role back to no login, so a forgotten overlay looks
 like a revoke. The database itself limits the role: it can only write rows tagged
-with this delivery at the six `chwrr` stations, and each successful command
+with this delivery at stations of the `chwrr` tenant (the rule is tenant-based by design: the credential could also create further `chwrr` stations and write delivery-tagged rows there, but nothing outside that tenant and delivery), and each successful command
 appends one audit row (counts only, no values). Set the delivery directory once
 per shell, then every command below is:
 

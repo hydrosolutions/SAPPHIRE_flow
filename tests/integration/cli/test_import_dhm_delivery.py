@@ -738,3 +738,126 @@ def test_the_three_commands_work_on_a_tenant_created_by_the_deploy_step(
     assert station is not None
     assert station.tenant_id == provisioned["chwrr"].id
     assert _audit_count(db_connection) == before + 3
+
+
+def _delivery_files(metadata):  # type: ignore[no-untyped-def]
+    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
+    rating = parse_rating_tables(
+        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
+    )
+    return {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations
+    }
+
+
+def test_failed_audit_write_rolls_back_the_qc_statuses(
+    db_connection: sa.Connection,
+) -> None:
+    _seed_chwrr(db_connection)
+    tenants = PgTenantStore(db_connection)
+    stations = PgStationStore(db_connection)
+    observations = PgObservationStore(db_connection)
+    audit = PgAuditLogStore(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    register_stations(
+        tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+    )
+    replace_delivery(
+        tenants,
+        stations,
+        PgRatingCurveStore(db_connection),
+        observations,
+        _CHWRR,
+        _delivery_files(metadata),
+        audit_log_store=audit,
+        now=_NOW,
+    )
+    ids = [
+        s.id
+        for spec in metadata.stations
+        if (s := stations.fetch_station_by_code(spec.code, "dhm")) is not None
+    ]
+    nested = db_connection.begin_nested()
+    with pytest.raises(RuntimeError, match="injected audit"):
+        run_delivery_qc(
+            tenants,
+            stations,
+            observations,
+            _CHWRR,
+            Path(__file__).resolve().parents[3] / "config.toml",
+            audit_log_store=_FailingAuditStore(),
+            now=_NOW,
+        )
+    nested.rollback()
+    assert {
+        row.qc_status
+        for row in observations.fetch_delivery_observations(DELIVERY_ID, ids)
+    } == {QcStatus.RAW}
+
+
+def test_qc_dry_run_leaves_statuses_and_audit_untouched(
+    db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sapphire_flow.cli.import_dhm_delivery import main
+
+    repo = Path(__file__).resolve().parents[3]
+    monkeypatch.setenv("SAPPHIRE_CONFIG", str(repo / "config.toml"))
+    monkeypatch.setenv(
+        "SAPPHIRE_CONFIG_OVERLAY", str(repo / "config/overlays/chwrr-import.toml")
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+    )
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    with db_engine.begin() as setup:
+        _seed_chwrr(setup)
+        audit = PgAuditLogStore(setup)
+        tenants = PgTenantStore(setup)
+        stations = PgStationStore(setup)
+        register_stations(
+            tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+        )
+        replace_delivery(
+            tenants,
+            stations,
+            PgRatingCurveStore(setup),
+            PgObservationStore(setup),
+            _CHWRR,
+            _delivery_files(metadata),
+            audit_log_store=audit,
+            now=_NOW,
+        )
+    try:
+        with db_engine.connect() as probe:
+            before = _audit_count(probe)
+        assert main(["qc", "--tenant", "chwrr", "--dry-run"]) == 0
+        with db_engine.connect() as probe:
+            assert _audit_count(probe) == before
+            statuses = probe.scalars(
+                sa.select(observations_table.c.qc_status).where(
+                    observations_table.c.delivery_id == DELIVERY_ID
+                )
+            ).all()
+        assert set(statuses) == {"raw"}
+    finally:
+        with db_engine.begin() as cleanup:
+            cleanup.execute(
+                sa.delete(observations_table).where(
+                    observations_table.c.delivery_id == DELIVERY_ID
+                )
+            )
+            cleanup.execute(
+                sa.delete(rating_curves_table).where(
+                    rating_curves_table.c.delivery_id == DELIVERY_ID
+                )
+            )
+            cleanup.execute(
+                sa.delete(stations_table).where(stations_table.c.network == "dhm")
+            )
+            cleanup.execute(
+                sa.delete(tenants_table).where(tenants_table.c.code == "chwrr")
+            )

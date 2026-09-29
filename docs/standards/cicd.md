@@ -1299,7 +1299,7 @@ SELECT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'sapphire_operator')
     OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE usename = 'sapphire_operator');
 ```
 
-This differs deliberately from `sapphire_publication_health`, whose login persists across deploys.
+Also **replace the secret file** (`openssl rand -base64 32 > ./secrets/sapphire_operator_db_password`) if the password may have leaked: the next deploy with the overlay would otherwise re-enable login with the old password. This differs deliberately from `sapphire_publication_health`, whose login persists across deploys.
 
 **Rollback.** Removing the operator login: deploy without the overlay. Removing the role: an owner step, run
 **before** switching to an older image (an older `init` does not know the role and will not touch it):

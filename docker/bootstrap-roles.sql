@@ -544,6 +544,17 @@ JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
 JOIN pg_catalog.pg_roles member ON member.oid = am.member
 WHERE member.rolname = 'sapphire_operator'
 \gexec
+-- Revocation comes FIRST and can never be skipped by the ownership preflight
+-- below: a session that still holds an old connection loses its privileges here.
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
+-- The operator may create TEMP tables (TEMP is granted to PUBLIC and is not
+-- prevented), and PostgreSQL records an ownership dependency for them. They
+-- vanish with their session and must never abort `init`, so the preflight
+-- skips temporary relations; it still refuses real persistent objects.
 DO $$
 DECLARE
     owned_objects integer;
@@ -551,24 +562,23 @@ BEGIN
     SELECT count(*) INTO owned_objects
     FROM pg_catalog.pg_shdepend sd
     JOIN pg_catalog.pg_roles r ON r.oid = sd.refobjid
-    WHERE r.rolname = 'sapphire_operator' AND sd.deptype = 'o';
+    LEFT JOIN pg_catalog.pg_class c
+        ON sd.classid = 'pg_catalog.pg_class'::regclass AND c.oid = sd.objid
+    WHERE r.rolname = 'sapphire_operator' AND sd.deptype = 'o'
+      AND COALESCE(c.relpersistence, 'p') <> 't';
     IF owned_objects > 0 THEN
         RAISE EXCEPTION 'sapphire_operator owns % object(s)', owned_objects;
     END IF;
 END $$;
 DROP OWNED BY sapphire_operator;
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
 GRANT CONNECT ON DATABASE sapphire TO sapphire_operator;
 GRANT USAGE ON SCHEMA public TO sapphire_operator;
 
 -- Every guard trigger of migration 0067, by table, name, function and
 -- pg_trigger.tgtype (BEFORE=2, ROW=1, INSERT=4, DELETE=8, UPDATE=16,
 -- TRUNCATE=32), present AND enabled ('O' origin, 'A' always; a DISABLE
--- TRIGGER leaves the row present with 'D').
+-- TRIGGER leaves the row present with 'D'), and carrying its WHEN clause
+-- (tgqual; without it the trigger would fire for every role).
 SELECT count(*) = 10 AS operator_guard_ok
 FROM (VALUES
     ('observations', 'trg_observations_operator_guard_insert',
@@ -597,6 +607,7 @@ JOIN pg_catalog.pg_trigger t
    AND t.tgrelid = to_regclass('public.' || expected.rel)
    AND NOT t.tgisinternal
    AND t.tgenabled IN ('O', 'A')
+   AND t.tgqual IS NOT NULL
    AND t.tgtype = expected.trigger_type
 JOIN pg_catalog.pg_proc p
     ON p.oid = t.tgfoid
