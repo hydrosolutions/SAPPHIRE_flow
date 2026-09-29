@@ -285,6 +285,29 @@ separate Prefect owner-credential residual in `security.md` is not closed by it.
 - A forgotten operator overlay looks the same as a revoke (the role goes back to no login); the runbook says so.
 - The Plan 268 edit is applied once, by T7, after its own independent review.
 
+### Freshness review against merged Plan 513 and PR #341 (2026-09-29, main `b74be26f`) — KEEP READY
+
+Two independent reviews (Claude and Codex) found no blocker and no decision to change. Corrections for the implementer:
+
+- **T4:** the guard migration number is `0067` (head is `0066`; bump `_RELEASE_B_HEAD` in
+  `tests/unit/db/test_alembic_head_release_b.py`). Extend `tests/unit/deploy/test_compose_declared_tenants.py`
+  (Plan 513's new test, whose merge helper takes one overlay) to base + Mac-mini + operator, keeping the Mac-mini
+  `init` overlay and mount while adding the operator secret; also extend `test_compose_db_roles.py` and
+  `tests/integration/db/test_role_bootstrap.py`. The `operator` *service* selects only `chwrr-import.toml` (the import
+  rejects more than one overlay), which differs from `init`'s `mac-mini.toml`. The operator role needs `SELECT` on
+  `tenants` and `stations` for the guard's lookups (state it in the grants).
+- **T5:** tests use `bootstrap_tenant` as fixture setup at about 14 sites (`tests/unit/cli/test_import_dhm_delivery.py`,
+  `tests/unit/cli/test_import_dhm_replacement.py`, `tests/integration/cli/test_import_dhm_delivery.py`); replace the
+  setup with `PgTenantStore.ensure_tenant`/`store_tenant` or the fake, and drop the `_ADMIN` fixtures and unused
+  imports. Remove the `bootstrap-tenant` argparse choice and the `main()` branches. Plan 513 already rewrote the
+  runbook: delete **steps 0 and 1 together** (step 0 says the command "stays only until Plan 510 removes it") and the
+  same sentence at `docs/standards/security.md:205`; update the three "tenant must be bootstrapped first" error
+  texts in `import_dhm_delivery.py`.
+- **D6:** the Nepal-only optional-secret comment is now at `docker-compose.yml:538-542` (the overlay is
+  `docker-compose.recap.yml`), not 534-538.
+- **Not affected:** `lock_tenant`'s only callers are still `replace` and `qc`; Plan 513's `ensure_tenant` takes no row
+  lock and needs no shared advisory key; PR #341 touches no roles, tenants or import code.
+
 ```json
 {
   "phases": [
