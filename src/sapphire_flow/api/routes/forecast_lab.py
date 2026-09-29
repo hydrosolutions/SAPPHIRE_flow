@@ -33,6 +33,7 @@ from sapphire_flow.api.deps import get_stores
 # build the response model — a string-only ForwardRef left unresolved
 # breaks every response with a PydanticUserError ("not fully defined").
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot  # noqa: TC001
+from sapphire_flow.api.publication_gate import PublicationGate, get_publication_gate
 from sapphire_flow.api.security import (
     Principal,
     ensure_station_in_scope,
@@ -151,11 +152,17 @@ def get_forecast_lab_snapshot(
         get_forecast_combination_strategy
     ),
     principal: Principal = Depends(require_principal),
+    gate: PublicationGate = Depends(get_publication_gate),
 ) -> ForecastLabSnapshot:
     """`GET /api/v1/forecast-lab/snapshot` — see the module docstring for
     the scoping contract (D8/D17a)."""
     fl_stores = _forecast_lab_stores(stores)
     stations = _resolve_requested_stations(fl_stores, principal, station_code)
+    if any(gate.active(station.tenant_id) for station in stations):
+        raise HTTPException(
+            status_code=403,
+            detail="Forecast Lab is unavailable for publication-gated stations",
+        )
     return build_snapshot(
         fl_stores,
         stations=stations,

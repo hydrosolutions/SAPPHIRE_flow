@@ -13,6 +13,14 @@ from sapphire_flow.api.model_visibility import (
     model_tier_for_model_id,
     station_has_active_floor,
 )
+from sapphire_flow.api.publication_gate import (
+    PublicationGate,
+    get_publication_gate,
+    require_publication_store,
+    station_tenant_id,
+)
+from sapphire_flow.api.publication_views import publication_metadata
+from sapphire_flow.api.routes.api_forecasts import to_forecast_detail
 from sapphire_flow.api.schemas import (
     ForecastSummary,
     GeoCoordResponse,
@@ -133,7 +141,7 @@ def _to_forecast_summary(row: Any) -> ForecastSummary:
     )
 
 
-def _parse_datetime(value: str, field_name: str) -> UtcDatetime:
+def parse_api_datetime(value: str, field_name: str) -> UtcDatetime:
     try:
         dt = datetime.fromisoformat(value)
     except ValueError as exc:
@@ -255,8 +263,8 @@ def list_observations(
 ) -> list[ObservationResponse]:
     sid = StationId(UUID(station_id))
     ensure_station_in_scope(principal, sid)
-    start_dt = _parse_datetime(start, "start")
-    end_dt = _parse_datetime(end, "end")
+    start_dt = parse_api_datetime(start, "start")
+    end_dt = parse_api_datetime(end, "end")
 
     qc: QcStatus | None = None
     if qc_status is not None:
@@ -287,19 +295,53 @@ def list_forecasts(
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_principal),
+    gate: PublicationGate = Depends(get_publication_gate),
 ) -> PaginatedResponse[ForecastSummary]:
     sid = StationId(UUID(station_id))
     ensure_station_in_scope(principal, sid)
     now = UtcDatetime(datetime.now(UTC))
 
     start_dt = (
-        _parse_datetime(start, "start")
+        parse_api_datetime(start, "start")
         if start is not None
         else UtcDatetime(now - timedelta(days=7))
     )
-    end_dt = _parse_datetime(end, "end") if end is not None else now
+    end_dt = parse_api_datetime(end, "end") if end is not None else now
 
     mid: ModelId | None = ModelId(model_id) if model_id is not None else None
+
+    if gate.active_tenant_ids:
+        tenant_id = station_tenant_id(stores, sid)
+        if gate.active(tenant_id):
+            pub = require_publication_store(stores)
+            pub.lock_read_snapshot()
+            selected_ids, total = pub.fetch_selected_ids(
+                sid,
+                start_dt,
+                end_dt,
+                model_id=model_id,
+                parameter=parameter,
+                degraded_only=degraded_only,
+                limit=limit,
+                offset=offset,
+            )
+            forecasts = [
+                stores["forecast_store"].fetch_forecast(fid) for fid in selected_ids
+            ]
+            return PaginatedResponse[ForecastSummary](
+                items=[
+                    ForecastSummary.model_validate(
+                        to_forecast_detail(f)
+                        .model_copy(update=publication_metadata(pub, f, tenant_id)[0])
+                        .model_dump()
+                    )
+                    for f in forecasts
+                    if f is not None
+                ],
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
 
     rows, total = stores["forecast_store"].fetch_forecast_summaries(
         sid,

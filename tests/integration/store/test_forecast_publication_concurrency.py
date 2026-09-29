@@ -24,6 +24,11 @@ from sapphire_flow.store.forecast_publication_store import (
     PgForecastPublicationStore,
     PublicationConflictError,
 )
+from sapphire_flow.types.forecast_publication import (
+    WithdrawalReasonCode,
+    WithdrawRequest,
+)
+from sapphire_flow.types.ids import PublicationDecisionId
 from tests.integration.store.test_forecast_publication_store import (
     _add_candidate,
     _publish,
@@ -244,3 +249,63 @@ def test_change_feed_sequence_follows_commit_order_for_equal_timestamps(
             (1, first_id),
             (2, second_id),
         ]
+
+
+def test_reader_snapshot_lock_keeps_withdrawal_from_committing_mid_response(
+    publication_engine: Engine,
+) -> None:
+    from uuid import uuid4
+
+    from sapphire_flow.types.forecast_publication import PublicationKey
+    from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+    from tests.integration.store.test_forecast_publication_store import _NOW
+    from tests.integration.store.test_forecast_store import _ISSUED_A
+
+    with publication_engine.begin() as setup:
+        _, principal, forecast_id, station_id = _seed(setup)
+    with publication_engine.connect() as writer:
+        _publish(PgForecastPublicationStore(writer), principal, forecast_id)
+
+    request = WithdrawRequest(
+        forecast_id=forecast_id,
+        expected_selection_version=1,
+        reason_code=WithdrawalReasonCode.DATA_ERROR,
+        reason_text="corrected observations",
+        idempotency_key="snapshot-withdraw",
+    )
+    with publication_engine.begin() as reader:
+        read_store = PgForecastPublicationStore(reader)
+        read_store.lock_read_snapshot()
+        assert (
+            read_store.fetch_selection(
+                PublicationKey(
+                    tenant_id=DEFAULT_TENANT_ID,
+                    station_id=station_id,
+                    parameter="discharge",
+                    issued_at=_ISSUED_A,
+                )
+            ).selected_forecast_id
+            == forecast_id
+        )
+        with (
+            pytest.raises(OperationalError, match="lock timeout"),
+            publication_engine.connect() as writer,
+        ):
+            writer.execute(sa.text("SET lock_timeout = '100ms'"))
+            PgForecastPublicationStore(
+                writer, transaction_factory=lambda: _transaction(writer)
+            ).withdraw(
+                request,
+                principal,
+                decision_id=PublicationDecisionId(uuid4()),
+                now=_NOW,
+            )
+        assert len(read_store.fetch_decisions(forecast_id)) == 1
+
+    with publication_engine.connect() as writer:
+        PgForecastPublicationStore(writer).withdraw(
+            request,
+            principal,
+            decision_id=PublicationDecisionId(uuid4()),
+            now=_NOW,
+        )
