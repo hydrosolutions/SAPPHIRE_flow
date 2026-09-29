@@ -26,9 +26,18 @@ coordinate confirmation below before generating replacement geometry or
 onboarding additional stations; if a coordinate correction changes a basin,
 issue a new geometry/package version and register the corrected geometry.
 
-The SAP3 onboarding sequence is not yet complete. Plan 143 and its upstream
-station/QC dependencies must be implemented and accepted before the steps in
-“Run SAP3 onboarding” can be executed. In particular, do not trigger the
+Plan 268's historical delivery importer merged in PR #332. Its T8 staging
+run on 2026-09-29 is orchestrator-reported in Plans 510/513 as an owner-approved
+one-off, not independently verified here. Confirm against its retained Mac-mini
+aggregate acceptance/QC evidence and confirm the six stations and persisted discharge
+QC in tenant `chwrr` before proceeding. This is the existing shared Mac-mini
+database, not a new Nepal database. The deployment session owns that acceptance.
+
+Plan 143 is READY and its preparation commands are implemented. Real-package
+joins, Plan 268 T8 and aggregate staging read-back remain acceptance gates.
+For the Mac-mini, section 7 is not runnable until the runtime wrapper and
+owner-approved execution role are recorded (section 9, steps 1 and 3), as well
+as its data and snow-scope prerequisites. Do not trigger the
 parameterless `onboard-stations` deployment: its defaults select CAMELS-CH
 stations. Do not mark DHM stations operational or create forecast targets as
 a shortcut around the readiness gates.
@@ -250,12 +259,25 @@ has a different code/network, stop and correct the station import or package
 through its owner. A held basin is a visible readiness outcome; do not work
 around it by creating a duplicate station.
 
-Once Plan 143 and its dependencies are implemented and approved, run the
-existing importer against the reviewed package and the intended Nepal
-database, following the command and report guidance in the basin/static
-importer runbook. Review the full report. Confirm each intended basin is
-`imported` or already current, and resolve every `onboarding_held` reason
-before continuing. Retain the package ID, checksums, command context, report,
+Use `sapphire_flow.cli.onboard_nepal basins` below after Plan 268 T8 acceptance.
+It enforces CHWRR write authority and atomically imports all six basin/polygon
+mappings and reanalysis source bindings. Use the generic importer's runbook
+for package validation guidance.
+
+Before committing the bindings, have the staging orchestrator scope the existing
+`ingest-recap-reanalysis` snow deployment's `station_ids` to its explicit prior
+snow-station list, excluding the six new gauges (`[]` for none, not `None`).
+Ensure no queued or running unscoped snow run overlaps the import, retain service
+for existing snow stations, and verify the effective parameters again after
+deployment re-registration. Active `era5_land` bindings otherwise enroll these
+onboarding stations in scheduled snow ingestion too. A previous missing-data
+response does not guarantee that future runs cannot write data. Hold the import
+if this scope check is incomplete; a rollback dry run does not replace it.
+
+Run the Nepal command's rollback dry run and inspect its full report before the
+writing invocation. Confirm all six basins and both kinds of bindings are
+imported or already current; any rejection or held basin must leave the whole
+batch uncommitted. Retain the package ID, checksums, command context, report,
 and database environment in the onboarding record. Do not rerun a modified
 package with an already-used package ID; issue a new package ID for corrected
 content.
@@ -283,38 +305,137 @@ the inventory, command history, or onboarding report. A successful read-only
 probe does not mean historical values have been persisted in SAP3; the
 Nepal-specific historical forcing persistence step is delivered by Plan 143.
 
-## 7. Run SAP3 onboarding after its implementation is available
+## 7. Run the six-station discharge preparation command
 
-Do this only when the orchestrator has made the onboarding implementation
-available and its documented invocation explicitly scopes the intended DHM
-stations and Nepal database. The implementation must perform the basin/binding
-checks, persist supported historical forcing, assess eligible water-level
-targets and QC, and produce a per-station readiness report. Until then, this
-section is a gate, not an executable command sequence.
+**Mac-mini hold:** do not run these examples until the runtime wrapper and
+owner-approved execution role are recorded in the operator handoff (section 9,
+steps 1 and 3). The approved wrapper replaces each example's `uv run` prefix
+as appropriate for that runtime; keep the CLI arguments and process-local
+configuration intact and verify all referenced paths inside that runtime.
+
+Run these commands in the approved deployment environment with its existing
+database and Recap secret configuration. `--config` points to the base config;
+the command applies `SAPPHIRE_CONFIG_OVERLAY` in order. Use the existing
+CHWRR-only identity overlay last; an admin identity or the Swiss default is
+refused. `DATABASE_URL` selects the database. For this operator process, set:
+
+```bash
+export CHWRR_CONFIG=config.toml
+export SAPPHIRE_CONFIG_OVERLAY=config/overlays/nepal-history.toml,config/overlays/chwrr-import.toml
+```
+
+Set `SAPPHIRE_RECAP_BASE_URL` to the deployment's accepted Gateway endpoint and supply
+the existing API-key secret (`/run/secrets/sapphire_dg_api_key`, or the existing
+`RECAP_API_KEY` environment fallback). The history overlay supplies adapter
+settings only and does not change the forecast adapter or register schedules.
+Keep these environment settings local to the operator process.
+The command uses only the six codes listed above. The accepted basin package
+comes from the existing Mac-mini handoff; synthetic test fixtures are not
+staging inputs.
+
+After the owner has checked the geometry joins, the deployment session has
+recorded Plan 268 T8 acceptance, and the snow precondition in section 5 holds:
+
+```bash
+uv run python -m sapphire_flow.cli.onboard_nepal basins \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --package-dir "$ACCEPTED_PACKAGE_DIR" \
+  --confirm-package-joins --confirm-snow-scope --dry-run
+```
+
+Review the result, then repeat without `--dry-run` to commit. The confirmation
+flags acknowledge recorded operator checks; the CLI cannot inspect deployment
+queues or verify geometry review. It refuses held or partially accepted packages.
+
+Choose the installed discharge model, years, supported cadence and minimum
+number of complete training windows when running the tool. Record its declared
+weather and static inputs before retrieving history. Start and end are explicit
+timezone-aware ISO timestamps; the end is exclusive.
+
+```bash
+uv run python -m sapphire_flow.cli.onboard_nepal history \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --start "$HISTORY_START" --end "$HISTORY_END"
+
+uv run python -m sapphire_flow.cli.onboard_nepal qualify \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --start "$HISTORY_START" --end "$HISTORY_END" \
+  --model "$DISCHARGE_MODEL" --time-step-hours "$STEP_HOURS" \
+  --minimum-samples "$MINIMUM_SAMPLES" --dry-run
+```
+
+Repeat `qualify` without `--dry-run` after inspecting the aggregate report.
+All three commands support rollback dry runs. History requests cover at most
+31 days each and preserve the adapter's source and per-row version. Each batch
+checks station state and bindings under the tenant lock, then commits separately
+and releases the lock. A later failure preserves earlier committed batches;
+repeating the same retrieval is safe. Dry runs roll back each batch. This command
+calls the Prefect flow body in each transaction; it does not register or schedule
+a deployment.
+
+Qualification requires basin-average inputs, supported precipitation/temperature
+features, required statics, and current-version QC-passed discharge from the
+restricted delivery. It uses the existing resampling rules and counts contiguous
+complete rows covering the model's lookback plus forecast horizon. The minimum
+count is an explicit model-specific operator choice; it is not a skill score.
+No historical rating curve is needed for directly delivered discharge.
+
+Exit code 0 means the requested operation passed. Exit code 1 means a failure
+or held coverage/readiness. A successful qualification with held stations
+**commits cleared discharge targets** unless `--dry-run` is present; a raised
+error rolls back the current transaction. For `history`, empty station/parameter
+coverage in any batch returns exit code 1, including during a dry run.
+Successfully stored data is preserved unless `--dry-run` is present. Rerun after filling the missing Gateway
+coverage. History coverage counts alone do not establish
+model readiness. The qualification report lists every gauge, hold reasons,
+QC counts/versions, usable observations and complete windows, and overlap.
+It contains no measurement values. Save the package ID/checksums, software and
+configuration versions, model requirements, command options and aggregate
+reports in the controlled handoff. Repeat qualification after delivery/QC changes.
+
+The owner chose discharge-first onboarding on 2026-09-29. Stations remain in
+onboarding with no assigned model. Live inputs, current rating availability,
+and model-output publication remain separate release questions.
 
 For each batch:
 
-1. Confirm the selected database is the Nepal test deployment and the station
-   scope is the reviewed list of DHM gauge codes. Record the deployment and
-   software version.
+1. Confirm the selected database is the shared Mac-mini staging database, the
+   write identity is scoped to `chwrr`, and all six reviewed DHM stations belong
+   to that tenant. Record Plan 268 T8 acceptance and software/configuration
+   versions. Select the discharge model and training window whose requirements
+   the readiness check will assess; do not assign or train the model here.
 2. Confirm station-to-basin and basin-to-Gateway bindings resolve one-to-one
-   for every station. Stop on a missing, duplicate, or unexpected mapping.
+   for every station. Also verify each `era5_land` / `REANALYSIS` source binding
+   is active and basin-average; a polygon mapping alone is insufficient. Stop
+   on a missing, duplicate, conflicting or cross-tenant mapping.
 3. Back-extract supported ERA5-Land history for the model's declared training
    window. Record the actual persisted time span, variables, gaps, and source
-   provenance. Do not infer coverage from the requested window.
+   provenance. Verify the stored `recap_era5_land_reanalysis` rows can be read
+   through the selected history reader and overlap the target history after
+   resampling. Do not infer coverage from the requested window or confuse the
+   source tag with the binding name or the separate Sloth ERA5-Land product.
 4. Keep radiation or snow requirements unmet unless their SAP3 support and
    actual coverage have both been established. Hold any model requiring an
    unmet variable.
-5. Keep the forecast target unset unless authorized, QC-qualified
-   water-level history is available. Rating-derived stages must have an
-   approved, datum-compatible rating curve covering the discharge and dates;
-   label them as derived equivalents, never as original DHM level
-   observations. Otherwise record the hold reason and proceed only with tasks
-   that do not require a target.
+5. Qualify Plan 268's delivery-tagged, manual-import discharge using persisted
+   `QC_PASSED` rows only. Set the target to `discharge` only when model input,
+   overlap and static-input gates pass. RAW, unchecked, suspect and
+   failed rows do not count as usable targets. Preserve the measurements,
+   delivery tags and QC verdicts; do not invert curves or rerun generic
+   onboarding QC. Keep unqualified targets unset and report the hold reason.
+   Repeat qualification after delivery replacement or QC changes. The readiness
+   report contains aggregates only; consumer and reviewer access to restricted
+   observations remains withheld.
+   Plan 268 D9's pilot approval and Plan 143 D2's discharge-first decision are
+   the recorded scope authority; no runtime training-permission flag exists or
+   is required here. Record the unresolved model-output publication question
+   from Plan 268 D5/D9 in the handoff; this procedure does not authorize publication.
 6. Review the readiness report and database audit. Every requested station
    must appear exactly once with its gate outcomes. Stations remain in the
    `onboarding` lifecycle state; this procedure does not assign models,
-   schedule forecast production, or activate alerts.
+   schedule forecast production, or activate alerts. Record live-feed and
+   current-rating limitations separately: historical training readiness is not
+   proof that the operational input path is ready.
 
 ## 8. Handover for a new station batch
 
@@ -327,6 +448,96 @@ inventory, accepted package, validation/import reports, coverage record, and
 readiness report with the designated CHWRR/DHM counterparts through the
 approved project location. Do not share credentials or data beyond the
 project's agreed data-use permissions.
+
+## 9. Mac-mini handoff — next visit
+
+**Owner:** the staging orchestrator / `cmal_small` deployment session. Code is
+in [PR #344](https://github.com/hydrosolutions/SAPPHIRE_flow/pull/344); this handoff
+does not merge or deploy it. Plan 143 remains READY until its staging checks
+are recorded in the plan. Use the procedure in section 7; this section identifies
+what must be resolved on the host before running it.
+
+**Current hold:** the execution runtime and database role are not yet established
+for Plan 143. The repository's worker role cannot take the required tenant lock;
+the known owner role can, but using it requires a fresh owner decision. Resolve
+steps 1 and 3 before treating the section 7 command examples as runnable on the
+Mac-mini. The prior delivery run is not permission to reuse its credential.
+
+1. **Use the approved build.** Wait for PR checks and owner approval/merge, then
+   have the staging session deploy the merged revision under the existing
+   [Mac-mini deployment procedure](mac-mini-deploy-runbook.md). Record the
+   actual deployed SHA. Run host/Compose operations from the persistent checkout
+   `/Users/sapphire/SAPPHIRE_flow`, never this development worktree under `/tmp`.
+   **Runtime is an unresolved check:** section 7 uses a checkout `uv` environment,
+   but the deployed database is reached on the Compose network; its `postgres`
+   hostname is not a host-side connection recipe. Do not expose a database port
+   to make the example work. Have the staging session choose an approved runtime
+   and record the exact execution wrapper before writes. In that runtime, verify
+   the selected model and CLI are installed, the accepted package and base config
+   are readable, both `chwrr-import.toml` and `nepal-history.toml` are available,
+   the process has the authorized `DATABASE_URL`, and the Gateway secret is
+   available by the supported mechanism. `/run/secrets/...` is a container path,
+   not a host path. Check `python -m sapphire_flow.cli.onboard_nepal --help` there.
+
+2. **Reuse the existing inputs.** Plans
+   [510](../plans/510-operator-database-role-for-imports.md) and
+   [513](../plans/513-declared-tenants-created-at-deploy.md) record an orchestrator
+   report that Plan 268 T8 ran on 2026-09-29; this is not host verification.
+   Obtain its retained aggregate acceptance and QC record
+   from the deployment session. Use the six-catchment package already handed to
+   that session; confirm its immutable package ID, checksums and owner-reviewed
+   station/geometry joins. Do not replace the restricted delivery again simply
+   to execute Plan 143. Verify six `chwrr` / `dhm` stations remain in onboarding,
+   with no active model assignment and targets unset or discharge-only.
+
+3. **Resolve the database execution role before writes.** The CHWRR config
+   identity is an application check; it does not grant database privileges.
+   Every command takes `SELECT ... FOR UPDATE` on the tenant row. The execution
+   role also needs the importer’s basin/package/polygon/source-binding writes,
+   historical-forcing inserts and station updates for targets and basin links.
+   The worker role lacks the tenant UPDATE privilege needed for that lock.
+   Plan 510 is still READY; its proposed delivery-operator role is not implemented
+   by this PR and is not proof of authority for basin imports or target updates.
+   The exit path is a fresh owner decision on an authorized execution role, or
+   the planned advisory-lock change plus verification of a role's required writes.
+   Plan 510 landing alone is insufficient: verify all delivery and onboarding
+   callers use the same lock mechanism and deployed version before overlapping
+   jobs. The orchestrator must supply an authorized execution role
+   for these commands and verify its effective permissions and selected database.
+   If none is available, hold here and resolve it through the owner. The earlier
+   T8 one-off owner-credential approval does not authorize a new owner-credential
+   run. Do not change grants or copy credentials into this handoff.
+
+4. **Confirm the existing snow deployment's scope.** Preserve its prior station
+   list, explicitly excluding these six gauges (`[]` if none, never `None`).
+   Confirm no queued/running unscoped run can overlap the basin/source import.
+   Recheck the effective parameter after deployment registration. Record this
+   before using `--confirm-snow-scope`.
+
+5. **Choose this run's model and history.** Select the installed discharge model,
+   timezone-aware start/end, supported daily-or-coarser cadence, and minimum
+   complete training-window count. Inspect its weather/static requirements before
+   retrieval: this path supports basin-average precipitation and temperature;
+   models requiring snow or radiation remain held. Set the process-local config
+   overlays and existing Gateway secret as in section 7. Record configuration
+   versions and endpoint identity without recording credentials.
+
+6. **Execute section 7 in order.** Basin rollback dry run, inspect, then commit;
+   retrieve history; qualification rollback dry run, inspect, then commit.
+   History commits at most 31 days per transaction and can retain earlier batches
+   after a later error. Exit 1 means failure or held coverage/readiness; inspect
+   the aggregate report before repeating. Dry runs never retain writes and can
+   still exit 1. Hold reasons are valid outcomes, not a reason to force targets.
+
+7. **Read back and record acceptance in Plan 143.** Confirm six station-to-basin
+   links, six exact polygon mappings and six active reanalysis bindings; retained
+   forcing source/version and coverage; and exactly one readiness outcome per
+   gauge for the selected model/window. Qualified targets are discharge-only;
+   held targets are unset. All six stations must remain in onboarding, with no
+   new model assignment, forecast production or alert activation. Preserve
+   observation/QC lineage and report counts/coverage only. Repeat qualification
+   after a delivery replacement or QC rerun. Record live-input/current-rating
+   limitations and the unresolved model-output publication decision separately.
 
 ## Related procedures
 

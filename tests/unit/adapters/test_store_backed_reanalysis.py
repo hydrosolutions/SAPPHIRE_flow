@@ -59,6 +59,29 @@ def _make_forecast_weather_source(station_id: str = "s1") -> StationWeatherSourc
 
 
 class TestStoreBackedReanalysisSource:
+    def test_explicit_source_mapping_reads_gateway_history(self) -> None:
+        from dataclasses import replace
+
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            [replace(_make_record(), source="recap_era5_land_reanalysis")]
+        )
+        binding = replace(_make_weather_source(), nwp_source="era5_land")
+        start = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2024, 1, 2, tzinfo=UTC))
+        assert (
+            StoreBackedReanalysisSource(store).fetch_reanalysis(
+                [binding], start, end, ["precipitation"]
+            )
+            == []
+        )
+        adapter = StoreBackedReanalysisSource(
+            store, source_mapping={"era5_land": "recap_era5_land_reanalysis"}
+        )
+        rows = adapter.fetch_reanalysis([binding], start, end, ["precipitation"])
+        assert len(rows) == 1
+        assert rows[0].source == "recap_era5_land_reanalysis"
+
     def test_returns_raw_forcing_from_store(self) -> None:
         store = FakeHistoricalForcingStore()
         store.store_forcing(

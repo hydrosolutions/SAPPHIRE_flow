@@ -34,6 +34,36 @@ def _seed_station(conn: sa.Connection) -> StationId:
 
 
 class TestStoreAndFetch:
+    def test_mapped_gateway_source_reads_persisted_history(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.adapters.store_backed_reanalysis import (
+            StoreBackedReanalysisSource,
+        )
+        from sapphire_flow.services.nepal_onboarding import history_binding
+        from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
+
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        row = make_raw_historical_forcing(
+            station_id=sid,
+            source=GATEWAY_HISTORY_SOURCE,
+            version="test-v1",
+            valid_time=_utc(2026, 1, 10),
+            parameter="temperature",
+            spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+        )
+        store.store_forcing([row])
+        reader = StoreBackedReanalysisSource(
+            store, source_mapping={"era5_land": GATEWAY_HISTORY_SOURCE}
+        )
+        assert reader.fetch_reanalysis(
+            [history_binding(sid)],
+            _utc(2026, 1, 10),
+            _utc(2026, 1, 11),
+            ["temperature"],
+        ) == [row]
+
     def test_store_and_fetch(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)
         store = PgHistoricalForcingStore(db_connection)
