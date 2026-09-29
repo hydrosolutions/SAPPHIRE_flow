@@ -107,6 +107,8 @@ holds. Touch `adapters/forecast_interface.py`'s retrain/`supports_warm_start` an
 never in the vendored yaml.** `config_hash` is the SHA-256 of the yaml's bytes and a retrain refuses a
 donor whose recorded hash differs, so any yaml edit invalidates every imported donor. Operator
 procedure: `docs/runbooks/model-fine-tuning.md`.
+`AquacastShim.DATA_NUM_WORKERS` (default 0) forces the training data loaders in-process for the same reason: the yaml
+asks for 4 worker processes and aquacast's collate cannot be pickled under Python 3.14's `forkserver` start method.
 
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,

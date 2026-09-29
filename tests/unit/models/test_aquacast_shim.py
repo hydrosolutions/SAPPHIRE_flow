@@ -265,3 +265,23 @@ class TestCmalSmallFineTuneAllowlist:
         permitted = CmalPoolPT.FINETUNE_STRATEGIES
 
         assert permitted == frozenset()
+
+
+class TestTrainingDataLoadersRunInProcess:
+    """aquacast's collate is a local closure, so worker processes fail under the
+    `forkserver` start method Python 3.14 uses; the shim forces in-process loading.
+    """
+
+    def test_cmal_small_loads_training_data_in_process(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        template = CmalSmall()._inner._model_template  # pyright: ignore[reportPrivateUsage]
+
+        assert template.config.data.num_workers == 0
+
+    def test_the_pooled_model_loads_training_data_in_process(self) -> None:
+        from sapphire_flow.models.aquacast import CmalPoolPT
+
+        template = CmalPoolPT()._inner._model_template  # pyright: ignore[reportPrivateUsage]
+
+        assert template.config.data.num_workers == 0

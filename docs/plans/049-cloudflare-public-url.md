@@ -96,8 +96,8 @@ outbound connection.
   (`chmod 600`, never committed); token values to the Worker's secrets, not the mini.
 
 **In / Out**: Cloudflare dashboard + `./secrets/` on the mini. Out: repo code.
-**Verification**: `cloudflared tunnel info` shows a connector; an unauthenticated request to the public
-hostname is redirected/denied by Access; a request with the service-token headers reaches the origin.
+**Verification**: the tunnel and Access application exist; an unauthenticated request to the public
+hostname is denied by Access. (Connector and origin reachability are verified after T2 installs the connector.)
 **Pre-change**: N/A (infrastructure). Baseline: hostname does not resolve / answers nothing today.
 
 ### T2 — Compose overlay and network hardening
@@ -189,9 +189,10 @@ timeout each alert; the local probe is unaffected.
 {
   "phases": [
     { "id": "phase-1", "tasks": ["T0"] },
-    { "id": "phase-2", "tasks": ["T1", "T2"], "depends_on": ["phase-1"], "parallel": true },
-    { "id": "phase-3", "tasks": ["T3", "T4"], "depends_on": ["phase-2"], "parallel": true },
-    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3"] }
+    { "id": "phase-2", "tasks": ["T1"], "depends_on": ["phase-1"] },
+    { "id": "phase-3", "tasks": ["T2"], "depends_on": ["phase-2"] },
+    { "id": "phase-3b", "tasks": ["T3", "T4"], "depends_on": ["phase-3"], "parallel": true },
+    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3b"] }
   ]
 }
 ```

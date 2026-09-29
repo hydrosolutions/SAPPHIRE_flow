@@ -21,6 +21,8 @@ source: docs/plans/162-robust-database-backup.md § D4 + "Owner context 2026-08-
 > retention, which Plan 340's protected-backup proofs need; (4) restate the "Owner context" decision
 > (AWS, S3). **Priority: backups are NOT a v1 staging blocker** (owner, 2026-09-29) — Plan 511's backup
 > task waits on this plan and does not gate the first Nepal staging forecasts.
+> **Also note:** this plan replicates an operational dump; it is not Plan 340's protected-preservation
+> bundle, and its body makes encryption at publication a prerequisite that does not yet exist.
 
 ## Status
 

@@ -573,7 +573,8 @@ exit criteria — Plan 212 owns that deeper screening.
   ⚠️ **Not yet deployed to the mini.**
 - **208** — Backups must leave the box — `DRAFT` — the off-box sink Plan 162 D4 named but never
   created (162's `blocks:` is empty). Owner 2026-08-28: no backup drive for the mini ever; separation
-  arrives with the **AWS** deployment, sink is **S3**. Two findings make it more than a port: 162
+  was to arrive with an **AWS** deployment, sink **S3** — **superseded 2026-09-29**: the Nepal host is
+  Infomaniak (Plan 511) and the target is Cloudflare **R2**; this plan needs updating (notice at its top). Two findings make it more than a port: 162
   deferred this on the reasoning that "an encrypted artifact is safe wherever it lands", but
   **encryption never shipped** (D5 was Phase B; the mini's dumps are plaintext, verified) — so it is a
   prerequisite, not a companion. And **Plan 194's device predicate does not port**: meaningless on S3,
