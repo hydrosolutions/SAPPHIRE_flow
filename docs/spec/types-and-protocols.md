@@ -895,8 +895,9 @@ class RawObservation:
     parameter: str                 # canonical name
     value: float
     source: ObservationSource      # measured | rating_curve_derived | manual_import | component_derived
-    rating_curve_id: RatingCurveId | None = None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
+    rating_curve_id: RatingCurveId | None = None  # producing curve for derived rows; in-force provenance for DHM manual discharge
     rating_curve_correction_version: str | None = None  # v1 — correction param version. Omit from v0 DB schema.
+    delivery_id: str | None = None  # restricted import package identity
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Observation:
@@ -906,12 +907,13 @@ class Observation:
     parameter: str
     value: float | None            # None when qc_status is MISSING (explicit gap record)
     source: ObservationSource      # measured | rating_curve_derived | manual_import | component_derived
-    rating_curve_id: RatingCurveId | None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
+    rating_curve_id: RatingCurveId | None  # producing curve or in-force provenance for imported discharge
     rating_curve_correction_version: str | None  # v1 — correction param version. Omit from v0 DB schema.
     qc_status: QcStatus
     qc_flags: list[QcFlag]
     qc_rule_version: str | None    # Plan 324 observation-QC processing-generation marker
     created_at: UtcDatetime
+    delivery_id: str | None = None
 
 
 # v1 — Plan 035 Task 3: value superseded by a rating-curve reprocessing
@@ -1191,6 +1193,8 @@ class RatingCurve:
     interpolation: InterpolationMethod   # enum: linear | log_linear (Plan 035 Task 1)
     uploaded_by: UUID | None
     created_at: UtcDatetime
+    delivery_id: str | None = None
+    rating_type_label: str | None = None  # DHM's label, distinct from version
 ```
 
 Module: `types/rating_curve.py`
@@ -2932,12 +2936,14 @@ class ArtifactIntegrityError(SapphireError):
 
 ```python
 class ObservationStore(Protocol):
+    def fetch_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> list[Observation]: ...
+    def delete_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> int: ...
     def store_observations(self, observations: list[Observation]) -> None: ...
     def store_raw_observations(self, observations: list[RawObservation]) -> list[ObservationId]: ...
-        # Inserts raw observations (pre-QC) with qc_status=RAW. Returns IDs of newly inserted
-        # rows; rows matching an existing natural key (station_id, timestamp, parameter, source)
-        # are silently skipped via ON CONFLICT DO NOTHING.
+        # Inserts or restates raw rows. A different delivery_id on the same natural key
+        # raises DeliveryCollisionError before the batch writes; NULL matches NULL.
     def update_qc(self, observation_id: ObservationId, qc_status: QcStatus, qc_flags: list[QcFlag]) -> None: ...
+    def update_delivery_qc(self, observation_id: ObservationId, delivery_id: str, qc_status: QcStatus, qc_flags: list[QcFlag], qc_rule_version: str | None) -> bool: ...
     def fetch_observations(
         self,
         station_id: StationId,
@@ -3609,10 +3615,13 @@ class AccessTokenStore(Protocol):
 ```python
 class RatingCurveStore(Protocol):
     def store_rating_curve(self, curve: RatingCurve) -> RatingCurveId: ...
+    def fetch_all_curves_for_station(self, station_id: StationId) -> list[RatingCurve]: ...
+    def fetch_delivery_curves(self, delivery_id: str, station_ids: list[StationId]) -> list[RatingCurve]: ...
+    def delete_delivery_curves(self, delivery_id: str, station_ids: list[StationId]) -> int: ...
     def fetch_active_curve(self, station_id: StationId) -> RatingCurve | None: ...
         # Returns the curve with valid_to IS NULL, or None.
     def fetch_curve_at(self, station_id: StationId, at: UtcDatetime) -> RatingCurve | None: ...
-        # Returns the curve valid at the given time (valid_from <= at < valid_to).
+        # Returns the latest valid_from curve when validity windows overlap.
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None: ...
         # Sets valid_to on the current active curve when a new one is uploaded.
     def fetch_curves_in_range(self, station_id: StationId, start: UtcDatetime, end: UtcDatetime) -> list[RatingCurve]: ...

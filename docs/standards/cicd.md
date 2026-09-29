@@ -552,6 +552,7 @@ developer edits file
   • ruff format --check  (check-only, no auto-fix)
   • ruff check           (check-only, no auto-fix)
   • gitleaks             (secret-pattern scan)
+  • DHM delivery filename guard rejects restricted DFL_/RT_ text files
         │ blocks commit on failure
         ▼
 developer runs uv run check  (optional, pre-push confidence)

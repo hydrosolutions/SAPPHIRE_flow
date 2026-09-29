@@ -10,6 +10,7 @@ import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import observations as observations_table
+from sapphire_flow.exceptions import DeliveryCollisionError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_RawObservationKey = tuple[object, object, object, object]
+_RawObservationKey = tuple[StationId, object, str, object]
 _OBSERVATION_NATURAL_KEY_COLUMNS = (
     observations_table.c.station_id,
     observations_table.c.timestamp,
@@ -51,9 +52,49 @@ class PgObservationStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
 
+    def fetch_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[Observation]:
+        if not station_ids:
+            return []
+        rows = (
+            self._conn.execute(
+                sa.select(observations_table)
+                .where(observations_table.c.delivery_id == delivery_id)
+                .where(observations_table.c.station_id.in_(station_ids))
+                .order_by(
+                    observations_table.c.station_id, observations_table.c.timestamp
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [_row_to_domain(row) for row in rows]
+
+    def delete_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
+        if not station_ids:
+            return 0
+        result = self._conn.execute(
+            sa.delete(observations_table)
+            .where(observations_table.c.delivery_id == delivery_id)
+            .where(observations_table.c.station_id.in_(station_ids))
+        )
+        return result.rowcount
+
     def store_observations(self, observations: list[Observation]) -> None:
         if not observations:
             return
+        self._assert_delivery_collisions(
+            [
+                (
+                    (obs.station_id, obs.timestamp, obs.parameter, obs.source.value),
+                    obs.delivery_id,
+                )
+                for obs in observations
+            ]
+        )
         for obs in observations:
             stmt = (
                 pg_insert(observations_table)
@@ -71,10 +112,17 @@ class PgObservationStore:
                         "rating_curve_correction_version": (
                             obs.rating_curve_correction_version
                         ),
+                        "delivery_id": obs.delivery_id,
                     },
+                    where=observations_table.c.delivery_id.is_not_distinct_from(
+                        obs.delivery_id
+                    ),
                 )
+                .returning(observations_table.c.id)
             )
-            self._conn.execute(stmt)
+            written_id = self._conn.execute(stmt).scalar_one_or_none()
+            if written_id is None:
+                raise DeliveryCollisionError(obs.station_id)
 
     _BATCH_SIZE = 5000  # same as PgHistoricalForcingStore; 11 cols × 5000 = 55K params
 
@@ -85,6 +133,15 @@ class PgObservationStore:
             return []
 
         deduped = _dedupe_raw_observations(observations)
+        self._assert_delivery_collisions(
+            [
+                (
+                    (raw.station_id, raw.timestamp, raw.parameter, raw.source.value),
+                    raw.delivery_id,
+                )
+                for raw in deduped
+            ]
+        )
         rows = [
             {
                 "id": ObservationId(uuid4()),
@@ -100,6 +157,7 @@ class PgObservationStore:
                 "qc_status": QcStatus.RAW.value,
                 "qc_flags": None,
                 "qc_rule_version": None,
+                "delivery_id": raw.delivery_id,
             }
             for raw in deduped
         ]
@@ -122,18 +180,24 @@ class PgObservationStore:
                     "qc_status": QcStatus.RAW.value,
                     "qc_flags": None,
                     "qc_rule_version": None,
+                    "delivery_id": insert_stmt.excluded.delivery_id,
                 },
                 # Fire when value OR provenance changed, so a restated curve
                 # refreshes provenance even at an unchanged value (Plan 035 Task 2).
-                where=sa.or_(
-                    observations_table.c.value.is_distinct_from(
-                        insert_stmt.excluded.value
+                where=sa.and_(
+                    observations_table.c.delivery_id.is_not_distinct_from(
+                        insert_stmt.excluded.delivery_id
                     ),
-                    observations_table.c.rating_curve_id.is_distinct_from(
-                        insert_stmt.excluded.rating_curve_id
-                    ),
-                    observations_table.c.rating_curve_correction_version.is_distinct_from(
-                        insert_stmt.excluded.rating_curve_correction_version
+                    sa.or_(
+                        observations_table.c.value.is_distinct_from(
+                            insert_stmt.excluded.value
+                        ),
+                        observations_table.c.rating_curve_id.is_distinct_from(
+                            insert_stmt.excluded.rating_curve_id
+                        ),
+                        observations_table.c.rating_curve_correction_version.is_distinct_from(
+                            insert_stmt.excluded.rating_curve_correction_version
+                        ),
                     ),
                 ),
             ).returning(observations_table.c.id)
@@ -157,6 +221,35 @@ class PgObservationStore:
 
         return ids
 
+    def _assert_delivery_collisions(
+        self,
+        entries: list[tuple[_RawObservationKey, str | None]],
+    ) -> None:
+        expected: dict[_RawObservationKey, str | None] = {}
+        for key, delivery_id in entries:
+            if key in expected and expected[key] != delivery_id:
+                raise DeliveryCollisionError(key[0])
+            expected[key] = delivery_id
+        keys = list(expected)
+        for offset in range(0, len(keys), 500):
+            rows = self._conn.execute(
+                sa.select(
+                    observations_table.c.station_id,
+                    observations_table.c.timestamp,
+                    observations_table.c.parameter,
+                    observations_table.c.source,
+                    observations_table.c.delivery_id,
+                ).where(
+                    sa.tuple_(*_OBSERVATION_NATURAL_KEY_COLUMNS).in_(
+                        keys[offset : offset + 500]
+                    )
+                )
+            ).all()
+            for station_id, timestamp, parameter, source, delivery_id in rows:
+                key = (station_id, timestamp, parameter, source)
+                if expected[key] != delivery_id:
+                    raise DeliveryCollisionError(StationId(station_id))
+
     def update_qc(
         self,
         observation_id: ObservationId,
@@ -173,6 +266,26 @@ class PgObservationStore:
                 qc_rule_version=qc_rule_version,
             )
         )
+
+    def update_delivery_qc(
+        self,
+        observation_id: ObservationId,
+        delivery_id: str,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None,
+    ) -> bool:
+        result = self._conn.execute(
+            sa.update(observations_table)
+            .where(observations_table.c.id == observation_id)
+            .where(observations_table.c.delivery_id == delivery_id)
+            .values(
+                qc_status=qc_status.value,
+                qc_flags=_serialize_flags(qc_flags),
+                qc_rule_version=qc_rule_version,
+            )
+        )
+        return result.rowcount == 1
 
     def fetch_observations(
         self,
@@ -320,6 +433,7 @@ def _obs_to_values(obs: Observation) -> dict[str, object]:
         "qc_status": obs.qc_status.value,
         "qc_flags": _serialize_flags(obs.qc_flags),
         "qc_rule_version": obs.qc_rule_version,
+        "delivery_id": obs.delivery_id,
         "created_at": obs.created_at,
     }
 
@@ -342,4 +456,5 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Observation:
         qc_flags=_deserialize_flags(row["qc_flags"]),
         qc_rule_version=row["qc_rule_version"],
         created_at=utc_from_row(row["created_at"]),
+        delivery_id=row["delivery_id"],
     )

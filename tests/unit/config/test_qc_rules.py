@@ -193,6 +193,7 @@ class TestProductionConfigRules:
                 rule.parameter,
                 rule.time_step,
                 rule.network,
+                frozenset(rule.thresholds.items()),
             )
             for rule in config.rules
             if rule.network is not None
@@ -204,6 +205,7 @@ class TestProductionConfigRules:
                 rule.parameter,
                 rule.time_step,
                 rule.network,
+                frozenset(rule.thresholds.items()),
             )
             for rule in reference.rules
             if rule.network is not None

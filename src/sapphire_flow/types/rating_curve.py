@@ -22,3 +22,5 @@ class RatingCurve:
     interpolation: InterpolationMethod
     uploaded_by: UUID | None
     created_at: UtcDatetime
+    delivery_id: str | None = None
+    rating_type_label: str | None = None

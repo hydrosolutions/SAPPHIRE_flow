@@ -1,0 +1,87 @@
+[tenant]
+code = "chwrr"
+display_name = "CHWRR Nepal"
+
+[[stations]]
+code = "447"
+name = "Trisuli at Betrawati"
+latitude = 27.97008611
+longitude = 85.18294444
+published_area_km2 = 4619.85
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"
+
+[[stations]]
+code = "450"
+name = "Narayani at Devghat"
+latitude = 27.72548333
+longitude = 84.42761944
+published_area_km2 = 31649.96
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"
+
+[[stations]]
+code = "604.5"
+name = "Arun at Turkeghat"
+latitude = 27.31193889
+longitude = 87.18930278
+published_area_km2 = 27124.20
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"
+
+[[stations]]
+code = "647"
+name = "Tamakoshi at Busti"
+latitude = 27.63623889
+longitude = 86.08495556
+published_area_km2 = 2934.55
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"
+
+[[stations]]
+code = "670"
+name = "Dudhkoshi at Rabuwa Bazar"
+latitude = 27.26853333
+longitude = 86.65941944
+published_area_km2 = 3716.26
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"
+
+[[stations]]
+code = "684"
+name = "Tamor at Majhitar"
+latitude = 27.15927500
+longitude = 87.71188611
+published_area_km2 = 4017.61
+station_kind = "river"
+network = "dhm"
+timezone = "Asia/Kathmandu"
+measured_parameters = ["discharge"]
+station_status = "onboarding"
+ownership = "foreign"
+gauging_status = "gauged"

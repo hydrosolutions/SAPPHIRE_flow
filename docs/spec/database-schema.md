@@ -61,6 +61,9 @@ than diagrammed, matching `forecast_evidence`'s own precedent).
 
 ## v0 Schema (27 tables)
 
+This section preserves the original v0 scope. Later migrations added rating curves
+and curve references; the current schema is described in the full-schema sections below.
+
 Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
 
@@ -185,8 +188,7 @@ erDiagram
 
     %% ──────────────────────────────────────────────
     %% OBSERVATION DOMAIN
-    %% v0: no rating_curve_id, no rating_curve_correction_version
-    %% v0: no rating_curves table
+    %% Historical v0-only sketch; later migrations added curve references and rating_curves.
     %% v0: not partitioned (plan 013: ~8.9M rows/year at ~170 stations, ~52.6M at ~1000 — ~6×)
     %% ──────────────────────────────────────────────
 
@@ -731,6 +733,7 @@ erDiagram
         TEXT source "measured | rating_curve_derived | manual_import | component_derived"
         UUID rating_curve_id FK "NULL"
         TEXT rating_curve_correction_version "NULL"
+        TEXT delivery_id "NULL; restricted import identity"
         TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing | qc_unchecked"
         JSONB qc_flags
         TEXT qc_rule_version "NULL"
@@ -746,8 +749,14 @@ erDiagram
         JSONB points
         TEXT interpolation "linear | log_linear"
         UUID uploaded_by "NULL"
+        TEXT delivery_id "NULL; restricted import identity"
+        TEXT rating_type_label "NULL; source label, not version"
         TIMESTAMPTZ created_at
     }
+
+    %% Delivery replacement deletes only rows and curves with the same delivery_id.
+    %% Observation upserts refuse a natural-key collision with another delivery;
+    %% NULL delivery_id matches NULL for ordinary ingest corrections.
 
     observation_versions {
         UUID id PK

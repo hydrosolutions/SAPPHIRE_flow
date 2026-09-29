@@ -145,6 +145,12 @@ This repo uses `pre-commit` as the developer-tier gate that catches
 lint, format, and secret-pattern issues before they reach a branch.
 CI is the secondary gate (push + PR).
 
+The unscoped DHM delivery filename guard rejects staged `DFL_*.txt` and
+`RT_*.txt` files anywhere in the repository except the two exact dummy examples
+under `docs/requirements/`. Keep restricted runoff and rating-table deliveries
+outside the repository; `.gitignore` prevents accidental staging, and the hook
+catches forced staging.
+
 **One-time setup** (per contributor):
 
 ```bash

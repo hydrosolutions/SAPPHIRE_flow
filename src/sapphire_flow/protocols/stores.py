@@ -108,6 +108,16 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class ObservationStore(Protocol):
+    def fetch_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[Observation]:
+        raise NotImplementedError
+
+    def delete_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
+        raise NotImplementedError
+
     def store_observations(self, observations: list[Observation]) -> None:
         raise NotImplementedError
 
@@ -123,6 +133,16 @@ class ObservationStore(Protocol):
         qc_flags: list[QcFlag],
         qc_rule_version: str | None = None,
     ) -> None:
+        raise NotImplementedError
+
+    def update_delivery_qc(
+        self,
+        observation_id: ObservationId,
+        delivery_id: str,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None,
+    ) -> bool:
         raise NotImplementedError
 
     def fetch_observations(
@@ -660,6 +680,9 @@ class TenantStore(Protocol):
     def fetch_tenant_by_code(self, code: str) -> Tenant | None:
         raise NotImplementedError
 
+    def lock_tenant(self, tenant_id: TenantId) -> Tenant:
+        raise NotImplementedError
+
     def fetch_all_tenants(self) -> list[Tenant]:
         raise NotImplementedError
 
@@ -841,6 +864,19 @@ class AccessTokenStore(Protocol):
 @runtime_checkable
 class RatingCurveStore(Protocol):
     def store_rating_curve(self, curve: RatingCurve) -> RatingCurveId:
+        raise NotImplementedError
+
+    def fetch_all_curves_for_station(self, station_id: StationId) -> list[RatingCurve]:
+        raise NotImplementedError
+
+    def fetch_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[RatingCurve]:
+        raise NotImplementedError
+
+    def delete_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
         raise NotImplementedError
 
     def fetch_active_curve(self, station_id: StationId) -> RatingCurve | None:

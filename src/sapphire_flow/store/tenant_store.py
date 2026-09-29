@@ -29,6 +29,18 @@ class PgTenantStore:
         )
         return _row_to_tenant(row) if row is not None else None
 
+    def lock_tenant(self, tenant_id: TenantId) -> Tenant:
+        row = (
+            self._conn.execute(
+                sa.select(tenants).where(tenants.c.id == tenant_id).with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise ValueError(f"tenant {tenant_id} is missing")
+        return _row_to_tenant(row)
+
     def fetch_all_tenants(self) -> list[Tenant]:
         rows = self._conn.execute(sa.select(tenants)).mappings().all()
         return [_row_to_tenant(row) for row in rows]

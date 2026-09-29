@@ -590,6 +590,7 @@ observations = sa.Table(
     # station — MATCH SIMPLE skips the check when rating_curve_id IS NULL.
     sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=True),
     sa.Column("rating_curve_correction_version", sa.Text, nullable=True),
+    sa.Column("delivery_id", sa.Text, nullable=True),
     sa.Column(
         "qc_status",
         sa.Text,
@@ -651,6 +652,11 @@ sa.Index(
     observations.c.source,
     observations.c.timestamp,
 )
+sa.Index(
+    "ix_observations_delivery_id",
+    observations.c.delivery_id,
+    postgresql_where=observations.c.delivery_id.is_not(None),
+)
 
 # ──────────────────────────────────────────────
 # RATING CURVE DOMAIN
@@ -676,6 +682,8 @@ rating_curves = sa.Table(
         server_default="linear",
     ),
     sa.Column("uploaded_by", UUID(as_uuid=True), nullable=True),
+    sa.Column("delivery_id", sa.Text, nullable=True),
+    sa.Column("rating_type_label", sa.Text, nullable=True),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
@@ -696,6 +704,11 @@ sa.Index(
     "ix_rating_curves_station_valid_from",
     rating_curves.c.station_id,
     rating_curves.c.valid_from.desc(),
+)
+sa.Index(
+    "ix_rating_curves_delivery_id",
+    rating_curves.c.delivery_id,
+    postgresql_where=rating_curves.c.delivery_id.is_not(None),
 )
 sa.Index(
     "uq_rating_curves_station_active",

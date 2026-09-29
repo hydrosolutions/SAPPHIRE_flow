@@ -307,6 +307,48 @@ class TestNetworkAwareOnboardingQc:
 
 
 class TestHappyPath:
+    def test_delivery_collision_isolated_to_its_station(self) -> None:
+        colliding_id = StationId(uuid4())
+        unaffected_id = StationId(uuid4())
+        colliding = make_station_config(station_id=colliding_id, code="B001")
+        unaffected = make_station_config(station_id=unaffected_id, code="B002")
+        stores = _Stores()
+        stores.obs.store_raw_observations(
+            [
+                RawObservation(
+                    station_id=colliding_id,
+                    timestamp=_EPOCH,
+                    parameter="discharge",
+                    value=7.0,
+                    source=ObservationSource.MANUAL_IMPORT,
+                    delivery_id="earlier-delivery",
+                )
+            ]
+        )
+
+        result = _run(
+            stores,
+            stations=[colliding, unaffected],
+            basins=[_make_basin("B001"), _make_basin("B002")],
+            obs_by_station={
+                colliding_id: _make_raw_obs(colliding_id, 3),
+                unaffected_id: _make_raw_obs(unaffected_id, 3),
+            },
+            forcing_by_station={},
+        )
+
+        assert result.observations_imported == 3
+        assert any(str(colliding_id) in error for error in result.errors)
+        assert (
+            len(stores.obs.fetch_observations(unaffected_id, "discharge", _EPOCH, _END))
+            == 3
+        )
+        preserved = stores.obs.fetch_observations(
+            colliding_id, "discharge", _EPOCH, _END
+        )
+        assert len(preserved) == 1
+        assert preserved[0].delivery_id == "earlier-delivery"
+
     def test_happy_path(self) -> None:
         sid1 = StationId(uuid4())
         sid2 = StationId(uuid4())

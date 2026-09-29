@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -165,6 +166,39 @@ def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore
 
 
 class TestIngestObservationsFlow:
+    def test_delivery_collision_keeps_other_station_stored_and_qc_eligible(
+        self,
+    ) -> None:
+        colliding = make_station_config(code="2135", rng=random.Random(71))
+        unaffected = make_station_config(code="2136", rng=random.Random(72))
+        stations = FakeStationStore()
+        stations.store_station(colliding)
+        stations.store_station(unaffected)
+        observations = FakeObservationStore()
+        collided_row = _make_obs(colliding.id, "discharge", 9.0)
+        observations.store_raw_observations(
+            [replace(collided_row, delivery_id="earlier-delivery")]
+        )
+        unaffected_row = _make_obs(unaffected.id, "discharge", 12.0)
+
+        result = ingest_observations_flow(
+            station_store=stations,
+            tenant_store=FakeTenantStore(),
+            obs_store=observations,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([collided_row, unaffected_row]),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.stations_failed == 1
+        assert result.observations_stored == 1
+        assert any("delivery collision" in error for error in result.errors)
+        by_station = {row.station_id: row for row in observations.observations()}
+        assert by_station[colliding.id].delivery_id == "earlier-delivery"
+        assert by_station[colliding.id].value == 9.0
+        assert by_station[unaffected.id].qc_status is QcStatus.QC_UNCHECKED
+
     def test_rejected_declaration_does_not_block_valid_qc_and_survives_early_return(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

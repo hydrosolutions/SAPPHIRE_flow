@@ -179,6 +179,7 @@ writable_tenants = ["sapphire"]
 
 [onboarding]
 data_source = "camels-ch"
+qc_pending_networks = ["dhm"]
 basin_ids = [
     "2004", "2009", "2011", "2016", "2017", "2018", "2019", "2020",
     "2021", "2024", "2025", "2027", "2028", "2029", "2031", "2033",
@@ -204,10 +205,64 @@ basin_ids = [
     "2642",
 ]
 
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "447"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 20000.0 }
+
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "450"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 100000.0 }
+
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "604.5"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 25000.0 }
+
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "647"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 10000.0 }
+
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "670"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 50000.0 }
+
+[[onboarding.station_qc_thresholds]]
+tenant_code = "chwrr"
+code = "684"
+network = "dhm"
+rule_id = "range_check"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_max = 20000.0 }
+
 
 # QC rules
 [qc_rules]
-version = "1.0.0"
+version = "1.1.0"
 
 [[qc_rules.rules]]
 rule_id = "range_check"
@@ -306,6 +361,30 @@ rule_version = "1.0.0"
 parameter = "discharge"
 time_step_seconds = 86400
 thresholds = { k_sigma = 5.0 }
+
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+network = "dhm"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_min = 0.0, value_max = 100000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+network = "dhm"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { max_rate = 100000.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+network = "dhm"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { tolerance = 25.0 }
 
 [[qc_rules.rules]]
 rule_id = "range_check"

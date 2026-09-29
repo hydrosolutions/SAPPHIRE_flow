@@ -26,9 +26,11 @@ implementation and pass only once the upsert is correct.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import pytest
 import structlog
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.ids import StationId
 
+from sapphire_flow.exceptions import DeliveryCollisionError
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
@@ -109,6 +112,119 @@ class TestStoreRawUpsertRestatement:
         assert obs.qc_status == QcStatus.RAW
         assert obs.qc_flags == []
         assert obs.qc_rule_version is None
+
+    def test_foreign_delivery_refuses_entire_batch_before_writing(
+        self, db_connection: sa.Connection
+    ) -> None:
+        first = _seed_station(db_connection, rng_seed=401, code="DELIVERY-401")
+        second = _seed_station(db_connection, rng_seed=402, code="DELIVERY-402")
+        store = PgObservationStore(db_connection)
+        tagged = RawObservation(
+            station_id=first,
+            timestamp=_utc(),
+            parameter="discharge",
+            value=10.0,
+            source=ObservationSource.MANUAL_IMPORT,
+            delivery_id="delivery-a",
+        )
+        store.store_raw_observations([tagged])
+        with pytest.raises(DeliveryCollisionError, match="delivery collision"):
+            store.store_raw_observations(
+                [
+                    _raw(second, hour=0, value=20.0),
+                    RawObservation(
+                        station_id=first,
+                        timestamp=_utc(),
+                        parameter="discharge",
+                        value=30.0,
+                        source=ObservationSource.MANUAL_IMPORT,
+                        delivery_id="delivery-b",
+                    ),
+                ]
+            )
+        assert store.fetch_observations(second, "discharge", _utc(), _utc(hour=1)) == []
+        saved = store.fetch_delivery_observations("delivery-a", [first])
+        assert len(saved) == 1
+        assert saved[0].value == 10.0
+
+    def test_null_delivery_restates_and_scoped_delete_preserves_untagged(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection, rng_seed=403, code="DELIVERY-403")
+        store = PgObservationStore(db_connection)
+        store.store_raw_observations([_raw(station_id, hour=0, value=1.0)])
+        store.store_raw_observations([_raw(station_id, hour=0, value=2.0)])
+        tagged = RawObservation(
+            station_id=station_id,
+            timestamp=_utc(hour=1),
+            parameter="discharge",
+            value=3.0,
+            source=ObservationSource.MANUAL_IMPORT,
+            delivery_id="delivery-a",
+        )
+        store.store_raw_observations([tagged])
+        assert store.delete_delivery_observations("delivery-a", [station_id]) == 1
+        remaining = store.fetch_observations(
+            station_id, "discharge", _utc(), _utc(hour=2)
+        )
+        assert len(remaining) == 1
+        assert remaining[0].value == 2.0
+        assert remaining[0].delivery_id is None
+
+    def test_delivery_qc_update_requires_matching_delivery_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection, rng_seed=404, code="DELIVERY-404")
+        store = PgObservationStore(db_connection)
+        tagged = RawObservation(
+            station_id=station_id,
+            timestamp=_utc(),
+            parameter="discharge",
+            value=3.0,
+            source=ObservationSource.MANUAL_IMPORT,
+            delivery_id="delivery-a",
+        )
+        [observation_id] = store.store_raw_observations([tagged])
+        assert not store.update_delivery_qc(
+            observation_id, "delivery-b", QcStatus.QC_FAILED, [], "1.2"
+        )
+        assert store.update_delivery_qc(
+            observation_id, "delivery-a", QcStatus.QC_PASSED, [], "1.2"
+        )
+        [persisted] = store.fetch_delivery_observations("delivery-a", [station_id])
+        assert persisted.qc_status is QcStatus.QC_PASSED
+        assert persisted.qc_rule_version == "1.2"
+
+    def test_checked_writer_preserves_delivery_identity_and_allows_null_correction(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection, rng_seed=405, code="DELIVERY-405")
+        store = PgObservationStore(db_connection)
+        tagged = RawObservation(
+            station_id=station_id,
+            timestamp=_utc(),
+            parameter="discharge",
+            value=1.0,
+            source=ObservationSource.MANUAL_IMPORT,
+            delivery_id="delivery-a",
+        )
+        store.store_raw_observations([tagged])
+        [persisted] = store.fetch_delivery_observations("delivery-a", [station_id])
+        with pytest.raises(DeliveryCollisionError, match="delivery collision"):
+            store.store_observations([replace(persisted, delivery_id=None, value=2.0)])
+        [same] = store.fetch_delivery_observations("delivery-a", [station_id])
+        assert same.value == 1.0
+
+        store.store_raw_observations([_raw(station_id, hour=1, value=3.0)])
+        [ordinary] = store.fetch_observations(
+            station_id, "discharge", _utc(hour=1), _utc(hour=2)
+        )
+        store.store_observations([replace(ordinary, value=4.0)])
+        [corrected] = store.fetch_observations(
+            station_id, "discharge", _utc(hour=1), _utc(hour=2)
+        )
+        assert corrected.value == 4.0
+        assert corrected.delivery_id is None
 
     def test_unchanged_value_no_write_and_no_qc_churn(
         self, db_connection: sa.Connection

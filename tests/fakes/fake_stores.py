@@ -21,6 +21,7 @@ from sapphire_flow.exceptions import (
     CaptureAbandonedError,
     ConfigurationError,
     ConflictError,
+    DeliveryCollisionError,
     ForecastRetryConflictError,
     StoreError,
 )
@@ -144,24 +145,89 @@ class FakeObservationStore:
         self._observations: dict[ObservationId, Observation] = {}
         self.fetch_observations_call_count: int = 0
 
+    def fetch_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[Observation]:
+        wanted = set(station_ids)
+        return sorted(
+            (
+                observation
+                for observation in self._observations.values()
+                if observation.delivery_id == delivery_id
+                and observation.station_id in wanted
+            ),
+            key=lambda observation: (
+                str(observation.station_id),
+                observation.timestamp,
+            ),
+        )
+
+    def delete_delivery_observations(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
+        observations = self.fetch_delivery_observations(delivery_id, station_ids)
+        for observation in observations:
+            del self._observations[observation.id]
+        return len(observations)
+
     def store_observations(self, observations: list[Observation]) -> None:
+        self._check_delivery_collisions(observations)
         for obs in observations:
-            self._observations[obs.id] = obs
+            existing = self._by_natural_key(obs)
+            if existing is not None:
+                self._observations[existing.id] = replace(obs, id=existing.id)
+            else:
+                self._observations[obs.id] = obs
+
+    def _by_natural_key(
+        self, observation: Observation | RawObservation
+    ) -> Observation | None:
+        return next(
+            (
+                stored
+                for stored in self._observations.values()
+                if (
+                    stored.station_id,
+                    stored.timestamp,
+                    stored.parameter,
+                    stored.source,
+                )
+                == (
+                    observation.station_id,
+                    observation.timestamp,
+                    observation.parameter,
+                    observation.source,
+                )
+            ),
+            None,
+        )
+
+    def _check_delivery_collisions(
+        self, observations: list[Observation] | list[RawObservation]
+    ) -> None:
+        incoming: dict[tuple[object, object, object, object], str | None] = {}
+        for observation in observations:
+            key = (
+                observation.station_id,
+                observation.timestamp,
+                observation.parameter,
+                observation.source,
+            )
+            if key in incoming and incoming[key] != observation.delivery_id:
+                raise DeliveryCollisionError(observation.station_id)
+            incoming[key] = observation.delivery_id
+            existing = self._by_natural_key(observation)
+            if existing is not None and existing.delivery_id != observation.delivery_id:
+                raise DeliveryCollisionError(observation.station_id)
 
     def store_raw_observations(
         self, observations: list[RawObservation]
     ) -> list[ObservationId]:
+        deduped = _dedupe_raw_observations(observations)
+        self._check_delivery_collisions(deduped)
         ids = []
-        for raw in _dedupe_raw_observations(observations):
-            natural_key = (raw.station_id, raw.timestamp, raw.parameter, raw.source)
-            existing = next(
-                (
-                    o
-                    for o in self._observations.values()
-                    if (o.station_id, o.timestamp, o.parameter, o.source) == natural_key
-                ),
-                None,
-            )
+        for raw in deduped:
+            existing = self._by_natural_key(raw)
             if existing is not None:
                 provenance_unchanged = (
                     existing.rating_curve_id == raw.rating_curve_id
@@ -180,6 +246,7 @@ class FakeObservationStore:
                     qc_status=QcStatus.RAW,
                     qc_flags=[],
                     qc_rule_version=None,
+                    delivery_id=raw.delivery_id,
                 )
                 ids.append(existing.id)
                 continue
@@ -198,6 +265,7 @@ class FakeObservationStore:
                 qc_flags=[],
                 qc_rule_version=None,
                 created_at=raw.timestamp,
+                delivery_id=raw.delivery_id,
             )
             self._observations[oid] = obs
             ids.append(oid)
@@ -214,6 +282,20 @@ class FakeObservationStore:
         self._observations[observation_id] = replace(
             obs, qc_status=qc_status, qc_flags=qc_flags, qc_rule_version=qc_rule_version
         )
+
+    def update_delivery_qc(
+        self,
+        observation_id: ObservationId,
+        delivery_id: str,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None,
+    ) -> bool:
+        observation = self._observations.get(observation_id)
+        if observation is None or observation.delivery_id != delivery_id:
+            return False
+        self.update_qc(observation_id, qc_status, qc_flags, qc_rule_version)
+        return True
 
     def fetch_observations(
         self,
@@ -1494,6 +1576,12 @@ class FakeTenantStore:
     def fetch_tenant_by_code(self, code: str) -> Tenant | None:
         return next((t for t in self._tenants.values() if t.code == code), None)
 
+    def lock_tenant(self, tenant_id: TenantId) -> Tenant:
+        tenant = self.fetch_tenant(tenant_id)
+        if tenant is None:
+            raise ValueError(f"tenant {tenant_id} is missing")
+        return tenant
+
     def fetch_all_tenants(self) -> list[Tenant]:
         return list(self._tenants.values())
 
@@ -1782,6 +1870,37 @@ class FakeRatingCurveStore:
         self._curves[curve.id] = curve
         return curve.id
 
+    def fetch_all_curves_for_station(self, station_id: StationId) -> list[RatingCurve]:
+        return sorted(
+            (
+                curve
+                for curve in self._curves.values()
+                if curve.station_id == station_id
+            ),
+            key=lambda curve: (curve.valid_from, curve.version),
+        )
+
+    def fetch_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[RatingCurve]:
+        wanted = set(station_ids)
+        return sorted(
+            (
+                curve
+                for curve in self._curves.values()
+                if curve.delivery_id == delivery_id and curve.station_id in wanted
+            ),
+            key=lambda curve: (str(curve.station_id), curve.valid_from, curve.version),
+        )
+
+    def delete_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
+        curves = self.fetch_delivery_curves(delivery_id, station_ids)
+        for curve in curves:
+            del self._curves[curve.id]
+        return len(curves)
+
     def fetch_active_curve(self, station_id: StationId) -> RatingCurve | None:
         return next(
             (
@@ -1795,14 +1914,16 @@ class FakeRatingCurveStore:
     def fetch_curve_at(
         self, station_id: StationId, at: UtcDatetime
     ) -> RatingCurve | None:
-        for c in self._curves.values():
-            if (
-                c.station_id == station_id
-                and c.valid_from <= at
-                and (c.valid_to is None or at < c.valid_to)
-            ):
-                return c
-        return None
+        matches = (
+            curve
+            for curve in self._curves.values()
+            if curve.station_id == station_id
+            and curve.valid_from <= at
+            and (curve.valid_to is None or at < curve.valid_to)
+        )
+        return max(
+            matches, key=lambda curve: (curve.valid_from, curve.version), default=None
+        )
 
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None:
         c = self._curves[curve_id]
