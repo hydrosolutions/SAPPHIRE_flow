@@ -523,6 +523,56 @@ class TestStalledAndDroppedBothSurface:
 
 
 class TestD2aBackfill:
+    @pytest.mark.parametrize("include_prior", [False, True])
+    def test_explicit_prior_scope_excludes_six_nepal_bindings(
+        self, include_prior: bool
+    ) -> None:
+        prior = StationId(uuid4())
+        nepal = [StationId(uuid4()) for _ in range(6)]
+        store = _station_store_with_binding(prior, *nepal)
+        forcing = FakeHistoricalForcingStore()
+
+        class AvailableAdapter:
+            def fetch_snow_reanalysis(
+                self,
+                station_configs: list[StationWeatherSource],
+                start: UtcDatetime,
+                end: UtcDatetime,
+                variables: list[str] | None = None,
+            ) -> _FakeResult:
+                assert {c.station_id for c in station_configs} == {prior}
+                return _FakeResult(
+                    rows=[
+                        make_raw_historical_forcing(
+                            station_id=c.station_id,
+                            source="recap_snow_reanalysis",
+                            parameter=p,
+                            valid_time=start,
+                        )
+                        for c in station_configs
+                        for p in DEFAULT_VARIABLES
+                    ],
+                    unavailable={},
+                    attempted={_HRU: frozenset(DEFAULT_VARIABLES)},
+                    resolved={c.station_id: _HRU for c in station_configs},
+                    skipped={},
+                )
+
+        result = ingest_recap_reanalysis_flow.fn(
+            station_store=store,
+            forcing_store=forcing,
+            gateway_polygon_store=object(),
+            pipeline_health_store=None,
+            adapter=AvailableAdapter(),
+            clock=_clock,
+            station_ids=[str(prior)] if include_prior else [],
+        )
+        assert result.stations_targeted == int(include_prior)
+        assert all(
+            forcing.fetch_forcing(sid, "recap_snow_reanalysis", _START, _NOW) == []
+            for sid in nepal
+        )
+
     def test_station_ids_subset_scopes_the_run(self) -> None:
         sid_a = StationId(uuid4())
         sid_b = StationId(uuid4())

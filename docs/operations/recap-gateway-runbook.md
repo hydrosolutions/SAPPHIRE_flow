@@ -43,10 +43,11 @@ multi-year training series (see Plan 082 "Client caveats").
 
 1. Confirm the §5a mapping table has bindings for every target station
    (above).
-2. Run `ingest_weather_history_flow` with an explicit `window_days` covering
-   the desired history (e.g. `window_days=3650` for 10 years) — the Swiss
-   rolling-ingest default (`window_days` unset, 60 days) is too short for
-   initial Nepal back-extraction.
+2. For the six CHWRR gauges, use the `onboard_nepal history` command in the
+   [Nepal onboarding runbook](nepal-station-onboarding-runbook.md#7-run-the-six-station-discharge-preparation-command)
+   with an explicit start/end window. It persists ERA5-Land precipitation and
+   temperature in bounded requests. `ingest_weather_history_flow` is the
+   MeteoSwiss path; the scheduled `ingest-recap-reanalysis` flow handles snow.
 3. The reanalysis adapter's leakage guard (`adapters/recap_gateway.py
    ._drop_forecast_fill_rows`) drops any `ifs`/`jsnow_forecast`-sourced rows
    the Gateway's `reanalysis` endpoint may still echo — only `era5_land` /

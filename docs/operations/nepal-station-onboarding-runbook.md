@@ -255,12 +255,10 @@ has a different code/network, stop and correct the station import or package
 through its owner. A held basin is a visible readiness outcome; do not work
 around it by creating a duplicate station.
 
-Once Plan 143 and its dependencies are implemented and approved, use **Plan
-143 T2's Nepal-specific operator command**, whose final invocation must be
-documented here by the implementation. It must enforce CHWRR write authority
-and atomically import all six basin/polygon mappings and reanalysis source
-bindings. The generic basin importer is not the writing entry point for this
-batch; use its runbook only for package validation guidance.
+Use `sapphire_flow.cli.onboard_nepal basins` below after Plan 268 T8 acceptance.
+It enforces CHWRR write authority and atomically imports all six basin/polygon
+mappings and reanalysis source bindings. Use the generic importer's runbook
+for package validation guidance.
 
 Before committing the bindings, have the staging orchestrator scope the existing
 `ingest-recap-reanalysis` snow deployment's `station_ids` to its explicit prior
@@ -303,16 +301,85 @@ the inventory, command history, or onboarding report. A successful read-only
 probe does not mean historical values have been persisted in SAP3; the
 Nepal-specific historical forcing persistence step is delivered by Plan 143.
 
-## 7. Run SAP3 onboarding after its implementation is available
+## 7. Run the six-station discharge preparation command
 
-Do this only when the orchestrator has made the onboarding implementation
-available and its documented invocation explicitly scopes the intended DHM
-stations and Nepal database. The implementation must perform the basin/binding
-checks, persist supported historical forcing, qualify the imported QC-passed
-discharge history, and produce a per-station readiness report. The owner chose
-discharge-first onboarding on 2026-09-29; rating-derived water levels are deferred.
-Until then, this
-section is a gate, not an executable command sequence.
+Run these commands in the approved deployment environment with its existing
+database and Recap secret configuration. `--config` points to the base config;
+the command applies `SAPPHIRE_CONFIG_OVERLAY` in order. Use the existing
+CHWRR-only identity overlay last; an admin identity or the Swiss default is
+refused. `DATABASE_URL` selects the database. For this operator process, set:
+
+```bash
+export CHWRR_CONFIG=config.toml
+export SAPPHIRE_CONFIG_OVERLAY=config/overlays/nepal-history.toml,config/overlays/chwrr-import.toml
+```
+
+Set `SAPPHIRE_RECAP_BASE_URL` to the deployment's accepted Gateway endpoint and supply
+the existing API-key secret (`/run/secrets/sapphire_dg_api_key`, or the existing
+`RECAP_API_KEY` environment fallback). The history overlay supplies adapter
+settings only and does not change the forecast adapter or register schedules.
+Keep these environment settings local to the operator process.
+The command uses only the six codes listed above. The accepted basin package
+comes from the existing Mac-mini handoff; synthetic test fixtures are not
+staging inputs.
+
+After the owner has checked the geometry joins, the deployment session has
+recorded Plan 268 T8 acceptance, and the snow precondition in section 5 holds:
+
+```bash
+uv run python -m sapphire_flow.cli.onboard_nepal basins \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --package-dir "$ACCEPTED_PACKAGE_DIR" \
+  --confirm-package-joins --confirm-snow-scope --dry-run
+```
+
+Review the result, then repeat without `--dry-run` to commit. The confirmation
+flags acknowledge recorded operator checks; the CLI cannot inspect deployment
+queues or verify geometry review. It refuses held or partially accepted packages.
+
+Choose the installed discharge model, years, supported cadence and minimum
+number of complete training windows when running the tool. Record its declared
+weather and static inputs before retrieving history. Start and end are explicit
+timezone-aware ISO timestamps; the end is exclusive.
+
+```bash
+uv run python -m sapphire_flow.cli.onboard_nepal history \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --start "$HISTORY_START" --end "$HISTORY_END"
+
+uv run python -m sapphire_flow.cli.onboard_nepal qualify \
+  --config "$CHWRR_CONFIG" --tenant chwrr --confirm-t8 \
+  --start "$HISTORY_START" --end "$HISTORY_END" \
+  --model "$DISCHARGE_MODEL" --time-step-hours "$STEP_HOURS" \
+  --minimum-samples "$MINIMUM_SAMPLES" --dry-run
+```
+
+Repeat `qualify` without `--dry-run` after inspecting the aggregate report.
+All three commands support rollback dry runs. History requests cover at most
+31 days each and preserve the adapter's source and per-row version. Repeating
+the same retrieval is safe. This command calls the Prefect flow body inside
+the database transaction; it does not register or schedule a deployment.
+
+Qualification requires basin-average inputs, supported precipitation/temperature
+features, required statics, and current-version QC-passed discharge from the
+restricted delivery. It uses the existing resampling rules and counts contiguous
+complete rows covering the model's lookback plus forecast horizon. The minimum
+count is an explicit model-specific operator choice; it is not a skill score.
+No historical rating curve is needed for directly delivered discharge.
+
+Exit code 0 means the requested operation passed. Exit code 1 means a failure
+or held coverage/readiness. A successful qualification with held stations
+**commits cleared discharge targets** unless `--dry-run` is present; a raised
+error rolls back the operation. History coverage counts alone do not establish
+model readiness. The qualification report lists every gauge, hold reasons,
+QC counts/versions, usable observations and complete windows, and overlap.
+It contains no measurement values. Save the package ID/checksums, software and
+configuration versions, model requirements, command options and aggregate
+reports in the controlled handoff. Repeat qualification after delivery/QC changes.
+
+The owner chose discharge-first onboarding on 2026-09-29. Stations remain in
+onboarding with no assigned model. Live inputs, current rating availability,
+and model-output publication remain separate release questions.
 
 For each batch:
 

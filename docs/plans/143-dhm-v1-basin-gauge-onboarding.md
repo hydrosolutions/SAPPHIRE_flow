@@ -19,6 +19,16 @@ Claude and Codex reviews recommended READY with no remaining findings. Reconcile
 against remote `main` at `90aebc56`; freshness checked before implementation.
 This status authorizes implementation, not staging acceptance.
 
+Implementation (2026-09-29): `cli/onboard_nepal.py` provides atomic `basins`,
+bounded `history`, and `qualify` commands with rollback dry runs. The readiness
+service uses the delivery tenant lock and existing training-data resampling;
+`StoreBackedReanalysisSource` accepts an opt-in source mapping, used by the
+Nepal reader without changing other callers. Model, time window, cadence and
+minimum complete-window count are runtime selections, as confirmed by the owner.
+The real six-basin package will come from the existing Mac-mini deployment
+handoff. T1's owner joins and T2–T5 staging read-back remain external acceptance
+work; this plan stays READY until that evidence is recorded.
+
 | Prerequisite | State at this revision | Remaining gate for Plan 143 |
 |---|---|---|
 | 120 — basin/static importer | COMPLETE, archived; reusable core is present | Validate the actual six-basin package and station joins |
