@@ -5,10 +5,23 @@ from uuid import UUID
 
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_stores
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
-from sapphire_flow.api.schemas import EnsembleResponse, ForecastDetail, QcFlagResponse
+from sapphire_flow.api.publication_gate import (
+    PublicationGate,
+    get_publication_gate,
+    require_publication_store,
+    station_tenant_id,
+)
+from sapphire_flow.api.publication_views import publication_metadata
+from sapphire_flow.api.schemas import (
+    EnsembleResponse,
+    ForecastDetail,
+    PublicationTombstone,
+    QcFlagResponse,
+)
 from sapphire_flow.api.security import Principal, require_principal
 from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
@@ -62,7 +75,7 @@ def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
     )
 
 
-def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
+def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
     return ForecastDetail(
         id=str(f.id),
         station_id=str(f.station_id),
@@ -106,7 +119,8 @@ def get_forecast(
     forecast_id: str,
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_principal),
-) -> ForecastDetail:
+    gate: PublicationGate = Depends(get_publication_gate),
+) -> ForecastDetail | JSONResponse:
     forecast = stores["forecast_store"].fetch_forecast(ForecastId(UUID(forecast_id)))
     # Plan 147 Slice C R2: scope-check AFTER fetch (need station_id off the
     # row) but BEFORE returning — an out-of-scope forecast is a 404, not a
@@ -114,4 +128,25 @@ def get_forecast(
     # "Station not found" confirmed that another scope's forecast exists.
     if forecast is None or not principal.station_in_scope(forecast.station_id):
         raise HTTPException(status_code=404, detail="Forecast not found")
-    return _to_forecast_detail(forecast)
+    if not gate.active_tenant_ids:
+        return to_forecast_detail(forecast)
+    tenant_id = station_tenant_id(stores, forecast.station_id)
+    if not gate.active(tenant_id):
+        return to_forecast_detail(forecast)
+    pub = require_publication_store(stores)
+    pub.lock_read_snapshot()
+    metadata, decisions = publication_metadata(pub, forecast, tenant_id)
+    if not decisions:
+        raise HTTPException(status_code=404, detail="Forecast not found")
+    if metadata["publication_state"] == "withdrawn":
+        last = decisions[-1]
+        tombstone = PublicationTombstone(
+            forecast_id=str(forecast.id),
+            station_id=str(forecast.station_id),
+            parameter=forecast.ensemble.parameter,
+            issued_at=forecast.issued_at,
+            decision_id=str(last.id),
+            withdrawn_at=last.created_at,
+        )
+        return JSONResponse(status_code=410, content=tombstone.model_dump(mode="json"))
+    return to_forecast_detail(forecast).model_copy(update=metadata)

@@ -1,9 +1,7 @@
-"""Plan 404 D4 — the single named predicate a REVIEW route consults to
-decide whether Plan 341's tenant publication gate is active. Answers `False`
-until Plan 341 provides its own tenant activation switch. Both landing
-orders are covered (`404:111-118`, `341:84`): if Plan 341 lands first, this
-plan's T3 wires this predicate to Plan 341's switch; if this plan lands
-first, Plan 341's activation wires its switch to this predicate.
+"""Shared tenant predicate for publication reads and rejected-forecast review.
+
+Plan 341 T3 supplies an empty active set in production. Plan 342 owns live
+activation; tests may inject enrolled tenants to exercise gated behavior.
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import TenantId
 
 
-def publication_gate_active(tenant_id: TenantId) -> bool:
-    del tenant_id  # unused until Plan 341's switch exists
-    return False
+def publication_gate_active(
+    tenant_id: TenantId, active_tenant_ids: frozenset[TenantId]
+) -> bool:
+    return tenant_id in active_tenant_ids

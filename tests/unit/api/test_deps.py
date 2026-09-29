@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.config.deployment import load_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -58,8 +59,18 @@ class TestGetStoresReadOnlyDataRoot:
 
         monkeypatch.setattr(Path, "mkdir", fake_mkdir)
 
-        stores = get_stores(conn=sqlite_conn)
+        stores = get_stores(conn=sqlite_conn, config=load_config("config.toml"))
 
         assert "artifact_store" in stores
         assert not (data_root / "raw").exists()
         assert not (data_root / "cache").exists()
+
+
+def test_missing_deployment_config_keeps_ordinary_stores_available(
+    sqlite_conn: sa.Connection,
+) -> None:
+    stores = get_stores(conn=sqlite_conn, config=None)
+
+    assert stores["forecast_store"] is not None
+    assert stores["station_store"] is not None
+    assert stores["publication_store"] is None

@@ -29,6 +29,11 @@ class PublicationEventType(Enum):
     WITHDRAWN = "withdrawn"
 
 
+class WithdrawalState(Enum):
+    NOT_WITHDRAWN = "not_withdrawn"
+    WITHDRAWN = "withdrawn"
+
+
 class PreservationAtPublish(Enum):
     VERIFIED = "verified"
     BACKUP_PENDING = "backup_pending"
@@ -117,6 +122,14 @@ class PublicationSelection:
     selected_forecast_id: ForecastId | None
     version: int
     linked_warning_publication_id: UUID | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PublicationEvent:
+    sequence: int
+    event_type: PublicationEventType
+    decision: PublicationDecision
+    withdrawal_state: WithdrawalState
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

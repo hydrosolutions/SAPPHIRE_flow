@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi import Depends
 
+from sapphire_flow.api.human_auth import require_human_principal
 from sapphire_flow.api.review_auth import require_reviewer_or_human
 from sapphire_flow.api.security import (
     PepperNotConfiguredError,
@@ -191,6 +192,7 @@ class TestRoleGates:
         # human, which this table (keyed by AccessTokenRole) cannot express.
         "REVIEW_OR_HUMAN": frozenset({AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN}),
         "ADMIN": frozenset({AccessTokenRole.ADMIN}),
+        "HUMAN": frozenset(),
     }
 
     @staticmethod
@@ -308,7 +310,7 @@ def _flat_dependant_calls(dependant: object) -> list[object]:
 
 
 def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str], str]:
-    """method+path -> "PUBLIC" | "PRINCIPAL" | "REVIEW" | "ADMIN", derived from each
+    """method+path -> PUBLIC/PRINCIPAL/REVIEW/ADMIN/HUMAN from each
     mounted route's actual dependency graph (not a hand-maintained belief
     about which router it lives in) — a route added to an existing router
     without `dependencies=[Depends(require_admin/require_principal)]`
@@ -348,7 +350,9 @@ def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str],
             # sub-dependencies of a REVIEW_OR_HUMAN route — but the check is
             # still ordered defensively, so an ungated route still reads
             # PUBLIC either way.
-            if require_admin in calls:
+            if require_human_principal in calls:
+                tag = "HUMAN"
+            elif require_admin in calls:
                 tag = "ADMIN"
             elif require_reviewer_or_human in calls:
                 tag = "REVIEW_OR_HUMAN"
@@ -403,6 +407,12 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/stations/{station_id}"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/observations"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/forecasts"): "PRINCIPAL",
+        (
+            "GET",
+            "/api/v1/stations/{station_id}/forecasts/latest-published",
+        ): "PRINCIPAL",
+        ("GET", "/api/v1/stations/{station_id}/forecast-publications"): "PRINCIPAL",
+        ("GET", "/api/v1/forecast-publications"): "PRINCIPAL",
         ("GET", "/api/v1/forecasts/{forecast_id}"): "PRINCIPAL",
         ("GET", "/api/v1/alerts"): "PRINCIPAL",
         ("POST", "/api/v1/alerts/{alert_id}/acknowledge"): "PRINCIPAL",
@@ -410,6 +420,10 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/qc/rules"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/skill"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"): "REVIEW_OR_HUMAN",
+        ("GET", "/api/v1/review/forecasts"): "HUMAN",
+        ("GET", "/api/v1/review/forecasts/{forecast_id}"): "HUMAN",
+        ("POST", "/api/v1/review/forecasts/{forecast_id}/publish"): "HUMAN",
+        ("POST", "/api/v1/review/forecasts/{forecast_id}/withdraw"): "HUMAN",
     }
 
     def test_every_mounted_route_matches_the_expected_classification(self) -> None:
@@ -431,7 +445,9 @@ class TestRouteAuthMatrixExhaustive:
             if tag == "PUBLIC" or AccessTokenRole.REVIEWER in admitted[tag]
         }
         assert reachable == {
-            route for route, tag in self._EXPECTED.items() if tag != "ADMIN"
+            route
+            for route, tag in self._EXPECTED.items()
+            if tag not in {"ADMIN", "HUMAN"}
         }
 
     def test_a_require_reviewer_route_is_classified_review(self) -> None:

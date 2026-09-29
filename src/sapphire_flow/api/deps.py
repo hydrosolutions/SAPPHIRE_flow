@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Any
 
 import sqlalchemy as sa
 from fastapi import Depends, FastAPI, Request
 
+from sapphire_flow.config.deployment import DeploymentConfig, load_config
 from sapphire_flow.db.engine import create_engine_from_env
 
 
@@ -25,6 +27,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     human_config = load_oidc_config()
     app.state.human_oidc_verifier = (
         build_human_token_verifier(human_config) if human_config is not None else None
+    )
+    from sapphire_flow.api.publication_gate import PublicationGate
+
+    app.state.publication_gate = PublicationGate()
+    # A configured API validates the activation field at boot. An unset
+    # SAPPHIRE_CONFIG leaves ordinary legacy reads available but cannot
+    # construct a publication store or accept a publication write.
+    import os
+
+    app.state.deployment_config = (
+        load_config() if os.environ.get("SAPPHIRE_CONFIG") else None
     )
     app.state.engine = create_engine_from_env()
     yield
@@ -47,14 +60,25 @@ def get_connection(request: Request) -> Generator[sa.Connection, None, None]:
         yield conn
 
 
+def get_deployment_config(request: Request) -> DeploymentConfig | None:
+    config: DeploymentConfig | None = getattr(
+        request.app.state, "deployment_config", None
+    )
+    return config
+
+
 def get_stores(
     conn: sa.Connection = Depends(get_connection),
+    config: DeploymentConfig | None = Depends(get_deployment_config),
 ) -> dict[str, Any]:
     from sapphire_flow.config.paths import resolve_artifact_dir
     from sapphire_flow.store.alert_store import PgAlertStore
     from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
+    from sapphire_flow.store.forecast_publication_store import (
+        PgForecastPublicationStore,
+    )
     from sapphire_flow.store.forecast_store import PgForecastStore
     from sapphire_flow.store.hindcast_store import PgHindcastStore
     from sapphire_flow.store.historical_forcing_store import (
@@ -85,6 +109,15 @@ def get_stores(
         "hindcast_store": PgHindcastStore(conn),
         "skill_store": PgSkillStore(conn),
         "forecast_store": PgForecastStore(conn),
+        "publication_store": (
+            PgForecastPublicationStore(
+                conn,
+                backup_max_age=timedelta(hours=config.protected_backup_max_age_hours),
+                proof_window=timedelta(hours=config.publication_proof_window_hours),
+            )
+            if config is not None
+            else None
+        ),
         "alert_store": PgAlertStore(conn),
         "pipeline_health_store": PgPipelineHealthStore(conn),
         # Plan 198 T5 — the Forecast Lab snapshot route's read-only DB

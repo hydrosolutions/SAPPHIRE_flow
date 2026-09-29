@@ -105,6 +105,28 @@
           "ensemble": {
             "$ref": "#/components/schemas/EnsembleResponse"
           },
+          "forecast_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Status"
+          },
+          "forecast_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Version"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -190,6 +212,61 @@
             "title": "Parameter",
             "type": "string"
           },
+          "preservation_at_publish": {
+            "anyOf": [
+              {
+                "enum": [
+                  "verified",
+                  "backup_pending"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preservation At Publish"
+          },
+          "publication_decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Decision Id"
+          },
+          "publication_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unpublished",
+                  "selected",
+                  "replaced",
+                  "withdrawn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication State"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
           "qc_flags": {
             "default": [],
             "items": {
@@ -213,6 +290,17 @@
           "representation": {
             "title": "Representation",
             "type": "string"
+          },
+          "selection_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection Version"
           },
           "source_model_ids": {
             "anyOf": [
@@ -380,6 +468,28 @@
             "title": "Created At",
             "type": "string"
           },
+          "forecast_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Status"
+          },
+          "forecast_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Version"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -431,6 +541,61 @@
             "title": "Parameter",
             "type": "string"
           },
+          "preservation_at_publish": {
+            "anyOf": [
+              {
+                "enum": [
+                  "verified",
+                  "backup_pending"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preservation At Publish"
+          },
+          "publication_decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Decision Id"
+          },
+          "publication_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unpublished",
+                  "selected",
+                  "replaced",
+                  "withdrawn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication State"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
           "qc_flags": {
             "default": [],
             "items": {
@@ -454,6 +619,17 @@
           "representation": {
             "title": "Representation",
             "type": "string"
+          },
+          "selection_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection Version"
           },
           "station_id": {
             "title": "Station Id",
@@ -849,6 +1025,52 @@
           "offset"
         ],
         "title": "PaginatedResponse[StationSummary]",
+        "type": "object"
+      },
+      "PublicationTombstone": {
+        "properties": {
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "forecast_id": {
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "publication_state": {
+            "const": "withdrawn",
+            "default": "withdrawn",
+            "title": "Publication State",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "format": "date-time",
+            "title": "Withdrawn At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "station_id",
+          "parameter",
+          "issued_at",
+          "decision_id",
+          "withdrawn_at"
+        ],
+        "title": "PublicationTombstone",
         "type": "object"
       },
       "QcFlagResponse": {
@@ -1751,13 +1973,13 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "1.1"
+    "version": "2.0"
   },
   "openapi": "3.1.0",
   "paths": {
     "/api/v1/forecasts/{forecast_id}": {
       "get": {
-        "description": "Forecast detail, with typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown forecast is 404. A malformed forecast_id is unguarded today and returns 500, not 400.",
+        "description": "Forecast detail, with typed qc_flags. For an activated CHWRR tenant only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400.",
         "operationId": "get_forecast_api_v1_forecasts__forecast_id__get",
         "parameters": [
           {
@@ -1800,6 +2022,16 @@
               }
             },
             "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationTombstone"
+                }
+              }
+            },
+            "description": "Withdrawn forecast; metadata-only tombstone."
           },
           "422": {
             "content": {
@@ -2117,7 +2349,7 @@
     },
     "/api/v1/stations/{station_id}/forecasts": {
       "get": {
-        "description": "Forecast summaries for a station, with QC status and typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown station is 404.",
+        "description": "Forecast summaries for a station, with QC status and typed qc_flags. For an activated CHWRR tenant this contains only the current human-selected publication per issue time, including a selected forecast later marked superseded by an automatic retry. Consumer and reviewer scopes are identical; admin is unscoped but sees the same publication gate. An out-of-scope station is 404.",
         "operationId": "list_forecasts_api_v1_stations__station_id__forecasts_get",
         "parameters": [
           {

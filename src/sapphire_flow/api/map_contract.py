@@ -22,7 +22,7 @@ from fastapi.routing import APIRoute
 from sapphire_flow.api import app
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "1.1"
+MAP_CONTRACT_VERSION = "2.0"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
 # other route may appear in the committed file.
@@ -55,7 +55,7 @@ _REVIEW_OR_HUMAN_PATHS: frozenset[str] = frozenset(
 
 # Every route in _MAP_ROUTES except the station LIST parses at least one
 # query value (or a station_id) through a helper that raises HTTPException
-# 400 on failure (`api/routes/api_stations.py::_parse_datetime/_parse_enum`,
+# 400 on failure (`api/routes/api_stations.py::parse_api_datetime/_parse_enum`,
 # `api/routes/api_review.py::_parse_station_id`) — `/stations/{id}` and
 # `/forecasts/{id}` parse their path id UNGUARDED today (500 on malformed,
 # noted on the consumer page, not changed here).
@@ -103,13 +103,19 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
     ),
     ("GET", "/api/v1/stations/{station_id}/forecasts"): (
         "Forecast summaries for a station, with QC status and typed "
-        "qc_flags. Any authenticated token role may call this; an "
-        "out-of-scope or unknown station is 404."
+        "qc_flags. For an activated CHWRR tenant this contains only the "
+        "current human-selected publication per issue time, including a "
+        "selected forecast later marked superseded by an automatic retry. "
+        "Consumer and reviewer scopes are identical; admin is unscoped but "
+        "sees the same publication gate. An out-of-scope station is 404."
     ),
     ("GET", "/api/v1/forecasts/{forecast_id}"): (
-        "Forecast detail, with typed qc_flags. Any authenticated token "
-        "role may call this; an out-of-scope or unknown forecast is 404. A "
-        "malformed forecast_id is unguarded today and returns 500, not 400."
+        "Forecast detail, with typed qc_flags. For an activated CHWRR tenant "
+        "only selected or historical replaced publications expose values; "
+        "an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 "
+        "with a metadata-only tombstone. All service roles use the same "
+        "publication gate. A malformed forecast_id remains unguarded and "
+        "returns 500, not 400."
     ),
     ("GET", "/api/v1/qc/rules"): (
         "Both QC rule sets as the serving process resolves them now. "
@@ -219,5 +225,21 @@ def build_map_openapi() -> dict[str, Any]:
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
                 )
+            if path == "/api/v1/forecasts/{forecast_id}":
+                responses["410"] = {
+                    "description": "Withdrawn forecast; metadata-only tombstone.",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PublicationTombstone"
+                            }
+                        }
+                    },
+                }
 
+    from sapphire_flow.api.schemas import PublicationTombstone
+
+    doc["components"]["schemas"]["PublicationTombstone"] = (
+        PublicationTombstone.model_json_schema()
+    )
     return doc

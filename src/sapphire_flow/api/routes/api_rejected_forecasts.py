@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sapphire_flow.api.deps import get_stores
 from sapphire_flow.api.human_auth import require_human_station_permission
+from sapphire_flow.api.publication_gate import PublicationGate, get_publication_gate
 from sapphire_flow.api.review_auth import require_reviewer_or_human
 from sapphire_flow.api.routes.api_review import (
     _parse_station_id,  # pyright: ignore[reportPrivateUsage]
@@ -28,7 +29,6 @@ from sapphire_flow.api.schemas import (
     RejectedForecastValuePoint,
 )
 from sapphire_flow.api.security import Principal, ensure_station_in_scope
-from sapphire_flow.services.publication_gate import publication_gate_active
 from sapphire_flow.types.datetime import UtcDatetime
 from sapphire_flow.types.enums import AccessTokenRole
 from sapphire_flow.types.human_auth import HumanPermission
@@ -121,6 +121,7 @@ def get_rejected_forecasts(
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal | HumanPrincipal = Depends(require_reviewer_or_human),
+    gate: PublicationGate = Depends(get_publication_gate),
 ) -> PaginatedResponse[RejectedForecastResponse]:
     sid = _parse_station_id(station_id)
 
@@ -136,7 +137,7 @@ def get_rejected_forecasts(
     withheld = (
         isinstance(principal, Principal)
         and principal.role is AccessTokenRole.REVIEWER
-        and publication_gate_active(station.tenant_id)
+        and gate.active(station.tenant_id)
     )
 
     now = UtcDatetime(datetime.now(UTC))

@@ -5,6 +5,7 @@ import re
 from datetime import date, timedelta  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Any, Literal, Self, cast
+from uuid import UUID  # noqa: TC003 - Pydantic resolves this field at runtime.
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -93,6 +94,18 @@ class DeploymentConfig(BaseModel):
     protected_backup_max_age_hours: int = Field(default=36, gt=0)
     publication_proof_window_hours: int = Field(default=36, gt=0)
     publication_proof_retry_hours: int = Field(default=24, gt=0)
+    # Plan 342 owns activation and its preflight. T3 rejects every nonempty
+    # value so configuration alone cannot expose unpublished CHWRR forecasts.
+    publication_active_tenant_ids: tuple[UUID, ...] = ()
+
+    @field_validator("publication_active_tenant_ids")
+    @classmethod
+    def _publication_activation_requires_plan_342(
+        cls, value: tuple[UUID, ...]
+    ) -> tuple[UUID, ...]:
+        if value:
+            raise ValueError("forecast publication activation requires Plan 342")
+        return value
 
     # Plan 095: hot window (days) for the raw NWP grid-cube zarrs under
     # nwp_grid_archive_base_path. Supersedes weather_hot_days for the raw-grid

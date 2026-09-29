@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sapphire_flow.api.cors import ScopedCorsMiddleware, parse_exact_origin
 from sapphire_flow.api.deps import lifespan
 from sapphire_flow.api.errors import http_exception_handler, unhandled_exception_handler
+from sapphire_flow.api.publication_cache import PublicationCacheMiddleware
 from sapphire_flow.api.security import (
     require_admin,
     require_principal,
@@ -36,6 +37,7 @@ app = FastAPI(
     openapi_url=None,
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+app.add_middleware(PublicationCacheMiddleware)
 # jinja2 stubs over-narrow env.globals' value type to the default-globals
 # union; at runtime it is a plain str-keyed dict accepting any value.
 cast("dict[str, object]", templates.env.globals)["prefect_ui_url"] = _PREFECT_UI_URL
@@ -107,6 +109,7 @@ import sapphire_flow.api.routes.api_rejected_forecasts as _api_rejected  # noqa:
 import sapphire_flow.api.routes.api_review as _api_review  # noqa: E402
 import sapphire_flow.api.routes.api_stations as _api_stn  # noqa: E402
 import sapphire_flow.api.routes.forecast_lab as _forecast_lab  # noqa: E402
+import sapphire_flow.api.routes.forecast_publication as _publication  # noqa: E402
 
 app.include_router(_api_stn.router, dependencies=[Depends(require_principal)])
 app.include_router(_api_fcst.router, dependencies=[Depends(require_principal)])
@@ -122,3 +125,6 @@ app.include_router(_api_review.router, dependencies=[Depends(require_reviewer)])
 # level `dependencies=`, deliberately outside Plan 402's `require_reviewer`
 # router above — that gate admits service-token principals only.
 app.include_router(_api_rejected.router)
+# Review routes depend on a named OIDC human. Consumer publication routes
+# retain the existing service-token authorization and station scope.
+app.include_router(_publication.router)
