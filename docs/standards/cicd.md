@@ -154,13 +154,21 @@ Responsibilities are split across two stages:
 
 1. Wait for PostgreSQL and Prefect Server health checks to pass (implicit via `depends_on`)
 2. Run `alembic upgrade head` — creates all tables, indexes, constraints
-3. Run `/app/docker/bootstrap-roles.sh` — idempotently creates/updates the scoped `sapphire_api` /
+3. Run `python -m sapphire_flow.cli.provision_tenants` (Plan 513) — creates the tenants the host's config
+   declares as `[tenants.<code>]` (`name` only, never an id), idempotently, in ONE transaction and in sorted
+   code order (`INSERT ... ON CONFLICT (code) DO NOTHING`, then a name check). An existing tenant keeps its id;
+   the same code with a different name aborts the step and `init` (a rename is an owner action, SQL). It reads
+   the base config and the overlays with plain `tomllib` (only the `tenants` tables; no `${...}` expansion), so
+   `init` MUST have `SAPPHIRE_CONFIG` (base `init` sets it) — unset is a hard error; a config with no
+   `[tenants]` is a no-op; the step logs the declared count on every run. Removing a declaration deletes
+   nothing. Because `init` gates the whole stack, a bad declaration also blocks that host's workers and API.
+4. Run `/app/docker/bootstrap-roles.sh` — idempotently creates/updates the scoped `sapphire_api` /
    `sapphire_worker` DB roles and their per-table grants (§ DB role bootstrap below, Plan 147 Slice D).
    Runs AFTER migrations (so grants cover every migrated table) and on EVERY `init` run, not just
    first boot — unlike `init-db.sh` above, which only fires on a fresh `pgdata` volume.
-4. > **v1-only** (v0-scope.md §A1)
+5. > **v1-only** (v0-scope.md §A1)
    Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
-5. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
+6. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
 
 `init` steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure) — this is also how an EXISTING (already-deployed) database picks up the Plan 147 Slice D role bootstrap: role creation does not depend on a fresh volume.
 
@@ -902,7 +910,7 @@ A missing overlay file raises `FileNotFoundError` at startup. There is no silent
 
 ### Docker Compose pattern
 
-Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
+Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). `docker-compose.macmini.yml` likewise passes `mac-mini.toml` to `init` (Plan 513): that overlay declares `[tenants.chwrr]`, which the `init` tenant step creates — an overlay-less `init` on a host that declares tenants would silently skip them. The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
 
 ```
 docker compose -f docker-compose.yml -f docker-compose.staging.yml up

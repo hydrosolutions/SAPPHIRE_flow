@@ -1589,6 +1589,23 @@ class FakeTenantStore:
         self._tenants[tenant.id] = tenant
         return tenant.id
 
+    def ensure_tenant(self, *, tenant_id: TenantId, code: str, name: str) -> Tenant:
+        existing = self.fetch_tenant_by_code(code)
+        if existing is None:
+            existing = Tenant(
+                id=tenant_id,
+                code=code,
+                name=name,
+                created_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+            )
+            self._tenants[tenant_id] = existing
+        if existing.name != name:
+            raise ConfigurationError(
+                f"tenant {code!r} already exists with name {existing.name!r}; "
+                f"declared name is {name!r}"
+            )
+        return existing
+
 
 class FakeStationStore:
     def __init__(self) -> None:

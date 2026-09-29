@@ -16,7 +16,16 @@ absolute `config.toml` path. Confirm both before a write. `--dry-run` parses
 and writes inside a transaction that rolls back; it does not verify a later
 commit will succeed against concurrently changed data.
 
-1. Create a temporary admin overlay **outside** the checkout containing only:
+0. **Preferred: the tenant is declared.** A host whose overlay lists
+   `[tenants.chwrr]` with `name = "CHWRR Nepal"` (the Mac-mini's
+   `config/overlays/mac-mini.toml`) gets the tenant created by `init` on
+   deploy (Plan 513); nothing to run here, and step 1 is unnecessary. The
+   `bootstrap-tenant` command below stays only until Plan 510 removes it. If
+   the tenant already exists under another name, `init` fails; an owner fixes
+   the row with SQL.
+
+1. Only where the tenant is not declared: create a temporary admin overlay
+   **outside** the checkout containing only:
 
    ```toml
    [deployment]

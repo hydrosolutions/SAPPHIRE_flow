@@ -3616,7 +3616,15 @@ class TenantStore(Protocol):
     def fetch_tenant_by_code(self, code: str) -> Tenant | None: ...
     def fetch_all_tenants(self) -> list[Tenant]: ...
     def store_tenant(self, tenant: Tenant) -> TenantId: ...
+    def ensure_tenant(self, *, tenant_id: TenantId, code: str, name: str) -> Tenant: ...
+        # Plan 513: insert-or-skip on `code` (an existing tenant keeps its id and
+        # created_at), then a SEPARATE name check: the same code with a different
+        # name raises ConfigurationError naming the code and both names. Returns
+        # the row that now holds `code`. The caller owns the transaction.
 ```
+
+`DeclaredTenant(code, name)` (types/tenant.py) is the parsed `[tenants.<code>]`
+declaration — never carries an id (Plan 513 D3).
 
 #### StationStore
 
