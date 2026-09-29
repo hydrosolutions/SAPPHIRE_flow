@@ -6,17 +6,18 @@ the measured set of privileges the commands need; the tests prove it is both
 sufficient (all three commands pass) and minimal (removing any single grant
 makes the command that needs it fail at a named table with a permission error).
 
-The final operator grants are set by ``docker/bootstrap-roles.sql`` (T4) and
-compared with this matrix in ``test_operator_role.py``; this module is the
-single place the matrix is written down.
+The matrix is the single place the grants are written down; the real
+``sapphire_operator`` grants set by ``docker/bootstrap-roles.sql`` are compared
+with it in ``test_operator_role.py``. At T1 the tenant lock was a row lock and
+the matrix carried ``UPDATE (name) ON tenants``; T4 replaced it with an
+advisory lock (``TestTenantLockPrivilege`` keeps the measurement) and the grant
+left the matrix.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -25,32 +26,17 @@ import pytest
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
-from sapphire_flow.adapters.dhm_files import parse_daily_flow, parse_rating_tables
-from sapphire_flow.cli.import_dhm_delivery import (
-    load_station_metadata,
-    register_stations,
-    replace_delivery,
-    run_delivery_qc,
-)
-from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
-from sapphire_flow.store.audit_log_store import PgAuditLogStore
-from sapphire_flow.store.observation_store import PgObservationStore
-from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
-from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
-from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import TenantId
+from tests.integration.db.dhm_import_support import (
+    run_qc,
+    run_replace,
+    run_stations,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_FIXTURES = _REPO_ROOT / "tests/fixtures/dhm"
-_CONFIG = _REPO_ROOT / "config.toml"
-_NOW = ensure_utc(datetime(2026, 9, 28, tzinfo=UTC))
-_CHWRR = DeploymentIdentityConfig(
-    writable_tenants=frozenset({"chwrr"}), global_admin=False
-)
 SCRATCH = "scratch_operator"
 
 
@@ -87,11 +73,6 @@ MATRIX: tuple[Grant, ...] = (
     Grant(
         sql="GRANT SELECT ON tenants TO {role}",
         commands=_ALL,
-        denied_on="table tenants",
-    ),
-    Grant(
-        sql="GRANT UPDATE (name) ON tenants TO {role}",
-        commands=_REPLACE_QC,
         denied_on="table tenants",
     ),
     Grant(
@@ -146,82 +127,10 @@ def _label(value: Command | Grant) -> str:
     return value.value if isinstance(value, Command) else value.sql.split(" TO")[0]
 
 
-def _stores(
-    conn: sa.Connection,
-) -> tuple[
-    PgTenantStore,
-    PgStationStore,
-    PgRatingCurveStore,
-    PgObservationStore,
-    PgAuditLogStore,
-]:
-    return (
-        PgTenantStore(conn),
-        PgStationStore(conn),
-        PgRatingCurveStore(conn),
-        PgObservationStore(conn),
-        PgAuditLogStore(conn),
-    )
-
-
-def _files() -> dict[str, tuple[object, object]]:
-    metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
-    rating = parse_rating_tables(
-        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
-    )
-    return {
-        spec.code: (
-            replace(daily, station_code=spec.code),
-            replace(rating, station_code=spec.code),
-        )
-        for spec in metadata.stations
-    }
-
-
-def _run_stations(conn: sa.Connection) -> None:
-    tenants, stations, _, _, audit = _stores(conn)
-    register_stations(
-        tenants,
-        stations,
-        _CHWRR,
-        load_station_metadata(_FIXTURES / "stations.toml"),
-        audit_log_store=audit,
-        now=_NOW,
-    )
-
-
-def _run_replace(conn: sa.Connection) -> None:
-    tenants, stations, curves, observations, audit = _stores(conn)
-    replace_delivery(
-        tenants,
-        stations,
-        curves,
-        observations,
-        _CHWRR,
-        _files(),  # type: ignore[arg-type]
-        audit_log_store=audit,
-        now=_NOW,
-    )
-
-
-def _run_qc(conn: sa.Connection) -> None:
-    tenants, stations, _, observations, audit = _stores(conn)
-    run_delivery_qc(
-        tenants,
-        stations,
-        observations,
-        _CHWRR,
-        _CONFIG,
-        audit_log_store=audit,
-        now=_NOW,
-    )
-
-
 _RUNNERS: dict[Command, Callable[[sa.Connection], None]] = {
-    Command.STATIONS: _run_stations,
-    Command.REPLACE: _run_replace,
-    Command.QC: _run_qc,
+    Command.STATIONS: run_stations,
+    Command.REPLACE: run_replace,
+    Command.QC: run_qc,
 }
 
 _WIPE_CHWRR_ROWS = (
@@ -263,8 +172,8 @@ def owner() -> Iterator[sa.Engine]:
                 tenants.ensure_tenant(
                     tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
                 )
-                _run_stations(conn)
-                _run_replace(conn)
+                run_stations(conn)
+                run_replace(conn)
             yield engine
         finally:
             engine.dispose()
@@ -408,8 +317,8 @@ class TestImportWritesNoObservationVersions:
             txn = conn.begin()
             try:
                 before = conn.scalar(sa.text(count))
-                _run_replace(conn)
-                _run_qc(conn)
+                run_replace(conn)
+                run_qc(conn)
                 assert conn.scalar(sa.text(count)) == before
             finally:
                 txn.rollback()
@@ -424,7 +333,7 @@ class TestAuditWriteNeedsNoRead:
             try:
                 _apply(conn, MATRIX)
                 conn.execute(sa.text(f"SET LOCAL ROLE {SCRATCH}"))
-                _run_qc(conn)
+                run_qc(conn)
                 with pytest.raises(
                     sa.exc.ProgrammingError, match="permission denied for table"
                 ):

@@ -1,6 +1,8 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+import struct
+
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -9,6 +11,16 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.tenant import Tenant
+
+_TENANT_LOCK_NAMESPACE = 0x53464C4B
+"""First half of the two-integer advisory key ("SFLK"); the second half is
+derived from the tenant id, so this key space never meets the single-key
+advisory locks other stores take."""
+
+
+def tenant_lock_key(tenant_id: TenantId) -> tuple[int, int]:
+    (second,) = struct.unpack(">i", tenant_id.bytes[:4])
+    return _TENANT_LOCK_NAMESPACE, second
 
 
 class PgTenantStore:
@@ -32,16 +44,18 @@ class PgTenantStore:
         return _row_to_tenant(row) if row is not None else None
 
     def lock_tenant(self, tenant_id: TenantId) -> Tenant:
-        row = (
-            self._conn.execute(
-                sa.select(tenants).where(tenants.c.id == tenant_id).with_for_update()
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None:
+        """Serialise on the tenant with a transaction-scoped advisory lock.
+
+        Every caller, whatever its role, takes the same key. A row lock
+        (`FOR UPDATE`/`FOR SHARE`) would need UPDATE on `tenants`, which no
+        routine role holds; advisory locks coordinate cooperating callers only.
+        """
+        tenant = self.fetch_tenant(tenant_id)
+        if tenant is None:
             raise ValueError(f"tenant {tenant_id} is missing")
-        return _row_to_tenant(row)
+        namespace, key = tenant_lock_key(tenant_id)
+        self._conn.execute(sa.select(sa.func.pg_advisory_xact_lock(namespace, key)))
+        return tenant
 
     def fetch_all_tenants(self) -> list[Tenant]:
         rows = self._conn.execute(sa.select(tenants)).mappings().all()

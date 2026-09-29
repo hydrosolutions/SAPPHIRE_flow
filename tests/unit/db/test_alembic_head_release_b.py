@@ -88,13 +88,14 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # `rejected_forecasts` — a QC-rejected member/group-station forecast, kept
 # outside `forecasts`, D2) onto 0064 — advancing the pinned head to 0065.
 # Plan 268 then chains 0066 (DHM delivery identity and rating-type provenance)
-# onto 0065.
+# onto 0065. Plan 510 then chains 0067 (the row-limit guard triggers for the
+# database-limited operator role) onto 0066.
 #
 # Three of these were authored in parallel branches and renumbered on merge:
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0066"
+_RELEASE_B_HEAD = "0067"
 
 
 def _down_revisions() -> dict[str, str | None]:

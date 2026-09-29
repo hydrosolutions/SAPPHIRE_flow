@@ -503,3 +503,132 @@ END $$;
 -- sapphire_backup must not read the separate Prefect database either --
 -- same cross-database boundary as sapphire_api/sapphire_worker above.
 REVOKE CONNECT ON DATABASE prefect FROM sapphire_backup;
+
+-- ── sapphire_operator: OWN CONVERGENCE BLOCK (Plan 510) ────────────────────
+-- The database-limited identity for the DHM delivery import commands. Three
+-- levels of database identity: the owner (deploy: migrations, this script,
+-- tenants), the runtime roles above, and this one. It is ALWAYS created
+-- NOLOGIN; login is enabled only when the operator overlay supplies a password
+-- (`-v operator_password`, set by bootstrap-roles.sh from
+-- SAPPHIRE_OPERATOR_DB_PASSWORD_FILE). A deploy without the overlay sets NOLOGIN
+-- again — that stops NEW connections only; docs/standards/cicd.md has the
+-- init-independent revoke that also ends open sessions.
+--
+-- Its rows are limited by the database, not by the Python: migration 0067's
+-- guard triggers refuse any write outside the delivery. The grants below are
+-- given ONLY while every guard trigger exists and is enabled; otherwise this
+-- block grants nothing, revokes what the role holds, warns, and lets `init`
+-- continue (an aborted `init` would leave the whole stack down).
+--
+-- Bypass preconditions this design rests on (none is granted here):
+--   * DISABLE TRIGGER needs table ownership;
+--   * session_replication_role needs superuser or an explicit GRANT SET;
+--   * TRUNCATE needs the TRUNCATE privilege (never granted, and guarded);
+--   * SET ROLE needs a role membership (all are revoked below);
+--   * TEMP is granted to PUBLIC by default and is NOT prevented — the guard
+--     schema-qualifies its relations and pins its search_path, so a temporary
+--     table cannot influence it.
+SELECT 'CREATE ROLE sapphire_operator NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_operator'
+)
+\gexec
+ALTER ROLE sapphire_operator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+ALTER ROLE sapphire_operator RESET ALL;
+ALTER ROLE sapphire_operator IN DATABASE sapphire RESET ALL;
+SELECT format('REVOKE %I FROM sapphire_operator', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_operator'
+\gexec
+DO $$
+DECLARE
+    owned_objects integer;
+BEGIN
+    SELECT count(*) INTO owned_objects
+    FROM pg_catalog.pg_shdepend sd
+    JOIN pg_catalog.pg_roles r ON r.oid = sd.refobjid
+    WHERE r.rolname = 'sapphire_operator' AND sd.deptype = 'o';
+    IF owned_objects > 0 THEN
+        RAISE EXCEPTION 'sapphire_operator owns % object(s)', owned_objects;
+    END IF;
+END $$;
+DROP OWNED BY sapphire_operator;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
+GRANT CONNECT ON DATABASE sapphire TO sapphire_operator;
+GRANT USAGE ON SCHEMA public TO sapphire_operator;
+
+-- Every guard trigger of migration 0067, by table, name, function and
+-- pg_trigger.tgtype (BEFORE=2, ROW=1, INSERT=4, DELETE=8, UPDATE=16,
+-- TRUNCATE=32), present AND enabled ('O' origin, 'A' always; a DISABLE
+-- TRIGGER leaves the row present with 'D').
+SELECT count(*) = 10 AS operator_guard_ok
+FROM (VALUES
+    ('observations', 'trg_observations_operator_guard_insert',
+        'operator_guard_delivery_row', 7),
+    ('observations', 'trg_observations_operator_guard_update',
+        'operator_guard_delivery_row', 19),
+    ('observations', 'trg_observations_operator_guard_delete',
+        'operator_guard_delivery_row', 11),
+    ('rating_curves', 'trg_rating_curves_operator_guard_insert',
+        'operator_guard_delivery_row', 7),
+    ('rating_curves', 'trg_rating_curves_operator_guard_update',
+        'operator_guard_delivery_row', 19),
+    ('rating_curves', 'trg_rating_curves_operator_guard_delete',
+        'operator_guard_delivery_row', 11),
+    ('stations', 'trg_stations_operator_guard_insert',
+        'operator_guard_station_insert', 7),
+    ('observations', 'trg_observations_operator_guard_truncate',
+        'operator_guard_truncate', 34),
+    ('rating_curves', 'trg_rating_curves_operator_guard_truncate',
+        'operator_guard_truncate', 34),
+    ('stations', 'trg_stations_operator_guard_truncate',
+        'operator_guard_truncate', 34)
+) AS expected(rel, trigger_name, function_name, trigger_type)
+JOIN pg_catalog.pg_trigger t
+    ON t.tgname = expected.trigger_name
+   AND t.tgrelid = to_regclass('public.' || expected.rel)
+   AND NOT t.tgisinternal
+   AND t.tgenabled IN ('O', 'A')
+   AND t.tgtype = expected.trigger_type
+JOIN pg_catalog.pg_proc p
+    ON p.oid = t.tgfoid
+   AND p.pronamespace = 'public'::regnamespace
+   AND p.proname = expected.function_name
+   AND NOT p.prosecdef
+\gset
+
+\if :operator_guard_ok
+    -- SELECT on `tenants` and `stations` is what the guard's own lookups need
+    -- (it runs as the invoker); the operator's reads reach every tenant's
+    -- rows — the guard limits integrity, not availability or confidentiality.
+    GRANT SELECT ON tenants, stations, rating_curves, observations
+        TO sapphire_operator;
+    GRANT INSERT ON stations TO sapphire_operator;
+    GRANT INSERT, DELETE ON rating_curves TO sapphire_operator;
+    GRANT INSERT, UPDATE, DELETE ON observations TO sapphire_operator;
+    -- INSERT only: no SELECT, no UPDATE/DELETE (the append-only trigger of
+    -- migration 0046 applies). The sequence privilege is what the INSERT needs
+    -- to draw its key; the store drops the implicit RETURNING.
+    GRANT INSERT ON audit_log TO sapphire_operator;
+    GRANT USAGE ON SEQUENCE audit_log_id_seq TO sapphire_operator;
+\else
+    DO $$
+    BEGIN
+        RAISE WARNING 'sapphire_operator: a guard trigger from migration 0067 is '
+            'missing or not enabled — the role is granted NO table privileges';
+    END $$;
+\endif
+
+\if :{?operator_password}
+    ALTER ROLE sapphire_operator LOGIN PASSWORD :'operator_password';
+\else
+    ALTER ROLE sapphire_operator NOLOGIN;
+\endif

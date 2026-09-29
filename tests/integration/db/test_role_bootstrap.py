@@ -106,10 +106,26 @@ class _RoleBootstrapHarness:
         api_password: str,
         worker_password: str,
         backup_password: str = "backup-pw-default",
+        operator_password: str | None = None,
+        operator_password_file: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        """``operator_password`` mounts the overlay-only secret file (Plan 510);
+        ``operator_password_file`` instead names a path without writing it (a
+        set-but-missing secret). Both None models a deploy without the overlay."""
         self._write_secret_file_in_container("/tmp/api_password", api_password)
         self._write_secret_file_in_container("/tmp/worker_password", worker_password)
         self._write_secret_file_in_container("/tmp/backup_password", backup_password)
+        operator_env: list[str] = []
+        if operator_password is not None:
+            self._write_secret_file_in_container(
+                "/tmp/operator_password", operator_password
+            )
+            operator_password_file = "/tmp/operator_password"
+        if operator_password_file is not None:
+            operator_env = [
+                "-e",
+                f"SAPPHIRE_OPERATOR_DB_PASSWORD_FILE={operator_password_file}",
+            ]
         return subprocess.run(
             [
                 "docker",
@@ -122,6 +138,7 @@ class _RoleBootstrapHarness:
                 "SAPPHIRE_WORKER_DB_PASSWORD_FILE=/tmp/worker_password",
                 "-e",
                 "SAPPHIRE_BACKUP_DB_PASSWORD_FILE=/tmp/backup_password",
+                *operator_env,
                 self._container_id,
                 "sh",
                 "/tmp/bootstrap-roles.sh",

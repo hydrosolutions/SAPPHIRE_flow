@@ -1205,6 +1205,7 @@ publication switch must remain off if rolling back to a prior image.
 | `db_password` | Docker secret, `./secrets/db_password`, mounted into `postgres`, `prefect-server`, and `init` ONLY | The owner/migration superuser password (`${DB_USER:-sapphire}`). `init` uses it to run `alembic upgrade head` and the role-bootstrap SQL; `prefect-server` uses it against the separate `prefect` database (unchanged by this slice — `sapphire_prefect` residual, see `security.md` § Least-privilege DB roles). |
 | `sapphire_api_db_password` | Docker secret, `./secrets/sapphire_api_db_password`, mounted into `api` AND `init` (`init` needs it to bootstrap/rotate the role's password) | The `sapphire_api` role's password. |
 | `sapphire_worker_db_password` | Docker secret, `./secrets/sapphire_worker_db_password`, mounted into `prefect-worker`/`prefect-worker-ingest` AND `init` | The `sapphire_worker` role's password. |
+| `sapphire_operator_db_password` | **Optional, overlay-only** (Plan 510): `docker-compose.operator.yml` declares `./secrets/sapphire_operator_db_password` and mounts it into `init` and the `operator` service ONLY; absent from the base file | The `sapphire_operator` role's password. Without the overlay the role exists but has no login. |
 
 Each service's `DATABASE_URL_TEMPLATE` (docker-compose.yml) names its own role
 (`sapphire_api@postgres/sapphire`, `sapphire_worker@postgres/sapphire`, or the owner for `init`), and
@@ -1243,6 +1244,71 @@ scoped roles already exist. Generate the two new secret files (§ First deploy a
 `docker compose up -d --build`/`docker compose run --rm --build init` — the bootstrap fails closed
 (non-zero exit, migrations already applied but roles not yet granted) if either secret file is
 missing, rather than silently skipping the role bootstrap.
+
+### Operator role for delivery replacement (Plan 510)
+
+Three levels of database identity: the owner (deploy: migrations, this bootstrap, declared tenants), the
+runtime roles, and `sapphire_operator` for the rare CHWRR delivery replacement. `init` always creates the
+operator role `NOLOGIN`; the bootstrap grants it table privileges only while migration `0067`'s guard
+triggers exist and are enabled (`security.md` § Three levels of database identity has the grants, the guard
+and its stated limits). The base compose file is unchanged; nothing below is needed on a deployment that
+never imports a delivery.
+
+**Activation.** On the host: `openssl rand -base64 32 > ./secrets/sapphire_operator_db_password`
+(`chmod 600`), then deploy with the overlay so `init` reads it:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.macmini.yml -f docker-compose.operator.yml up -d
+```
+
+Keep the host overlay (`-f docker-compose.macmini.yml`) in the command: `init` needs its own overlay for the
+declared tenants (Plan 513) as well as the operator secret. `init` sets `LOGIN` and the password only when
+`SAPPHIRE_OPERATOR_DB_PASSWORD_FILE` names a readable non-empty file; a set-but-missing or empty file leaves
+the role without login and prints a note on stderr.
+
+**Running a command.** Restricted delivery files stay outside the checkout; name the directory on the host
+and run the `operator` service (no Postgres port is published, so this runs on the host):
+
+```sh
+export SAPPHIRE_DHM_DELIVERY_DIR=/absolute/path/to/restricted-delivery   # outside the checkout, owner-only
+docker compose -f docker-compose.yml -f docker-compose.macmini.yml -f docker-compose.operator.yml \
+    run --rm operator replace --tenant chwrr --input-dir /data/dhm-delivery --dry-run
+```
+
+The service mounts the delivery directory read-only at `/data/dhm-delivery`, selects only
+`config/overlays/chwrr-import.toml` (the import rejects more than one overlay) and mounts the base config and
+`tests/fixtures/dhm/stations.toml` (the image ships neither `config/overlays` nor `tests/`). `stations` and
+`qc` take `--tenant chwrr` and `--dry-run` too. Per-person identity is deferred to v1.x.
+
+**Rotation.** Replace the secret file and re-run `init` with the overlay
+(`docker compose ... -f docker-compose.operator.yml run --rm init`).
+
+**Revocation has two parts.**
+
+1. *Deploy without the overlay.* The bootstrap sets `NOLOGIN` again, which prevents **new** connections only;
+   a session already open keeps working. A forgotten overlay looks exactly like a revoke.
+2. *Emergency, independent of `init`* (a failing tenant declaration can stop `init` before the role bootstrap
+   runs). As the owner, in `psql` against the `sapphire` database:
+
+```sql
+ALTER ROLE sapphire_operator NOLOGIN;
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'sapphire_operator';
+-- verify: must return f
+SELECT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'sapphire_operator')
+    OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE usename = 'sapphire_operator');
+```
+
+This differs deliberately from `sapphire_publication_health`, whose login persists across deploys.
+
+**Rollback.** Removing the operator login: deploy without the overlay. Removing the role: an owner step, run
+**before** switching to an older image (an older `init` does not know the role and will not touch it):
+terminate its sessions, then `DROP OWNED BY sapphire_operator; DROP ROLE sapphire_operator;`. The guard
+triggers stay unless migration `0067` is downgraded; that downgrade revokes the operator's DML **first**
+(guarded by a `pg_roles` existence check, so it also runs where the role was never created) and then drops
+the triggers and functions. A bootstrap that finds the guard missing or disabled grants the operator nothing
+and revokes what it holds. The tenant-lock change (`lock_tenant` = advisory lock for every caller) is not
+undone by removing the role; mixed-version deployments must know an older image still using `FOR UPDATE` does
+not exclude a newer one.
 
 ### Rollback
 

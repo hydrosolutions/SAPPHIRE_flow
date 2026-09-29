@@ -38,9 +38,23 @@ API_PASSWORD=$(cat "${SAPPHIRE_API_DB_PASSWORD_FILE}")
 WORKER_PASSWORD=$(cat "${SAPPHIRE_WORKER_DB_PASSWORD_FILE}")
 BACKUP_PASSWORD=$(cat "${SAPPHIRE_BACKUP_DB_PASSWORD_FILE}")
 
-psql -v ON_ERROR_STOP=1 \
-     -v api_password="${API_PASSWORD}" \
-     -v worker_password="${WORKER_PASSWORD}" \
-     -v backup_password="${BACKUP_PASSWORD}" \
-     "${OWNER_LIBPQ_URL}" \
-     -f "${SCRIPT_DIR}/bootstrap-roles.sql"
+# Plan 510: the operator role's password is an OPTIONAL, overlay-only secret
+# (docker-compose.operator.yml). Unset, missing or empty means "leave the role
+# without login" — bootstrap-roles.sql has the explicit no-secret branch.
+set -- -v ON_ERROR_STOP=1 \
+    -v api_password="${API_PASSWORD}" \
+    -v worker_password="${WORKER_PASSWORD}" \
+    -v backup_password="${BACKUP_PASSWORD}"
+if [ -n "${SAPPHIRE_OPERATOR_DB_PASSWORD_FILE:-}" ]; then
+    if [ -r "${SAPPHIRE_OPERATOR_DB_PASSWORD_FILE}" ]; then
+        OPERATOR_PASSWORD=$(cat "${SAPPHIRE_OPERATOR_DB_PASSWORD_FILE}")
+    else
+        OPERATOR_PASSWORD=""
+        echo "bootstrap-roles.sh: SAPPHIRE_OPERATOR_DB_PASSWORD_FILE is set but unreadable; sapphire_operator stays without login" >&2
+    fi
+    if [ -n "${OPERATOR_PASSWORD}" ]; then
+        set -- "$@" -v operator_password="${OPERATOR_PASSWORD}"
+    fi
+fi
+
+psql "$@" "${OWNER_LIBPQ_URL}" -f "${SCRIPT_DIR}/bootstrap-roles.sql"
