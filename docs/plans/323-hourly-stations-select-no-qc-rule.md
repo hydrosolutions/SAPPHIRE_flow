@@ -30,6 +30,30 @@ exists on today's rule set (a 10-minute datum-less water-level group, § T4 Pre-
 the hourly one, which becomes a T2 verification. All tasks stay on one branch and one PR, so T5's
 "T2 and T4 deployed together" still holds.
 
+🔄 **Reconciled with `main` on 2026-09-29 (after PRs #315, #324, #328, #332).** T4 is built and
+re-applied on top of that `main` — branch `feat/plan-323-t4-rebased`, reviewed READY by an independent
+Claude and by Codex on the rebased code; T1, T2, T3 and T5 are not built. What changed under this plan,
+and what it changes for the tasks still to build:
+- **Selection is now per network** (#315): `resolve_selection`, `check` and T4's `check_with_coverage`
+  take a required `station_networks` mapping, and `rules_for` lets a network-specific rule replace a
+  network-less one with the same rule id, parameter and cadence. The eleven 3600 s rows have no
+  `network`, so they apply to every station; a later `network = "…"` row at 3600 s (303, for DHM)
+  would replace them for that network. T2's selection test must pass a network for its station.
+- **Flags now carry their own rule's `rule_version`**; the module constant `_RULE_VERSION = "1.2"` is
+  gone. T2's eleven rows therefore need a `rule_version`: **`"1.0.0"`, as all 29 shipped rows use.**
+  The rule set's own `version` moves when rows are added (#332 took it to `1.1.0` for its three DHM
+  rows): **T2 sets it to `1.2.0`.** Both follow the precedent, not a new decision; the reviewer of T2
+  should confirm them.
+- **Per-station thresholds apply at ingest** (#324), and `_run_qc_task` now also takes `overrides`.
+  No change to this plan's scope: an override still needs a rule at the same cadence to exist.
+- **The DHM delivery import (#332) does not use T4's guard**: it calls the checker's original `check`
+  and its own status logic, so T4 does not change it (checked 2026-09-29: the first row of a daily
+  series is still judged by `range_check`).
+- **Line numbers.** Citations of the form `file.py:NNN` in § What is measured and D1-D5 are as of the
+  `main` named in `source:` and have moved (`flows/ingest_observations.py` gained about 150 lines,
+  `services/qc.py` about 60); they are evidence of what was measured then, not a map of today's code.
+  T2 and T4 now name the code by symbol.
+
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
 *checkable*: about 95% of their checks will run real rules. It does **not** make the Plan 318
 watchdog go quiet — § (10) measures why, and the owner accepted that leftover on 2026-09-25 (D3).
@@ -368,7 +392,7 @@ real verdict.
   `frozen_sensor`, with the values D1's table prescribes.
 - The same eleven rows in `docs/spec/config-reference.toml` (the two files must agree on these
   rows; ⛔ existing differences between them are not this plan's) and in
-  `_default_swiss_qc_rules()` (`config/qc_rules.py:40`) — a live fallback when `SAPPHIRE_CONFIG` is
+  `_default_swiss_qc_rules()` (`config/qc_rules.py`) — a live fallback when `SAPPHIRE_CONFIG` is
   unset. ⚠️ The three surfaces already differ on existing rows (the fallback carries 28 rules to
   `config.toml`'s 26, and some daily values differ), and
   `test_qc_rules.py::test_the_swiss_defaults_agree_with_the_shipped_config` pins only the discharge
@@ -379,6 +403,13 @@ real verdict.
   {600, 86400}) and `TestShippedDischargeCeiling::test_both_toml_surfaces_ship_the_loose_ceiling`
   (asserts discharge ceilings exactly {600: 100000, 86400: 100000}) — both extended with 3600, not
   loosened.
+- Each new row carries `rule_version = "1.0.0"` (flags report it) and the rule set's `version`
+  becomes `1.2.0` (§ Status, "Reconciled with `main`"). The rows carry no `network`. The selection
+  test passes a network for its station, and a 600 s group's selection is asserted unchanged for both
+  a network-less and a `dhm` station.
+- ⚠️ `test_qc_rules.py`'s parity test between the shipped config and the reference now also compares
+  the thresholds of the network-specific rows (#332). It still skips network-less rows, so it does not
+  cover the eleven; the new eleven-row parity test below is still needed.
 - 🔴 **Each threshold carries its source in a comment beside it**: a derived one names the T1
   statistic and the rule (2 × P99.9 or the 600 s floor, whichever won); a copied one names the
   600 s row. § (5) is the argument: an unexplained threshold survived months without anyone
@@ -441,23 +472,23 @@ alarmed on.
 - **How the result leaves the checker, without touching its contract.** `Stage1QualityChecker`
   gains a method returning both the flags and the set of judged observation ids (a frozen
   dataclass); `check` delegates to it and still returns only the flags. ⇒ The `QualityChecker`
-  Protocol (`protocols/stores.py:1055-1064`), onboarding (`services/onboarding.py:796`) and
-  `scripts/dhm_precip/` (`qc_mask.py:199,204`, `build_dudh_koshi_handover.py:175` — no pyright gate
+  Protocol (`protocols/stores.py`), onboarding (`services/onboarding.py`) and
+  `scripts/dhm_precip/` (`qc_mask.py`, `build_dudh_koshi_handover.py` — no pyright gate
   there) are unchanged. `resolve_selection` is unchanged (it returns `(cadence, count)`,
-  `services/qc.py:77-108`); the new method receives the same inputs `check` does, so Plan 400's
+  `services/qc.py`); the new method receives the same inputs `check` does, so Plan 400's
   look-back cadence reaches it through the same keyword.
-- `_run_qc_task` calls the new method; `_aggregate_qc_status` (`flows/ingest_observations.py:152-163`)
+- `_run_qc_task` calls the new method; `_aggregate_qc_status` (`flows/ingest_observations.py`)
   becomes per reading: `QC_PASSED` needs the reading in the judged set.
 - **Reporting (D5), pending readings only** — a context row already judged in an earlier run is not
   re-reported: a new `PipelineCheckType.OBSERVATION_QC_UNJUDGED` (`types/enums.py`, beside
   `OBSERVATION_QC_UNCHECKED` at `:236`) and a record written like the Plan 318 one
-  (`flows/ingest_observations.py:264-331`), carrying `reason = "no_check_could_run"`, the groups,
+  (`flows/ingest_observations.py`), carrying `reason = "no_check_could_run"`, the groups,
   the reported **observation ids as strings**, and `observations_unjudged`. 🔴 `ObservationId` is a
-  `UUID` (`types/ids.py:13`) and the engine has no JSON serializer for it, so a raw id in the JSONB
+  `UUID` (`types/ids.py`) and the engine has no JSON serializer for it, so a raw id in the JSONB
   `detail` raises at insert — and the Plan 318 writer catches that and only logs a warning
   (`:311-329`), so the record would be lost silently in production while the fake store, which never
   serialises, passes every test. The watchdog does not probe the new type.
-- **How it reaches the flow:** `QcTaskOutcome` (`flows/ingest_observations.py:250-261`, the Plan 318
+- **How it reaches the flow:** `QcTaskOutcome` (`flows/ingest_observations.py`, the Plan 318
   mechanism) gains the unjudged groups and ids; the flow writes the record, as it does the zero-rule
   one (`:978-983`).
 - **Counting rules.** (a) **Zero-rule wins:** a pending reading in a group that resolved zero rules
@@ -466,16 +497,16 @@ alarmed on.
   the zero-rule record (`observations_unjudged` goes only in the new record),
   `IngestResult.qc_unchecked` (`:63`, set at `:1044`, logged at `:1062`) beside a new
   `qc_unjudged`, and the `ingest.qc_complete` log (`:967`).
-- Text that would otherwise become false: the enum comment at `types/enums.py:229-235` ("unlike every
+- Text that would otherwise become false: the enum comment at `types/enums.py` ("unlike every
   other member…") now describes two presence-type members; five comments that define
   `QC_UNCHECKED`/`QC_PASSED` by selection alone now also cover a selected rule that could not judge
-  the reading — the `_aggregate_qc_status` docstring (`flows/ingest_observations.py:153-158`), the
-  `QcStatus.QC_UNCHECKED` comment (`types/enums.py:10-12`), and in
+  the reading — the `_aggregate_qc_status` docstring (`flows/ingest_observations.py`), the
+  `QcStatus.QC_UNCHECKED` comment (`types/enums.py`), and in
   `docs/spec/types-and-protocols.md` the `QC_UNCHECKED` comment (`:90-93`), the `QualityChecker`
   comment (`:757`) and the `aggregate_qc_status` docstring (`:526-533`, "ONLY when rules actually
   ran"); `ZeroRuleGroup`'s docstring
-  (`flows/ingest_observations.py:237-247`) and the `qc.no_rules_selected` log event
-  (`flows/ingest_observations.py:514`) stay for the zero-rule reasons, and the unjudged case gets
+  (`flows/ingest_observations.py`) and the `qc.no_rules_selected` log event
+  (`flows/ingest_observations.py`) stay for the zero-rule reasons, and the unjudged case gets
   its own log event.
 - The three DHM tests the round-5 review found flipping silently get a verdict assertion:
   `test_ingest_observations_dhm.py::…::test_six_hour_recovery_qcs_old_rows_with_preceding_context`
@@ -526,7 +557,7 @@ group.** It must fail on X's status.
 - The same case **with** a datum: X gets a real verdict from `range_check`.
 - The hourly datum-less case is verified in **T2** once its rows exist — ⛔ not a T4 gate.
 - **The watchdog is isolated from the new record, through the real probe and a real filter.** The
-  existing stub pattern (`tests/unit/ops/test_watchdog_qc_unchecked.py:289-354`) returns a fixed
+  existing stub pattern (`tests/unit/ops/test_watchdog_qc_unchecked.py`) returns a fixed
   payload whatever the URL, so it cannot tell a filtered request from an unfiltered one. ⇒ Either
   drive the real health route through Starlette's `TestClient(app)` (an `httpx.Client`) over a fake
   health store holding both records, or a stub that serves from a two-record list filtered by the
