@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 import yaml
@@ -853,7 +854,16 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
         assert _dml_privileges(db)
 
     @pytest.mark.parametrize(
-        "condition", ["false", "session_user = 'someone_else'", "true"]
+        "condition",
+        [
+            "false",
+            "session_user = 'someone_else'",
+            "true",
+            "session_user = 'SAPPHIRE_OPERATOR'",
+            "session_user = 'sapphire_ operator'",
+            "session_user = 'SAPPHIRE_OPERATOR'",
+            "session_user = 'sapphire_ operator'",
+        ],
     )
     def test_a_guard_trigger_with_the_wrong_when_predicate_counts_as_broken(
         self, db: OperatorDb, condition: str
@@ -1137,6 +1147,13 @@ class TestTruncateTriggerRefusesEvenWithTheGrant:
         assert "may not TRUNCATE" in outcome.message
 
 
+def _assert_session_was_terminated(conn: sa.Connection) -> None:
+    """The connection itself is gone (not merely denied by the ACL)."""
+    with pytest.raises(sa.exc.DBAPIError) as info:
+        conn.execute(sa.text("SELECT 1"))
+    assert isinstance(info.value.orig, psycopg.OperationalError), info.value.orig
+
+
 _TEMP_OBJECTS: dict[str, tuple[str, ...]] = {
     "temp-table-with-rls": (
         "CREATE TEMP TABLE scratch (id int)",
@@ -1192,16 +1209,108 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
                     assert _all_table_privileges(db) == {}
                 else:
                     assert _dml_privileges(db)
-                with pytest.raises(sa.exc.DBAPIError):
-                    conn.execute(
-                        sa.text(_INSERT_OBS.format(station="swiss", delivery="NULL")),
-                        {**db.ids, "t": _T},
-                    )
+                _assert_session_was_terminated(conn)
         finally:
             conn.close()
             engine.dispose()
             db.bootstrap()
         assert _dml_privileges(db)
+
+    @pytest.mark.parametrize("guard", ["healthy", "disabled"])
+    def test_a_persistent_large_object_of_the_operator_is_removed(
+        self, db: OperatorDb, guard: str
+    ) -> None:
+        engine = db.engine()
+        conn = engine.connect()
+        conn.execute(sa.text("SELECT lo_creat(-1)"))
+        conn.commit()
+        trigger = "trg_observations_operator_guard_insert"
+        disabled = guard == "disabled"
+        count_sql = (
+            "SELECT count(*) FROM pg_largeobject_metadata "
+            "WHERE lomowner = 'sapphire_operator'::regrole"
+        )
+        try:
+            with _owner_ran(
+                db,
+                [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"]
+                if disabled
+                else [],
+                [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"]
+                if disabled
+                else [],
+            ):
+                assert db.scalar(count_sql) == 1
+                db.bootstrap()
+                assert db.scalar(count_sql) == 0
+                if disabled:
+                    assert _all_table_privileges(db) == {}
+                _assert_session_was_terminated(conn)
+        finally:
+            conn.close()
+            engine.dispose()
+            db.bootstrap()
+
+    def test_the_sweep_is_quick_because_the_wait_sees_the_backend_leave(
+        self, db: OperatorDb
+    ) -> None:
+        import time
+
+        engine = db.engine()
+        conn = engine.connect()
+        try:
+            started = time.perf_counter()
+            db.bootstrap()
+            elapsed = time.perf_counter() - started
+            _assert_session_was_terminated(conn)
+        finally:
+            conn.close()
+            engine.dispose()
+        # A stale pg_stat_activity snapshot would burn the whole 3 s deadline
+        # twice (about 6 s extra on a ~1.5 s bootstrap).
+        assert elapsed < 5, elapsed
+
+    def test_a_reconnecting_operator_never_survives_the_sweep(
+        self, db: OperatorDb
+    ) -> None:
+        import threading
+
+        kept: list[sa.Connection] = []
+        engines: list[sa.Engine] = []
+        stop = threading.Event()
+
+        def reconnect() -> None:
+            while not stop.is_set():
+                engine = db.engine()
+                try:
+                    kept.append(engine.connect())
+                    engines.append(engine)
+                except sa.exc.OperationalError:
+                    engine.dispose()
+                stop.wait(0.02)
+
+        thread = threading.Thread(target=reconnect)
+        thread.start()
+        try:
+            db.bootstrap(operator_password=None)
+        finally:
+            stop.set()
+            thread.join()
+        try:
+            assert kept, "the reconnecting client never got in before the ALTER"
+            for conn in kept:
+                _assert_session_was_terminated(conn)
+            assert (
+                db.scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE usename = :r",
+                    r=OPERATOR,
+                )
+                == 0
+            )
+        finally:
+            for engine in engines:
+                engine.dispose()
+            db.bootstrap()
 
     def test_a_persistent_object_owned_by_the_operator_is_still_refused(
         self, db: OperatorDb

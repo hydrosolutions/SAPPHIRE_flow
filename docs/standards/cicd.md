@@ -1255,7 +1255,7 @@ triggers exist and are enabled (`security.md` § Three levels of database identi
 and its stated limits). The base compose file is unchanged; nothing below is needed on a deployment that
 never imports a delivery.
 
-**Every `init` run ends open operator sessions.** The bootstrap first sets the role `NOLOGIN`, revokes its privileges and terminates its backends (an in-flight import rolls back atomically); deploys stop workers first, so schedule imports outside deploys. Login returns at the end of `init` only when the overlay secret is present.
+**Every bootstrap ends open operator sessions.** When the bootstrap SQL runs (after the wrapper's variable/secret checks and the preceding migrations succeeded), its first step commits `NOLOGIN` and the privilege revocations, then terminates the role's backends twice with a short bounded wait (a session that survives only raises a WARNING; its privileges are already revoked), and removes any large object the operator owns (`lo_unlink`; `lo_*` stays PUBLIC for other roles). An in-flight import therefore rolls back atomically, so schedule imports outside deploys; deploys stop workers first. Login returns at the end of `init` only when the overlay secret is present.
 
 **Activation.** On the host: `openssl rand -base64 32 > ./secrets/sapphire_operator_db_password`
 (`chmod 600`), then deploy with the overlay so `init` reads it:
