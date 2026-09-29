@@ -38,6 +38,9 @@ tenants it hosts instead.
   path fails when `SAPPHIRE_CONFIG` is unset.
 - **Only `docker-compose.staging.yml` passes an overlay to `init`** (`staging-5-stations.toml`). **`docker-compose.macmini.yml`
   has no `init` block**: it wires `mac-mini.toml` into the two workers and the API only.
+- **`chwrr` already exists on the Mac-mini (2026-09-29).** Plan 268 T8 ran by the one-off route: the tenant was
+  created by `bootstrap-tenant` with a random id (`CHWRR Nepal`), with six stations and the delivery. Adding the
+  declaration later must keep that row and id, so T2's "existing tenant created by the old command" case is real.
 - **Where `chwrr` lives.** Plan 268 D11 and T8 put it in the existing **Mac-mini staging database**, the shared stack
   that also hosts the Swiss `sapphire` tenant. There is no other host: `docker-compose.nepal-forcing.yml` is a
   forcing-only Postgres with no `init`, API or workers. So on the Mac-mini both tenants are *intended*; the
@@ -128,7 +131,8 @@ tenants it hosts instead.
   nothing else stale. Plan text (268, 510, 513) is excluded: it legitimately discusses the command.
 - **Pre-change:** N/A (documentation and one overlay entry; the behaviour is covered in T2).
 - **Plan 268 is `READY`.** Its T8 and D11 still prescribe `bootstrap-tenant`. This plan **proposes** the change
-  (T8 is gated on deployed 513 **and** 510, and the tenant comes from the declaration); the edit to a READY plan
+  (T8 has since been run by the owner-approved one-off route on 2026-09-29, so the proposal reduces to: record that
+  and describe declared tenants as the way to create the next one); the edit to a READY plan
   needs its own independent review before it is applied, and this plan does not make it.
 
 ## Rollback

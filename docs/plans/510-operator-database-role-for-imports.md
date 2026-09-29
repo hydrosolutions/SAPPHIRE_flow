@@ -6,7 +6,7 @@ plan: 510
 title: Three levels of database identity — tenants created at deploy time, a narrow database-limited operator role for delivery replacement, no routine job on the owner superuser
 scope: Stop routine operator jobs from needing the owner (superuser) credential. Tenant creation moves to deploy time (Plan 513); a least-privilege operator role, row-limited by the database itself, covers the rare delivery-replacement job; schema changes stay with the owner at deploy. Needed for v1.
 risk: high   # secrets, database roles, a migration/trigger, Docker wiring (docs/workflow.md § High-risk work)
-depends_on: [147, 268, 513]   # 268's code is implemented through T7; only its operator run (T8) is pending and runs after this plan
+depends_on: [147, 268, 513]   # 268's code is implemented through T7; its operator run (T8) was done on 2026-09-29 by the owner-approved one-off route
 blocks: []
 related: [341, 401, 306, 307, 512]
 open_decisions: []
@@ -189,8 +189,12 @@ Reading the import code shows the gap is wider than tenant creation and delete:
 - **Verification:** the import suite passes with tenants created by Plan 513's deploy step; **a test asserts the retired command is
   unavailable**.
 - **Pre-change:** RED — the command exists today.
-- **Ordering:** T5 runs after T4 (both edit `tests/integration/cli/test_import_dhm_delivery.py`); T8 (Plan 268) runs after this plan, as the operator role; a one-off owner-credential run is
-  only a fallback the owner may approve, and Plan 513's rule of preserving an existing tenant keeps it safe.
+- **Ordering:** T5 runs after T4 (both edit `tests/integration/cli/test_import_dhm_delivery.py`).
+- **Plan 268 T8 status (2026-09-29):** it was executed by the owner-approved one-off route with the owner
+  credential — the `chwrr` tenant, six stations, 112 curves and 99,246 observations are in place (aggregate
+  record kept on the Mac-mini). That tenant has a random id and was created by `bootstrap-tenant`, which is
+  exactly the "existing tenant" case Plan 513 must preserve. This plan's own T8 below therefore verifies
+  *future* replacements and corrections run as the operator role, not the first import.
 
 ### T8 — End-to-end under the real operator login
 - **Outcome:** all three commands, with their audit writes and the shared lock, run successfully as
