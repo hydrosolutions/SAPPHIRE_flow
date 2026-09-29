@@ -673,3 +673,68 @@ class TestDryRunWritesNoAuditRow:
                 cleanup.execute(
                     sa.delete(tenants_table).where(tenants_table.c.code == "chwrr")
                 )
+
+
+def test_the_three_commands_work_on_a_tenant_created_by_the_deploy_step(
+    db_connection: sa.Connection,
+) -> None:
+    from sapphire_flow.cli.provision_tenants import ensure_declared_tenants
+    from sapphire_flow.config.declared_tenants import load_declared_tenants
+
+    repo = Path(__file__).resolve().parents[3]
+    declared = load_declared_tenants(
+        repo / "config.toml", [repo / "config/overlays/mac-mini.toml"]
+    )
+    tenants = PgTenantStore(db_connection)
+    provisioned = {t.code: t for t in ensure_declared_tenants(tenants, declared)}
+    assert provisioned["chwrr"].name == "CHWRR Nepal"
+    assert tenants.fetch_tenant_by_code("chwrr") == provisioned["chwrr"]
+    stations = PgStationStore(db_connection)
+    curves = PgRatingCurveStore(db_connection)
+    observations = PgObservationStore(db_connection)
+    audit = PgAuditLogStore(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
+    rating = parse_rating_tables(
+        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
+    )
+    files = {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations
+    }
+    before = _audit_count(db_connection)
+
+    assert (
+        register_stations(
+            tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+        )
+        == 6
+    )
+    assert replace_delivery(
+        tenants,
+        stations,
+        curves,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=audit,
+        now=_NOW,
+    ) == (12, 18)
+    counts = run_delivery_qc(
+        tenants,
+        stations,
+        observations,
+        _CHWRR,
+        Path(__file__).resolve().parents[3] / "config.toml",
+        audit_log_store=audit,
+        now=_NOW,
+    )
+
+    assert sum(counts.values()) == 18
+    station = stations.fetch_station_by_code("447", "dhm")
+    assert station is not None
+    assert station.tenant_id == provisioned["chwrr"].id
+    assert _audit_count(db_connection) == before + 3
