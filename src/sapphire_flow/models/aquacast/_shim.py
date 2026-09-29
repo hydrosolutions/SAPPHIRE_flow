@@ -561,6 +561,14 @@ class AquacastShim:
     # recorded hash differs, so editing the yaml would invalidate every imported donor.
     FINETUNE_STRATEGIES: ClassVar[frozenset[str]] = frozenset()
 
+    # Training data loaders run in-process. The vendored configs ask for 4 worker
+    # processes, but aquacast builds its collate function as a local closure, which
+    # cannot be pickled for the `forkserver` start method that Python 3.14 uses by
+    # default on Linux, so any retrain or train raised `PicklingError`. Held here, not
+    # in the vendored yaml, for the same reason as `FINETUNE_STRATEGIES`: the yaml's
+    # bytes are `config_hash`. Remove once aquacast makes its collate picklable.
+    DATA_NUM_WORKERS: ClassVar[int | None] = 0
+
     def __init__(self) -> None:
         cls = type(self)
         filename = getattr(cls, "CONFIG_FILENAME", None)
@@ -588,6 +596,13 @@ class AquacastShim:
         if cls.FINETUNE_STRATEGIES:
             template = dataclasses.replace(
                 template, finetune_strategies=cls.FINETUNE_STRATEGIES
+            )
+        if cls.DATA_NUM_WORKERS is not None:
+            data = dataclasses.replace(
+                template.config.data, num_workers=cls.DATA_NUM_WORKERS
+            )
+            template = dataclasses.replace(
+                template, config=dataclasses.replace(template.config, data=data)
             )
         self._inner: Any = model_mod.AquacastModel(template)
 

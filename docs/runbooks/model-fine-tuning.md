@@ -99,10 +99,16 @@ the result is a separate, owner-level decision.
 | changed-template refusal | config differs from the donor's | stop; do not edit the config |
 | a refusal about features or fine-tuning settings | our configuration | stop and report |
 | a clearly transient failure (network, timeout) | environment | retry once, then escalate |
+| `PicklingError` from the data loader | worker processes under Python 3.14 (fixed by the shim's in-process loading) | stop; a new occurrence means the shim override is missing |
 | anything else | unknown | stop and keep the logs |
 
 ## Known limits
 
+- Training data loads **in-process** (no worker processes) for the aquacast models. aquacast builds its collate
+  function as a local closure, which cannot be pickled for the `forkserver` start method that Python 3.14 uses by
+  default, so the vendored `num_workers: 4` made every train or retrain raise `PicklingError` (found on the first
+  staging run, 2026-09-29). The shim forces 0 workers; loading is slower, which matters little for a short
+  fine-tune. Remove the override once aquacast makes its collate picklable.
 - The aim of fine-tuning on this deployment's forcing is to reduce the **climatology**
   mismatch between training data and serving data. Whether it does is a hypothesis to
   evaluate. It does **not** teach the model the forecast model's error behaviour: the
