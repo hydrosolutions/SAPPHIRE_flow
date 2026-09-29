@@ -1,7 +1,7 @@
 ---
 status: READY
 created: 2026-09-24
-revised: 2026-09-26
+revised: 2026-09-29
 plan: 323
 title: Five Swiss stations report hourly and select no QC rule at all
 scope: Give the observation QC rule set a 3600 s cadence for the parameters the hourly BAFU stations deliver, so those stations are actually checked instead of selecting zero rules — on ~95% of checks; the owner accepted the leftover on 2026-09-25 — and, so that no hourly reading is marked passed unjudged, require that a reading passes only if some selected check could actually judge it (T4; recorded, not alarmed on — D5; owner 2026-09-26). NOT supplying water-level datums (Plan 403). NOT how the cadence is inferred (Plan 400), NOT an hourly `frozen_sensor` row (no plan yet), NOT the DHM/Nepal rule rows (303), NOT the network dimension of selection (264), NOT `rate_of_change`'s arithmetic (313), NOT per-station overrides (269), NOT re-QC of the rows already stored (owner, 2026-09-24 — history is left), NOT the pick-up set (317, merged), NOT the consumer policy (316, merged).
