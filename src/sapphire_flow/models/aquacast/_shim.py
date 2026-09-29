@@ -41,6 +41,7 @@ scaling).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
 from datetime import timedelta
@@ -555,6 +556,11 @@ class AquacastShim:
     # shim as the natural owner of this flag, since it already binds the config.
     static_naming: ClassVar[StaticNaming] = StaticNaming.CARAVAN
 
+    # Fine-tuning strategies this deployment permits. Held here, NOT in the vendored
+    # yaml: `config_hash` digests the yaml's bytes and a retrain refuses a donor whose
+    # recorded hash differs, so editing the yaml would invalidate every imported donor.
+    FINETUNE_STRATEGIES: ClassVar[frozenset[str]] = frozenset()
+
     def __init__(self) -> None:
         cls = type(self)
         filename = getattr(cls, "CONFIG_FILENAME", None)
@@ -579,6 +585,10 @@ class AquacastShim:
         model_mod: Any = importlib.import_module("aquacast.operational.model")
 
         template: Any = config_mod.ModelTemplate.from_yaml(str(_config_path(filename)))
+        if cls.FINETUNE_STRATEGIES:
+            template = dataclasses.replace(
+                template, finetune_strategies=cls.FINETUNE_STRATEGIES
+            )
         self._inner: Any = model_mod.AquacastModel(template)
 
     @property
@@ -626,6 +636,13 @@ class AquacastShim:
     def train(
         self, inputs: ModelInputs, *, config: Mapping[str, Any], rng: Random
     ) -> TrainedArtifact:
+        if "finetune" in config:
+            raise ConfigurationError(
+                "a `finetune` block asks for a warm-start retrain, but this run "
+                "names no base_artifact_id, so it would train from scratch and "
+                "promote the result; name the donor artifact or remove the "
+                "`finetune` block"
+            )
         return self._inner.train(_to_aquacast_inputs(inputs), config=config, rng=rng)
 
     @property
@@ -729,5 +746,6 @@ class CmalSmall(AquacastShim):
     """
 
     CONFIG_FILENAME = "cmal_small.yaml"
+    FINETUNE_STRATEGIES = frozenset({"static_only", "last_layer"})
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION
