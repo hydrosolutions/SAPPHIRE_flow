@@ -99,7 +99,7 @@ the result is a separate, owner-level decision.
 | changed-template refusal | config differs from the donor's | stop; do not edit the config |
 | a refusal about features or fine-tuning settings | our configuration | stop and report |
 | a clearly transient failure (network, timeout) | environment | retry once, then escalate |
-| `PicklingError` from the data loader | worker processes under Python 3.14 (fixed by the shim's in-process loading) | stop; a new occurrence means the shim override is missing |
+| `PicklingError` from the data loader | worker processes under Python 3.14 (the shim loads in-process) | stop; check that the effective training loader has `num_workers=0`; if it does, keep the traceback and escalate |
 | anything else | unknown | stop and keep the logs |
 
 ## Known limits
