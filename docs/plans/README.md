@@ -462,7 +462,7 @@ exit criteria — Plan 212 owns that deeper screening.
   0 artifacts, 0 observations, 0 assignments; forecasting 12300 is Plan 139. 🔴 Surfaced an unowned
   prerequisite: nothing ingests ERA5-Land or JSNOW **reanalysis**, so `historical_forcing` is 0 and training
   has no history.
-- **143** — DHM v1 station, basin and Gateway onboarding — `DRAFT` — consumes Plan 268's six station rows, binds the registered `nepal6_20260923` polygons, imports supported forcing and conditionally prepares approved, datum-compatible water-level targets; ends at model-onboarding readiness, not operational activation. Depends on Plans 120, 268, 304 and 315.
+- **143** — DHM v1 station, basin and Gateway onboarding — `DRAFT`, reconciled against remote main `90aebc56` (2026-09-29). Owner selected discharge-first: consumes Plan 268's six `chwrr` station rows and persisted discharge QC, imports basin/polygon and reanalysis source bindings, persists supported Gateway weather history, and qualifies discharge targets for model onboarding. Depends on Plans 120 and 268, including 268 T8 staging acceptance. Plans 304/315 remain separate follow-ons because this path creates no observations or QC verdicts. No rating inversion, training or operational activation.
 - **144** — Multi-track probabilistic forecasting — `SUPERSEDED by docs/design/forecast-cycle-redesign.md`
   (2026-07-23). The multi-track/ensemble orchestration is folded into the forecast-cycle redesign (its D1–D6
   decisions carry over). Six /plan stalls proved it needs a forecast-cycle re-architecture, not incremental patches.

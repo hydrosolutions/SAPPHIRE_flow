@@ -26,8 +26,13 @@ coordinate confirmation below before generating replacement geometry or
 onboarding additional stations; if a coordinate correction changes a basin,
 issue a new geometry/package version and register the corrected geometry.
 
-The SAP3 onboarding sequence is not yet complete. Plan 143 and its upstream
-station/QC dependencies must be implemented and accepted before the steps in
+Plan 268's historical delivery importer merged in PR #332. Its T8 staging
+acceptance is a separate gate: confirm the six stations and persisted discharge
+QC in tenant `chwrr` before proceeding. This is the existing shared Mac-mini
+database, not a new Nepal database. The deployment session owns that acceptance.
+
+The SAP3 onboarding sequence is not yet complete. Plan 143 remains DRAFT and
+must be implemented and accepted before the steps in
 “Run SAP3 onboarding” can be executed. In particular, do not trigger the
 parameterless `onboard-stations` deployment: its defaults select CAMELS-CH
 stations. Do not mark DHM stations operational or create forecast targets as
@@ -288,33 +293,47 @@ Nepal-specific historical forcing persistence step is delivered by Plan 143.
 Do this only when the orchestrator has made the onboarding implementation
 available and its documented invocation explicitly scopes the intended DHM
 stations and Nepal database. The implementation must perform the basin/binding
-checks, persist supported historical forcing, assess eligible water-level
-targets and QC, and produce a per-station readiness report. Until then, this
+checks, persist supported historical forcing, qualify the imported QC-passed
+discharge history, and produce a per-station readiness report. The owner chose
+discharge-first onboarding on 2026-09-29; rating-derived water levels are deferred.
+Until then, this
 section is a gate, not an executable command sequence.
 
 For each batch:
 
-1. Confirm the selected database is the Nepal test deployment and the station
-   scope is the reviewed list of DHM gauge codes. Record the deployment and
-   software version.
+1. Confirm the selected database is the shared Mac-mini staging database, the
+   write identity is scoped to `chwrr`, and all six reviewed DHM stations belong
+   to that tenant. Record Plan 268 T8 acceptance and software/configuration
+   versions. Select the discharge model and training window whose requirements
+   the readiness check will assess; do not assign or train the model here.
 2. Confirm station-to-basin and basin-to-Gateway bindings resolve one-to-one
-   for every station. Stop on a missing, duplicate, or unexpected mapping.
+   for every station. Also verify each `era5_land` / `REANALYSIS` source binding
+   is active and basin-average; a polygon mapping alone is insufficient. Stop
+   on a missing, duplicate, conflicting or cross-tenant mapping.
 3. Back-extract supported ERA5-Land history for the model's declared training
    window. Record the actual persisted time span, variables, gaps, and source
-   provenance. Do not infer coverage from the requested window.
+   provenance. Verify the stored `recap_era5_land_reanalysis` rows can be read
+   through the selected history reader and overlap the target history after
+   resampling. Do not infer coverage from the requested window or confuse the
+   source tag with the binding name or the separate Sloth ERA5-Land product.
 4. Keep radiation or snow requirements unmet unless their SAP3 support and
    actual coverage have both been established. Hold any model requiring an
    unmet variable.
-5. Keep the forecast target unset unless authorized, QC-qualified
-   water-level history is available. Rating-derived stages must have an
-   approved, datum-compatible rating curve covering the discharge and dates;
-   label them as derived equivalents, never as original DHM level
-   observations. Otherwise record the hold reason and proceed only with tasks
-   that do not require a target.
+5. Qualify Plan 268's delivery-tagged, manual-import discharge using persisted
+   `QC_PASSED` rows only. Set the target to `discharge` only when model input,
+   overlap and intended training-use gates pass. RAW, unchecked, suspect and
+   failed rows do not count as usable targets. Preserve the measurements,
+   delivery tags and QC verdicts; do not invert curves or rerun generic
+   onboarding QC. Keep unqualified targets unset and report the hold reason.
+   Repeat qualification after delivery replacement or QC changes. The readiness
+   report contains aggregates only; consumer and reviewer access to restricted
+   observations remains withheld.
 6. Review the readiness report and database audit. Every requested station
    must appear exactly once with its gate outcomes. Stations remain in the
    `onboarding` lifecycle state; this procedure does not assign models,
-   schedule forecast production, or activate alerts.
+   schedule forecast production, or activate alerts. Record live-feed and
+   current-rating limitations separately: historical training readiness is not
+   proof that the operational input path is ready.
 
 ## 8. Handover for a new station batch
 
