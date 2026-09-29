@@ -358,6 +358,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     OBSERVATION_REPROCESSED = "observation_reprocessed"
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
+    DELIVERY_IMPORTED = "delivery_imported"     # additive (Plan 510 T2)
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
     HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
     HUMAN_GRANT_CHANGED = "human_grant_changed"      # additive (Plan 341 T1)

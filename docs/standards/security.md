@@ -201,8 +201,9 @@ A separate principal kind — distinct from the three HTTP read roles above.
 - **Tenants are declared, not seeded (Plan 513).** Migration `0041` seeds only `sapphire`; every other tenant
   is declared per host as `[tenants.<code>]` (`name`, never an id) in the host's overlay and created by the
   `init` step `cli/provision_tenants.py` (idempotent, one transaction, name conflict aborts). Declaring a tenant
-  is provisioning: it never widens or narrows `writable_tenants` (a different setting), and the old
-  `bootstrap-tenant` command (owner credential at run time) remains only until Plan 510 removes it.
+  is provisioning: it never widens or narrows `writable_tenants` (a different setting). The import CLI
+  has no tenant-creating command (Plan 510 removed `bootstrap-tenant`): the tenant exists before any
+  operator job runs, and the `stations`/`replace`/`qc` commands only look it up by code.
 - **`WritePrincipal`** (`types/write_principal.py`): `WritePrincipal(id: PrincipalId | None, tenant_id:
   TenantId | None)`. `PrincipalId = NewType("PrincipalId", str)` is the config operator handle — never a
   `UserId`/UUID, never an `AccessTokenId`. `tenant_id=None` = unscoped/global-admin (may write to any
@@ -1123,6 +1124,74 @@ creates two scoped, non-superuser roles and grants them per-table:
 - **`sapphire_prefect` is UNCHANGED by this slice** — `prefect-server` still connects with the owner
   credential against the separate `prefect` database (`docker/init-db.sh`). Realizing a distinct
   scoped `sapphire_prefect` role is a documented residual, not built here.
+
+### Three levels of database identity (Plan 510)
+
+No routine job runs on the owner (superuser) credential.
+
+1. **The owner** — deploy time only: migrations, `docker/bootstrap-roles.sql`, and the declared tenants
+   (Plan 513). Mounted only into `init`, `postgres` and `prefect-server` (the documented Prefect residual
+   is not closed by this plan).
+2. **The runtime roles** — `sapphire_api`, `sapphire_worker`. Grants unchanged by Plan 510.
+3. **`sapphire_operator`** — a narrow, database-limited role for the rare DHM delivery replacement
+   (`cli/import_dhm_delivery.py`: `stations`, `replace`, `qc`). It is always created `NOLOGIN`; a password
+   exists only when the host deploys the `docker-compose.operator.yml` overlay (secret
+   `./secrets/sapphire_operator_db_password`, consumed by `init` and the `operator` service only). The base
+   compose file is unchanged and needs no such file.
+
+**What the operator may do** (measured against a real Postgres by
+`tests/integration/db/test_operator_grant_matrix.py` and compared with the real role in
+`tests/integration/db/test_operator_role.py`; the matrix is `SELECT` on `tenants`; `SELECT`/`INSERT` on
+`stations`; `SELECT`/`INSERT`/`DELETE` on `rating_curves`; `SELECT`/`INSERT`/`UPDATE`/`DELETE` on
+`observations`; `INSERT` only on `audit_log` plus `USAGE` on `audit_log_id_seq`). `SELECT` on `tenants` and
+`stations` is what the guard's own lookups need. The operator holds **no** `UPDATE`, `DELETE` or `TRUNCATE`
+on `stations` or `tenants` and no `UPDATE` on `rating_curves`, no access to `observation_versions` (the
+import writes none) and no `SELECT` on `audit_log`: the store drops the implicit `RETURNING` so an
+`INSERT`-only role can append. Its `SELECT` reaches every tenant's rows; the guard limits integrity, not
+confidentiality or availability (a role holding `DELETE`/`UPDATE` can still `LOCK TABLE` or
+`SELECT ... FOR UPDATE` and block ingest, and advisory locks are open to any role).
+
+**The row limit is the database's, not Python's** (migration `0067`). A `SECURITY INVOKER` row trigger with
+`WHEN (session_user = 'sapphire_operator')` on `observations` and `rating_curves` (INSERT, UPDATE, DELETE),
+a matching `BEFORE INSERT` trigger on `stations`, and `BEFORE TRUNCATE` statement triggers refuse every
+write whose row is not (a) tagged with the delivery id (`DELIVERY_ID`) **and** (b) at a station of tenant
+`chwrr`, looked up by code (never by id). It checks `NEW` on INSERT, `OLD` on DELETE and both on UPDATE, and
+an UPDATE may not change `station_id`, `delivery_id` or a curve's validity dates. It is a positive allow:
+if `chwrr` does not exist the guard refuses. `session_user` (the login) is tested, not `current_user`, so a
+`SECURITY DEFINER` function owned by the owner cannot slip past it. Relations are schema-qualified and the
+function's `search_path` is pinned to `pg_catalog, public, pg_temp` (`pg_temp` last), so a temporary table
+named `stations` or `tenants` cannot influence it; **temporary tables themselves are not prevented** (`TEMP`
+is granted to `PUBLIC` by default and revoking it from the operator alone would not remove it). A second
+delivery later is a deliberate migration that extends the allow-list.
+
+**Bypasses and the preconditions they rest on** (none is granted): `DISABLE TRIGGER` needs table ownership;
+`session_replication_role` needs superuser or an explicit `GRANT SET`; `TRUNCATE` needs the grant (and is
+guarded); `SET ROLE` needs a role membership (the bootstrap revokes every membership and resets role-level
+settings on every run). No function in `public` that writes the three tables is `SECURITY DEFINER`
+(asserted by a test).
+
+**The bootstrap converges to the safe state.** It grants the operator table privileges only while every
+guard trigger exists and is enabled (`pg_trigger.tgenabled` `'O'` or `'A'`; `DISABLE TRIGGER` leaves the row
+present with `'D'`). If any is missing or disabled it grants nothing, revokes what the role holds, logs a
+warning, and lets `init` continue (an aborted `init` would leave the whole stack down). The guard
+migration's downgrade revokes the operator's DML **before** dropping the triggers, so the migration-only
+path leaves no unguarded interval.
+
+**Residual: forged audit rows.** `INSERT`-only on `audit_log` still lets the operator write rows with any `event_type` and `actor_type`; the append-only trigger stops edits, not forgeries. Attribution of who ran a job is deferred to v1.x.
+
+**Temporary tables.** An operator session may hold a temp table; the bootstrap's ownership preflight skips temporary relations (so it never aborts `init`) and revokes the role's privileges before that preflight runs, so an open session loses them at once. `DROP OWNED` may remove that session's temp table.
+
+**Overhead of the guard triggers (measured).** 20,000-row `store_raw_observations` batches into `observations` as a real `sapphire_worker`-style login, 7 runs each, medians: inserts 5.95 s / 5.89 s with the guard triggers vs 6.09 s / 5.89 s with them disabled; upserts 6.25 s / 6.33 s vs 6.40 s / 6.09 s. The `WHEN (session_user = ...)` clause showed no difference beyond run-to-run noise (about 4 %). Measured once on a laptop container with a single station and no concurrent load; nothing more is claimed.
+
+**Attribution.** Audit rows are written as the system actor (`AuditEventType.DELIVERY_IMPORTED`, counts
+only, in the mutation's own transaction; a failed audit write rolls the mutation back). They carry no
+operator identity; per-person attribution is deferred to v1.x. Rejections stay log-only.
+
+**Tenant lock.** `lock_tenant` is a plain `SELECT` plus `pg_advisory_xact_lock(namespace, key)` for every
+caller and role (`FOR UPDATE`/`FOR SHARE` need `UPDATE` on `tenants`, which no routine role holds).
+Advisory locks coordinate cooperating callers only; an older image still using `FOR UPDATE` does not
+exclude a newer one. `cicd.md` § DB role bootstrap has the operator's activation, rotation, revocation and
+rollback procedures.
 
 See `docker/bootstrap-roles.sql` (the grants), `docker/bootstrap-roles.sh` (the psql wrapper, reads
 `$DATABASE_URL` + the two scoped-password secret files), `docker/entrypoint.sh`

@@ -380,7 +380,8 @@ class AuditEventType(Enum):
     is additive too (Plan 262 T3a) — group CREATION had no operator route at all
     before it, and no non-test caller of `store_group`. `audit_log.event_type` is
     plain text with no check constraint (only `actor_type` is constrained), so a new
-    member needs NO migration.
+    member needs NO migration. DELIVERY_IMPORTED is additive too (Plan 510 T2) —
+    one system-actor row per successful DHM delivery import command.
     """
 
     LOGIN = "login"
@@ -405,6 +406,7 @@ class AuditEventType(Enum):
     OBSERVATION_REPROCESSED = "observation_reprocessed"
     STATION_ONBOARDED = "station_onboarded"
     MODEL_ASSIGNED = "model_assigned"
+    DELIVERY_IMPORTED = "delivery_imported"
 
 
 class ForcingProvenance(Enum):

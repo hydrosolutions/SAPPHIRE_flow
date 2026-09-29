@@ -10,13 +10,13 @@ from sapphire_flow.adapters.dhm_files import parse_daily_flow, parse_rating_tabl
 from sapphire_flow.adapters.nepal_local_day import nepal_day_start
 from sapphire_flow.cli.import_dhm_delivery import (
     DELIVERY_ID,
-    bootstrap_tenant,
     load_station_metadata,
     register_stations,
     replace_delivery,
     run_delivery_qc,
 )
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
+from sapphire_flow.db.metadata import audit_log as audit_log_table
 from sapphire_flow.db.metadata import forecasts as forecasts_table
 from sapphire_flow.db.metadata import models as models_table
 from sapphire_flow.db.metadata import observations as observations_table
@@ -24,23 +24,30 @@ from sapphire_flow.db.metadata import rating_curves as rating_curves_table
 from sapphire_flow.db.metadata import stations as stations_table
 from sapphire_flow.db.metadata import tenants as tenants_table
 from sapphire_flow.exceptions import ConfigurationError, DeliveryCurveDependencyError
+from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
+from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
-from sapphire_flow.types.ids import ObservationId, StationId
+from sapphire_flow.types.ids import ObservationId, StationId, TenantId
 from sapphire_flow.types.observation import RawObservation
 from tests.conftest import make_station_config
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/dhm"
 _NOW = ensure_utc(datetime(2026, 9, 28, tzinfo=UTC))
-_ADMIN = DeploymentIdentityConfig(writable_tenants=frozenset(), global_admin=True)
 _CHWRR = DeploymentIdentityConfig(
     writable_tenants=frozenset({"chwrr"}), global_admin=False
 )
+
+
+def _ensure_chwrr(tenants: PgTenantStore) -> TenantId:
+    return tenants.ensure_tenant(
+        tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
+    ).id
 
 
 class _FailingObservationStore(PgObservationStore):
@@ -106,9 +113,16 @@ def test_failed_replacement_rolls_back_curves_and_observations(
     station_store = PgStationStore(db_connection)
     curve_store = PgRatingCurveStore(db_connection)
     obs_store = PgObservationStore(db_connection)
-    bootstrap_tenant(tenant_store, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenant_store)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenant_store, station_store, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenant_store,
+        station_store,
+        _CHWRR,
+        metadata,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
     rating = parse_rating_tables(
         (_FIXTURES / "synthetic_rating_tables.txt").read_text()
@@ -127,6 +141,7 @@ def test_failed_replacement_rolls_back_curves_and_observations(
         obs_store,
         _CHWRR,
         files,
+        audit_log_store=PgAuditLogStore(db_connection),
         now=_NOW,
     ) == (12, 18)
     station = station_store.fetch_station_by_code("447", "dhm")
@@ -146,6 +161,7 @@ def test_failed_replacement_rolls_back_curves_and_observations(
             _FailingObservationStore(db_connection),
             _CHWRR,
             files,
+            audit_log_store=PgAuditLogStore(db_connection),
             now=_NOW,
             day_start=shifted,
         )
@@ -166,9 +182,16 @@ def test_post_preflight_collision_rolls_back_replacement(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenants, stations, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenants,
+        stations,
+        _CHWRR,
+        metadata,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
     rating = parse_rating_tables(
         (_FIXTURES / "synthetic_rating_tables.txt").read_text()
@@ -180,7 +203,16 @@ def test_post_preflight_collision_rolls_back_replacement(
         )
         for spec in metadata.stations
     }
-    replace_delivery(tenants, stations, curves, observations, _CHWRR, files, now=_NOW)
+    replace_delivery(
+        tenants,
+        stations,
+        curves,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     station = stations.fetch_station_by_code("447", "dhm")
     assert station is not None
     original_curves = curves.fetch_delivery_curves(DELIVERY_ID, [station.id])
@@ -195,6 +227,7 @@ def test_post_preflight_collision_rolls_back_replacement(
             _RacingObservationStore(db_connection),
             _CHWRR,
             files,
+            audit_log_store=PgAuditLogStore(db_connection),
             now=_NOW,
         )
     nested.rollback()
@@ -213,9 +246,16 @@ def test_forecast_reference_blocks_replacement_without_partial_delete(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenants, stations, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenants,
+        stations,
+        _CHWRR,
+        metadata,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
     rating = parse_rating_tables(
         (_FIXTURES / "synthetic_rating_tables.txt").read_text()
@@ -227,7 +267,16 @@ def test_forecast_reference_blocks_replacement_without_partial_delete(
         )
         for spec in metadata.stations
     }
-    replace_delivery(tenants, stations, curves, observations, _CHWRR, files, now=_NOW)
+    replace_delivery(
+        tenants,
+        stations,
+        curves,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     station = stations.fetch_station_by_code("447", "dhm")
     assert station is not None
     original_curves = curves.fetch_delivery_curves(DELIVERY_ID, [station.id])
@@ -256,7 +305,14 @@ def test_forecast_reference_blocks_replacement_without_partial_delete(
     nested = db_connection.begin_nested()
     with pytest.raises(DeliveryCurveDependencyError, match="dependent record"):
         replace_delivery(
-            tenants, stations, curves, observations, _CHWRR, files, now=_NOW
+            tenants,
+            stations,
+            curves,
+            observations,
+            _CHWRR,
+            files,
+            audit_log_store=PgAuditLogStore(db_connection),
+            now=_NOW,
         )
     nested.rollback()
 
@@ -274,9 +330,16 @@ def test_qc_rolls_back_partial_updates_then_persists_versions(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenants, stations, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenants,
+        stations,
+        _CHWRR,
+        metadata,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     swiss = make_station_config(code="2009")
     stations.store_station(swiss)
     observations.store_raw_observations(
@@ -312,7 +375,16 @@ def test_qc_rolls_back_partial_updates_then_persists_versions(
         )
         for spec in metadata.stations
     }
-    replace_delivery(tenants, stations, curves, observations, _CHWRR, files, now=_NOW)
+    replace_delivery(
+        tenants,
+        stations,
+        curves,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
     station_ids = [
         station.id
         for spec in metadata.stations
@@ -328,6 +400,7 @@ def test_qc_rolls_back_partial_updates_then_persists_versions(
             _FailingQcStore(db_connection),
             _CHWRR,
             config_path,
+            audit_log_store=PgAuditLogStore(db_connection),
             now=_NOW,
         )
     nested.rollback()
@@ -337,7 +410,13 @@ def test_qc_rolls_back_partial_updates_then_persists_versions(
     } == {QcStatus.RAW}
 
     counts = run_delivery_qc(
-        tenants, stations, observations, _CHWRR, config_path, now=_NOW
+        tenants,
+        stations,
+        observations,
+        _CHWRR,
+        config_path,
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
     )
     assert sum(counts.values()) == 18
     station_447 = stations.fetch_station_by_code("447", "dhm")
@@ -381,10 +460,15 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
     with db_engine.begin() as setup:
         tenant_store = PgTenantStore(setup)
         station_store = PgStationStore(setup)
-        tenant_id = bootstrap_tenant(
-            tenant_store, _ADMIN, tenant_code="chwrr", now=_NOW
+        tenant_id = _ensure_chwrr(tenant_store)
+        register_stations(
+            tenant_store,
+            station_store,
+            _CHWRR,
+            metadata,
+            audit_log_store=PgAuditLogStore(setup),
+            now=_NOW,
         )
-        register_stations(tenant_store, station_store, _CHWRR, metadata, now=_NOW)
         replace_delivery(
             tenant_store,
             station_store,
@@ -392,6 +476,7 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
             PgObservationStore(setup),
             _CHWRR,
             files,
+            audit_log_store=PgAuditLogStore(setup),
             now=_NOW,
         )
         station_ids = [
@@ -411,6 +496,7 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
                 PgObservationStore(replacement),
                 _CHWRR,
                 files,
+                audit_log_store=PgAuditLogStore(replacement),
                 now=_NOW,
             )
             qc.execute(sa.text("SET LOCAL lock_timeout = '100ms'"))
@@ -421,6 +507,7 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
                     PgObservationStore(qc),
                     _CHWRR,
                     Path(__file__).resolve().parents[3] / "config.toml",
+                    audit_log_store=PgAuditLogStore(qc),
                     now=_NOW,
                 )
             qc_txn.rollback()
@@ -433,6 +520,7 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
                 PgObservationStore(qc),
                 _CHWRR,
                 Path(__file__).resolve().parents[3] / "config.toml",
+                audit_log_store=PgAuditLogStore(qc),
                 now=_NOW,
             )
             assert sum(counts.values()) == 18
@@ -454,4 +542,322 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
             )
             cleanup.execute(
                 sa.delete(tenants_table).where(tenants_table.c.id == tenant_id)
+            )
+
+
+class _FailingAuditStore:
+    def append_entry(self, entry: AuditEntry) -> None:
+        raise RuntimeError("injected audit failure")
+
+
+def _audit_count(conn: sa.Connection) -> int:
+    return conn.scalar(sa.select(sa.func.count()).select_from(audit_log_table)) or 0
+
+
+def _seed_chwrr(conn: sa.Connection) -> None:
+    _ensure_chwrr(PgTenantStore(conn))
+
+
+def test_failed_audit_write_rolls_back_the_station_registration(
+    db_connection: sa.Connection,
+) -> None:
+    _seed_chwrr(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    nested = db_connection.begin_nested()
+    with pytest.raises(RuntimeError, match="injected audit"):
+        register_stations(
+            PgTenantStore(db_connection),
+            PgStationStore(db_connection),
+            _CHWRR,
+            metadata,
+            audit_log_store=_FailingAuditStore(),
+            now=_NOW,
+        )
+    nested.rollback()
+    assert PgStationStore(db_connection).fetch_station_by_code("447", "dhm") is None
+
+
+def test_failed_audit_write_rolls_back_the_replacement(
+    db_connection: sa.Connection,
+) -> None:
+    _seed_chwrr(db_connection)
+    tenants = PgTenantStore(db_connection)
+    stations = PgStationStore(db_connection)
+    curves = PgRatingCurveStore(db_connection)
+    observations = PgObservationStore(db_connection)
+    audit = PgAuditLogStore(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    register_stations(
+        tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+    )
+    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
+    rating = parse_rating_tables(
+        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
+    )
+    files = {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations
+    }
+    nested = db_connection.begin_nested()
+    with pytest.raises(RuntimeError, match="injected audit"):
+        replace_delivery(
+            tenants,
+            stations,
+            curves,
+            observations,
+            _CHWRR,
+            files,
+            audit_log_store=_FailingAuditStore(),
+            now=_NOW,
+        )
+    nested.rollback()
+    station = stations.fetch_station_by_code("447", "dhm")
+    assert station is not None
+    assert observations.fetch_delivery_observations(DELIVERY_ID, [station.id]) == []
+    assert curves.fetch_delivery_curves(DELIVERY_ID, [station.id]) == []
+
+
+def test_success_appends_one_audit_row_in_the_same_transaction(
+    db_connection: sa.Connection,
+) -> None:
+    _seed_chwrr(db_connection)
+    before = _audit_count(db_connection)
+    nested = db_connection.begin_nested()
+    register_stations(
+        PgTenantStore(db_connection),
+        PgStationStore(db_connection),
+        _CHWRR,
+        load_station_metadata(_FIXTURES / "stations.toml"),
+        audit_log_store=PgAuditLogStore(db_connection),
+        now=_NOW,
+    )
+    assert _audit_count(db_connection) == before + 1
+    nested.rollback()
+    assert _audit_count(db_connection) == before
+
+
+class TestDryRunWritesNoAuditRow:
+    def test_dry_run_leaves_neither_stations_nor_an_audit_row(
+        self, db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.cli.import_dhm_delivery import main
+
+        repo = Path(__file__).resolve().parents[3]
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(repo / "config.toml"))
+        monkeypatch.setenv(
+            "SAPPHIRE_CONFIG_OVERLAY", str(repo / "config/overlays/chwrr-import.toml")
+        )
+        monkeypatch.setenv(
+            "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+        )
+        with db_engine.begin() as setup:
+            _seed_chwrr(setup)
+        try:
+            with db_engine.connect() as probe:
+                before = _audit_count(probe)
+            assert main(["stations", "--tenant", "chwrr", "--dry-run"]) == 0
+            with db_engine.connect() as probe:
+                assert _audit_count(probe) == before
+                assert PgStationStore(probe).fetch_station_by_code("447", "dhm") is None
+            assert main(["stations", "--tenant", "chwrr"]) == 0
+            with db_engine.connect() as probe:
+                assert _audit_count(probe) == before + 1
+        finally:
+            with db_engine.begin() as cleanup:
+                cleanup.execute(
+                    sa.delete(stations_table).where(stations_table.c.network == "dhm")
+                )
+                cleanup.execute(
+                    sa.delete(tenants_table).where(tenants_table.c.code == "chwrr")
+                )
+
+
+def test_the_three_commands_work_on_a_tenant_created_by_the_deploy_step(
+    db_connection: sa.Connection,
+) -> None:
+    from sapphire_flow.cli.provision_tenants import ensure_declared_tenants
+    from sapphire_flow.config.declared_tenants import load_declared_tenants
+
+    repo = Path(__file__).resolve().parents[3]
+    declared = load_declared_tenants(
+        repo / "config.toml", [repo / "config/overlays/mac-mini.toml"]
+    )
+    tenants = PgTenantStore(db_connection)
+    provisioned = {t.code: t for t in ensure_declared_tenants(tenants, declared)}
+    assert provisioned["chwrr"].name == "CHWRR Nepal"
+    assert tenants.fetch_tenant_by_code("chwrr") == provisioned["chwrr"]
+    stations = PgStationStore(db_connection)
+    curves = PgRatingCurveStore(db_connection)
+    observations = PgObservationStore(db_connection)
+    audit = PgAuditLogStore(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
+    rating = parse_rating_tables(
+        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
+    )
+    files = {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations
+    }
+    before = _audit_count(db_connection)
+
+    assert (
+        register_stations(
+            tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+        )
+        == 6
+    )
+    assert replace_delivery(
+        tenants,
+        stations,
+        curves,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=audit,
+        now=_NOW,
+    ) == (12, 18)
+    counts = run_delivery_qc(
+        tenants,
+        stations,
+        observations,
+        _CHWRR,
+        Path(__file__).resolve().parents[3] / "config.toml",
+        audit_log_store=audit,
+        now=_NOW,
+    )
+
+    assert sum(counts.values()) == 18
+    station = stations.fetch_station_by_code("447", "dhm")
+    assert station is not None
+    assert station.tenant_id == provisioned["chwrr"].id
+    assert _audit_count(db_connection) == before + 3
+
+
+def _delivery_files(metadata):  # type: ignore[no-untyped-def]
+    daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
+    rating = parse_rating_tables(
+        (_FIXTURES / "synthetic_rating_tables.txt").read_text()
+    )
+    return {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations
+    }
+
+
+def test_failed_audit_write_rolls_back_the_qc_statuses(
+    db_connection: sa.Connection,
+) -> None:
+    _seed_chwrr(db_connection)
+    tenants = PgTenantStore(db_connection)
+    stations = PgStationStore(db_connection)
+    observations = PgObservationStore(db_connection)
+    audit = PgAuditLogStore(db_connection)
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    register_stations(
+        tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+    )
+    replace_delivery(
+        tenants,
+        stations,
+        PgRatingCurveStore(db_connection),
+        observations,
+        _CHWRR,
+        _delivery_files(metadata),
+        audit_log_store=audit,
+        now=_NOW,
+    )
+    ids = [
+        s.id
+        for spec in metadata.stations
+        if (s := stations.fetch_station_by_code(spec.code, "dhm")) is not None
+    ]
+    nested = db_connection.begin_nested()
+    with pytest.raises(RuntimeError, match="injected audit"):
+        run_delivery_qc(
+            tenants,
+            stations,
+            observations,
+            _CHWRR,
+            Path(__file__).resolve().parents[3] / "config.toml",
+            audit_log_store=_FailingAuditStore(),
+            now=_NOW,
+        )
+    nested.rollback()
+    assert {
+        row.qc_status
+        for row in observations.fetch_delivery_observations(DELIVERY_ID, ids)
+    } == {QcStatus.RAW}
+
+
+def test_qc_dry_run_leaves_statuses_and_audit_untouched(
+    db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sapphire_flow.cli.import_dhm_delivery import main
+
+    repo = Path(__file__).resolve().parents[3]
+    monkeypatch.setenv("SAPPHIRE_CONFIG", str(repo / "config.toml"))
+    monkeypatch.setenv(
+        "SAPPHIRE_CONFIG_OVERLAY", str(repo / "config/overlays/chwrr-import.toml")
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+    )
+    metadata = load_station_metadata(_FIXTURES / "stations.toml")
+    with db_engine.begin() as setup:
+        _seed_chwrr(setup)
+        audit = PgAuditLogStore(setup)
+        tenants = PgTenantStore(setup)
+        stations = PgStationStore(setup)
+        register_stations(
+            tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
+        )
+        replace_delivery(
+            tenants,
+            stations,
+            PgRatingCurveStore(setup),
+            PgObservationStore(setup),
+            _CHWRR,
+            _delivery_files(metadata),
+            audit_log_store=audit,
+            now=_NOW,
+        )
+    try:
+        with db_engine.connect() as probe:
+            before = _audit_count(probe)
+        assert main(["qc", "--tenant", "chwrr", "--dry-run"]) == 0
+        with db_engine.connect() as probe:
+            assert _audit_count(probe) == before
+            statuses = probe.scalars(
+                sa.select(observations_table.c.qc_status).where(
+                    observations_table.c.delivery_id == DELIVERY_ID
+                )
+            ).all()
+        assert set(statuses) == {"raw"}
+    finally:
+        with db_engine.begin() as cleanup:
+            cleanup.execute(
+                sa.delete(observations_table).where(
+                    observations_table.c.delivery_id == DELIVERY_ID
+                )
+            )
+            cleanup.execute(
+                sa.delete(rating_curves_table).where(
+                    rating_curves_table.c.delivery_id == DELIVERY_ID
+                )
+            )
+            cleanup.execute(
+                sa.delete(stations_table).where(stations_table.c.network == "dhm")
+            )
+            cleanup.execute(
+                sa.delete(tenants_table).where(tenants_table.c.code == "chwrr")
             )

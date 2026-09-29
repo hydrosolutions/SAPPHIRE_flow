@@ -1,0 +1,86 @@
+# Plan 510 — the database-limited OPERATOR identity for the DHM delivery import.
+#
+# Usage:
+#   deploy (activates or rotates the login; `init` reads the secret):
+#     docker compose -f docker-compose.yml [-f <host overlay>] \
+#         -f docker-compose.operator.yml up -d
+#   run a command (base compose exposes no Postgres port, so this needs host access):
+#     docker compose -f docker-compose.yml [-f <host overlay>] \
+#         -f docker-compose.operator.yml run --rm operator replace --tenant chwrr \
+#         --input-dir /data/dhm-delivery
+#   (`stations` and `qc` take `--tenant chwrr` too; add `--dry-run` to roll back.)
+#
+# Deployments that never import a delivery OMIT this file: they need no
+# ./secrets/sapphire_operator_db_password, and the role stays without login. The
+# secret is optional and lives here — not in the base file, where a `file:`
+# secret that is missing would stop the service — following the recap overlay's
+# precedent (docker-compose.recap.yml; the base file's note on the Nepal-only
+# gateway key).
+#
+# Deploying WITHOUT this overlay sets the role NOLOGIN again. That stops NEW
+# connections only, and a forgotten overlay looks the same as a revoke. For an
+# immediate stop use the init-independent procedure in docs/standards/cicd.md
+# (NOLOGIN plus pg_terminate_backend), which does not depend on `init` running.
+#
+# The delivery directory holds restricted data: SAPPHIRE_DHM_DELIVERY_DIR names
+# it on the host, OUTSIDE the checkout (the import refuses one inside it), and it
+# is mounted read-only. The operator service selects ONLY the CHWRR import overlay
+# (the import rejects more than one overlay); `init` keeps the host's own overlay.
+services:
+  init:
+    environment:
+      SAPPHIRE_OPERATOR_DB_PASSWORD_FILE: /run/secrets/sapphire_operator_db_password
+    secrets:
+      - sapphire_operator_db_password
+
+  operator:
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
+    profiles: ["operator"]
+    entrypoint:
+      - /entrypoint.sh
+      - python
+      - -m
+      - sapphire_flow.cli.import_dhm_delivery
+    environment:
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_operator@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_operator_db_password
+      SAPPHIRE_CONFIG: /app/config.toml
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/chwrr-import.toml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - FOWNER
+    secrets:
+      - sapphire_operator_db_password
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks: [backend]
+    volumes:
+      # The import reads these relative to the config path; the image ships
+      # neither `config/overlays` nor `tests/` (.dockerignore).
+      - ./config.toml:/app/config.toml:ro
+      - ./config/overlays/chwrr-import.toml:/app/config/overlays/chwrr-import.toml:ro
+      - ./tests/fixtures/dhm/stations.toml:/app/tests/fixtures/dhm/stations.toml:ro
+      - type: bind
+        source: ${SAPPHIRE_DHM_DELIVERY_DIR:-/var/empty}
+        target: /data/dhm-delivery
+        read_only: true
+        bind:
+          create_host_path: false
+
+secrets:
+  sapphire_operator_db_password:
+    file: ./secrets/sapphire_operator_db_password

@@ -169,3 +169,17 @@ class TestInitServiceKeepsOwnerAndBootstrapsRoles:
             "migrations (so grants cover every migrated table) and BEFORE "
             "deployment registration"
         )
+
+
+class TestInitDoesNotRequireTheOptionalOperatorSecret:
+    def test_base_init_mounts_no_operator_secret(self) -> None:
+        # Plan 510: the operator password is overlay-only; a base `init` that
+        # mounted it would stop every deployment that has no such file.
+        svc = _service(_compose(), "init")
+        assert "sapphire_operator_db_password" not in _secret_names(svc)
+        assert "SAPPHIRE_OPERATOR_DB_PASSWORD_FILE" not in _env(svc)
+
+    def test_init_still_bootstraps_after_the_declared_tenant_step(self) -> None:
+        command = _service(_compose(), "init")["command"]
+        assert isinstance(command, str)
+        assert command.find("provision_tenants") < command.find("bootstrap-roles.sh")

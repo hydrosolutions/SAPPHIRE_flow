@@ -87,15 +87,16 @@ class TestAuditEventType:
     def test_exists_as_runtime_enum(self) -> None:
         _require_audit_event_type()
 
-    def test_has_exactly_twenty_two_values(self) -> None:
+    def test_has_exactly_twenty_three_values(self) -> None:
         """The count is a deliberate lock: a new member must be a conscious edit
         HERE, in the expected set below, and in the authoritative spec
         (`docs/spec/types-and-protocols.md`) — three places, like the Dockerfile's
         curated script list. Plan 262 T3a took it from 18 to 19;
-        Plan 341 T1 adds human identity linking and grant changes.
+        Plan 341 T1 adds human identity linking and grant changes; Plan 510 T2
+        adds delivery_imported.
         """
         audit_event_type = _require_audit_event_type()
-        assert len(audit_event_type) == 22
+        assert len(audit_event_type) == 23
 
     def test_values_match_spec_plus_additive_members(self) -> None:
         audit_event_type = _require_audit_event_type()
@@ -122,6 +123,7 @@ class TestAuditEventType:
             "human_identity_linked",
             "human_grant_changed",
             "forecast_publication_decided",
+            "delivery_imported",
         }
         assert {e.value for e in audit_event_type} == expected
 

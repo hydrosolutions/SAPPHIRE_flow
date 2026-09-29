@@ -21,12 +21,16 @@ def _init(path: str) -> dict[str, object]:
     return compose["services"].get("init", {})
 
 
-def _merged_init(overlay: str | None) -> tuple[dict[str, str], list[str]]:
+def _merged_init(
+    overlay: str | None, *more_overlays: str
+) -> tuple[dict[str, str], list[str]]:
     base = _init("docker-compose.yml")
     env: dict[str, str] = dict(base["environment"])  # type: ignore[arg-type]
     volumes: list[str] = list(base["volumes"])  # type: ignore[arg-type]
-    if overlay is not None:
-        extra = _init(overlay)
+    for name in (overlay, *more_overlays):
+        if name is None:
+            continue
+        extra = _init(name)
         env.update(extra.get("environment", {}))  # type: ignore[arg-type]
         volumes.extend(extra.get("volumes", []))  # type: ignore[arg-type]
     return env, volumes
@@ -90,3 +94,32 @@ class TestMacMiniInit:
         worker = compose["services"]["prefect-worker"]["environment"]
         env, _ = _merged_init("docker-compose.macmini.yml")
         assert env["SAPPHIRE_CONFIG_OVERLAY"] == worker["SAPPHIRE_CONFIG_OVERLAY"]
+
+
+class TestMacMiniInitWithTheOperatorOverlay:
+    """Plan 510: the operator overlay adds the optional secret to `init` and must
+    not disturb the Mac-mini's declared-tenant wiring."""
+
+    _OVERLAYS = ("docker-compose.macmini.yml", "docker-compose.operator.yml")
+
+    def test_the_declared_tenant_wiring_survives_the_operator_overlay(self) -> None:
+        env, volumes = _merged_init(*self._OVERLAYS)
+        mount = "./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro"
+        assert env["SAPPHIRE_CONFIG"] == "/app/config.toml"
+        assert env["SAPPHIRE_CONFIG_OVERLAY"] == "/app/config/overlays/mac-mini.toml"
+        assert mount in volumes
+        assert "chwrr" in _declared_codes(mount)
+
+    def test_init_also_gets_the_operator_secret_path(self) -> None:
+        env, _ = _merged_init(*self._OVERLAYS)
+        assert env["SAPPHIRE_OPERATOR_DB_PASSWORD_FILE"] == (
+            "/run/secrets/sapphire_operator_db_password"
+        )
+
+    def test_the_operator_overlay_alone_does_not_replace_init_command_or_overlay(
+        self,
+    ) -> None:
+        extra = _init("docker-compose.operator.yml")
+        assert "command" not in extra
+        assert "SAPPHIRE_CONFIG_OVERLAY" not in extra.get("environment", {})
+        assert "volumes" not in extra
