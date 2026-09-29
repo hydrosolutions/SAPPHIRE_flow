@@ -16,18 +16,6 @@
 -- database (docker/init-db.sh), which is a documented residual, not an
 -- omission (Plan 147 §Slice D).
 --
--- psql client-side variables `:'api_password'` / `:'worker_password'` are
--- substituted (and SQL-literal-quoted) by psql BEFORE the query is sent.
--- NOTE: this substitution does NOT happen inside a dollar-quoted ($$...$$)
--- string, so role create/alter is generated with `format(..., %L)` + `\gexec`
--- below instead of a `DO $$ ... $$` block (which silently passed the raw
--- `:'var'` token through to the server — caught by this slice's own
--- integration test before it ever reached a real deploy).
---
--- Postgres has no `CREATE ROLE IF NOT EXISTS`; each pair of SELECTs below
--- produces exactly one row (the ALTER branch when the role exists, the
--- CREATE branch when it does not), and `\gexec` executes whatever row(s)
--- the preceding query returned.
 -- ── Plan 510: the operator's SAFE STATE comes FIRST ────────────────────────
 -- Before any preflight or block below that can abort under ON_ERROR_STOP, the
 -- operator role (if it exists) loses login, memberships and every table,
@@ -36,39 +24,142 @@
 -- and large objects) could abort `init` first and leave a surviving session
 -- holding its DML.
 --
--- ORDER MATTERS: the restriction is plain AUTOCOMMITTED statements, so it is
--- COMMITTED before any session is terminated — a session that reconnects during
--- the sweep is refused, and one that authenticated just before the ALTER is
--- caught by the second terminate round. (Inside one DO block the ALTER/REVOKEs
--- would still be uncommitted while sessions are terminated.) Ending sessions on
--- every bootstrap is intended: deploys stop the workers first, and an in-flight
--- import rolls back atomically. This runs when this SQL runs, i.e. after the
--- wrapper's variable/secret checks and the preceding migrations succeeded.
+-- ORDER MATTERS. (1) The role's backends are terminated FIRST: an operator
+-- transaction can hold locks that block the restriction itself (its own
+-- `ALTER ROLE ... PASSWORD` locks the same pg_authid tuple; `LOCK TABLE` and row
+-- locks block the REVOKEs), and locks live only as long as their sessions.
+-- (2) The restriction is plain AUTOCOMMITTED statements under a short
+-- lock_timeout with ON_ERROR_STOP off (a timeout must not abort the script),
+-- retried for three unrolled rounds (psql has no loop) until a `\gset` check
+-- shows the role neutralised: no login, no explicit table or schema ACL entry.
+-- Committed before the sweep below, a reconnecting session is refused.
+-- (3) If the role still cannot be neutralised the safe state could not be
+-- established, and aborting `init` with a clear error is then the right thing.
+-- Every bootstrap ends operator sessions: deploys stop the workers first, and an
+-- in-flight import rolls back atomically. This runs when this SQL runs, i.e.
+-- after the wrapper's variable/secret checks and the preceding migrations.
 SELECT EXISTS (
     SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_operator'
 ) AS operator_exists
 \gset
+\set operator_neutral t
 \if :operator_exists
-    ALTER ROLE sapphire_operator NOLOGIN;
-    SELECT format('REVOKE %I FROM sapphire_operator', granted.rolname)
-    FROM pg_catalog.pg_auth_members am
-    JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
-    JOIN pg_catalog.pg_roles member ON member.oid = am.member
-    WHERE member.rolname = 'sapphire_operator'
-    \gexec
-    REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
-    REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
-    REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
-    REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
-    REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
-    -- Terminate, wait (pg_stat_activity is snapshotted once per transaction, so
-    -- the snapshot is cleared inside the loop), terminate again, wait again.
-    -- A survivor only raises a WARNING: its privileges are already revoked and
-    -- committed, so it cannot write, and `init` must not abort here.
+    \set operator_neutral f
+    \set ON_ERROR_STOP off
+    SET lock_timeout = '2s';
+    -- round 1
+    \if :operator_neutral
+    \else
+        SELECT count(pg_catalog.pg_terminate_backend(pid)) AS terminated
+        FROM pg_catalog.pg_stat_activity
+        WHERE usename = 'sapphire_operator' AND pid <> pg_catalog.pg_backend_pid()
+        \gset
+        SELECT format('REVOKE %I FROM sapphire_operator', granted.rolname)
+        FROM pg_catalog.pg_auth_members am
+        JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+        JOIN pg_catalog.pg_roles member ON member.oid = am.member
+        WHERE member.rolname = 'sapphire_operator'
+        \gexec
+        ALTER ROLE sapphire_operator NOLOGIN;
+        REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
+        SELECT NOT r.rolcanlogin
+           AND NOT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_class c
+                CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
+                WHERE a.grantee = r.oid)
+           AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_namespace n
+            CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
+            WHERE n.nspname = 'public' AND a.grantee = r.oid) AS operator_neutral
+        FROM pg_catalog.pg_roles r WHERE r.rolname = 'sapphire_operator'
+        \gset
+    \endif
+    -- round 2
+    \if :operator_neutral
+    \else
+        SELECT count(pg_catalog.pg_terminate_backend(pid)) AS terminated
+        FROM pg_catalog.pg_stat_activity
+        WHERE usename = 'sapphire_operator' AND pid <> pg_catalog.pg_backend_pid()
+        \gset
+        SELECT format('REVOKE %I FROM sapphire_operator', granted.rolname)
+        FROM pg_catalog.pg_auth_members am
+        JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+        JOIN pg_catalog.pg_roles member ON member.oid = am.member
+        WHERE member.rolname = 'sapphire_operator'
+        \gexec
+        ALTER ROLE sapphire_operator NOLOGIN;
+        REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
+        SELECT NOT r.rolcanlogin
+           AND NOT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_class c
+                CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
+                WHERE a.grantee = r.oid)
+           AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_namespace n
+            CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
+            WHERE n.nspname = 'public' AND a.grantee = r.oid) AS operator_neutral
+        FROM pg_catalog.pg_roles r WHERE r.rolname = 'sapphire_operator'
+        \gset
+    \endif
+    -- round 3
+    \if :operator_neutral
+    \else
+        SELECT count(pg_catalog.pg_terminate_backend(pid)) AS terminated
+        FROM pg_catalog.pg_stat_activity
+        WHERE usename = 'sapphire_operator' AND pid <> pg_catalog.pg_backend_pid()
+        \gset
+        SELECT format('REVOKE %I FROM sapphire_operator', granted.rolname)
+        FROM pg_catalog.pg_auth_members am
+        JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+        JOIN pg_catalog.pg_roles member ON member.oid = am.member
+        WHERE member.rolname = 'sapphire_operator'
+        \gexec
+        ALTER ROLE sapphire_operator NOLOGIN;
+        REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+        REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
+        SELECT NOT r.rolcanlogin
+           AND NOT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_class c
+                CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
+                WHERE a.grantee = r.oid)
+           AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_namespace n
+            CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
+            WHERE n.nspname = 'public' AND a.grantee = r.oid) AS operator_neutral
+        FROM pg_catalog.pg_roles r WHERE r.rolname = 'sapphire_operator'
+        \gset
+    \endif
+    RESET lock_timeout;
+    \set ON_ERROR_STOP on
+    \if :operator_neutral
+    \else
+        DO $$
+        BEGIN
+            RAISE EXCEPTION 'sapphire_operator could not be neutralised after 3 '
+                'rounds (its sessions were terminated; something else holds a '
+                'conflicting lock) -- refusing to continue without the safe state';
+        END $$;
+    \endif
+    -- Sweep: terminate, wait (pg_stat_activity is snapshotted once per
+    -- transaction, so the snapshot is cleared inside the loop), terminate again,
+    -- wait again. A survivor only raises a WARNING: its privileges are already
+    -- revoked and committed, so it cannot write, and `init` must not abort here.
     DO $$
     DECLARE
         remaining integer;
         deadline timestamptz;
+        started timestamptz := pg_catalog.clock_timestamp();
     BEGIN
         FOR round IN 1..2 LOOP
             PERFORM pg_catalog.pg_terminate_backend(pid)
@@ -87,6 +178,8 @@ SELECT EXISTS (
                 PERFORM pg_catalog.pg_sleep(0.05);
             END LOOP;
         END LOOP;
+        RAISE NOTICE 'operator sweep took % ms',
+            round(extract(epoch FROM pg_catalog.clock_timestamp() - started) * 1000);
         IF remaining > 0 THEN
             RAISE WARNING 'sapphire_operator: % session(s) survived termination; '
                 'their privileges are revoked and committed', remaining;
@@ -100,6 +193,18 @@ SELECT EXISTS (
     END $$;
 \endif
 
+-- psql client-side variables `:'api_password'` / `:'worker_password'` are
+-- substituted (and SQL-literal-quoted) by psql BEFORE the query is sent.
+-- NOTE: this substitution does NOT happen inside a dollar-quoted ($$...$$)
+-- string, so role create/alter is generated with `format(..., %L)` + `\gexec`
+-- below instead of a `DO $$ ... $$` block (which silently passed the raw
+-- `:'var'` token through to the server — caught by this slice's own
+-- integration test before it ever reached a real deploy).
+--
+-- Postgres has no `CREATE ROLE IF NOT EXISTS`; each pair of SELECTs below
+-- produces exactly one row (the ALTER branch when the role exists, the
+-- CREATE branch when it does not), and `\gexec` executes whatever row(s)
+-- the preceding query returned.
 SELECT format('ALTER ROLE sapphire_api PASSWORD %L', :'api_password')
 WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_api')
 UNION ALL
@@ -590,8 +695,8 @@ REVOKE CONNECT ON DATABASE prefect FROM sapphire_backup;
 -- (`-v operator_password`, set by bootstrap-roles.sh from
 -- SAPPHIRE_OPERATOR_DB_PASSWORD_FILE). A deploy without the overlay sets NOLOGIN
 -- again; every bootstrap also ends the role's open sessions (first block of
--- this file). docs/standards/cicd.md has the
--- init-independent revoke that also ends open sessions.
+-- this file); docs/standards/cicd.md has the manual equivalent for
+-- when `init` itself cannot run.
 --
 -- Its rows are limited by the database, not by the Python: migration 0067's
 -- guard triggers refuse any write outside the delivery. The grants below are
@@ -624,7 +729,8 @@ JOIN pg_catalog.pg_roles member ON member.oid = am.member
 WHERE member.rolname = 'sapphire_operator'
 \gexec
 -- (The revocations already ran at the top of this file.) Ownership preflight:
--- objects in temporary namespaces — relations, functions, types — vanish with
+-- objects of ANY class in a temporary namespace (resolved generically with
+-- pg_identify_object: relations, functions, types, collations, domains, ...) vanish with
 -- their (already terminated) session and must never abort `init`; PERSISTENT
 -- objects are still refused. pg_shdepend spans the cluster, so the object
 -- lookups only apply to rows of THIS database; foreign-database ownerships and
@@ -638,19 +744,13 @@ BEGIN
     JOIN pg_catalog.pg_roles r ON r.oid = sd.refobjid
     LEFT JOIN pg_catalog.pg_database d
         ON d.datname = pg_catalog.current_database() AND d.oid = sd.dbid
-    LEFT JOIN pg_catalog.pg_class c
-        ON d.oid IS NOT NULL
-       AND sd.classid = 'pg_catalog.pg_class'::regclass AND c.oid = sd.objid
-    LEFT JOIN pg_catalog.pg_proc p
-        ON d.oid IS NOT NULL
-       AND sd.classid = 'pg_catalog.pg_proc'::regclass AND p.oid = sd.objid
-    LEFT JOIN pg_catalog.pg_type ty
-        ON d.oid IS NOT NULL
-       AND sd.classid = 'pg_catalog.pg_type'::regclass AND ty.oid = sd.objid
-    LEFT JOIN pg_catalog.pg_namespace n
-        ON n.oid = COALESCE(c.relnamespace, p.pronamespace, ty.typnamespace)
+    LEFT JOIN LATERAL (
+        SELECT i.schema
+        FROM pg_catalog.pg_identify_object(sd.classid, sd.objid, sd.objsubid) i
+        WHERE d.oid IS NOT NULL
+    ) o ON true
     WHERE r.rolname = 'sapphire_operator' AND sd.deptype = 'o'
-      AND NOT COALESCE(n.nspname ~ '^pg_(toast_)?temp_', false);
+      AND NOT COALESCE(o.schema ~ '^pg_(toast_)?temp_', false);
     IF owned_objects > 0 THEN
         RAISE EXCEPTION 'sapphire_operator owns % object(s)', owned_objects;
     END IF;

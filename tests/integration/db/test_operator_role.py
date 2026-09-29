@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
+_BOOTSTRAP_SQL = REPO_ROOT / "docker" / "bootstrap-roles.sql"
 OPERATOR = "sapphire_operator"
 OPERATOR_PW = "operator-pw-one"
 _OTHER_DELIVERY = "some-other-delivery"
@@ -861,8 +863,6 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
             "true",
             "session_user = 'SAPPHIRE_OPERATOR'",
             "session_user = 'sapphire_ operator'",
-            "session_user = 'SAPPHIRE_OPERATOR'",
-            "session_user = 'sapphire_ operator'",
         ],
     )
     def test_a_guard_trigger_with_the_wrong_when_predicate_counts_as_broken(
@@ -1173,6 +1173,28 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
     ends and the role's privileges follow the guard's state."""
 
     _OPEN_TRANSACTION = "open-transaction-locking-a-temp-table"
+    # Lock vectors the operator holds with its LEGITIMATE privileges, left in an
+    # open transaction: they can block the bootstrap's own restriction.
+    _LOCK_VECTORS: dict[str, str] = {
+        "open-transaction-altering-its-own-password": (
+            "ALTER ROLE sapphire_operator PASSWORD 'x'"
+        ),
+        "open-transaction-locking-observations": (
+            "LOCK TABLE public.observations IN ACCESS EXCLUSIVE MODE"
+        ),
+        "open-transaction-locking-rating-curves": (
+            "LOCK TABLE public.rating_curves IN ACCESS EXCLUSIVE MODE"
+        ),
+        "open-transaction-holding-row-locks": (
+            "SELECT id FROM public.observations WHERE delivery_id = "
+            "'dhm-barkhk-2026-09-08' FOR UPDATE"
+        ),
+        "open-transaction-updating-a-delivery-row": (
+            "UPDATE public.observations SET value = value WHERE delivery_id = "
+            "'dhm-barkhk-2026-09-08' AND station_id = "
+            "(SELECT id FROM public.stations WHERE code = '447')"
+        ),
+    }
 
     def _session(self, db: OperatorDb, kind: str) -> tuple[sa.Engine, sa.Connection]:
         engine = db.engine()
@@ -1183,37 +1205,40 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
         conn.commit()
         if kind == self._OPEN_TRANSACTION:
             conn.execute(sa.text("LOCK TABLE scratch IN ACCESS EXCLUSIVE MODE"))
+        elif kind in self._LOCK_VECTORS:
+            conn.execute(sa.text(self._LOCK_VECTORS[kind]))
         return engine, conn
 
     @pytest.mark.parametrize("guard", ["healthy", "disabled"])
-    @pytest.mark.parametrize("kind", [*_TEMP_OBJECTS, _OPEN_TRANSACTION])
+    @pytest.mark.parametrize(
+        "kind", [*_TEMP_OBJECTS, _OPEN_TRANSACTION, *_LOCK_VECTORS]
+    )
     def test_the_bootstrap_completes_and_the_session_cannot_write(
         self, db: OperatorDb, kind: str, guard: str
     ) -> None:
-        engine, conn = self._session(db, kind)
         trigger = "trg_observations_operator_guard_insert"
-        setup = (
-            [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"]
-            if guard == "disabled"
-            else []
-        )
-        teardown = (
-            [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"]
-            if guard == "disabled"
-            else []
-        )
-        try:
-            with _owner_ran(db, setup, teardown):
+        disabled = guard == "disabled"
+        # The guard is switched off BEFORE the session opens: an operator lock
+        # on observations would otherwise block this very ALTER TABLE.
+        with _owner_ran(
+            db,
+            [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"] if disabled else [],
+            [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"] if disabled else [],
+        ):
+            engine, conn = self._session(db, kind)
+            try:
+                started = time.perf_counter()
                 db.bootstrap()
-                if guard == "disabled":
+                assert time.perf_counter() - started < 30
+                if disabled:
                     assert _all_table_privileges(db) == {}
                 else:
                     assert _dml_privileges(db)
                 _assert_session_was_terminated(conn)
-        finally:
-            conn.close()
-            engine.dispose()
-            db.bootstrap()
+            finally:
+                conn.close()
+                engine.dispose()
+        db.bootstrap()
         assert _dml_privileges(db)
 
     @pytest.mark.parametrize("guard", ["healthy", "disabled"])
@@ -1251,24 +1276,93 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
             engine.dispose()
             db.bootstrap()
 
-    def test_the_sweep_is_quick_because_the_wait_sees_the_backend_leave(
+    def test_a_lock_the_bootstrap_cannot_clear_fails_loudly_and_boundedly(
         self, db: OperatorDb
     ) -> None:
-        import time
+        blocker = db.owner.connect()
+        blocker.execute(sa.text("ALTER ROLE sapphire_operator PASSWORD 'held'"))
+        try:
+            started = time.perf_counter()
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            elapsed = time.perf_counter() - started
+        finally:
+            blocker.rollback()
+            blocker.close()
+            db.bootstrap()
+        assert result.returncode != 0
+        assert "could not be neutralised" in result.stderr
+        assert elapsed < 35, elapsed
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "CREATE DOMAIN pg_temp.scratch_dom AS int",
+            "CREATE COLLATION pg_temp.scratch_coll (provider = libc, locale = 'C')",
+        ],
+        ids=["domain", "collation"],
+    )
+    def test_the_ownership_preflight_ignores_any_temp_object_class(
+        self, db: OperatorDb, statement: str
+    ) -> None:
+        """Runs the preflight block alone while the operator's session (which
+        owns the temp object) is still open, as if it had survived the sweep."""
+        sql = _BOOTSTRAP_SQL.read_text()
+        marker = sql.index("WHERE r.rolname = 'sapphire_operator' AND sd.deptype")
+        start = sql.rindex("DO $$", 0, marker)
+        preflight = sql[start : sql.index("END $$;", start) + len("END $$;")]
+        assert "sapphire_operator owns" in preflight
+        engine = db.engine()
+        conn = engine.connect()
+        try:
+            conn.execute(sa.text(statement))
+            conn.commit()
+            with db.owner.begin() as owner:
+                owner.execute(sa.text(preflight))
+        finally:
+            conn.close()
+            engine.dispose()
+
+    def test_a_lock_that_clears_after_the_first_round_is_retried(
+        self, db: OperatorDb
+    ) -> None:
+        import threading
+
+        blocker = db.owner.connect()
+        blocker.execute(sa.text("ALTER ROLE sapphire_operator PASSWORD 'held'"))
+        released = threading.Timer(3.0, blocker.rollback)
+        released.start()
+        try:
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        finally:
+            released.join()
+            blocker.close()
+            db.bootstrap()
+        assert result.returncode == 0, result.stderr
+        assert "lock timeout" in result.stderr
+
+    def test_the_sweep_wait_sees_the_backend_leave(self, db: OperatorDb) -> None:
+        import re
 
         engine = db.engine()
         conn = engine.connect()
         try:
-            started = time.perf_counter()
-            db.bootstrap()
-            elapsed = time.perf_counter() - started
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            assert result.returncode == 0, result.stderr
             _assert_session_was_terminated(conn)
         finally:
             conn.close()
             engine.dispose()
+        match = re.search(r"operator sweep took (\d+) ms", result.stderr)
+        assert match, result.stderr
         # A stale pg_stat_activity snapshot would burn the whole 3 s deadline
-        # twice (about 6 s extra on a ~1.5 s bootstrap).
-        assert elapsed < 5, elapsed
+        # twice (>= 6000 ms); the real wait is a few hundred ms at most.
+        assert int(match.group(1)) < 3000, match.group(1)
 
     def test_a_reconnecting_operator_never_survives_the_sweep(
         self, db: OperatorDb
@@ -1291,6 +1385,9 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
 
         thread = threading.Thread(target=reconnect)
         thread.start()
+        deadline = time.perf_counter() + 20
+        while not kept and time.perf_counter() < deadline:
+            time.sleep(0.02)
         try:
             db.bootstrap(operator_password=None)
         finally:
