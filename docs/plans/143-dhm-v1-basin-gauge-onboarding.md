@@ -41,12 +41,14 @@ included in the observation-consumer policy inventory.
 | 120 — basin/static importer | COMPLETE, archived; reusable core is present | Validate the actual six-basin package and station joins |
 | 264 / 269 — network QC and station overrides | Merged (#315 / #324) | Use the existing selector and resolver; no reimplementation |
 | 272 / 316 / 317 / 318 / 324 — cadence and unchecked-data handling | COMPLETE, archived | Scheduled-ingest closure does not close onboarding's separate gap |
-| 268 — restricted DHM delivery | Implementation merged as `a7794028` (#332) | T8 real-delivery staging acceptance; deployment is owned by the `cmal_small` session |
+| 268 — restricted DHM delivery | Implementation merged as `a7794028` (#332); Plans 510/513 record an orchestrator report of T8's one-off run on 2026-09-29 | Confirm against the retained Mac-mini T8 acceptance/QC evidence; deployment is owned by the `cmal_small` session |
 | 304 / 315 — daily context / generic onboarding QC | DRAFT | Related follow-ons, no longer dependencies of the discharge-only path (D4) |
 
-Plan 268's file still says READY; its merged code is the evidence of implementation,
-not evidence that T8 passed. Do not rerun that deployment from this plan or assume
-the six station rows exist until its operator reports acceptance. The owner's
+Plan 268's file still says READY. Current main's Plans 510/513 record the
+orchestrator's report that T8 ran on 2026-09-29 by an owner-approved one-off route;
+that is not host verification here. Confirm against that operator's retained
+acceptance and QC evidence; do not rerun delivery replacement from this plan.
+Confirm the six station rows when starting Plan 143. The owner's
 2026-09-29 decision changes this plan to **discharge-first onboarding**: T4
 qualifies Plan 268's already-QC'd history instead of creating and QC'ing levels.
 
