@@ -336,13 +336,17 @@ For each batch:
    unmet variable.
 5. Qualify Plan 268's delivery-tagged, manual-import discharge using persisted
    `QC_PASSED` rows only. Set the target to `discharge` only when model input,
-   overlap and intended training-use gates pass. RAW, unchecked, suspect and
+   overlap and static-input gates pass. RAW, unchecked, suspect and
    failed rows do not count as usable targets. Preserve the measurements,
    delivery tags and QC verdicts; do not invert curves or rerun generic
    onboarding QC. Keep unqualified targets unset and report the hold reason.
    Repeat qualification after delivery replacement or QC changes. The readiness
    report contains aggregates only; consumer and reviewer access to restricted
    observations remains withheld.
+   Plan 268 D9's pilot approval and Plan 143 D2's discharge-first decision are
+   the recorded scope authority; no runtime training-permission flag exists or
+   is required here. Record the unresolved model-output publication question
+   from Plan 268 D5/D9 in the handoff; this procedure does not authorize publication.
 6. Review the readiness report and database audit. Every requested station
    must appear exactly once with its gate outcomes. Stations remain in the
    `onboarding` lifecycle state; this procedure does not assign models,

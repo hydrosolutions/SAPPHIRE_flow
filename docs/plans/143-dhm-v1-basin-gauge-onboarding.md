@@ -152,10 +152,18 @@ forcing/target overlap after the existing resampling path, not merely matching
 date ranges. If it cannot satisfy the chosen model, report a hold.
 
 Set `forecast_targets` to `frozenset({"discharge"})` only after usable history,
-forcing and static requirements pass and the intended training use is permitted.
+forcing and static requirements pass.
 Every station remains `onboarding`. A missing live feed or current rating curve
 is reported as a later operational limitation, not a reason to discard historical
-discharge training data. Model-output publication permissions remain separate.
+discharge training data.
+
+Scope authority is the recorded owner approval of a real-gauge pilot in
+Plan 268 D9 and the 2026-09-29 discharge-first decision above. This plan performs
+data preparation and qualification only; it neither trains models nor publishes
+outputs. There is no runtime training-permission field or new approval flag to
+implement or test. Plan 268 D5/D9's unresolved model-output publication question
+remains a later release decision, recorded in the handoff rather than used as
+a technical readiness predicate. Restricted observations remain withheld (D5).
 
 ### D3 — Separate raw Gateway availability from supported model input
 
@@ -335,8 +343,8 @@ target and a specific hold reason. All stay in `onboarding`.
 
 **In:** a bounded Nepal readiness service/operator path consuming Plan 268 T8's
 acceptance and the existing stores, resampling and model requirement types.
-Check the exact restricted delivery cohort, persisted QC versions, usable
-sample/overlap requirements and intended training-use permission. Perform the
+Check the exact restricted delivery cohort, persisted QC versions and usable
+sample/overlap requirements. Perform the
 database checks and target writes in one CHWRR-authorized transaction with the
 tenant-row lock; provide a rollback dry run.
 **Out:** observation or QC writes, curve conversion, generic CAMELS onboarding,
@@ -344,7 +352,7 @@ new QC rules, model training/assignment, station promotion or live-feed activati
 
 **Verification:** synthetic tests include adequate QC-passed daily discharge,
 only RAW/unchecked/suspect/failed rows, inadequate overlap, missing required
-static/forcing inputs, wrong tenant/delivery, unapproved use, and an unexpected
+static/forcing inputs, wrong tenant/delivery, and an unexpected
 existing target or operational station. Excluding unqualified rows must leave
 too-short histories held. Show that an expired/missing historical curve does
 not disqualify directly delivered discharge. Verify target/forcing alignment
@@ -378,8 +386,9 @@ registration, alerts.
 forecast-operational. All six gauge codes appear exactly once; each failed gate
 names its reason. It identifies the selected model/window, persisted forcing
 source and QC versions, and separates historical readiness from current live
-input/rating limitations. It reports training/publication permission holds
-separately and does not treat a reviewer token as permission to publish the data.
+input/rating limitations. The handoff cites the D2 scope decisions and records
+the unresolved model-output publication question separately from computed
+readiness; a reviewer token is not permission to publish restricted data.
 A database audit confirms no station was promoted and no
 forecast/model assignment was created. Do not trigger the existing
 `onboard-stations` deployment, whose defaults point at CAMELS-CH. Run

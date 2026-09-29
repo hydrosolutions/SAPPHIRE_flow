@@ -404,12 +404,14 @@ exit criteria — Plan 212 owns that deeper screening.
   different plan has an open decision.*
 - **Nepal DHM observation/QC family (264 / 268 / 269 / 301 / 303 / 304 / 315–318)** — read these plans
   together. Plans 316, 317 and 318 are **COMPLETE and ARCHIVED** (#301, #303, #299);
-  Plans 264 and 269 are **COMPLETE** (#315, #324); Plans 268/301/303/304/315 remain DRAFT.
+  Plans 264 and 269 are **COMPLETE** (#315, #324). Plan 268's implementation is
+  merged (#332), with T8 staging acceptance outstanding; Plans 301/303/304/315 remain DRAFT.
   - **268** — DHM Barkhk delivery: parse, verify and import six Koshi/Narayani gauges —
-    `DRAFT`, `depends_on: [264, 269]` (both merged). D14's generous first-pass QC
-    thresholds are settled for controlled testing; narrowing awaits further data and
-    hydrologist review. The current draft needs exact-state Claude and Codex review before
-    READY. The delivery is **unpublishable**; never check an excerpt into the repo.
+    frontmatter `READY`, implementation merged (#332); `depends_on: [264, 269]`
+    (both merged). T8 real-delivery staging acceptance remains the completion gate.
+    D14's generous first-pass QC thresholds are settled for controlled testing;
+    narrowing awaits further data and hydrologist review. The delivery is
+    **unpublishable**; never check an excerpt into the repo.
   - **264** — QC rules select on network, not only parameter and cadence — **COMPLETE**,
     merged in PR #315 (`dbbea4d9`, 2026-09-26); `blocks: [268, 269]`. Adds network-specific
     selection with generic fallback, threads the station-network mapping through the checker,
