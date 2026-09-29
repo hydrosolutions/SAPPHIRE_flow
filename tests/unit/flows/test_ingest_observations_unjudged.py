@@ -123,6 +123,7 @@ def _run_task(
         parameter,
         qc_rules=rules,
         now=_NOW,
+        station_networks={station_id: "bafu"},
         datum=datum,
     )
 

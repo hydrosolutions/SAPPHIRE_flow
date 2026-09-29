@@ -134,6 +134,7 @@ def _network_for_station(
             f"missing network mapping for station {station_id}"
         ) from exc
 
+
 # Plan 323 T4 (D4): each rule reports whether it could JUDGE a reading, apart
 # from whether it flagged it. A clean result and "nothing could run" both
 # produce no flag, and only the first may be stored as QC_PASSED. The verdict
