@@ -137,6 +137,14 @@ not a permanent accommodation.
 
 ## Where this is going — level forecasting, and why
 
+**Onboarding sequence, owner decision 2026-09-29:** Plan 143 prepares the six
+`chwrr` gauges for **discharge-model onboarding first**, using the historical
+discharge and persisted QC imported by Plan 268 (#332). It binds basins and
+Gateway sources, imports supported weather history, and checks training-data
+readiness. Rating-derived level targets remain a follow-on toward the destination
+below. This decision does not activate stations, authorize model-output
+publication, or establish a working live level-to-discharge path.
+
 *Owner, 2026-09-20.* **The destination is to forecast water LEVEL rather than discharge.**
 DHM is realistically not going to produce good rating curves for all these stations, so a
 system whose every output depends on a current rating curve has no stable future.

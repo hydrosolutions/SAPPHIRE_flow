@@ -6,6 +6,8 @@ from sapphire_flow.types.enums import WeatherSourceRole
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.protocols.stores import HistoricalForcingStore
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.station import StationWeatherSource
@@ -16,10 +18,18 @@ class StoreBackedReanalysisSource:
 
     Used when historical forcing data has already been imported (e.g. via
     CAMELS-CH onboarding) and no external API call is needed.
+    Optional source_mapping translates binding names into persisted source tags;
+    unmapped names retain their existing behavior.
     """
 
-    def __init__(self, forcing_store: HistoricalForcingStore) -> None:
+    def __init__(
+        self,
+        forcing_store: HistoricalForcingStore,
+        *,
+        source_mapping: Mapping[str, str] | None = None,
+    ) -> None:
         self._store = forcing_store
+        self._source_mapping = dict(source_mapping or {})
 
     def fetch_reanalysis(
         self,
@@ -34,7 +44,7 @@ class StoreBackedReanalysisSource:
                 continue
             records = self._store.fetch_forcing(
                 station_id=cfg.station_id,
-                source=cfg.nwp_source,
+                source=self._source_mapping.get(cfg.nwp_source, cfg.nwp_source),
                 start=start,
                 end=end,
                 parameters=parameters,

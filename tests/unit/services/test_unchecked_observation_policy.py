@@ -607,6 +607,8 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
         "QcStatus.QC_PASSED",
         "QcStatus.QC_PASSED",
     ),
+    # Plan 143's delivery reader forwards training_data's QC_PASSED filter.
+    "src/sapphire_flow/services/nepal_onboarding.py": ("qc_status",),
     "src/sapphire_flow/services/observation_alert_checker.py": ("QcStatus.QC_PASSED",),
     "src/sapphire_flow/services/onboarding.py": (
         "QcStatus.QC_PASSED",
