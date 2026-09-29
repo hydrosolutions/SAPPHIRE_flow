@@ -261,13 +261,20 @@ class PipelineCheckType(Enum):
         # noise at a handful of stations). No watchdog probe wired yet
         # (Plan 175 § Residual forks #1) — visible today only via
         # `/api/v1/health/detail` and the dashboard.
+    OBSERVATION_QC_UNCHECKED = "observation_qc_unchecked"
+        # Plan 318 T1 — written by ingest_observations_flow only when a QC group
+        # resolved ZERO rules, so its readings were stored QC_UNCHECKED (Plan
+        # 272). A presence record, not a per-run heartbeat: the watchdog probes
+        # the latest record of this type (Plan 318 T2). Locked `detail` keys:
+        # `zero_rule_groups` (station_id, parameter, inferred_time_step_seconds,
+        # reason), `groups_affected`, `observations_unchecked`,
+        # `observations_passed`, `observations_failed`, `observations_suspect`,
+        # `observations_rechecked`, `observations_newly_checked`.
     OBSERVATION_QC_THRESHOLD_CONFIG = "observation_qc_threshold_config"
         # Plan 269: a rejected or not-applicable station QC threshold declaration.
         # WARNING records are written by scheduled ingest, including on no-data
         # runs; pending networks and onboarding stations are INFO logs only.
         # The watchdog does not yet probe this type.
-    # NOTE: types/enums.py also carries OBSERVATION_QC_UNCHECKED (Plan 318 —
-    # the zero-rule record the watchdog probes); not listed here before, drift.
     OBSERVATION_QC_UNJUDGED = "observation_qc_unjudged"
         # Plan 323 T4 (D5) — written by ingest_observations_flow only when a
         # group SELECTED rules but had pending readings no rule could judge
