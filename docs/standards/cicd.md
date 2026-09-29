@@ -23,6 +23,7 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 | `api` | custom (sapphire-flow) | postgres (v0) / pgbouncer (v1), prefect-server | `curl -f http://localhost:8000/api/v1/health` | `unless-stopped` | v0+v1 |
 | `caddy` | `caddy:2` | api | TCP check on 443 | `unless-stopped` | v0+v1 |
 | `init` | custom (sapphire-flow) | postgres (healthy) | — | `no` (one-shot) | v0+v1 |
+| `operator` | sapphire-flow (same tag as `init`; defined ONLY in `docker-compose.operator.yml`, profile `operator`, so a plain `up` never starts it) | postgres (healthy) | — | `no` (`run --rm`) | **Plan 510** — DHM delivery import as `sapphire_operator`; § Operator role for delivery replacement |
 
 ### Custom image
 

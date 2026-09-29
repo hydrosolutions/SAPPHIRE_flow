@@ -9,6 +9,8 @@ rolled back, so the committed baseline seeded by the owner never changes.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,6 +19,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import sqlalchemy as sa
+import yaml
 from sqlalchemy.pool import NullPool
 
 from sapphire_flow.store.observation_store import PgObservationStore
@@ -25,7 +28,13 @@ from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.ids import TenantId
 from tests.conftest import make_station_config
-from tests.integration.db.dhm_import_support import run_qc, run_replace, run_stations
+from tests.integration.db.dhm_import_support import (
+    FIXTURES,
+    REPO_ROOT,
+    run_qc,
+    run_replace,
+    run_stations,
+)
 from tests.integration.db.test_operator_grant_matrix import MATRIX
 from tests.integration.db.test_role_bootstrap import (
     role_harness,  # noqa: F401
@@ -33,6 +42,7 @@ from tests.integration.db.test_role_bootstrap import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+    from pathlib import Path
 
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
@@ -952,6 +962,172 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
             "WHERE pronamespace = 'public'::regnamespace AND prosecdef"
         )
         assert names == "lock_publication_candidate, lock_publication_grants"
+
+
+def _stub_bin(directory: Path) -> Path:
+    directory.mkdir()
+    (directory / "chown").write_text("#!/bin/sh\nexit 0\n")
+    (directory / "gosu").write_text('#!/bin/sh\nshift\nexec "$@"\n')
+    for stub in ("chown", "gosu"):
+        (directory / stub).chmod(0o755)
+    return directory
+
+
+def _operator_database_url(db: OperatorDb, tmp_path: Path) -> str:
+    """The URL the `operator` service would build: its compose environment run
+    through the REAL docker/entrypoint.sh (secret file spliced into the
+    template), with the compose hostname pointed at the test container."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.operator.yml").read_text())
+    env = compose["services"]["operator"]["environment"]
+    secret = tmp_path / "operator_secret"
+    secret.write_text(OPERATOR_PW)
+    stubs = _stub_bin(tmp_path / "stubs")
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "docker/entrypoint.sh"),
+            "sh",
+            "-c",
+            "printf '%s' \"$DATABASE_URL\"",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+        cwd=tmp_path,
+        env={
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "DATABASE_URL_TEMPLATE": env["DATABASE_URL_TEMPLATE"],
+            "DB_PASSWORD_SECRET": str(secret),
+        },
+    )
+    host = db.harness.role_url(OPERATOR, OPERATOR_PW).split("@", 1)[1]
+    assert "@postgres:5432/sapphire" in result.stdout
+    return result.stdout.replace("postgres:5432/sapphire", host)
+
+
+def _write_delivery(directory: Path) -> Path:
+    directory.mkdir()
+    daily = (FIXTURES / "synthetic_daily_flow.txt").read_text()
+    rating = (FIXTURES / "synthetic_rating_tables.txt").read_text()
+    for code in ("447", "450", "604.5", "647", "670", "684"):
+        (directory / f"DFL_{code}.txt").write_text(daily.replace("999", code))
+        (directory / f"RT_{code}.txt").write_text(rating.replace("999", code))
+    return directory
+
+
+def _wipe_chwrr_rows(db: OperatorDb) -> None:
+    with db.owner.begin() as conn:
+        for statement in (
+            "DELETE FROM observations WHERE station_id IN (SELECT id FROM stations "
+            "WHERE tenant_id = :chwrr)",
+            "DELETE FROM rating_curves WHERE station_id IN (SELECT id FROM stations "
+            "WHERE tenant_id = :chwrr)",
+            "DELETE FROM stations WHERE tenant_id = :chwrr",
+        ):
+            conn.execute(sa.text(statement), {"chwrr": db.ids["chwrr"]})
+
+
+def _restore_baseline_after_end_to_end(db: OperatorDb) -> None:
+    with db.owner.begin() as conn:
+        ids = {
+            row.code: row.id
+            for row in conn.execute(sa.text("SELECT id, code FROM stations")).all()
+        }
+        db.ids = {**db.ids, "s447": ids["447"], "s450": ids["450"]}
+        conn.execute(
+            sa.text(
+                "INSERT INTO observations (id, station_id, timestamp, parameter, "
+                "value, source, delivery_id) VALUES (gen_random_uuid(), :s447, "
+                "'2001-01-01T00:00:00+00', 'discharge', 1.0, 'manual_import', :other)"
+            ),
+            db.ids,
+        )
+
+
+class TestEndToEndUnderTheRealOperatorLogin:
+    """The three commands through their CLI, on the URL the `operator` service
+    builds, against a tenant with no stations or delivery yet."""
+
+    @pytest.fixture
+    def env(
+        self, db: OperatorDb, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Iterator[Path]:
+        db.bootstrap()
+        delivery = _write_delivery(tmp_path / "restricted-delivery")
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(REPO_ROOT / "config.toml"))
+        monkeypatch.setenv(
+            "SAPPHIRE_CONFIG_OVERLAY",
+            str(REPO_ROOT / "config/overlays/chwrr-import.toml"),
+        )
+        monkeypatch.setenv("DATABASE_URL", _operator_database_url(db, tmp_path))
+        _wipe_chwrr_rows(db)
+        try:
+            yield delivery
+        finally:
+            _wipe_chwrr_rows(db)
+            with db.owner.begin() as conn:
+                run_stations(conn)
+                run_replace(conn)
+            _restore_baseline_after_end_to_end(db)
+
+    def _counts(self, db: OperatorDb) -> tuple[object, ...]:
+        with db.owner.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT (SELECT count(*) FROM stations WHERE tenant_id = :chwrr), "
+                    "(SELECT count(*) FROM rating_curves WHERE delivery_id = :d), "
+                    "(SELECT count(*) FROM observations WHERE delivery_id = :d "
+                    "AND station_id IN (SELECT id FROM stations "
+                    "WHERE tenant_id = :chwrr)), "
+                    "(SELECT count(*) FROM observations WHERE delivery_id = :d "
+                    "AND qc_status <> 'raw' AND station_id IN (SELECT id FROM "
+                    "stations WHERE tenant_id = :chwrr)), "
+                    "(SELECT count(*) FROM audit_log WHERE event_type = "
+                    "'delivery_imported')"
+                ),
+                db.ids,
+            ).one()
+        return tuple(row)
+
+    def test_stations_replace_and_qc_all_succeed_and_each_leaves_an_audit_row(
+        self, db: OperatorDb, env: Path
+    ) -> None:
+        from sapphire_flow.cli.import_dhm_delivery import main
+
+        audit_before = self._counts(db)[4]
+        assert main(["stations", "--tenant", "chwrr", "--dry-run"]) == 0
+        assert self._counts(db)[:1] == (0,)
+        assert main(["stations", "--tenant", "chwrr"]) == 0
+        replace = ["replace", "--tenant", "chwrr", "--input-dir", str(env)]
+        assert main([*replace, "--dry-run"]) == 0
+        assert self._counts(db)[1:3] == (0, 0)
+        assert main(replace) == 0
+        assert main(["qc", "--tenant", "chwrr"]) == 0
+        counts = self._counts(db)
+        assert counts[:4] == (6, 12, 18, 18)
+        assert counts[4] == audit_before + 3
+
+    def test_the_worker_cannot_replace_but_still_runs_stations_and_qc(
+        self,
+        db: OperatorDb,
+        env: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from sapphire_flow.cli.import_dhm_delivery import main
+
+        assert main(["stations", "--tenant", "chwrr"]) == 0
+        replace = ["replace", "--tenant", "chwrr", "--input-dir", str(env)]
+        assert main(replace) == 0
+        before = self._counts(db)
+        monkeypatch.setenv(
+            "DATABASE_URL", db.harness.role_url("sapphire_worker", "worker-pw")
+        )
+        with pytest.raises(sa.exc.ProgrammingError, match="permission denied"):
+            main(replace)
+        assert self._counts(db) == before
+        assert main(["stations", "--tenant", "chwrr"]) == 0
+        assert main(["qc", "--tenant", "chwrr"]) == 0
 
 
 def _alembic(direction: str, revision: str) -> None:
