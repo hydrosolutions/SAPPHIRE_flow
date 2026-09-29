@@ -72,7 +72,7 @@ Reading the import code shows the gap is wider than tenant creation and delete:
     **both** on UPDATE; an UPDATE may not change `station_id`, `delivery_id` (clearing the tag would launder a
     row out of the guard) or a rating curve's validity dates;
   - **written as a positive allow, hardened:** `IF NOT EXISTS (…) THEN RAISE` (a missing `chwrr` row must
-    refuse, not pass as NULL — Plan 513 creates deployments without it); relations schema-qualified
+    refuse, not pass as NULL — a deployment that does not declare `chwrr` has no such tenant); relations schema-qualified
     (`public.stations`, `public.tenants`) with the function's `search_path` pinned, and `TEMP` revoked from the
     operator, so a temporary table cannot shadow the lookup;
   - a matching `BEFORE INSERT` check on `stations` (the operator may create stations only in the delivery
