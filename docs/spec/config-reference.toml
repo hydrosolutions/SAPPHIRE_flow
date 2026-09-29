@@ -713,3 +713,18 @@ sources = [
 
 [api.cors]
 allow_origins = ["https://sapphire.example.ch"]  # explicit list, never "*"
+
+
+# =============================================================================
+# Declared tenants — the tenants THIS host hosts (Plan 513)
+# Source: docs/plans/513-declared-tenants-created-at-deploy.md
+# =============================================================================
+# Usually set in the host's overlay, not the base. `init` creates each missing tenant
+# (cli/provision_tenants.py). Table keyed by code: lowercase letters/digits/_/-, starts
+# with a letter, max 32 chars. `name` non-blank, max 200. NEVER an id (an existing tenant keeps
+# its id). Not `writable_tenants` — declaring a tenant grants no write authority. The same
+# code with a different name than the database's makes `init` fail. `sapphire` may only be
+# declared with its seeded name. Read with plain tomllib: no ${...} expansion.
+# Commented out: the base config declares no tenants (only `sapphire`, from migration 0041).
+# [tenants.chwrr]
+# name = "CHWRR Nepal"

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import tenants
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.tenant import Tenant
@@ -55,6 +57,22 @@ class PgTenantStore:
             )
         )
         return tenant.id
+
+    def ensure_tenant(self, *, tenant_id: TenantId, code: str, name: str) -> Tenant:
+        self._conn.execute(
+            pg_insert(tenants)
+            .values(id=tenant_id, code=code, name=name)
+            .on_conflict_do_nothing(index_elements=[tenants.c.code])
+        )
+        existing = self.fetch_tenant_by_code(code)
+        if existing is None:
+            raise ConfigurationError(f"tenant {code!r} is missing after insert-or-skip")
+        if existing.name != name:
+            raise ConfigurationError(
+                f"tenant {code!r} already exists with name {existing.name!r}; "
+                f"declared name is {name!r} (a rename is an owner action)"
+            )
+        return existing
 
 
 def _row_to_tenant(row: sa.engine.row.RowMapping) -> Tenant:

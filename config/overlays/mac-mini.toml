@@ -40,3 +40,9 @@ disk_guard_scratch_soft_gb = 1.5
 disk_guard_scratch_hard_gb = 0.5
 disk_guard_archive_soft_gb = 8.0
 disk_guard_archive_hard_gb = 3.0
+
+# Plan 513: the tenants this host hosts, created by `init` (never widens
+# `writable_tenants`; never carries an id). The name must equal
+# DELIVERY_TENANT_NAME (cli/import_dhm_delivery.py) — a test ties them.
+[tenants.chwrr]
+name = "CHWRR Nepal"

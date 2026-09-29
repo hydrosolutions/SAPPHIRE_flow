@@ -689,6 +689,9 @@ class TenantStore(Protocol):
     def store_tenant(self, tenant: Tenant) -> TenantId:
         raise NotImplementedError
 
+    def ensure_tenant(self, *, tenant_id: TenantId, code: str, name: str) -> Tenant:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class StationStore(Protocol):
