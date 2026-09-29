@@ -13,11 +13,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 
 from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
@@ -25,6 +27,7 @@ from sapphire_flow.config._overlay import (
 from sapphire_flow.config.declared_tenants import load_declared_tenants
 from sapphire_flow.db.engine import create_engine_from_env
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.ids import TenantId
 
@@ -64,6 +67,7 @@ def _config_path() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    configure_cli_logging()
     try:
         declared = load_declared_tenants(_config_path(), _resolve_overlay_paths())
         log.info("tenants_declared", count=len(declared))
@@ -72,8 +76,14 @@ def main(argv: list[str] | None = None) -> int:
         engine = create_engine_from_env()
         with engine.begin() as conn:
             ensured = ensure_declared_tenants(PgTenantStore(conn), declared)
-    except ConfigurationError as exc:
-        log.error("tenant_provisioning_failed", error=str(exc))
+    except (ConfigurationError, tomllib.TOMLDecodeError) as exc:
+        log.error(
+            "tenant_provisioning_failed", cause=type(exc).__name__, error=str(exc)
+        )
+        return 1
+    except SQLAlchemyError as exc:
+        # Class name only: a driver message can echo connection details.
+        log.error("tenant_provisioning_failed", cause=type(exc).__name__)
         return 1
     log.info("tenants_ensured", codes=[t.code for t in ensured])
     return 0

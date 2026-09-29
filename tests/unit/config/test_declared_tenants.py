@@ -48,6 +48,14 @@ class TestParseDeclaredTenants:
         with pytest.raises(ConfigurationError, match="name"):
             parse_declared_tenants({"abc": {}})
 
+    def test_error_reports_locations_and_types_never_input_values(self) -> None:
+        with pytest.raises(ConfigurationError) as exc:
+            parse_declared_tenants({"abc": {"name": "N", "password": "secretpw"}})
+        text = str(exc.value)
+        assert "secretpw" not in text
+        assert "password: extra_forbidden" in text
+        assert exc.value.__context__ is None
+
     def test_id_key_is_rejected(self) -> None:
         with pytest.raises(ConfigurationError, match="abc"):
             parse_declared_tenants(

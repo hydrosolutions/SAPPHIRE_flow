@@ -69,7 +69,7 @@ before assuming the deploy broke something — the alert may simply be working f
     #    init now also creates the tenants declared in config/overlays/mac-mini.toml
     #    ([tenants.chwrr], Plan 513). Before the FIRST init carrying that declaration, read the
     #    existing row: code exactly `chwrr`, name exactly `CHWRR Nepal`, no trailing whitespace.
-    #    A different name (or a renamed `sapphire`) makes init FAIL, which also blocks the Swiss
+    #    A different name (or a renamed `sapphire`, when `sapphire` is declared) makes init FAIL, which also blocks the Swiss
     #    workers, API and deployment registration. Fix by owner SQL, never by editing the declaration
     #    to match a wrong row. Init logs `tenants_declared` (count) on every run.
 

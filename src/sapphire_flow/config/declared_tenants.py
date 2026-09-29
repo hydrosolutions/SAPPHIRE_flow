@@ -53,9 +53,18 @@ def _parse_entry(code: str, entry: object) -> DeclaredTenant:
     if not isinstance(entry, dict):
         raise ConfigurationError(f"[tenants.{code}] must be a table with a name")
     try:
-        parsed = _TenantEntry.model_validate(entry)
+        parsed: _TenantEntry | None = _TenantEntry.model_validate(entry)
+        problems = ""
     except ValidationError as exc:
-        raise ConfigurationError(f"[tenants.{code}]: invalid ({exc})") from exc
+        # Locations and error types only: a message that echoes input values
+        # could leak a secret a user mistyped into the declaration.
+        problems = ", ".join(
+            f"{'.'.join(str(part) for part in err['loc'])}: {err['type']}"
+            for err in exc.errors(include_input=False, include_url=False)
+        )
+        parsed = None
+    if parsed is None:
+        raise ConfigurationError(f"[tenants.{code}]: invalid ({problems})")
     if not parsed.name.strip():
         raise ConfigurationError(f"[tenants.{code}]: name must not be blank")
     if code == DEFAULT_TENANT_CODE and parsed.name != DEFAULT_TENANT_NAME:
