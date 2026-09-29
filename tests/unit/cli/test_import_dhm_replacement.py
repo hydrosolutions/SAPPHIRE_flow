@@ -24,6 +24,7 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import RatingCurveId, StationId, TenantId
 from sapphire_flow.types.observation import RawObservation
 from tests.fakes.fake_stores import (
+    FakeAuditLogStore,
     FakeObservationStore,
     FakeRatingCurveStore,
     FakeStationStore,
@@ -45,7 +46,14 @@ def test_boundary_replacement_removes_only_delivery_rows() -> None:
     ratings = FakeRatingCurveStore()
     bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenants, stations, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenants,
+        stations,
+        _CHWRR,
+        metadata,
+        audit_log_store=FakeAuditLogStore(),
+        now=_NOW,
+    )
     daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
     rating = parse_rating_tables(
         (_FIXTURES / "synthetic_rating_tables.txt").read_text()
@@ -69,7 +77,14 @@ def test_boundary_replacement_removes_only_delivery_rows() -> None:
     observations.store_raw_observations([unrelated])
 
     assert replace_delivery(
-        tenants, stations, ratings, observations, _CHWRR, files, now=_NOW
+        tenants,
+        stations,
+        ratings,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=FakeAuditLogStore(),
+        now=_NOW,
     ) == (12, 18)
     original_times = {
         obs.timestamp
@@ -96,6 +111,7 @@ def test_boundary_replacement_removes_only_delivery_rows() -> None:
         observations,
         _CHWRR,
         files,
+        audit_log_store=FakeAuditLogStore(),
         now=_NOW,
         day_start=shifted,
     ) == (12, 18)
@@ -114,7 +130,14 @@ def test_delivery_qc_checks_only_tagged_rows() -> None:
     ratings = FakeRatingCurveStore()
     bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(tenants, stations, _CHWRR, metadata, now=_NOW)
+    register_stations(
+        tenants,
+        stations,
+        _CHWRR,
+        metadata,
+        audit_log_store=FakeAuditLogStore(),
+        now=_NOW,
+    )
     daily = parse_daily_flow((_FIXTURES / "synthetic_daily_flow.txt").read_text())
     rating = parse_rating_tables(
         (_FIXTURES / "synthetic_rating_tables.txt").read_text()
@@ -139,7 +162,16 @@ def test_delivery_qc_checks_only_tagged_rows() -> None:
             )
         ]
     )
-    replace_delivery(tenants, stations, ratings, observations, _CHWRR, files, now=_NOW)
+    replace_delivery(
+        tenants,
+        stations,
+        ratings,
+        observations,
+        _CHWRR,
+        files,
+        audit_log_store=FakeAuditLogStore(),
+        now=_NOW,
+    )
     config_path = Path(__file__).resolve().parents[3] / "config.toml"
     tenant = tenants.fetch_tenant_by_code("chwrr")
     assert tenant is not None
@@ -165,7 +197,13 @@ def test_delivery_qc_checks_only_tagged_rows() -> None:
         for rule in rules.rules_for("discharge", timedelta(days=1), network="dhm")
     } == {"range_check", "rate_of_change", "spike", "gross_outlier"}
     counts = run_delivery_qc(
-        tenants, stations, observations, _CHWRR, config_path, now=_NOW
+        tenants,
+        stations,
+        observations,
+        _CHWRR,
+        config_path,
+        audit_log_store=FakeAuditLogStore(),
+        now=_NOW,
     )
     assert counts == {QcStatus.QC_PASSED: 12, QcStatus.QC_UNCHECKED: 6}
     assert (
@@ -233,6 +271,7 @@ def test_qc_refuses_unresolved_station_ceiling() -> None:
         stations,
         _CHWRR,
         load_station_metadata(_FIXTURES / "stations.toml"),
+        audit_log_store=FakeAuditLogStore(),
         now=_NOW,
     )
     partial = [

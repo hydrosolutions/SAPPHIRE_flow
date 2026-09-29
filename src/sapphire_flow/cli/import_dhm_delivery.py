@@ -1,3 +1,4 @@
+# pyright: reportUnknownMemberType=false
 """Guarded import of the restricted DHM historical delivery."""
 
 from __future__ import annotations
@@ -7,7 +8,7 @@ import os
 import tomllib
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import structlog
@@ -42,10 +43,12 @@ from sapphire_flow.services.write_principal import (
     enforce_tenant_isolation,
     resolve_run_principal,
 )
+from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
+from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.domain import (
@@ -75,6 +78,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.adapters.dhm_files import DailyFlowFile, RatingTableFile
     from sapphire_flow.protocols.stores import (
+        AuditLogStore,
         ObservationStore,
         RatingCurveStore,
         StationStore,
@@ -86,6 +90,31 @@ log = structlog.get_logger(__name__)
 DELIVERY_TENANT_CODE = "chwrr"
 DELIVERY_TENANT_NAME = "CHWRR Nepal"
 _STATION_CODES = frozenset({"447", "450", "604.5", "647", "670", "684"})
+
+ImportCommand = Literal["stations", "replace", "qc"]
+
+
+def _audit_import(
+    audit_log_store: AuditLogStore,
+    *,
+    command: ImportCommand,
+    tenant_id: TenantId,
+    counts: dict[str, object],
+    now: UtcDatetime,
+) -> None:
+    """One system-actor row per successful command, written on the caller's
+    connection so it commits or rolls back with the mutation. Rejections stay
+    log-only: a rejection row would roll back with the failed transaction."""
+    audit_log_store.append_entry(
+        AuditEntry.system(
+            event_type=AuditEventType.DELIVERY_IMPORTED,
+            target_type="tenant",
+            target_id=str(tenant_id),
+            detail={"command": command, "delivery_id": DELIVERY_ID, **counts},
+            ip_address=None,
+            created_at=now,
+        )
+    )
 
 
 class _TenantInput(BaseModel):
@@ -247,6 +276,7 @@ def register_stations(
     identity: DeploymentIdentityConfig,
     metadata: _MetadataInput,
     *,
+    audit_log_store: AuditLogStore,
     now: UtcDatetime,
 ) -> int:
     _assert_chwrr_scoped(identity)
@@ -306,6 +336,13 @@ def register_stations(
             )
     for station in new_stations:
         station_store.store_station(station)
+    _audit_import(
+        audit_log_store,
+        command="stations",
+        tenant_id=tenant.id,
+        counts={"created": len(new_stations), "declared": len(expected_stations)},
+        now=now,
+    )
     return len(new_stations)
 
 
@@ -409,6 +446,7 @@ def replace_delivery(
     identity: DeploymentIdentityConfig,
     files: dict[str, tuple[DailyFlowFile, RatingTableFile]],
     *,
+    audit_log_store: AuditLogStore,
     now: UtcDatetime,
     day_start: Callable[[date], UtcDatetime] = nepal_day_start,
 ) -> tuple[int, int]:
@@ -478,6 +516,17 @@ def replace_delivery(
     }
     if written_keys != intended_keys or len(written) != len(new_observations):
         raise ConfigurationError("DHM delivery read-back differs from staged rows")
+    _audit_import(
+        audit_log_store,
+        command="replace",
+        tenant_id=tenant.id,
+        counts={
+            "stations": len(station_ids),
+            "curves": len(new_curves),
+            "observations": len(new_observations),
+        },
+        now=now,
+    )
     return len(new_curves), len(new_observations)
 
 
@@ -578,6 +627,7 @@ def run_delivery_qc(
     identity: DeploymentIdentityConfig,
     config_path: Path,
     *,
+    audit_log_store: AuditLogStore,
     now: UtcDatetime,
 ) -> dict[QcStatus, int]:
     _assert_chwrr_scoped(identity)
@@ -681,10 +731,21 @@ def run_delivery_qc(
         flags_raised=flags_raised,
         unchecked=sum(status is QcStatus.QC_UNCHECKED for status in outcomes.values()),
     )
-    return {
+    tally = {
         status: list(outcomes.values()).count(status)
         for status in set(outcomes.values())
     }
+    _audit_import(
+        audit_log_store,
+        command="qc",
+        tenant_id=tenant.id,
+        counts={
+            "rows_evaluated": len(outcomes),
+            "statuses": {status.value: count for status, count in tally.items()},
+        },
+        now=now,
+    )
+    return tally
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -729,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
             transaction = conn.begin()
             try:
                 tenant_store = PgTenantStore(conn)
+                audit_log_store = PgAuditLogStore(conn)
                 now = ensure_utc(datetime.now(UTC))
                 if args.command == "bootstrap-tenant":
                     tenant_id = bootstrap_tenant(
@@ -741,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
                         PgStationStore(conn),
                         identity,
                         metadata,
+                        audit_log_store=audit_log_store,
                         now=now,
                     )
                     log.info("dhm_import.stations", created=created)
@@ -754,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
                         PgObservationStore(conn),
                         identity,
                         files,
+                        audit_log_store=audit_log_store,
                         now=now,
                     )
                     log.info(
@@ -768,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
                         PgObservationStore(conn),
                         identity,
                         config_path,
+                        audit_log_store=audit_log_store,
                         now=now,
                     )
                     log.info(

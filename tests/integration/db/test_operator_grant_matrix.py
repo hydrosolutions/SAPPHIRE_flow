@@ -75,6 +75,16 @@ class Grant:
 
 MATRIX: tuple[Grant, ...] = (
     Grant(
+        sql="GRANT INSERT ON audit_log TO {role}",
+        commands=_ALL,
+        denied_on="table audit_log",
+    ),
+    Grant(
+        sql="GRANT USAGE ON SEQUENCE audit_log_id_seq TO {role}",
+        commands=_ALL,
+        denied_on="sequence audit_log_id_seq",
+    ),
+    Grant(
         sql="GRANT SELECT ON tenants TO {role}",
         commands=_ALL,
         denied_on="table tenants",
@@ -170,18 +180,19 @@ def _files() -> dict[str, tuple[object, object]]:
 
 
 def _run_stations(conn: sa.Connection) -> None:
-    tenants, stations, _, _, _ = _stores(conn)
+    tenants, stations, _, _, audit = _stores(conn)
     register_stations(
         tenants,
         stations,
         _CHWRR,
         load_station_metadata(_FIXTURES / "stations.toml"),
+        audit_log_store=audit,
         now=_NOW,
     )
 
 
 def _run_replace(conn: sa.Connection) -> None:
-    tenants, stations, curves, observations, _ = _stores(conn)
+    tenants, stations, curves, observations, audit = _stores(conn)
     replace_delivery(
         tenants,
         stations,
@@ -189,13 +200,22 @@ def _run_replace(conn: sa.Connection) -> None:
         observations,
         _CHWRR,
         _files(),  # type: ignore[arg-type]
+        audit_log_store=audit,
         now=_NOW,
     )
 
 
 def _run_qc(conn: sa.Connection) -> None:
-    tenants, stations, _, observations, _ = _stores(conn)
-    run_delivery_qc(tenants, stations, observations, _CHWRR, _CONFIG, now=_NOW)
+    tenants, stations, _, observations, audit = _stores(conn)
+    run_delivery_qc(
+        tenants,
+        stations,
+        observations,
+        _CHWRR,
+        _CONFIG,
+        audit_log_store=audit,
+        now=_NOW,
+    )
 
 
 _RUNNERS: dict[Command, Callable[[sa.Connection], None]] = {
@@ -391,5 +411,23 @@ class TestImportWritesNoObservationVersions:
                 _run_replace(conn)
                 _run_qc(conn)
                 assert conn.scalar(sa.text(count)) == before
+            finally:
+                txn.rollback()
+
+
+class TestAuditWriteNeedsNoRead:
+    def test_the_matrix_lets_a_command_append_but_not_read_audit_rows(
+        self, owner: sa.Engine
+    ) -> None:
+        with owner.connect() as conn:
+            txn = conn.begin()
+            try:
+                _apply(conn, MATRIX)
+                conn.execute(sa.text(f"SET LOCAL ROLE {SCRATCH}"))
+                _run_qc(conn)
+                with pytest.raises(
+                    sa.exc.ProgrammingError, match="permission denied for table"
+                ):
+                    conn.execute(sa.text("SELECT count(*) FROM audit_log"))
             finally:
                 txn.rollback()

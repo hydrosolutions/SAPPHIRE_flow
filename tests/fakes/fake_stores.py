@@ -1834,6 +1834,10 @@ class FakeAuditLogStore:
     def append_entry(self, entry: AuditEntry) -> None:
         self._entries.append(entry)
 
+    @property
+    def entries(self) -> list[AuditEntry]:
+        return list(self._entries)
+
 
 class FakeArtifactProvenanceStore:
     """Plan 157 T3: mirrors `PgArtifactProvenanceStore`'s `.record(...)`

@@ -27,8 +27,12 @@ class PgAuditLogStore:
         self._conn = conn
 
     def append_entry(self, entry: AuditEntry) -> None:
+        # `.inline()` drops the implicit `RETURNING id`: an INSERT-only role
+        # (Plan 510's operator) cannot read the row it appends.
         self._conn.execute(
-            sa.insert(audit_log).values(
+            sa.insert(audit_log)
+            .inline()
+            .values(
                 event_type=entry.event_type.value,
                 actor_id=entry.actor_id,
                 actor_type=entry.actor_type.value,

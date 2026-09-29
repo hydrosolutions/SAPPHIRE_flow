@@ -4,23 +4,38 @@ from pathlib import Path
 
 import pytest
 
+from sapphire_flow.adapters.dhm_files import parse_daily_flow, parse_rating_tables
 from sapphire_flow.cli.import_dhm_delivery import (
+    DELIVERY_ID,
     _require_admin_bootstrap_identity,
     _require_chwrr_identity,
     _safe_failure_reason,
     bootstrap_tenant,
     load_station_metadata,
     register_stations,
+    replace_delivery,
+    run_delivery_qc,
 )
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import AuditActorType, AuditEventType
+from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
-from tests.fakes.fake_stores import FakeStationStore, FakeTenantStore
+from tests.fakes.fake_stores import (
+    FakeAuditLogStore,
+    FakeObservationStore,
+    FakeRatingCurveStore,
+    FakeStationStore,
+    FakeTenantStore,
+)
 
 METADATA_PATH = Path(__file__).resolve().parents[2] / "fixtures/dhm/stations.toml"
 NOW = ensure_utc(datetime(2026, 9, 28, tzinfo=UTC))
 ADMIN = DeploymentIdentityConfig(writable_tenants=frozenset(), global_admin=True)
+CHWRR = DeploymentIdentityConfig(
+    writable_tenants=frozenset({"chwrr"}), global_admin=False
+)
 
 
 def test_tenant_bootstrap_is_idempotent() -> None:
@@ -59,6 +74,7 @@ def test_station_registration_requires_chwrr_write_authority() -> None:
             stations,
             swiss_identity,
             load_station_metadata(METADATA_PATH),
+            audit_log_store=FakeAuditLogStore(),
             now=NOW,
         )
     assert stations.fetch_all_stations() == []
@@ -74,6 +90,7 @@ def test_station_registration_rejects_global_admin_routine_write() -> None:
             stations,
             ADMIN,
             load_station_metadata(METADATA_PATH),
+            audit_log_store=FakeAuditLogStore(),
             now=NOW,
         )
     assert stations.fetch_all_stations() == []
@@ -87,8 +104,28 @@ def test_station_registration_reuses_six_rows_without_duplicates() -> None:
         writable_tenants=frozenset({"chwrr"}), global_admin=False
     )
     metadata = load_station_metadata(METADATA_PATH)
-    assert register_stations(tenants, stations, identity, metadata, now=NOW) == 6
-    assert register_stations(tenants, stations, identity, metadata, now=NOW) == 0
+    assert (
+        register_stations(
+            tenants,
+            stations,
+            identity,
+            metadata,
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
+        == 6
+    )
+    assert (
+        register_stations(
+            tenants,
+            stations,
+            identity,
+            metadata,
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
+        == 0
+    )
     assert len(stations.fetch_all_stations()) == 6
     assert {station.tenant_id for station in stations.fetch_all_stations()} == {
         tenant_id
@@ -106,13 +143,27 @@ def test_cross_tenant_same_code_is_refused_before_any_insert() -> None:
         writable_tenants=frozenset({"chwrr"}), global_admin=False
     )
     metadata = load_station_metadata(METADATA_PATH)
-    register_stations(tenants, stations, identity, metadata, now=NOW)
+    register_stations(
+        tenants,
+        stations,
+        identity,
+        metadata,
+        audit_log_store=FakeAuditLogStore(),
+        now=NOW,
+    )
     foreign = stations.fetch_station_by_code("447", "dhm")
     assert foreign is not None
     other = FakeStationStore()
     other.store_station(replace(foreign, tenant_id=DEFAULT_TENANT_ID))
     with pytest.raises(ConfigurationError, match="another tenant"):
-        register_stations(tenants, other, identity, metadata, now=NOW)
+        register_stations(
+            tenants,
+            other,
+            identity,
+            metadata,
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
     assert len(other.fetch_all_stations()) == 1
 
 
@@ -148,3 +199,145 @@ def test_bootstrap_requires_out_of_checkout_admin_overlay(
     (checkout / "admin.toml").write_text(overlay.read_text())
     with pytest.raises(ConfigurationError, match="outside the checkout"):
         _require_admin_bootstrap_identity(config)
+
+
+def _files_for(metadata: object) -> dict[str, tuple[object, object]]:
+    daily = parse_daily_flow(
+        (METADATA_PATH.parent / "synthetic_daily_flow.txt").read_text()
+    )
+    rating = parse_rating_tables(
+        (METADATA_PATH.parent / "synthetic_rating_tables.txt").read_text()
+    )
+    return {
+        spec.code: (
+            replace(daily, station_code=spec.code),
+            replace(rating, station_code=spec.code),
+        )
+        for spec in metadata.stations  # type: ignore[attr-defined]
+    }
+
+
+class TestImportAuditOnSuccess:
+    def _seeded(self) -> tuple[FakeTenantStore, FakeStationStore, TenantId]:
+        tenants = FakeTenantStore()
+        stations = FakeStationStore()
+        tenant_id = bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+        return tenants, stations, tenant_id
+
+    def test_stations_writes_one_system_row_with_counts_only(self) -> None:
+        tenants, stations, tenant_id = self._seeded()
+        audit = FakeAuditLogStore()
+        register_stations(
+            tenants,
+            stations,
+            CHWRR,
+            load_station_metadata(METADATA_PATH),
+            audit_log_store=audit,
+            now=NOW,
+        )
+        (entry,) = audit.entries
+        assert entry.event_type is AuditEventType.DELIVERY_IMPORTED
+        assert entry.actor_type is AuditActorType.SYSTEM
+        assert (entry.target_type, entry.target_id) == ("tenant", str(tenant_id))
+        assert entry.detail == {
+            "command": "stations",
+            "delivery_id": DELIVERY_ID,
+            "created": 6,
+            "declared": 6,
+        }
+
+    def test_a_repeat_run_still_records_that_it_ran(self) -> None:
+        tenants, stations, _ = self._seeded()
+        audit = FakeAuditLogStore()
+        metadata = load_station_metadata(METADATA_PATH)
+        for _ in range(2):
+            register_stations(
+                tenants, stations, CHWRR, metadata, audit_log_store=audit, now=NOW
+            )
+        assert [entry.detail["created"] for entry in audit.entries] == [6, 0]
+
+    def test_replace_writes_one_row_with_counts_only(self) -> None:
+        tenants, stations, tenant_id = self._seeded()
+        audit = FakeAuditLogStore()
+        metadata = load_station_metadata(METADATA_PATH)
+        register_stations(
+            tenants,
+            stations,
+            CHWRR,
+            metadata,
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
+        replace_delivery(
+            tenants,
+            stations,
+            FakeRatingCurveStore(),
+            FakeObservationStore(),
+            CHWRR,
+            _files_for(metadata),  # type: ignore[arg-type]
+            audit_log_store=audit,
+            now=NOW,
+        )
+        (entry,) = audit.entries
+        assert entry.target_id == str(tenant_id)
+        assert entry.detail == {
+            "command": "replace",
+            "delivery_id": DELIVERY_ID,
+            "stations": 6,
+            "curves": 12,
+            "observations": 18,
+        }
+
+    def test_qc_writes_one_row_with_status_counts(self) -> None:
+        tenants, stations, _ = self._seeded()
+        observations = FakeObservationStore()
+        metadata = load_station_metadata(METADATA_PATH)
+        register_stations(
+            tenants,
+            stations,
+            CHWRR,
+            metadata,
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
+        replace_delivery(
+            tenants,
+            stations,
+            FakeRatingCurveStore(),
+            observations,
+            CHWRR,
+            _files_for(metadata),  # type: ignore[arg-type]
+            audit_log_store=FakeAuditLogStore(),
+            now=NOW,
+        )
+        audit = FakeAuditLogStore()
+        run_delivery_qc(
+            tenants,
+            stations,
+            observations,
+            CHWRR,
+            Path(__file__).resolve().parents[3] / "config.toml",
+            audit_log_store=audit,
+            now=NOW,
+        )
+        (entry,) = audit.entries
+        assert entry.detail == {
+            "command": "qc",
+            "delivery_id": DELIVERY_ID,
+            "rows_evaluated": 18,
+            "statuses": {"qc_passed": 12, "qc_unchecked": 6},
+        }
+
+    def test_a_refused_command_writes_no_audit_row(self) -> None:
+        tenants, stations, _ = self._seeded()
+        audit = FakeAuditLogStore()
+        with pytest.raises(ConfigurationError, match="CHWRR-scoped"):
+            register_stations(
+                tenants,
+                stations,
+                ADMIN,
+                load_station_metadata(METADATA_PATH),
+                audit_log_store=audit,
+                now=NOW,
+            )
+        assert audit.entries == []
