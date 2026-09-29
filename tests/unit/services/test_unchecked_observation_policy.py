@@ -282,7 +282,7 @@ def _forecast_with_observation_status(
         id_gen=lambda: UUID(int=random.Random(7).getrandbits(128)),
         rng=random.Random(11),
         model_state_store=state_store,
-    )
+    ).result
 
 
 def _per_track_forecast_with_observation_status(

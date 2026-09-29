@@ -308,7 +308,7 @@ def _run(
         model_state_store=model_state_store  # type: ignore[arg-type]
         if model_state_store is not None
         else FakeModelStateStore(),
-    )
+    ).result
 
 
 class TestEnsembleModeFanOut:

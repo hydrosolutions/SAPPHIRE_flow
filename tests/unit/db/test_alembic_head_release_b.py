@@ -84,13 +84,15 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # `reviewer` access-token role — three role CHECKs re-created, downgrade
 # refused while a reviewer row exists) onto 0060 — advancing the pinned head
 # to 0061. Plan 341 T1 then chains 0062 (local OIDC human identities and
-# station grants) onto 0061.
+# station grants) onto 0061. Plan 404 T1 then chains 0065 (append-only
+# `rejected_forecasts` — a QC-rejected member/group-station forecast, kept
+# outside `forecasts`, D2) onto 0064 — advancing the pinned head to 0065.
 #
 # Three of these were authored in parallel branches and renumbered on merge:
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0064"
+_RELEASE_B_HEAD = "0065"
 
 
 def _down_revisions() -> dict[str, str | None]:

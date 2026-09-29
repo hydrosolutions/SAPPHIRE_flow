@@ -12,7 +12,7 @@ from polars.testing import assert_frame_equal
 from sqlalchemy.exc import DisconnectionError
 
 from sapphire_flow.config.deployment import DeploymentConfig
-from sapphire_flow.exceptions import ModelOutputError, StoreError
+from sapphire_flow.exceptions import GroupForecastError, ModelOutputError, StoreError
 from sapphire_flow.services import run_group_forecast as service
 from sapphire_flow.services.forecast_evidence import restore_frame, restore_snapshot
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
@@ -410,7 +410,7 @@ class _QcChecker:
         return []
 
 
-def _call_run_group_forecast(
+def _call_run_group_forecast_outcome(
     *,
     group: StationGroup,
     group_inputs: GroupModelInputs,
@@ -420,7 +420,8 @@ def _call_run_group_forecast(
     qc_checker: _QcChecker | None = None,
     qc_rules: ForecastQcRuleSet | None = None,
     water_level_datums_masl: dict[StationId, float | None] | None = None,
-) -> dict[StationId, service.StationForecastResult]:
+) -> service.GroupForecastOutcome:
+    """Plan 404 T2 — the FULL outcome, including `.rejected`."""
     return service.run_group_forecast(
         group=group,
         group_inputs=group_inputs,
@@ -440,6 +441,34 @@ def _call_run_group_forecast(
         rng=random.Random(42),
         water_level_datums_masl=water_level_datums_masl,
     )
+
+
+def _call_run_group_forecast(
+    *,
+    group: StationGroup,
+    group_inputs: GroupModelInputs,
+    metadata_by_station: dict[StationId, OperationalInputMetadata],
+    model: _BatchGroupModel,
+    artifact_store: FakeModelArtifactStore,
+    qc_checker: _QcChecker | None = None,
+    qc_rules: ForecastQcRuleSet | None = None,
+    water_level_datums_masl: dict[StationId, float | None] | None = None,
+) -> dict[StationId, service.StationForecastResult]:
+    """Plan 404 T2: `run_group_forecast` now returns a `GroupForecastOutcome`
+    (`.results` + `.rejected`) — unwrapped here so every pre-existing caller
+    of this helper, which only ever asserted on the passing results, keeps
+    working unchanged. Callers that need `.rejected` use
+    `_call_run_group_forecast_outcome` instead."""
+    return _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=group_inputs,
+        metadata_by_station=metadata_by_station,
+        model=model,
+        artifact_store=artifact_store,
+        qc_checker=qc_checker,
+        qc_rules=qc_rules,
+        water_level_datums_masl=water_level_datums_masl,
+    ).results
 
 
 def test_assembles_group_inputs_and_metadata_by_station(
@@ -860,6 +889,108 @@ def test_run_group_forecast_omits_station_with_qc_failed_parameter() -> None:
 
     assert set(results) == {sid_a}
     assert results[sid_a].new_state == b"state-a"
+
+
+def test_rejected_payload_populated_for_the_qc_failed_station_only() -> None:
+    """Plan 404 T2/D3: group rejection is per station — the outcome's
+    `.rejected` carries exactly the failing station's payload, with the
+    group_id set, while the sibling's forecast is unaffected."""
+    sid_a = StationId(uuid4())
+    sid_b = StationId(uuid4())
+    group = _make_group(sid_a, sid_b)
+    group_inputs = _make_group_inputs(group)
+    artifact_store = FakeModelArtifactStore()
+    _seed_group_artifact(artifact_store, group)
+    model = _BatchGroupModel(
+        {
+            sid_a: ({"discharge": _make_ensemble(sid_a, 10.0)}, b"state-a"),
+            sid_b: ({"discharge": _make_ensemble(sid_b, 20.0)}, b"state-b"),
+        }
+    )
+
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=group_inputs,
+        metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+        model=model,
+        artifact_store=artifact_store,
+        qc_checker=_QcChecker(failed_station_id=sid_b),
+    )
+
+    assert set(outcome.results) == {sid_a}
+    assert len(outcome.rejected) == 1
+    rejected = outcome.rejected[0]
+    assert rejected.station_id == sid_b
+    assert rejected.group_id == group.id
+    assert len(rejected.parameters) == 1
+    assert rejected.parameters[0].qc_status == QcStatus.QC_FAILED
+
+
+def test_group_forecast_error_carries_rejected_so_far_when_a_later_station_raises() -> (
+    None
+):
+    """Plan 404 T2: station A rejected, then station B raises an ordinary
+    error — the group call raises GroupForecastError carrying A's rejection
+    and the original exception; the flow skips the group exactly as today
+    (proven at the flow layer; this proves the service raises the right
+    thing)."""
+
+    class _FailThenRaiseChecker:
+        def __init__(self, failed_station_id: StationId, raising_station_id: StationId):
+            self.failed_station_id = failed_station_id
+            self.raising_station_id = raising_station_id
+
+        def check(
+            self,
+            ensemble,
+            rule_set,
+            qc_overrides,
+            baselines,
+            skipped_rule_ids=frozenset(),
+        ):  # noqa: ANN001
+            if ensemble.station_id == self.raising_station_id:
+                raise RuntimeError("boom checking station B")
+            if ensemble.station_id == self.failed_station_id:
+                return [
+                    QcFlag(
+                        rule_id="range_check",
+                        rule_version="1.0",
+                        status=QcStatus.QC_FAILED,
+                        detail="failed for test",
+                    )
+                ]
+            return []
+
+    sid_a = StationId(uuid4())
+    sid_b = StationId(uuid4())
+    group = _make_group(sid_a, sid_b)
+    group_inputs = _make_group_inputs(group)
+    artifact_store = FakeModelArtifactStore()
+    _seed_group_artifact(artifact_store, group)
+    model = _BatchGroupModel(
+        {
+            sid_a: ({"discharge": _make_ensemble(sid_a, 10.0)}, b"state-a"),
+            sid_b: ({"discharge": _make_ensemble(sid_b, 20.0)}, b"state-b"),
+        }
+    )
+
+    with pytest.raises(GroupForecastError) as exc_info:
+        _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+            model=model,
+            artifact_store=artifact_store,
+            qc_checker=_FailThenRaiseChecker(
+                failed_station_id=sid_a, raising_station_id=sid_b
+            ),
+        )
+
+    err = exc_info.value
+    assert len(err.rejected) == 1
+    assert err.rejected[0].station_id == sid_a
+    assert isinstance(err.original, RuntimeError)
+    assert "boom checking station B" in str(err.original)
 
 
 def test_run_group_forecast_logs_missing_station_output() -> None:

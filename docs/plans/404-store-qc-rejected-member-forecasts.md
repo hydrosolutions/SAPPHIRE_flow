@@ -208,7 +208,10 @@ builds the rows (value encoding included), inserts them, then — still inside t
 fake store honours `abandon` the same way. The API reads through its request connection; the
 timeouts belong to the worker's write path only. The migration also adds a **role-independent
 append-only guard** — triggers rejecting UPDATE, DELETE and TRUNCATE, as migration 0057 does for the
-evidence tables (`alembic/versions/0057_forecast_evidence.py:82-96`). The flow parameter
+evidence tables (`alembic/versions/0057_forecast_evidence.py:82-96`) — for ordinary DML by any role,
+including the table's owner; a trigger cannot stop the owning role's own DDL (`ALTER TABLE ...
+DISABLE TRIGGER`), so the append-only guarantee's real boundary is operational: nothing but a
+migration ever holds that role's credentials. The flow parameter
 `rejected_forecast_store` on `run_forecast_cycle_flow` (`flows/run_forecast_cycle.py:2323-2370`),
 read from the production bundle when stores are not injected (`:2405-2428`) — an injected caller that
 omits it gets no capture, which leaves the ~84 existing injected test calls unchanged; a flow
@@ -525,6 +528,17 @@ After staging deploy (orchestrator):
   contract; scope and `security.md` wording updated.
 - 2026-09-28 — third independent review (Codex CLEAN; Claude 1 minor here): T4 updates `341:114`,
   which still told Plan 341 T3 to add a human branch and classify the route as REVIEW.
+- 2026-09-28 — implementation review (Claude, Codex, the owner-commissioned data/forecast-cycle-
+  safety reviewer): capture was skipped entirely if closing the HTTP client raised before it (fixed
+  — capture now runs in its own nested `finally`); the thread-start/join failure path logged one
+  generic `write_failed` instead of once per buffered assignment (fixed); the NullPool/connect-timeout
+  test asserted a separately built engine, not the production factory (fixed, spied on the real call);
+  a default-window test compared a fixed seed date against the real clock and would flake once real
+  time passed it (fixed); the append-only guard's "role-independent" wording could read as stronger
+  than a Postgres trigger can promise against its own owning role's DDL — the plan and migration now
+  state that boundary explicitly. Confirmed NOT a defect: the high-risk reviewer's abandon-before-
+  commit race is exactly D6's already-accepted "unknown but atomic outcome" case, verified against
+  the code and `attempt_id`'s structlog binding (needed for the promised reconciliation).
 
 ## Dependency graph
 

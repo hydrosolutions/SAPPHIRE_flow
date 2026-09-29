@@ -38,7 +38,12 @@ assurance policy and signing-key rollover must be verified before activation.
 `SAPPHIRE_HUMAN_DASHBOARD_ORIGIN` is an exact origin: only that origin gets
 GET/POST CORS permission under `/api/v1/review/forecasts`, for the named-human
 dashboard contract; other configured consumer origins retain GET only.
-No human review or publish route is mounted by T1.
+No human review or publish route is mounted by T1. **Plan 404 T3** extends
+this origin to a SEPARATE, GET-only CORS policy scoped to exactly
+`/api/v1/stations/{id}/rejected-forecasts` (`api/cors.py::ScopedCorsMiddleware`)
+— that route never needs POST, unlike the review-forecasts policy above; with
+`SAPPHIRE_HUMAN_DASHBOARD_ORIGIN` unset the path gets no CORS at all, same as
+the review prefix today.
 
 Plan 341 T2 adds a host-only `sapphire_publication_health` database role. It
 starts `NOLOGIN`; an operator enables a separate credential on the protected
@@ -415,6 +420,29 @@ after Plan 402 T3 (the latter includes observation-derived baseline statistics f
 `climatology_outlier`). **Before DHM observations are readable by a Nepal consumer token, the owner
 must decide whether observation and forecast flag `detail` is stripped for consumers on that network**
 (recorded in Plan 143, DHM onboarding).
+
+**Plan 404 D4 (2026-09-26) — a new route-matrix class, REVIEW_OR_HUMAN.**
+`GET /api/v1/stations/{id}/rejected-forecasts` admits a reviewer or admin
+service token (the same two roles as REVIEW) OR a named human with a
+current station `review` grant (Plan 341). One route-level dependency,
+`api/review_auth.py::require_reviewer_or_human`, decides which verifier to
+call from the bearer's SHAPE alone — exactly one `.` (a service token,
+`prefix.secret`, both `secrets.token_urlsafe` output, which never contains
+a dot itself) calls `require_principal`/`require_reviewer`; exactly two
+`.` (three JWT segments) calls `require_human_principal`; any other shape,
+or either verifier's own failure (including human auth being disabled —
+`require_human_principal`'s 503 never reaches the caller), is the SAME
+`401` body — no fallback from one verifier to the other. Registered on its
+own router, deliberately OUTSIDE Plan 402's `require_reviewer` router
+(`api/__init__.py`), since it admits a principal kind that dependency does
+not. Where Plan 341's tenant publication gate is active
+(`services/publication_gate.py::publication_gate_active`), a **reviewer**
+service token's items are withheld (`withheld: true`, `values: null`,
+every flag's `detail: null`) — **admin** tokens and a **granted human**
+always see the full record; a **consumer** token gets `403`, a revoked
+grant or out-of-scope/unknown station `404`. `tests/unit/api/test_security.py`'s
+route-matrix (`_classify_routes`, `TestRouteAuthMatrixExhaustive`) carries
+this class and pins the route's classification.
 
 ## Secrets management
 

@@ -555,6 +555,25 @@
         "title": "ModelAssignmentResponse",
         "type": "object"
       },
+      "NonFiniteValue": {
+        "description": "The evidence non-finite encoding (`services/forecast_evidence.py`),\nreused at the wire boundary: `repr(value)` is one of `nan`, `inf`,\n`-inf`.",
+        "properties": {
+          "nonfinite": {
+            "enum": [
+              "nan",
+              "inf",
+              "-inf"
+            ],
+            "title": "Nonfinite",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nonfinite"
+        ],
+        "title": "NonFiniteValue",
+        "type": "object"
+      },
       "ObservationQcRuleResponse": {
         "properties": {
           "network": {
@@ -770,6 +789,37 @@
         "title": "PaginatedResponse[ForecastSummary]",
         "type": "object"
       },
+      "PaginatedResponse_RejectedForecastResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RejectedForecastResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "PaginatedResponse[RejectedForecastResponse]",
+        "type": "object"
+      },
       "PaginatedResponse_StationSummary_": {
         "properties": {
           "items": {
@@ -861,6 +911,162 @@
           "forecast"
         ],
         "title": "QcRulesResponse",
+        "type": "object"
+      },
+      "RejectedForecastResponse": {
+        "properties": {
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "qc_flags": {
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "enum": [
+              "qc_failed",
+              "qc_suspect",
+              "qc_passed",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "representation": {
+            "enum": [
+              "members",
+              "quantiles"
+            ],
+            "title": "Representation",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          },
+          "units": {
+            "title": "Units",
+            "type": "string"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "$ref": "#/components/schemas/RejectedForecastValuePoint"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
+          },
+          "withheld": {
+            "title": "Withheld",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "attempt_id",
+          "recorded_at",
+          "station_id",
+          "model_id",
+          "model_artifact_id",
+          "group_id",
+          "issued_at",
+          "parameter",
+          "representation",
+          "units",
+          "time_step_seconds",
+          "qc_status",
+          "qc_flags",
+          "values",
+          "withheld"
+        ],
+        "title": "RejectedForecastResponse",
+        "type": "object"
+      },
+      "RejectedForecastValuePoint": {
+        "properties": {
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "$ref": "#/components/schemas/NonFiniteValue"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "valid_time",
+          "value"
+        ],
+        "title": "RejectedForecastValuePoint",
         "type": "object"
       },
       "SkillRowResponse": {
@@ -1545,7 +1751,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "1.0"
+    "version": "1.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2208,6 +2414,165 @@
         "summary": "List Observations",
         "tags": [
           "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/rejected-forecasts": {
+      "get": {
+        "description": "Every QC-rejected member or group-station forecast for this station in the query window \u2014 never stored in `forecasts` (Plan 404 D1/D2). Admits a reviewer or admin service token, OR a named human with a current station `review` grant (403 for a consumer token). Where a tenant's publication gate (Plan 341) is active, a reviewer token's items are withheld: values and flag detail are null; admin and a granted human always see the full record. An out-of-scope or ungranted station is 404 for a reviewer/human, an unknown one 404 for a reviewer, admin or granted human, a malformed one 400.",
+        "operationId": "get_rejected_forecasts_api_v1_stations__station_id__rejected_forecasts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_RejectedForecastResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token, or a granted human, required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Rejected Forecasts",
+        "tags": [
+          "api-rejected-forecasts"
         ]
       }
     },

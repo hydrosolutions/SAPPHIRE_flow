@@ -41,6 +41,10 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.recap_gateway_polygon_store import (
         RecapGatewayPolygonStore,
     )
+    from sapphire_flow.store.rejected_forecast_store import (
+        PgRejectedForecastStore,
+        rejected_capture_transaction_factory,
+    )
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
@@ -72,6 +76,13 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "formula_store": PgFormulaStore(conn),
         "tenant_store": PgTenantStore(conn),
         "audit_log_store": PgAuditLogStore(conn),
+        # Plan 404 T1 — a dedicated, bounded connection (NEVER the shared
+        # AUTOCOMMIT connection above): the capture write is best-effort and
+        # must never hold or break the flow's shared connection (D5).
+        "rejected_forecast_store": PgRejectedForecastStore(
+            conn,
+            transaction_factory=rejected_capture_transaction_factory(conn.engine.url),
+        ),
     }
 
 

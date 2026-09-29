@@ -65,6 +65,7 @@ def get_stores(
     from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
     from sapphire_flow.store.pipeline_health_store import PgPipelineHealthStore
+    from sapphire_flow.store.rejected_forecast_store import PgRejectedForecastStore
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
@@ -95,4 +96,10 @@ def get_stores(
         # block's tenant the same way ingest does
         # (services/station_qc_overrides.py::resolve_configured_station_qc).
         "tenant_store": PgTenantStore(conn),
+        # Plan 404 T3 — read-only: the API never writes this store (its role
+        # has SELECT only); `transaction_factory=None` makes a write refuse
+        # loudly (ConfigurationError) rather than silently no-op.
+        "rejected_forecast_store": PgRejectedForecastStore(
+            conn, transaction_factory=None
+        ),
     }

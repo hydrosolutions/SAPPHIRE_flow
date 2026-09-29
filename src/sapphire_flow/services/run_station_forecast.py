@@ -49,6 +49,10 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
+from sapphire_flow.types.rejected_forecast import (
+    RejectedAssignmentPayload,
+    RejectedParameterPayload,
+)
 
 if TYPE_CHECKING:
     import polars as pl
@@ -116,6 +120,10 @@ class AssignmentSuccess:
 class AssignmentFailure:
     cause: AssignmentFailureCause
     detail: str
+    # Plan 404 T2 — set only for a QC_FAILED assignment: every parameter QC
+    # evaluated, each with its own verdict. A plain container the caller
+    # already holds — building it cannot raise (D1-D3).
+    rejected: RejectedAssignmentPayload | None = None
 
 
 AssignmentOutcome = AssignmentSuccess | AssignmentFailure
@@ -216,6 +224,35 @@ def _assert_consistent_member_set(
         )
         return f"inconsistent ensemble member sets across features: {detail}"
     return None
+
+
+def check_forecast_parameter(
+    ensemble: ForecastEnsemble,
+    param: str,
+    datum: float | None,
+    qc_checker: ForecastOutputQualityChecker,
+    qc_rules: ForecastQcRuleSet,
+    qc_overrides: list[StationForecastQcOverride],
+    baselines: list[ClimBaseline],
+) -> list[QcFlag]:
+    qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
+    skipped_rules = forecast_skipped_rules(param, datum)
+    if skipped_rules:
+        flags = qc_checker.check(
+            qc_ensemble,
+            qc_rules,
+            qc_overrides,
+            baselines,
+            skipped_rule_ids=skipped_rules,
+        )
+    else:
+        flags = qc_checker.check(qc_ensemble, qc_rules, qc_overrides, baselines)
+    return add_forecast_datum_details(
+        flags,
+        raw_ensemble=ensemble,
+        shifted_ensemble=qc_ensemble,
+        datum=datum,
+    )
 
 
 def _run_single_model(
@@ -564,40 +601,82 @@ def _run_single_model(
     ensembles = cast("dict[str, ForecastEnsemble]", ensembles)
     new_state = cast("bytes | None", new_state)
 
+    # Plan 404 T2 — QC runs on EVERY parameter before the verdict (it used to
+    # stop at the first QC_FAILED one). `rejected_parameters` carries every
+    # parameter's own verdict + flags, for the rejected-forecast record if
+    # this assignment ends up QC_FAILED; it is discarded (unused) on a
+    # passing assignment. Once a parameter has failed, an error anywhere in
+    # a REMAINING parameter's block (datum shift, skipped-rules lookup, QC,
+    # datum detail) is logged and that parameter is recorded QC_UNCHECKED —
+    # never turned into UNEXPECTED_EXCEPTION, never escaping this function.
+    # Before any failure, the same error still propagates exactly as today
+    # (to the loop-level UNEXPECTED_EXCEPTION backstop).
     all_flags: dict[str, list[QcFlag]] = {}
+    rejected_parameters: list[RejectedParameterPayload] = []
+    failed_params: list[str] = []
+    verdict_failed = False
     for param, ensemble in ensembles.items():
         datum = water_level_datum_masl if param == "water_level" else None
-        qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
-        skipped_rules = forecast_skipped_rules(param, datum)
-        if skipped_rules:
-            flags = qc_checker.check(
-                qc_ensemble,
-                qc_rules,
-                qc_overrides,
-                baselines,
-                skipped_rule_ids=skipped_rules,
-            )
+        if verdict_failed:
+            try:
+                flags = check_forecast_parameter(
+                    ensemble,
+                    param,
+                    datum,
+                    qc_checker,
+                    qc_rules,
+                    qc_overrides,
+                    baselines,
+                )
+            except Exception as exc:
+                log.error(
+                    "run_station_forecast.qc_parameter_unchecked",
+                    station_id=str(station_id),
+                    model_id=str(assignment.model_id),
+                    parameter=param,
+                    error=str(exc),
+                )
+                all_flags[param] = []
+                rejected_parameters.append(
+                    RejectedParameterPayload(
+                        ensemble=ensemble, qc_status=QcStatus.QC_UNCHECKED, qc_flags=()
+                    )
+                )
+                continue
         else:
-            flags = qc_checker.check(qc_ensemble, qc_rules, qc_overrides, baselines)
-        flags = add_forecast_datum_details(
-            flags,
-            raw_ensemble=ensemble,
-            shifted_ensemble=qc_ensemble,
-            datum=datum,
-        )
+            flags = check_forecast_parameter(
+                ensemble, param, datum, qc_checker, qc_rules, qc_overrides, baselines
+            )
+
         all_flags[param] = flags
         worst = worst_qc_status(flags)
+        rejected_parameters.append(
+            RejectedParameterPayload(
+                ensemble=ensemble, qc_status=worst, qc_flags=tuple(flags)
+            )
+        )
         if worst == QcStatus.QC_FAILED:
-            log.warning(
-                "run_station_forecast.qc_failed",
-                station_id=str(station_id),
-                model_id=str(assignment.model_id),
-                parameter=param,
-            )
-            return AssignmentFailure(
-                cause=AssignmentFailureCause.QC_FAILED,
-                detail=f"QC failed for parameter {param}",
-            )
+            verdict_failed = True
+            failed_params.append(param)
+
+    if verdict_failed:
+        log.warning(
+            "run_station_forecast.qc_failed",
+            station_id=str(station_id),
+            model_id=str(assignment.model_id),
+            parameters=failed_params,
+        )
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.QC_FAILED,
+            detail=f"QC failed for parameter(s): {', '.join(failed_params)}",
+            rejected=RejectedAssignmentPayload(
+                station_id=station_id,
+                model_id=assignment.model_id,
+                model_artifact_id=artifact_id,
+                issued_at=context.inputs.issue_time,
+                parameters=tuple(rejected_parameters),
+            ),
+        )
 
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
@@ -885,6 +964,17 @@ def run_all_station_forecasts_per_track(
     )
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PrimaryForecastOutcome:
+    """Plan 404 T2 — the PRIMARY-mode wrapper's return: the selected model's
+    result (if any) alongside every assignment that ran, so a rejected one's
+    `.rejected` payload is no longer discarded (the pre-Plan-404 return was
+    `StationForecastResult | None`, dropping `failed_models` entirely)."""
+
+    result: StationForecastResult | None
+    failed_models: dict[ModelId, AssignmentFailure]
+
+
 def run_station_forecast(
     station_id: StationId,
     inputs: StationModelInputs,
@@ -904,7 +994,7 @@ def run_station_forecast(
     rng: random.Random,
     model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
-) -> StationForecastResult | None:
+) -> PrimaryForecastOutcome:
     multi = run_all_station_forecasts(
         station_id=station_id,
         inputs=inputs,
@@ -929,5 +1019,8 @@ def run_station_forecast(
         log.warning(
             "run_station_forecast.all_models_failed", station_id=str(station_id)
         )
-        return None
-    return multi.results[multi.primary_model_id]
+        return PrimaryForecastOutcome(result=None, failed_models=multi.failed_models)
+    return PrimaryForecastOutcome(
+        result=multi.results[multi.primary_model_id],
+        failed_models=multi.failed_models,
+    )

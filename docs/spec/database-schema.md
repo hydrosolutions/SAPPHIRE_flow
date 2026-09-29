@@ -37,6 +37,26 @@ only behind healthy global backup state; an overdue proof blocks new publish
 writes and creates a CRITICAL operations-health record. All CHWRR publication
 API paths and activation remain later Plan 341 tasks.
 
+### Rejected forecasts (migration 0065, Plan 404 T1)
+
+`rejected_forecasts` records a QC-rejected member or group-station forecast
+outside `forecasts` (D1/D2) — a `QC_FAILED` assignment is never stored as a
+forecast. One row per rejected parameter, keyed by
+`(attempt_id, station_id, model_id, group_id, parameter)` in practice
+(`attempt_id` distinguishes a Plan 327 resume or Plan 328 retry of the same
+cycle); `group_id` is `NULL` for a member (station) rejection. `values` is
+JSONB, keyed by member id or quantile level, each an array of
+`[valid_time, value]` pairs with the evidence non-finite encoding
+(`services/forecast_evidence.py`); `qc_status` is the parameter's own
+verdict (`qc_failed`, `qc_suspect`, `qc_passed`, or `qc_unchecked` when its
+QC/datum handling errored after an earlier parameter in the same assignment
+had already failed). Append-only: role-independent triggers reject UPDATE,
+DELETE and TRUNCATE even for the table-owning role, mirroring migration
+0057's `forecast_evidence` guard. `sapphire_worker` gets INSERT only;
+`sapphire_api` reads it via its existing blanket SELECT. Not in the ER
+diagrams below (append-only/evidence-style tables are narrated here rather
+than diagrammed, matching `forecast_evidence`'s own precedent).
+
 ---
 
 ## v0 Schema (27 tables)

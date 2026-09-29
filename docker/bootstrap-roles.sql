@@ -216,6 +216,11 @@ GRANT INSERT ON audit_log TO sapphire_worker;
 -- explicit line (conventions.md § Service users). INSERT-only, mirroring
 -- model_artifact_basin_versions: a provenance row is never UPDATEd.
 GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
+-- Plan 404 T1: the append-only rejected-forecast record. INSERT-only — the
+-- role-independent append-only trigger (migration 0065) already refuses
+-- UPDATE/DELETE/TRUNCATE even for the table owner; sapphire_api's blanket
+-- SELECT above covers T3's read route, and never gets a write grant here.
+GRANT INSERT ON rejected_forecasts TO sapphire_worker;
 
 -- sapphire_worker must NOT be able to read the auth tables. The blanket
 -- `GRANT SELECT ON ALL TABLES ...` above intentionally includes
