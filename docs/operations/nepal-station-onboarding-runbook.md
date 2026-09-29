@@ -255,12 +255,27 @@ has a different code/network, stop and correct the station import or package
 through its owner. A held basin is a visible readiness outcome; do not work
 around it by creating a duplicate station.
 
-Once Plan 143 and its dependencies are implemented and approved, run the
-existing importer against the reviewed package and the intended Nepal
-database, following the command and report guidance in the basin/static
-importer runbook. Review the full report. Confirm each intended basin is
-`imported` or already current, and resolve every `onboarding_held` reason
-before continuing. Retain the package ID, checksums, command context, report,
+Once Plan 143 and its dependencies are implemented and approved, use **Plan
+143 T2's Nepal-specific operator command**, whose final invocation must be
+documented here by the implementation. It must enforce CHWRR write authority
+and atomically import all six basin/polygon mappings and reanalysis source
+bindings. The generic basin importer is not the writing entry point for this
+batch; use its runbook only for package validation guidance.
+
+Before committing the bindings, have the staging orchestrator scope the existing
+`ingest-recap-reanalysis` snow deployment's `station_ids` to its explicit prior
+snow-station list, excluding the six new gauges (`[]` for none, not `None`).
+Ensure no queued or running unscoped snow run overlaps the import, retain service
+for existing snow stations, and verify the effective parameters again after
+deployment re-registration. Active `era5_land` bindings otherwise enroll these
+onboarding stations in scheduled snow ingestion too. A previous missing-data
+response does not guarantee that future runs cannot write data. Hold the import
+if this scope check is incomplete; a rollback dry run does not replace it.
+
+Run the Nepal command's rollback dry run and inspect its full report before the
+writing invocation. Confirm all six basins and both kinds of bindings are
+imported or already current; any rejection or held basin must leave the whole
+batch uncommitted. Retain the package ID, checksums, command context, report,
 and database environment in the onboarding record. Do not rerun a modified
 package with an already-used package ID; issue a new package ID for corrected
 content.

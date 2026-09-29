@@ -118,6 +118,18 @@ This activates a source binding for explicit history retrieval, not the station
 lifecycle. Preserve any existing forecast binding; creating an IFS binding and
 activating scheduled forecasts are outside this plan.
 
+**Existing snow schedule:** `ingest-recap-reanalysis` also selects active
+`era5_land` reanalysis bindings, including onboarding stations. Before T2 commits
+the bindings, the staging orchestrator must set that deployment's existing
+`station_ids` parameter to the explicit previously intended snow-station list,
+excluding these six gauges (`[]` if none; never `None`, which selects all).
+No queued or running unscoped snow run may overlap the binding import. Preserve
+snow service for the previously intended stations and verify the effective
+deployment parameters after any deployment re-registration. This is an operator
+precondition using the existing flow parameter, not a new snow implementation.
+If the scope cannot be established, hold T2 before writes. A past
+`source_data_missing` response is not protection: data may become available.
+
 The user owns all Gateway-side shapefile registration and subscription actions.
 This plan consumes the existing registration and adds no Gateway admin API,
 upload, or subscription automation.
@@ -243,6 +255,8 @@ and existing station-store weather-source writer in one caller-owned transaction
 Require explicit `chwrr` authority and the exact six-station scope. Offer a
 dry run that exercises writes/read-back and rolls back. Treat a rejected or held
 package report as a failed six-station import; do not commit a partial set.
+Require the orchestrator's D1 snow-scope check before the writing invocation;
+the rollback dry run alone cannot establish what a concurrent scheduled run sees.
 **Out:** edits to Plan 268, duplicate station creation, Gateway-side changes.
 
 **Verification:** focused importer and resolver tests assert the six station
@@ -253,6 +267,11 @@ station, missing scope and conflicting bindings before mutation; an injected
 failure rolls back the package and source writes together. A repeated import is
 idempotent and preserves other source bindings. The generic CAMELS deployment is not
 run. Run `uv run pytest tests/integration/services/test_basin_importer.py tests/integration/store/test_basin_importer_persistence.py tests/integration/store/test_basin_importer_idempotency.py`.
+Add a regression in `tests/unit/flows/test_ingest_recap_reanalysis.py` proving
+the explicit prior station list excludes the six new bindings even when their
+snow data is available, while preserving selection of existing snow stations;
+also cover the empty list. The operator records the effective deployment
+parameter and absence of overlapping unscoped runs before the import.
 
 **Pre-change:** the existing package core writes a polygon mapping but no
 weather-source binding. A synthetic package imported through that core leaves
