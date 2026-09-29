@@ -30,6 +30,14 @@ exists on today's rule set (a 10-minute datum-less water-level group, § T4 Pre-
 the hourly one, which becomes a T2 verification. All tasks stay on one branch and one PR, so T5's
 "T2 and T4 deployed together" still holds.
 
+📏 **T1 measured 2026-09-29** (§ T1 result). The five gauges have 26.9 days of hourly history, so every
+derived threshold is provisional. Two of the eleven D1 values are derived (water_temperature `max_rate`
+2.358, discharge `spike` `tolerance` 0.750); the rest are copied 600 s values. 🔴 **The measured
+per-check share is 57.7%, not the ~95% D3 rested on** — the newest hourly reading arrives 10-25 minutes
+late, so about 42% of checks still infer no cadence. Owner attention: D3's "accept a ~5% leftover" was
+decided on the lower estimate; the leftover is Plan 400's job and is now most runs in the first half
+hour of each hour.
+
 🔄 **Reconciled with `main` on 2026-09-29 (after PRs #315, #324, #328, #332).** T4 is built and
 re-applied on top of that `main` — branch `feat/plan-323-t4-rebased`, reviewed READY by an independent
 Claude and by Codex on the rebased code; T1, T2, T3 and T5 are not built. What changed under this plan,
@@ -377,9 +385,106 @@ to see them. ⛔ Any claim about *why* these five are hourly.
 the recorded query and get the same table** — otherwise the thresholds rest on a measurement nobody
 can reproduce.
 
-T1 needs the live store; it cannot be done from the repo. (Blocked on 2026-09-24 while the staging
-host was off the network; reachable again 2026-09-25; off the network again from 2026-09-26 for
-about two days — § Status.)
+T1 needed the live store and was run on 2026-09-29 (the staging host was reachable again); its result follows.
+
+#### T1 result — measured on the staging host, 2026-09-29 (main `11b9019a`, mini at 0.1.1027; read-only)
+
+**Population.** `source = measured` rows only, non-null values, five stations. Span per series is
+**26.9 days for every series — every derived number below is PROVISIONAL** (drought; § D1 hazards).
+`manual_import` (CAMELS daily, not used): 2251 and 2252 — 14,061 rows per parameter, 1981-01-01 →
+2019-07-01; 2319 — 14,610, → 2020-12-31; 2474 — 14,329, → 2020-12-31; 2623 has none. Four stations
+deliver discharge and water_level; 2623 delivers water_temperature only (the plan's "eleven rows" cover
+all three parameters, so nothing changes). Readings arrive on a 3600 s grid with occasional 7200 s
+gaps (e.g. 2251: 537 hourly pairs, 30 two-hour gaps, 8 of 3300 s).
+
+**Value distribution** (for the record — `range_check` is copied). No station has a
+`water_level_datum_masl` (all five NULL). Stored water_level is stage-like for 2251 (0.07–0.12) and
+2252 (−0.002–0.019) but **metres above sea level for 2319 (≈1508.3–1508.7) and 2474 (≈745.3–745.6)**, so
+no datum-relative range can be judged for any of them — the datum skip removes `range_check` and
+`gross_outlier` there (Plan 403's subject).
+
+| series | n | min | p1 | p50 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|---|
+| 2251 discharge | 591 | 1.719 | 1.719 | 2.987 | 5.529 | 6.759 | 6.839 |
+| 2252 discharge | 625 | 0.005 | 0.005 | 0.038 | 0.117 | 0.129 | 0.135 |
+| 2319 discharge | 629 | 0.310 | 0.313 | 0.399 | 1.606 | 1.686 | 1.699 |
+| 2474 discharge | 635 | 2.996 | 3.017 | 3.283 | 4.594 | 5.350 | 5.350 |
+| 2251 water_level | 591 | 0.068 | 0.068 | 0.085 | 0.109 | 0.118 | 0.119 |
+| 2252 water_level | 625 | −0.002 | −0.002 | 0.007 | 0.017 | 0.018 | 0.019 |
+| 2319 water_level | 629 | 1508.304 | 1508.305 | 1508.336 | 1508.689 | 1508.710 | 1508.713 |
+| 2474 water_level | 635 | 745.276 | 745.279 | 745.317 | 745.486 | 745.573 | 745.573 |
+| 2623 water_temperature | 609 | 3.451 | 3.639 | 5.321 | 8.146 | 8.298 | 8.358 |
+
+**Change statistics, in the form each rule computes it** (pooled across the parameter's series; p99.9
+and max per series are in the recorded output — the maximum is reported alongside, § D1 hazards):
+
+| rule / parameter | pairs or triples | p50 | p90 | p99 | p99.9 | max | 2 × p99.9 | 600 s value | **D1 hourly value** |
+|---|---|---|---|---|---|---|---|---|---|
+| `rate_of_change` discharge (abs) | 2371 | 0.003 | 0.044 | 0.147 | 0.411 | 0.812 | 0.822 | 50 | **50** (copied) |
+| `rate_of_change` water_level (abs) | 2371 | 0.001 | 0.004 | 0.022 | 0.076 | 0.095 | 0.152 | 0.5 | **0.5** (copied) |
+| `rate_of_change` water_temperature (abs) | 570 | 0.224 | 0.554 | 0.888 | 1.179 | 1.196 | 2.358 | 2.0 | **2.358** (derived) |
+| `spike` water_level `max_delta` | 2295 | 0.000 | 0.002 | 0.011 | 0.041 | 0.053 | 0.082 | 1.0 | **1.0** (copied) |
+| `spike` discharge `tolerance` (relative) | 2295 | 0.000 | 0.009 | 0.103 | 0.375 | 1.688 | 0.750 | 0.1 | **0.750** (derived) |
+
+⚠️ Discharge's relative spike is dominated by 2252, whose flow is 0.005–0.135 m³/s (relative change on
+a near-zero denominator: p99.9 0.916, max 1.688); the other three stay under 0.20. The derived 0.750
+therefore comes from one very-low-flow gauge. The two derived values (water_temperature `max_rate`
+2.358 and discharge `tolerance` 0.750) are the only ones that exceed their 600 s row; T2 writes them at
+no less than these values, marks them provisional, and rounding is T2's call.
+
+**Flat runs** (hours, consecutive hourly readings within the 600 s rule's `tolerance` — 0.001, and 0.01
+for water_temperature; recorded for the later `frozen_sensor` plan, D2 adds no row): 2251 discharge
+p50 3, p99 13, longest 14; 2251 water_level p50 3, p99 13.7, longest 20; 2252 discharge p50 6, p99 34,
+longest 45; 2252 water_level p50 9.5, p99 110, longest **117**; 2319 discharge longest 9, water_level
+24; 2474 discharge 4, water_level 8; 2623 water_temperature 2. Long flat stretches at 2252 are
+ordinary at that flow and resolution.
+
+**Datum coverage, fleet-wide (D4).** Water-level groups with measured readings in the last 2 days:
+**142; 142 of them have no datum** — every one, including four of the five. T4's extra `QC_UNCHECKED`
+load is therefore not confined to these stations: any group whose rules cannot judge a reading at the
+edge of a window is affected.
+
+🔴 **Pre-deploy per-check share — the plan's premise does not hold.** Zero-rule records
+(`observation_qc_unchecked`), 2026-09-24 11:25 → 2026-09-29 12:55 UTC, the five stations' entries:
+**5,847 infer exactly 3600 s and 4,268 infer `None` (`no_cadence_inferable`)**; 14 infer 3300 s and 12
+infer 3900 s. **57.7% of entries infer 3600 s, not the ~95.3% the replay in § (10) estimated**, and
+about 42% remain with no rule. The cause is arrival time, not missing data: by minute past the hour, the
+`None` entries are 1,604 (:00-:09), 1,486 (:10-:19), 759 (:20-:29), then 137/140/142 for the rest of the
+hour, while 3600 s entries are 0, 153, 1,097 and then ~1,530 per bucket — the newest hourly reading is
+published about 10-25 minutes late, so the 2-hour window holds one reading until then. ⇒ Consequences for the
+owner, not decided here: (1) the D3 acceptance of "a ~5% leftover" (owner, 2026-09-25) rested on this
+estimate; the measured leftover is ~42% of checks; (2) each reading is still checked once the next
+reading arrives (Plan 317's re-check), so the per-reading gate in T5 is a different, better number than
+this per-check one; (3) the watchdog stays red for these stations until Plan 400 lands — it alarms on
+any zero-rule record in the last 6 h, and the leftover is now most runs in the first half hour of
+every hour. Plan 400's look-back is what closes it.
+
+**Recorded queries, so the table can be re-run.** Extraction (mini, `docker compose exec -T postgres
+psql -U sapphire -d sapphire`):
+```sql
+\copy (select s.code, o.parameter, o.source, o.timestamp, o.value, o.qc_status
+       from observations o join stations s on s.id = o.station_id
+       where s.code in ('2251','2252','2319','2474','2623')
+         and o.source in ('measured','manual_import') order by 1,2,3,4) to stdout with csv header
+-- share and arrival time (zero-rule entries for the five stations)
+select (extract(minute from r.checked_at)::int/10)*10 as minute_bucket,
+       count(*) filter (where g->>'inferred_time_step_seconds'='3600.0') as step_3600,
+       count(*) filter (where g->>'reason'='no_cadence_inferable') as none_inferable
+from pipeline_health r cross join lateral jsonb_array_elements(r.detail->'zero_rule_groups') g
+join stations s on s.id::text = g->>'station_id' and s.code in ('2251','2252','2319','2474','2623')
+where r.check_type='observation_qc_unchecked' group by 1 order by 1;
+-- datum coverage
+select count(*) filter (where st.water_level_datum_masl is null) as no_datum, count(*) as total
+from (select distinct o.station_id from observations o where o.parameter='water_level'
+      and o.source='measured' and o.timestamp > now() - interval '2 days') w
+join stations st on st.id = w.station_id;
+```
+Analysis (Python, on the extracted CSV): keep `source='measured'` with non-null values, sort by
+station, parameter, timestamp; `rate_of_change` = `|x − prev|` over consecutive pairs whose gap is
+exactly 3600 s; `spike` = `min(|x − prev|, |x − next|)` over triples whose two gaps are both exactly
+3600 s (water_level absolute; discharge divided by `|prev|`, `prev = 0` excluded); quantiles by
+`numpy.quantile` on the pooled arrays; flat run = consecutive 3600 s pairs with `|x − prev| ≤ tolerance`,
+reported as readings in the run. The 600 s values are `config.toml`'s `time_step_seconds = 600` rows.
 
 ### T2 — Add the hourly rules (D1, D2)
 
