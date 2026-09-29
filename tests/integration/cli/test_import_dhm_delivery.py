@@ -10,7 +10,6 @@ from sapphire_flow.adapters.dhm_files import parse_daily_flow, parse_rating_tabl
 from sapphire_flow.adapters.nepal_local_day import nepal_day_start
 from sapphire_flow.cli.import_dhm_delivery import (
     DELIVERY_ID,
-    bootstrap_tenant,
     load_station_metadata,
     register_stations,
     replace_delivery,
@@ -40,10 +39,15 @@ from tests.conftest import make_station_config
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/dhm"
 _NOW = ensure_utc(datetime(2026, 9, 28, tzinfo=UTC))
-_ADMIN = DeploymentIdentityConfig(writable_tenants=frozenset(), global_admin=True)
 _CHWRR = DeploymentIdentityConfig(
     writable_tenants=frozenset({"chwrr"}), global_admin=False
 )
+
+
+def _ensure_chwrr(tenants: PgTenantStore) -> TenantId:
+    return tenants.ensure_tenant(
+        tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
+    ).id
 
 
 class _FailingObservationStore(PgObservationStore):
@@ -109,7 +113,7 @@ def test_failed_replacement_rolls_back_curves_and_observations(
     station_store = PgStationStore(db_connection)
     curve_store = PgRatingCurveStore(db_connection)
     obs_store = PgObservationStore(db_connection)
-    bootstrap_tenant(tenant_store, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenant_store)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenant_store,
@@ -178,7 +182,7 @@ def test_post_preflight_collision_rolls_back_replacement(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenants,
@@ -242,7 +246,7 @@ def test_forecast_reference_blocks_replacement_without_partial_delete(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenants,
@@ -326,7 +330,7 @@ def test_qc_rolls_back_partial_updates_then_persists_versions(
     stations = PgStationStore(db_connection)
     curves = PgRatingCurveStore(db_connection)
     observations = PgObservationStore(db_connection)
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenants,
@@ -456,9 +460,7 @@ def test_replacement_and_qc_tenant_lock_serializes(db_engine: sa.Engine) -> None
     with db_engine.begin() as setup:
         tenant_store = PgTenantStore(setup)
         station_store = PgStationStore(setup)
-        tenant_id = bootstrap_tenant(
-            tenant_store, _ADMIN, tenant_code="chwrr", now=_NOW
-        )
+        tenant_id = _ensure_chwrr(tenant_store)
         register_stations(
             tenant_store,
             station_store,
@@ -553,9 +555,7 @@ def _audit_count(conn: sa.Connection) -> int:
 
 
 def _seed_chwrr(conn: sa.Connection) -> None:
-    PgTenantStore(conn).ensure_tenant(
-        tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
-    )
+    _ensure_chwrr(PgTenantStore(conn))
 
 
 def test_failed_audit_write_rolls_back_the_station_registration(

@@ -1,16 +1,15 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from sapphire_flow.adapters.dhm_files import parse_daily_flow, parse_rating_tables
 from sapphire_flow.cli.import_dhm_delivery import (
     DELIVERY_ID,
-    _require_admin_bootstrap_identity,
     _require_chwrr_identity,
     _safe_failure_reason,
-    bootstrap_tenant,
     load_station_metadata,
     register_stations,
     replace_delivery,
@@ -38,12 +37,10 @@ CHWRR = DeploymentIdentityConfig(
 )
 
 
-def test_tenant_bootstrap_is_idempotent() -> None:
-    tenants = FakeTenantStore()
-    first = bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
-    second = bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
-    assert first == second
-    assert tenants.fetch_tenant_by_code("chwrr").name == "CHWRR Nepal"
+def _ensure_chwrr(tenants: FakeTenantStore) -> TenantId:
+    return tenants.ensure_tenant(
+        tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
+    ).id
 
 
 def test_unexpected_cli_failure_redacts_database_parameters() -> None:
@@ -51,20 +48,10 @@ def test_unexpected_cli_failure_redacts_database_parameters() -> None:
     assert reason == "RuntimeError; details withheld to protect delivered values"
 
 
-def test_tenant_bootstrap_refuses_swiss_identity() -> None:
-    tenants = FakeTenantStore()
-    swiss_identity = DeploymentIdentityConfig(
-        writable_tenants=frozenset({"sapphire"}), global_admin=False
-    )
-    with pytest.raises(ConfigurationError, match="global-admin"):
-        bootstrap_tenant(tenants, swiss_identity, tenant_code="chwrr", now=NOW)
-    assert tenants.fetch_tenant_by_code("chwrr") is None
-
-
 def test_station_registration_requires_chwrr_write_authority() -> None:
     tenants = FakeTenantStore()
     stations = FakeStationStore()
-    bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+    _ensure_chwrr(tenants)
     swiss_identity = DeploymentIdentityConfig(
         writable_tenants=frozenset({"sapphire"}), global_admin=False
     )
@@ -83,7 +70,7 @@ def test_station_registration_requires_chwrr_write_authority() -> None:
 def test_station_registration_rejects_global_admin_routine_write() -> None:
     tenants = FakeTenantStore()
     stations = FakeStationStore()
-    bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+    _ensure_chwrr(tenants)
     with pytest.raises(ConfigurationError, match="CHWRR-scoped write authority"):
         register_stations(
             tenants,
@@ -99,7 +86,7 @@ def test_station_registration_rejects_global_admin_routine_write() -> None:
 def test_station_registration_reuses_six_rows_without_duplicates() -> None:
     tenants = FakeTenantStore()
     stations = FakeStationStore()
-    tenant_id = bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+    tenant_id = _ensure_chwrr(tenants)
     identity = DeploymentIdentityConfig(
         writable_tenants=frozenset({"chwrr"}), global_admin=False
     )
@@ -138,7 +125,7 @@ def test_station_registration_reuses_six_rows_without_duplicates() -> None:
 def test_cross_tenant_same_code_is_refused_before_any_insert() -> None:
     tenants = FakeTenantStore()
     stations = FakeStationStore()
-    bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+    _ensure_chwrr(tenants)
     identity = DeploymentIdentityConfig(
         writable_tenants=frozenset({"chwrr"}), global_admin=False
     )
@@ -184,23 +171,6 @@ def test_chwrr_overlay_may_only_change_write_identity(
         _require_chwrr_identity(config)
 
 
-def test_bootstrap_requires_out_of_checkout_admin_overlay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    config = checkout / "config.toml"
-    config.write_text('[deployment]\nwritable_tenants = ["sapphire"]\n')
-    overlay = tmp_path / "admin.toml"
-    overlay.write_text("[deployment]\nglobal_admin = true\nwritable_tenants = []\n")
-    monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay))
-    _require_admin_bootstrap_identity(config)
-    monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(checkout / "admin.toml"))
-    (checkout / "admin.toml").write_text(overlay.read_text())
-    with pytest.raises(ConfigurationError, match="outside the checkout"):
-        _require_admin_bootstrap_identity(config)
-
-
 def _files_for(metadata: object) -> dict[str, tuple[object, object]]:
     daily = parse_daily_flow(
         (METADATA_PATH.parent / "synthetic_daily_flow.txt").read_text()
@@ -221,7 +191,7 @@ class TestImportAuditOnSuccess:
     def _seeded(self) -> tuple[FakeTenantStore, FakeStationStore, TenantId]:
         tenants = FakeTenantStore()
         stations = FakeStationStore()
-        tenant_id = bootstrap_tenant(tenants, ADMIN, tenant_code="chwrr", now=NOW)
+        tenant_id = _ensure_chwrr(tenants)
         return tenants, stations, tenant_id
 
     def test_stations_writes_one_system_row_with_counts_only(self) -> None:
@@ -341,3 +311,39 @@ class TestImportAuditOnSuccess:
                 now=NOW,
             )
         assert audit.entries == []
+
+
+class TestTenantCreationIsNotAnOperatorCommand:
+    def test_the_bootstrap_tenant_subcommand_is_not_offered(self) -> None:
+        from sapphire_flow.cli.import_dhm_delivery import _parser
+
+        with pytest.raises(SystemExit) as exit_info:
+            _parser().parse_args(["bootstrap-tenant", "--tenant", "chwrr"])
+        assert exit_info.value.code == 2
+
+    def test_main_refuses_the_retired_subcommand(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.cli.import_dhm_delivery import main
+
+        monkeypatch.setenv("SAPPHIRE_CONFIG", "/nonexistent/config.toml")
+        with pytest.raises(SystemExit) as exit_info:
+            main(["bootstrap-tenant", "--tenant", "chwrr"])
+        assert exit_info.value.code == 2
+
+    def test_the_tenant_creating_code_paths_are_gone(self) -> None:
+        from sapphire_flow.cli import import_dhm_delivery
+
+        assert not hasattr(import_dhm_delivery, "bootstrap_tenant")
+        assert not hasattr(import_dhm_delivery, "_require_admin_bootstrap_identity")
+
+    def test_a_missing_tenant_error_says_it_is_created_at_deploy_time(self) -> None:
+        with pytest.raises(ConfigurationError, match="deploy time"):
+            register_stations(
+                FakeTenantStore(),
+                FakeStationStore(),
+                CHWRR,
+                load_station_metadata(METADATA_PATH),
+                audit_log_store=FakeAuditLogStore(),
+                now=NOW,
+            )

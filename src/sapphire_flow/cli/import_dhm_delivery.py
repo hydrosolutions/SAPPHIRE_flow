@@ -71,7 +71,6 @@ from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId, Ten
 from sapphire_flow.types.observation import Observation, RawObservation
 from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.station import StationConfig
-from sapphire_flow.types.tenant import Tenant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,6 +91,10 @@ DELIVERY_TENANT_NAME = "CHWRR Nepal"
 _STATION_CODES = frozenset({"447", "450", "604.5", "647", "670", "684"})
 
 ImportCommand = Literal["stations", "replace", "qc"]
+_TENANT_MISSING = (
+    "CHWRR tenant does not exist: it is created at deploy time from the host's "
+    "[tenants.chwrr] declaration (Plan 513), never by an import command"
+)
 
 
 def _audit_import(
@@ -187,23 +190,6 @@ def _one_overlay(config_path: Path) -> Path:
     return path
 
 
-def _require_admin_bootstrap_identity(config_path: Path) -> DeploymentIdentityConfig:
-    overlay = _one_overlay(config_path)
-    if overlay.is_relative_to(config_path.resolve().parent):
-        raise ConfigurationError(
-            "DHM admin bootstrap overlay must be outside the checkout"
-        )
-    raw = tomllib.loads(overlay.read_text())
-    if raw != {"deployment": {"global_admin": True, "writable_tenants": []}}:
-        raise ConfigurationError(
-            "DHM admin bootstrap needs a dedicated global-admin overlay"
-        )
-    identity = load_deployment_identity_config(config_path)
-    if not identity.global_admin or identity.writable_tenants:
-        raise ConfigurationError("DHM tenant bootstrap requires global-admin identity")
-    return identity
-
-
 def _require_chwrr_identity(config_path: Path) -> DeploymentIdentityConfig:
     overlay = _one_overlay(config_path)
     expected = config_path.resolve().parent / "config/overlays/chwrr-import.toml"
@@ -223,34 +209,6 @@ def _assert_chwrr_scoped(identity: DeploymentIdentityConfig) -> None:
         {DELIVERY_TENANT_CODE}
     ):
         raise ConfigurationError("DHM import requires CHWRR-scoped write authority")
-
-
-def bootstrap_tenant(
-    tenant_store: TenantStore,
-    identity: DeploymentIdentityConfig,
-    *,
-    tenant_code: str,
-    now: UtcDatetime,
-) -> TenantId:
-    if not identity.global_admin or identity.writable_tenants:
-        raise ConfigurationError("DHM tenant bootstrap requires global-admin identity")
-    if tenant_code != DELIVERY_TENANT_CODE:
-        raise ConfigurationError("DHM tenant code must be chwrr")
-    existing = tenant_store.fetch_tenant_by_code(tenant_code)
-    if existing is not None:
-        if existing.name != DELIVERY_TENANT_NAME:
-            raise ConfigurationError(
-                "existing CHWRR tenant has a different display name"
-            )
-        return existing.id
-    tenant = Tenant(
-        id=TenantId(uuid4()),
-        code=DELIVERY_TENANT_CODE,
-        name=DELIVERY_TENANT_NAME,
-        created_at=now,
-    )
-    tenant_store.store_tenant(tenant)
-    return tenant.id
 
 
 def _station_matches(existing: StationConfig, expected: StationConfig) -> bool:
@@ -282,7 +240,7 @@ def register_stations(
     _assert_chwrr_scoped(identity)
     tenant = tenant_store.fetch_tenant_by_code(DELIVERY_TENANT_CODE)
     if tenant is None:
-        raise ConfigurationError("CHWRR tenant must be bootstrapped first")
+        raise ConfigurationError(_TENANT_MISSING)
     principal = resolve_run_principal(
         tenant_store, identity, tenant_code=DELIVERY_TENANT_CODE
     )
@@ -453,7 +411,7 @@ def replace_delivery(
     _assert_chwrr_scoped(identity)
     tenant = tenant_store.fetch_tenant_by_code(DELIVERY_TENANT_CODE)
     if tenant is None:
-        raise ConfigurationError("CHWRR tenant must be bootstrapped first")
+        raise ConfigurationError(_TENANT_MISSING)
     principal = resolve_run_principal(
         tenant_store, identity, tenant_code=DELIVERY_TENANT_CODE
     )
@@ -633,7 +591,7 @@ def run_delivery_qc(
     _assert_chwrr_scoped(identity)
     tenant = tenant_store.fetch_tenant_by_code(DELIVERY_TENANT_CODE)
     if tenant is None:
-        raise ConfigurationError("CHWRR tenant must be bootstrapped first")
+        raise ConfigurationError(_TENANT_MISSING)
     principal = resolve_run_principal(
         tenant_store, identity, tenant_code=DELIVERY_TENANT_CODE
     )
@@ -751,7 +709,7 @@ def run_delivery_qc(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Import restricted DHM history")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("bootstrap-tenant", "stations", "replace", "qc"):
+    for name in ("stations", "replace", "qc"):
         command = commands.add_parser(name)
         command.add_argument("--tenant", required=True)
         command.add_argument("--dry-run", action="store_true")
@@ -771,10 +729,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(config_raw)
     if args.tenant != DELIVERY_TENANT_CODE:
         raise ConfigurationError("DHM import tenant must be chwrr")
-    if args.command == "bootstrap-tenant":
-        identity = _require_admin_bootstrap_identity(config_path)
-    else:
-        identity = _require_chwrr_identity(config_path)
+    identity = _require_chwrr_identity(config_path)
     metadata_path = config_path.resolve().parent / "tests/fixtures/dhm/stations.toml"
     metadata = load_station_metadata(metadata_path)
     files = None
@@ -792,12 +747,7 @@ def main(argv: list[str] | None = None) -> int:
                 tenant_store = PgTenantStore(conn)
                 audit_log_store = PgAuditLogStore(conn)
                 now = ensure_utc(datetime.now(UTC))
-                if args.command == "bootstrap-tenant":
-                    tenant_id = bootstrap_tenant(
-                        tenant_store, identity, tenant_code=args.tenant, now=now
-                    )
-                    log.info("dhm_import.tenant_bootstrap", tenant_id=str(tenant_id))
-                elif args.command == "stations":
+                if args.command == "stations":
                     created = register_stations(
                         tenant_store,
                         PgStationStore(conn),

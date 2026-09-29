@@ -11,7 +11,6 @@ from sapphire_flow.cli.import_dhm_delivery import (
     DELIVERY_ID,
     _local_day_segments,
     _resolve_delivery_qc,
-    bootstrap_tenant,
     load_station_metadata,
     register_stations,
     replace_delivery,
@@ -33,10 +32,15 @@ from tests.fakes.fake_stores import (
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/dhm"
 _NOW = ensure_utc(datetime(2026, 9, 28, tzinfo=UTC))
-_ADMIN = DeploymentIdentityConfig(writable_tenants=frozenset(), global_admin=True)
 _CHWRR = DeploymentIdentityConfig(
     writable_tenants=frozenset({"chwrr"}), global_admin=False
 )
+
+
+def _ensure_chwrr(tenants: FakeTenantStore) -> TenantId:
+    return tenants.ensure_tenant(
+        tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
+    ).id
 
 
 def test_boundary_replacement_removes_only_delivery_rows() -> None:
@@ -44,7 +48,7 @@ def test_boundary_replacement_removes_only_delivery_rows() -> None:
     stations = FakeStationStore()
     observations = FakeObservationStore()
     ratings = FakeRatingCurveStore()
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenants,
@@ -128,7 +132,7 @@ def test_delivery_qc_checks_only_tagged_rows() -> None:
     stations = FakeStationStore()
     observations = FakeObservationStore()
     ratings = FakeRatingCurveStore()
-    bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    _ensure_chwrr(tenants)
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     register_stations(
         tenants,
@@ -265,7 +269,7 @@ def test_qc_refuses_config_without_dhm_rule_rows(tmp_path: Path) -> None:
 def test_qc_refuses_unresolved_station_ceiling() -> None:
     tenants = FakeTenantStore()
     stations = FakeStationStore()
-    tenant_id = bootstrap_tenant(tenants, _ADMIN, tenant_code="chwrr", now=_NOW)
+    tenant_id = _ensure_chwrr(tenants)
     register_stations(
         tenants,
         stations,

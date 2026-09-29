@@ -10,59 +10,51 @@ The station observations API withholds this delivery from consumer and reviewer
 tokens; only an internal admin token can read its individual values. Do not
 issue an admin token externally without the data owner's permission.
 
-Run this only after the Plan 268 migration is deployed. Set `DATABASE_URL` to
-the intended staging database and `SAPPHIRE_CONFIG` to this checkout's
-absolute `config.toml` path. Confirm both before a write. `--dry-run` parses
-and writes inside a transaction that rolls back; it does not verify a later
-commit will succeed against concurrently changed data.
+Run this only after the Plan 268 migration and Plan 510's guard migration (`0067`)
+are deployed. The `chwrr` tenant must already exist: the host's overlay declares
+`[tenants.chwrr]` with `name = "CHWRR Nepal"` (the Mac-mini's
+`config/overlays/mac-mini.toml`) and `init` creates it at deploy time (Plan 513).
+No command here creates tenants; if the tenant already exists under another name,
+`init` fails and an owner fixes the row with SQL.
 
-0. **Preferred: the tenant is declared.** A host whose overlay lists
-   `[tenants.chwrr]` with `name = "CHWRR Nepal"` (the Mac-mini's
-   `config/overlays/mac-mini.toml`) gets the tenant created by `init` on
-   deploy (Plan 513); nothing to run here, and step 1 is unnecessary. The
-   `bootstrap-tenant` command below stays only until Plan 510 removes it. If
-   the tenant already exists under another name, `init` fails; an owner fixes
-   the row with SQL.
+Run the commands as the database-limited `sapphire_operator`, not with the owner
+credential. It is created without login; an owner activates it once by creating
+`./secrets/sapphire_operator_db_password` and deploying with
+`docker-compose.operator.yml` (`docs/standards/cicd.md` § Operator role for
+delivery replacement, which also has rotation and the emergency revoke). A deploy
+without that overlay puts the role back to no login, so a forgotten overlay looks
+like a revoke. The database itself limits the role: it can only write rows tagged
+with this delivery at the six `chwrr` stations, and each successful command
+appends one audit row (counts only, no values). Set the delivery directory once
+per shell, then every command below is:
 
-1. Only where the tenant is not declared: create a temporary admin overlay
-   **outside** the checkout containing only:
+```sh
+export SAPPHIRE_DHM_DELIVERY_DIR=/absolute/path/to/restricted-delivery   # outside the checkout
+OP="docker compose -f docker-compose.yml -f docker-compose.macmini.yml -f docker-compose.operator.yml run --rm operator"
+```
 
-   ```toml
-   [deployment]
-   global_admin = true
-   writable_tenants = []
-   ```
+`--dry-run` parses and writes inside a transaction that rolls back (audit row
+included); it does not verify a later commit will succeed against concurrently
+changed data.
 
-   Set `SAPPHIRE_CONFIG_OVERLAY` to that file. Run the `bootstrap-tenant`
-   command first with `--dry-run`, then without it:
-
-   ```sh
-   uv run python -m sapphire_flow.cli.import_dhm_delivery bootstrap-tenant --tenant chwrr --dry-run
-   uv run python -m sapphire_flow.cli.import_dhm_delivery bootstrap-tenant --tenant chwrr
-   ```
-
-   The tenant is `chwrr` / `CHWRR Nepal`. Remove the temporary admin overlay
-   after bootstrapping. Ordinary import commands reject it.
-
-2. Set `SAPPHIRE_CONFIG_OVERLAY` to this checkout's absolute
-   `config/overlays/chwrr-import.toml` path. The command accepts only this
-   CHWRR-scoped deployment overlay. Register the approved station metadata:
+1. Register the approved station metadata:
 
    ```sh
-   uv run python -m sapphire_flow.cli.import_dhm_delivery stations --tenant chwrr --dry-run
-   uv run python -m sapphire_flow.cli.import_dhm_delivery stations --tenant chwrr
+   $OP stations --tenant chwrr --dry-run
+   $OP stations --tenant chwrr
    ```
 
    The six rows remain `onboarding`, with no forecast target. Rerunning this
    step reuses matching rows and refuses conflicting tenant ownership or
    changed metadata.
 
-3. Check the restricted delivery outside the checkout, then import it:
+2. Check the restricted delivery outside the checkout, then import it (the
+   service mounts the directory read-only at `/data/dhm-delivery`):
 
    ```sh
-   uv run python scripts/dhm_delivery/remeasure.py --input-dir /absolute/path/to/restricted-delivery --check
-   uv run python -m sapphire_flow.cli.import_dhm_delivery replace --tenant chwrr --input-dir /absolute/path/to/restricted-delivery --dry-run
-   uv run python -m sapphire_flow.cli.import_dhm_delivery replace --tenant chwrr --input-dir /absolute/path/to/restricted-delivery
+   uv run python scripts/dhm_delivery/remeasure.py --input-dir "$SAPPHIRE_DHM_DELIVERY_DIR" --check
+   $OP replace --tenant chwrr --input-dir /data/dhm-delivery --dry-run
+   $OP replace --tenant chwrr --input-dir /data/dhm-delivery
    ```
 
    The aggregate check compares counts and gap totals with the reviewed
@@ -72,17 +64,20 @@ commit will succeed against concurrently changed data.
    reference before retrying. If DHM later clarifies the local-day boundary,
    run the replacement under the revised boundary and repeat QC.
 
-4. Run QC after every successful import or replacement:
+3. Run QC after every successful import or replacement:
 
    ```sh
-   uv run python -m sapphire_flow.cli.import_dhm_delivery qc --tenant chwrr --dry-run
-   uv run python -m sapphire_flow.cli.import_dhm_delivery qc --tenant chwrr
+   $OP qc --tenant chwrr --dry-run
+   $OP qc --tenant chwrr
    ```
 
    The command checks only rows tagged `dhm-barkhk-2026-09-08`. It refuses
    absent or changed DHM rule/ceiling configuration and reports status counts.
    `gross_outlier` is deliberately skipped; one-day segments with no runnable
    cadence remain `QC_UNCHECKED`. Keep those counts in the operator record.
+
+`replace` and `qc` serialise on the tenant with an advisory lock, so the two never
+run at the same time whichever role runs them.
 
 The DHM date interpretation is the start of each Nepal local calendar day
 under `Asia/Kathmandu`, including the historical 1986 offset transition. It
