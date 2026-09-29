@@ -55,6 +55,11 @@ repos:
   # ── Mac-mini ops scripts: check-only shell/plist lint ───────────────────
   - repo: local
     hooks:
+      - id: guard-dhm-delivery-paths
+        name: Reject restricted DHM delivery filenames
+        entry: uv run python scripts/guard_dhm_delivery_paths.py
+        language: system
+        always_run: true
       - id: shellcheck
         name: shellcheck Mac-mini scripts
         # -x: follow `source` (Plan 199 T2 — docker-endpoint.sh is sourced,

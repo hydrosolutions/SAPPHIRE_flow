@@ -4,8 +4,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 from sapphire_flow.db.metadata import rating_curves
+from sapphire_flow.exceptions import DeliveryCurveDependencyError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.enums import InterpolationMethod
 from sapphire_flow.types.ids import RatingCurveId, StationId
@@ -31,9 +33,23 @@ class PgRatingCurveStore:
                 interpolation=curve.interpolation.value,
                 uploaded_by=curve.uploaded_by,
                 created_at=curve.created_at,
+                delivery_id=curve.delivery_id,
+                rating_type_label=curve.rating_type_label,
             )
         )
         return curve.id
+
+    def fetch_all_curves_for_station(self, station_id: StationId) -> list[RatingCurve]:
+        rows = (
+            self._conn.execute(
+                sa.select(rating_curves)
+                .where(rating_curves.c.station_id == station_id)
+                .order_by(rating_curves.c.valid_from, rating_curves.c.version)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row_to_curve(row) for row in rows]
 
     def fetch_active_curve(self, station_id: StationId) -> RatingCurve | None:
         row = (
@@ -55,7 +71,8 @@ class PgRatingCurveStore:
     ) -> RatingCurve | None:
         row = (
             self._conn.execute(
-                sa.select(rating_curves).where(
+                sa.select(rating_curves)
+                .where(
                     sa.and_(
                         rating_curves.c.station_id == station_id,
                         rating_curves.c.valid_from <= at,
@@ -65,11 +82,59 @@ class PgRatingCurveStore:
                         ),
                     )
                 )
+                .order_by(
+                    rating_curves.c.valid_from.desc(), rating_curves.c.version.desc()
+                )
+                .limit(1)
             )
             .mappings()
             .one_or_none()
         )
         return _row_to_curve(row) if row is not None else None
+
+    def fetch_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> list[RatingCurve]:
+        if not station_ids:
+            return []
+        rows = (
+            self._conn.execute(
+                sa.select(rating_curves)
+                .where(rating_curves.c.delivery_id == delivery_id)
+                .where(rating_curves.c.station_id.in_(station_ids))
+                .order_by(
+                    rating_curves.c.station_id,
+                    rating_curves.c.valid_from,
+                    rating_curves.c.version,
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [_row_to_curve(row) for row in rows]
+
+    def delete_delivery_curves(
+        self, delivery_id: str, station_ids: list[StationId]
+    ) -> int:
+        if not station_ids:
+            return 0
+        try:
+            result = self._conn.execute(
+                sa.delete(rating_curves)
+                .where(rating_curves.c.delivery_id == delivery_id)
+                .where(rating_curves.c.station_id.in_(station_ids))
+            )
+        except IntegrityError as exc:
+            constraint = getattr(
+                getattr(exc.orig, "diag", None), "constraint_name", None
+            )
+            raise DeliveryCurveDependencyError(
+                f"Cannot replace delivery {delivery_id} curves for station IDs "
+                f"{station_ids}: dependent record on "
+                f"constraint {constraint or 'unknown'}; "
+                "resolve reference before retrying"
+            ) from exc
+        return result.rowcount
 
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None:
         self._conn.execute(
@@ -167,4 +232,6 @@ def _row_to_curve(row: sa.engine.row.RowMapping) -> RatingCurve:
         interpolation=InterpolationMethod(row["interpolation"]),
         uploaded_by=row["uploaded_by"],
         created_at=utc_from_row(row["created_at"]),
+        delivery_id=row["delivery_id"],
+        rating_type_label=row["rating_type_label"],
     )

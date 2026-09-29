@@ -82,6 +82,10 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   § Reviewer tokens below) and `admin` (read, unscoped + CLI token/tenant management). Plan 147 G4
   had *two* roles; Plan 401 D1 (owner, 2026-09-26) amends G4's **role list only** — GET-only (next
   bullet) stands for every token. No session roles, no `operator`/`forecaster` role.
+- **Restricted DHM history**: `GET /api/v1/stations/{station_id}/observations`
+  withholds Plan 268's delivery-tagged discharge rows from consumer and reviewer
+  tokens even when the station is in scope. Internal admin tokens can read them;
+  do not issue such a token externally without the data owner's permission.
 - **Access tokens are strictly GET-only** — no bearer key of any role may POST/PATCH/DELETE. The
   sole state-changing v0/v1.0 route, `POST /alerts/{id}/acknowledge`, is removed from the v1.0 surface
   (returns `501`); it returns with the Flow 3 dashboard + session tokens in v1.x.

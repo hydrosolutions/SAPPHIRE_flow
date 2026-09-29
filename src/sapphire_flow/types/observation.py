@@ -26,6 +26,7 @@ class RawObservation:
     source: ObservationSource
     rating_curve_id: RatingCurveId | None = None
     rating_curve_correction_version: str | None = None
+    delivery_id: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -42,6 +43,7 @@ class Observation:
     qc_flags: list[QcFlag]
     qc_rule_version: str | None
     created_at: UtcDatetime
+    delivery_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.qc_status == QcStatus.MISSING and self.value is not None:

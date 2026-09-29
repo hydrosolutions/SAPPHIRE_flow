@@ -1,0 +1,2 @@
+[deployment]
+writable_tenants = ["chwrr"]

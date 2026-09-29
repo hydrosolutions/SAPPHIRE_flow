@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -129,6 +130,40 @@ class TestSupersedeCurve:
 
 
 class TestFetchCurveAt:
+    def test_overlap_uses_latest_valid_from_and_delivery_provenance_round_trips(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        store = PgRatingCurveStore(db_connection)
+        older = replace(
+            _make_curve(
+                station_id=station_id,
+                valid_to=_NOW + timedelta(days=3),
+            ),
+            delivery_id="delivery-a",
+            rating_type_label="3",
+        )
+        newer = replace(
+            _make_curve(
+                station_id=station_id,
+                version=2,
+                valid_from=_NOW + timedelta(days=2),
+                valid_to=_NOW + timedelta(days=5),
+            ),
+            delivery_id="delivery-a",
+            rating_type_label="3",
+        )
+        store.store_rating_curve(older)
+        store.store_rating_curve(newer)
+        selected = store.fetch_curve_at(station_id, _NOW + timedelta(days=2))
+        assert selected is not None
+        assert selected.id == newer.id
+        assert selected.rating_type_label == "3"
+        assert selected.delivery_id == "delivery-a"
+        assert len(store.fetch_delivery_curves("delivery-a", [station_id])) == 2
+        assert store.delete_delivery_curves("delivery-a", [station_id]) == 2
+        assert store.fetch_delivery_curves("delivery-a", [station_id]) == []
+
     def test_picks_curve_active_at_timestamp(
         self, db_connection: sa.Connection
     ) -> None:

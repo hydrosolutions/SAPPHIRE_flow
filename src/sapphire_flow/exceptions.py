@@ -37,6 +37,18 @@ class ConflictError(SapphireError):
     """Optimistic locking detected a concurrent modification."""
 
 
+class DeliveryCollisionError(ConflictError):
+    """An observation natural key belongs to another delivery."""
+
+    def __init__(self, station_id: StationId) -> None:
+        super().__init__(f"observation delivery collision at station {station_id}")
+        self.station_id = station_id
+
+
+class DeliveryCurveDependencyError(ValueError):
+    """A delivery curve cannot be replaced while another record references it."""
+
+
 class ForecastRetryConflictError(SapphireError):
     """Plan 327 — a forecast cycle re-run met an existing forecast under the
     same natural key ``(station_id, model_id, issued_at, parameter)`` and the

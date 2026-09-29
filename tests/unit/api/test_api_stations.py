@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.enums import (
     AccessTokenRole,
@@ -253,6 +254,52 @@ class TestGetStation:
 
 
 class TestListObservations:
+    def test_restricted_delivery_values_are_admin_only(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        restricted = replace(
+            make_observation(
+                station_id=station.id,
+                parameter="discharge",
+                timestamp=ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC)),
+                rng=random.Random(2),
+            ),
+            delivery_id=DELIVERY_ID,
+        )
+        ordinary = make_observation(
+            station_id=station.id,
+            parameter="discharge",
+            timestamp=ensure_utc(datetime(2025, 1, 1, 7, tzinfo=UTC)),
+            rng=random.Random(3),
+        )
+        fake_stores["obs_store"].store_observations([restricted, ordinary])
+        url = f"/api/v1/stations/{station.id}/observations"
+        params = {
+            "parameter": "discharge",
+            "start": "2025-01-01T00:00:00Z",
+            "end": "2025-01-02T00:00:00Z",
+        }
+
+        _set_principal(AccessTokenRole.CONSUMER, frozenset({station.id}))
+        consumer = client.get(url, params=params)
+        assert consumer.status_code == 200
+        assert [row["id"] for row in consumer.json()] == [str(ordinary.id)]
+
+        _set_principal(AccessTokenRole.REVIEWER, frozenset({station.id}))
+        reviewer = client.get(url, params=params)
+        assert reviewer.status_code == 200
+        assert [row["id"] for row in reviewer.json()] == [str(ordinary.id)]
+
+        _set_principal(AccessTokenRole.ADMIN, frozenset())
+        admin = client.get(url, params=params)
+        assert admin.status_code == 200
+        assert {row["id"] for row in admin.json()} == {
+            str(restricted.id),
+            str(ordinary.id),
+        }
+
     def test_returns_observations(
         self, client: TestClient, fake_stores: dict[str, Any]
     ) -> None:

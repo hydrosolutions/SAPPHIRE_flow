@@ -66,3 +66,9 @@ htmlcov/
 # Scratch prompt/note files from agent sessions (e.g. scratch_codex_prompt_217.txt,
 # committed by accident). Never a checked-in artifact.
 /scratch_*
+
+# Restricted DHM runoff delivery; only the two tracked dummy documentation files are allowed.
+DFL_*.txt
+RT_*.txt
+!docs/requirements/DFL_Dummy Station A.txt
+!docs/requirements/RT_Dummy Station A.txt

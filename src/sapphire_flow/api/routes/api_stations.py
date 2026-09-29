@@ -39,6 +39,7 @@ from sapphire_flow.api.security import (
     require_principal,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.enums import QcStatus, StationKind, StationStatus
 from sapphire_flow.types.ids import ModelId, StationId
 
@@ -273,6 +274,8 @@ def list_observations(
     observations = stores["obs_store"].fetch_observations(
         sid, parameter, start_dt, end_dt, qc_status=qc
     )
+    if not principal.is_admin:
+        observations = [o for o in observations if o.delivery_id != DELIVERY_ID]
     return [_to_observation_response(o) for o in observations]
 
 

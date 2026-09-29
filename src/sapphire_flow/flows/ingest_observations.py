@@ -11,7 +11,7 @@ from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 from prefect.runtime import flow_run, task_run
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, DeliveryCollisionError
 from sapphire_flow.services.qc import Stage1QualityChecker, resolve_selection
 from sapphire_flow.services.qc_datum import (
     add_observation_datum_details,
@@ -964,13 +964,29 @@ def ingest_observations_flow(
         )
 
     # --- Step 2.2: Store raw observations ---
-    stored_count = _store_raw_task(obs_store, raw_obs)
+    storage_failed_station_ids: set[StationId] = set()
+    storage_errors: list[str] = []
+    try:
+        stored_count = _store_raw_task(obs_store, raw_obs)
+    except DeliveryCollisionError:
+        stored_count = 0
+        for station_id in {row.station_id for row in raw_obs}:
+            station_rows = [row for row in raw_obs if row.station_id == station_id]
+            try:
+                stored_count += _store_raw_task(obs_store, station_rows)
+            except DeliveryCollisionError:
+                storage_failed_station_ids.add(station_id)
+                storage_errors.append(f"delivery collision at station {station_id}")
+                log.warning("ingest.delivery_collision", station_id=str(station_id))
+    stored_obs = [
+        row for row in raw_obs if row.station_id not in storage_failed_station_ids
+    ]
     skipped_count = len(raw_obs) - stored_count
     log.info("ingest.store_complete", stored=stored_count, skipped=skipped_count)
 
     # --- Steps 2.3–2.4: QC per (station, parameter) ---
     station_params: set[tuple[StationId, str]] = {
-        (o.station_id, o.parameter) for o in raw_obs
+        (o.station_id, o.parameter) for o in stored_obs
     }
     station_networks = {station.id: station.network for station in eligible}
     datums: dict[tuple[StationId, str], float | None] = {
@@ -982,7 +998,7 @@ def ingest_observations_flow(
     # Plan 318 T1: accumulated across every (station, parameter) so the run
     # writes ONE record carrying all of them, not one record per group.
     zero_rule_groups: list[ZeroRuleGroup] = []
-    errors: list[str] = []
+    errors: list[str] = storage_errors
     qc_failed_station_ids: set[StationId] = set()
     dhm_station_ids = {
         s.id
@@ -990,7 +1006,7 @@ def ingest_observations_flow(
         if s.network == "dhm" and s.station_kind == StationKind.RIVER
     }
     recovered_times: dict[tuple[StationId, str], list[UtcDatetime]] = {}
-    for observation in raw_obs:
+    for observation in stored_obs:
         if (
             observation.station_id in dhm_station_ids
             and observation.parameter == "water_level"
@@ -1080,7 +1096,7 @@ def ingest_observations_flow(
             formula_store,  # type: ignore[arg-type]
             station_store,  # type: ignore[arg-type]
             calculated,
-            raw_obs,
+            stored_obs,
             now,
         )
     elif calculated and formula_store is None:
@@ -1107,7 +1123,9 @@ def ingest_observations_flow(
     # --- Result ---
     # D8: stations_failed is the UNION of fetch failures and QC-task
     # exceptions — a station can fail either way, and both must count.
-    all_failed_station_ids = fetch_failed_station_ids | qc_failed_station_ids
+    all_failed_station_ids = (
+        fetch_failed_station_ids | qc_failed_station_ids | storage_failed_station_ids
+    )
     result = IngestResult(
         stations_polled=len(eligible),
         observations_fetched=len(raw_obs),

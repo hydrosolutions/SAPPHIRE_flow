@@ -1,0 +1,18 @@
+Station No: 999
+Data Type: Rating Table
+Left Column= Stage in m
+Right Column= Discharge im m3/s
+
+Rating Type No =  3
+From Date = 01-Jan-1985
+To Date = 31-Dec-1985
+From Stage = -0.1
+-0.1,1
+0,2
+--------------------
+Rating Type No =  3
+From Date = 01-Jan-1987
+To Date = 31-Dec-1987
+From Stage = 0
+0,2
+0.1,3

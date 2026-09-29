@@ -2343,8 +2343,9 @@ observations:
   parameter: TEXT              # canonical name (e.g. "discharge", "precipitation")
   value: DOUBLE PRECISION NULL  # NULL when qc_status = 'missing'; otherwise the observed value (never overwritten by QC)
   source: TEXT                 # ObservationSource: measured | rating_curve_derived | manual_import | component_derived (v1 — plan 015)
-  rating_curve_id: UUID NULL FK  # references rating_curves.id — set when source = rating_curve_derived
+  rating_curve_id: UUID NULL FK  # producing curve for derived rows; in-force provenance for DHM manual discharge
   rating_curve_correction_version: TEXT NULL  # correction param version — set when source = rating_curve_derived
+  delivery_id: TEXT NULL        # restricted source-package identity for scoped replacement
   qc_status: TEXT              # aggregate QcStatus enum value
   qc_flags: JSONB              # list[QcFlag], empty list when status = 'raw' or 'missing'
   qc_rule_version: TEXT NULL   # observation-QC processing-generation marker (Plan 324); individual configured rule versions are in qc_flags[].rule_version
@@ -2396,10 +2397,20 @@ rating_curves:
   points: JSONB                            # list of {"water_level": float, "discharge": float}
   interpolation: TEXT DEFAULT 'linear'     # InterpolationMethod: "linear" or "log_linear"
   uploaded_by: UUID NULL
+  delivery_id: TEXT NULL                  # source package identity
+  rating_type_label: TEXT NULL            # DHM type label, not station version
   created_at: TIMESTAMPTZ
 ```
 
 Index: `(station_id, valid_from DESC)` for temporal lookup. Partial unique index: `(station_id) WHERE valid_to IS NULL` — enforces at most one active curve per station. Unique `(station_id, version)` (monotonic versioning) and `(id, station_id)` — the latter is the FK target that lets observations/forecasts/observation_versions bind a curve *same-station* via a composite FK (Plan 035 Task 2/3).
+
+The CHWRR daily-discharge importer reads all six files before writing, converts each
+Nepal local date through `Asia/Kathmandu` (including the 1986 offset change), and
+replaces only observations and curves carrying its delivery ID in one tenant-locked
+transaction. The daily `MANUAL_IMPORT` rows keep an in-force curve ID as provenance
+where one exists. Its separate QC pass uses the shared base rule list's `dhm` daily
+rows and six station ceilings, skips `gross_outlier`, and leaves short uncheckable
+segments as `QC_UNCHECKED`. Neither step promotes a station for operations.
 
 ### `observation_versions` table (v1)
 
