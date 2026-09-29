@@ -94,3 +94,54 @@ class TestPgPipelineHealthStore:
         assert len(results) == 2
         assert results[0].checked_at.hour == 4
         assert results[1].checked_at.hour == 3
+
+
+class TestUnjudgedRecordRoundTrip:
+    """Plan 323 T4: the unjudged record carries observation ids. They are UUIDs,
+    the engine has no JSON serializer for them, and the writer only logs a
+    failed insert — so only a real Postgres write can show the record survives.
+    """
+
+    def test_the_record_is_stored_and_read_back(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from uuid import uuid4
+
+        from sapphire_flow.flows.ingest_observations import (
+            UnjudgedGroup,
+            _append_unjudged_health_record,
+        )
+        from sapphire_flow.types.ids import ObservationId, StationId
+
+        store = PgPipelineHealthStore(db_connection)
+        obs_id = ObservationId(uuid4())
+        station_id = StationId(uuid4())
+        checked_at = ensure_utc(datetime(2026, 9, 24, 12, 5, tzinfo=UTC))
+
+        _append_unjudged_health_record(
+            store,
+            checked_at=checked_at,
+            groups=(
+                UnjudgedGroup(
+                    station_id=station_id,
+                    parameter="water_level",
+                    inferred_time_step_seconds=600.0,
+                    observation_ids=(obs_id,),
+                ),
+            ),
+            totals={"unjudged": 1},
+        )
+
+        [record] = store.fetch_recent(
+            check_type=PipelineCheckType.OBSERVATION_QC_UNJUDGED
+        )
+        assert record.detail["reason"] == "no_check_could_run"
+        assert record.detail["unjudged_groups"] == [
+            {
+                "station_id": str(station_id),
+                "parameter": "water_level",
+                "inferred_time_step_seconds": 600.0,
+                "observation_ids": [str(obs_id)],
+            }
+        ]
+        assert record.detail["observations_unjudged"] == 1

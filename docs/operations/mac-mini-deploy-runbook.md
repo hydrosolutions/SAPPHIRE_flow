@@ -66,6 +66,12 @@ before assuming the deploy broke something — the alert may simply be working f
 
     # b. init succeeded
     docker inspect sapphire_flow-init-1 --format "{{.State.ExitCode}}"    # expect 0
+    #    init now also creates the tenants declared in config/overlays/mac-mini.toml
+    #    ([tenants.chwrr], Plan 513). Before the FIRST init carrying that declaration, read the
+    #    existing row: code exactly `chwrr`, name exactly `CHWRR Nepal`, no trailing whitespace.
+    #    A different name (or a renamed `sapphire`, when `sapphire` is declared) makes init FAIL, which also blocks the Swiss
+    #    workers, API and deployment registration. Fix by owner SQL, never by editing the declaration
+    #    to match a wrong row. Init logs `tenants_declared` (count) on every run.
 
     # c. Collector cron picked up the 24-run list, and both deployments are on the ingest pool
     docker compose exec -T prefect-worker prefect deployment inspect \

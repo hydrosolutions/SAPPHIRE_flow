@@ -198,6 +198,11 @@ A separate principal kind — distinct from the three HTTP read roles above.
   with `writable_tenants`), plus an optional `operator = "<handle>"` label. Parsed by
   `config/deployment_identity.py`; every declared code is resolved against the `tenants` table at
   principal-resolution time — an unknown code is a hard `ConfigurationError`, not a silent skip.
+- **Tenants are declared, not seeded (Plan 513).** Migration `0041` seeds only `sapphire`; every other tenant
+  is declared per host as `[tenants.<code>]` (`name`, never an id) in the host's overlay and created by the
+  `init` step `cli/provision_tenants.py` (idempotent, one transaction, name conflict aborts). Declaring a tenant
+  is provisioning: it never widens or narrows `writable_tenants` (a different setting), and the old
+  `bootstrap-tenant` command (owner credential at run time) remains only until Plan 510 removes it.
 - **`WritePrincipal`** (`types/write_principal.py`): `WritePrincipal(id: PrincipalId | None, tenant_id:
   TenantId | None)`. `PrincipalId = NewType("PrincipalId", str)` is the config operator handle — never a
   `UserId`/UUID, never an `AccessTokenId`. `tenant_id=None` = unscoped/global-admin (may write to any

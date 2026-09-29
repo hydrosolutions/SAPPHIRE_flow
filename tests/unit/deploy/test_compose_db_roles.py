@@ -151,6 +151,7 @@ class TestInitServiceKeepsOwnerAndBootstrapsRoles:
         command = svc["command"]
         assert isinstance(command, str)
         migrate_pos = command.find("alembic upgrade head")
+        tenants_pos = command.find("python -m sapphire_flow.cli.provision_tenants")
         bootstrap_pos = command.find("/app/docker/bootstrap-roles.sh")
         deployments_pos = command.find(
             "python -m sapphire_flow.cli.register_deployments"
@@ -161,7 +162,10 @@ class TestInitServiceKeepsOwnerAndBootstrapsRoles:
             "(docker/bootstrap-roles.sh)"
         )
         assert deployments_pos != -1
-        assert migrate_pos < bootstrap_pos < deployments_pos, (
-            "role bootstrap must run AFTER migrations (so grants cover every "
-            "migrated table) and BEFORE deployment registration"
+        assert tenants_pos != -1, "init command must run the declared-tenant step"
+        assert migrate_pos < tenants_pos < bootstrap_pos < deployments_pos, (
+            "the declared-tenant step runs AFTER migrations (the tenants table "
+            "exists) and BEFORE the role bootstrap; role bootstrap runs AFTER "
+            "migrations (so grants cover every migrated table) and BEFORE "
+            "deployment registration"
         )

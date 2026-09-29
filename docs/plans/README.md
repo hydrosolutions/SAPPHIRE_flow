@@ -12,6 +12,9 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 - **401** — [A reviewer access token for the review dashboards](401-reviewer-access-token-role.md) — `READY, HIGH RISK` (2026-09-26, owner's instruction); third HTTP token role — GET-only, tenant-scoped like a consumer, plus REVIEW routes — one per dashboard (BAFU/Swiss, Nepal). Amends Plan 147 G4's role list only; tokens stay GET-only; publishing is a named person (341); the DHM gauges get their own tenant (confirms Plan 268 D11) and the Nepal dashboard's token binds to it only (owner, 2026-09-26); a dashboard token uses tenant mode only when every station in its tenant belongs to its client, otherwise an explicit station list. Final text reviewed clean by Claude and Codex. Blocks 402.
 - **402** — [The flow map reads the /api/v1 interface — QC rule sets, station skill, forecast QC flags, committed contract](402-flow-map-reads-the-api.md) — `READY, HIGH RISK, implemented (hold-at-PR)` (2026-09-28, owner's instruction; D15 serves the per-station QC thresholds scheduled ingest applies); 401 merged (#320). T1-T4 implemented on `feat/plan-402-flow-map-api` (station-threshold resolution extracted to `services/station_qc_overrides.py`; `GET /api/v1/qc/rules[?station_id=]` and `GET /api/v1/stations/{id}/skill`, REVIEW-gated; typed `qc_flags`/`qc_rule_version` on existing responses; the committed, drift-tested `docs/spec/api-v1-map.openapi.json` + CI version gate). One more owner-commissioned review before the PR is opened; the After-staging-deploy steps (post-#4) and T6's hand-over messages are the orchestrator's, not yet run. Decisions: map reads the API (snapshot stays v2), forecast rules served too, per-dashboard reviewer token, forecast QC flags visible to every role. Follow-on: Plan 404 (QC-rejected member/group forecasts are dropped today, so the map can never show them). Open: D9 — QC what-if dry run, recommended as a follow-on.
 - **404** — [Keep the member and group forecasts that QC rejects](404-store-qc-rejected-member-forecasts.md) — `READY, HIGH RISK` (2026-09-28, owner's instruction; T3 also admits named humans, from the browser dashboard); rejected forecasts go to a **separate record** (new table + one REVIEW route), never the `forecasts` table, so fallback, alerting, combination, re-runs (327/328), model state and the freshness heartbeat are untouched; where Plan 341's gate is active, reviewer tokens see the rejecting rule but not the values, admins and granted hydrologists the full record (owner, 2026-09-26). Saved once at the end of each run, with a hard 10 s limit (D5, D6). Depends on 401 (merged) and 402. All decisions closed; reviewed clean. One more owner-commissioned review before the implementation PR.
+- **510** — [Three levels of database identity](510-operator-database-role-for-imports.md) — `READY, HIGH RISK` (2026-09-29, owner's instruction; final gate: four reviewers recommended READY; owner closed D1–D6). Order set by the owner: 513, then 510, then Plan 268 T8. A row-limited operator role for delivery replacement; tenants come from 513. Needs the owner-commissioned review before READY. Needed for v1.
+- **513** — [Declared tenants created at deploy](513-declared-tenants-created-at-deploy.md) — `READY, HIGH RISK` (2026-09-29, owner's instruction; final gate: four reviewers recommended READY); **done first**: a host's overlay declares its tenants and a new `init` step creates them atomically; existing tenants preserved. Three review rounds (Claude, Codex, all NEEDS CHANGES, narrowing) folded in. Blocks 510.
+- **512** — [One clean, audience-labelled runbook set](512-one-clean-runbook-set.md) — `DRAFT` (2026-09-29, owner agreed the approach); one home, one index, one job per file. Documentation only; T1 waits for PR #338.
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
@@ -572,7 +575,8 @@ exit criteria — Plan 212 owns that deeper screening.
   ⚠️ **Not yet deployed to the mini.**
 - **208** — Backups must leave the box — `DRAFT` — the off-box sink Plan 162 D4 named but never
   created (162's `blocks:` is empty). Owner 2026-08-28: no backup drive for the mini ever; separation
-  arrives with the **AWS** deployment, sink is **S3**. Two findings make it more than a port: 162
+  was to arrive with an **AWS** deployment, sink **S3** — **superseded 2026-09-29**: the Nepal host is
+  Infomaniak (Plan 511) and the target is Cloudflare **R2**; this plan needs updating (notice at its top). Two findings make it more than a port: 162
   deferred this on the reasoning that "an encrypted artifact is safe wherever it lands", but
   **encryption never shipped** (D5 was Phase B; the mini's dumps are plaintext, verified) — so it is a
   prerequisite, not a companion. And **Plan 194's device predicate does not port**: meaningless on S3,
@@ -591,7 +595,8 @@ exit criteria — Plan 212 owns that deeper screening.
   `fallback` cycle and the **00:00 slot silently drops to obs-only** (1 clean daily
   bucket short). Chosen direction = offset the schedule (opt B); documented, not urgent.
   Diagnosed 2026-07-13.
-- **049** — Cloudflare public URL + Entra SSO for staging — `DRAFT` — depends on 046.
+- **049** — Swiss demo backend: Cloudflare Tunnel + service-token Access for the Mac mini, so the flow-map Worker can read `/api/v1` — `DEFERRED` 2026-09-29 (v1 first; future shape = read-only Swiss copy on a Swiss cloud server, not a tunnel). Nepal half is Plan 511; `prefect-server` network fix is Plan 109.
+- **511** — Nepal instance on a cloud server (Caddy auto-TLS, DHM-tenant reviewer key, off-box backup) for the flow-map — `DRAFT`; provisioning only, waits on Nepal onboarding/feed tracks for content.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
   readiness. Docs-first; no change to the v1.0 Nepal critical path.
@@ -768,7 +773,8 @@ exit criteria — Plan 212 owns that deeper screening.
 
 - **323** — [Five Swiss stations report hourly and select no QC rule at all](323-hourly-stations-select-no-qc-rule.md)
   — **`READY`** (orchestrator, 2026-09-26, owner-confirmed), no open decisions, `blocks: [400, 403]`;
-  READY from both reviewers in rounds 8-11. ⚠️ T1 needs staging, which is off-network for now. Found from a live Slack warning on
+  READY from both reviewers in rounds 8-11. ⚠️ T1 needs staging, off-network for now ⇒ **T4 is built first** (owner, 2026-09-26); one
+  branch, one PR, so T2 and T4 still deploy together. Found from a live Slack warning on
   2026-09-24: five BAFU gauges deliver HOURLY, the rule set declares only 600 s and 86400 s,
   and selection matches by exact equality — so they resolve ZERO rules. Not new: their
   earlier rows were fail-open passed (~1,277 readings never checked). Thresholds come from

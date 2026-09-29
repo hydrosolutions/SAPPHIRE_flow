@@ -208,3 +208,80 @@ class TestCmalSmallDeclaration:
         from sapphire_flow.models.aquacast import CmalPoolPT, CmalSmall
 
         assert CmalPoolPT().config_hash != CmalSmall().config_hash
+
+
+class TestCmalSmallFineTuneAllowlist:
+    """The retrain refuses a donor whose recorded config hash differs from the
+    installed yaml's, so the strategy allowlist must live in the shim, never the yaml.
+    """
+
+    def test_the_vendored_yaml_bytes_are_unchanged(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        assert (
+            CmalSmall().config_hash
+            == "94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45"
+        )
+
+    def test_permits_exactly_the_two_strategies_under_test(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        permitted = CmalSmall.FINETUNE_STRATEGIES
+
+        assert permitted == {"static_only", "last_layer"}
+
+    def test_the_allowlist_reaches_the_template_aquacast_enforces(self) -> None:
+        """aquacast refuses a strategy absent from the TEMPLATE's set; deleting the
+        `replace` in the shim leaves the class attribute intact and enforcement off.
+        No public accessor exists, so this reads the inner model's template.
+        """
+        from sapphire_flow.models.aquacast import CmalPoolPT, CmalSmall
+
+        small = CmalSmall()._inner._model_template.finetune_strategies  # pyright: ignore[reportPrivateUsage]
+        pooled = CmalPoolPT()._inner._model_template.finetune_strategies  # pyright: ignore[reportPrivateUsage]
+
+        assert small == {"static_only", "last_layer"}
+        assert pooled == frozenset()
+
+    def test_train_refuses_a_finetune_block_so_a_missing_donor_cannot_cold_train(
+        self,
+    ) -> None:
+        from random import Random
+        from typing import Any, cast
+
+        from sapphire_flow.exceptions import ConfigurationError
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        with pytest.raises(ConfigurationError, match="base_artifact_id"):
+            CmalSmall().train(
+                cast("Any", None),
+                config={"finetune": {"strategy": "static_only"}},
+                rng=Random(0),
+            )
+
+    def test_the_pooled_model_permits_no_fine_tuning(self) -> None:
+        from sapphire_flow.models.aquacast import CmalPoolPT
+
+        permitted = CmalPoolPT.FINETUNE_STRATEGIES
+
+        assert permitted == frozenset()
+
+
+class TestTrainingDataLoadersRunInProcess:
+    """aquacast's collate is a local closure, so worker processes fail under the
+    `forkserver` start method Python 3.14 uses; the shim forces in-process loading.
+    """
+
+    def test_cmal_small_loads_training_data_in_process(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        template = CmalSmall()._inner._model_template  # pyright: ignore[reportPrivateUsage]
+
+        assert template.config.data.num_workers == 0
+
+    def test_the_pooled_model_loads_training_data_in_process(self) -> None:
+        from sapphire_flow.models.aquacast import CmalPoolPT
+
+        template = CmalPoolPT()._inner._model_template  # pyright: ignore[reportPrivateUsage]
+
+        assert template.config.data.num_workers == 0

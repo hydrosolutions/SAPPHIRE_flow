@@ -402,6 +402,7 @@ services:
     command: >
       sh -c "
         alembic upgrade head &&
+        python -m sapphire_flow.cli.provision_tenants &&
         /app/docker/bootstrap-roles.sh &&
         python -m sapphire_flow.cli.register_deployments &&
         echo 'Init complete'
@@ -422,6 +423,10 @@ services:
       # worker password-file env vars above.
       SAPPHIRE_BACKUP_DB_PASSWORD_FILE: /run/secrets/sapphire_backup_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
+      # Plan 513: the declared-tenant step reads `[tenants.<code>]` from the
+      # host's config (base + SAPPHIRE_CONFIG_OVERLAY, supplied per host by its
+      # overlay compose file). Unset = the step fails; the mount is below.
+      SAPPHIRE_CONFIG: /app/config.toml
       # Plan 103: see prefect-worker above for rationale. `init` uses the
       # Prefect client (register_deployments) so it needs the same fix.
       PREFECT_HOME: /tmp/prefect

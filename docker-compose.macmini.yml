@@ -20,6 +20,14 @@
 # Spec: docs/plans/046-mac-mini-staging-deployment.md §C2, §C3.
 
 services:
+  # Plan 513: `init` creates the tenants declared in mac-mini.toml
+  # (`[tenants.chwrr]`); same overlay wiring as docker-compose.staging.yml.
+  init:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
+    volumes:
+      - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
+
   prefect-worker:
     # This host is a 64 GB / 14-core Mac mini, so it can afford far more than
     # the base file's conservative 8 GiB. Measured 2026-08-28: onboarding ONE

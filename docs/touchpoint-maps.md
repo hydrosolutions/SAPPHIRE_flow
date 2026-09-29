@@ -103,6 +103,13 @@ NOT catch an aquacast model whose inner model lacks it; the service-layer refusa
 holds. Touch `adapters/forecast_interface.py`'s retrain/`supports_warm_start` and re-run
 `tests/unit/services/test_training.py` + `tests/unit/flows/test_train_models.py`.
 
+⚠️ **The fine-tuning strategy allowlist lives on the shim class (`AquacastShim.FINETUNE_STRATEGIES`),
+never in the vendored yaml.** `config_hash` is the SHA-256 of the yaml's bytes and a retrain refuses a
+donor whose recorded hash differs, so any yaml edit invalidates every imported donor. Operator
+procedure: `docs/runbooks/model-fine-tuning.md`.
+`AquacastShim.DATA_NUM_WORKERS` (default 0) forces the training data loaders in-process for the same reason: the yaml
+asks for 4 worker processes and aquacast's collate cannot be pickled under Python 3.14's `forkserver` start method.
+
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,
 prediction input assembly, model execution, or ModelFailure semantics. For
@@ -809,6 +816,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - connection factories: `get_connection_rw`, `make_pg_stores`, `setup_production_stores`
 - version-gated mutation: `PgForecastStore.transition_status`
 - upsert / idempotent writers (`store_observations` / `store_raw_observations`, `store_weather_forecasts`, `store_forcing`, `PgAlertStore.upsert_alert`, `store_baselines`, station/group upserts, `register_model`)
+- declared tenants (Plan 513): a host's `[tenants.<code>]` (name only, never an id) is created by the `init` step `cli/provision_tenants.py` (`TenantStore.ensure_tenant`, one transaction, sorted codes, name conflict aborts) — touch this when changing `init`'s command chain or its `SAPPHIRE_CONFIG`/overlay wiring in any compose file, the `tenants` table, or `config/declared_tenants.py`; re-run `tests/unit/config/test_declared_tenants.py`, `tests/unit/cli/test_provision_tenants.py`, `tests/unit/deploy/test_compose_declared_tenants.py`, `tests/unit/deploy/test_compose_db_roles.py`, `tests/integration/db/test_provision_tenants.py`; `config/overlays/chwrr-import.toml` must never declare tenants
 - tenant-scoped station/group writes (Plan 147 Slice A): `stations.tenant_id`/`station_groups.tenant_id` are canonical and `NOT NULL`; `station_group_members.tenant_id` is bound by TWO composite FKs (`(station_id, tenant_id) -> stations(id, tenant_id)`, `(group_id, tenant_id) -> station_groups(id, tenant_id)`) so `PgStationGroupStore.store_group`/`add_station_to_group` structurally reject a cross-tenant membership (`IntegrityError`, not a Python check) — touch this when changing group membership writers or the `tenants` table; `fetch_group_by_name` now takes a `tenant_id` (name is unique per tenant, not globally)
 - plain-insert / append-only writers (`store_hindcast`, `store_state`, `store_config`, `append_health_record`) — and `store_forecast`, which is a plain insert only when the natural key is FREE; otherwise it classifies the re-run (Plan 327, see contracts below)
 - append-only audit writer: `PgAuditLogStore.append_entry` (Plan 147 Slice B) — ONLY an insert, no update/delete method on the class or the `AuditLogStore` Protocol; append-only is additionally enforced at the DB by a role-independent `BEFORE UPDATE OR DELETE` trigger (migration `0046`) that RAISEs for every role including the table owner, so it holds even before the scoped DB roles exist (Slice D). Deliberately takes NO `transaction_factory` and opens no transaction of its own — it executes on the SAME `sa.Connection` the caller passes in, so a caller sharing one externally-owned `conn.begin()` across a domain mutation store AND this store gets atomicity "for free" (a failed audit INSERT rolls back the paired domain mutation, since both share one SQLAlchemy transaction) — no repo-wide connection refactor. A REJECTED write instead persists its rejection event (attempted `event_type` + `detail.outcome="rejected"`) in a SEPARATE, independently-committed transaction after the domain rollback. Slice C wired the first call sites (`cli/access_tokens.py::create_token`/`revoke_token`/the `create-admin` bootstrap — token insert + `API_KEY_CREATED`/`API_KEY_REVOKED` audit row in ONE `engine.begin()` transaction, CLI-side, no `PgAuditLogStore` needed for `list_tokens` which is read-only); Slice E's onboard/promote/assign + rejection call sites are still unwired — touch this when adding a new audited mutation or changing the `audit_log` schema/enums (`types/enums.py::AuditEventType`/`AuditActorType`, `types/auth.py::AuditEntry`)
@@ -1283,6 +1291,16 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `ingest.qc_complete` event and the `OBSERVATION_QC_UNCHECKED` health record
   split the judged rows by what they were before the run. Asserted in
   `tests/unit/flows/test_ingest_observations_recheck.py`
+- Plan 323 T4 (D4, D5): a reading is `QC_PASSED` only if some selected rule actually
+  **judged** it — `Stage1QualityChecker.check_with_coverage` returns the flags and the
+  `judged` set, taken from the rule functions themselves (no neighbour, no value, no
+  baseline, a short `frozen_sensor` stretch ⇒ not judged). A pending reading nothing
+  judged is stored `QC_UNCHECKED` and reported in a separate
+  `OBSERVATION_QC_UNJUDGED` health record (`reason = "no_check_could_run"`, observation
+  ids as strings) that the watchdog does **not** probe; it is counted as
+  `IngestResult.qc_unjudged`, apart from the zero-rule `qc_unchecked` (zero-rule wins).
+  Reach: datum-less water level — every Swiss river station today — after any gap.
+  Asserted in `tests/unit/flows/test_ingest_observations_unjudged.py`
 - Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
   RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
   `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`

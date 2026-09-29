@@ -776,6 +776,7 @@ class TestIngestObservationsFlow:
             "failed": 0,
             "suspect": 0,
             "unchecked": 0,
+            "unjudged": 0,
             # Plan 317 T1: a first judgement, not a re-examination.
             "rechecked": 0,
             "newly_checked": 1,
@@ -811,6 +812,7 @@ class TestIngestObservationsFlow:
             "failed": 0,
             "suspect": 1,
             "unchecked": 0,
+            "unjudged": 0,
             "rechecked": 0,
             "newly_checked": 1,
         }
@@ -859,6 +861,7 @@ class TestIngestObservationsFlow:
                 "failed": 0,
                 "suspect": 0,
                 "unchecked": 0,
+                "unjudged": 0,
                 "rechecked": 0,
                 "newly_checked": 1,
             },
