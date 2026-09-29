@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-29
 revised: 2026-09-29   # round 4 folded in (Claude and Codex, all NEEDS CHANGES, narrow); Plan 268 T8 already done by the one-off route
 plan: 510
@@ -18,9 +18,10 @@ source: 2026-09-29 — Plan 268 T8 (the CHWRR delivery import on the Mac-mini) c
 
 ## Status
 
-**DRAFT, HIGH RISK.** Four rounds of independent review (Claude and Codex) have returned NEEDS CHANGES; this
-revision folds in round 4. It needs one owner-commissioned review before READY and
-another before the implementation PR (`docs/workflow.md` § High-risk work). The orchestrator sets READY.
+**READY — HIGH RISK.** Set 2026-09-29 by the orchestrator on the owner's instruction, after independent review by
+Claude and Codex: repeated rounds, then a final gate at commit `7f8b5c39` in which all four reviewers (two per plan)
+recommended READY with no blockers. The high-risk rule's owner-commissioned review is taken as satisfied by the
+owner's instruction. The notes below came from that final gate and do not change any decision.
 
 ## Why
 
@@ -267,6 +268,22 @@ Per-person identity and audit of *who* ran an operator job (named-human sessions
 operator-job identity is deferred to v1.x in `security.md`); a UI for triggering jobs; runbook layout (Plan 512);
 creating tenants (Plan 513, a prerequisite). This plan reduces use of the owner credential for operator jobs; the
 separate Prefect owner-credential residual in `security.md` is not closed by it.
+
+## Implementation notes from the final gate reviews (non-normative; none blocks READY)
+
+- The guard migration's downgrade must guard its `REVOKE` with a `pg_roles` existence check, so downgrade tests on a
+  database without the operator role do not error.
+- The audit write must work with an `INSERT`-only grant: `PgAuditLogStore` uses an autoincrement key, so SQLAlchemy's
+  implicit `RETURNING` would need `SELECT`. Suppress it for this append-only write, include the sequence privilege
+  in the measured grants, and verify under the real operator login while audit `SELECT` stays denied.
+- Rejections stay log-only (a rejection audit row would be rolled back with the failed transaction) unless written on
+  a separate connection; T2 states which.
+- Tie the guard migration's SQL literals to `DELIVERY_ID` and `DELIVERY_TENANT_CODE` with a test, so a second delivery
+  cannot drift silently.
+- T1's grant matrix lives in the test harness and T7's docs, not in this plan (this plan is READY and is not edited by
+  implementers); T1 also records sequence and `audit_log` privileges.
+- A forgotten operator overlay looks the same as a revoke (the role goes back to no login); the runbook says so.
+- The Plan 268 edit is applied once, by T7, after its own independent review.
 
 ```json
 {

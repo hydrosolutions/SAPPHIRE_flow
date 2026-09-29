@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-29
 revised: 2026-09-29   # rounds 1–3 folded in (Claude and Codex, all NEEDS CHANGES, narrowing); T8 already done by the one-off route
 plan: 513
@@ -18,9 +18,10 @@ source: 2026-09-29 — owner: "what we actually need is option b" (declared tena
 
 ## Status
 
-**DRAFT, HIGH RISK.** Three review rounds (Claude and Codex, 2026-09-29) returned NEEDS CHANGES; this revision folds in
-round 3. It needs one owner-commissioned review before READY
-(`docs/workflow.md` § High-risk work). The orchestrator sets READY.
+**READY — HIGH RISK.** Set 2026-09-29 by the orchestrator on the owner's instruction, after independent review by
+Claude and Codex: repeated rounds, then a final gate at commit `7f8b5c39` in which all four reviewers (two per plan)
+recommended READY with no blockers. The high-risk rule's owner-commissioned review is taken as satisfied by the
+owner's instruction. The notes below came from that final gate and do not change any decision.
 
 ## Why
 
@@ -165,6 +166,21 @@ per task, and a full `uv run pytest` before merge; affected docs updated in the 
 
 Renaming tenants; deleting tenants; per-host declarations of anything but tenants; the operator database role
 (Plan 510).
+
+## Implementation notes from the final gate reviews (non-normative; none blocks READY)
+
+- T2's concurrency test cannot present unsorted batches through the step (it sorts its input); it calls
+  `ensure_tenant` directly, or the batch function with unsorted input, to prove the deadlock protection.
+- The same code declared in two overlays with different names resolves silently to the rightmost overlay through the
+  merge; D2 still catches any mismatch against the database. A parser test states this behaviour.
+- An owner-renamed `sapphire` row makes `init` fail (D2); the runbook says so.
+- T3's "existing tenant keeps its id" test creates the tenant directly through the store, so it survives Plan 510 T5
+  removing `bootstrap_tenant`; T2's test remains the source of truth for that behaviour.
+- The runbook edit in T3 is made at the runbook's then-current path (Plan 512 may move it).
+- The `init` ordering test at `tests/unit/deploy/test_compose_db_roles.py:147` gains the tenant step between
+  `alembic` and the role bootstrap.
+- Plan 268 stays stale until Plan 510 T7 lands; its `bootstrap-tenant` step is idempotent, so a reader who re-runs T8
+  from it does no harm.
 
 ```json
 {
