@@ -65,8 +65,9 @@ and what it changes for the tasks still to build:
 
 ⭐ **What this plan now promises, and what it does not.** It makes the five hourly stations
 *checkable*: about 95% of their checks should run real rules (the § (10) estimate; the T1 proxy is
-consistent with it; T5 measures it). It does **not** make the Plan 318
-watchdog go quiet — § (10) measures why, and the owner accepted that leftover on 2026-09-25 (D3).
+consistent with it; T5 measures it). It is **not expected** to make the
+Plan 318 watchdog go quiet — § (10)'s replay estimates why (an estimate, not an established post-deploy
+schedule), and the owner accepted that leftover on 2026-09-25 (D3).
 Plan 400 is the follow-on that closes it.
 
 ## Why this plan exists
@@ -275,8 +276,9 @@ deploy; this decision is unchanged.*
 § (10) estimated that about 5% of hourly checks will still infer no cadence, or one no rule
 declares, because one missing reading in a two- or three-reading window leaves one reading or
 changes the median gap. The owner's call: this plan
-ships the hourly rules and **accepts that leftover** — the Plan 318 watchdog will keep warning
-intermittently for these stations until Plan 400 lands — and **Plan 400 fixes how the cadence is worked out** for a
+ships the hourly rules and **accepts that leftover** — the Plan 318 watchdog is expected to keep
+warning intermittently for these stations until Plan 400 lands (an expectation from § (10)'s replay, not
+measured after deploy) — and **Plan 400 fixes how the cadence is worked out** for a
 series with occasional gaps.
 
 ⛔ **Replaced, not amended:** the 2026-09-24 text named nearest-rule matching as "Plan 264's
@@ -480,7 +482,8 @@ them, which is not measured. A late newest reading is consistent with, and by th
 sufficient for, runs in the first ~20 minutes seeing one reading and logging `None`; the data do not
 exclude other causes (the series also has real gaps, e.g. 30 two-hour gaps at 2251). ⚠️ **This is a neighbour-availability proxy, not a replay.** It checks that a reading ±3600 s away was
 already stored; it does not check that the neighbour lies inside the QC window `[now − 2 h, now + 1 h)`
-of the run that stored the reading (a reading stored at 12:25 can match an already-stored 10:00 one
+of the run that stored the reading — for these BAFU stations a fixed window, because the widening
+by `fetched_times` (`_run_qc_task`) applies only to DHM river `water_level` (a reading stored at 12:25 can match an already-stored 10:00 one
 that is outside `[10:25, …)`), does not compute the median gap `infer_time_step` uses (an extra off-grid
 timestamp can move it), and `created_at <= created_at` excludes a neighbour stored later in the same
 batch. It therefore can overstate (catch-up batches after gaps, a stray older row) and can understate
