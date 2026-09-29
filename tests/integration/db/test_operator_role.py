@@ -679,14 +679,16 @@ class TestBootstrapLoginHandling:
         db.bootstrap()
         assert self._can_log_in(db)
 
-    def test_dropping_the_overlay_stops_new_logins_but_not_an_open_session(
+    def test_every_bootstrap_ends_open_operator_sessions_and_stops_new_logins(
         self, db: OperatorDb
     ) -> None:
         engine = db.engine()
         try:
             with engine.connect() as open_session:
-                db.bootstrap(operator_password=None)
                 assert open_session.scalar(sa.text("SELECT 1")) == 1
+                db.bootstrap(operator_password=None)
+                with pytest.raises(sa.exc.DBAPIError):
+                    open_session.scalar(sa.text("SELECT 1"))
                 assert not self._can_log_in(db)
         finally:
             engine.dispose()
@@ -837,6 +839,33 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
                 sa.text(
                     f"CREATE TRIGGER {trigger} BEFORE INSERT ON observations "
                     "FOR EACH ROW EXECUTE FUNCTION "
+                    "public.operator_guard_delivery_row()"
+                )
+            )
+        try:
+            db.bootstrap()
+            assert _all_table_privileges(db) == {}
+        finally:
+            with db.owner.begin() as conn:
+                conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+                conn.execute(sa.text(definition))
+            db.bootstrap()
+        assert _dml_privileges(db)
+
+    @pytest.mark.parametrize(
+        "condition", ["false", "session_user = 'someone_else'", "true"]
+    )
+    def test_a_guard_trigger_with_the_wrong_when_predicate_counts_as_broken(
+        self, db: OperatorDb, condition: str
+    ) -> None:
+        trigger = "trg_observations_operator_guard_insert"
+        definition = _trigger_definition(db, trigger)
+        with db.owner.begin() as conn:
+            conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+            conn.execute(
+                sa.text(
+                    f"CREATE TRIGGER {trigger} BEFORE INSERT ON observations "
+                    f"FOR EACH ROW WHEN ({condition}) EXECUTE FUNCTION "
                     "public.operator_guard_delivery_row()"
                 )
             )
@@ -1108,59 +1137,107 @@ class TestTruncateTriggerRefusesEvenWithTheGrant:
         assert "may not TRUNCATE" in outcome.message
 
 
-class TestOperatorTempTableDoesNotBlockTheBootstrap:
-    """An operator session that created a temp table and stays open must neither
-    abort `init` nor keep its privileges when the bootstrap converges."""
+_TEMP_OBJECTS: dict[str, tuple[str, ...]] = {
+    "temp-table-with-rls": (
+        "CREATE TEMP TABLE scratch (id int)",
+        "ALTER TABLE scratch ENABLE ROW LEVEL SECURITY",
+    ),
+    "temp-function": (
+        "CREATE FUNCTION pg_temp.scratch_fn() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+    ),
+    "temp-type": ("CREATE TYPE pg_temp.scratch_ty AS (a int)",),
+    "temp-table": ("CREATE TEMP TABLE scratch (id int)",),
+}
 
-    def _open_session_with_temp_table(
-        self, db: OperatorDb
-    ) -> tuple[sa.Engine, sa.Connection]:
+
+class TestOperatorTempObjectsNeverBlockTheBootstrap:
+    """An operator session holding a committed temp object — or an open
+    transaction locking one — must neither abort nor hang `init`; the session
+    ends and the role's privileges follow the guard's state."""
+
+    _OPEN_TRANSACTION = "open-transaction-locking-a-temp-table"
+
+    def _session(self, db: OperatorDb, kind: str) -> tuple[sa.Engine, sa.Connection]:
         engine = db.engine()
         conn = engine.connect()
-        conn.execute(sa.text("CREATE TEMP TABLE scratch (id int)"))
+        statements = _TEMP_OBJECTS.get(kind, _TEMP_OBJECTS["temp-table"])
+        for statement in statements:
+            conn.execute(sa.text(statement))
         conn.commit()
+        if kind == self._OPEN_TRANSACTION:
+            conn.execute(sa.text("LOCK TABLE scratch IN ACCESS EXCLUSIVE MODE"))
         return engine, conn
 
-    def test_a_healthy_guard_still_bootstraps(self, db: OperatorDb) -> None:
-        engine, conn = self._open_session_with_temp_table(db)
-        try:
-            db.bootstrap()
-            assert _dml_privileges(db)
-            assert conn.scalar(sa.text("SELECT 1")) == 1
-        finally:
-            conn.close()
-            engine.dispose()
-
-    def test_a_broken_guard_revokes_the_open_sessions_privileges(
-        self, db: OperatorDb
+    @pytest.mark.parametrize("guard", ["healthy", "disabled"])
+    @pytest.mark.parametrize("kind", [*_TEMP_OBJECTS, _OPEN_TRANSACTION])
+    def test_the_bootstrap_completes_and_the_session_cannot_write(
+        self, db: OperatorDb, kind: str, guard: str
     ) -> None:
-        engine, conn = self._open_session_with_temp_table(db)
-        db.ids = {**db.ids, "t": _T}
+        engine, conn = self._session(db, kind)
+        trigger = "trg_observations_operator_guard_insert"
+        setup = (
+            [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"]
+            if guard == "disabled"
+            else []
+        )
+        teardown = (
+            [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"]
+            if guard == "disabled"
+            else []
+        )
         try:
-            with _owner_ran(
-                db,
-                [
-                    "ALTER TABLE observations DISABLE TRIGGER "
-                    "trg_observations_operator_guard_insert"
-                ],
-                [
-                    "ALTER TABLE observations ENABLE TRIGGER "
-                    "trg_observations_operator_guard_insert"
-                ],
-            ):
+            with _owner_ran(db, setup, teardown):
                 db.bootstrap()
-                assert _all_table_privileges(db) == {}
-                with pytest.raises(sa.exc.ProgrammingError, match="permission denied"):
+                if guard == "disabled":
+                    assert _all_table_privileges(db) == {}
+                else:
+                    assert _dml_privileges(db)
+                with pytest.raises(sa.exc.DBAPIError):
                     conn.execute(
                         sa.text(_INSERT_OBS.format(station="swiss", delivery="NULL")),
-                        db.ids,
+                        {**db.ids, "t": _T},
                     )
-                conn.rollback()
         finally:
             conn.close()
             engine.dispose()
             db.bootstrap()
         assert _dml_privileges(db)
+
+    def test_a_persistent_object_owned_by_the_operator_is_still_refused(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE TABLE public.operator_owned_probe (id int)",
+                f"ALTER TABLE public.operator_owned_probe OWNER TO {OPERATOR}",
+            ],
+            ["DROP TABLE public.operator_owned_probe"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        assert result.returncode != 0
+        assert "sapphire_operator owns" in result.stderr
+        db.bootstrap()
+
+    def test_a_persistent_rls_table_is_still_refused_by_the_backup_preflight(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE TABLE public.rls_probe (id int)",
+                "ALTER TABLE public.rls_probe ENABLE ROW LEVEL SECURITY",
+            ],
+            ["DROP TABLE public.rls_probe"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        assert result.returncode != 0
+        assert "row-level security" in result.stderr
+        db.bootstrap()
 
 
 def _stub_bin(directory: Path) -> Path:

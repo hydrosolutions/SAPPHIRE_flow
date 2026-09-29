@@ -28,6 +28,50 @@
 -- produces exactly one row (the ALTER branch when the role exists, the
 -- CREATE branch when it does not), and `\gexec` executes whatever row(s)
 -- the preceding query returned.
+-- ── Plan 510: the operator's SAFE STATE comes FIRST ────────────────────────
+-- Before any preflight or block below that can abort under ON_ERROR_STOP, the
+-- operator role (if it exists) loses login, memberships and every table,
+-- sequence, schema and database privilege, and its open sessions are ended.
+-- Otherwise an operator-controllable object (the role may create TEMP objects)
+-- could abort `init` first and leave a surviving session holding its DML.
+-- Ending sessions on every deploy is intended: deploys stop the workers first,
+-- and an in-flight import rolls back atomically. Termination is asynchronous,
+-- so wait (bounded) until the backends are gone.
+DO $$
+DECLARE
+    membership record;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_operator'
+    ) THEN
+        RETURN;
+    END IF;
+    ALTER ROLE sapphire_operator NOLOGIN;
+    FOR membership IN
+        SELECT granted.rolname AS granted_role
+        FROM pg_catalog.pg_auth_members am
+        JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+        JOIN pg_catalog.pg_roles member ON member.oid = am.member
+        WHERE member.rolname = 'sapphire_operator'
+    LOOP
+        EXECUTE format('REVOKE %I FROM sapphire_operator', membership.granted_role);
+    END LOOP;
+    REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+    REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+    REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
+    REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
+    PERFORM pg_catalog.pg_terminate_backend(pid)
+    FROM pg_catalog.pg_stat_activity
+    WHERE usename = 'sapphire_operator' AND pid <> pg_catalog.pg_backend_pid();
+    FOR attempt IN 1..100 LOOP
+        EXIT WHEN NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_stat_activity
+            WHERE usename = 'sapphire_operator' AND pid <> pg_catalog.pg_backend_pid()
+        );
+        PERFORM pg_catalog.pg_sleep(0.1);
+    END LOOP;
+END $$;
+
 SELECT format('ALTER ROLE sapphire_api PASSWORD %L', :'api_password')
 WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_api')
 UNION ALL
@@ -343,9 +387,15 @@ DECLARE
     rls_tables integer;
     large_objects integer;
 BEGIN
+    -- Temporary relations (any session's pg_temp_N / pg_toast_temp_N) are
+    -- skipped: a role allowed TEMP must not be able to abort this bootstrap
+    -- with a scratch table; PERSISTENT RLS tables are still refused.
     SELECT count(*) INTO rls_tables
-    FROM pg_catalog.pg_class
-    WHERE relrowsecurity;
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relrowsecurity
+      AND c.relpersistence <> 't'
+      AND n.nspname !~ '^pg_(toast_)?temp_';
 
     SELECT count(*) INTO large_objects FROM pg_catalog.pg_largeobject_metadata;
 
@@ -544,17 +594,12 @@ JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
 JOIN pg_catalog.pg_roles member ON member.oid = am.member
 WHERE member.rolname = 'sapphire_operator'
 \gexec
--- Revocation comes FIRST and can never be skipped by the ownership preflight
--- below: a session that still holds an old connection loses its privileges here.
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_operator;
-REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_operator;
--- The operator may create TEMP tables (TEMP is granted to PUBLIC and is not
--- prevented), and PostgreSQL records an ownership dependency for them. They
--- vanish with their session and must never abort `init`, so the preflight
--- skips temporary relations; it still refuses real persistent objects.
+-- (The revocations already ran at the top of this file.) Ownership preflight:
+-- objects in temporary namespaces — relations, functions, types — vanish with
+-- their (already terminated) session and must never abort `init`; PERSISTENT
+-- objects are still refused. pg_shdepend spans the cluster, so the object
+-- lookups only apply to rows of THIS database; foreign-database ownerships and
+-- shared objects stay countable.
 DO $$
 DECLARE
     owned_objects integer;
@@ -562,23 +607,38 @@ BEGIN
     SELECT count(*) INTO owned_objects
     FROM pg_catalog.pg_shdepend sd
     JOIN pg_catalog.pg_roles r ON r.oid = sd.refobjid
+    LEFT JOIN pg_catalog.pg_database d
+        ON d.datname = pg_catalog.current_database() AND d.oid = sd.dbid
     LEFT JOIN pg_catalog.pg_class c
-        ON sd.classid = 'pg_catalog.pg_class'::regclass AND c.oid = sd.objid
+        ON d.oid IS NOT NULL
+       AND sd.classid = 'pg_catalog.pg_class'::regclass AND c.oid = sd.objid
+    LEFT JOIN pg_catalog.pg_proc p
+        ON d.oid IS NOT NULL
+       AND sd.classid = 'pg_catalog.pg_proc'::regclass AND p.oid = sd.objid
+    LEFT JOIN pg_catalog.pg_type ty
+        ON d.oid IS NOT NULL
+       AND sd.classid = 'pg_catalog.pg_type'::regclass AND ty.oid = sd.objid
+    LEFT JOIN pg_catalog.pg_namespace n
+        ON n.oid = COALESCE(c.relnamespace, p.pronamespace, ty.typnamespace)
     WHERE r.rolname = 'sapphire_operator' AND sd.deptype = 'o'
-      AND COALESCE(c.relpersistence, 'p') <> 't';
+      AND NOT COALESCE(n.nspname ~ '^pg_(toast_)?temp_', false);
     IF owned_objects > 0 THEN
         RAISE EXCEPTION 'sapphire_operator owns % object(s)', owned_objects;
     END IF;
 END $$;
+-- Bounded, so a lock held by anything that survived cannot hang the deploy.
+SET lock_timeout = '10s';
 DROP OWNED BY sapphire_operator;
+RESET lock_timeout;
 GRANT CONNECT ON DATABASE sapphire TO sapphire_operator;
 GRANT USAGE ON SCHEMA public TO sapphire_operator;
 
 -- Every guard trigger of migration 0067, by table, name, function and
 -- pg_trigger.tgtype (BEFORE=2, ROW=1, INSERT=4, DELETE=8, UPDATE=16,
 -- TRUNCATE=32), present AND enabled ('O' origin, 'A' always; a DISABLE
--- TRIGGER leaves the row present with 'D'), and carrying its WHEN clause
--- (tgqual; without it the trigger would fire for every role).
+-- TRIGGER leaves the row present with 'D'), and carrying EXACTLY the WHEN
+-- predicate `session_user = 'sapphire_operator'` (a missing, `false` or
+-- wrong-role condition is a broken guard).
 SELECT count(*) = 10 AS operator_guard_ok
 FROM (VALUES
     ('observations', 'trg_observations_operator_guard_insert',
@@ -607,7 +667,9 @@ JOIN pg_catalog.pg_trigger t
    AND t.tgrelid = to_regclass('public.' || expected.rel)
    AND NOT t.tgisinternal
    AND t.tgenabled IN ('O', 'A')
-   AND t.tgqual IS NOT NULL
+   AND lower(regexp_replace(pg_catalog.pg_get_expr(t.tgqual, t.tgrelid),
+            '[()[:space:]]', '', 'g'))
+       = 'session_user=''sapphire_operator''::name'
    AND t.tgtype = expected.trigger_type
 JOIN pg_catalog.pg_proc p
     ON p.oid = t.tgfoid
