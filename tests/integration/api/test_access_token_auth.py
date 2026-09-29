@@ -732,6 +732,17 @@ _COLLECTION_ROUTES: dict[str, str] = {
     "/api/v1/alerts": "/api/v1/alerts?station_id={sid}",
     "/api/v1/forecast-lab/snapshot": "/api/v1/forecast-lab/snapshot",
 }
+_PUBLICATION_DETAIL_ROUTES: dict[str, str] = {
+    "/api/v1/stations/{station_id}/forecasts/latest-published": (
+        "/api/v1/stations/{sid}/forecasts/latest-published?parameter=discharge"
+    ),
+    "/api/v1/stations/{station_id}/forecast-publications": (
+        "/api/v1/stations/{sid}/forecast-publications"
+    ),
+}
+_PUBLICATION_COLLECTION_ROUTES: dict[str, str] = {
+    "/api/v1/forecast-publications": "/api/v1/forecast-publications",
+}
 
 
 class _Scene:
@@ -784,7 +795,12 @@ class TestReviewerOnPrincipalRoutes:
             for (method, path), tag in _classify_routes().items()
             if tag == "PRINCIPAL" and method == "GET"
         }
-        assert principal_gets == set(_DETAIL_ROUTES) | set(_COLLECTION_ROUTES)
+        assert principal_gets == (
+            set(_DETAIL_ROUTES)
+            | set(_COLLECTION_ROUTES)
+            | set(_PUBLICATION_DETAIL_ROUTES)
+            | set(_PUBLICATION_COLLECTION_ROUTES)
+        )
 
     def _keys(self, conn: sa.Connection, scene: _Scene) -> dict[AccessTokenRole, str]:
         return {
@@ -851,6 +867,91 @@ class TestReviewerOnPrincipalRoutes:
             f"/api/v1/alerts/{uuid4()}/acknowledge", headers=_auth(raw_key)
         )
         assert resp.status_code == 501
+
+
+@pytest.fixture
+def publication_scene(
+    db_connection: sa.Connection,
+) -> Generator[tuple[StationId, StationId], None, None]:
+    from sapphire_flow.api.deps import get_deployment_config
+    from sapphire_flow.api.publication_gate import PublicationGate, get_publication_gate
+    from sapphire_flow.config.deployment import load_config
+    from sapphire_flow.db.metadata import human_station_grants
+    from tests.integration.store.test_forecast_publication_store import (
+        _add_candidate,
+        _publish,
+        _seed,
+    )
+
+    store, human, forecast_id, in_scope = _seed(db_connection)
+    other = _seed_station(db_connection, seed=72, tenant_id=DEFAULT_TENANT_ID)
+    other_forecast = _add_candidate(db_connection, other)
+    for permission in ("review", "publish"):
+        db_connection.execute(
+            sa.insert(human_station_grants).values(
+                user_id=human.user_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                station_id=other,
+                permission=permission,
+            )
+        )
+    _publish(store, human, forecast_id)
+    _publish(store, human, other_forecast, idempotency_key="other-station")
+    config = load_config("config.toml")
+    app.dependency_overrides[get_deployment_config] = lambda: config
+    app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+        active_tenant_ids=frozenset({DEFAULT_TENANT_ID})
+    )
+    try:
+        yield in_scope, other
+    finally:
+        app.dependency_overrides.pop(get_deployment_config, None)
+        app.dependency_overrides.pop(get_publication_gate, None)
+
+
+class TestReviewerOnPublicationRoutes:
+    @pytest.mark.parametrize("template", list(_PUBLICATION_DETAIL_ROUTES.values()))
+    def test_active_publication_detail_matches_consumer_and_hides_other_station(
+        self,
+        client: TestClient,
+        db_connection: sa.Connection,
+        publication_scene: tuple[StationId, StationId],
+        template: str,
+    ) -> None:
+        in_scope, other = publication_scene
+        responses = []
+        for role in (AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER):
+            key = _make_token(
+                db_connection, role=role, station_ids=frozenset({in_scope})
+            )
+            visible = client.get(template.format(sid=in_scope), headers=_auth(key))
+            hidden = client.get(template.format(sid=other), headers=_auth(key))
+            assert visible.status_code == 200
+            assert hidden.status_code == 404
+            responses.append(_comparable(visible))
+        assert responses[0] == responses[1]
+
+    @pytest.mark.parametrize("path", list(_PUBLICATION_COLLECTION_ROUTES.values()))
+    def test_active_publication_feed_matches_consumer_and_filters_other_station(
+        self,
+        client: TestClient,
+        db_connection: sa.Connection,
+        publication_scene: tuple[StationId, StationId],
+        path: str,
+    ) -> None:
+        in_scope, _ = publication_scene
+        responses = []
+        for role in (AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER):
+            key = _make_token(
+                db_connection, role=role, station_ids=frozenset({in_scope})
+            )
+            response = client.get(path, headers=_auth(key))
+            assert response.status_code == 200
+            assert [item["station_id"] for item in response.json()["items"]] == [
+                str(in_scope)
+            ]
+            responses.append(_comparable(response))
+        assert responses[0] == responses[1]
 
 
 class TestForecastDetailHidesOutOfScopeExistence:
