@@ -45,6 +45,7 @@ from sapphire_flow.types.forecast_publication import (
     PublicationDecision,
     PublishRequest,
     WithdrawalReasonCode,
+    WithdrawalState,
     WithdrawRequest,
 )
 from sapphire_flow.types.human_auth import HumanPrincipal
@@ -314,7 +315,7 @@ class TestPgForecastPublicationStore:
             station_ids=frozenset({station_id}),
         )
         assert page_one[0].decision.id == first.id
-        assert page_one[0].withdrawn is True
+        assert page_one[0].withdrawal_state is WithdrawalState.WITHDRAWN
         assert page_two[0].event_type.value == "withdrawn"
         assert page_two[0].sequence > page_one[0].sequence
 

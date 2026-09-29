@@ -29,6 +29,11 @@ class PublicationEventType(Enum):
     WITHDRAWN = "withdrawn"
 
 
+class WithdrawalState(Enum):
+    NOT_WITHDRAWN = "not_withdrawn"
+    WITHDRAWN = "withdrawn"
+
+
 class PreservationAtPublish(Enum):
     VERIFIED = "verified"
     BACKUP_PENDING = "backup_pending"
@@ -124,7 +129,7 @@ class PublicationEvent:
     sequence: int
     event_type: PublicationEventType
     decision: PublicationDecision
-    withdrawn: bool
+    withdrawal_state: WithdrawalState
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -1355,7 +1355,10 @@ is an opaque base64 encoding of the last sequence (or the input position when
 the page is empty). A withdrawal event invalidates the forecast ID across all
 earlier decision IDs. History and feed access is authenticated. The Forecast Lab
 snapshot route denies an entire request containing an activated station before
-assembling RAW values. Legacy HTML and `/data.json` forecast views remain
+assembling RAW values. Internally, each `PublicationEvent` carries a typed
+`WithdrawalState` (`NOT_WITHDRAWN` or `WITHDRAWN`); the API encodes this as
+the change feed's `withdrawn` boolean.
+Legacy HTML and `/data.json` forecast views remain
 admin-only internal RAW diagnostics. Forecast-bearing API responses, including
 404 and 410 responses, set `Cache-Control: no-store`; downstream consumers use
 the sequence feed to invalidate any separately retained copies.

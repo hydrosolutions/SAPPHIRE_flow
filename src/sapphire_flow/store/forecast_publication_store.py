@@ -45,6 +45,7 @@ from sapphire_flow.types.forecast_publication import (
     PublicationKey,
     PublicationSelection,
     PublishRequest,
+    WithdrawalState,
     WithdrawRequest,
 )
 from sapphire_flow.types.ids import (
@@ -529,7 +530,11 @@ class PgForecastPublicationStore:
                 sequence=row["sequence"],
                 event_type=PublicationEventType(row["event_type"]),
                 decision=_decision_from_row(row),
-                withdrawn=row["withdrawn"],
+                withdrawal_state=(
+                    WithdrawalState.WITHDRAWN
+                    if row["withdrawn"]
+                    else WithdrawalState.NOT_WITHDRAWN
+                ),
             )
             for row in rows
         ]

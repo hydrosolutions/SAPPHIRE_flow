@@ -54,6 +54,7 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.forecast_publication import (
     PublishRequest,
     WithdrawalReasonCode,
+    WithdrawalState,
     WithdrawRequest,
 )
 from sapphire_flow.types.human_auth import HumanPermission, HumanPrincipal
@@ -289,13 +290,17 @@ def publication_history(
         decision = event.decision
         forecast = (
             stores["forecast_store"].fetch_forecast(decision.forecast_id)
-            if not event.withdrawn
+            if event.withdrawal_state is WithdrawalState.NOT_WITHDRAWN
             else None
         )
         metadata: dict[str, Any] = {}
         if forecast is not None:
             metadata, _ = publication_metadata(pub, forecast, tenant_id)
-        state = "withdrawn" if event.withdrawn else metadata["publication_state"]
+        state = (
+            "withdrawn"
+            if event.withdrawal_state is WithdrawalState.WITHDRAWN
+            else metadata["publication_state"]
+        )
         items.append(
             PublicationHistoryItem(
                 sequence=event.sequence,
@@ -346,7 +351,7 @@ def publication_changes(
                     else None
                 ),
                 created_at=e.decision.created_at,
-                withdrawn=e.withdrawn,
+                withdrawn=e.withdrawal_state is WithdrawalState.WITHDRAWN,
             )
             for e in events
         ],

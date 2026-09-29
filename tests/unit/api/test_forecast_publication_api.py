@@ -35,6 +35,7 @@ from sapphire_flow.types.forecast_publication import (
     PublicationEventType,
     PublicationKey,
     PublicationSelection,
+    WithdrawalState,
 )
 from sapphire_flow.types.human_auth import HumanPermission, HumanPrincipal, StationGrant
 from sapphire_flow.types.ids import (
@@ -138,7 +139,7 @@ class FakePublicationStore:
                     else PublicationEventType.PUBLISHED
                 ),
                 decision=decision,
-                withdrawn=False,
+                withdrawal_state=WithdrawalState.NOT_WITHDRAWN,
             )
         )
         return decision
@@ -166,7 +167,7 @@ class FakePublicationStore:
                 sequence=len(self.events) + 1,
                 event_type=PublicationEventType.WITHDRAWN,
                 decision=decision,
-                withdrawn=True,
+                withdrawal_state=WithdrawalState.WITHDRAWN,
             )
         )
 
@@ -232,8 +233,12 @@ class FakePublicationStore:
         return [
             replace(
                 e,
-                withdrawn=self.decisions[e.decision.forecast_id][-1].action
-                is PublicationAction.WITHDRAW,
+                withdrawal_state=(
+                    WithdrawalState.WITHDRAWN
+                    if self.decisions[e.decision.forecast_id][-1].action
+                    is PublicationAction.WITHDRAW
+                    else WithdrawalState.NOT_WITHDRAWN
+                ),
             )
             for e in self.events
             if e.sequence > after_sequence
