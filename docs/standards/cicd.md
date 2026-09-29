@@ -1294,8 +1294,15 @@ The service mounts the delivery directory read-only at `/data/dhm-delivery`, sel
 2. *Emergency, independent of `init`* (a failing tenant declaration can stop `init` before the role bootstrap
    runs). As the owner, in `psql` against the `sapphire` database:
 
+Terminate FIRST: an operator transaction (for instance an open `ALTER ROLE ... PASSWORD`) can block the
+`ALTER ROLE ... NOLOGIN` itself, and its locks disappear only with its session.
+
 ```sql
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'sapphire_operator';
 ALTER ROLE sapphire_operator NOLOGIN;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+-- again: catches a session that connected before NOLOGIN committed
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'sapphire_operator';
 -- verify: must return f
 SELECT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'sapphire_operator')

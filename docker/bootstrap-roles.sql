@@ -31,7 +31,10 @@
 -- (2) The restriction is plain AUTOCOMMITTED statements under a short
 -- lock_timeout with ON_ERROR_STOP off (a timeout must not abort the script),
 -- retried for three unrolled rounds (psql has no loop) until a `\gset` check
--- shows the role neutralised: no login, no explicit table or schema ACL entry.
+-- shows the role neutralised: no login, no explicit ACL entry on public's
+-- relations or on schema public — exactly the scope the REVOKEs below cover. A
+-- stale grant in another schema is not a reason to abort (it is not a lock
+-- problem); `DROP OWNED` further down removes it before login returns.
 -- Committed before the sweep below, a reconnecting session is refused.
 -- (3) If the role still cannot be neutralised the safe state could not be
 -- established, and aborting `init` with a clear error is then the right thing.
@@ -70,7 +73,8 @@ SELECT EXISTS (
            AND NOT EXISTS (
                 SELECT 1 FROM pg_catalog.pg_class c
                 CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
-                WHERE a.grantee = r.oid)
+                WHERE a.grantee = r.oid
+                  AND c.relnamespace = 'public'::regnamespace)
            AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.pg_namespace n
             CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
@@ -101,7 +105,8 @@ SELECT EXISTS (
            AND NOT EXISTS (
                 SELECT 1 FROM pg_catalog.pg_class c
                 CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
-                WHERE a.grantee = r.oid)
+                WHERE a.grantee = r.oid
+                  AND c.relnamespace = 'public'::regnamespace)
            AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.pg_namespace n
             CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
@@ -132,7 +137,8 @@ SELECT EXISTS (
            AND NOT EXISTS (
                 SELECT 1 FROM pg_catalog.pg_class c
                 CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a
-                WHERE a.grantee = r.oid)
+                WHERE a.grantee = r.oid
+                  AND c.relnamespace = 'public'::regnamespace)
            AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.pg_namespace n
             CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a
@@ -178,6 +184,8 @@ SELECT EXISTS (
                 PERFORM pg_catalog.pg_sleep(0.05);
             END LOOP;
         END LOOP;
+        -- Test scaffolding kept in production SQL: the sweep-timing test parses
+        -- this line. It prints a duration only, never a secret.
         RAISE NOTICE 'operator sweep took % ms',
             round(extract(epoch FROM pg_catalog.clock_timestamp() - started) * 1000);
         IF remaining > 0 THEN

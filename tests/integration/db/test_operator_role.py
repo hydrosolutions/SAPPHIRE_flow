@@ -1331,18 +1331,66 @@ class TestOperatorTempObjectsNeverBlockTheBootstrap:
 
         blocker = db.owner.connect()
         blocker.execute(sa.text("ALTER ROLE sapphire_operator PASSWORD 'held'"))
-        released = threading.Timer(3.0, blocker.rollback)
-        released.start()
+        stop = threading.Event()
+
+        def release_after_the_bootstrap_hits_the_lock() -> None:
+            # Evidence, not a wall-clock guess: wait until a bootstrap backend
+            # is blocked on the NOLOGIN statement, then hold it past the 2 s
+            # lock_timeout so round 1 really times out before the release.
+            deadline = time.perf_counter() + 30
+            while not stop.is_set() and time.perf_counter() < deadline:
+                waiting = db.scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = "
+                    "'Lock' AND query ILIKE 'ALTER ROLE sapphire_operator NOLOGIN%'"
+                )
+                if waiting:
+                    time.sleep(2.7)
+                    break
+                time.sleep(0.05)
+            blocker.rollback()
+
+        releaser = threading.Thread(target=release_after_the_bootstrap_hits_the_lock)
+        releaser.start()
         try:
             result = db.harness.run_bootstrap(
                 "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
             )
         finally:
-            released.join()
+            stop.set()
+            releaser.join()
             blocker.close()
             db.bootstrap()
         assert result.returncode == 0, result.stderr
         assert "lock timeout" in result.stderr
+
+    def test_a_stale_grant_in_another_schema_does_not_abort_and_is_removed(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE SCHEMA reporting",
+                "CREATE TABLE reporting.some_table (id int)",
+                f"GRANT SELECT, INSERT ON reporting.some_table TO {OPERATOR}",
+                f"GRANT USAGE ON SCHEMA reporting TO {OPERATOR}",
+            ],
+            ["DROP SCHEMA reporting CASCADE"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            assert result.returncode == 0, result.stderr
+            assert "could not be neutralised" not in result.stderr
+            assert (
+                db.scalar(
+                    "SELECT has_table_privilege(:r, 'reporting.some_table', "
+                    "'SELECT') OR has_table_privilege(:r, 'reporting.some_table', "
+                    "'INSERT') OR has_schema_privilege(:r, 'reporting', 'USAGE')",
+                    r=OPERATOR,
+                )
+                is False
+            )
+        db.bootstrap()
 
     def test_the_sweep_wait_sees_the_backend_leave(self, db: OperatorDb) -> None:
         import re
