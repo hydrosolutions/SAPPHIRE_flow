@@ -39,6 +39,15 @@ class HistoryWindow:
         if self.start >= self.end:
             raise ValueError("history start must precede end")
 
+    def batches(self) -> tuple[HistoryWindow, ...]:
+        windows: list[HistoryWindow] = []
+        start = self.start
+        while start < self.end:
+            end = ensure_utc(min(start + timedelta(days=31), self.end))
+            windows.append(HistoryWindow(start=start, end=end))
+            start = end
+        return tuple(windows)
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class TrainingWindow(HistoryWindow):

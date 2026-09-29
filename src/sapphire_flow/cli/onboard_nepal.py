@@ -11,6 +11,9 @@ from sapphire_flow import __version__
 from sapphire_flow.config.deployment_identity import load_deployment_identity_config
 from sapphire_flow.db.engine import create_engine_from_env
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
+    ingest_recap_era5_reanalysis_flow,
+)
 from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.services.basin_package_loader import load_basin_package
 from sapphire_flow.services.model_registry import discover_models
@@ -155,75 +158,80 @@ def main(argv: list[str] | None = None) -> int:
         engine = create_engine_from_env()
         held = 0
         try:
-            with engine.connect() as conn, conn.begin() as transaction:
-                if loaded is not None:
-                    report = import_nepal_package(
-                        conn, loaded, identity, clock=lambda: now
-                    )
-                    log.info(
-                        "nepal_onboarding.basins",
-                        outcome=report.outcome,
-                        basins=len(report.accepted),
-                    )
-                elif args.command == "history" and window is not None:
-                    from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
-                        ingest_recap_era5_reanalysis_flow,
-                    )
-
-                    # Keep the flow inside the CLI's rollback-capable transaction.
-                    coverage = ingest_recap_era5_reanalysis_flow.fn(
-                        conn,
-                        identity,
-                        build_history_adapter(conn, args.config),
-                        window,
-                        now=now,
-                    )
-                    for item in coverage:
-                        log.info(
-                            "nepal_onboarding.history",
-                            station=item.code,
-                            parameter=item.parameter,
-                            rows=item.rows,
-                            start=item.start,
-                            end=item.end,
-                        )
-                    held = sum(item.rows == 0 for item in coverage)
-                elif model is not None and isinstance(window, TrainingWindow):
-                    reports = qualify_discharge_targets(
-                        conn, identity, model, window, now=now
-                    )
-                    for item in reports:
-                        log.info(
-                            "nepal_onboarding.readiness",
-                            station=item.code,
-                            status=item.status.value,
-                            reasons=item.reasons,
-                            qc_counts=item.qc_counts,
-                            qc_versions=item.qc_versions,
-                            usable_observations=item.usable_observations,
-                            complete_samples=item.complete_samples,
-                            overlap_start=item.overlap_start,
-                            overlap_end=item.overlap_end,
-                            model=args.model,
-                            start=window.start,
-                            end=window.end,
-                            time_step_hours=args.time_step_hours,
-                            minimum_samples=window.minimum_samples,
-                            source="recap_era5_land_reanalysis",
-                            publication="unresolved_plan268_d5_d9",
-                            operational="not_activated",
-                            live_feed="not_assessed",
-                            current_rating="not_available",
-                        )
-                    held = sum(item.status is ReadinessStatus.HELD for item in reports)
-                if args.dry_run:
-                    transaction.rollback()
-                log.info(
-                    "nepal_onboarding.completed",
-                    command=args.command,
-                    dry_run=args.dry_run,
-                    held=held,
-                )
+            batches = (
+                window.batches()
+                if args.command == "history" and window is not None
+                else (window,)
+            )
+            with engine.connect() as conn:
+                for batch in batches:
+                    with conn.begin() as transaction:
+                        if loaded is not None:
+                            report = import_nepal_package(
+                                conn, loaded, identity, clock=lambda: now
+                            )
+                            log.info(
+                                "nepal_onboarding.basins",
+                                outcome=report.outcome,
+                                basins=len(report.accepted),
+                            )
+                        elif args.command == "history" and batch is not None:
+                            # Commit or roll back each history batch separately.
+                            coverage = ingest_recap_era5_reanalysis_flow.fn(
+                                conn,
+                                identity,
+                                build_history_adapter(conn, args.config),
+                                batch,
+                                now=now,
+                            )
+                            for item in coverage:
+                                log.info(
+                                    "nepal_onboarding.history",
+                                    station=item.code,
+                                    parameter=item.parameter,
+                                    rows=item.rows,
+                                    start=item.start,
+                                    end=item.end,
+                                )
+                            held += sum(item.rows == 0 for item in coverage)
+                        elif model is not None and isinstance(window, TrainingWindow):
+                            reports = qualify_discharge_targets(
+                                conn, identity, model, window, now=now
+                            )
+                            for item in reports:
+                                log.info(
+                                    "nepal_onboarding.readiness",
+                                    station=item.code,
+                                    status=item.status.value,
+                                    reasons=item.reasons,
+                                    qc_counts=item.qc_counts,
+                                    qc_versions=item.qc_versions,
+                                    usable_observations=item.usable_observations,
+                                    complete_samples=item.complete_samples,
+                                    overlap_start=item.overlap_start,
+                                    overlap_end=item.overlap_end,
+                                    model=args.model,
+                                    start=window.start,
+                                    end=window.end,
+                                    time_step_hours=args.time_step_hours,
+                                    minimum_samples=window.minimum_samples,
+                                    source="recap_era5_land_reanalysis",
+                                    publication="unresolved_plan268_d5_d9",
+                                    operational="not_activated",
+                                    live_feed="not_assessed",
+                                    current_rating="not_available",
+                                )
+                            held = sum(
+                                item.status is ReadinessStatus.HELD for item in reports
+                            )
+                        if args.dry_run:
+                            transaction.rollback()
+            log.info(
+                "nepal_onboarding.completed",
+                command=args.command,
+                dry_run=args.dry_run,
+                held=held,
+            )
         finally:
             engine.dispose()
         return 1 if held else 0

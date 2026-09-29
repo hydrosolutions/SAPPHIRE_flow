@@ -175,6 +175,38 @@ def seed_history(
 
 
 class TestNepalOnboarding:
+    @pytest.mark.parametrize("missing", ["source", "polygon"])
+    def test_requalification_clears_target_after_binding_loss(
+        self, db_connection: sa.Connection, cohort: list[StationConfig], missing: str
+    ) -> None:
+        from sapphire_flow.db.metadata import (
+            recap_gateway_polygon_bindings,
+            station_weather_sources,
+        )
+
+        import_nepal_package(db_connection, package(), IDENTITY, clock=lambda: NOW)
+        seed_history(db_connection, cohort)
+        qualify_discharge_targets(db_connection, IDENTITY, model(), WINDOW, now=NOW)
+        table = (
+            station_weather_sources
+            if missing == "source"
+            else recap_gateway_polygon_bindings
+        )
+        db_connection.execute(
+            sa.delete(table).where(table.c.station_id == cohort[0].id)
+        )
+        reports = qualify_discharge_targets(
+            db_connection, IDENTITY, model(), WINDOW, now=NOW
+        )
+        assert len(reports) == 6
+        assert reports[0].status is ReadinessStatus.HELD
+        assert any("binding" in r or "mapping" in r for r in reports[0].reasons)
+        assert (
+            PgStationStore(db_connection).fetch_station(cohort[0].id).forecast_targets
+            is None
+        )
+        assert all(r.status is ReadinessStatus.READY for r in reports[1:])
+
     @pytest.mark.parametrize("defect", ["missing", "duplicate", "polygon", "hru"])
     def test_invalid_package_is_refused_before_writes(
         self, db_connection: sa.Connection, cohort: list[StationConfig], defect: str

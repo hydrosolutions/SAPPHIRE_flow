@@ -28,6 +28,11 @@ minimum complete-window count are runtime selections, as confirmed by the owner.
 The real six-basin package will come from the existing Mac-mini deployment
 handoff. T1's owner joins and T2–T5 staging read-back remain external acceptance
 work; this plan stays READY until that evidence is recorded.
+History CLI transactions are limited to 31-day batches; each rechecks station
+state and bindings and releases the tenant lock at commit. Later failures retain
+earlier batches, while dry runs roll back every batch. Requalification treats
+station-specific missing or conflicting history bindings as holds and clears
+their discharge targets, while reporting all six gauges.
 
 | Prerequisite | State at this revision | Remaining gate for Plan 143 |
 |---|---|---|

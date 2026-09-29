@@ -31,9 +31,9 @@ acceptance is a separate gate: confirm the six stations and persisted discharge
 QC in tenant `chwrr` before proceeding. This is the existing shared Mac-mini
 database, not a new Nepal database. The deployment session owns that acceptance.
 
-The SAP3 onboarding sequence is not yet complete. Plan 143 remains DRAFT and
-must be implemented and accepted before the steps in
-“Run SAP3 onboarding” can be executed. In particular, do not trigger the
+Plan 143 is READY and its preparation commands are implemented. Real-package
+joins, Plan 268 T8 and aggregate staging read-back remain acceptance gates.
+Use section 7 once its prerequisites are recorded. Do not trigger the
 parameterless `onboard-stations` deployment: its defaults select CAMELS-CH
 stations. Do not mark DHM stations operational or create forecast targets as
 a shortcut around the readiness gates.
@@ -356,9 +356,12 @@ uv run python -m sapphire_flow.cli.onboard_nepal qualify \
 
 Repeat `qualify` without `--dry-run` after inspecting the aggregate report.
 All three commands support rollback dry runs. History requests cover at most
-31 days each and preserve the adapter's source and per-row version. Repeating
-the same retrieval is safe. This command calls the Prefect flow body inside
-the database transaction; it does not register or schedule a deployment.
+31 days each and preserve the adapter's source and per-row version. Each batch
+checks station state and bindings under the tenant lock, then commits separately
+and releases the lock. A later failure preserves earlier committed batches;
+repeating the same retrieval is safe. Dry runs roll back each batch. This command
+calls the Prefect flow body in each transaction; it does not register or schedule
+a deployment.
 
 Qualification requires basin-average inputs, supported precipitation/temperature
 features, required statics, and current-version QC-passed discharge from the
@@ -370,7 +373,10 @@ No historical rating curve is needed for directly delivered discharge.
 Exit code 0 means the requested operation passed. Exit code 1 means a failure
 or held coverage/readiness. A successful qualification with held stations
 **commits cleared discharge targets** unless `--dry-run` is present; a raised
-error rolls back the operation. History coverage counts alone do not establish
+error rolls back the current transaction. For `history`, empty station/parameter
+coverage in any batch returns exit code 1, including during a dry run.
+Successfully stored data is preserved unless `--dry-run` is present. Rerun after filling the missing Gateway
+coverage. History coverage counts alone do not establish
 model readiness. The qualification report lists every gauge, hold reasons,
 QC counts/versions, usable observations and complete windows, and overlap.
 It contains no measurement values. Save the package ID/checksums, software and

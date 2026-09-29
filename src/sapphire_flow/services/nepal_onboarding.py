@@ -128,25 +128,29 @@ def history_binding(station_id: StationId) -> StationWeatherSource:
 def require_history_bindings(
     conn: sa.Connection, stations: list[StationConfig]
 ) -> list[StationWeatherSource]:
+    for station in stations:
+        if reason := history_binding_issue(conn, station):
+            raise ConfigurationError(f"{reason}: {station.code}")
+    return [history_binding(s.id) for s in stations]
+
+
+def history_binding_issue(conn: sa.Connection, station: StationConfig) -> str | None:
     store = PgStationStore(conn)
     polygons = RecapGatewayPolygonStore(conn)
-    for station in stations:
-        expected = history_binding(station.id)
-        if expected not in store.fetch_weather_sources(station.id):
-            raise ConfigurationError(
-                f"missing active reanalysis binding for {station.code}"
-            )
-        rows = polygons.fetch_bindings_for_station(station.id)
-        matches = [
-            r for r in rows if r.spatial_type is SpatialRepresentation.BASIN_AVERAGE
-        ]
-        if len(matches) != 1 or (
-            matches[0].basin_id != station.basin_id
-            or matches[0].gateway_hru_name != GATEWAY_HRU
-            or matches[0].name != dict(GAUGE_POLYGONS)[station.code]
-        ):
-            raise ConfigurationError(f"unexpected Gateway mapping for {station.code}")
-    return [history_binding(s.id) for s in stations]
+    if history_binding(station.id) not in store.fetch_weather_sources(station.id):
+        return "missing_active_reanalysis_binding"
+    matches = [
+        r
+        for r in polygons.fetch_bindings_for_station(station.id)
+        if r.spatial_type is SpatialRepresentation.BASIN_AVERAGE
+    ]
+    if len(matches) != 1 or (
+        matches[0].basin_id != station.basin_id
+        or matches[0].gateway_hru_name != GATEWAY_HRU
+        or matches[0].name != dict(GAUGE_POLYGONS)[station.code]
+    ):
+        return "missing_or_conflicting_gateway_mapping"
+    return None
 
 
 def validate_nepal_package(loaded: LoadedBasinPackage) -> None:
@@ -309,7 +313,6 @@ def qualify_discharge_targets(
     if window.time_step not in requirements.supported_time_steps:
         raise ConfigurationError("selected time step is not supported by the model")
     stations = chwrr_stations(conn, identity, now=now)
-    require_history_bindings(conn, stations)
     store = PgStationStore(conn)
     obs_store = DeliveryObservationReader(conn)
     forcing = GatewayHistoryReader(
@@ -340,6 +343,8 @@ def qualify_discharge_targets(
                 and r.qc_rule_version == obs_qc_rule_version("discharge", None)
             ]
             reasons: list[str] = []
+            if binding_issue := history_binding_issue(conn, station):
+                reasons.append(binding_issue)
             if (
                 requirements.spatial_input_type
                 is not SpatialRepresentation.BASIN_AVERAGE
