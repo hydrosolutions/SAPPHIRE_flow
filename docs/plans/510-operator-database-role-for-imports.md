@@ -6,7 +6,7 @@ plan: 510
 title: Three levels of database identity — tenants created at deploy time, a narrow database-limited operator role for delivery replacement, no routine job on the owner superuser
 scope: Stop routine operator jobs from needing the owner (superuser) credential. Tenant creation moves to deploy time (Plan 513); a least-privilege operator role, row-limited by the database itself, covers the rare delivery-replacement job; schema changes stay with the owner at deploy. Needed for v1.
 risk: high   # secrets, database roles, a migration/trigger, Docker wiring (docs/workflow.md § High-risk work)
-depends_on: [147, 268, 513]
+depends_on: [147, 268, 513]   # 268's code is implemented through T7; only its operator run (T8) is pending and runs after this plan
 blocks: []
 related: [341, 401, 306, 307, 512]
 open_decisions: []
@@ -104,7 +104,7 @@ Reading the import code shows the gap is wider than tenant creation and delete:
   `FOR UPDATE` does not exclude a newer one. (`FOR SHARE` was dropped: it needs the same UPDATE privilege.)
 - **D5 — the tenant vehicle: Plan 513 (declared tenants), done first (owner, 2026-09-29).** An earlier draft
   used a seed migration as a stopgap; the owner chose the order 513 → 510 → T8 instead, so no seed migration
-  exists and no Swiss database gets an empty `chwrr`. This plan assumes a tenant that Plan 513 has already
+  exists and no Swiss-only deployment gets an empty `chwrr` (the Mac-mini hosts both tenants on purpose, see Plan 513). This plan assumes a tenant that Plan 513 has already
   created; an existing tenant is preserved by 513's own contract.
 - **D6 — credential and command (recommended path, accepted for now; reworked in round 3).** Compose secrets
   are `file:` entries and a missing file stops the service, so the optional secret cannot live in the base
@@ -182,7 +182,7 @@ Reading the import code shows the gap is wider than tenant creation and delete:
 ### T5 — Retire `bootstrap-tenant` from the operator path
 - **Outcome:** no operator command creates tenants; `_require_admin_bootstrap_identity` and the `global_admin`
   branch used only by it are removed or documented dead; the "tenant must be bootstrapped first" error says the
-  tenant is created at deploy time; `store_tenant` is left without a non-test caller and that is stated.
+  tenant is created at deploy time.
 - **In:** `cli/import_dhm_delivery.py`, the three test files that set up tenants through the command (5
   integration sites), `docs/runbooks/chwrr-dhm-history-import.md` step 1, Plan 268 T8's sequence.
   **Out:** the tenant store.
