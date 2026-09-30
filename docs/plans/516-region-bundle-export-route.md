@@ -49,8 +49,8 @@ that, this plan stops** and the dashboard stays on fixtures (the map's own condi
   deployment plan requires DHM permission before publication.
 - **Today** the Nepal dashboard runs on synthetic fixtures (Plan 273's bundle). The map pulls the bundle
   every 6 hours and keeps the last good copy on failure.
-- **Dependencies not yet real:** Plan 341/342's publication gate is unimplemented and its activation setting
-  rejects any non-empty value; the route inventory in Plan 341 is a hard-listed set.
+- **The publication gate exists but is inactive.** `api/routes/api_stations.py` already reads through `PublicationGate` and `fetch_selected_ids` for gated tenants (Plan 341 T3), but the activation setting rejects any
+  non-empty value today, so no tenant is gated; Plan 341's route inventory is a hard-listed set.
 - **Contract discipline** (Plan 402 D14): `docs/spec/api-v1-map.openapi.json` is committed at version 2.0 with a
   CI check; an additive route is a minor bump (to 2.1). The map keeps its own copy of the contract and checks
   its Worker allow-list against it.
@@ -61,28 +61,28 @@ that, this plan stops** and the dashboard stays on fixtures (the map's own condi
 |---|---|---|
 | D1 | **Two read routes under `/api/v1/regions/{region}/`, GET-only, returning fragments.** `bundle` returns `{manifest, stations, basins}` (the publisher writes `region.json`, `stations.geojson`, `basins.geojson`); `stations/{station_key}/series` returns one series document (written to `series/<key>.json`). The publisher assembles the directory and runs the map's validator over the whole. | The root schema needs all four documents; two bounded routes keep responses small. Contracts are per fragment; whole-bundle validation happens on the assembled directory. |
 | D2 | **Route class: a PRINCIPAL-class route** (Plan 401): station-scoped consumer and reviewer tokens read it; admin tokens also reach it but the **restriction filter applies to every role** (D6). No token → 401; an in-scope station → 200; an existing station out of scope or unknown → 404 with an identical body. The publisher uses a station-scoped token, never admin. | The map's prompt says consumer, Plan 401 sends dashboards to reviewer, and admin is unscoped: one class with a role-independent filter means a wrong token cannot leak restricted rows. |
-| D3 | **A region is a named station set in config** — `[region_bundle.<region>]` — keyed by `(network, code)`, listing per station: `model` (the one product to export), and per dataset (`observations`, `forecasts`, `derived_metrics`) `withheld` (default) or `allowed`. **`allowed` for a station of a restricted network requires a `permission_ref`** (the identifier of a recorded owner + DHM decision); a config without it is rejected. Config alone is never permission. | Default-withheld per the map's contract; Plan 268 D9 means forecasts trained on restricted data need their own recorded decision, not just a flag. |
+| D3 | **A region is a named station set in config** — `[region_bundle.<region>]` — keyed by `(network, code)`, listing per station: `model` (the one product to export), and per dataset (`observations`, `forecasts`, `derived_metrics`) `withheld` (default) or `allowed`. **`allowed` for any dataset of a restricted station requires a `permission_ref`** (a station is restricted if it has any delivery-tagged observation row, or belongs to a network in `[region_bundle].restricted_networks`, which defaults to `dhm`) (the identifier of a recorded owner + DHM decision); a config without it is rejected. Config alone is never permission. | Default-withheld per the map's contract; Plan 268 D9 means forecasts trained on restricted data need their own recorded decision, not just a flag. |
 | D4 | **`forcing_kind` and `source_mode` come from stored evidence with conservative defaults.** `forcing_kind`: T1 writes the mapping table from `forecasts.nwp_cycle_source` / `warm_up_source` and `hindcast_forecasts.forcing_type`, defaulting to `unknown` (renders as not verifiable) wherever the evidence does not decide. `source_mode`: default `modelled`; `operational` only when live (non-hindcast) forecasts from an active artifact for that station exist within the last two cycles — **never from the station's status label** (which some stations got by direct DB write). `illustrative` is never emitted by the backend. | A label that can be configured or inferred from a loose flag can be wrong; "not verifiable" must be machine-decidable. |
-| D5 | **The bundle always carries quantiles; members are added where stored.** A forecast stored as members yields **empirical quantiles of the members at the declared levels** (not distribution fitting) plus the members, with `ensemble_size` and manifest representation `quantiles_and_members`; a forecast stored as quantiles yields `quantiles`. | v3 requires a non-empty quantile `series` in every issue; the map refuses tail probabilities manufactured by fitting. |
-| D6 | **One shared restriction predicate**, extracted from the `/observations` route and used by both routes and by `/observations`, applied to **every role**. `observations` is `null` — the whole series, not partial — when any delivery-tagged row is in the window or the D3 flag is withheld. In that case `publication.observations` is forced to `withheld`, `verification` is `null`, `thresholds` is `null` with `threshold_basis` `none_available` (so a percentile threshold cannot leak the observed distribution), and only `qc_status` is emitted — never QC flag `detail` or observation-derived free text (Plan 402 D6 carry-forward; `eligibility_note` carries no such text). | The filter must not depend on the caller; derived values can expose withheld series (bias exposes the mean). |
+| D5 | **The bundle always carries quantiles; members are added where stored.** A forecast stored as members yields **empirical quantiles of the members at the declared levels** (not distribution fitting) plus the members, with `ensemble_size` and manifest representation `quantiles_and_members`; a forecast stored as quantiles yields `quantiles`. The estimator is **linear interpolation between order statistics** (numpy's default), so exports are deterministic. The manifest `representation` is set by region config (`quantiles` | `quantiles_and_members`); members are emitted only when it is `quantiles_and_members`, and one shared function checks that at least one exported issue carries members (else the manifest says `quantiles`), because the validator ties the manifest value to the content. | v3 requires a non-empty quantile `series` in every issue; the map refuses tail probabilities manufactured by fitting. |
+| D6 | **One shared restriction predicate**, extracted from the `/observations` route and used by **the two new routes for every role**. `/observations` itself is unchanged (admin tokens still read delivery-tagged rows, as `security.md` documents); the export goes to a public path, so it is stricter than that route on purpose. A station is **restricted** by one deterministic, window-independent rule (D3: any delivery-tagged row exists for it, or a restricted network), evaluated identically by both routes so the fragments agree. For a restricted station `observations` is `null` — the whole series, not partial. The same holds when the D3 flag is withheld. In that case `publication.observations` is forced to `withheld`, `verification` is `null`, `thresholds` is `null` with `threshold_basis` `none_available` (so a percentile threshold cannot leak the observed distribution), and only `qc_status` is emitted — never QC flag `detail` or observation-derived free text (Plan 402 D6 carry-forward; `eligibility_note` carries no such text). | The filter must not depend on the caller; derived values can expose withheld series (bias exposes the mean). |
 | D7 | **The bundle schema is copied into the repository with its SHA-256 recorded**; every export is validated against it in tests. | A cross-repository contract must fail loudly when either side changes. |
 | D8 | **Question 0 is answered first, alone** (T0): are ECMWF IFS reforecasts, or any archived forecast forcing overlapping the pre-2019 DHM record, reachable through the recap gateway or another adapter? It also states whether the series' historical issues come from `hindcast_forecasts` (verification over the record) or live `forecasts` (recent). | It decides whether any skill number is forecast skill or simulation skill, and what feeds the series. |
-| D9 | **Forecast selection: one issue per station per issue time, on the manifest's cycle.** Export the station's configured `model`, latest non-superseded version, ordered by issue time; a cycle slot with no eligible forecast is a declared `gap`; forecasts whose horizon, cadence or quantile levels differ from the manifest cycle are excluded and counted, not exported. The manifest cycle is defined per region in config. | The validator rejects duplicate issue times, missing slots and mixed shapes; the store holds several products per time. |
+| D9 | **Forecast selection: one issue per station per issue time, on the manifest's cycle, as a contiguous run.** Export the station's configured `model`; for a **gated tenant** use the current publication selection (`PublicationGate`, `fetch_selected_ids`), keeping selected superseded ids; for an ungated tenant the latest non-superseded version. Order by issue time. The validator requires consecutive issues exactly one cycle apart, and the schema's `gaps` are intervals *inside* one issue's horizon, so **a missing slot cannot be declared: export only the most recent contiguous run at the cadence** and log how many earlier issues were dropped. Forecasts whose horizon, cadence or quantile levels differ from the manifest cycle are excluded (logged). The manifest cycle is defined per region in config. | The validator rejects duplicate issue times, missing slots and mixed shapes; the store holds several products per time. |
 | D10 | **Series are bounded.** The series route takes `issued_from`, `issued_to` and a maximum count (defaulting to the recent window, rejected with 400 beyond a cap chosen in T4 against the schema's maximum of 20000 issues). | "Separately fetchable" is not a bound by itself. |
-| D11 | **A region with no station the caller may read returns 404**, not an empty (schema-invalid) bundle. | v3 requires at least one station. |
+| D11 | **A region with no eligible station returns 404**, not an empty (schema-invalid) bundle. Eligible = readable by the caller, published per D3, **and with stored basin geometry**: a station without a basin polygon is excluded from every fragment and logged, because v3 requires a non-empty `basin_id` matching a basin feature. | v3 requires at least one station and one basin per station. |
 
 ## Field sourcing
 
 | Required field | Source |
 |---|---|
 | `manifest.banner` (headline, spread_label, verification_note, date_label) | Fixed text, one per `source_mode`, kept in the spec page and reviewed by the owner — not configured per deployment |
-| `manifest.forecast_cycle`, `timezone`, `generator`, `provenance` | Region config (cycle), deployment config (timezone), package version, and stored provenance |
-| `stations[].identity` incl. `backend_uuid`, `key` (slug) | Station row; the key is the configured `(network, code)` mapped to a slug |
-| `stations[].basin_id`, basin polygons | Stored basin geometry where present, else `null`/absent and stated |
+| `manifest.forecast_cycle` (cycle hours, cadence, horizon steps, `starts_at_issue_time`, quantile levels, representation), `timezone`, `generator`, `provenance` | Region config (cycle, representation), deployment config (timezone), package version, and stored provenance |
+| `stations[].identity` incl. `backend_uuid`, `display_name`, `key` (slug) | Station row; the key is the configured `(network, code)` mapped to a slug |
+| `stations[].basin_id`, basin polygons | Stored basin geometry; a station without one is excluded (D11) |
 | `stations[].calibration` | The model artifact's recorded training window, else `null` (there is no "unknown" value in the schema) |
 | `stations[].thresholds`, `threshold_basis` | Stored thresholds (currently none: `null` / `none_available`) |
 | `stations[].verification` | `null` — computed map-side from published data |
-| issue `qc_status` | Mapped from stored `qc_status` (`raw` → `not_run`; unknown values → `unknown`) |
+| issue `qc_status`, `horizon`, `gaps` | Stored `qc_status` mapped: `qc_passed` → `passed`, `qc_failed` → `failed`, `raw` and `qc_unchecked` → `not_run`, `qc_suspect` and `missing` → `unknown`; `horizon` from the stored valid times; `gaps` only intervals inside one horizon |
 | issue `unit` | `m3/s` only; a station or forecast in another unit or parameter is excluded |
 
 ## Tasks
@@ -111,17 +111,15 @@ one shared function.
 - Config load validates **shape only** (default withheld; a restricted-network station with `allowed` needs
   `permission_ref`; duplicate keys rejected). Existence and tenant checks need the database, so they run in a
   startup/CLI check command, and again per request (D2).
-- Extract the delivery filter from `/observations` into a shared predicate used by that route, and add the
-  admin case to its tests.
-**In / Out**: `config/deployment.py`, the config reference, `api_stations.py`, tests. Out: enabling any region in a
+- Extract the delivery filter from `/observations` into a shared predicate that the two new routes use for every role; `/observations` keeps its documented admin behaviour (`security.md` §Restricted DHM history is unchanged, and gains a sentence describing the export's stricter rule).
+**In / Out**: `config/deployment.py`, the config reference, `api_stations.py`, `docs/standards/security.md`, tests. Out: enabling any region in a
 shipped overlay.
-**Verification**: unit tests for each rule; an `/observations` test showing an admin token is now also filtered
-where a region flag withholds (state the behaviour change: admin still reads through the legacy admin surfaces).
+**Verification**: unit tests for each rule and for the restricted-station definition (delivery rows present, restricted network, neither); a test that `/observations` behaviour for admin is unchanged.
 **Pre-change**: RED — parsing and predicate tests first; the admin-filter test fails against the inline filter.
 
 ### T3 — Bundle route (manifest, stations, basins)
 **Outcome**: `GET /api/v1/regions/{region}/bundle` returns the three fragments for the caller's readable stations.
-- Expected statuses: in-scope consumer and reviewer 200; admin 200, filtered; no token 401; existing
+- The manifest is built from config and stored data by shared functions (representation check, restricted rule, eligibility per D11) so `bundle` and `series` agree. Expected statuses: in-scope consumer and reviewer 200; admin 200, filtered; no token 401; existing
   out-of-scope station absent; region with none readable 404 (D11); withheld datasets present with
   `publication` `withheld` (never omitted).
 - Add the route to the Plan 401 route-auth matrix and to Plan 341's route inventory (or record the hand-off
@@ -134,9 +132,7 @@ against the pinned schema; a foreign existing station and an unknown one are ind
 ### T4 — Series route (one station)
 **Outcome**: `GET /api/v1/regions/{region}/stations/{station_key}/series` returns the series document per D5, D6,
 D9, D10.
-- Forecasts are read through the publication-gate reader **when that reader exists**; until then the route reads
-  raw forecasts only for tenants whose gate is inactive, and the tests inject an active predicate the way Plan
-  341's own tests do (the setting rejects non-empty values today).
+- Forecasts are read through `PublicationGate` / `fetch_selected_ids` for a gated tenant (D9) and by latest non-superseded version otherwise. No tenant is gated today, so tests inject an active predicate the way Plan 341's own tests do.
 **In / Out**: the route and builders. Out: skill computation (map side).
 **Verification** (each must fail against a naive implementation): delivery-tagged rows never appear for
 consumer, reviewer **or admin** tokens; a station with any restricted row in the window gets `observations`
@@ -144,14 +140,13 @@ consumer, reviewer **or admin** tokens; a station with any restricted row in the
 is 404; a station whose `forecasts` flag is withheld returns an empty `forecasts` array and `withheld`; with an
 injected active gate, unpublished and withdrawn values are absent and a selected publication survives
 automatic supersession; a members-only forecast yields quantiles, members and `ensemble_size`; two products at
-one issue time export one; a missing cycle slot is a declared gap; a horizon or quantile mismatch is excluded;
+one issue time export one; a series with an interior missing cycle slot exports only the recent contiguous run and **validates with the map's real validator**; a station without basin geometry is excluded from every fragment; a horizon or quantile mismatch is excluded; the manifest representation matches the content;
 an undecidable forcing gives `unknown`; a request above the cap is 400.
 **Pre-change**: RED — 404 today; the restriction and selection tests fail against a direct-read implementation.
 
 ### T5 — Contract, docs, the whole-bundle validator
 **Outcome**: the committed contract has both routes at version **2.1** (D14, additive); the spec page documents
-fragments, layout and field sourcing; the map's validator accepts an assembled bundle from a seeded run **and**
-from real staging output (T6).
+fragments, layout and field sourcing; the map's validator accepts an assembled bundle from a **seeded** run (T6 covers real staging output or its fallback).
 - Hand-offs to the map session, recorded here: the map's own copy of the contract
   (`schemas/sapphire-flow-api-v1-map.openapi.json`) and the Worker allow-list in `worker/apiProxy.ts` (checked
   against that copy) need entries for the region routes if the Worker will call them; the publisher writes the
@@ -175,8 +170,8 @@ with the command.
 1. T0's paragraph is delivered before any other task began and its evidence is re-checkable.
 2. Both routes exist, are in the committed contract at 2.1 and the route inventories, and every fragment
    validates against the pinned schema.
-3. Tests prove a delivery-tagged row never appears for consumer, reviewer or admin, and a restricted-network
-   station cannot publish `forecasts` or `derived_metrics` without a `permission_ref`.
+3. Tests prove a delivery-tagged row never appears for consumer, reviewer or admin, and a restricted station
+   cannot publish any dataset without a `permission_ref`.
 4. Every dataset is withheld unless config allows it; the default is proved by a test.
 5. The map's validator accepts an assembled seeded bundle, and T6 records real output or its bounded fallback.
 
@@ -193,7 +188,7 @@ hosts; the map repository (only the hand-offs in T5).
 |---|---|
 | The export becomes a side door for restricted DHM data | D2, D3, D6: role-independent filter, `permission_ref`, null observations/verification/thresholds, T4's discriminating tests. |
 | Forecasts trained on restricted data are published without permission | D3: `allowed` needs a recorded decision reference (Plan 268 D9). |
-| Real output fails the map's validator (mixed products, gaps, horizons) | D9 and T4's selection tests; T5/T6 validate real output, not only a seeded fixture. |
+| Real output fails the map's validator (mixed products, gaps, horizons, basins) | D9, D11 and T4's selection tests using the real validator; T6 validates real output or records its fallback. |
 | Real Nepal forecasts do not exist yet for the six stations | T6's bounded fallback; labels stay `modelled`/`unknown`; fixtures remain the fallback. |
 | Reanalysis-forced runs read as forecast skill | D4/D8: `forcing_kind` is derived, `unknown` renders as not verifiable; T0 settles what exists. |
 | Cross-repository schema drift | D7: pinned hash and validation test. |

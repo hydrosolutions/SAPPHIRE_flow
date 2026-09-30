@@ -102,7 +102,7 @@ runs, and how the bundle reaches R2.
   map's publisher is a hosted job. Options: (a) the export runs on the mini and a publisher on the office
   side pushes bundles **outward** to R2 (outbound only; the recommended demo-period path); (b) restricted data is
   moved to the Plan 511 host (an owner decision not made here) and the publisher reads its API. Record the
-  choice; without it, gate 3 can pass only as "fixtures".
+  choice; without it, gate 3 can pass only as "fixtures". **Before any real DHM forecast is pushed to R2, Plan 516's `permission_ref` (Plan 268 D5/D9) must exist for it.**
 - Plan 511 owns issuing the Nepal reviewer key and setting the Worker's `SAPPHIRE_API_BASE_URL` and secret
   `SAPPHIRE_API_TOKEN` for the live QC/skill panels; this plan only records the result. Those panels show
   nothing for the DHM stations while the 511 host is empty.

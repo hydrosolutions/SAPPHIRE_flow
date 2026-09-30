@@ -39,7 +39,7 @@ layout the writer really produces, and reclaim the space already wasted on the M
 |---|---|---|
 | D1 | **Prune by cycle, not by name pattern.** For each source directory, group every entry belonging to a cycle — `<cycle>.zarr` (symlink or directory), `<cycle>_vN`, `<cycle>_vN_tmp`, `<cycle>_tmp_symlink`, `<cycle>.zarr.old` — and remove the whole group when the cycle is older than the cutoff. **Iterate directory entries by name, not by `is_dir()`** (a dangling symlink is not a directory), parsing the cycle stem from every member form. | The layout has several members per cycle; matching one of them leaves the rest. |
 | D2 | **Remove a symlink with `unlink`, a directory with `rmtree`, and report failures.** Log `nwp.old_cycle_pruned` only for what was actually removed; log a warning with the path when a removal fails; end each run with one summary event (cycles removed, bytes freed, failures). | The false "pruned" message hid the fault for 88 days. |
-| D3 | **Order: remove the symlink first, then the versioned directories; tolerate a member vanishing (`FileNotFoundError`); skip any cycle group with a member modified within the last hour** (the writer's own `_tmp` window, `_STALE_TMP_MAX_AGE_S`) and prune only stale `_tmp` members. | A reader never follows a symlink into a half-deleted directory, and a writer archiving a historical or re-fetched cycle (`archive()` accepts any cycle time and writes `_vN_tmp` before renaming and swapping the symlink) is never deleted under. |
+| D3 | **Order: remove the symlink first, then the versioned directories; tolerate a member vanishing (`FileNotFoundError`); skip any cycle group with a member modified within the last hour** (the writer's own `_tmp` window) and prune only stale `_tmp` members. **A freshness check is not exclusion**: a writer can start after the check. So `archive()` and the prune share a **per-source advisory lock** (a lock file in the source directory, held by the writer around the swap and by the prune per cycle group) **unless T3 proves every writer is already serialised with the prune** (for example, the forecast cycle is the only writer and runs the prune in the same flow under a concurrency limit of one). | A reader never follows a symlink into a half-deleted directory, and a writer archiving a historical or re-fetched cycle (`archive()` accepts any cycle time and writes `_vN_tmp` before renaming and swapping the symlink) is never deleted under. |
 | D4 | **The retention rule is unchanged** (age-only, `nwp_grid_retention_days`, its existing floor of `ceil(nwp_max_fallback_age_hours / 24) + 1`). | The fault is that the rule is never applied, not that it is wrong. |
 | D5 | **One-time reclaim on the mini is the fix's first run**, done after deployment by the orchestrator, with before/after `du`. No separate cleanup script. | The corrected prune removes everything older than the window; a second mechanism would be a second thing to get wrong. |
 
@@ -62,11 +62,12 @@ layout the writer really produces, and reclaim the space already wasted on the M
 - Implement D1–D4 in `store/zarr_nwp_grid_store.py`. Keep the function signature. Cover: a dangling symlink,
   a stale `_tmp` directory, a fresh `_tmp` (left alone), a name that matches no pattern (left alone), a missing
   base path (no-op), a member removed by a concurrent run (`FileNotFoundError` tolerated), and a deterministic
-  interleaving test where a writer's fresh `_vN_tmp` for an old cycle survives the prune.
+  interleaving test **that starts the writer after the prune's freshness check** and shows the writer's cycle
+  survives (through the lock).
 - Update the existing plain-directory test so it states which layout it covers.
-**In / Out**: `store/zarr_nwp_grid_store.py`, tests, and the docs that describe the prune
-(`docs/architecture-context.md` Flow 1.2 and the `config.toml` comment); a patch version bump. Out: the writer,
-the call site, retention defaults.
+**In / Out**: `store/zarr_nwp_grid_store.py` (the prune, and the shared lock in `archive()` unless T3 proves it
+unnecessary), tests, and the docs that describe the prune (`docs/architecture-context.md` Flow 1.2 and the
+`config.toml` comment); a patch version bump. Out: the call site, retention defaults.
 **Verification**: T1 passes; the existing prune tests pass; `uv run pytest tests/unit/store -q`,
 `uv run pyright`, `uv run ruff check`.
 **Pre-change**: T1's RED, plus RED tests for the dangling-symlink and stale-`_tmp` cases.
@@ -75,11 +76,13 @@ the call site, retention defaults.
 **Outcome**: confirmed, not assumed, that no reader depends on grids older than the window and that every writer
 is covered by D3.
 - The prune's own comment says the NWP adapter re-fetches from STAC and never reads the archive. **Readers**:
-  the callers of `ZarrNwpGridStore.load` — `adapters/replay/nwp.py:46` and `tools/record_fixtures.py` — and any
+  the callers of `ZarrNwpGridStore.load` — `adapters/replay/nwp.py:46` — and any
   other reader of `nwp_grid_archive_base_path` (`adapters/era5_land_reanalysis.py` keeps its own
   `{store_root}/{var}.zarr` and is not a reader of this base path); state each one's window.
-- **Writers**: every caller of `archive()` (forecast cycle, recovery/backfill, replay tools) and whether it can
-  write a cycle older than the cutoff.
+- **Writers**: every caller of `archive()` — the forecast cycle (`flows/run_forecast_cycle.py:2708`), recovery or
+  backfill flows, and `tools/record_fixtures.py:307` (a writer, to its own output directory, not the operational
+  archive) — and whether each can write a cycle older than the cutoff or run concurrently with the prune. The
+  answer decides whether the lock in D3 is needed.
 **In / Out**: this plan's "Findings" section only. Out: code changes.
 **Verification**: inspection — each reader and writer named with the file:line that shows its window.
 **Pre-change**: N/A (read-only check).
