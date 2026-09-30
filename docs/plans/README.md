@@ -597,6 +597,7 @@ exit criteria — Plan 212 owns that deeper screening.
   Diagnosed 2026-07-13.
 - **049** — Swiss demo backend: Cloudflare Tunnel + service-token Access for the Mac mini, so the flow-map Worker can read `/api/v1` — `DEFERRED` 2026-09-29 (v1 first; future shape = read-only Swiss copy on a Swiss cloud server, not a tunnel). Nepal half is Plan 511; `prefect-server` network fix is Plan 109.
 - **511** — Nepal instance on a cloud server (Caddy auto-TLS on `/api/v1/` only, Nepal-tenant reviewer key; backups are a follow-on, 511 D9) for the flow-map — `DRAFT`; provisioning only, waits on Nepal onboarding/feed tracks for content.
+- **515** — The NWP raw-grid prune removes nothing (symlink + `_vN` layout never matched; the mini holds 421 GB despite 3-day retention) — `DRAFT`; fix, real-layout test, one-time reclaim on the mini.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
   readiness. Docs-first; no change to the v1.0 Nepal critical path.

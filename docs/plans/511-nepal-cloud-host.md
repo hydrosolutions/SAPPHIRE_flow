@@ -3,7 +3,7 @@ status: READY
 reviews:
   - "claude + codex 2026-09-29/30 rounds 1-4 — FINDINGS each round, all folded; round 4 residue was two sentences"
   - "claude 2026-09-30 — CLEAN on exact state 2fcef37e (diff of the last two edits + plan consistency)"
-  - "READY set by the session author at the owner's direct instruction 2026-09-30 (CLAUDE.md routes this to the orchestrator; the owner overrode)"
+  - "READY: the owner, who is also the orchestrator, directed it on 2026-09-30; the author session made the edit"
 ---
 
 # Plan 511 — Nepal instance on a cloud server, readable by the flow-map
