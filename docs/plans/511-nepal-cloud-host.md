@@ -22,8 +22,11 @@ Nepal onboarding, models or data feeds, which are separate tracks.
 ## Context
 
 - **Development stage, keep it simple (owner, 2026-09-29).** The restricted DHM delivery (Plan 268) is
-  already on the Mac mini and **stays there while we develop and test**. This host starts with **no
-  restricted DHM data**; moving data over is a later step, not part of this plan. The host is
+  already on the Mac mini. This host starts with **no restricted DHM data**; moving data over is a later step,
+  not part of this plan. **Update 2026-09-30:** the owner, on an **assumption** (DHM has not replied) and taking
+  full responsibility, has approved hosting the DHM data on this password-protected host — see
+  `docs/decisions/2026-09-30-dhm-data-hosting-assumption.md`. It is not DHM's consent. **Loading the data onto this host triggers the backup follow-on (D9): plan
+  it first.** The host is
   **staging**, never production; anything beyond staging (production deployment, merging) stays with the
   owner (CLAUDE.md § Orchestration authority).
 - **Different host, different data terms from the Swiss instance** (Swiss data path: Plan 049 T4): the Swiss BAFU
