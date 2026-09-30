@@ -9,8 +9,8 @@ reviews:
 # Plan 511 — Nepal instance on a cloud server, readable by the flow-map
 
 **Date**: 2026-09-29 (revised after round-1 reviews, same day)
-**Priority**: first hosting plan (owner, 2026-09-29) — v1 Nepal comes before the Swiss demo (Plan 049, deferred)
-**Related**: Plan 049 (Swiss half — deferred), Plan 513 (declared tenants), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
+**Priority**: first hosting plan (owner, 2026-09-29) — v1 Nepal comes before the Swiss/BAFU dashboard (Plan 049 covers the Cloudflare side of both dashboards)
+**Related**: Plan 049 (Cloudflare edge for the dashboards: access, reachability, data paths), Plan 513 (declared tenants), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
 delivery import; owns the `chwrr` tenant identity), Plan 109 (Prefect network fix; cross-linked both ways), Plan 208 and Plan 340
 (backups, follow-on), `docs/standards/security.md`, `docs/standards/cicd.md`
 **Scope**: stand up SAPPHIRE Flow for **Nepal** on a rented cloud server with a public HTTPS address, and
@@ -26,7 +26,7 @@ Nepal onboarding, models or data feeds, which are separate tracks.
   restricted DHM data**; moving data over is a later step, not part of this plan. The host is
   **staging**, never production; anything beyond staging (production deployment, merging) stays with the
   owner (CLAUDE.md § Orchestration authority).
-- **Different host, different data terms from the Swiss instance** (Plan 049, deferred): the Swiss BAFU
+- **Different host, different data terms from the Swiss instance** (Swiss data path: Plan 049 T4): the Swiss BAFU
   material never goes on this host.
 - **The map side is ready for an `https://` origin.** The Worker takes `SAPPHIRE_API_BASE_URL`, the
   region's reviewer key (`SAPPHIRE_API_TOKEN`) and an optional Cloudflare Access service token; it refuses
