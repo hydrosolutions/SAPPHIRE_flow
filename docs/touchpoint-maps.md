@@ -1313,6 +1313,34 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   of hourly history and are provisional (water_temperature `max_rate` 2.358, discharge `spike`
   `tolerance` 0.75); the rest copy the 600 s row. Asserted in
   `tests/unit/config/test_qc_rules.py::TestHourlyRules`
+- Plan 323 T3 — **why a QC group can select zero rules, and where each cause is answered**
+  (the `OBSERVATION_QC_UNCHECKED` health record and the watchdog alarm on it). ⚠️ The record's
+  `reason` does **not** separate the two causes cleanly — read the inferred step as well:
+  - **A cadence the rule set does not declare** — a station whose readings steadily arrive at a
+    step no `[[qc_rules.rules]]` row carries (900 s, 1200 s, 3600 s before Plan 323 T2). Recorded as
+    `reason = "no_rule_declares_it"` with the station's usual step. Answer: add rule rows under the
+    loose-first posture — range bounds and `k_sigma` copied from an existing cadence, change
+    limits (`rate_of_change`, `spike`) the larger of 2 × the 99.9th percentile of the series' own
+    measured statistic and the shorter cadence's value; **not** a factor applied to another row.
+    Selection matches the cadence exactly (Plan 272 D1) and **no plan commissions nearest-cadence
+    matching**. Example: Plan 323 T2 (eleven 3600 s rows).
+  - **A gap inside a known cadence** — a missing or late reading leaves the 2 h QC window with too
+    few readings, or an off-grid median. It is recorded under **either** reason:
+    `no_cadence_inferable` when fewer than two distinct readings are in the window (no step at
+    all), or `no_rule_declares_it` at an off-grid step (5400 s or 7200 s at an hourly station).
+    ⛔ For the second, **do not add rule rows**: the station's real cadence is declared and the step
+    is a symptom of the gap. Answer: **Plan 400's** inference change (a separate bounded look-back
+    used for cadence only). Until Plan 400 lands, these checks stay `QC_UNCHECKED` and the watchdog
+    reports them. How to tell the two causes apart: is the recorded step the station's usual
+    cadence (steady, add rows) or a multiple / odd value of it (a gap, Plan 400)?
+  - ⚠️ The zero-rule entries **count runs, not readings** (unchecked readings are re-picked on
+    every 5-minute run), so their share is not a per-reading coverage figure — measure that per
+    reading (Plan 323 T5).
+  - **A rule WAS selected but could not judge a reading** (no neighbour, no value, no baseline —
+    datum-less water level after a gap, above all) is a third, different case: the reading stays
+    `QC_UNCHECKED`, recorded as `no_check_could_run` in `OBSERVATION_QC_UNJUDGED`, which is
+    **not** alarmed on (T4, D4, D5) — never a pass. Datums (Plan 403) remove most of these for
+    water level.
 - Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
   RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
   `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`
