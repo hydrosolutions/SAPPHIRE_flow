@@ -124,7 +124,8 @@ nothing but `/api/v1/` reachable from outside.
   from the overlay's `[tenants.chwrr]` declaration, created by `init` on first boot; verify the row exists
   with **zero stations**. No station rows are created here and no global-admin overlay is needed.
 **In / Out**: the Caddy configuration, `docker-compose.nepal-cloud.yml` (the overlay wiring and mount on
-all four services, the caddy `environment`, and the `prefect-server` network change), the Nepal overlay,
+all four services, and the caddy `environment`), **the base `docker-compose.yml`** (the `prefect-server`
+network change, `[backend]` only — a Nepal-only override would not satisfy Plan 109), the Nepal overlay,
 `register_deployments` change, tests, security.md list. Out: onboarding stations, models, feeds.
 **Verification**: a compose/config test asserting: overlay env present on all four services; caddy gets
 `SAPPHIRE_DOMAIN` and its health check is compatible with a domain being set; `prefect-server` not on
@@ -154,7 +155,10 @@ registration test fails while BAFU deployments register unconditionally.
   delete it under the identity left in force (no `sapphire` write authority; the worker role has no
   station DELETE; the stores expose no deletion), so this is an **exceptional database-owner
   procedure**: insert one standalone `stations` row with the `sapphire` tenant via owner-credential SQL
-  in the `postgres` container, check an admin can read it and the Nepal key cannot, then delete it by
+  in the `postgres` container (the owner role is `DB_USER` with the `db_password` secret, via
+  `docker compose exec postgres psql`; the insert supplies `id`, `code`, `name`, a POINT/4326 `location`,
+  `station_kind`, `timezone`, `measured_parameters`, `network`, `tenant_id` — unique on `(network, code)`;
+  the other columns have defaults), check an admin can read it and the Nepal key cannot, then delete it by
   its exact ID with the same credential (a bare station row has no dependents to block deletion).
   Record both statements and the owner identity used, and confirm afterwards that the `sapphire` tenant
   has zero stations. The
