@@ -7,7 +7,7 @@ scope: (S) The group's static frame is projected to the model's DECLARED statics
 risk: high   # FI-boundary edit (docs/workflow.md high-risk list) and scientific behaviour: which stations get a forecast
 related: [262, 312, 116, 120, 155, 223, 239, 257, 327, 404, 323, 517]
 open_decisions: [Q1, Q2, Q3, Q5, Q6, Q7, Q8]
-source: 2026-09-29 pilot run `powerful-leech` - investigation by the orchestrator session; revised 2026-09-30 after one Claude and one Codex review; revised again 2026-09-30 (rev 2) after the measured 12:00Z worker log; rev 3 2026-09-30 after second Claude and Codex re-reviews
+source: 2026-09-29 pilot run `powerful-leech` - investigation by the orchestrator session; revised 2026-09-30 after one Claude and one Codex review; revised again 2026-09-30 (rev 2) after the measured 12:00Z worker log; rev 3 2026-09-30 after second Claude and Codex re-reviews; rev 4 2026-09-30 after the round-3 reviews
 ---
 
 # Plan 514 - a group member with a null static or missing forcing must not drop the group, and a dropped group must be visible
@@ -88,11 +88,14 @@ revision serves them.
    in `sorted(station_ids, key=str)` order, so whether a group fails depends on the id order of its first member.
    `how="vertical_relaxed"` stacks it in either order (supertype `Float64`), but also silently coerces every other
    mismatch (int/float, and any future dtype drift). The primary fix is projection to the declared statics (DS1), which
-   removes undeclared columns before stacking; the `Null`-cast (DS1b) covers only declared columns and the dynamic frames. No
-   declared static column reaches the stack all-`Null` (DS2 skips such members first).
+   removes undeclared columns before stacking, and DS2 removes members with a declared null, so no `Null`-dtype static column reaches the
+   stack. **A declared numeric static that is `Int64` in some members and `Float64` in others (JSON `5` versus `5.0`) still raises
+   `SchemaError` in BOTH orders** (reproduced at polars 1.43.2, the locked version; the round-3 review saw 1.44.2 - same result): DS1c
+   handles it.
 3. The past/future frames go through the same `_stack_station_frames`; a
    `Null`-dtype column there (a forcing or target column present but all-null) would fail the same way. Whether
-   the assemblers can produce one is UNVERIFIED; T3 (conformance tests) covers it with real polars.
+   the assemblers can produce one is UNVERIFIED; T3 covers `Null`-dtype cases on the dynamic frames with real polars (T1 covers
+   statics only, and after DS2 a `Null` static cannot reach the stack).
 4. **What happens next in the adapter (read from code).** `ForecastInterfaceAdapter._static_inputs`
    (`adapters/forecast_interface.py` ~1621-1650) selects only the model's **declared** statics
    (`static.select(sorted(static_names))`), and `_static_value` **raises `ConfigurationError`** for a value that is
@@ -172,7 +175,11 @@ into skips in the shared function. The group assembler change is local to `run_g
      timestamp appears). A null-filled grid therefore makes `past_forcing_flags` report **no gap** - the
      quality flag the owner decision requires would be lost. The flag must be derived from the **pre-fill**
      frame (or from an explicit null-filled record carried out of the assembler), with a test.
-  3. `max_nan` is only as strict as the model's declared tolerance. **UNVERIFIED:** the tolerances declared by
+  3. **The null-fill dtype matters.** A null-fill built from `pl.lit(None)` has dtype `Null` and reproduces the same
+     `SchemaError` against `Float64` siblings: filled value columns are `Float64` (or the sibling's dtype when a sibling has
+     the column), and the filled `timestamp` column takes the dtype of the timestamps the assembler produces for the
+     other members (read at T3; UNVERIFIED which). T3 asserts both.
+  4. `max_nan` is only as strict as the model's declared tolerance. **UNVERIFIED:** the tolerances declared by
      the pinned `aquacast` model; if a tolerance is at least the window length, a fully null station is served
      from all-null forcing. T3 reads and records them before T4 lands.
 - **The existing per-station skip** (`run_group_forecast.station_inputs_unavailable`, then
@@ -225,16 +232,17 @@ into skips in the shared function. The group assembler change is local to `run_g
 | # | Decision | Why |
 |---|---|---|
 | DS1 | **Primary statics fix: project to the model's DECLARED statics before stacking, in the GROUP assembler only.** After Caravan resolution and collision checks, after DS2 classification, each member's static frame is narrowed to the declared names in sorted order and then stacked; a model declaring no statics gets no static frame. Undeclared basin keys (300 in a package, six `reservoir_*` null for 84 members, a few others null for 1-10, any dtype drift) never reach the stack. Evidence: `cmal_small.yaml` declares 78 statics and none is `reservoir_*`; the adapter reads only declared statics. The station path is not touched. | Removes the whole class instead of one dtype; also removes the order dependence and the `Int64`-versus-`Float64` variant (reproduced, both orders). |
-| DS1b | **`Null`-cast is a defence for DECLARED columns and the dynamic frames only.** An all-`Null` column of a declared column is cast to the sibling dtype (`Float64` when no sibling has a value; an all-`Null` declared column in every member is a DS2 case, so this fallback applies only to non-static frames). `how="vertical_relaxed"` is broader than needed (silently coerces int/float and other drift) and is not used unless T1 records a reason. | Keeps strictness where the model reads. |
+| DS1b | **Statics need no `Null`-cast: it is dead code there** (DS1 removes undeclared columns, DS2 removes declared nulls) and is not implemented for statics. For the DYNAMIC frames an all-`Null` column is cast to the sibling dtype (`Float64` when no sibling has a value) or, better, never created (D3 fills with an explicit dtype); if kept it needs a mutation check (T3). | No dead code. |
+| DS1c | **Numeric declared statics are cast to `Float64` before stacking** (int and float only; bool and non-scalar values are not numeric and are not cast - see DS4). Chosen over `how="vertical_relaxed"` because that also coerces string-versus-float and every future dtype drift, and the model reads these columns; the T1 negative test (string versus float) must still fail. The alternative - accepting the failure as a known limit - is rejected because it would dark the pilot again on a JSON `5`/`5.0` mix. A test covers `Int64` versus `Float64` in both member orders, for a DECLARED column. | Closes the last known statics `SchemaError` on the declared path. |
 | DS2 | **A member whose DECLARED static is missing is skipped per member, GROUP-LOCAL, before stacking** (`run_group_forecast.station_inputs_unavailable`, reason `missing_declared_static`). It is **not** moved into the shared sibling (D6): the station flow treats a `None` from the wrapper as skip-the-whole-station (`run_forecast_cycle.py` ~3453/3483), which would suppress static-free fallback models. Three explicit cases: a static frame that is `None` (no basin or no attributes; `operational_inputs.py` ~1105-1145; the adapter would pass `{}`), a declared column absent (Caravan resolution pops a declared name without a source, giving a different width), a declared cell `None`/NaN. Undeclared nulls skip nobody. **Applies only to names the deployed model declares** (T1 checks against the checked-in 78). Whether "skip" is the right policy for a genuinely missing declared static is Q8. | The adapter raises for a declared `None` and would drop the whole group; `max_nan` does not count statics. |
-| DS3 | **PR1 = T1-T2 + T2d + T2r; PR2 = T3-T8.** PR1 stays inside `run_group_forecast.py` and its tests; each PR has its own docs, review (both get the extra high-risk review) and live checkpoint (T9a/T9b), and the full suite runs after each PR's final change. | Unblocks the pilot without holding it behind a multi-part change, without skipping any gate. |
-| DS4 | **Known remaining limit: a non-null bad basin area (0, negative, inf) still makes the aquacast shim refuse the WHOLE batch** (`models/aquacast/_shim.py` ~693-698 via `_units.py` ~60). Not fixed here and no general SAP3 static-value policy is invented. It is visible: Part B reports it as `model_input_data` (tested in T1/T6). Candidate FI gap: the FI `model_interface` is understood to require per-entry failure when other stations can produce output (review cites FI v0.1.20 `docs/model_interface.md:99`; UNVERIFIED, the pinned FI text is not readable in this checkout); if confirmed, that is an upstream FI/model issue to file, not a SAP3 workaround. | Scope discipline; FI adherence. |
+| DS3 | **PR1 = T1-T2 + T2d + T2r; PR2 = T3-T8.** PR1 stays inside `run_group_forecast.py` and its tests; each PR has its own docs, review (both get the extra high-risk review) and live checkpoint (T9a/T9b), and the full suite runs after each PR's final change. **PR2 is re-reviewed (plan text or implementation as the owner sequences it) before its implementation starts; PR1's checkpoint does not carry that approval.** | Unblocks the pilot without holding it behind a multi-part change, without skipping any gate. |
+| DS4 | **Known remaining limit: a non-null bad basin area (0, negative, inf) still makes the aquacast shim refuse the WHOLE batch** (`models/aquacast/_shim.py` ~693-698 via `_units.py` ~60). Not fixed here and no general SAP3 static-value policy is invented. In PR1 it is only the existing whole-batch `ModelFailure(INPUT_DATA)` and the logged empty outcome (`run_group_forecast.py` ~597-609 logs the exception and returns an empty outcome); Part B reports it as `model_input_data` from PR2 (T6). **Other remaining limits:** `_static_value` (`forecast_interface.py` ~1642-1650) also raises `ConfigurationError` for a `bool` and for a non-scalar (list/dict) value, whole-batch; a collision raise in a member (`operational_inputs.py`, before the group assembler) still drops the whole group. Neither is fixed here; both are visible only through the generic assembly-failure log until PR2. Candidate FI gap: the FI `model_interface` is understood to require per-entry failure when other stations can produce output (review cites FI v0.1.20 `docs/model_interface.md:99`; UNVERIFIED, the pinned FI text is not readable in this checkout); if confirmed, that is an upstream FI/model issue to file, not a SAP3 workaround. | Scope discipline; FI adherence. |
 | DS5 | **The adapter is not changed for a declared `None`.** Its `ConfigurationError` (`forecast_interface.py` ~1642-1650) is SAP3 adapter code and needs no upstream FI issue; DS2 prevents reaching it in the group path. A per-station gate in `predict_batch` (drop the station like the NaN case) would be a cleaner second line of defence but touches the FI boundary a second time; **decision: not in this plan**, revisit if a declared-`None` reaches the adapter in T9. | Keeps PR1 small. |
 | D1 | **Part A conforms, it does not drop.** Before stacking, each member's `past_targets`, `past_dynamic` and `future_dynamic` are conformed to the model's declared schema: declared columns absent from the frame are added as nulls on the expected time grid, and the columns are put in declared order. `_stack_station_frames` itself stays strict. | Owner decision (a): consistent with Plan 239 T1b - a gap is a quality flag, not a refusal. |
 | D2 | **Conformance is by declared need.** A model that declares no `past_dynamic_features` gets no columns added; its zero-column frames stay zero-column. A frame with columns **beyond** the declared schema, or with a non-zero-width mismatch the declared schema does not explain, is **not** repaired: it still fails stacking and is reported as an assembly failure (made visible by Part B). | Otherwise conformance would hide real schema faults. |
-| D3 | **What is null-filled, precisely.** Past frames (`past_targets`, `past_dynamic`): the declared columns, on the expected grid (`timestamp` + nulls). `future_dynamic`: its declared columns depend on the model's ensemble mode (member-suffixed columns), so a zero-width member frame is conformed to the **column set of the other members' frames** with zero rows; the existing `nwp.insufficient_coverage` gate then judges it (today that gate drops the whole group on one short member - Q5). | The past grid is knowable from the anchor; the future column set is not derivable without the member count. UNVERIFIED which reference to use for the future frame; T4 decides with a test. |
-| D4 | **The only remaining hard drop** is a member whose assembly returns `None` (today the cadence mismatch) - existing behaviour, unchanged. There is **no new drop reason**: with a declared schema, null-filling is always possible. If the model's declared schema cannot be read, conformance is skipped and stacking stays strict (fails loudly, visible via Part B). | Owner decision (a): hard-drop only where null-filling is impossible. |
-| D5 | **The quality flag survives the fill, and it has a carrier.** `GroupModelInputs` is frozen and both `_build_station_result` (~402-410) and `_group_forcing_gap_details` (~476-490) compute `past_forcing_flags` from the filled frame, which would report no gap. The pre-fill gap record (per station: the missing declared columns and buckets) travels in `GroupAssembly` metadata (D6); **both call sites read it**; a test for each proves a null-filled member keeps its own gap flag and no sibling is labelled. | `missing_buckets` is membership-only (Facts). |
+| D3 | **What is null-filled, precisely.** Past frames (`past_targets`, `past_dynamic`): the declared columns, on the expected grid (`timestamp` + nulls). `future_dynamic`: its declared columns depend on the model's ensemble mode (member-suffixed columns), so a zero-width member frame is conformed to the **column set of the other members' frames** with zero rows; the existing `nwp.insufficient_coverage` gate then judges it (today that gate drops the whole group on one short member - Q5). | The past grid is knowable from the anchor; filled columns carry an explicit dtype (Float64 value columns, the assembler's timestamp dtype), never `Null` (Facts item 3); the future column set is not derivable without the member count. UNVERIFIED which reference to use for the future frame; T4 decides with a test. |
+| D4 | **The per-member skips are** a member whose assembly returns `None` (today the cadence mismatch, unchanged) and, from PR1, a DS2 `missing_declared_static` skip (group-local). There is **no new drop reason for forcing**: with a declared schema, null-filling is always possible. If the model's declared schema cannot be read, conformance is skipped and stacking stays strict (fails loudly, visible via Part B). | Owner decision (a): hard-drop only where null-filling is impossible. |
+| D5 | **The quality flag survives the fill, and it has a carrier.** `GroupModelInputs` is frozen and both `_build_station_result` (~402-410) and `_group_forcing_gap_details` (~476-490) compute `past_forcing_flags` from the filled frame, which would report no gap. The pre-fill gap record (per station: the missing declared columns and buckets) travels in the `GroupAssembly` metadata (D6) **carried by the existing per-station `OperationalInputMetadata`** (a new frozen field; `run_group_forecast` already receives `metadata_by_station`, so no signature change to `run_group_forecast` or the flow call site ~3868). The flow unpacks `GroupAssembly` and passes `metadata_by_station` as today; **both call sites (inside `run_group_forecast`) read it**; a test for each proves a null-filled member keeps its own gap flag and no sibling is labelled. | `missing_buckets` is membership-only (Facts). |
 | D6 | **Reasons are conveyed by a sibling function, not by changing a return type.** `assemble_station_operational_inputs` keeps returning `None` and its 2-tuple, unchanged. A sibling `assemble_station_operational_inputs_outcome` (same arguments) returns a small frozen union - the inputs, or a `StationInputsSkipped(reason)` with a closed-vocabulary `reason` (today only `cadence_mismatch`) - and the original becomes a thin wrapper that maps a skip to `None`. Only the group assembler calls the sibling; DS2 does NOT use it (DS2 is group-local). Same pattern for the group assembler: `assemble_group_operational_inputs` keeps its signature and return; a sibling returns a frozen `GroupAssembly` (inputs, metadata, skipped members with reasons, null-filled members with their columns, or a group-level drop reason) that the flow calls. | Codex P1: the station caller checks `is None`, and tests assert `None`. |
 | D7 | **The unit of a record is a group-model execution**, and **exactly one record is written after its final outcome is known** - never an OK followed by a WARNING for the same run. Skipped and null-filled member information rides through successful assembly (D6) and is attached to the single final record. | Codex P2: execution iterates `(group, model)`. |
 | D8 | **Part B: a dropped group-model execution is DEGRADED, the flow run stays Completed.** Recoverable drops (table above) increment `ForecastCycleResult.groups_dropped`. Fatal persistence failures and `StoreError` still propagate and are **not** counted. Existing FAILED precedence is preserved. | See "State decision". |
@@ -274,7 +282,9 @@ the fixtures because the assembler sorts members with `sorted(group.station_ids,
   class); the other order passes on `main` (guard). A second variant with an undeclared column `Int64` in one
   member and `Float64` in another (RED in both orders, reproduced at polars 1.43.2). After T2: all three members
   in `station_ids`, the unused column **absent** from the stacked static, the declared columns present.
-- A model declaring **no statics**: `static=None` on the inputs, no crash, all members survive.
+- A model declaring **no statics**: `static=None` on the inputs, no crash, all members survive. **RED on `main` for populated basins** (`operational_inputs.py` ~1105-1145 still builds a static frame and `run_group_forecast.py` ~209-237 stacks it); only the absent-basin variant is a guard.
+- **Declared dtype drift (DS1c):** a DECLARED numeric static `Int64` in one member and `Float64` in another, both orders: RED on `main` (`SchemaError`); after T2 all members present, column `Float64`.
+- **All members DS2-skipped:** the group falls through to `no_serviceable_stations` / `None`, no crash.
 - **Negative test:** a mismatch in a DECLARED column (string versus float) still fails stacking (strict where the
   model reads).
 - **DS2 tests (declared fixtures; through the real adapter or a faithful fake that mirrors `_static_inputs` /
@@ -285,18 +295,28 @@ the fixtures because the assembler sorts members with `sorted(group.station_ids,
 - **Station-fallback regression:** in the station flow, a station missing a static needed by one assigned model still
   runs its static-free fallback model (the station assembler is unchanged by this plan).
 - **Bad area (DS4):** a member with a non-null area of 0 or negative makes the shim return one
-  `ModelFailure(INPUT_DATA)` for the whole batch; assert the current behaviour and (after T6) that Part B reports
-  `model_input_data`. Documented limit, not fixed here.
-- **Read and record in a dated note here (read-only):** (i) whether the deployed worker image's `cmal_small`
-  declared statics equal the checked-in `src/sapphire_flow/models/aquacast/configs/cmal_small.yaml` (78 names,
-  none `reservoir_*`) - UNVERIFIED until read; use a documented read-only command against the running worker image
-  or the artifact manifest, or list this as a pre-merge check by the orchestrator; (ii) every consumer of
-  `GroupModelInputs.static` (grep list in exit gate 1); (iii) the count of members with a declared-null static,
-  by running the resolver over the 138 basins read-only.
+  `ModelFailure(INPUT_DATA)` for the whole batch; assert only the current behaviour (whole-batch `ModelFailure(INPUT_DATA)`, logged, empty outcome). The `model_input_data` reporting is PR2 (T6). Documented limit, not fixed here.
+- **Read and record in a dated note here (read-only):** (i) **CLOSED (verified 2026-09-30 by the orchestrator):** the
+  sha256 of `cmal_small.yaml` inside the running `prefect-worker` container
+  (`/app/src/sapphire_flow/models/aquacast/configs/cmal_small.yaml`) is `94ebec0fe4e000ce...`, equal to the repo file
+  and to the recorded `config_hash`; the deployed declaration is the checked-in one (78 names, none `reservoir_*`).
+  Matching declarations do NOT prove every member has all 78 values - that is (iii); (ii) every consumer of
+  `GroupModelInputs.static` (grep list in exit gate 1), **plus a grep for any evidence replay or comparison that
+  depends on undeclared columns of the recorded static** (`capture_group_evidence`, `forecast_evidence.py` ~297,
+  records `inputs.static`, which projection narrows to the declared names, or `None` for a model declaring none;
+  UNVERIFIED whether anything reads the dropped columns); (iii) by running the REAL Caravan resolver
+  (`services/caravan_statics.py::project_declared_static_attributes`, via `resolve_shared_static_frame`) read-only over
+  the 138 pilot basins - **not a raw-key SQL probe** (71 of the 78 declared names are derived by the Caravan
+  projection, not raw `basin_versions.attributes` keys; the 7 that are raw keys were checked 2026-09-30: all numeric,
+  no nulls, no int/float mix) - report (a) the number of members with a missing declared value (the expected DS2 skip
+  count) and (b) per-DECLARED-column dtype consistency across the 138 (any int/float mix or non-numeric type).
+  **PR1 merge gate:** if the measured DS2 skip count among the pilot's currently served stations is more than 0 (or
+  above a bound the owner states), stop and ask the owner before merge; a non-zero count means PR1 removes stations that
+  are served today.
 **In / Out**: `tests/unit/services/test_run_group_forecast.py` (+ a station-flow test file). Out: source.
 **Verification**: `uv run pytest tests/unit/services/test_run_group_forecast.py -k static`.
-**Pre-change**: RED for the `Null`-first order, the dtype-drift variant and the three DS2 cases; the other order,
-the no-statics case, the negative test, the station-fallback regression and the undeclared-null guard pass on
+**Pre-change**: RED for the `Null`-first order, both dtype-drift variants (undeclared and declared), the populated-basin no-statics case and the three DS2 cases; the other order,
+the absent-basin no-statics case, the negative test, the station-fallback regression and the undeclared-null guard pass on
 `main` and are marked as guards.
 
 ### T2 - Project to declared statics; skip a member with a missing declared static (PR1, group assembler only)
@@ -306,19 +326,19 @@ the no-statics case, the negative test, the station-fallback regression and the 
   to the model's declared static names (`reqs.static_features`) in **sorted order**, then stack. No static frame
   when the model declares none. Members without a static frame are handled by DS2, not silently omitted from
   `static_parts` as today.
-- Add the `Null`-cast defence of DS1b for declared columns only.
+- Cast numeric declared statics to `Float64` before stacking (DS1c). No `Null`-cast for statics (DS1b: dead code).
 - Log `run_group_forecast.station_inputs_unavailable` with `reason=missing_declared_static` (and the names) for a
   DS2 skip. The cadence skip keeps its current, reasonless log until T4.
 **In / Out**: `services/run_group_forecast.py` only (a local check; T4/D6 moves nothing later). Out: the flow,
 `operational_inputs.py`, health, the station path, models, the FI package.
 **Verification**: T1 passes; `uv run pytest tests/unit/services -q`; `uv run pyright`; `uv run ruff check`.
 **Pre-change**: mutation-check - remove only the projection and the stacking cases fail; remove only DS2 and the
-three skip cases fail.
+three skip cases fail; remove only the `Float64` cast and the declared dtype-drift test fails.
 
 ### T2d - PR1 documentation
 `docs/standards/logging.md` (the two events PR1 touches: `station_inputs_unavailable` with reason
 `missing_declared_static`), `docs/touchpoint-maps.md` forecast-cycle map (group statics are projected to declared
-names; DS2 is group-local), `docs/plans/262-...` wrong-sentence fix moves to T8. **Verification**: grep each name in `docs/`.
+names; DS2 is group-local; numeric declared statics cast to `Float64`), and a note that projection is not observably neutral: `capture_group_evidence` now records only the declared static columns (or `None`), `docs/plans/262-...` wrong-sentence fix moves to T8. **Verification**: grep each name in `docs/`.
 
 ### T2r - PR1 review gate
 One independent Claude and one independent Codex review of the patch, plus the extra owner-commissioned high-risk
@@ -326,7 +346,7 @@ review (PR1 decides which stations get a forecast). Full test suite after the fi
 Then T9a.
 
 ### T3 - Failing tests: the zero-column and partial-column class, with real polars
-**Outcome**: tests that reproduce each remaining stacking crash (station 2024's shape), plus the guards. The `Null`-dtype cases are T1.
+**Outcome**: tests that reproduce each remaining stacking crash (station 2024's shape), plus the guards. Statics are T1; the `Null`-dtype cases on the dynamic frames are here.
 - Mixed group of three members, model declaring a `past_dynamic` feature, one member with `past_dynamic =
   pl.DataFrame()`: today `ShapeError` (assert the exception class in the RED evidence). After T4: all three in
   `station_ids`, the empty member's declared columns all null on the expected grid.
@@ -339,6 +359,7 @@ Then T9a.
 - **Negative test:** a member frame with a non-zero-width mismatch beyond the declared schema (an extra or
   misnamed column) still fails stacking and is reported as an assembly failure (D2).
 - A null-filled member keeps its own past-forcing gap flag and its siblings have none (D5).
+- **Null-fill dtype:** filled columns are `Float64` (or the sibling dtype) and the timestamp column matches the siblings' dtype; a fill built from `pl.lit(None)` is RED (`SchemaError` against `Float64` siblings). If DS1b's cast is kept for dynamic frames, a mutation check removes it.
 - A test that a zero-row fill would have passed the gate (documenting why the grid is materialised).
 - Read and record the pinned model's declared `max_nan` tolerances (UNVERIFIED above) in a dated note here.
 - A **negative test** that the DS2 skip and D1 null-fill do not overlap: a DECLARED static that is missing is never null-filled into a served member (D1 concerns past/future frames only).
@@ -351,8 +372,8 @@ as "returned inputs", not as `ShapeError`; the guards pass.
 
 ### T4 - Conform frames to the declared schema, and the sibling result functions
 **Outcome**: Part A, without changing any existing return type.
-- Add the conformance step in the group assembler (D1-D5), local to `run_group_forecast.py`.
-  `operational_inputs.py` gains only the sibling `assemble_station_operational_inputs_outcome` (D6); the original
+- Add the conformance step in the group assembler (D1-D5), local to `run_group_forecast.py`, with explicit dtypes for filled columns (D3). The pre-fill gap record rides in `OperationalInputMetadata` (D5).
+  `operational_inputs.py` gains only the sibling (and the metadata field) `assemble_station_operational_inputs_outcome` (D6); the original
   keeps its behaviour, including the log-and-continue of `no_observations` and `no_nwp`.
 - Add the closed reason type (`Enum`; PR1's local `missing_declared_static` joins it here) and the frozen `GroupAssembly` / `StationInputsSkipped` results in
   `types/`, following the repo's parse-don't-validate style.
@@ -393,10 +414,11 @@ dropped group.
 - **`ModelOutputError` gets a new SAP3-internal attribute** (`cause`, default `None`) set where the adapter's
   `_output_from_result` converts a returned `ModelFailure`, from the FI's `ModelFailure.cause`. The group service
   maps `INPUT_DATA` to `model_input_data`. No FI change and no FI issue.
+This is where the bad-area case first reports `model_input_data` (moved from PR1's gate).
 **In / Out**: `services/run_group_forecast.py`, `adapters/forecast_interface.py`, `exceptions.py`, tests. Out: the
 FI package, models. **Runs after T4** (same file).
 **Verification**: one unit test per path asserts the reason on the outcome; a fake FI model returning
-`ModelFailure(INPUT_DATA)` asserts `model_input_data`.
+`ModelFailure(INPUT_DATA)` asserts `model_input_data`; the bad-area fixture (DS4) reports `model_input_data`.
 **Pre-change**: RED - the outcome has no such field.
 
 ### T7 - One health record per group-model execution
@@ -452,7 +474,7 @@ cycle; repeated records respect D10.
   difference (duplicate or superseded rows can hide missing stations behind a right-looking count). Record how the
   three sparse stations were treated, with the adapter's `station_input_nan_tolerance_exceeded` lines.
 - **Expected `missing_declared_static` skips are the members with a declared-null static only.** Measure the number
-  read-only in T1 by running the static resolver over the 138 basins; do not assume it. The 84 null `reservoir_fs`
+  read-only in T1 by running the real static resolver over the 138 basins; do not assume it. The 84 null `reservoir_fs`
   values are undeclared and are **not** an expected skip count.
 - Do not break staging to prove the whole-group drop health path; T7's tests cover it. If the owner wants live
   proof of the record, provoke it on a scratch group, never on the pilot group.
@@ -466,13 +488,13 @@ cycle; repeated records respect D10.
 1. **PR1 (T1-T2, T2d, T2r, T9a):** the mixed-null undeclared-static stacking case fails on `main` (`SchemaError`, and a
    dtype-drift variant in both member orders) and passes after T2 with the unused column absent from the stacked
    result; the guards pass before and after; DS2's three cases skip with reason `missing_declared_static`; the
-   station-fallback regression test passes; the bad-area case reports `model_input_data`; the T1 dated note records
-   the deployed declared statics against the checked-in config and every consumer of `GroupModelInputs.static`
+   station-fallback regression test passes; the declared dtype-drift case passes in both orders and all-DS2-skipped falls through to `None`; the bad-area case shows only the existing whole-batch `ModelFailure(INPUT_DATA)` and the logged empty outcome (its `model_input_data` reporting is PR2's); the T1 measurement of DS2 skips and per-declared-column dtype consistency is recorded and its merge gate (skip count > 0 or above the owner's bound: ask first) is cleared; the T1 dated note records
+   the closed config-hash check and every consumer of `GroupModelInputs.static`
    (`adapters/forecast_interface.py`, `services/forecast_evidence.py` including `capture_group_evidence`,
    `services/run_group_forecast.py`, `types/model.py::for_station`).
 2. **PR2:** T3's mixed-frame cases fail on `main` with the `ShapeError` and pass after T4; the all-empty case
    fails as "returned inputs" on `main`; the guards pass before and after; the non-zero-width negative test still
-   reports an assembly failure; D5's flag test passes at both call sites.
+   reports an assembly failure; D5's flag test passes at both call sites; the bad-area case reports `model_input_data` (T6); null-fill dtype tests pass.
 3. Every **recoverable** whole-group drop path in the table has a test showing a counted drop, one record with the
    right reason, and DEGRADED health - **except** where the cycle is already FAILED, which stays FAILED. The two
    non-drops are not counted. `StoreError` and fatal persistence failures still propagate. No path adds to
@@ -546,13 +568,12 @@ cycle; repeated records respect D10.
   forecast.** T3 will read the tolerance. *Recommendation:* if it is that loose, ask the model owner to tighten it
   rather than adding a SAP3-side rule; a SAP3 history-length gate is deliberately out of scope.
 
-- **Q7 - Does the running forecast model ask for the same station properties as the copy we have checked in?** We
+- **Q7 (closed on the description; the measurement remains) - Does the running forecast model ask for the same station properties as the copy we have checked in?** We
   read the checked-in description, which does not include the reservoir-share property that 84 of the 138 stations
-  lack; the copy inside the running system has not been read. *Recommendation:* someone reads the running copy
-  before the first fix ships (T1). If they match, those 84 stations need no special treatment at all and
-  nothing about them changes.
+  lack. **Answered 2026-09-30:** the copy inside the running system is byte-identical (checksum match), so those 84 stations need no
+  special treatment. What stays open is the separate T1 measurement of how many members lack a property the model DOES ask for.
 - **Q8 - If a station is missing a property the model does ask for, should it get a forecast?** Only relevant if
-  Q7 finds such properties, or for a new station later. The model was trained outside this system, so what it did with
+  the T1 measurement finds such stations, or for a new station later. The model was trained outside this system, so what it did with
   missing properties in training is unknown to us. *Recommendation:* skip the station and say why in the log
   (no forecast rather than a possibly wrong one), and ask the model's authors what their training did with missing
   values; confirm with the hydrologist. This plan does not judge bad-but-present values (see DS4).
@@ -581,6 +602,30 @@ against `origin/main` before folding (statuses in brackets).
 - **D5 has a carrier** for the pre-fill gap record; exit gate 1 lists `capture_group_evidence`; the adapter's
   `ConfigurationError` on `None` is decided (DS5).
 - Rejected or narrowed claims: see the hand-off report; none of the four blockers was rejected.
+
+### Rev 4 (2026-09-30, after the round-3 Claude and Codex reviews; both NOT READY, narrowly)
+
+A confirmation review reads ONLY these items. Claims were checked at `origin/main` 63169e55 (statuses in brackets).
+
+- **PR1's exit gate no longer needs PR2** [verified: `run_group_forecast.py` ~597-609 only logs and returns an empty
+  outcome; T6 is PR2]. The bad-area case asserts the existing whole-batch refusal in PR1; `model_input_data` moved to T6 / PR2's gate.
+- **Declared dtype drift is handled (DS1c)** [reproduced: int versus float raises `SchemaError` in both orders at polars
+  1.43.2]. Numeric declared statics are cast to `Float64` before stacking; `vertical_relaxed` still rejected (coerces
+  string/float and future drift); test added; T1 measures per-declared-column dtype consistency with the REAL Caravan
+  resolver over the 138 basins (no raw-key SQL). DS1b is dropped for statics (dead code) and mutation-checked for dynamic frames.
+- **PR1 merge gate on the T1 measurement** (DS2 skip count > 0 or over the owner's bound: ask first). The config-identity
+  prerequisite is CLOSED (checksum equal; stale statements in T1, Q7 updated); the missing-declared-values measurement stays.
+- **Null-fill dtype specified** (Facts item 3, D3, T3): explicit `Float64` / sibling timestamp dtype; `Null` dtype is RED;
+  the T1-versus-T3 coverage contradiction is reconciled.
+- **D4 reworded** (DS2 is a second per-member skip). **DS4 lists more limits**: bool and non-scalar statics raise in
+  `_static_value`; a collision raise in a member still drops the group.
+- **D5 carrier chosen**: the existing per-station `OperationalInputMetadata` (no signature change to `run_group_forecast`
+  or the flow call site).
+- **Projection is not observably neutral**: `capture_group_evidence` records the narrowed static; noted in T2d; T1 greps
+  for any evidence replay depending on undeclared columns (UNVERIFIED).
+- **New T1 tests**: all members DS2-skipped falls through to `None`; the no-statics test is RED for populated basins and a
+  guard only for the absent-basin case (Codex P2).
+- **DS3 states PR2 is re-reviewed before its implementation.**
 
 ## Dependency graph
 
