@@ -90,6 +90,7 @@ command that produced them.
 
 ### T1 — Provision the host
 **Outcome**: a hardened VM reachable over SSH, 80 and 443 only, with a correct clock.
+- **T0/T1 record (2026-09-30):** hostname **`nepal-staging.hydrosolutions.ch`** (A record at Hostpoint, added by the owner's colleague; verified resolving to `84.234.29.144` at the authoritative nameserver and at 1.1.1.1). Server `nepal-staging-1` on Infomaniak Public Cloud, Ubuntu 24.04.4 LTS, hardened per T1 (key-only SSH, root login off, host firewall 22/80/443, clock synchronised, UTC, Docker 29.8.1 with Compose v5.5.1); security group `nepal-staging-web` allows 22 (open to all for now), 80, 443. Cloud account owner: Beatrice Marti (Infomaniak login), billing on the same account. No stack deployed yet.
 - **T1 price record (Infomaniak calculator, 2026-09-30, owner's screenshot):** instance `a8_ram16_disk0` (8 vCPU / 16 GB, 730 h) CHF 23.50/month; 200 GB `Perf1` block storage CHF 17.52/month; one reserved IPv4 CHF 3.34/month; **total CHF 44.35/month**. Not in the estimate: snapshots/backups and outgoing traffic (check the first invoice). Project `nepal-staging` in Public Cloud `sapphire`, region `dc4-a`, quota 20 vCPU / 64 GB RAM / 1000 GB.
 - **Trial first (CHF 300 credit, 3 months):** confirm the real price of the size, a public IPv4,
   block-storage and snapshot prices; record them. If any unknown breaks the budget, take the Hetzner fallback.
