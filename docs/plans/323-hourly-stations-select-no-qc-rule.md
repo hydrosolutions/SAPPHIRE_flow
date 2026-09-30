@@ -40,7 +40,7 @@ looked like 57.7%, but those entries count runs, not readings, and are not compa
 
 🔄 **Reconciled with `main` on 2026-09-29 (after PRs #315, #324, #328, #332).** T4 is built and
 re-applied on top of that `main` — branch `feat/plan-323-t4-rebased`, reviewed READY by an independent
-Claude and by Codex on the rebased code; T1 is measured (§ T1 result); T2 is built (eleven hourly rows on all three surfaces, `TestHourlyRules`); T3 and T5 are not. What changed under this plan,
+Claude and by Codex on the rebased code; T1 is measured (§ T1 result); T2 is built (eleven hourly rows on all three surfaces, `TestHourlyRules`); T3 is built (documentation: `docs/touchpoint-maps.md` and `docs/architecture-context.md`; the checker method, result type and enum member were already in `docs/spec/types-and-protocols.md` from T4); T5 is not. What changed under this plan,
 and what it changes for the tasks still to build:
 - **Selection is now per network** (#315): `resolve_selection`, `check` and T4's `check_with_coverage`
   take a required `station_networks` mapping, and `rules_for` lets a network-specific rule replace a
