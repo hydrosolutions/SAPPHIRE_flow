@@ -33,6 +33,8 @@ from tests.conftest import make_station_config
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from sapphire_flow.types.ids import ArtifactId
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BOOTSTRAP_SQL = _REPO_ROOT / "docker" / "bootstrap-roles.sql"
 _BOOTSTRAP_SH = _REPO_ROOT / "docker" / "bootstrap-roles.sh"
@@ -1077,6 +1079,112 @@ class TestApplicationStoresWorkUnderScopedRoles:
         url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
         assert bootstrapped.denied(
             url, "UPDATE model_artifact_provenance SET notes = 'x'"
+        )
+
+
+class TestWarmStartProvenanceUnderScopedRole:
+    """Plan 399/405 — the fine-tune run failed on the Mac-mini with
+    `permission denied for table model_artifact_warm_start`: migration 0060 added
+    the table and nothing granted `sapphire_worker` INSERT on it. The store write
+    is run here as the real scoped role, through the production writer.
+    """
+
+    def _seed_two_artifacts(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> tuple[ArtifactId, ArtifactId]:
+        from uuid import uuid4
+
+        from sapphire_flow.types.ids import ArtifactId
+
+        model_id = f"warm-role-test-{uuid4().hex[:8]}"
+        donor, retrained = uuid4(), uuid4()
+        with role_harness.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO models (id, display_name, artifact_scope, description)"
+                    " VALUES (:m, 'warm role test', 'station', 'test')"
+                ),
+                {"m": model_id},
+            )
+            group = conn.execute(
+                sa.text(
+                    "INSERT INTO station_groups (id, name, tenant_id)"
+                    " SELECT gen_random_uuid(), :n, id FROM tenants LIMIT 1"
+                    " RETURNING id"
+                ),
+                {"n": model_id},
+            ).scalar_one()
+            for aid in (donor, retrained):
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO model_artifacts (id, model_id, status,"
+                        " group_id, artifact_path, sha256_hash, training_period_start,"
+                        " training_period_end, trained_at)"
+                        " VALUES (:a, :m, 'training', :g, '/x', 'h',"
+                        " now(), now(), now())"
+                    ),
+                    {"a": aid, "m": model_id, "g": group},
+                )
+        return ArtifactId(donor), ArtifactId(retrained)
+
+    def test_worker_can_record_warm_start_and_api_can_read_it(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        from sapphire_flow.store.model_artifact_warm_start import (
+            PgWarmStartWriter,
+            WarmStartRecord,
+            fetch_warm_start,
+        )
+
+        result = role_harness.run_bootstrap("warm-api-pw", "warm-worker-pw")
+        assert result.returncode == 0, result.stderr
+        donor, retrained = self._seed_two_artifacts(role_harness)
+
+        worker_engine = sa.create_engine(
+            role_harness.role_url("sapphire_worker", "warm-worker-pw")
+        )
+        try:
+            with worker_engine.begin() as conn:
+                PgWarmStartWriter(conn).record(
+                    WarmStartRecord(
+                        artifact_id=retrained,
+                        base_artifact_id=donor,
+                        run_config={"lr": 0.001},
+                        base_config_path="cfg.yml",
+                        base_config_sha256="abc",
+                        base_params_unknown_reason="imported donor",
+                    )
+                )
+        finally:
+            worker_engine.dispose()
+
+        api_engine = sa.create_engine(
+            role_harness.role_url("sapphire_api", "warm-api-pw")
+        )
+        try:
+            with api_engine.connect() as conn:
+                fetched = fetch_warm_start(conn, retrained)
+        finally:
+            api_engine.dispose()
+        assert fetched is not None
+        assert fetched.base_artifact_id == donor
+
+    def test_worker_cannot_update_or_delete_warm_start(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(
+            url, "UPDATE model_artifact_warm_start SET run_config = '{}'"
+        )
+        assert bootstrapped.denied(url, "DELETE FROM model_artifact_warm_start")
+
+    def test_api_cannot_write_warm_start(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_api", "api-pw-initial")
+        assert bootstrapped.denied(url, "DELETE FROM model_artifact_warm_start")
+        assert bootstrapped.denied(
+            url, "UPDATE model_artifact_warm_start SET run_config = '{}'"
         )
 
 

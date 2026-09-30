@@ -1246,6 +1246,11 @@ scoped roles already exist. Generate the two new secret files (§ First deploy a
 (non-zero exit, migrations already applied but roles not yet granted) if either secret file is
 missing, rather than silently skipping the role bootstrap.
 
+A grant added to `docker/bootstrap-roles.sql` alone (for example `INSERT ON model_artifact_warm_start
+TO sapphire_worker`) needs no migration and takes effect on a live database only when `init` re-runs
+the bootstrap, i.e. on the next deploy that runs `init`; merging the change does not alter running
+databases.
+
 ### Operator role for delivery replacement (Plan 510)
 
 Three levels of database identity: the owner (deploy: migrations, this bootstrap, declared tenants), the
