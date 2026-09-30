@@ -86,7 +86,7 @@ class TestDeploymentScopeResolution:
             for r in resp.json()["observation"]["rules"]
             if r["rule_id"] == "range_check" and r["parameter"] == "discharge"
         ]
-        assert {r["time_step_seconds"] for r in rows} == {600, 86400}
+        assert {r["time_step_seconds"] for r in rows} == {600, 3600, 86400}
 
     def test_nan_and_inf_thresholds_served_as_null(
         self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

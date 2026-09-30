@@ -40,7 +40,7 @@ looked like 57.7%, but those entries count runs, not readings, and are not compa
 
 🔄 **Reconciled with `main` on 2026-09-29 (after PRs #315, #324, #328, #332).** T4 is built and
 re-applied on top of that `main` — branch `feat/plan-323-t4-rebased`, reviewed READY by an independent
-Claude and by Codex on the rebased code; T1 is measured (§ T1 result); T2, T3 and T5 are not built. What changed under this plan,
+Claude and by Codex on the rebased code; T1 is measured (§ T1 result); T2 is built (eleven hourly rows on all three surfaces, `TestHourlyRules`); T3 and T5 are not. What changed under this plan,
 and what it changes for the tasks still to build:
 - **Selection is now per network** (#315): `resolve_selection`, `check` and T4's `check_with_coverage`
   take a required `station_networks` mapping, and `rules_for` lets a network-specific rule replace a
@@ -562,7 +562,9 @@ real verdict.
   `test_water_level_spike_rules_use_max_delta` (asserts water_level `spike` cadences are exactly
   {600, 86400}) and `TestShippedDischargeCeiling::test_both_toml_surfaces_ship_the_loose_ceiling`
   (asserts discharge ceilings exactly {600: 100000, 86400: 100000}) — both extended with 3600, not
-  loosened.
+  loosened; and `tests/unit/api/test_api_review_qc_rules.py::TestDeploymentScopeResolution::
+  test_same_rule_id_at_two_cadences_returns_both_rows` (asserts the served discharge `range_check`
+  cadences are exactly {600, 86400} — found by the full unit run, not by the plan; extended the same way).
 - Each new row carries `rule_version = "1.0.0"` (flags report it) and the rule set's `version`
   becomes `1.2.0` in `config.toml` **and** `docs/spec/config-reference.toml` (a test pins the two
   equal); `_default_swiss_qc_rules()` keeps its own version `1.0.0` (a test pins it) (§ Status,
