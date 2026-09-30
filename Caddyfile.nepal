@@ -1,0 +1,44 @@
+# Plan 511 D2/D7: the Nepal cloud host's public edge.
+#
+# Differences from the base Caddyfile, and why:
+#   * {$SAPPHIRE_DOMAIN} is REQUIRED (no `:80` fallback). An unset value makes
+#     Caddy refuse to start, so the host can never come up as a plain-HTTP site.
+#     docker-compose.nepal-cloud.yml passes it into the container.
+#   * HSTS is sent explicitly. Caddy's automatic HTTPS redirects and obtains the
+#     certificate but does NOT add a Strict-Transport-Security header.
+#   * Only /api/v1/ is forwarded. The legacy HTML routers, .json exports and any
+#     other path answer 404 here, before the API sees them.
+#   * A localhost-only :80 site serves the container healthcheck. With a domain
+#     configured, plain-HTTP requests for any other Host are redirected to HTTPS,
+#     which would fail the base healthcheck (`wget http://localhost:80/...`).
+#
+# Prefect UI is NOT routed (security.md § Network policy).
+
+{$SAPPHIRE_DOMAIN} {
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        -Server
+    }
+
+    handle /api/v1/* {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        respond "Not Found" 404
+    }
+}
+
+http://localhost:80 {
+    handle /api/v1/health {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        respond "Not Found" 404
+    }
+}

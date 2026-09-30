@@ -1,0 +1,38 @@
+# Plan 511 T2: the Nepal cloud host (nepal-staging.hydrosolutions.ch).
+# Layered on the Swiss base config.toml by docker-compose.nepal-cloud.yml on ALL
+# FOUR services that read config: api, prefect-worker, prefect-worker-ingest and
+# init. A service without it silently falls back to the Swiss base config, so a
+# test asserts the wiring on each.
+#
+# This host carries NO Swiss data: it starts empty, the seeded `sapphire` tenant
+# has no write authority (below), and the BAFU collectors are not registered
+# (SAPPHIRE_SKIP_DEPLOYMENTS, set on `init` in the compose overlay).
+
+# Nepal display timezone (base: Europe/Zurich).
+default_display_timezone = "Asia/Kathmandu"
+
+# The ONE tenant this host may write to. The base config's list is replaced
+# wholesale by an overlay's list.
+[deployment]
+writable_tenants = ["chwrr"]
+
+# Plan 513: created by `init` on first boot. Plan 268 D11's identity, so this
+# host and the Mac mini agree; the name must equal DELIVERY_TENANT_NAME
+# (cli/import_dhm_delivery.py) — a test ties them.
+[tenants.chwrr]
+name = "CHWRR Nepal"
+
+[onboarding]
+# Bulk-imported stations would be stamped with this tenant.
+tenant = "chwrr"
+# Replaces the Swiss CAMELS-CH basin list; the DHM stations arrive through
+# cli.import_dhm_delivery (Plan 268), not a bulk basin import.
+basin_ids = []
+# A label only: no code reads it. Named for the source this host is meant for.
+data_source = "dhm"
+
+# No MeteoSwiss ICON-CH2 NWP fetch on this host. The Nepal forcing feed is
+# configured when that track lands; until then the forecast cycle runs without
+# a Swiss NWP source.
+[adapters.weather_forecast]
+enabled = false

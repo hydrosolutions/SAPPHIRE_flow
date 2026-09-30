@@ -39,7 +39,28 @@ class DeploymentSpec:
     work_pool_name: str = WORK_POOL
 
 
+_SKIP_ENV_VAR = "SAPPHIRE_SKIP_DEPLOYMENTS"
+
+
+def _skipped_deployments() -> frozenset[str]:
+    """Deployment names a host opts out of (Plan 511 D4), comma-separated."""
+    raw = os.environ.get(_SKIP_ENV_VAR, "")
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
 def _build_specs() -> list[DeploymentSpec]:
+    """Build the deployment specs, minus any the host opts out of."""
+    specs = _all_specs()
+    skipped = _skipped_deployments()
+    unknown = skipped - {spec.deployment_name for spec in specs}
+    if unknown:
+        raise ValueError(
+            f"{_SKIP_ENV_VAR} names unknown deployments: {sorted(unknown)}"
+        )
+    return [spec for spec in specs if spec.deployment_name not in skipped]
+
+
+def _all_specs() -> list[DeploymentSpec]:
     """Build deployment specs with env-var-configurable schedules."""
     cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
     cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")

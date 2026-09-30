@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -541,3 +542,77 @@ class TestRegisterAll:
 
         assert mock_client.create_work_pool.await_count == 3
         assert mock_register.await_count == len(DEPLOYMENT_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# Plan 511 D4/T2: a host can opt out of deployments (SAPPHIRE_SKIP_DEPLOYMENTS)
+# ---------------------------------------------------------------------------
+
+_NEPAL_SKIP = "collect-bafu-forecasts,collect-bafu-observations"
+
+
+class TestSkippedDeployments:
+    def test_unset_registers_every_deployment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        assert {s.deployment_name for s in _build_specs()} == DEPLOYMENT_NAMES
+
+    def test_the_nepal_skip_list_leaves_the_complete_named_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", _NEPAL_SKIP)
+        names = {s.deployment_name for s in _build_specs()}
+        assert names == {
+            "ingest-observations",
+            "forecast-cycle",
+            "backup-database",
+            "train-models",
+            "run-hindcast",
+            "compute-skills",
+            "compute-combined-skills",
+            "onboard-stations",
+            "onboard-model",
+            "ingest-weather-history",
+            "ingest-recap-reanalysis",
+            "import-model-artifact",
+        }
+
+    def test_no_bafu_deployment_survives_the_nepal_skip_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", _NEPAL_SKIP)
+        assert not [s for s in _build_specs() if "bafu" in s.deployment_name]
+
+    def test_whitespace_and_empty_entries_are_tolerated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SAPPHIRE_SKIP_DEPLOYMENTS", " collect-bafu-forecasts , ,train-models,"
+        )
+        names = {s.deployment_name for s in _build_specs()}
+        assert names == DEPLOYMENT_NAMES - {"collect-bafu-forecasts", "train-models"}
+
+    def test_an_unknown_name_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "collect-bafu-forecast")
+        with pytest.raises(ValueError, match="unknown deployments"):
+            _build_specs()
+
+    def test_the_compose_skip_list_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The value the Nepal compose overlay actually sets names real deployments."""
+        import yaml
+
+        overlay = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[3] / "docker-compose.nepal-cloud.yml"
+            ).read_text()
+        )
+        monkeypatch.setenv(
+            "SAPPHIRE_SKIP_DEPLOYMENTS",
+            overlay["services"]["init"]["environment"]["SAPPHIRE_SKIP_DEPLOYMENTS"],
+        )
+        assert not [s for s in _build_specs() if "bafu" in s.deployment_name]

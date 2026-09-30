@@ -464,6 +464,8 @@ All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mount
 
 Required secrets:
 - `db_password` — PostgreSQL password for application users
+- `sapphire_api_db_password`, `sapphire_worker_db_password`, `sapphire_backup_db_password` — the distinct passwords of the least-privilege `sapphire_api`, `sapphire_worker` and `sapphire_backup` database roles (Plan 147 Slice D; Plan 162 T1). All three are declared in the base `docker-compose.yml` and mounted into `init`, which bootstraps the roles, so a stack cannot start without them. Generate each independently of `db_password`.
+- Build-time secrets (environment-sourced, never on disk): `recap_dg_client_token` and `aquacast_token`, needed to build the images (`docs/deployment/nepal-cloud-host.md`).
 - `access_token_pepper` — server-side pepper for `access_tokens.token_hash` (Plan 147 Slice C, REALIZED). Mounted only into the `api` service (auth verification + the token-management CLI, run via `docker compose exec api`). The API refuses to boot without it (fail-closed, no unpeppered fallback).
 - `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config) *(v1)*
 - `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption) *(v1)*
