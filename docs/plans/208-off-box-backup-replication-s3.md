@@ -19,8 +19,8 @@ source: docs/plans/162-robust-database-backup.md § D4 + "Owner context 2026-08-
 > bucket-lifecycle-expiry principles, checking that R2 API tokens can be scoped to one bucket with
 > write-only access and that R2 lifecycle rules exist; (3) check whether R2 supports object lock /
 > retention, which Plan 340's protected-backup proofs need; (4) restate the "Owner context" decision
-> (AWS, S3). **Priority: backups are NOT a v1 staging blocker** (owner, 2026-09-29) — Plan 511's backup
-> task waits on this plan and does not gate the first Nepal staging forecasts.
+> (AWS, S3). **Priority: backups are NOT a v1 staging blocker** (owner, 2026-09-29) — Plan 511 D9 records
+> backups as a follow-on that waits on this plan; nothing here gates the first Nepal staging forecasts.
 > **Also note:** this plan replicates an operational dump; it is not Plan 340's protected-preservation
 > bundle, and its body makes encryption at publication a prerequisite that does not yet exist.
 

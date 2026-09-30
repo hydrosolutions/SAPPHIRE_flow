@@ -191,8 +191,9 @@ timeout each alert; the local probe is unaffected.
     { "id": "phase-1", "tasks": ["T0"] },
     { "id": "phase-2", "tasks": ["T1"], "depends_on": ["phase-1"] },
     { "id": "phase-3", "tasks": ["T2"], "depends_on": ["phase-2"] },
-    { "id": "phase-3b", "tasks": ["T3", "T4"], "depends_on": ["phase-3"], "parallel": true },
-    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3b"] }
+    { "id": "phase-3b", "tasks": ["T3"], "depends_on": ["phase-3"] },
+    { "id": "phase-3c", "tasks": ["T4"], "depends_on": ["phase-3b"] },
+    { "id": "phase-4", "tasks": ["T5"], "depends_on": ["phase-3c"] }
   ]
 }
 ```
