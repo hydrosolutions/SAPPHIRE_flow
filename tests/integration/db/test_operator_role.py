@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 import yaml
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
 
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
+_BOOTSTRAP_SQL = REPO_ROOT / "docker" / "bootstrap-roles.sql"
 OPERATOR = "sapphire_operator"
 OPERATOR_PW = "operator-pw-one"
 _OTHER_DELIVERY = "some-other-delivery"
@@ -679,14 +682,16 @@ class TestBootstrapLoginHandling:
         db.bootstrap()
         assert self._can_log_in(db)
 
-    def test_dropping_the_overlay_stops_new_logins_but_not_an_open_session(
+    def test_every_bootstrap_ends_open_operator_sessions_and_stops_new_logins(
         self, db: OperatorDb
     ) -> None:
         engine = db.engine()
         try:
             with engine.connect() as open_session:
-                db.bootstrap(operator_password=None)
                 assert open_session.scalar(sa.text("SELECT 1")) == 1
+                db.bootstrap(operator_password=None)
+                with pytest.raises(sa.exc.DBAPIError):
+                    open_session.scalar(sa.text("SELECT 1"))
                 assert not self._can_log_in(db)
         finally:
             engine.dispose()
@@ -837,6 +842,40 @@ class TestBootstrapConvergesToTheSafeStateWhenTheGuardIsBroken:
                 sa.text(
                     f"CREATE TRIGGER {trigger} BEFORE INSERT ON observations "
                     "FOR EACH ROW EXECUTE FUNCTION "
+                    "public.operator_guard_delivery_row()"
+                )
+            )
+        try:
+            db.bootstrap()
+            assert _all_table_privileges(db) == {}
+        finally:
+            with db.owner.begin() as conn:
+                conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+                conn.execute(sa.text(definition))
+            db.bootstrap()
+        assert _dml_privileges(db)
+
+    @pytest.mark.parametrize(
+        "condition",
+        [
+            "false",
+            "session_user = 'someone_else'",
+            "true",
+            "session_user = 'SAPPHIRE_OPERATOR'",
+            "session_user = 'sapphire_ operator'",
+        ],
+    )
+    def test_a_guard_trigger_with_the_wrong_when_predicate_counts_as_broken(
+        self, db: OperatorDb, condition: str
+    ) -> None:
+        trigger = "trg_observations_operator_guard_insert"
+        definition = _trigger_definition(db, trigger)
+        with db.owner.begin() as conn:
+            conn.execute(sa.text(f"DROP TRIGGER {trigger} ON observations"))
+            conn.execute(
+                sa.text(
+                    f"CREATE TRIGGER {trigger} BEFORE INSERT ON observations "
+                    f"FOR EACH ROW WHEN ({condition}) EXECUTE FUNCTION "
                     "public.operator_guard_delivery_row()"
                 )
             )
@@ -1108,59 +1147,351 @@ class TestTruncateTriggerRefusesEvenWithTheGrant:
         assert "may not TRUNCATE" in outcome.message
 
 
-class TestOperatorTempTableDoesNotBlockTheBootstrap:
-    """An operator session that created a temp table and stays open must neither
-    abort `init` nor keep its privileges when the bootstrap converges."""
+def _assert_session_was_terminated(conn: sa.Connection) -> None:
+    """The connection itself is gone (not merely denied by the ACL)."""
+    with pytest.raises(sa.exc.DBAPIError) as info:
+        conn.execute(sa.text("SELECT 1"))
+    assert isinstance(info.value.orig, psycopg.OperationalError), info.value.orig
 
-    def _open_session_with_temp_table(
-        self, db: OperatorDb
-    ) -> tuple[sa.Engine, sa.Connection]:
+
+_TEMP_OBJECTS: dict[str, tuple[str, ...]] = {
+    "temp-table-with-rls": (
+        "CREATE TEMP TABLE scratch (id int)",
+        "ALTER TABLE scratch ENABLE ROW LEVEL SECURITY",
+    ),
+    "temp-function": (
+        "CREATE FUNCTION pg_temp.scratch_fn() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+    ),
+    "temp-type": ("CREATE TYPE pg_temp.scratch_ty AS (a int)",),
+    "temp-table": ("CREATE TEMP TABLE scratch (id int)",),
+}
+
+
+class TestOperatorTempObjectsNeverBlockTheBootstrap:
+    """An operator session holding a committed temp object — or an open
+    transaction locking one — must neither abort nor hang `init`; the session
+    ends and the role's privileges follow the guard's state."""
+
+    _OPEN_TRANSACTION = "open-transaction-locking-a-temp-table"
+    # Lock vectors the operator holds with its LEGITIMATE privileges, left in an
+    # open transaction: they can block the bootstrap's own restriction.
+    _LOCK_VECTORS: dict[str, str] = {
+        "open-transaction-altering-its-own-password": (
+            "ALTER ROLE sapphire_operator PASSWORD 'x'"
+        ),
+        "open-transaction-locking-observations": (
+            "LOCK TABLE public.observations IN ACCESS EXCLUSIVE MODE"
+        ),
+        "open-transaction-locking-rating-curves": (
+            "LOCK TABLE public.rating_curves IN ACCESS EXCLUSIVE MODE"
+        ),
+        "open-transaction-holding-row-locks": (
+            "SELECT id FROM public.observations WHERE delivery_id = "
+            "'dhm-barkhk-2026-09-08' FOR UPDATE"
+        ),
+        "open-transaction-updating-a-delivery-row": (
+            "UPDATE public.observations SET value = value WHERE delivery_id = "
+            "'dhm-barkhk-2026-09-08' AND station_id = "
+            "(SELECT id FROM public.stations WHERE code = '447')"
+        ),
+    }
+
+    def _session(self, db: OperatorDb, kind: str) -> tuple[sa.Engine, sa.Connection]:
         engine = db.engine()
         conn = engine.connect()
-        conn.execute(sa.text("CREATE TEMP TABLE scratch (id int)"))
+        statements = _TEMP_OBJECTS.get(kind, _TEMP_OBJECTS["temp-table"])
+        for statement in statements:
+            conn.execute(sa.text(statement))
         conn.commit()
+        if kind == self._OPEN_TRANSACTION:
+            conn.execute(sa.text("LOCK TABLE scratch IN ACCESS EXCLUSIVE MODE"))
+        elif kind in self._LOCK_VECTORS:
+            conn.execute(sa.text(self._LOCK_VECTORS[kind]))
         return engine, conn
 
-    def test_a_healthy_guard_still_bootstraps(self, db: OperatorDb) -> None:
-        engine, conn = self._open_session_with_temp_table(db)
-        try:
-            db.bootstrap()
-            assert _dml_privileges(db)
-            assert conn.scalar(sa.text("SELECT 1")) == 1
-        finally:
-            conn.close()
-            engine.dispose()
-
-    def test_a_broken_guard_revokes_the_open_sessions_privileges(
-        self, db: OperatorDb
+    @pytest.mark.parametrize("guard", ["healthy", "disabled"])
+    @pytest.mark.parametrize(
+        "kind", [*_TEMP_OBJECTS, _OPEN_TRANSACTION, *_LOCK_VECTORS]
+    )
+    def test_the_bootstrap_completes_and_the_session_cannot_write(
+        self, db: OperatorDb, kind: str, guard: str
     ) -> None:
-        engine, conn = self._open_session_with_temp_table(db)
-        db.ids = {**db.ids, "t": _T}
+        trigger = "trg_observations_operator_guard_insert"
+        disabled = guard == "disabled"
+        # The guard is switched off BEFORE the session opens: an operator lock
+        # on observations would otherwise block this very ALTER TABLE.
+        with _owner_ran(
+            db,
+            [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"] if disabled else [],
+            [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"] if disabled else [],
+        ):
+            engine, conn = self._session(db, kind)
+            try:
+                started = time.perf_counter()
+                db.bootstrap()
+                assert time.perf_counter() - started < 30
+                if disabled:
+                    assert _all_table_privileges(db) == {}
+                else:
+                    assert _dml_privileges(db)
+                _assert_session_was_terminated(conn)
+            finally:
+                conn.close()
+                engine.dispose()
+        db.bootstrap()
+        assert _dml_privileges(db)
+
+    @pytest.mark.parametrize("guard", ["healthy", "disabled"])
+    def test_a_persistent_large_object_of_the_operator_is_removed(
+        self, db: OperatorDb, guard: str
+    ) -> None:
+        engine = db.engine()
+        conn = engine.connect()
+        conn.execute(sa.text("SELECT lo_creat(-1)"))
+        conn.commit()
+        trigger = "trg_observations_operator_guard_insert"
+        disabled = guard == "disabled"
+        count_sql = (
+            "SELECT count(*) FROM pg_largeobject_metadata "
+            "WHERE lomowner = 'sapphire_operator'::regrole"
+        )
         try:
             with _owner_ran(
                 db,
-                [
-                    "ALTER TABLE observations DISABLE TRIGGER "
-                    "trg_observations_operator_guard_insert"
-                ],
-                [
-                    "ALTER TABLE observations ENABLE TRIGGER "
-                    "trg_observations_operator_guard_insert"
-                ],
+                [f"ALTER TABLE observations DISABLE TRIGGER {trigger}"]
+                if disabled
+                else [],
+                [f"ALTER TABLE observations ENABLE TRIGGER {trigger}"]
+                if disabled
+                else [],
             ):
+                assert db.scalar(count_sql) == 1
                 db.bootstrap()
-                assert _all_table_privileges(db) == {}
-                with pytest.raises(sa.exc.ProgrammingError, match="permission denied"):
-                    conn.execute(
-                        sa.text(_INSERT_OBS.format(station="swiss", delivery="NULL")),
-                        db.ids,
-                    )
-                conn.rollback()
+                assert db.scalar(count_sql) == 0
+                if disabled:
+                    assert _all_table_privileges(db) == {}
+                _assert_session_was_terminated(conn)
         finally:
             conn.close()
             engine.dispose()
             db.bootstrap()
-        assert _dml_privileges(db)
+
+    def test_a_lock_the_bootstrap_cannot_clear_fails_loudly_and_boundedly(
+        self, db: OperatorDb
+    ) -> None:
+        blocker = db.owner.connect()
+        blocker.execute(sa.text("ALTER ROLE sapphire_operator PASSWORD 'held'"))
+        try:
+            started = time.perf_counter()
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            elapsed = time.perf_counter() - started
+        finally:
+            blocker.rollback()
+            blocker.close()
+            db.bootstrap()
+        assert result.returncode != 0
+        assert "could not be neutralised" in result.stderr
+        assert elapsed < 35, elapsed
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "CREATE DOMAIN pg_temp.scratch_dom AS int",
+            "CREATE COLLATION pg_temp.scratch_coll (provider = libc, locale = 'C')",
+        ],
+        ids=["domain", "collation"],
+    )
+    def test_the_ownership_preflight_ignores_any_temp_object_class(
+        self, db: OperatorDb, statement: str
+    ) -> None:
+        """Runs the preflight block alone while the operator's session (which
+        owns the temp object) is still open, as if it had survived the sweep."""
+        sql = _BOOTSTRAP_SQL.read_text()
+        marker = sql.index("WHERE r.rolname = 'sapphire_operator' AND sd.deptype")
+        start = sql.rindex("DO $$", 0, marker)
+        preflight = sql[start : sql.index("END $$;", start) + len("END $$;")]
+        assert "sapphire_operator owns" in preflight
+        engine = db.engine()
+        conn = engine.connect()
+        try:
+            conn.execute(sa.text(statement))
+            conn.commit()
+            with db.owner.begin() as owner:
+                owner.execute(sa.text(preflight))
+        finally:
+            conn.close()
+            engine.dispose()
+
+    def test_a_lock_that_clears_after_the_first_round_is_retried(
+        self, db: OperatorDb
+    ) -> None:
+        import threading
+
+        blocker = db.owner.connect()
+        blocker.execute(sa.text("ALTER ROLE sapphire_operator PASSWORD 'held'"))
+        stop = threading.Event()
+
+        def release_after_the_bootstrap_hits_the_lock() -> None:
+            # Evidence, not a wall-clock guess: wait until a bootstrap backend
+            # is blocked on the NOLOGIN statement, then hold it past the 2 s
+            # lock_timeout so round 1 really times out before the release.
+            deadline = time.perf_counter() + 30
+            while not stop.is_set() and time.perf_counter() < deadline:
+                waiting = db.scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = "
+                    "'Lock' AND query ILIKE 'ALTER ROLE sapphire_operator NOLOGIN%'"
+                )
+                if waiting:
+                    time.sleep(2.7)
+                    break
+                time.sleep(0.05)
+            blocker.rollback()
+
+        releaser = threading.Thread(target=release_after_the_bootstrap_hits_the_lock)
+        releaser.start()
+        try:
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        finally:
+            stop.set()
+            releaser.join()
+            blocker.close()
+            db.bootstrap()
+        assert result.returncode == 0, result.stderr
+        assert "lock timeout" in result.stderr
+
+    def test_a_stale_grant_in_another_schema_does_not_abort_and_is_removed(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE SCHEMA reporting",
+                "CREATE TABLE reporting.some_table (id int)",
+                f"GRANT SELECT, INSERT ON reporting.some_table TO {OPERATOR}",
+                f"GRANT USAGE ON SCHEMA reporting TO {OPERATOR}",
+            ],
+            ["DROP SCHEMA reporting CASCADE"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            assert result.returncode == 0, result.stderr
+            assert "could not be neutralised" not in result.stderr
+            assert (
+                db.scalar(
+                    "SELECT has_table_privilege(:r, 'reporting.some_table', "
+                    "'SELECT') OR has_table_privilege(:r, 'reporting.some_table', "
+                    "'INSERT') OR has_schema_privilege(:r, 'reporting', 'USAGE')",
+                    r=OPERATOR,
+                )
+                is False
+            )
+        db.bootstrap()
+
+    def test_the_sweep_wait_sees_the_backend_leave(self, db: OperatorDb) -> None:
+        import re
+
+        engine = db.engine()
+        conn = engine.connect()
+        try:
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_session_was_terminated(conn)
+        finally:
+            conn.close()
+            engine.dispose()
+        match = re.search(r"operator sweep took (\d+) ms", result.stderr)
+        assert match, result.stderr
+        # A stale pg_stat_activity snapshot would burn the whole 3 s deadline
+        # twice (>= 6000 ms); the real wait is a few hundred ms at most.
+        assert int(match.group(1)) < 3000, match.group(1)
+
+    def test_a_reconnecting_operator_never_survives_the_sweep(
+        self, db: OperatorDb
+    ) -> None:
+        import threading
+
+        kept: list[sa.Connection] = []
+        engines: list[sa.Engine] = []
+        stop = threading.Event()
+
+        def reconnect() -> None:
+            while not stop.is_set():
+                engine = db.engine()
+                try:
+                    kept.append(engine.connect())
+                    engines.append(engine)
+                except sa.exc.OperationalError:
+                    engine.dispose()
+                stop.wait(0.02)
+
+        thread = threading.Thread(target=reconnect)
+        thread.start()
+        deadline = time.perf_counter() + 20
+        while not kept and time.perf_counter() < deadline:
+            time.sleep(0.02)
+        try:
+            db.bootstrap(operator_password=None)
+        finally:
+            stop.set()
+            thread.join()
+        try:
+            assert kept, "the reconnecting client never got in before the ALTER"
+            for conn in kept:
+                _assert_session_was_terminated(conn)
+            assert (
+                db.scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE usename = :r",
+                    r=OPERATOR,
+                )
+                == 0
+            )
+        finally:
+            for engine in engines:
+                engine.dispose()
+            db.bootstrap()
+
+    def test_a_persistent_object_owned_by_the_operator_is_still_refused(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE TABLE public.operator_owned_probe (id int)",
+                f"ALTER TABLE public.operator_owned_probe OWNER TO {OPERATOR}",
+            ],
+            ["DROP TABLE public.operator_owned_probe"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        assert result.returncode != 0
+        assert "sapphire_operator owns" in result.stderr
+        db.bootstrap()
+
+    def test_a_persistent_rls_table_is_still_refused_by_the_backup_preflight(
+        self, db: OperatorDb
+    ) -> None:
+        with _owner_ran(
+            db,
+            [
+                "CREATE TABLE public.rls_probe (id int)",
+                "ALTER TABLE public.rls_probe ENABLE ROW LEVEL SECURITY",
+            ],
+            ["DROP TABLE public.rls_probe"],
+        ):
+            result = db.harness.run_bootstrap(
+                "api-pw", "worker-pw", "backup-pw", operator_password=OPERATOR_PW
+            )
+        assert result.returncode != 0
+        assert "row-level security" in result.stderr
+        db.bootstrap()
 
 
 def _stub_bin(directory: Path) -> Path:

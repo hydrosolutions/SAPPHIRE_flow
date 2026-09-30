@@ -1255,6 +1255,8 @@ triggers exist and are enabled (`security.md` § Three levels of database identi
 and its stated limits). The base compose file is unchanged; nothing below is needed on a deployment that
 never imports a delivery.
 
+**Every bootstrap ends open operator sessions.** When the bootstrap SQL runs (after the wrapper's variable/secret checks and the preceding migrations succeeded), its first step terminates the role's backends (their locks — even an open `ALTER ROLE ... PASSWORD` or `LOCK TABLE` — cannot block it), commits `NOLOGIN` and the privilege revocations under a short lock timeout with up to three retry rounds (if the role still cannot be neutralised `init` aborts with a clear error, the one case where aborting is right), then terminates the role's backends twice with a short bounded wait (a session that survives only raises a WARNING; its privileges are already revoked), and removes any large object the operator owns (`lo_unlink`; `lo_*` stays PUBLIC for other roles). An in-flight import therefore rolls back atomically, so schedule imports outside deploys; deploys stop workers first. Login returns at the end of `init` only when the overlay secret is present.
+
 **Activation.** On the host: `openssl rand -base64 32 > ./secrets/sapphire_operator_db_password`
 (`chmod 600`), then deploy with the overlay so `init` reads it:
 
@@ -1286,13 +1288,21 @@ The service mounts the delivery directory read-only at `/data/dhm-delivery`, sel
 
 **Revocation has two parts.**
 
-1. *Deploy without the overlay.* The bootstrap sets `NOLOGIN` again, which prevents **new** connections only;
-   a session already open keeps working. A forgotten overlay looks exactly like a revoke.
+1. *Deploy without the overlay.* The bootstrap sets `NOLOGIN` again and, like every bootstrap, terminates the
+   role's open sessions (an in-flight import rolls back), so it stops new AND open connections once `init`
+   reaches the bootstrap SQL. A forgotten overlay looks exactly like a revoke.
 2. *Emergency, independent of `init`* (a failing tenant declaration can stop `init` before the role bootstrap
    runs). As the owner, in `psql` against the `sapphire` database:
 
+Terminate FIRST: an operator transaction (for instance an open `ALTER ROLE ... PASSWORD`) can block the
+`ALTER ROLE ... NOLOGIN` itself, and its locks disappear only with its session.
+
 ```sql
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'sapphire_operator';
 ALTER ROLE sapphire_operator NOLOGIN;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_operator;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_operator;
+-- again: catches a session that connected before NOLOGIN committed
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'sapphire_operator';
 -- verify: must return f
 SELECT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'sapphire_operator')

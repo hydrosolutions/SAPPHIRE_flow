@@ -754,56 +754,7 @@ def _delivery_files(metadata):  # type: ignore[no-untyped-def]
     }
 
 
-def test_failed_audit_write_rolls_back_the_qc_statuses(
-    db_connection: sa.Connection,
-) -> None:
-    _seed_chwrr(db_connection)
-    tenants = PgTenantStore(db_connection)
-    stations = PgStationStore(db_connection)
-    observations = PgObservationStore(db_connection)
-    audit = PgAuditLogStore(db_connection)
-    metadata = load_station_metadata(_FIXTURES / "stations.toml")
-    register_stations(
-        tenants, stations, _CHWRR, metadata, audit_log_store=audit, now=_NOW
-    )
-    replace_delivery(
-        tenants,
-        stations,
-        PgRatingCurveStore(db_connection),
-        observations,
-        _CHWRR,
-        _delivery_files(metadata),
-        audit_log_store=audit,
-        now=_NOW,
-    )
-    ids = [
-        s.id
-        for spec in metadata.stations
-        if (s := stations.fetch_station_by_code(spec.code, "dhm")) is not None
-    ]
-    nested = db_connection.begin_nested()
-    with pytest.raises(RuntimeError, match="injected audit"):
-        run_delivery_qc(
-            tenants,
-            stations,
-            observations,
-            _CHWRR,
-            Path(__file__).resolve().parents[3] / "config.toml",
-            audit_log_store=_FailingAuditStore(),
-            now=_NOW,
-        )
-    nested.rollback()
-    assert {
-        row.qc_status
-        for row in observations.fetch_delivery_observations(DELIVERY_ID, ids)
-    } == {QcStatus.RAW}
-
-
-def test_qc_dry_run_leaves_statuses_and_audit_untouched(
-    db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from sapphire_flow.cli.import_dhm_delivery import main
-
+def _cli_env(db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = Path(__file__).resolve().parents[3]
     monkeypatch.setenv("SAPPHIRE_CONFIG", str(repo / "config.toml"))
     monkeypatch.setenv(
@@ -812,6 +763,9 @@ def test_qc_dry_run_leaves_statuses_and_audit_untouched(
     monkeypatch.setenv(
         "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
     )
+
+
+def _seed_committed_delivery(db_engine: sa.Engine) -> None:
     metadata = load_station_metadata(_FIXTURES / "stations.toml")
     with db_engine.begin() as setup:
         _seed_chwrr(setup)
@@ -831,33 +785,69 @@ def test_qc_dry_run_leaves_statuses_and_audit_untouched(
             audit_log_store=audit,
             now=_NOW,
         )
+
+
+def _cleanup_committed_delivery(db_engine: sa.Engine) -> None:
+    with db_engine.begin() as cleanup:
+        cleanup.execute(
+            sa.delete(observations_table).where(
+                observations_table.c.delivery_id == DELIVERY_ID
+            )
+        )
+        cleanup.execute(
+            sa.delete(rating_curves_table).where(
+                rating_curves_table.c.delivery_id == DELIVERY_ID
+            )
+        )
+        cleanup.execute(
+            sa.delete(stations_table).where(stations_table.c.network == "dhm")
+        )
+        cleanup.execute(sa.delete(tenants_table).where(tenants_table.c.code == "chwrr"))
+
+
+def _qc_statuses(db_engine: sa.Engine) -> set[str]:
+    with db_engine.connect() as probe:
+        return set(
+            probe.scalars(
+                sa.select(observations_table.c.qc_status).where(
+                    observations_table.c.delivery_id == DELIVERY_ID
+                )
+            ).all()
+        )
+
+
+def test_failed_audit_write_makes_the_qc_command_change_nothing(
+    db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sapphire_flow.cli import import_dhm_delivery
+
+    _cli_env(db_engine, monkeypatch)
+    monkeypatch.setattr(
+        import_dhm_delivery, "PgAuditLogStore", lambda conn: _FailingAuditStore()
+    )
+    _seed_committed_delivery(db_engine)
+    try:
+        assert _qc_statuses(db_engine) == {"raw"}
+        with pytest.raises(RuntimeError, match="injected audit"):
+            import_dhm_delivery.main(["qc", "--tenant", "chwrr"])
+        assert _qc_statuses(db_engine) == {"raw"}
+    finally:
+        _cleanup_committed_delivery(db_engine)
+
+
+def test_qc_dry_run_leaves_statuses_and_audit_untouched(
+    db_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sapphire_flow.cli.import_dhm_delivery import main
+
+    _cli_env(db_engine, monkeypatch)
+    _seed_committed_delivery(db_engine)
     try:
         with db_engine.connect() as probe:
             before = _audit_count(probe)
         assert main(["qc", "--tenant", "chwrr", "--dry-run"]) == 0
         with db_engine.connect() as probe:
             assert _audit_count(probe) == before
-            statuses = probe.scalars(
-                sa.select(observations_table.c.qc_status).where(
-                    observations_table.c.delivery_id == DELIVERY_ID
-                )
-            ).all()
-        assert set(statuses) == {"raw"}
+        assert _qc_statuses(db_engine) == {"raw"}
     finally:
-        with db_engine.begin() as cleanup:
-            cleanup.execute(
-                sa.delete(observations_table).where(
-                    observations_table.c.delivery_id == DELIVERY_ID
-                )
-            )
-            cleanup.execute(
-                sa.delete(rating_curves_table).where(
-                    rating_curves_table.c.delivery_id == DELIVERY_ID
-                )
-            )
-            cleanup.execute(
-                sa.delete(stations_table).where(stations_table.c.network == "dhm")
-            )
-            cleanup.execute(
-                sa.delete(tenants_table).where(tenants_table.c.code == "chwrr")
-            )
+        _cleanup_committed_delivery(db_engine)
