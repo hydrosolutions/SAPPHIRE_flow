@@ -24,7 +24,7 @@ reachability, the data path into each dashboard, and the runbook. It does **not*
 - **Access to the dashboard today** is an application-level shared passphrase (HMAC-SHA-256, signed
   session cookie, fail-closed, 250 ms failure delay; `worker/auth.ts`), independent of any email service.
 - **The map's plan of record** (`NEPAL_MVP_DEPLOYMENT_PLAN.md`, 2026-09-18): a login-protected six-station
-  dashboard for a **late-November 2026 visit to DHM; the map's plan set a hard freeze of 2026-11-13, which the owner moved to the end of November 2026 (2026-09-30: the trip moved; this plan assumes **2026-11-30** until the new date is given — the map's own document still carries the old date and needs the same change).** Data reaches the page through a
+  dashboard for a visit to DHM originally planned for late November 2026 with a hard freeze of 2026-11-13. **The trip moved (owner, 2026-09-30): the visit is now early December 2026 (exact date to be given), and the freeze moves to the end of November (assumed 2026-11-30, i.e. before the visit).** The map's own documents still carry the old dates (see the hand-offs in T5). Data reaches the page through a
   **publisher** (fetch or fixture → validate → immutable `runs/<id>/` bundles in R2 → conditional PUT of
   `current.json`), so the dashboard does **not** need a live backend. Until a real export exists it runs on
   **synthetic fixtures** (Plan 273's bundle is synthetic).
@@ -39,9 +39,9 @@ reachability, the data path into each dashboard, and the runbook. It does **not*
   dashboard and the API per the map docs). Our DNS is at Hostpoint. Moving `hydrosolutions.ch` to Cloudflare
   would put company mail and website DNS at risk for a pilot and is **not** proposed.
 - **The gap this plan cannot close alone:** the map's plan asks the backend for a real
-  `flow-map-region-bundle/v3` export (real Nepal forecasts, not fixtures). **No plan in this repository owns it**
-  (only mentions in Plan 402 D13 and its hand-off note). Without it, "Nepal counterparts inspect *our*
-  forecasts" means synthetic or illustrative content in November. See T3.
+  `flow-map-region-bundle/v3` export (real Nepal forecasts, not fixtures). **Plan 516 (DRAFT, 2026-09-30) now owns it.**
+  Until it lands, "Nepal counterparts inspect *our*
+  forecasts" means synthetic or illustrative content. See T3.
 
 ## Decisions
 
@@ -50,8 +50,8 @@ reachability, the data path into each dashboard, and the runbook. It does **not*
 | D1 | **DECIDED (owner, 2026-09-30): the passphrase gate is enough for the Nepal dashboard for now.** Cloudflare Access with named emails stays an option to add later (T1 dry run). | The gate is built, tested and independent of email deliverability into a government mail system; Access adds a second login step and a dependency on OTP mail arriving. |
 | D2 | **The BAFU/Swiss dashboard gets Cloudflare Access with named emails from day one.** | BAFU data is licence-limited (Plan 111 G1); named, revocable access is the point, and no publication decision is made by this plan. |
 | D3 | **`workers.dev` first; a small dedicated domain on Cloudflare only if DHM's network blocks `workers.dev`.** Not the `hydrosolutions.ch` zone. | Matches the map's §9a criterion (owner opens the URL from inside DHM's network). A ~$10/yr domain has no blast radius. |
-| D4 | **The API host (Plan 511) stays behind its reviewer key.** Access-on-Worker protects people reaching the dashboard, not the API origin; a Cloudflare Access service token in front of the API is possible only if that hostname is on a Cloudflare zone, which it is not (DNS at Hostpoint). | The Worker already refuses `http` and holds the key server-side; the key is the gate. |
-| D5 | **The mini is never exposed.** The Swiss dashboard reads a **read-only Swiss copy of SAPPHIRE Flow on a cloud server** through the same allow-listed `/api/v1` proxy the Nepal dashboard uses; the mini pushes a filtered export **outward** (no inbound path). | Owner decision 2026-09-29: no tunnel into the office network. The API and the map's proxy exist now (Plans 401/402/404), so this reuses them unchanged; a snapshot-to-R2 design would need new export formats and a new read path in the map. |
+| D4 | **The API host (Plan 511) stays behind its reviewer key.** Access-on-Worker protects people reaching the dashboard, not the API origin; a Cloudflare Access service token in front of the API is possible only if that hostname is on a Cloudflare zone (**unverified** — from the map's notes, not tested), which it is not (DNS at Hostpoint). | The Worker already refuses `http` and holds the key server-side; the key is the gate. |
+| D5 | **The mini is never exposed.** The Swiss dashboard reads a **read-only Swiss copy of SAPPHIRE Flow on a cloud server** through the same allow-listed `/api/v1` proxy the Nepal dashboard uses; the mini pushes a filtered export **outward** (no inbound path). | Owner decision 2026-09-29: no tunnel into the office network. The API and the map's proxy exist now (Plans 401/402/404), so this reuses them unchanged; a snapshot-to-R2 design would need new export formats and a new read path in the map. **Constraint (Plan 111 export extension): the quarantined BAFU forecast archive may not be exposed publicly, tunnelled, given public DNS, or replicated to a hosted server. The hosted Swiss copy therefore holds only SAPPHIRE's own outputs and observations, never that archive or the Forecast Lab snapshot built from it.** |
 | D6 | **Dashboards are read-only demos** (owner, 2026-09-29): every route they read is GET-only; nothing here adds writes. | Unchanged. |
 
 ## Tasks
@@ -92,51 +92,65 @@ reachability, the data path into each dashboard, and the runbook. It does **not*
 **Pre-change**: N/A. Baseline: never tested from DHM.
 
 ### T3 — Real Nepal forecasts into the dashboard
-**Outcome**: a named owner and plan exist for the real export, and the November data path is decided.
-- Record which content the November visit will show: fixtures (today), or real bundles from the backend once a
-  region-bundle export exists. The publisher, R2 buckets and the bundle schema are map-side milestones (M5); the
-  backend's export route is unowned.
-- **The backend export is Plan 516** (owner-assigned 2026-09-30), from the map's
-  `SAPPHIRE_FLOW_REGION_BUNDLE_EXPORT_PROMPT.md`. It must not depend on Nepal onboarding plans that will not
-  converge by November, matching the map's own constraint.
-- Once Plan 511's host exists, set the Nepal Worker's `SAPPHIRE_API_BASE_URL` and secret `SAPPHIRE_API_TOKEN`
-  (the live QC/skill panels); this is independent of the publisher path.
+**Outcome**: the November data path is decided and recorded: which content the visit shows, where Plan 516's export
+runs, and how the bundle reaches R2.
+- Content: fixtures (today), or real bundles once Plan 516 lands. The publisher, R2 buckets and bundle
+  schema are map-side milestones (M5); the backend export is **Plan 516** (owner-assigned 2026-09-30), which
+  must not depend on Nepal onboarding plans that will not converge in time.
+- **Where the export runs and how it reaches R2** must be decided, because the pieces are apart: the Mac mini
+  (restricted DHM data lives there) is LAN-only and never exposed; the Plan 511 host is empty by design; the
+  map's publisher is a hosted job. Options: (a) the export runs on the mini and a publisher on the office
+  side pushes bundles **outward** to R2 (outbound only; the recommended demo-period path); (b) restricted data is
+  moved to the Plan 511 host (an owner decision not made here) and the publisher reads its API. Record the
+  choice; without it, gate 3 can pass only as "fixtures".
+- Plan 511 owns issuing the Nepal reviewer key and setting the Worker's `SAPPHIRE_API_BASE_URL` and secret
+  `SAPPHIRE_API_TOKEN` for the live QC/skill panels; this plan only records the result. Those panels show
+  nothing for the DHM stations while the 511 host is empty.
 
-**In / Out**: a decision record and one new plan request. Out: the export implementation, map code.
-**Verification**: Plan 516's status is recorded here, with the content the visit will show.
+**In / Out**: a decision record. Out: the export implementation and map code.
+**Verification**: the record names the content, the location of the export and the route to R2, and Plan 516's status.
 **Pre-change**: N/A. Baseline: Plan 516 is a DRAFT (2026-09-30).
 
 ### T4 — BAFU / Swiss dashboard data path (after Nepal)
-**Outcome**: a chosen way for Swiss forecasts to reach the Swiss Worker without opening the office network.
+**Outcome**: a chosen way for Swiss content to reach the Swiss Worker without opening the office network, within
+Plan 111's limits.
+- **What can be shown at all.** Plan 111's export extension keeps the **BAFU-published forecast archive**
+  quarantined: no public exposure, tunnel, public DNS or hosted replica. So the dashboard's **BAFU forecasts**
+  (the Forecast Lab snapshot, whose BAFU forecasts come from that archive) **cannot go on Cloudflare until the
+  licence gate G1 is settled**; named-email Access does not replace G1. What can: SAPPHIRE's own forecasts,
+  observations, QC rules and skill.
 - **Recommended (D5): a read-only Swiss copy on a cloud server** — API and database only, no workers and no
-  ingest — sized about 4 vCPU / 8 GB / 100 GB (estimate), reusing Plan 511's host recipe, and kept separate
-  from the Nepal host (licences differ). The mini uploads a **filtered export** (the few GB a map read needs,
-  not the 104 GB database or the grid archive) outward to R2 or by SSH push; the cloud host restores it.
-  Freshness is the push cadence; live collectors on the cloud copy are a later option (LINDAS rate limits
-  forbid two collectors polling at once). The Swiss Worker points at it with the same variables the Nepal
-  Worker uses.
-- **Alternative: snapshot push to R2**, no API host: the map reads bundles from R2. Rejected as the default
-  because the Swiss dashboard now reads QC and skill live through the API proxy, so it would need new
-  QC/skill export formats and a new read path in the map.
-- Either way: Access with named emails (D2), and no BAFU publication decision until Plan 111 G1 is settled.
+  ingest — sized about 4 vCPU / 8 GB / 100 GB (estimate), reusing Plan 511's host recipe, kept separate from the
+  Nepal host. The mini uploads a **filtered export** (the few GB a map read needs, **excluding the BAFU forecast
+  archive and the snapshot built from it**, not the 104 GB database or grid archive) outward to R2 or by SSH
+  push; the cloud host restores it. Freshness is the push cadence; live collectors on the copy are a later option
+  (LINDAS rate limits forbid two collectors polling at once). The Swiss Worker points at it with the same
+  variables the Nepal Worker uses. The Worker's proxy today allows stations, observations, QC rules and skill
+  only — not forecast or snapshot routes — so the Forecast Lab view keeps its snapshot path and stays behind G1.
+- **Alternative: snapshot push to R2**, no API host. Rejected as the default: the Swiss dashboard reads QC and
+  skill live through the API proxy, so it would need new QC/skill export formats and a new read path in the map.
+- Either way: Access with named emails (D2), and any inclusion of BAFU-archive content needs an **amendment to
+  Plan 111** first.
 
 **In / Out**: the choice, then its own plan. Out: implementation here.
-**Verification**: the choice recorded with its reason; a follow-on plan ID.
+**Verification**: the choice recorded with its reason and its Plan 111 boundary; a follow-on plan ID.
 **Pre-change**: N/A.
 
 ### T5 — Runbook
 **Outcome**: `docs/deployment/cloudflare-dashboards-runbook.md`: who has access to each Worker, how to add or
 remove a named person, how to rotate the reviewer key and the passphrase, how to take a dashboard offline, and
-what the visit-day fallback is.
+what the visit-day fallback is. **Hand-offs to the map session** (its files, not edited here): the freeze and visit dates in `NEPAL_MVP_DEPLOYMENT_PLAN.md`; its references to a Mac-mini Cloudflare Tunnel and an Access service token (`QC_SKILL_VIEW_PLAN.md`, `README.md`) which this plan drops; its Hetzner backend (Plan 511 chose Infomaniak).
 **In / Out**: docs only.
 **Verification**: inspection against T1–T4; `uv run pre-commit run --all-files` clean.
 **Pre-change**: N/A.
 
 ## Exit gates
 
-1. Nepal: a named DHM person can open the dashboard through the decided gate (T1), from a network that
-   allows it (T2), before **the end of November 2026 (assumed 2026-11-30; the freeze date moved with the trip)**.
-2. The Nepal Worker reads its live routes from the Plan 511 host with its own key, or the record states why not.
+1. Nepal: a DHM visitor can open the dashboard through the passphrase gate (D1; T1's Access dry run is optional),
+   from a network that allows it (T2), before the **freeze at the end of November 2026 (assumed 2026-11-30)**,
+   ahead of the early-December visit.
+2. T3 records the Nepal data path (where the export runs, how it reaches R2), and Plan 511 records the Worker
+   connection to its host.
 3. Plan 516 has landed and the Nepal dashboard shows its output, or the owner has recorded that the visit shows fixtures.
 4. The BAFU dashboard's access rule and data path are chosen (T4); nothing is published before Plan 111 G1.
 5. The runbook is committed.
@@ -156,7 +170,7 @@ the backend (Plan 341); production.
 | The demo shows synthetic content while claiming "our forecasts" | T3 forces the decision; the map's page text already labels illustrative data. |
 | Access and the passphrase double-gate confuse visitors | D1 makes the double gate opt-in after the dry run. |
 | Free-plan seat cap or pricing changes | T1 records the account's own limit; Access can be switched off without touching the dashboard. |
-| The visit is late November; the freeze is now assumed 2026-11-30 | T2 is quick and owner-run; T3 (Plan 516) is the long pole. |
+| Visit early December, freeze assumed 2026-11-30 | T2 is quick and owner-run; T3 (Plan 516 and the data path) is the long pole. |
 
 ## Dependency graph
 

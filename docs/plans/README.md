@@ -597,8 +597,8 @@ exit criteria — Plan 212 owns that deeper screening.
   `fallback` cycle and the **00:00 slot silently drops to obs-only** (1 clean daily
   bucket short). Chosen direction = offset the schedule (opt B); documented, not urgent.
   Diagnosed 2026-07-13.
-- **049** — Cloudflare edge for the flow-map dashboards: Nepal MVP for DHM first (access gate, `workers.dev` reachability, data path, real-forecast export gap), BAFU/Swiss dashboard second (named-email Access, outbound snapshot push, no tunnel into the office network) — `DRAFT`, rewritten 2026-09-30. Nepal API host is Plan 511; Prefect network fix is Plan 109.
-- **511** — Nepal instance on a cloud server (Caddy auto-TLS on `/api/v1/` only, Nepal-tenant reviewer key; backups are a follow-on, 511 D9) for the flow-map — `DRAFT`; provisioning only, waits on Nepal onboarding/feed tracks for content.
+- **049** — Cloudflare edge for the flow-map dashboards: Nepal MVP for DHM first (passphrase gate decided; `workers.dev` reachability; data path for real forecasts), BAFU/Swiss dashboard second (a hosted copy limited by Plan 111; no tunnel into the office network) — `DRAFT`, rewritten 2026-09-30. Nepal API host is Plan 511; real-forecast export is Plan 516.
+- **511** — Nepal instance on a cloud server (Caddy auto-TLS on `/api/v1/` only, Nepal-tenant reviewer key; backups are a follow-on, 511 D9) for the flow-map — `READY`; provisioning only, waits on Nepal onboarding/feed tracks for content.
 - **515** — The NWP raw-grid prune removes nothing (symlink + `_vN` layout never matched; the mini holds 421 GB despite 3-day retention) — `DRAFT`; fix, real-layout test, one-time reclaim on the mini.
 - **516** — Region bundle export for the flow-map: `GET /api/v1/regions/{region}/bundle` and per-station series, `flow-map-region-bundle/v3`, real Nepal forecasts honestly labelled, restricted DHM data never emitted, default-withheld publication flags — `DRAFT` (owner-assigned 2026-09-30); Question 0 (archived forecast forcing for the DHM record) first.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —

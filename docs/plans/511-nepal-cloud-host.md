@@ -10,7 +10,7 @@ reviews:
 
 **Date**: 2026-09-29 (revised after round-1 reviews, same day)
 **Priority**: first hosting plan (owner, 2026-09-29) — v1 Nepal comes before the Swiss/BAFU dashboard (Plan 049 covers the Cloudflare side of both dashboards)
-**Related**: Plan 049 (Cloudflare edge for the dashboards: access, reachability, data paths), Plan 513 (declared tenants), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
+**Related**: Plan 049 (Cloudflare edge for the dashboards: access, reachability, data paths), Plan 513 (declared tenants), Plan 515 (grid prune), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
 delivery import; owns the `chwrr` tenant identity), Plan 109 (Prefect network fix; cross-linked both ways), Plan 208 and Plan 340
 (backups, follow-on), `docs/standards/security.md`, `docs/standards/cicd.md`
 **Scope**: stand up SAPPHIRE Flow for **Nepal** on a rented cloud server with a public HTTPS address, and
@@ -56,7 +56,7 @@ Nepal onboarding, models or data feeds, which are separate tracks.
     `sapphire_backup_db_password`, `access_token_pepper` (+ build secrets); security.md's list omits three.
   - Raw NWP grids are pruned after `nwp_grid_retention_days` (default 3); the permanent record is the
     extracted values in the database. **But** the Mac mini holds 421 GB of grids back to 2026-07-03, so
-    pruning is not visibly working there (uninvestigated). Size the disk from the database and confirm
+    pruning is not working there (diagnosed in Plan 515: the prune never matches the symlink + versioned-directory layout). Size the disk from the database and confirm
     pruning on this host; do not trust the 3-day figure until seen.
 
 ## Decisions
