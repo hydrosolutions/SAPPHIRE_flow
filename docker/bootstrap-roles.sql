@@ -401,6 +401,13 @@ GRANT INSERT ON audit_log TO sapphire_worker;
 -- explicit line (conventions.md § Service users). INSERT-only, mirroring
 -- model_artifact_basin_versions: a provenance row is never UPDATEd.
 GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
+-- Plan 399 T4 / 405: model_artifact_warm_start (migration 0060) is the fine-tune
+-- provenance row `train_models_flow` writes right after storing a retrained
+-- artifact. INSERT-only, like model_artifact_provenance: the store never
+-- UPDATEs or DELETEs it (reads are covered by the blanket SELECT above). Without
+-- this line a warm-start retrain trains, stores the artifact, then dies on
+-- `permission denied for table model_artifact_warm_start`.
+GRANT INSERT ON model_artifact_warm_start TO sapphire_worker;
 -- Plan 404 T1: the append-only rejected-forecast record. INSERT-only — the
 -- role-independent append-only trigger (migration 0065) already refuses
 -- UPDATE/DELETE/TRUNCATE even for the table owner; sapphire_api's blanket

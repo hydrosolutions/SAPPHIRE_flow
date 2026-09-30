@@ -992,7 +992,16 @@ and surface only as a late crash. ⚠️ The refusal sits **outside** the per-un
 deliberately: unresolvable donor provenance is an integrity failure like the SHA-256 mismatch,
 so it aborts the run loudly rather than being recorded as one failed unit and continued past.
 ⚠️ **Atomicity is NOT claimed** — `PgWarmStartWriter` holds its own connection and the store is
-a separate Prefect task; moving the refusal earlier removes the failure mode without it.
+a separate Prefect task; moving the refusal earlier removes the failure mode without it. 🔴 **A failed provenance write leaves an ORPHAN artifact**: the bytes are written to
+`<artifact_dir>/<model_id>/<artifact_id>.bin` and the `model_artifacts` row (status `training`,
+never promoted) is committed by `_store_artifact_task` BEFORE the warm-start insert runs on
+`PgWarmStartWriter`'s own connection, so an insert failure (first seen as a missing
+`sapphire_worker` grant on the Mac-mini) leaves file + row and no warm-start row. Nothing cleans
+it up; it is inert (not ACTIVE) and must be removed or re-provisioned by hand. 🔑 **A NEW table the
+worker writes needs its own `GRANT` line in `docker/bootstrap-roles.sql`** (blanket SELECT only
+covers reads); `tests/integration/db/test_role_bootstrap.py::TestWarmStartProvenanceUnderScopedRole`
+runs the real store write as `sapphire_worker`. The grant reaches a live DB only when `init`
+re-runs the bootstrap on deploy; no migration is involved.
 
 **Plan 405 T2 — a CHANGED TEMPLATE is refused, and the config path is now real.** The flow reads
 `config_path` alongside `config_hash` off the model and passes BOTH; `resolve_donor_config`
