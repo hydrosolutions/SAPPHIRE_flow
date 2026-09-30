@@ -8,6 +8,9 @@ status: DRAFT
 **Type:** Infra/security fix (hold-at-PR) + standards-doc hygiene (direct-to-main)
 **Owner:** Bea (marti@hydrosolutions.ch)
 **Created:** 2026-07-08
+**Cross-plan (2026-09-30):** Plan 511 T2 (Nepal cloud host) and the deferred Plan 049 both need
+`prefect-server` off the `frontend` network. Whichever plan lands the one-line change first, the other
+records it here — do not land it twice.
 **Surfaced by:** the Prefect / Docker / deployment touchpoint map (`docs/touchpoint-maps.md`),
 codex-confirmed 2026-07-08. Do **not** start until reviewed — this is a next-session plan.
 

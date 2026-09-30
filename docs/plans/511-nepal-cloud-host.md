@@ -6,8 +6,8 @@ status: DRAFT
 
 **Date**: 2026-09-29 (revised after round-1 reviews, same day)
 **Priority**: first hosting plan (owner, 2026-09-29) — v1 Nepal comes before the Swiss demo (Plan 049, deferred)
-**Related**: Plan 049 (Swiss half — deferred), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
-delivery import; owns the `chwrr` tenant identity), Plan 109 (Prefect network fix), Plan 208 and Plan 340
+**Related**: Plan 049 (Swiss half — deferred), Plan 513 (declared tenants), Plan 401 (reviewer key, tenant binding), Plan 268 (DHM
+delivery import; owns the `chwrr` tenant identity), Plan 109 (Prefect network fix; cross-linked both ways), Plan 208 and Plan 340
 (backups, follow-on), `docs/standards/security.md`, `docs/standards/cicd.md`
 **Scope**: stand up SAPPHIRE Flow for **Nepal** on a rented cloud server with a public HTTPS address, and
 connect the flow-map's Cloudflare Worker to it. Provisioning, deployment and access wiring — **not**
@@ -33,9 +33,16 @@ Nepal onboarding, models or data feeds, which are separate tracks.
     (its comment says it is automatic; it is not), and it forwards **every** path to `api:8000`.
   - BAFU collectors are **not** compose services: `cli/register_deployments.py` registers them
     unconditionally on the shared workers, and the base `config.toml` points at Swiss sources.
-  - No Nepal config overlay exists (`config/overlays/` has `chwrr-import`, `local`, `mac-mini`,
-    `staging-5-stations`). The overlay must be applied on all four of `api`, `prefect-worker`,
-    `prefect-worker-ingest`, `init` (cicd.md), or the missing one silently uses the base config.
+  - No Nepal *deployment* overlay exists (`config/overlays/` has `chwrr-import`, `local`, `mac-mini`,
+    `staging-5-stations`, and `nepal-history`, which only configures recap-gateway history import and
+    selects no forecast adapter or schedule). The overlay must be applied on all four of `api`,
+    `prefect-worker`, `prefect-worker-ingest`, `init` (cicd.md), or the missing one silently uses the
+    base config.
+  - Tenants are now **declared in config**: a `[tenants.<code>]` table is created by
+    `python -m sapphire_flow.cli.provision_tenants`, which `init` runs between `alembic upgrade head`
+    and `bootstrap-roles.sh` (Plan 513; `docker-compose.yml`; security.md). `config/overlays/mac-mini.toml`
+    declares `[tenants.chwrr]` (name "CHWRR Nepal") this way. The older `bootstrap_tenant` command in
+    `cli/import_dhm_delivery.py` is gone.
   - Application images are built locally (cicd.md: no registry, no publish workflow); only third-party
     images are digest-pinned. The `sapphire-flow-aquacast` image installs torch and needs build secrets.
   - A fresh database always gets the seeded tenant `sapphire` ("SAPPHIRE (Swiss v0)", migration 0041).
@@ -95,11 +102,14 @@ nothing but `/api/v1/` reachable from outside.
   Check the compose health check (`http://localhost:80/api/v1/health`) still passes with a domain set;
   adjust it if not.
 - **Nepal config overlay** `config/overlays/nepal-cloud.toml`, applied on all four services
-  (`api`, `prefect-worker`, `prefect-worker-ingest`, `init`): `writable_tenants` = the Nepal tenant
-  only, no BAFU or MeteoSwiss adapters, archive paths per T0, schedules per the Nepal feeds actually
-  live. Contents are agreed in T0's measurements and this task's review, not invented here.
+  (`api`, `prefect-worker`, `prefect-worker-ingest`, `init`): `[tenants.chwrr] name = "CHWRR Nepal"`
+  (Plan 268 D11's identity, so this host and the mini agree), `writable_tenants = ["chwrr"]`, no BAFU
+  adapters (`adapters.bafu_forecast`, `adapters.bafu_observation` absent), no Swiss
+  `onboarding.data_source`/`basin_ids`, a Nepal `default_display_timezone`, weather adapters and
+  schedules per the Nepal feeds actually live (decided from T0's measurements, not invented here).
 - **Deployment registration**: BAFU deployments must not be registered. Smallest mechanism, chosen in
-  this task (e.g. a config list of deployments to skip, read by `register_deployments`); the test
+  this task (e.g. a config list of deployments to skip; `register_deployments` reads no TOML today,
+  but `init` now has `SAPPHIRE_CONFIG`, so this task also states how the list reaches it); the test
   asserts the **registered deployment set**, not service names.
 - **Prefect**: `prefect-server` off the `frontend` network (Plan 109's one-line change; land it here if
   109 has not landed, and record it in Plan 109 when it does, so the two plans do not both land it).
@@ -110,24 +120,22 @@ nothing but `/api/v1/` reachable from outside.
   `access_token_pepper`); update security.md's stale list.
 - **First boot**: `init` runs migrations, role bootstrap and deployment registration together; a failed
   `init` blocks everything, so check its exit code and logs before proceeding.
-- **Bootstrap**: mint the admin access token with the documented CLI command. Create the Nepal tenant
-  with **Plan 268 D11's identity** (code `chwrr`, name `CHWRR Nepal`) so this host and the mini agree,
-  using Plan 268's **tenant-only bootstrap procedure**: a temporary global-admin overlay kept outside the
-  checkout (exactly `deployment.global_admin = true`, `writable_tenants = []`), run once, then the scoped
-  overlay (`writable_tenants = ["chwrr"]`) restored. The only existing creator is `bootstrap_tenant` in
-  `cli/import_dhm_delivery.py`, which belongs to the delivery import; this task names the smallest
-  tenant-only entry point (an existing command if one is exposed, else a small extraction of that
-  function) and does **not** run the delivery import. Verify the tenant exists with zero stations and
-  record the identity in force before and after. No station rows are created.
-**In / Out**: the Caddy configuration, `docker-compose.nepal-cloud.yml`, the Nepal overlay,
+- **Bootstrap**: mint the admin access token with the documented CLI command. The Nepal tenant comes
+  from the overlay's `[tenants.chwrr]` declaration, created by `init` on first boot; verify the row exists
+  with **zero stations**. No station rows are created here and no global-admin overlay is needed.
+**In / Out**: the Caddy configuration, `docker-compose.nepal-cloud.yml` (the overlay wiring and mount on
+all four services, the caddy `environment`, and the `prefect-server` network change), the Nepal overlay,
 `register_deployments` change, tests, security.md list. Out: onboarding stations, models, feeds.
 **Verification**: a compose/config test asserting: overlay env present on all four services; caddy gets
 `SAPPHIRE_DOMAIN` and its health check is compatible with a domain being set; `prefect-server` not on
 `frontend`; no published Prefect port. A **merged-configuration test** (load the base plus
-`nepal-cloud.toml` as the services do) asserting `writable_tenants == ["chwrr"]` and that no
-BAFU/MeteoSwiss/Swiss adapter is active, so an empty overlay fails. A registration test asserting the
+`nepal-cloud.toml` as the services do) asserting the concrete keys above: `writable_tenants ==
+["chwrr"]`; `[tenants]` is exactly `{chwrr: "CHWRR Nepal"}`; the BAFU adapter tables are absent;
+`onboarding.data_source` and `basin_ids` are not the Swiss set; `default_display_timezone` is not
+`Europe/Zurich` — so an empty overlay fails. A registration test asserting the
 complete registered deployment set for this host (no BAFU deployment; each remaining deployment named).
-On the host, after the first scheduled runs: zero observation or weather rows from Swiss sources. On the
+On the host, after the first scheduled runs: a named query, written in this task against the actual
+schema, returns zero observation or weather rows from Swiss sources. On the
 host: `docker compose ps` healthy; health URL over HTTPS with a valid
 certificate and an `Strict-Transport-Security` header; a non-`/api/v1/` path (legacy HTML, a `.json`
 export, `/docs`) returns 404 from outside.
@@ -141,13 +149,19 @@ registration test fails while BAFU deployments register unconditionally.
   the dashboard's client (Plan 401); otherwise use stations mode. In the map project (not edited here):
   set `SAPPHIRE_API_BASE_URL`, `SAPPHIRE_API_TOKEN` (and the Access token if used).
 - Acceptance is for an **empty host**: `/stations` answers 200 with an empty list; no key → 401. Tenant
-  isolation is proved with a **temporary synthetic station in the seeded `sapphire` tenant**, created
-  by a one-time admin run (a nonexistent ID would return 404 even with broken isolation): an admin can
-  read it, the Nepal key cannot, then the station is removed and its removal recorded. The
+  isolation is proved with a **temporary synthetic station in the seeded `sapphire` tenant** (a
+  nonexistent ID would return 404 even with broken isolation). Nothing in the application can create or
+  delete it under the identity left in force (no `sapphire` write authority; the worker role has no
+  station DELETE; the stores expose no deletion), so this is an **exceptional database-owner
+  procedure**: insert one standalone `stations` row with the `sapphire` tenant via owner-credential SQL
+  in the `postgres` container, check an admin can read it and the Nepal key cannot, then delete it by
+  its exact ID with the same credential (a bare station row has no dependents to block deletion).
+  Record both statements and the owner identity used, and confirm afterwards that the `sapphire` tenant
+  has zero stations. The
   populated-map check waits until Nepal stations are on this host; restricted data stays on the mini.
 **In / Out**: key issuance and a check record. Out: map-repo changes, restricted data.
 **Verification**: the calls above, recorded with the commands used, including the synthetic station's
-creation and removal.
+insert and delete statements and the final zero-station count.
 **Pre-change**: N/A (integration check).
 
 ### T4 — Runbook and standards
