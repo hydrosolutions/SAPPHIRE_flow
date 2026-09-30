@@ -9,7 +9,6 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
-from sapphire_flow.cli.import_dhm_delivery import bootstrap_tenant
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
 from sapphire_flow.exceptions import ConfigurationError, TenantIsolationError
 from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
@@ -34,6 +33,7 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.nepal_onboarding import (
     GATEWAY_HISTORY_SOURCE,
     GATEWAY_HRU,
@@ -74,11 +74,10 @@ def model() -> FakeStationForecastModel:
 
 @pytest.fixture
 def cohort(db_connection: sa.Connection) -> list[StationConfig]:
-    tenant = bootstrap_tenant(
-        PgTenantStore(db_connection),
-        DeploymentIdentityConfig(writable_tenants=frozenset(), global_admin=True),
-        tenant_code="chwrr",
-        now=NOW,
+    tenant = (
+        PgTenantStore(db_connection)
+        .ensure_tenant(tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal")
+        .id
     )
     stations = [
         make_station_config(
@@ -272,18 +271,17 @@ class TestNepalOnboarding:
         from sapphire_flow.db.metadata import tenants
 
         with db_engine.begin() as setup:
-            tenant_id = bootstrap_tenant(
-                PgTenantStore(setup),
-                DeploymentIdentityConfig(
-                    writable_tenants=frozenset(), global_admin=True
-                ),
-                tenant_code="chwrr",
-                now=NOW,
+            tenant_id = (
+                PgTenantStore(setup)
+                .ensure_tenant(
+                    tenant_id=TenantId(uuid4()), code="chwrr", name="CHWRR Nepal"
+                )
+                .id
             )
         try:
             with db_engine.connect() as delivery, db_engine.connect() as readiness:
                 delivery_tx = delivery.begin()
-                # The same row lock acquired by delivery replacement and QC.
+                # The same tenant lock acquired by delivery replacement and QC.
                 PgTenantStore(delivery).lock_tenant(tenant_id)
                 readiness.execute(sa.text("SET LOCAL lock_timeout = '100ms'"))
                 with pytest.raises(sa.exc.OperationalError, match="lock timeout"):
