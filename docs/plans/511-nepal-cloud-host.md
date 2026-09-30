@@ -90,6 +90,7 @@ command that produced them.
 
 ### T1 — Provision the host
 **Outcome**: a hardened VM reachable over SSH, 80 and 443 only, with a correct clock.
+- **T1 price record (Infomaniak calculator, 2026-09-30, owner's screenshot):** instance `a8_ram16_disk0` (8 vCPU / 16 GB, 730 h) CHF 23.50/month; 200 GB `Perf1` block storage CHF 17.52/month; one reserved IPv4 CHF 3.34/month; **total CHF 44.35/month**. Not in the estimate: snapshots/backups and outgoing traffic (check the first invoice). Project `nepal-staging` in Public Cloud `sapphire`, region `dc4-a`, quota 20 vCPU / 64 GB RAM / 1000 GB.
 - **Trial first (CHF 300 credit, 3 months):** confirm the real price of the size, a public IPv4,
   block-storage and snapshot prices; record them. If any unknown breaks the budget, take the Hetzner fallback.
 - Ubuntu LTS, Docker, non-root deploy user, key-only SSH (allow-list by source address if practical —
