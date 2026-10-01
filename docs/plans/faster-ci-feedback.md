@@ -61,22 +61,16 @@ Read-only GitHub evidence on 2026-10-01:
   PR CI 36842575461 spent 19.7 minutes in services, 13.4 in adapters/flows,
   4.9 in scripts, 4.8 in rest, and 8.7 in integration. Its CI verdict arrived
   about 20 minutes after workflow creation.
-- CI 36835227628 needed a retry of integration; latest job completion was
-  about 33.3 minutes after original workflow creation. CI 36826980858 needed
-  a retry after a rest-shard installation failure; completion was about 28.7
-  minutes after original creation; its sibling dependency-safety job extends the
-  combined PR verdict to about 37.9 minutes. Eight completed PR observations with
-  job evidence range from 16.5 to 37.9 minutes across the sampled workflows.
-  Never restart the measurement clock on retry.
+- The completed post-shard baseline covers 107 PR heads: 80 settled, 8 obsolete
+  cancelled, and 19 incomplete. Of the 80 settled heads, 23 completed all gates
+  within ten minutes (28.7%). Of the 63 successful settled heads, 19 completed
+  within ten minutes (30.2%). This closes the T1 measurement baseline only; it
+  is not target acceptance and it does not restart timing after retries.
 - Local diagnostics (same target source, Aquacast installed, two workers) passed
   1,334 services tests in 185.71 seconds without coverage, 337.18 seconds with
   the current coverage core, and 125.29 seconds with sysmon. Both coverage runs
   recorded exactly the same covered-line sets. These local results are not proof
   of end-to-end Actions performance. See D1 for the identified quadratic fake.
-- This is preliminary evidence, not a complete cost baseline or a 90% claim.
-  Workflow creation is only a proxy for push time. Jobs returned with
-  `filter=all` can repeat successful work in attempt views; reconcile attempts
-  before summing cost. Cancelled and in-flight runs are not completed verdicts.
 
 Raw read-only timing receipts are retained locally under
 `.worktrees/visions/faster-ci-evidence`, not committed. Organization billing

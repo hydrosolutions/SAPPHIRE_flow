@@ -433,24 +433,64 @@ jobs:
       # is a different decision.
       - name: Run unit shard
         env:
+          COVERAGE_CORE: sysmon
           COVERAGE_FILE: ${{ github.workspace }}/coverage-data/shard.${{ matrix.shard }}.coverage
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$COVERAGE_FILE")"
+          uv run python - <<'PY'
+          import coverage
+
+          cov = coverage.Coverage(source=["src/sapphire_flow"])
+          cov.load()
+          incompatible = {
+              "branch": cov.config.branch,
+              "dynamic_context": cov.config.dynamic_context,
+              "concurrency": cov.config.concurrency,
+          }
+          if any(incompatible.values()):
+              raise SystemExit(
+                  "COVERAGE_CORE=sysmon is only enabled for statement coverage "
+                  f"without dynamic contexts or concurrency plugins: {incompatible!r}"
+              )
+          cov.start()
+          core = repr(cov._collector.core)  # noqa: SLF001 - coverage has no public active-core API.
+          cov.stop()
+          if "SysMonitor" not in core:
+              raise SystemExit(f"COVERAGE_CORE=sysmon did not activate sysmon: {core}")
+          print(f"coverage measurement core active: {core}")
+          PY
           args="$(uv run python tools/unit_shards.py --pytest-args '${{ matrix.shard }}')"
           echo "shard ${{ matrix.shard }}: pytest $args"
           started=$SECONDS
           # Word-splitting $args is deliberate — it is an argument list.
           # shellcheck disable=SC2086
-          uv run pytest $args -n auto --cov=src/sapphire_flow --cov-report=
+          uv run pytest $args -n auto --cov=src/sapphire_flow --cov-report= --junitxml "$RUNNER_TEMP/junit-unit-${{ matrix.shard }}.xml"
           # Plan 319 D1 balanced the shards on COLLECTED COUNTS, which are a
           # proxy for duration and not a good one. This line is how that proxy
           # gets checked against reality; if the legs come out lopsided, the
           # answer is a duration-based split (D1 option b).
           echo "::notice title=unit shard ${{ matrix.shard }}::wall-clock $((SECONDS - started))s"
+      - name: Upload this shard's JUnit durations
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        # Keep this diagnostic artifact bounded, but do not increase the unit
+        # job timeout. The existing coverage upload was observed around 2s and
+        # is bounded at 2 minutes below; this small XML upload gets 1 minute so
+        # both artifact transfers fit the pre-existing budget.
+        timeout-minutes: 1
+        with:
+          name: unit-junit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit-unit-${{ matrix.shard }}.xml
+          retention-days: 14
+          if-no-files-found: warn
       - name: Upload this shard's coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
+        # Observed around 2s. Bounded at 2 minutes so the added JUnit XML
+        # upload above fits without raising the unit job timeout or changing
+        # install/test step budgets.
+        timeout-minutes: 2
         with:
           name: unit-coverage-${{ matrix.shard }}
           path: coverage-data/shard.${{ matrix.shard }}.coverage
@@ -696,9 +736,22 @@ jobs:
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
-      - run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
+      - name: Run integration tests
+        run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow" --junitxml "$RUNNER_TEMP/junit-integration.xml"
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
+      - name: Upload integration JUnit durations
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        # Small diagnostic XML upload. Keep it bounded without changing the
+        # integration test command, install steps, or job timeout.
+        timeout-minutes: 1
+        with:
+          name: integration-junit
+          path: ${{ runner.temp }}/junit-integration.xml
+          retention-days: 14
+          if-no-files-found: warn
 
   # B0 + B3 + B4 — Build the app image in CI and scan it in the same job.
   #
