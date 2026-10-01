@@ -105,6 +105,25 @@ procedure: `docs/runbooks/model-fine-tuning.md`.
 `AquacastShim.DATA_NUM_WORKERS` (default 0) forces the training data loaders in-process for the same reason: the yaml
 asks for 4 worker processes and aquacast's collate cannot be pickled under Python 3.14's `forkserver` start method.
 
+**Aquacast area-conversion failures:** `models/aquacast/_shim.py` owns both unit
+conversion and its FI member outcomes. Predict/hindcast translate usable stations
+once, retain inner total failures, and add explicit no-data `FAILURE` entries with
+`DATA_AVAILABILITY` for excluded members. Outbound area errors affect only the
+variable requiring conversion. Training/retraining remain strict and never silently
+train on a reduced station set. Other configuration/programming errors propagate.
+
+The supported locked daily CMAL path has one served cadence/horizon/offset per
+target, including relaxed horizons and batch hindcasts. Failed inbound members use
+that target's unambiguous returned metadata, canonical units, and no sibling flags
+or data. This is nominal failed-product metadata, not invented prediction rows.
+Missing targets, incompatible units or inconsistent same-target timing raise
+`ModelOutputError`: the shim cannot represent that unsupported result faithfully.
+This is an Aquacast-specific invariant, not a restriction on valid FI outputs in
+general. Existing outbound no-data failures retain their own timing and flags.
+Run all three `tests/unit/models/test_aquacast_{shim,shim_translation,units}.py`
+modules (the construction suite requires the `aquacast` extra). These local contracts
+do not establish Nepal forecast delivery, activation, or scientific validity.
+
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,
 prediction input assembly, model execution, or ModelFailure semantics. For
