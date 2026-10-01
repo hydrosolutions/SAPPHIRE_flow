@@ -1,14 +1,18 @@
-# Faster GitHub Actions feedback within the existing budget
+# Faster CI and conflict-free parallel delivery within the existing budget
 
 ## Outcome
 
 Developers should receive all required pull-request check results within ten minutes
 of pushing a commit on at least 90% of runs. Improve iteration speed without reducing
 validation coverage, weakening safety checks, or increasing CI spending. Make useful
-pre-push feedback available locally using the same tools and rules as CI.
+pre-push feedback available locally using the same tools and rules as CI. Independent
+PRs should not require routine manual conflict resolution solely because they each
+change shared release-version metadata.
 
-The owner confirmed this outcome on 2026-10-01. This is a standalone vision, not an
-Effort in the live-dashboard Program. It can proceed alongside the Swiss and Nepal
+The owner confirmed the CI outcome on 2026-10-01 and subsequently approved extending
+this same vision to remove routine version-file conflicts in parallel PRs, including
+reconsidering when versions are assigned. This is a standalone vision, not an Effort
+in the live-dashboard Program. It can proceed alongside the Swiss and Nepal
 visions on separate branches. Coordinate overlapping files and shared CI changes,
 but do not serialize whole visions or make dashboard delivery depend on this work.
 The dashboards' one-week deadline does not impose a separate deadline on this vision.
@@ -99,6 +103,57 @@ source and current tests as well as the applicable plans; reuse completed work. 
 historical implementation choices are not an excuse to preserve a proven bottleneck,
 but the safety properties they protect must survive any replacement.
 
+## Parallel delivery and release-version conflicts
+
+The owner reported recurring conflicts in `pyproject.toml`, `uv.lock` and
+`src/sapphire_flow/__init__.py` while merging independent PRs, including the Nepal
+hosting and global-agent-settings changes (PRs 351 and 355, now merged). Inspection
+of `main` at `d739c67ac35b8dcc4c3d87aa3aadcb725f6db90a` confirms the coupling:
+
+- `AGENTS.md` requires a patch bump in every code commit.
+- `bump-my-version` writes the project and runtime versions, then invokes `uv lock`
+  to update the root package's version in the lockfile.
+- `.github/workflows/tag-main.yml` tags the version already recorded on `main`;
+  it does not centrally assign a version to each incoming change.
+
+This shared metadata churn is distinct from genuine incompatible code or dependency
+changes. Remove the routine release-metadata conflict without suppressing legitimate
+conflicts. Do not solve it by making contributors serialize independent PR development
+or by repeatedly asking the owner to reconcile these three files.
+
+The owner authorizes reconsidering the per-code-commit bump policy. Investigate
+assigning versions at merge or release time instead, but choose the mechanism from
+repository evidence; this vision does not prescribe a release tool or a merge queue.
+A short serialized version-assignment operation may be appropriate; whole visions
+must remain independently developable. No additional spending or merge authority is
+granted. The existing bump rule remains effective until an approved, reviewed
+implementation changes the policy and its tooling together.
+
+Preserve reproducible dependency resolution and traceable package/image/release
+identity. Inspect the version consumers in packaging, runtime reporting, image
+build/deployment conventions, `tag-main.yml` and their tests. Define how versions
+are assigned uniquely, how builds map to source commits, and how repeated or
+concurrent automation avoids conflicting tags or silently reusing an identity for
+different release contents. Keep existing tags and history intact; do not make
+feature branches publish release tags. A tag remains an identifier, not a substitute
+for passing validation or owner approval.
+
+Dependency changes still require intentional review and a lockfile consistent with
+the accepted constraints. Never resolve a genuine dependency conflict by blindly
+choosing one branch's lockfile, dropping the other change, or resolving unrelated
+packages without explanation. Coordinate updates to affected contribution rules,
+release documentation, tests and automation so that old and new version policies
+do not coexist as contradictory instructions.
+
+Acceptance must exercise at least two independent PR-like branches from the same
+base through the proposed integration/release path. Land them in both orders in a
+controlled test and demonstrate no manual conflict caused only by version metadata,
+correct dependency locks, and traceable release identities. Also test compatible
+concurrent dependency edits, a genuinely incompatible dependency case that reports
+a meaningful conflict instead of silently discarding a constraint, and repeated or
+concurrent version-assignment execution. These are verification cases, not authority
+to merge real PRs, mutate protected branches or publish test release tags remotely.
+
 ## Local iteration experience
 
 A contributor should have a clear, reproducible way to run the useful checks for a
@@ -143,7 +198,9 @@ Also verify:
 - a real failing test still produces a failed required result;
 - dependency/auth failures cannot masquerade as successful tests;
 - local commands give useful results and clearly identify their scope;
-- the new path works on GitHub Actions, not only on a developer's faster machine.
+- the new path works on GitHub Actions, not only on a developer's faster machine;
+- independent PRs no longer need routine manual version-metadata conflict repairs,
+  while real dependency conflicts and release-identity failures remain visible.
 
 If the ten-minute target cannot be achieved within the fixed budget and preserved
 gates, report the measured shortfall and bottleneck. Do not claim completion, spend
