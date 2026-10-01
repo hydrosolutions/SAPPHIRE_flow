@@ -1552,3 +1552,15 @@ prove the change.
   check. `handover/it-operations.md` names the deployment inputs and recovery
   steps; `handover/hydrology-operations.md` explains what evidence a reviewer
   can inspect and which review/API steps remain future work.
+
+### Protected provisional storage and generic table browsing
+
+When adding protected conversion/reference relations, review both
+`docker/bootstrap-roles.sql`'s ordinary-table grant enumeration and
+`api/routes/tables.py::SAPPHIRE_TABLES`. The four dormant provisional relations are
+excluded from both: no transient bootstrap SELECT grants, no generic inventory COUNT,
+and no by-name detail/rows access. Check failed-bootstrap real-session access with a
+protected canary, plus ordinary API-role table-list success and protected-name 404s.
+Do not repair a permission error by granting protected reads. SQL insertion checks
+snapshot/identity/QC/domain consistency; only the typed store re-converts Q. Later
+writer grants/activation must review that numerical authority boundary explicitly.

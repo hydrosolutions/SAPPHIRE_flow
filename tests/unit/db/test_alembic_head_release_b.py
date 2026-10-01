@@ -11,8 +11,8 @@ along with the guard that enforced it.
 This test keeps the cheap, DB-free, CI-enforceable shape of its predecessor
 (walks ``alembic/versions/`` directly, no DB, no Alembic ``ScriptDirectory``
 machinery) and pins the ONE thing that still matters at this level: Alembic
-has exactly one head and it is `0033`. A rogue migration branching off an
-earlier revision (instead of chaining onto `0033`) would give Alembic
+has exactly one head and it matches the current pin below. A rogue migration
+branching off an earlier revision instead of the current head would give Alembic
 multiple heads at deploy time — an opaque runtime error this test catches
 statically instead.
 
@@ -89,13 +89,14 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # outside `forecasts`, D2) onto 0064 — advancing the pinned head to 0065.
 # Plan 268 then chains 0066 (DHM delivery identity and rating-type provenance)
 # onto 0065. Plan 510 then chains 0067 (the row-limit guard triggers for the
-# database-limited operator role) onto 0066.
+# database-limited operator role) onto 0066. The protected provisional-discharge
+# schema and guards chain 0068 onto 0067.
 #
 # Three of these were authored in parallel branches and renumbered on merge:
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0067"
+_RELEASE_B_HEAD = "0068"
 
 
 def _down_revisions() -> dict[str, str | None]:

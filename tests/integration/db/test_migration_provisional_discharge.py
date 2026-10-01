@@ -90,6 +90,7 @@ class TestProtectedMigration:
                 "UPDATE observations SET value = 1.9",
                 "UPDATE observations SET qc_status = 'raw'",
                 "UPDATE rating_curves SET version = 2",
+                "UPDATE provisional_discharge_permissions SET state = 'disabled'",
                 "INSERT INTO rating_curves SELECT * FROM rating_curves",
             ):
                 with engine.connect() as contender, contender.begin():

@@ -5152,3 +5152,15 @@ No ordinary ObservationStore reader joins this storage. Applicable configured-ru
 verification and evidence ingestion, full activation, forecast propagation, protected
 read authorization and training/evaluation exclusion wiring remain future work.
 This is storage/conversion preparation, not a delivered test forecast pathway.
+
+The strict numerical boundary is `PgProvisionalDischargeStore`'s re-conversion.
+The SQL guard checks snapshot/identity/QC/domain consistency but does not recompute Q;
+a privileged owner could supply a different finite Q with consistent content/SHA.
+No runtime INSERT grant exists. Any future writer/activation review must explicitly
+resolve this boundary. Generic admin table reads exclude all four protected relations.
+
+Persistence additionally rejects `captured_at` later than PostgreSQL's actual clock;
+the pure converter retains its injected-time contract. Reference offsets are explicit
+evidence, never inferred from equal/different reference labels. Gate metadata remains
+fixed, with only an owner-session enabled→disabled stop permitted. Runtime writes,
+re-enable, deletion and TRUNCATE remain denied. This is not an activation protocol.

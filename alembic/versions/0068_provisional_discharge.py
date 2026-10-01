@@ -168,6 +168,20 @@ BEGIN
     RAISE EXCEPTION 'protected provisional evidence is immutable';
 END $$;
 
+CREATE FUNCTION public.provisional_permission_disable() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+        'provisional-discharge:' || NEW.tenant_id::text, 0));
+    IF session_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = TG_RELID
+    ) OR OLD.state <> 'enabled' OR NEW.state <> 'disabled'
+      OR (to_jsonb(OLD) - 'state') IS DISTINCT FROM (to_jsonb(NEW) - 'state') THEN
+        RAISE EXCEPTION 'protected permission is immutable except owner disable';
+    END IF;
+    RETURN NEW;
+END $$;
+
 CREATE FUNCTION public.provisional_curve_content(data jsonb) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp
 SET timezone = 'UTC' AS $$
@@ -244,6 +258,12 @@ SET timezone = 'UTC' AS $$
 DECLARE d jsonb := NEW.content::jsonb; o public.observations;
     c public.rating_curves; feed jsonb; proof jsonb; newest uuid;
 BEGIN
+    IF NEW.captured_at > clock_timestamp() THEN
+        RAISE EXCEPTION 'provisional capture time is in the future';
+    END IF;
+    -- Serialize owner disable with append without granting UPDATE for row locks.
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+        'provisional-discharge:' || NEW.tenant_id::text, 0));
     IF NOT EXISTS (SELECT 1 FROM public.provisional_discharge_permissions
         WHERE tenant_id = NEW.tenant_id AND state = 'enabled') THEN
         RAISE EXCEPTION 'provisional discharge activation is disabled';
@@ -315,11 +335,21 @@ def upgrade() -> None:
             op.execute(sa.schema.CreateIndex(index, if_not_exists=True))
     op.execute(_FUNCTIONS)
     for name in _TABLES:
+        events = (
+            "DELETE OR TRUNCATE"
+            if name == "provisional_discharge_permissions"
+            else "UPDATE OR DELETE OR TRUNCATE"
+        )
         op.execute(
-            f"CREATE TRIGGER trg_{name}_immutable BEFORE UPDATE OR DELETE OR TRUNCATE "
+            f"CREATE TRIGGER trg_{name}_immutable BEFORE {events} "
             f"ON public.{name} FOR EACH STATEMENT "
             "EXECUTE FUNCTION public.provisional_immutable()"
         )
+    op.execute(
+        "CREATE TRIGGER trg_provisional_permission_disable BEFORE UPDATE "
+        "ON public.provisional_discharge_permissions FOR EACH ROW "
+        "EXECUTE FUNCTION public.provisional_permission_disable()"
+    )
     for name in ("measurement_feed_evidence", "rating_reference_proofs"):
         op.execute(
             f"CREATE TRIGGER trg_{name}_insert BEFORE INSERT ON public.{name} "
@@ -363,5 +393,6 @@ def downgrade() -> None:
         "provisional_curve_content(jsonb)",
         "provisional_measurement_content(jsonb)",
         "provisional_immutable()",
+        "provisional_permission_disable()",
     ):
         op.execute(f"DROP FUNCTION public.{name}")

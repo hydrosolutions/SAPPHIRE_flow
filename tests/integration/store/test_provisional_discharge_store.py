@@ -372,3 +372,105 @@ class TestRatingReferenceStore:
             db_connection.execute(
                 sa.insert(provisional_discharges).values(**values, captured_at=NOW)
             )
+
+
+class TestProvisionalWritePermission:
+    def test_owner_can_disable_but_not_reenable(
+        self, db_connection: sa.Connection
+    ) -> None:
+        result = convert(*seed(db_connection))
+        permit_fixture(db_connection, result.tenant_id)
+        store = PgProvisionalDischargeStore(db_connection)
+        store.store_provisional_discharge(result, captured_at=NOW)
+        db_connection.execute(
+            sa.update(provisional_discharge_permissions).values(state="disabled")
+        )
+        with (
+            pytest.raises(sa.exc.DBAPIError, match="activation is disabled"),
+            db_connection.begin_nested(),
+        ):
+            store.store_provisional_discharge(result, captured_at=NOW)
+        with (
+            pytest.raises(sa.exc.DBAPIError, match="immutable"),
+            db_connection.begin_nested(),
+        ):
+            db_connection.execute(
+                sa.update(provisional_discharge_permissions).values(state="enabled")
+            )
+        assert (
+            db_connection.scalar(sa.select(provisional_discharge_permissions.c.state))
+            == "disabled"
+        )
+
+    def test_disable_cannot_rewrite_permission_metadata(
+        self, db_connection: sa.Connection
+    ) -> None:
+        result = convert(*seed(db_connection))
+        permit_fixture(db_connection, result.tenant_id)
+        with pytest.raises(sa.exc.DBAPIError, match="immutable"):
+            db_connection.execute(
+                sa.update(provisional_discharge_permissions).values(
+                    state="disabled", permission_reference="changed-proof"
+                )
+            )
+
+    @pytest.mark.parametrize("writer", ["store", "sql"])
+    def test_future_capture_cannot_expire_a_current_curve(
+        self,
+        db_connection: sa.Connection,
+        writer: str,
+    ) -> None:
+        from sapphire_flow.services.provisional_discharge import (
+            convert_provisional_discharge,
+        )
+        from sapphire_flow.types.rating_reference import curve_snapshot
+
+        obs, curve, feed, proof = seed(db_connection)
+        actual_now = db_connection.scalar(sa.select(sa.func.clock_timestamp()))
+        current_curve = replace(curve, valid_to=actual_now + timedelta(days=1))
+        db_connection.execute(
+            sa.update(rating_curves).values(valid_to=current_curve.valid_to)
+        )
+        current_proof = replace(proof, id=uuid4(), curve=curve_snapshot(current_curve))
+        seed_reference(db_connection, rating_reference_proofs, current_proof)
+        future_capture = actual_now + timedelta(days=2)
+        result = convert_provisional_discharge(
+            observation=obs,
+            curves=[current_curve],
+            feed_evidence=feed,
+            reference_proof=current_proof,
+            at=future_capture,
+        )
+        permit_fixture(db_connection, result.tenant_id)
+        if writer == "store":
+            with pytest.raises(ValueError, match="future"):
+                PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                    result, captured_at=future_capture
+                )
+        else:
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="future"),
+                db_connection.begin_nested(),
+            ):
+                db_connection.execute(
+                    sa.insert(provisional_discharges).values(
+                        **raw_values(result), captured_at=future_capture
+                    )
+                )
+        assert (
+            db_connection.scalar(sa.select(rating_curves.c.valid_to))
+            == current_curve.valid_to
+        )
+
+    def test_current_database_capture_is_allowed(
+        self, db_connection: sa.Connection
+    ) -> None:
+        result = convert(*seed(db_connection))
+        permit_fixture(db_connection, result.tenant_id)
+        actual_now = db_connection.scalar(sa.select(sa.func.clock_timestamp()))
+        assert (
+            PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                result, captured_at=actual_now
+            )
+            == result.fingerprint
+        )

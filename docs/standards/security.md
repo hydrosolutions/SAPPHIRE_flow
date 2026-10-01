@@ -1270,16 +1270,22 @@ training inputs and QC semantics are unchanged. These relations contain restrict
 copied measurement/QC/curve evidence. Do not publish their content or diagnostics.
 
 The API, worker, delivery-only `sapphire_operator` and publication-health roles have
-no proof, feed-evidence or provisional-data privileges. The bootstrap revokes broad
-SELECT and stale column grants, then grants API/worker only SELECT on the gate's
+no proof, feed-evidence or provisional-data privileges. Runtime SELECT enumeration excludes these relations entirely, including during
+a failed bootstrap. Stale table and column grants (including PUBLIC grants) are
+removed before runtime re-grants and later backup preflights. Successful bootstrap
+grants API/worker only SELECT on the gate's
 `tenant_id` and `state`. The migration also strips inherited default relation grants.
 There is no proof/association approval writer, activation command, credential change,
 new role or role membership. Backup retains its existing protected full-database
 read capability; this is not consumer access or new publication authority.
 
-Role-independent `SECURITY INVOKER` triggers refuse UPDATE, DELETE and TRUNCATE,
-including owner DML. Provisional INSERT fails without an explicit enabled tenant
-permission. Invoker functions pin their search path and schema-qualify their reads.
+Role-independent `SECURITY INVOKER` triggers refuse evidence UPDATE, DELETE and
+TRUNCATE, including owner DML. Gate deletion/TRUNCATE is also refused. The sole gate
+UPDATE exception is the actual table-owner session changing enabled to disabled
+without changing any other field. Re-enable and metadata rewriting remain refused;
+runtime roles have no gate write grants. Tenant advisory transaction locks serialize
+this fail-closed disable with append without adding UPDATE privileges for row locks.
+Provisional INSERT fails without an explicit enabled tenant permission. Invoker functions pin their search path and schema-qualify their reads.
 Composite FKs bind tenant/station/measurement/curve/proof identities. The store and
 SQL guard compare persisted measurement, exact QC generation/flags, current curve
 content and persisted proofs under locks. Content hashes include all copied facts,
@@ -1301,3 +1307,30 @@ forecast-class isolation and downstream invalidity/exclusion/read contracts. The
 permission relation is guard scaffolding, not a usable activation protocol; no
 production role can write it. Disposable owner fixture seeds are tests, not operator
 instructions. Do not enable this path or deploy a conversion writer from this slice.
+
+The SQL insert guard establishes snapshot, identity, QC and domain consistency; it
+**does not recompute discharge**. Owner-only direct SQL can submit a different finite
+Q with matching content and SHA. The typed append store re-converts and refuses that
+mismatch. No runtime role can INSERT this data. Numerical authority and this database
+boundary must be explicitly reviewed before any later writer grant or activation;
+do not describe the current SQL trigger as proof of numerical conversion.
+
+The generic admin table browser excludes all four protected provisional relations
+from inventory/COUNT and both detail/rows-by-name paths. Admin authentication is not
+permission to expose protected snapshots; excluded names return 404 without granting
+DB reads. Ordinary authorized table browsing remains available.
+
+Persisted capture times cannot exceed PostgreSQL `clock_timestamp()`, enforced by
+both the append store and INSERT trigger. A caller cannot expire a current curve by
+supplying a future capture time. The pure converter keeps its injected time for
+isolated tests; original curve validity and measured timestamps are not rewritten.
+Reference labels and offsets are evidenced assertions: equal labels do not imply zero
+offset, and different labels do not imply a nonzero offset. No datum is inferred.
+
+Protected parent FKs intentionally hold delivery replacement that would delete a
+referenced measurement or curve. There is no delete cascade or evidence cleanup to
+bypass that hold. Operator replacement must stop and seek an authorized retention
+resolution. Raw owner SQL/driver exceptions can echo restricted bound content; no
+claim is made that owner SQL errors are redacted. These stores are unwired, have no
+public error route, and no runtime SQL writer is granted. Any future wiring must
+project safe errors rather than expose exception text or database parameters.

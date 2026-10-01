@@ -43,6 +43,11 @@ class PgProvisionalDischargeStore:
     def store_provisional_discharge(
         self, discharge: ProvisionalDischarge, *, captured_at: UtcDatetime
     ) -> str:
+        database_now = self._conn.execute(
+            sa.select(sa.func.clock_timestamp())
+        ).scalar_one()
+        if captured_at > database_now:
+            raise ValueError("provisional capture time is in the future")
         self._conn.execute(sa.text("LOCK TABLE public.rating_curves IN SHARE MODE"))
         row = (
             self._conn.execute(
