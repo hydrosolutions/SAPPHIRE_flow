@@ -380,7 +380,7 @@ class TestCoverageIsStitchedBackIntoOneNumber:
         assert junit_step["with"]["retention-days"] == 14
         assert junit_step["with"]["if-no-files-found"] == "warn"
 
-        integration_steps = workflow["jobs"]["integration"]["steps"]
+        integration_steps = workflow["jobs"]["integration-shard"]["steps"]
         integration_run = next(
             step
             for step in integration_steps
@@ -392,7 +392,9 @@ class TestCoverageIsStitchedBackIntoOneNumber:
             if step.get("name") == "Upload integration JUnit durations"
         )
         assert "--junitxml" in integration_run
+        assert "${{ matrix.shard }}" in integration_run
         assert integration_upload["if"] == "${{ !cancelled() }}"
         assert integration_upload["continue-on-error"] is True
         assert integration_upload["with"]["retention-days"] == 14
         assert integration_upload["with"]["if-no-files-found"] == "warn"
+        assert "${{ matrix.shard }}" in integration_upload["with"]["name"]

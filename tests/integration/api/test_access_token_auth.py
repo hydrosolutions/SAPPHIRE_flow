@@ -445,26 +445,50 @@ class TestLastUsedAtUpdatedOnAuthentication:
         assert resp.status_code == 401
 
 
-_ADMIN_GATED_ROUTE_SAMPLES: list[tuple[str, str]] = [
-    ("GET", "/api/v1/health/detail"),
-    ("GET", "/health/detail/"),
-    ("GET", "/"),
-    ("GET", "/tables/"),
-    ("GET", "/tables/some_table/"),
-    ("GET", "/tables/some_table/rows"),
-    ("GET", "/observations/"),
-    ("GET", "/stations/"),
-    ("GET", f"/stations/{uuid4()}/"),
-    ("GET", f"/api/v1/stations/{uuid4()}/observations.json"),
-    ("GET", f"/api/v1/stations/{uuid4()}/forcing.json"),
-    ("GET", f"/api/v1/stations/{uuid4()}/baselines.json"),
-    ("GET", f"/api/v1/stations/{uuid4()}/hindcasts.json"),
-    ("GET", "/forecasts/"),
-    ("GET", f"/forecasts/{uuid4()}/"),
-    ("GET", f"/api/v1/forecasts/{uuid4()}/data.json"),
-    ("GET", "/models/"),
-    ("GET", "/models/some-model/"),
-    ("GET", "/api/v1/models/some-model/skill-chart.json"),
+_ADMIN_GATED_ROUTE_SAMPLES: list[object] = [
+    pytest.param("GET", "/api/v1/health/detail", id="api-health-detail"),
+    pytest.param("GET", "/health/detail/", id="legacy-health-detail"),
+    pytest.param("GET", "/", id="legacy-root"),
+    pytest.param("GET", "/tables/", id="tables-index"),
+    pytest.param("GET", "/tables/some_table/", id="tables-detail"),
+    pytest.param("GET", "/tables/some_table/rows", id="tables-rows"),
+    pytest.param("GET", "/observations/", id="legacy-observations"),
+    pytest.param("GET", "/stations/", id="legacy-stations"),
+    pytest.param("GET", f"/stations/{uuid4()}/", id="legacy-station-detail"),
+    pytest.param(
+        "GET",
+        f"/api/v1/stations/{uuid4()}/observations.json",
+        id="station-observations-json",
+    ),
+    pytest.param(
+        "GET",
+        f"/api/v1/stations/{uuid4()}/forcing.json",
+        id="station-forcing-json",
+    ),
+    pytest.param(
+        "GET",
+        f"/api/v1/stations/{uuid4()}/baselines.json",
+        id="station-baselines-json",
+    ),
+    pytest.param(
+        "GET",
+        f"/api/v1/stations/{uuid4()}/hindcasts.json",
+        id="station-hindcasts-json",
+    ),
+    pytest.param("GET", "/forecasts/", id="legacy-forecasts"),
+    pytest.param("GET", f"/forecasts/{uuid4()}/", id="legacy-forecast-detail"),
+    pytest.param(
+        "GET",
+        f"/api/v1/forecasts/{uuid4()}/data.json",
+        id="forecast-data-json",
+    ),
+    pytest.param("GET", "/models/", id="legacy-models"),
+    pytest.param("GET", "/models/some-model/", id="legacy-model-detail"),
+    pytest.param(
+        "GET",
+        "/api/v1/models/some-model/skill-chart.json",
+        id="model-skill-chart-json",
+    ),
 ]
 
 

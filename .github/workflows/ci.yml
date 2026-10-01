@@ -622,8 +622,13 @@ jobs:
           uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client
           uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client
 
-  integration:
+  integration-shard:
     runs-on: ubuntu-latest
+    name: integration (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [heavy, rest]
     timeout-minutes: 25
     services:
       postgres:
@@ -736,8 +741,14 @@ jobs:
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
+      - name: Prove integration shard partition
+        if: matrix.shard == 'heavy'
+        run: uv run python tools/integration_shards.py --check-partition
       - name: Run integration tests
-        run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow" --junitxml "$RUNNER_TEMP/junit-integration.xml"
+        run: |
+          set -euo pipefail
+          PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args "${{ matrix.shard }}")"
+          uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml "$RUNNER_TEMP/junit-integration-${{ matrix.shard }}.xml"
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
       - name: Upload integration JUnit durations
@@ -748,10 +759,27 @@ jobs:
         # integration test command, install steps, or job timeout.
         timeout-minutes: 1
         with:
-          name: integration-junit
-          path: ${{ runner.temp }}/junit-integration.xml
+          name: integration-junit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit-integration-${{ matrix.shard }}.xml
           retention-days: 14
           if-no-files-found: warn
+
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: [integration-shard]
+    if: ${{ always() }}
+    timeout-minutes: 2
+    steps:
+      - name: Require all integration shards to pass
+        run: |
+          set -euo pipefail
+          result="${{ needs.integration-shard.result }}"
+          if [ "$result" != "success" ]; then
+            echo "::error::integration shards finished with result: $result"
+            exit 1
+          fi
+          echo "integration shards passed"
 
   # B0 + B3 + B4 — Build the app image in CI and scan it in the same job.
   #
