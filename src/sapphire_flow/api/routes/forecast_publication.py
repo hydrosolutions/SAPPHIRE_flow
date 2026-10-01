@@ -51,6 +51,7 @@ from sapphire_flow.store.forecast_publication_store import (
     PublicationUnavailableError,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.enums import ForecastDataUse
 from sapphire_flow.types.forecast_publication import (
     PublishRequest,
     WithdrawalReasonCode,
@@ -78,7 +79,7 @@ def _human_forecast(
     permission: HumanPermission,
 ) -> Any:
     forecast = stores["forecast_store"].fetch_forecast(forecast_id)
-    if forecast is None:
+    if forecast is None or forecast.data_use is not ForecastDataUse.STANDARD:
         raise HTTPException(status_code=404, detail="Forecast not found")
     if not principal.allows(forecast.station_id, permission):
         raise HTTPException(status_code=404, detail="Forecast not found")

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -17,7 +17,8 @@ from sapphire_flow.db.metadata import rejected_forecasts
 from sapphire_flow.exceptions import CaptureAbandonedError, ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.domain import QcFlag
-from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus
+from sapphire_flow.types.enums import EnsembleRepresentation, ForecastDataUse, QcStatus
+from sapphire_flow.types.forecast_lineage import ForecastInputLineage
 from sapphire_flow.types.ids import (
     ArtifactId,
     ModelId,
@@ -25,7 +26,10 @@ from sapphire_flow.types.ids import (
     StationGroupId,
     StationId,
 )
-from sapphire_flow.types.rejected_forecast import PersistedRejectedForecast
+from sapphire_flow.types.rejected_forecast import (
+    PersistedRejectedForecast,
+    validate_rejected_assignment,
+)
 
 if TYPE_CHECKING:
     import threading
@@ -141,6 +145,10 @@ def _build_rows(entry: RejectedForecastEntry) -> list[dict[str, object]]:
             {
                 "id": uuid4(),
                 "attempt_id": entry.attempt_id,
+                "data_use": payload.data_use.value,
+                "input_lineage": payload.input_lineage.content
+                if payload.input_lineage
+                else None,
                 "station_id": payload.station_id,
                 "model_id": payload.model_id,
                 "model_artifact_id": payload.model_artifact_id,
@@ -181,6 +189,10 @@ def _row_to_domain(row: RowMapping) -> PersistedRejectedForecast:
         qc_status=QcStatus(row["qc_status"]),
         qc_flags=_parse_qc_flags(row["qc_flags"]),
         values=_decode_series(row["values"]),
+        data_use=ForecastDataUse(row["data_use"]),
+        input_lineage=ForecastInputLineage.from_content(row["input_lineage"])
+        if row["input_lineage"] is not None
+        else None,
     )
 
 
@@ -190,6 +202,7 @@ class PgRejectedForecastStore:
         conn: sa.Connection,
         *,
         transaction_factory: Callable[[], ContextManager[sa.Connection]] | None,
+        data_use: ForecastDataUse = ForecastDataUse.STANDARD,
     ) -> None:
         """`transaction_factory` has NO default (T1): every caller must
         decide explicitly. `api/deps.py` passes `None` — the API reads on
@@ -197,6 +210,9 @@ class PgRejectedForecastStore:
         with `None` raises `ConfigurationError`."""
         self._conn = conn
         self._begin = transaction_factory
+        if not isinstance(cast("object", data_use), ForecastDataUse):
+            raise ValueError("rejected forecast store requires a typed purpose")
+        self._data_use = data_use
 
     def write_batch(
         self,
@@ -209,6 +225,8 @@ class PgRejectedForecastStore:
                 "RejectedForecastStore.write_batch requires a transaction_factory "
                 "— this store was built with none (read-only construction)"
             )
+        for entry in entries:
+            validate_rejected_assignment(entry.payload, self._data_use)
         rows = [row for entry in entries for row in _build_rows(entry)]
         with self._begin() as txn:
             txn.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
@@ -235,6 +253,7 @@ class PgRejectedForecastStore:
         offset: int = 0,
     ) -> tuple[list[PersistedRejectedForecast], int]:
         filters = [
+            rejected_forecasts.c.data_use == self._data_use.value,
             rejected_forecasts.c.station_id == station_id,
             rejected_forecasts.c.issued_at >= start,
             rejected_forecasts.c.issued_at < end,

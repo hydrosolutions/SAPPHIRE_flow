@@ -292,8 +292,11 @@ class ForecastStore(Protocol):
 
 @runtime_checkable
 class RejectedForecastStore(Protocol):
-    """Plan 404 T1 — the append-only record for a QC-rejected member or
-    group-station forecast, never `forecasts` (D2)."""
+    """Purpose-bound, append-only QC rejection capture; STANDARD by default.
+
+    Validate all payload purposes and lineage before encoding or writing.
+    Reads and counts never widen the construction-time purpose.
+    """
 
     def write_batch(
         self,

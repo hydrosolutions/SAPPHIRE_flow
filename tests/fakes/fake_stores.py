@@ -114,9 +114,10 @@ from sapphire_flow.types.observation import (  # noqa: TC001
 )
 from sapphire_flow.types.pipeline import PipelineHealthRecord  # noqa: TC001
 from sapphire_flow.types.rating_curve import RatingCurve  # noqa: TC001
-from sapphire_flow.types.rejected_forecast import (  # noqa: TC001
+from sapphire_flow.types.rejected_forecast import (
     PersistedRejectedForecast,
     RejectedForecastEntry,
+    validate_rejected_assignment,
 )
 from sapphire_flow.types.skill import (  # noqa: TC001
     FlowRegimeConfig,
@@ -2478,10 +2479,18 @@ class FakeRejectedForecastStore:
     round-trip would. `clock` stands in for the DB's `recorded_at` server
     default."""
 
-    def __init__(self, *, clock: Callable[[], UtcDatetime] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], UtcDatetime] | None = None,
+        data_use: ForecastDataUse = ForecastDataUse.STANDARD,
+    ) -> None:
         self._clock = (
             clock if clock is not None else lambda: ensure_utc(datetime.now(UTC))
         )
+        if not isinstance(data_use, ForecastDataUse):
+            raise ValueError("rejected forecast store requires a typed purpose")
+        self._data_use = data_use
         self._rows: list[PersistedRejectedForecast] = []
         self.write_batch_calls: int = 0
 
@@ -2491,6 +2500,8 @@ class FakeRejectedForecastStore:
         *,
         abandon: threading.Event,
     ) -> None:
+        for entry in entries:
+            validate_rejected_assignment(entry.payload, self._data_use)
         rows: list[PersistedRejectedForecast] = []
         for entry in entries:
             payload = entry.payload
@@ -2500,6 +2511,8 @@ class FakeRejectedForecastStore:
                     PersistedRejectedForecast(
                         id=RejectedForecastId(uuid4()),
                         attempt_id=entry.attempt_id,
+                        data_use=payload.data_use,
+                        input_lineage=payload.input_lineage,
                         recorded_at=self._clock(),
                         station_id=payload.station_id,
                         model_id=payload.model_id,
@@ -2534,7 +2547,8 @@ class FakeRejectedForecastStore:
         matches = [
             row
             for row in self._rows
-            if row.station_id == station_id
+            if row.data_use is self._data_use
+            and row.station_id == station_id
             and start <= row.issued_at < end
             and (model_id is None or row.model_id == model_id)
         ]

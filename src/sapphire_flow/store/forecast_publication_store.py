@@ -33,6 +33,7 @@ from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AuditEventType,
+    ForecastDataUse,
     PipelineCheckType,
     PipelineHealthStatus,
 )
@@ -245,6 +246,8 @@ class PgForecastPublicationStore:
             raise PublicationConflictError(
                 "superseded forecast is not a publication candidate"
             )
+        if locked["data_use"] != ForecastDataUse.STANDARD.value:
+            raise PublicationConflictError("test forecast cannot be published")
         if locked["qc_status"] == "qc_failed":
             raise PublicationConflictError("QC-failed forecast cannot be published")
         if self._is_withdrawn(txn, request.forecast_id):
@@ -385,10 +388,22 @@ class PgForecastPublicationStore:
             )
 
     def fetch_selection(self, key: PublicationKey) -> PublicationSelection | None:
+        selection = forecast_publication_selections
         row = (
             self._conn.execute(
                 sa.select(forecast_publication_selections).where(
-                    *self._key_predicates(key)
+                    *self._key_predicates(key),
+                    sa.or_(
+                        forecast_publication_selections.c.selected_forecast_id.is_(
+                            None
+                        ),
+                        sa.exists(
+                            sa.select(forecasts.c.id).where(
+                                forecasts.c.id == selection.c.selected_forecast_id,
+                                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
+                            )
+                        ),
+                    ),
                 )
             )
             .mappings()
@@ -417,7 +432,14 @@ class PgForecastPublicationStore:
                     forecast_publication_events.c.decision_id
                     == forecast_publication_decisions.c.id,
                 )
-                .where(forecast_publication_decisions.c.forecast_id == forecast_id)
+                .join(
+                    forecasts,
+                    forecasts.c.id == forecast_publication_decisions.c.forecast_id,
+                )
+                .where(
+                    forecast_publication_decisions.c.forecast_id == forecast_id,
+                    forecasts.c.data_use == ForecastDataUse.STANDARD.value,
+                )
                 .order_by(forecast_publication_events.c.sequence)
             )
             .mappings()
@@ -439,6 +461,7 @@ class PgForecastPublicationStore:
     ) -> tuple[list[ForecastId], int]:
         selection = forecast_publication_selections
         filters = [
+            forecasts.c.data_use == ForecastDataUse.STANDARD.value,
             selection.c.station_id == station_id,
             selection.c.issued_at >= start,
             selection.c.issued_at < end,
@@ -474,7 +497,9 @@ class PgForecastPublicationStore:
         selection = forecast_publication_selections
         value = self._conn.execute(
             sa.select(selection.c.selected_forecast_id)
+            .join(forecasts, forecasts.c.id == selection.c.selected_forecast_id)
             .where(
+                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
                 selection.c.station_id == station_id,
                 selection.c.parameter == parameter,
                 selection.c.selected_forecast_id.is_not(None),
@@ -513,7 +538,9 @@ class PgForecastPublicationStore:
                 withdrawn.label("withdrawn"),
             )
             .join(event, event.c.decision_id == decision.c.id)
+            .join(forecasts, forecasts.c.id == decision.c.forecast_id)
             .where(
+                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
                 event.c.sequence > after_sequence,
                 decision.c.tenant_id.in_(tenant_ids),
             )
@@ -542,6 +569,17 @@ class PgForecastPublicationStore:
     def assess_candidate(
         self, forecast_id: ForecastId, now: UtcDatetime
     ) -> CandidateAssessment:
+        data_use = self._conn.execute(
+            sa.select(forecasts.c.data_use).where(forecasts.c.id == forecast_id)
+        ).scalar_one_or_none()
+        if data_use == ForecastDataUse.EXPIRED_RATING_TEST.value:
+            return CandidateAssessment(
+                capture_status="unavailable",
+                preservation_status="unavailable",
+                attestation_id=None,
+                remaining_reasons=("test forecast cannot be published",),
+                preservation_at_publish=None,
+            )
         evidence = self._conn.execute(
             sa.select(forecast_evidence.c.status).where(
                 forecast_evidence.c.forecast_id == forecast_id
@@ -601,6 +639,7 @@ class PgForecastPublicationStore:
                 forecasts.c.version,
                 forecasts.c.status,
                 forecasts.c.qc_status,
+                forecasts.c.data_use,
                 stations.c.tenant_id,
             )
             .join(stations, stations.c.id == forecasts.c.station_id)

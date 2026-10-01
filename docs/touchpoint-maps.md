@@ -1625,6 +1625,27 @@ writer grants/activation must review that numerical authority boundary explicitl
   do not exclude store modules from the scanner or widen accepted forecasting statuses.
 
 
+### Publication and rejection data-use boundary
+
+Review `types/rejected_forecast.py`, both Pg/FakeRejectedForecastStore implementations,
+the store protocol, publication store/API and migration `0070` together. Rejection payloads
+remain non-throwing; capture validates every purpose/lineage before encoding the batch.
+Keep mixed parameter verdicts, nonfinite values and abandonment atomicity. TEST requires a
+QC-failed assignment, not merely scientific invalidity. Default reads/counts are STANDARD.
+
+Publication checks remain inside the existing locked transaction. SQL guards cover all
+current/replaced forecast IDs, selection INSERT/UPDATE, immutable decision/event writes
+and TEST reviewed/published lifecycle changes. Preserve selected superseded STANDARD reads,
+authorization, replay, withdrawal and concurrency tests. Run the new publication/rejection
+data-use store, real-role and migration tests plus existing API/store/concurrency gates.
+Downgrade must refuse either retained TEST class, not just rejection columns.
+
+No private relation, grant or activation capability is added. Rejection lineage inherits
+raw table/browser access; T1d must close it together with forecast lineage before activation.
+SQL source/tenant linkage and actual-consumption completeness for rejection lineage remain
+held. The two unconditional TEST write refusals are necessary until those closures and
+verified deployment/rollback coverage exist. Backup still covers the full database.
+
 ### Forecast data-use storage boundary
 
 When changing forecast identity, consult `types/forecast_lineage.py`,
@@ -1640,7 +1661,8 @@ the migration-head gate. Deployed guard tests use the unmodified SQL refusal and
 actual runtime logins. Structural tests transactionally remove only that refusal
 in disposable PostGIS; all integrity/immutability triggers remain active.
 No test-mode activation, runtime grants, direct-reader sweep, public lineage exposure,
-publication, FI/state or alert changes are provided here. Full downstream consumption
+FI/state or alert changes are provided here. Publication/rejection guards are covered
+by the preceding publication and rejection boundary. Full downstream consumption
 lineage and reviewed inventory-backed activation remain prerequisites.
 
 For the protected lineage join, include `docker/bootstrap-roles.sql`'s early stale

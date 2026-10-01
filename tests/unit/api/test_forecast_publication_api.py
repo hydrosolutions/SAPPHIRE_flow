@@ -608,3 +608,63 @@ class TestActivationConfig:
                     "publication_active_tenant_ids": [str(uuid4())],
                 }
             )
+
+
+@pytest.mark.parametrize(
+    "method,path", [("get", ""), ("post", "/publish"), ("post", "/withdraw")]
+)
+def test_human_test_forecast_is_not_found_even_with_test_store(
+    client: TestClient,
+    fake_stores: dict[str, Any],
+    publication_data: tuple[Any, FakePublicationStore],
+    method: str,
+    path: str,
+) -> None:
+    from sapphire_flow.types.enums import ForecastDataUse, QcStatus
+    from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+    from tests.fakes.fake_stores import FakeForecastStore
+
+    station, _ = publication_data
+    forecast = replace(
+        _forecast(station.id, "test-model"),
+        data_use=ForecastDataUse.EXPIRED_RATING_TEST,
+        qc_status=QcStatus.QC_PASSED,
+        input_lineage=ForecastInputLineage(
+            provisional_discharge_fingerprints=("a" * 64,),
+            transformation_versions=("v1",),
+        ),
+    )
+    test_store = FakeForecastStore(data_use=ForecastDataUse.EXPIRED_RATING_TEST)
+    test_store.store_forecast(forecast)
+    fake_stores["forecast_store"] = test_store
+    app.dependency_overrides[require_human_principal] = lambda: HumanPrincipal(
+        user_id=UserId(uuid4()),
+        tenant_id=station.tenant_id,
+        grants=frozenset(
+            {
+                StationGrant(station_id=station.id, permission=p)
+                for p in (HumanPermission.REVIEW, HumanPermission.PUBLISH)
+            }
+        ),
+    )
+    url = f"/api/v1/review/forecasts/{forecast.id}{path}"
+    if method == "get":
+        response = client.get(url)
+    else:
+        body = (
+            {
+                "expected_forecast_version": 1,
+                "expected_selection_version": 1,
+                "idempotency_key": "test",
+            }
+            if path == "/publish"
+            else {
+                "expected_selection_version": 1,
+                "reason_code": "data_error",
+                "reason_text": "test",
+                "idempotency_key": "test",
+            }
+        )
+        response = client.post(url, json=body)
+    assert response.status_code == 404
+    assert response.json() == {"error": "Forecast not found", "detail": None}

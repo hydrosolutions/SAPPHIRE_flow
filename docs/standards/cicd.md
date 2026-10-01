@@ -1635,6 +1635,27 @@ that the daily interval clears the expected backlog. An individual forecast may 
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
 
+## Dormant forecast publication and rejection isolation
+
+Migration `0070` adds publication/status guards and STANDARD-default rejection columns.
+It does not enable TEST data: `0069` remains unchanged and TEST rejection INSERT/COPY
+also unconditionally refuses. Existing STANDARD writers/readers retain their behavior.
+No activation command, inventory relation or new role grant ships here. A well-formed
+inventory is not verified compatibility, complete coverage or operator authority.
+
+Before any future activation, close T1d/T3 isolation and verify immutable image IDs/digests
+and source SHAs for the API, every worker, queued/running jobs, registered deployments,
+operator/scheduled containers and compatible rollback release. Missing, mixed, unknown-drain
+or unsupported inventory refuses. Runtime roles never self-activate; the delivery operator
+has no activation authority. A separately reviewed authorized capability is still required.
+Keep the gate off during upgrades. The provisional-input permission is not output readiness.
+
+`0070` downgrade refuses retained TEST forecasts or TEST rejections. An INSERT refusal
+alone does not make an older publication reader safe for already-retained TEST rows.
+Do not roll application images back on a mixed database without verified compatible
+isolation; use an authorized isolated restore instead, never delete provenance to unblock.
+Both raw lineage columns and rejection SQL source/tenant linkage remain preactivation holds.
+
 ## Dormant provisional-discharge migration
 
 Revision `0068` creates separate protected measurement/feed/reference/conversion

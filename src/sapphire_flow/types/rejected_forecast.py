@@ -17,13 +17,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import ForecastDataUse, QcStatus
+from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcFlag
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus
+    from sapphire_flow.types.enums import EnsembleRepresentation
     from sapphire_flow.types.ids import (
         ArtifactId,
         ModelId,
@@ -56,6 +59,8 @@ class RejectedAssignmentPayload:
     issued_at: UtcDatetime
     parameters: tuple[RejectedParameterPayload, ...]
     group_id: StationGroupId | None = None
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -90,3 +95,21 @@ class PersistedRejectedForecast:
     qc_status: QcStatus
     qc_flags: tuple[QcFlag, ...]
     values: dict[str, tuple[tuple[UtcDatetime, float], ...]]
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None
+
+
+def validate_rejected_assignment(
+    payload: RejectedAssignmentPayload, data_use: ForecastDataUse
+) -> None:
+    """Validate at capture time, never while constructing a service result."""
+    if payload.data_use is not data_use:
+        raise ValueError("rejected forecast does not match store purpose")
+    if data_use is ForecastDataUse.STANDARD:
+        if payload.input_lineage is not None:
+            raise ValueError("standard rejection cannot carry test input lineage")
+        return
+    if not isinstance(payload.input_lineage, ForecastInputLineage):
+        raise ValueError("test rejection requires typed consumed input lineage")
+    if not any(p.qc_status is QcStatus.QC_FAILED for p in payload.parameters):
+        raise ValueError("test rejection requires a QC-failed parameter")

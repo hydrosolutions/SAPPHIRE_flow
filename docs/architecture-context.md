@@ -1876,6 +1876,13 @@ Two distinct domain types with different metadata, storage tables, and lifecycle
 
 **Publication store (Plan 341 T2).** `forecast_publication_selections` keeps one persistent key `(tenant, station, parameter, issued_at)` and an independent version. A publish or same-key replacement locks the candidate forecast against automatic supersession, checks current human grants, QC, captured evidence and the host-written protected-backup health projection, then writes the selection, immutable decision, `audit_log` row and commit-ordered feed event in one transaction. A replacement retains the older forecast and its decision. A reasoned withdrawal tombstones that forecast ID across its publication history; it clears the pointer only when that ID is selected. Linked-warning changes fail closed pending Plan 342's joint transaction. Missing or stale backup health blocks new publication, while withdrawal remains available. This store is not exposed to CHWRR until Plan 341 T3/T2b and the deployment activation gates pass.
 
+Normal publication is STANDARD-only. Migration `0070` rejects TEST references
+(current and replaced IDs) in selection, decision and event writes, and prohibits
+TEST reviewed/published lifecycle states. The locked publication store independently
+refuses TEST even when numerical QC passes. Selected STANDARD superseded generations
+remain readable; this does not add a current-status filter. TEST forecast and rejection
+writes remain unconditionally disabled pending downstream isolation and rollout.
+
 New evidence manifests bind the count and SHA-256 of the ordered
 forecast-value set at storage time. Publication recomputes both before a new
 decision. Candidates captured before this binding require a fresh trusted
