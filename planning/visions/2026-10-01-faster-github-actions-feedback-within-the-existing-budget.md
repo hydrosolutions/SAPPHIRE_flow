@@ -16,12 +16,15 @@ The dashboards' one-week deadline does not impose a separate deadline on this vi
 ## Non-negotiable boundaries
 
 - There is no additional budget. Work within the existing GitHub-hosted runner
-  budget. More runner minutes, larger paid runners, new subscriptions and a new
-  self-hosted runner are not implicitly authorized. Demonstrate the cost impact of
-  changes, including setup, duplicated work, retries and artifact/cache use.
+  spending allowance; do not buy larger paid runners, new subscriptions or a new
+  self-hosted runner. Establish the current billing allowance and usage from
+  authorized account records, not assumptions about free minutes or repository
+  visibility. Runner allocation may change within that envelope. Demonstrate the
+  effect on billable usage and total runner-minutes, including setup, duplicated
+  work, retries and artifact/cache use; a faster run is not permission to spend more.
 - Preserve the tests and required checks that protect each change today. Do not
   obtain a faster green result by silently skipping slow tests, weakening assertions,
-  losing the Aquacast integration coverage, excluding a shard, moving a required
+  losing the real Aquacast shim/model test coverage, excluding a shard, moving a required
   pre-merge check until after merge, or changing branch protection.
 - Local checks provide earlier feedback; they do not replace independent GitHub
   Actions validation. The final code state still needs the repository's complete
@@ -44,6 +47,9 @@ for PR 351 at `c44d83ccb3919262c73e937b3c3b26c48d160861`:
 | Work | Observed duration |
 | --- | --- |
 | Lint job, including type checking | 65 seconds |
+| Image build, smoke check, vulnerability scan and SBOM job | 233 seconds |
+| Wheel-only dependency guard | 17 seconds |
+| Combined unit-coverage job on the successful retry | 24 seconds |
 | Scripts unit-shard pytest step | 129 seconds |
 | Services unit-shard pytest step | 626 seconds |
 | Adapters/flows unit-shard pytest step | about 1,090 seconds |
@@ -84,9 +90,12 @@ before choosing mechanisms. Relevant existing behavior includes:
   type-checking ratchet. Reuse or simplify existing entry points rather than creating
   a parallel definition of what a valid change means.
 
-Plans 185 (dependency coverage), 201 (test isolation), 300 (local parallelism), 309
-(step bounds) and 319 (CI sharding) record prior constraints and decisions. Read the
-actual source and current tests as well as those plans; reuse completed work. Their
+Plans 185 (dependency coverage), 201 (test isolation), 309 (step bounds) and 319
+(CI sharding), plus `docs/conventions.md`, record prior constraints and decisions.
+Plans 185, 201 and 319 are archived. Some workflow comments attribute parallelism
+to Plan 300, but that plan number now identifies the DHM observation adapter; do
+not use that ambiguous citation as the parallelism specification. Read the actual
+source and current tests as well as the applicable plans; reuse completed work. Their
 historical implementation choices are not an excuse to preserve a proven bottleneck,
 but the safety properties they protect must survive any replacement.
 
@@ -105,6 +114,15 @@ not prescribe a new runner, test selector or scheduling framework.
 
 ## Evidence of success
 
+Read the live GitHub branch-protection/ruleset requirements and the workflow
+triggers to establish the required-check inventory; workflow names alone are not
+proof of the merge gate. If account permissions prevent that read, report the gap.
+Preserve that inventory and the current validation coverage.
+
+Build a complete per-job and critical-path baseline across the required workflows,
+including image build, smoke checks, vulnerability scans, SBOM generation and any
+retry waits, wheel guard, coverage aggregation and dependency-safety. The table
+above is an observed starting sample, not the complete performance baseline.
 Measure push-to-verdict time across all required PR checks, including runner queue,
 setup, dependency acquisition, tests, scans and aggregation. If GitHub's available
 event timestamps require a proxy for push time, state that limitation and do not
