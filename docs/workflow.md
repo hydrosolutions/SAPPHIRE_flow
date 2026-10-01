@@ -3,11 +3,11 @@
 ## Working Protocol
 
 1. One agent owns each planning or implementation pass end to end.
-2. Use `/plan` to review or refine a plan with the owner.
+2. Use the globally installed PCE skills for discovery, vision authoring, and delivery.
 3. The orchestrator decides whether the plan becomes READY after at least one independent review is complete; the owner approves and merges the work.
-4. Use `/implement` to build one READY plan and run its focused checks.
-5. When the owner requests review, use the review prompt in independent Claude and
-   Codex sessions separately.
+4. When implementing an existing plan, verify READY status with
+   `uv run python scripts/check_readiness.py <plan-path>` and run its focused checks.
+5. When the owner requests review, use independent Claude and Codex sessions.
 6. The owner resolves findings. Nothing automatically retries, fixes, opens a PR,
    merges, tags, or deploys.
 
@@ -48,8 +48,7 @@ Plans end with a small JSON dependency graph:
 }
 ```
 
-The graph records ordering. The `/implement` prompt keeps one agent responsible for
-the whole graph unless the owner explicitly requests delegation.
+The graph records ordering. One agent owns the plan unless the owner requests delegation.
 
 ## Preserve Existing Logic
 
@@ -115,7 +114,7 @@ plans retain the resulting decisions rather than the review-round history.
 ### Plan review
 
 The ordinary review is one Claude design/proportionality pass and one independent
-Codex repository-grounded pass. The owner starts them separately with `/review`;
+Codex repository-grounded pass. The owner starts the reviews separately;
 neither prompt launches the other. Both review the complete current plan.
 
 Reports contain findings, not plan summaries. Each finding states severity, its
@@ -194,23 +193,17 @@ decision itself.
 Context surfaced mid-task must be applied, deferred with a reason, or tracked —
 never silently dropped.
 
-### Prompt Guides
+### Global Agent Skills
 
-The repository ships three plain Markdown skills:
+Agent workflows are supplied by the globally installed
+[CooperBigFoot/pce](https://github.com/CooperBigFoot/pce) skills:
+`grill-me`, `to-vision`, `implement-vision`, `chart-program`, `grill-ticket`,
+and `land-ticket`.
 
-```text
-/plan docs/plans/NNN-name.md
-/implement docs/plans/NNN-name.md
-/review docs/plans/NNN-name.md
-```
-
-- `/plan` reviews or refines a plan with the owner.
-- `/implement` builds one READY plan and stops after focused verification.
-- `/review` performs one independent, read-only plan or patch review.
-
-The skills do not call each other, launch agents, retry, reconcile findings, or
-manage state. Use the same review instructions deliberately in separate Claude and
-Codex sessions when multi-model review is required.
+This repository does not ship local agent skills, commands, or workflow copies.
+Do not reintroduce them. Install PCE globally for each agent client in use.
+Project review, approval, testing, and safety rules remain applicable; historical
+plans and review records are retained as evidence, not executable workflows.
 
 ## Task Exit Gate
 
@@ -221,7 +214,7 @@ For manual/direct work, the implementing agent verifies:
 3. `uv run pyright src/` reports no type errors in changed modules
 4. Affected docs are updated in the same change
 
-During `/implement`, run each task's targeted checks and the plan's focused Exit
+During implementation, run each task's targeted checks and the plan's focused Exit
 gates. Do not repeatedly run the repository-wide suite during review iterations.
 After the final code change and before merge, `uv run pytest` must pass locally or
 in CI.

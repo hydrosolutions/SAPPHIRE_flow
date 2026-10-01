@@ -1967,7 +1967,7 @@ skill_generations = sa.Table(
     # version, then its newest generation" — precedence is version FIRST).
     sa.Column("computation_version", sa.Integer, nullable=False),
     # Publication instant, clock-injected by the caller (never
-    # `datetime.now()` — CLAUDE.md testability rule). Second-level tiebreak
+    # `datetime.now()` — AGENTS.md testability rule). Second-level tiebreak
     # for "newest" within one `computation_version`; `id` is the final
     # tiebreak on an exact tie (`_latest_generation_predicate`).
     sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),

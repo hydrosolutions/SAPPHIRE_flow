@@ -902,7 +902,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 
 - `docs/standards/orchestration.md` (pools, scheduling, concurrency — its v0-vs-v1 caveats decide what is real), `docs/standards/cicd.md` (compose, volumes, migrations, tagging, upgrade/rollback, per-pool limits), `docs/standards/security.md` (non-root, capabilities, secrets)
 - `docs/deployment/mac-mini-staging.md` — the live-host runbook
-- `.env` — the `VERSION` operators pin (minted per CLAUDE.md § Version Bumping)
+- `.env` — the `VERSION` operators pin (minted per AGENTS.md § Version Bumping)
 
 **Core implementation touchpoints:**
 

@@ -244,7 +244,7 @@ Each plan above follows the standing workflow, unchanged by this roadmap:
 3. **(optional) independent external review** — for high-stakes plans; it has repeatedly caught what the automated loop missed (`feedback_independent_review_beats_automated_loop`).
 4. **WF2 vision-build** — in an **isolated worktree**, **hold-at-PR** (never auto-merge to main). Claude authors locked regression tests; Codex implements.
 
-**FI adherence is a HARD rule** for anything touching a model or the FI adapter (CLAUDE.md §ForecastInterface Adherence): a model that cannot fit the contract → file an FI-repo issue + co-design, never a SAP3-side workaround.
+**FI adherence is a HARD rule** for anything touching a model or the FI adapter (AGENTS.md §ForecastInterface Adherence): a model that cannot fit the contract → file an FI-repo issue + co-design, never a SAP3-side workaround.
 
 **This roadmap doc** goes straight to `main` (no PR, no version bump — plan-doc-only rule), then through WF1 plan-review to harden the sequencing/dependencies, and — given the payoff of the independent-review gate — **one independent external review is recommended before the wave sequence is locked**.
 

@@ -102,7 +102,7 @@ So the contract says: *deliver `lookback` steps of size `time_step`, aggregated 
 Our hindcast path delivers raw 10-minute rows against a declared `timedelta(days=1)`, and the model
 does precisely what the contract entitles it to do. **This is not a model bug and not a new
 requirement — it is SAP3 failing to meet a contract it already claims**, which
-`CLAUDE.md` § ForecastInterface Adherence classifies as "our code violates the FI → fix our code".
+`AGENTS.md` § ForecastInterface Adherence classifies as "our code violates the FI → fix our code".
 
 **Therefore C is not the expensive option; it is the correct one.** A is the mechanism (the provider
 aggregates, exactly as `services/operational_inputs.py:551` already does); C is the enforcement that

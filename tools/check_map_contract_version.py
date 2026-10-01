@@ -16,7 +16,7 @@ Rules:
     2026-09-28)
 
 Direct pushes to `main` are not checked — code (and so this generated file)
-only reaches `main` through a pull request (hold-at-PR, CLAUDE.md § Version
+only reaches `main` through a pull request (hold-at-PR, AGENTS.md § Version
 Bumping).
 
 Usage::

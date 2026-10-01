@@ -429,7 +429,7 @@ def _millisecond_long_frame() -> pl.DataFrame:
 def _patch_workbook_io(
     monkeypatch: pytest.MonkeyPatch, long_frame: pl.DataFrame
 ) -> None:
-    """Mocks ONLY the file-I/O boundary (CLAUDE.md: mock at external
+    """Mocks ONLY the file-I/O boundary (AGENTS.md: mock at external
     boundaries). Everything after it — `on_grid_view`, `normalise_hourly_axis`,
     `iter_observations_by_station`, `qc_mask.iter_station_results` and the
     mask anti-join — is the real production composition."""

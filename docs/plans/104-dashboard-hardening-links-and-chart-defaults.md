@@ -343,7 +343,7 @@ a multi-station STATION-scope (or multi-group GROUP-scope) model. Concretely:
    chart and table so an operator is never misled into reading one station's skill as
    the model's overall performance.
 
-   **Why key by scope id, not artifact id (parse, don't validate — CLAUDE.md).**
+   **Why key by scope id, not artifact id (parse, don't validate — AGENTS.md).**
    Threading a globally-unique `artifact_id` through the public query param makes any
    `model_id` + `artifact_id` combination *representable*, including cross-model ones,
    which would force a "verify this artifact_id belongs to model_id" ownership check
@@ -452,7 +452,7 @@ aggregating multiple station artifacts into a single combined model-level chart
   into the query becomes a **DB error / 500**, not a clean client error. Type the params
   as `uuid.UUID | None = Query(default=None)` so FastAPI returns **422** on a malformed
   value automatically and treats an *omitted* param as `None` (parse-don't-validate,
-  CLAUDE.md). Add tests for BOTH a malformed param (clean 422, not 500) AND an omitted
+  AGENTS.md). Add tests for BOTH a malformed param (clean 422, not 500) AND an omitted
   param (falls back to the deterministic default / virtual empty state, not a `""`-driven
   failure) on both `model_detail` and `model_skill_chart_json`.
 - Re-key **all three** artifact-scoped queries in `model_detail` to the same resolved
@@ -891,7 +891,7 @@ uv run pytest tests/integration/api/test_dashboard*.py
   `artifact_id`, so cross-model artifact references are structurally unrepresentable
   (compound `WHERE model_id AND (station_id OR group_id) AND status='active'`) — the
   earlier "validate artifact_id belongs to model_id" ownership check on two endpoints
-  is removed as unnecessary (parse, don't validate — CLAUDE.md). It treats the
+  is removed as unnecessary (parse, don't validate — AGENTS.md). It treats the
   skill-chart mismatch as the structural multi-active-artifact issue it is (per-scope
   artifacts, `db/metadata.py:493-513`), covers BOTH the STATION
   (`ix_model_artifacts_station_model_active`) and GROUP

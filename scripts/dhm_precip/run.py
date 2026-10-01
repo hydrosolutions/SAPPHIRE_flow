@@ -110,7 +110,7 @@ def run(out: Path) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return _exit_code_for(exc)
 
-    # D9/CLAUDE.md — a single injected clock reading, never a bare
+    # D9/AGENTS.md — a single injected clock reading, never a bare
     # `datetime.now()` inside `compute_all`'s business logic; reused for
     # both the manifest's timestamps and `Observation.created_at` (task 2a).
     generated_at = datetime.now(UTC)

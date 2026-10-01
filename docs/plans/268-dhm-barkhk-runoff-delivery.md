@@ -697,7 +697,7 @@ fixtures are synthetic.
 **Outcome**: delivered `DFL_*.txt` and `RT_*.txt` files cannot be staged anywhere in the
 repository by accident. **In**: `.gitignore`, `.pre-commit-config.yaml`,
 `scripts/guard_dhm_delivery_paths.py`, `tests/unit/scripts/test_dhm_delivery_path_guard.py`,
-`docs/standards/cicd.md`, and `CLAUDE.md`. The unscoped pre-commit hook rejects those basenames
+`docs/standards/cicd.md`, and `AGENTS.md`. The unscoped pre-commit hook rejects those basenames
 at the repository root or in any nested directory, except the two exact synthetic documentation
 examples already tracked at `docs/requirements/DFL_Dummy Station A.txt` and
 `docs/requirements/RT_Dummy Station A.txt`. The ignore rules and guard test must allow only

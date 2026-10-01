@@ -306,7 +306,7 @@ Depends on T0 (which settles D1's remainder and D5) and T1.
 
 **Out:** the input registry (T1); the ForecastInterface — ⚠️ **FI declares no output temporal support**
 (verified 2026-09-09: `VariableMetadata` carries `unit`, `timedelta`, `forecast_horizon`, `offset` and
-nothing else, while `SpatialRepresentation` exists for the spatial equivalent). Per CLAUDE.md that
+nothing else, while `SpatialRepresentation` exists for the spatial equivalent). Per AGENTS.md that
 asymmetry is an **upstream issue to file**, never a SAP3-side workaround — T0 must decide whether to
 file it.
 

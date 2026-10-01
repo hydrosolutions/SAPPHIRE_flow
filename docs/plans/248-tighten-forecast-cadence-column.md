@@ -123,7 +123,7 @@ both the gap-inference path and the single-timestamp fabricated-hour path — is
 
 🔑 **This is the part that reaches a hydromet service.** `NOT NULL` is the point: it makes an
 invariant the code already maintains unrepresentable in the schema, so no future write can
-reintroduce an inferred cadence. Same parse-don't-validate principle `CLAUDE.md` applies to types,
+reintroduce an inferred cadence. Same parse-don't-validate principle `AGENTS.md` applies to types,
 applied to the database.
 
 **In:**

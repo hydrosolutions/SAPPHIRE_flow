@@ -1,7 +1,7 @@
 """Plan 184 (M-A6) task T2 — Pyramid `AT` loader, the D14 lapse correction,
 and the hour-of-day-equalised transect check.
 
-Guard tests (module-level intent, CLAUDE.md testing philosophy — contracts,
+Guard tests (module-level intent, AGENTS.md testing philosophy — contracts,
 not internals):
 
 - `TestLoadPyramidLvl1AtCsv` proves `AT` is retained at the real cold

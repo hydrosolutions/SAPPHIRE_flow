@@ -1,5 +1,5 @@
 """D9 — `RunManifest` JSON I/O. Pydantic at the `results.json` boundary
-(CLAUDE.md); `RunManifest` is the domain type on either side of it."""
+(AGENTS.md); `RunManifest` is the domain type on either side of it."""
 
 from __future__ import annotations
 

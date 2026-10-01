@@ -72,7 +72,7 @@ jobs:
       # Plan 402 T4 (D14): a PR that changes the committed flow-map OpenAPI
       # contract must bump its info.version. PR-only — direct pushes to
       # `main` never carry this file's changes except through a merged PR
-      # (hold-at-PR, CLAUDE.md § Version Bumping).
+      # (hold-at-PR, AGENTS.md § Version Bumping).
       - name: Check map contract version
         if: github.event_name == 'pull_request'
         run: uv run python tools/check_map_contract_version.py --base-ref "${{ github.event.pull_request.base.sha }}"

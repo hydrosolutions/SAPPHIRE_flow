@@ -227,7 +227,7 @@ on the forecast; it remains visible only in the ingest path's own monitoring.
 2. **It reaches models as a shape failure, not a data failure.** A missing tail yields
    **fewer rows, not nulls**, so the `max_nan=0` gate passes untouched
    (`adapters/forecast_interface.py:1029-1038` counts nulls and NaNs in the frame it was
-   given). Per CLAUDE.md, `max_nan` is a pre-`predict` NaN gate only and shape shortfalls
+   given). Per AGENTS.md, `max_nan` is a pre-`predict` NaN gate only and shape shortfalls
    are the model's responsibility — so the model returns `ModelFailure`, and the operator
    sees a failed forecast whose stated cause is the model's input validation rather than
    an unfilled forcing series.

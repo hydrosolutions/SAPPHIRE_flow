@@ -236,7 +236,7 @@ def _qc_mask_tables(
     """Task 2a/2b/3a (Plan 173, M-A3) — the fit-for-purpose QC mask, its
     removal accounting, the M-A6 exclusion list, and rule provenance,
     computed from the SAME normalised axis M-A2 produced. `now` is injected
-    (CLAUDE.md: no bare `datetime.now()` in business logic) — it only ever
+    (AGENTS.md: no bare `datetime.now()` in business logic) — it only ever
     becomes `Observation.created_at`, which no QC rule reads.
 
     D7 — `iter_observations_by_station` streams one station's `Observation`

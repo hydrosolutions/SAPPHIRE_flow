@@ -454,7 +454,7 @@ access_token_stations`, alongside a re-assertion that `sapphire_worker` still ca
 mutate it. The widening is one verb on one table, not a hole.
 **Verification:** `uv run pytest tests/integration/db/test_role_bootstrap.py -v`
 
-### T8 — documentation (CLAUDE.md: "every code change updates affected docs — no exceptions")
+### T8 — documentation (AGENTS.md: "every code change updates affected docs — no exceptions")
 
 **In scope:**
 

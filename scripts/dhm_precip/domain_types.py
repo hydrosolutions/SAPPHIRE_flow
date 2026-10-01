@@ -40,7 +40,7 @@ class AxisStatus(StrEnum):
 class AccumulationConvention(StrEnum):
     """How a timestamp relates to the interval it summarises. A `bool` cannot
     express this: `False` would conflate period-starting, instantaneous and
-    unknown, and CLAUDE.md forbids a bool for a domain state with named
+    unknown, and AGENTS.md forbids a bool for a domain state with named
     possibilities. DHM answered PERIOD_ENDING for this dataset (M-D3), and
     ERA5-Land shares it — which is why M-A6 needs no offset."""
 
@@ -89,7 +89,7 @@ class DatumReconciliationStatus(StrEnum):
     on a common vertical reference. `station_elevation_datum` is `UNKNOWN`
     today (DHM has not stated one), so this is `UNRECONCILED` for every row
     until M-D2 (or DHM) states a datum AND it agrees with the orography
-    side's — never a bool, per CLAUDE.md, and never silently assumed."""
+    side's — never a bool, per AGENTS.md, and never silently assumed."""
 
     RECONCILED = "RECONCILED"
     UNRECONCILED = "UNRECONCILED"
