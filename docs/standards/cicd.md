@@ -565,9 +565,9 @@ developer edits file
         │ blocks commit on failure
         ▼
 developer runs uv run check  (optional, pre-push confidence)
-  • ruff format --check src/ tests/
-  • ruff check src/ tests/
-        │ mirrors the CI lint job's ruff steps
+  • no arguments: ruff format --check src/ tests/ + ruff check src/ tests/ (lint-only)
+  • optional focused paths under tests/unit or tests/fakes: same ruff checks, then pytest on those explicit paths (focused-not-full)
+        │ mirrors the CI lint job's ruff steps; focused pytest is useful feedback, not full validation
         ▼
 [pre-push hook — on git push]
   • uv run pyright --outputjson src/
@@ -591,6 +591,100 @@ merge to main
 ```
 
 Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests, and (Plan 201 T3 layer 3) a full SEQUENTIAL `tests/unit/` run that catches test-ordering / global-state leaks the push/PR path's sharded, `-n auto` unit jobs cannot see; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
+
+### Local validation recipe and prerequisites
+
+Use `uv` for every project command. The short command set below is a **partial
+normal-code confidence pass**. It is useful before pushing, but it is not the
+complete CI/local parity inventory:
+
+```bash
+uv sync --frozen
+uv run check
+uv run check tests/unit/test_check.py              # optional focused example; not full validation
+uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing
+uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
+uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/
+uv run pyright --outputjson src/ > /tmp/pyright.json || true
+uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
+```
+
+The complete local parity inventory is the table in § CI workflow tiers plus
+the commands below. Run what the change touches, and record any missing
+prerequisite as a non-success / not-run condition, never as a pass. Replace
+`<BASE_SHA>` with the PR base commit. Configure private Git credentials without
+printing tokens.
+
+```bash
+# Credential-protected optional model boundary.
+uv sync --frozen --extra aquacast
+uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q
+
+# Developer hooks, type ratchet, shell lint and default tests.
+uv run pre-commit run --all-files
+uv run pytest
+uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/
+uv run pyright --outputjson src/ > /tmp/pyright.json || true
+uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
+shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/run-nepal-forcing.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh
+
+# PR/base-sensitive classifiers.
+uv run python tools/check_map_contract_version.py --base-ref <BASE_SHA>
+uv run python tools/dependency_safety.py --base-ref <BASE_SHA>
+
+# Wheel-only guard. Order matters: the exception reinstall follows the guard.
+uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client
+uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client
+
+# Image validation. Requires Docker and RECAP_DG_CLIENT_TOKEN in the local env.
+docker buildx build -f Dockerfile -t sapphire-flow:local --load --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .
+shipped=$(docker run --rm --entrypoint sh sapphire-flow:local -c 'ls /app/scripts' | sort)
+expected=$(printf '%s
+'   backfill_era5_land_history.py   backfill_meteoswiss_history.py   create_station_group.py   import_caravan_attributes.py   onboard.py   validate_forcing_reference.py | sort)
+test "$shipped" = "$expected"
+for script in $expected; do
+  docker run --rm --entrypoint sh sapphire-flow:local     -c "python /app/scripts/$script --help" >/dev/null
+done
+
+# Filesystem and image supply-chain checks. Same scanners/severity as CI.
+trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .
+trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local
+trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json
+trivy convert --format sarif --scanners vuln,secret --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json
+syft sapphire-flow:local -o cyclonedx-json=sbom.cdx.json
+```
+
+Prerequisites decide which commands can really run:
+
+- Private dependency access: `uv sync --frozen` needs the normal local Git
+  credentials for `recap-dg-client`; the `aquacast` extra additionally needs
+  access to `aquacast`. Missing credentials are a real non-success for local
+  parity, not a pass.
+- System libraries: unit and integration tests that import cfgrib/rioxarray/
+  exactextract need the same native libraries CI installs (`libeccodes0`,
+  `libexpat1`, `libgeos-c1v5`, or platform equivalents).
+- PostgreSQL/PostGIS: the integration command needs a reachable database
+  matching `DATABASE_URL`. CI provides `postgis/postgis:16-3.4`; locally use
+  Docker or another PostGIS 16 service. Do not use xdist for integration.
+- Docker: image smoke/build validation needs a Docker daemon and a local
+  `RECAP_DG_CLIENT_TOKEN` env var for the build secret.
+- Trivy, Syft and ShellCheck must be installed locally for their commands.
+- Base references: `tools/check_map_contract_version.py` and
+  `tools/dependency_safety.py` need an explicit base SHA locally. CI supplies
+  the pull-request base SHA.
+
+CI-only differences remain CI-only: GitHub secret availability checks,
+Dependabot degraded-secret classification, PR changed-file API checks, artifact
+upload/download, SARIF upload to code scanning, queue/retry timing, and
+GitHub-hosted runner environment variance. Unit shards in CI use
+`COVERAGE_CORE=sysmon` on Python 3.12 for statement coverage only, assert the
+active measurement core, and fail if branch coverage, dynamic contexts or
+concurrency plugins are enabled. The unit and integration jobs upload small
+JUnit XML duration artifacts for 14 days. These artifacts aid diagnosis and do
+not replace the existing coverage data, coverage combine step, scan gates or
+severity thresholds.
 
 ### Known external-dependency caveats
 
@@ -639,7 +733,8 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 2 | `unit` | `Install (no aquacast extra — degraded)` — `uv sync --frozen` + `::warning::` (Plan 185 D1 case 2 / D3) | — | `uv sync` | Yes — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot |
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
 | 2 | `unit` | `Plan 201 regression — known ordering leak stays fixed (sequential)` — runs the 4-file Plan 201 reproducer sequentially and asserts it passes (Plan 201 T3 layer 2) | — | `uv run pytest -q tests/unit/cli/test_export_forecast_lab.py tests/unit/flows/test_compute_skills.py tests/unit/scripts/test_backfill_meteoswiss_history_script.py tests/unit/services/skill/test_combined_skill.py` | No |
-| 2 | `unit` | `Run unit shard` — `uv run pytest $(uv run python tools/unit_shards.py --pytest-args <shard>) -n auto --cov=src/sapphire_flow --cov-report=` (Plan 319; runs once per matrix leg, and echoes that leg's wall-clock as a `::notice::`). Was a single unsharded `uv run pytest tests/unit/ … --cov-report=term-missing` step until 2026-09-24 | — | `uv run pytest tests/unit/` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
+| 2 | `unit` | `Run unit shard` — `COVERAGE_CORE=sysmon uv run pytest $(uv run python tools/unit_shards.py --pytest-args <shard>) -n auto --cov=src/sapphire_flow --cov-report= --junitxml ...` (Plan 319 + faster-feedback slice; runs once per matrix leg, asserts sysmon is the active statement-coverage core, and echoes that leg's wall-clock as a `::notice::`). Was a single unsharded `uv run pytest tests/unit/ … --cov-report=term-missing` step until 2026-09-24 | — | `uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
+| 2 | `unit` | `Upload this shard's JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: ${{ !cancelled() }}`) | `Run unit shard` | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
 | 2 | `unit` | `Upload this shard's coverage data` (`uses: actions/upload-artifact`, `if-no-files-found: error`) | `Run unit shard` | n/a — a local run needs no stitching | Yes — feeds the `unit-coverage` job |
 | 2 | `unit-coverage` | `Configure git auth for the private clones` | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `unit-coverage` | `uv sync --frozen` | — | `uv sync` | No |
@@ -651,7 +746,8 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 3 | `integration` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 3 | `integration` | `uv sync --frozen` | — | `uv sync` | No |
-| 3 | `integration` | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (the `--ignore` has been there since 2026-04-21, `d39aa8a`; live-API tests belong to the nightly, not the PR path) | — | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
+| 3 | `integration` | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (the `--ignore` has been there since 2026-04-21, `d39aa8a`; live-API tests belong to the nightly, not the PR path) | — | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
+| 3 | `integration` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
@@ -785,22 +881,24 @@ split between operational topology and policy rationale.
 ### Local gate helper — `uv run check`
 
 The `[project.scripts]` entry `check = "sapphire_flow.cli.check:main"`
-(declared in `pyproject.toml`) provides a one-command developer-side
-mirror of the CI `lint` job's ruff steps:
+(declared in `pyproject.toml`) provides a developer-side mirror of the CI
+`lint` job's ruff steps, with an optional focused pytest pass for explicit
+unit/fake paths:
 
 ~~~bash
-uv run check       # runs `ruff format --check src/ tests/` then `ruff check src/ tests/`
+uv run check                         # lint-only: ruff format --check, then ruff check
+uv run check tests/unit/test_check.py # focused-not-full: same ruff steps, then that pytest path
 ~~~
 
 It does NOT invoke `uv sync`: developers typically have a synced venv
 when invoking it, and CI's lint job runs `uv sync --frozen` at the
 workflow level before the ruff steps.
 
-It does NOT invoke pytest: the `unit` and `integration` CI jobs are
-CI-only because they require system deps (`libeccodes0`, `libgeos-c1v5`)
-and a postgres service that a local-helper invocation should not assume.
-For pre-merge confidence developers can run `uv run pytest tests/unit`
-manually.
+Focused pytest paths are deliberately narrow. They must be existing relative
+paths under `tests/unit` or `tests/fakes`; traversal, symlink escapes and
+flag-like arguments are rejected before any subprocess runs. This is useful
+pre-push feedback only. It is not full unit, integration, Aquacast, Docker,
+Trivy, Syft, wheel-only or dependency-safety validation.
 
 `uv run check` is the developer ergonomics counterpart to the
 `pre-commit` developer-tier gate (see `AGENTS.md` §Pre-commit hooks and
@@ -1523,3 +1621,42 @@ activation, measure a six-station run and restore on the DHM target, and confirm
 that the daily interval clears the expected backlog. An individual forecast may still be published
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
+
+## Dormant provisional-discharge migration
+
+Revision `0068` creates separate protected measurement/feed/reference/conversion
+relations. It seeds no permission or provisional values. Normal workers and the API
+remain unwired and cannot read or write protected content. Keep this path disabled:
+the full reader inventory, compatible rollback inventory, proof-recording authority
+and activation command are not implemented. The existing delivery operator remains
+delivery-only; do not borrow its credential or the migration owner credential for
+conversion jobs. No deployment or live grant is authorized by these schema changes.
+
+Downgrade refuses if **any** protected relation has rows, including reference proofs
+or a permission record. It never deletes evidence to permit rollback. Empty-schema
+roundtrip tests use disposable PostGIS16. Protected data belongs to the existing
+restricted backup/retention boundary. Future activation still needs the full reviewed
+inventory and rollback policy; a successful migration or fixture conversion proves
+neither activation readiness nor forecast delivery.
+
+Runtime bootstrap grants SELECT only to ordinary public table/view relations;
+protected provisional relations never receive transient blanket grants. Protected
+stale table/column ACLs are removed during runtime convergence, before later backup
+preflights. A deliberate backup-ownership abort is tested with real API/worker
+sessions and a committed protected canary. The existing operator safe-state block
+remains first. A failed bootstrap still fails deployment; denied protected access
+is not permission to continue starting services after that failure.
+
+A gate's only permitted state change is table-owner-session enabled→disabled with
+all metadata unchanged. It is a fail-closed stop, not activation authority: no runtime
+write grant, enable command, re-enable update or permission deletion is added.
+Disable and append serialize through a tenant transaction advisory lock. Owner SQL
+errors can include protected bound values; do not publish raw database diagnostics.
+Protected FK dependencies block delivery deletion/replacement and must not be
+removed by cascading deletes. Full future activation/audit/rollback work remains held.
+
+Protected writes require READ COMMITTED transactions. Fixed-snapshot levels are
+refused by both the append store and SQL guards; do not retry under owner credentials
+or change isolation to bypass another safety hold. Future nonowner writer setup must
+review the source-table privileges required by TABLE SHARE/FOR SHARE separately.
+No additional grant or live execution path is provided by this migration.

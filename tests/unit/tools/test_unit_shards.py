@@ -345,3 +345,54 @@ class TestCoverageIsStitchedBackIntoOneNumber:
         combine = "\n".join(_run_scripts(job))
         assert "coverage combine" in combine
         assert re.search(r"coverage report\b", combine)
+
+    def test_unit_shards_use_sysmon_statement_coverage_with_active_core_check(
+        self, workflow: dict[str, Any]
+    ) -> None:
+        job = _unit_job(workflow)
+        shard_step = next(
+            step for step in job["steps"] if step.get("name") == "Run unit shard"
+        )
+
+        assert shard_step["env"]["COVERAGE_CORE"] == "sysmon"
+        assert "--cov=src/sapphire_flow" in shard_step["run"]
+        assert "cov.config.branch" in shard_step["run"]
+        assert "cov.config.dynamic_context" in shard_step["run"]
+        assert "cov.config.concurrency" in shard_step["run"]
+        assert "SysMonitor" in shard_step["run"]
+
+    def test_unit_shards_and_integration_upload_bounded_junit_artifacts(
+        self, workflow: dict[str, Any]
+    ) -> None:
+        unit_steps = _unit_job(workflow)["steps"]
+        junit_step = next(
+            step
+            for step in unit_steps
+            if step.get("name") == "Upload this shard's JUnit durations"
+        )
+        unit_run = next(
+            step for step in unit_steps if step.get("name") == "Run unit shard"
+        )["run"]
+
+        assert "--junitxml" in unit_run
+        assert junit_step["if"] == "${{ !cancelled() }}"
+        assert junit_step["continue-on-error"] is True
+        assert junit_step["with"]["retention-days"] == 14
+        assert junit_step["with"]["if-no-files-found"] == "warn"
+
+        integration_steps = workflow["jobs"]["integration"]["steps"]
+        integration_run = next(
+            step
+            for step in integration_steps
+            if step.get("name") == "Run integration tests"
+        )["run"]
+        integration_upload = next(
+            step
+            for step in integration_steps
+            if step.get("name") == "Upload integration JUnit durations"
+        )
+        assert "--junitxml" in integration_run
+        assert integration_upload["if"] == "${{ !cancelled() }}"
+        assert integration_upload["continue-on-error"] is True
+        assert integration_upload["with"]["retention-days"] == 14
+        assert integration_upload["with"]["if-no-files-found"] == "warn"

@@ -828,3 +828,16 @@ current tests and end-to-end evidence match the approved vision; leave the Effor
   ]
 }
 ```
+
+
+### Partial storage/conversion implementation boundary
+
+The protected-storage slice covers part of T1a, prerequisite fail-closed T1c guards
+and pure/transactional T2b conversion only. It does not activate or complete those
+tasks. It adds the narrow `MeasurementFeedEvidence` prerequisite: historical
+`ObservationSource.MEASURED` and current adapter bindings cannot establish a row's
+feed identity. Authorized T2a work must later attest exact measured-value snapshots
+to a verified endpoint/API station identity. A restatement needs new feed evidence;
+QC-only reprocessing snapshots its new QC generation without re-attesting the feed.
+Proof/association recording, configured-rule verification, full activation inventory
+and all CLI/flow wiring remain held. No runtime or delivery-operator grant is added.

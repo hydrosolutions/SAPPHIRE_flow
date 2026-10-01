@@ -10,7 +10,7 @@ from collections.abc import (
 from dataclasses import replace
 from datetime import UTC, date, datetime  # noqa: TC003
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -139,6 +139,10 @@ from sapphire_flow.types.weather import (  # noqa: TC001
     WeatherForecastRecord,
 )
 
+_ObservationNaturalKey: TypeAlias = tuple[
+    StationId, UtcDatetime, str, ObservationSource
+]
+
 
 class FakeObservationStore:
     def __init__(self) -> None:
@@ -171,52 +175,69 @@ class FakeObservationStore:
         return len(observations)
 
     def store_observations(self, observations: list[Observation]) -> None:
-        self._check_delivery_collisions(observations)
+        by_natural_key = self._natural_key_index()
+        self._check_delivery_collisions(observations, by_natural_key)
         for obs in observations:
-            existing = self._by_natural_key(obs)
-            if existing is not None:
-                self._observations[existing.id] = replace(obs, id=existing.id)
-            else:
-                self._observations[obs.id] = obs
+            key = self._natural_key(obs)
+            existing = by_natural_key.get(key)
+            stored = replace(obs, id=existing.id) if existing is not None else obs
+            previous = self._observations.get(stored.id)
+            self._observations[stored.id] = stored
+            self._replace_index_entry(by_natural_key, stored, previous)
 
-    def _by_natural_key(
-        self, observation: Observation | RawObservation
-    ) -> Observation | None:
-        return next(
-            (
-                stored
-                for stored in self._observations.values()
-                if (
-                    stored.station_id,
-                    stored.timestamp,
-                    stored.parameter,
-                    stored.source,
-                )
-                == (
-                    observation.station_id,
-                    observation.timestamp,
-                    observation.parameter,
-                    observation.source,
-                )
-            ),
-            None,
+    @staticmethod
+    def _natural_key(
+        observation: Observation | RawObservation,
+    ) -> _ObservationNaturalKey:
+        return (
+            observation.station_id,
+            observation.timestamp,
+            observation.parameter,
+            observation.source,
         )
 
-    def _check_delivery_collisions(
-        self, observations: list[Observation] | list[RawObservation]
+    def _natural_key_index(self) -> dict[_ObservationNaturalKey, Observation]:
+        by_natural_key: dict[_ObservationNaturalKey, Observation] = {}
+        for stored in self._observations.values():
+            by_natural_key.setdefault(self._natural_key(stored), stored)
+        return by_natural_key
+
+    def _replace_index_entry(
+        self,
+        by_natural_key: dict[_ObservationNaturalKey, Observation],
+        stored: Observation,
+        previous: Observation | None,
     ) -> None:
-        incoming: dict[tuple[object, object, object, object], str | None] = {}
+        if previous is not None:
+            previous_key = self._natural_key(previous)
+            old_key_points_to_previous = by_natural_key.get(previous_key) == previous
+            if previous_key != self._natural_key(stored) and old_key_points_to_previous:
+                del by_natural_key[previous_key]
+                replacement = next(
+                    (
+                        observation
+                        for observation in self._observations.values()
+                        if observation.id != stored.id
+                        and self._natural_key(observation) == previous_key
+                    ),
+                    None,
+                )
+                if replacement is not None:
+                    by_natural_key[previous_key] = replacement
+        by_natural_key[self._natural_key(stored)] = stored
+
+    def _check_delivery_collisions(
+        self,
+        observations: list[Observation] | list[RawObservation],
+        by_natural_key: dict[_ObservationNaturalKey, Observation],
+    ) -> None:
+        incoming: dict[_ObservationNaturalKey, str | None] = {}
         for observation in observations:
-            key = (
-                observation.station_id,
-                observation.timestamp,
-                observation.parameter,
-                observation.source,
-            )
+            key = self._natural_key(observation)
             if key in incoming and incoming[key] != observation.delivery_id:
                 raise DeliveryCollisionError(observation.station_id)
             incoming[key] = observation.delivery_id
-            existing = self._by_natural_key(observation)
+            existing = by_natural_key.get(key)
             if existing is not None and existing.delivery_id != observation.delivery_id:
                 raise DeliveryCollisionError(observation.station_id)
 
@@ -224,10 +245,11 @@ class FakeObservationStore:
         self, observations: list[RawObservation]
     ) -> list[ObservationId]:
         deduped = _dedupe_raw_observations(observations)
-        self._check_delivery_collisions(deduped)
+        by_natural_key = self._natural_key_index()
+        self._check_delivery_collisions(deduped, by_natural_key)
         ids = []
         for raw in deduped:
-            existing = self._by_natural_key(raw)
+            existing = by_natural_key.get(self._natural_key(raw))
             if existing is not None:
                 provenance_unchanged = (
                     existing.rating_curve_id == raw.rating_curve_id
@@ -236,7 +258,7 @@ class FakeObservationStore:
                 )
                 if existing.value == raw.value and provenance_unchanged:
                     continue
-                self._observations[existing.id] = replace(
+                stored = replace(
                     existing,
                     value=raw.value,
                     rating_curve_id=raw.rating_curve_id,
@@ -248,6 +270,9 @@ class FakeObservationStore:
                     qc_rule_version=None,
                     delivery_id=raw.delivery_id,
                 )
+                previous = self._observations.get(existing.id)
+                self._observations[existing.id] = stored
+                self._replace_index_entry(by_natural_key, stored, previous)
                 ids.append(existing.id)
                 continue
 
@@ -268,6 +293,7 @@ class FakeObservationStore:
                 delivery_id=raw.delivery_id,
             )
             self._observations[oid] = obs
+            self._replace_index_entry(by_natural_key, obs, None)
             ids.append(oid)
         return ids
 
