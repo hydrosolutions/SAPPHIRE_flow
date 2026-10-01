@@ -8,7 +8,7 @@
 #     certificate but does NOT add a Strict-Transport-Security header.
 #   * Only /api/v1/ is forwarded. The legacy HTML routers, .json exports and any
 #     other path answer 404 here, before the API sees them.
-#   * A localhost-only :80 site serves the container healthcheck. With a domain
+#   * A loopback-only :80 site serves the container healthcheck. With a domain
 #     configured, plain-HTTP requests for any other Host are redirected to HTTPS,
 #     which would fail the base healthcheck (`wget http://localhost:80/...`).
 #
@@ -24,7 +24,9 @@
         -Server
     }
 
-    handle /api/v1/* {
+    # path_regexp is case-sensitive; the `path` matcher is not.
+    @api path_regexp ^/api/v1/
+    handle @api {
         reverse_proxy api:8000
     }
 
@@ -33,8 +35,16 @@
     }
 }
 
+# `localhost` selects on the Host header, it does not bind the listener to the
+# loopback interface, so the health route is ALSO limited to loopback clients: the
+# container's own healthcheck (wget to localhost) matches, an outside request that
+# sends `Host: localhost` does not.
 http://localhost:80 {
-    handle /api/v1/health {
+    @health {
+        path /api/v1/health
+        remote_ip 127.0.0.1 ::1
+    }
+    handle @health {
         reverse_proxy api:8000
     }
 

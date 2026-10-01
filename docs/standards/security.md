@@ -340,7 +340,7 @@ The following are infrastructure-level security measures — the IT team's respo
 | **fail2ban** | Blocks IPs after repeated failed SSH attempts. Complements IP allowlisting. | High |
 | **`auditd`** | OS-level audit logging of SSH sessions, `sudo` usage, file access. Feeds into SIEM if available. | High |
 | **Full disk encryption (LUKS)** | Protects against physical disk theft. Requires manual unlock or TPM on reboot. | High |
-| **`./secrets/` file permissions** | `chmod 600`, owned by root. Prevents other OS users from reading secrets on the host. | High |
+| **`./secrets/` file permissions** | `chmod 600`, owned by root. Prevents other OS users from reading secrets on the host. **Linux cloud hosts (Plan 511):** bind-mounted secrets keep host ownership and the containers drop capabilities, so the directory is `750 root:docker` and the files `644` root-owned — the directory, not the file mode, excludes other users (`docs/deployment/nepal-cloud-host.md` § 2; to be confirmed at first boot). | High |
 | **Firewall** | Only port 443 (HTTPS) and SSH open. All other ports blocked at the OS level (in addition to Docker network isolation). | Critical |
 | **Unattended upgrades** | Automatic OS security patches. | High |
 | **`pgaudit` extension** | PostgreSQL audit logging of all SQL queries. Detects direct database access that bypasses the application API. See "Threat model" section below. | Recommended |

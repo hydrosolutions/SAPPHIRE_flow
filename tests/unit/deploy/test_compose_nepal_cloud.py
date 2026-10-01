@@ -7,7 +7,10 @@ beyond Caddy's 80/443."""
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -116,19 +119,95 @@ class TestNepalCaddyfile:
     def test_forwards_only_the_api_prefix_and_404s_the_rest(self) -> None:
         directives = self._directives()
         domain_site = directives.split("http://localhost:80")[0]
-        assert re.search(
-            r"handle /api/v1/\*\s*\{\s*reverse_proxy api:8000", domain_site
-        )
+        assert re.search(r"@api path_regexp \^/api/v1/", domain_site)
+        assert re.search(r"handle @api\s*\{\s*reverse_proxy api:8000", domain_site)
         assert domain_site.count("reverse_proxy") == 1
         assert re.search(r"handle\s*\{\s*respond \"Not Found\" 404", domain_site)
 
     def test_healthcheck_site_serves_only_the_health_route(self) -> None:
         health_site = self._directives().split("http://localhost:80")[1]
         assert re.search(
-            r"handle /api/v1/health\s*\{\s*reverse_proxy api:8000", health_site
+            r"path /api/v1/health\s+remote_ip 127\.0\.0\.1 ::1", health_site
         )
+        assert re.search(r"handle @health\s*\{\s*reverse_proxy api:8000", health_site)
         assert health_site.count("reverse_proxy") == 1
 
     def test_the_base_healthcheck_targets_that_localhost_site(self) -> None:
         test = _services("docker-compose.yml")["caddy"]["healthcheck"]["test"]  # type: ignore[index]
         assert "http://localhost:80/api/v1/health" in test  # type: ignore[operator]
+
+
+def _compose_config_json() -> dict[str, dict[str, object]]:
+    """The merged stack as Docker Compose itself renders it (the unit tests above
+    parse the two files separately and so never exercise Compose's merge rules)."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("docker is not installed")
+    result = subprocess.run(
+        [
+            docker,
+            "compose",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            OVERLAY,
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=_root(),
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": str(Path.home()),
+            "VERSION": "0.0.0-test",
+            "SAPPHIRE_DOMAIN": "nepal-staging.hydrosolutions.ch",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"docker compose config unavailable: {result.stderr[:200]}")
+    return json.loads(result.stdout)["services"]
+
+
+def _mounts(service: dict[str, object]) -> list[tuple[str, str]]:
+    return [
+        (str(v.get("source", "")), str(v["target"]))
+        for v in service.get("volumes", [])  # type: ignore[attr-defined]
+    ]
+
+
+class TestComposeRenderedMerge:
+    def test_overlay_lands_on_every_config_reader(self) -> None:
+        services = _compose_config_json()
+        for name in CONFIG_READING_SERVICES:
+            env = services[name]["environment"]
+            assert env["SAPPHIRE_CONFIG_OVERLAY"] == CONFIG_OVERLAY_PATH  # type: ignore[index]
+            assert any(
+                target == CONFIG_OVERLAY_PATH and source.endswith("nepal-cloud.toml")
+                for source, target in _mounts(services[name])
+            ), name
+
+    def test_the_nepal_caddyfile_replaces_the_base_mount(self) -> None:
+        caddyfile_mounts = [
+            source
+            for source, target in _mounts(_compose_config_json()["caddy"])
+            if target == "/etc/caddy/Caddyfile"
+        ]
+        assert len(caddyfile_mounts) == 1
+        assert caddyfile_mounts[0].endswith("Caddyfile.nepal")
+
+    def test_only_caddy_publishes_ports_and_init_alone_skips_deployments(self) -> None:
+        services = _compose_config_json()
+        assert [n for n, s in services.items() if s.get("ports")] == ["caddy"]
+        skipping = [
+            n
+            for n, s in services.items()
+            if "SAPPHIRE_SKIP_DEPLOYMENTS" in (s.get("environment") or {})  # type: ignore[operator]
+        ]
+        assert skipping == ["init"]
+
+    def test_prefect_server_is_on_the_backend_network_only(self) -> None:
+        networks = _compose_config_json()["prefect-server"]["networks"]
+        assert list(networks) == ["backend"]  # type: ignore[call-overload]

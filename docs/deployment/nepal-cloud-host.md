@@ -13,32 +13,42 @@ it forwards `/api/v1/` and answers 404 to every other path. The Swiss BAFU colle
 ```bash
 git clone <repo> ~/SAPPHIRE_flow && cd ~/SAPPHIRE_flow      # then check out the release tag
 cat > .env <<EOF_ENV
-VERSION=<release version, e.g. 0.1.1040>
+VERSION=<the release version you are deploying>
 SAPPHIRE_DOMAIN=nepal-staging.hydrosolutions.ch
 EOF_ENV
 ```
 
-## 2. Secrets (`./secrets/`, mode 600, never committed)
+## 2. Secrets (`./secrets/`)
 
-Generate each on the host; none of them passes through a chat or a ticket.
+Generate each on the host; none of them passes through a chat or a ticket. Independent random value per file.
+
+On Linux a bind-mounted secret file keeps its host owner and mode, and the containers drop capabilities, so a
+container user can read a secret only if it owns it or the file is readable by others. The files are therefore
+root-owned and readable (644), and **the directory** keeps other host users out: `750 root:docker` (members of
+the `docker` group are already root-equivalent on this host).
 
 ```bash
-mkdir -p secrets && chmod 700 secrets
+sudo install -d -m 750 -o root -g docker secrets
 for f in db_password sapphire_api_db_password sapphire_worker_db_password \
          sapphire_backup_db_password access_token_pepper; do
-  [ -e "secrets/$f" ] || (umask 077; openssl rand -base64 32 | tr -d '\n' > "secrets/$f")
+  [ -e "secrets/$f" ] || openssl rand -base64 32 | tr -d '\n' | sudo tee "secrets/$f" >/dev/null
 done
+sudo chown root:root secrets/* && sudo chmod 644 secrets/*
+ls -ln secrets/        # five files, owner 0, mode 644
 ```
 
-Independent passwords for each file. Losing `db_password` after data exists means restoring from backup,
-so keep an out-of-band copy in the password manager.
+**Verify on the first boot** (section 3) that every service starts; if one reports it cannot read a secret,
+check `ls -ln secrets/` and the container log, then correct this section. Keep an out-of-band copy of
+`db_password` in the password manager: losing it after data exists means restoring from backup.
 
-Build-time tokens (private repositories) are read from the environment while building — set them in the
-same shell, never on disk:
+Build-time tokens (private repositories) are read from the environment while building and must never reach
+shell history or disk. Read them with a silent prompt, then unset them after the build:
 
 ```bash
-export RECAP_DG_CLIENT_TOKEN=...   # hydrosolutions/recap-dg-client
-export AQUACAST_TOKEN=...          # aquacast (forecast worker image)
+read -rs -p 'RECAP_DG_CLIENT_TOKEN: ' RECAP_DG_CLIENT_TOKEN; echo; export RECAP_DG_CLIENT_TOKEN
+read -rs -p 'AQUACAST_TOKEN: ' AQUACAST_TOKEN; echo; export AQUACAST_TOKEN
+# ... build (section 3) ...
+unset RECAP_DG_CLIENT_TOKEN AQUACAST_TOKEN
 ```
 
 ## 3. Build and start
@@ -49,6 +59,13 @@ Application images are built on the host (there is no registry): both `sapphire-
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.nepal-cloud.yml build
 docker compose -f docker-compose.yml -f docker-compose.nepal-cloud.yml up -d
+```
+
+Before starting, check the edge configuration with the real Caddy:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nepal-cloud.yml run --rm --no-deps caddy \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
 `init` runs migrations, creates the declared `chwrr` tenant, bootstraps the database roles and registers
@@ -79,7 +96,9 @@ curl -so /dev/null -w '%{http_code}\n' https://nepal-staging.hydrosolutions.ch/d
 docker compose -f docker-compose.yml -f docker-compose.nepal-cloud.yml ps
 ```
 
-Also confirm from outside that only 22, 80 and 443 answer, and that no Prefect port is reachable.
+Also confirm from outside that only 22, 80 and 443 answer, and that no Prefect port is reachable. A request to port 80 with `Host: localhost` from outside must get 404 (the health route answers loopback clients only).
+
+**Expected on a fresh host:** `ingest-weather-history` is registered and, with no stations bound yet, writes a CRITICAL `no_stations_bound` pipeline-health record every day. That is normal until Nepal stations are onboarded, not a fault.
 `backup-database` stays registered and writes dumps to the local `backups` volume only; **off-box backup is
 not set up** (Plan 511 D9) — do not load restricted data before that follow-on is planned
 (`docs/decisions/2026-09-30-dhm-data-hosting-assumption.md`).
