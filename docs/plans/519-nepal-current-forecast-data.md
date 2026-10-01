@@ -15,8 +15,9 @@ Vision: ../../planning/visions/2026-10-01-nepal6-current-forecast-data-for-the-e
 ## Authority and scope
 
 This plan implements the approved vision including the test-mode amendment merged
-in PR #359. It is DRAFT: do not execute it. Only the orchestrator sets READY, after
-required independent review. Owner approval controls every merge and exceptional
+in PR #359. Its recorded status is DRAFT; execution follows the global skill and
+current user instructions under `AGENTS.md`, not a separate READY gate.
+Owner approval controls every merge and exceptional
 operational action. The scientific-validity, database-identity, API/security and FI
 boundaries make this high-risk work, requiring the ordinary Claude/Codex pair and
 one additional owner-commissioned relevant review at the prescribed gates.
@@ -314,9 +315,9 @@ past forcing is represented as declared nulls plus quality flags; FI max_nan dec
 whether prediction proceeds. Do not replace it with blanket refusal. Unexpected schema
 errors and fatal storage failures remain visible failures.
 
-Plan 514 stays DRAFT and is not executed as a prerequisite. Before either plan becomes
-READY, the orchestrator must record this limited scope ownership in 514 and reduce its
-remaining scope accordingly, or assign the repair there and remove it here. No concurrent
+Plan 514 stays DRAFT and is not executed as a prerequisite. Before editing the shared
+code, the implementing agents must record this limited scope ownership in 514 and
+reduce its remaining scope accordingly, or assign the repair there and remove it here. No concurrent
 implementation of the same group seam is authorized. Other 514 work is not imported, and
 this proposal does not itself change its YAML status.
 
@@ -544,7 +545,7 @@ members or silently shrink expected coverage.
 
 **In:** `services/run_group_forecast.py`, its narrow flow catch boundary in
 `flows/run_forecast_cycle.py`, relevant input metadata types, tests and Plan 514 overlap
-note agreed by the orchestrator. Preserve the owner decision restated above: declared
+note agreed by the agents owning the overlapping work. Preserve the owner decision restated above: declared
 past gaps reach FI max_nan with quality flags; undeclared statics do not poison stacking.
 No model-contract, global QC or database-error suppression changes.
 
@@ -664,7 +665,7 @@ updated contract must close that failing deterministic gate without weakening it
 **Outcome:** target-host operation and consumer integration are demonstrated, with actual
 valid and invalid coverage counted separately and the service configured beyond October 7.
 
-**In:** owner/orchestrator-authorized staging deployment and bounded onboarding using
+**In:** owner-authorized staging deployment and bounded onboarding using
 existing reviewed paths, backup prerequisites before restricted transfers, scoped secrets
 and no inbound office exposure. Preserve Swiss operations and restrict Nepal snow/forcing
 schedules as required by existing onboarding. The cloud overlay's disabled forecast feed

@@ -21,7 +21,7 @@ independent reviews found that doing so changes what the rules compare — not o
 is inferred — and the owner chose the narrower design below. Seven review rounds have run (§ Review
 record); rounds 6, 7 and 8 READY from both reviewers, and round 8 CLEAN on the text round 7's fold
 produced. Only this status paragraph and the review record have changed since. ⛔ No implementation until
-an independent review of this exact state is complete and the orchestrator sets READY. It runs
+the required independent review of this exact state is complete. It runs
 **after Plan 323**.
 
 ⚠️ **What it cannot fix alone:** at a water-level station with **no datum** — every Swiss river

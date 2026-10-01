@@ -5,7 +5,7 @@ revised: 2026-09-29   # rounds 1–3 folded in (Claude and Codex, all NEEDS CHAN
 plan: 513
 title: Declared tenants — a host's config lists its tenants and the deploy creates them
 scope: A per-host declaration of tenants that a new `init` step creates idempotently and atomically, so no tenant needs a migration and no host carries a tenant it does not host. Done first: Plan 510 and Plan 268 T8 build on it.
-risk: high   # a new step in every deployment's `init`, configuration schema, compose wiring (docs/workflow.md § High-risk work)
+risk: high   # a new step in every deployment's `init`, configuration schema, compose wiring (retired workflow § High-risk work)
 depends_on: [147]
 blocks: [510]
 related: [268, 269, 512]

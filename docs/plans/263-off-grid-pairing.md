@@ -110,7 +110,7 @@ at all is an owner decision this plan must put.**
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)).
 
 ### T1 — settle D1–D5
 
@@ -140,7 +140,6 @@ pairing as unspecified.
 ## Exit gates
 
 ```bash
-uv run python scripts/check_readiness.py docs/plans/263-off-grid-pairing.md
 ```
 
 1. **Every one of D1–D5 is answered**, none deferred to implementation.

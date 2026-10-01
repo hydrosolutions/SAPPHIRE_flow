@@ -420,7 +420,7 @@ uv run pyright
 uv run pytest tests/unit -q
 ```
 
-### Documentation (part of T2's exit, per `docs/workflow.md` § Task Exit Gate)
+### Documentation (part of T2's exit, per [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Task Exit Gate)
 - `docs/deployment/mac-mini-staging.md` — the watchdog's probe list (the
   `ch.hydrosolutions.sapphire-watchdog` paragraph, ~line 305) gains the stuck-flow-run check; the
   SSH-tunnel block (~line 420) still forwards 4200, which the staging overlay does **not** publish

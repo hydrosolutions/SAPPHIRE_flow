@@ -228,7 +228,7 @@ expected outcome for, at minimum:
 Predicting only the failure table is NOT sufficient — a spec using one expected set per feature class
 predicts all three of those rows correctly and still fails the Seasonal case.
 
-Follow `docs/workflow.md`'s task shape for a non-trivial task: outcome, bounded in/out scope, exact
+Follow [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)'s task shape for a non-trivial task: outcome, bounded in/out scope, exact
 verification, and pre-change evidence.
 
 ## T0 DELIVERABLE — the resolution check, specified (2026-09-04)
@@ -496,7 +496,7 @@ an explicit `<30` marker on the stored row** — not sample-size data, and not a
 general.
 
 **On sequencing:** T2 shares no mechanism with T0/T1 and is not blocked by them. It is still a task
-in a DRAFT plan, so it needs the owner's READY like anything else (`docs/workflow.md`), and T3 below
+in a DRAFT plan, so it needs the owner's READY like anything else ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)), and T3 below
 is split so T2's docs do not wait on T1.
 
 ### T3a — docs for T2 (with T2, not after T1)

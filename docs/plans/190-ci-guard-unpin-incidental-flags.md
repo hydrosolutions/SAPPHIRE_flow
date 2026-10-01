@@ -14,7 +14,7 @@ source: observed CI failure on d532a130, 4ae7cf82, e74e3e1c (2026-08-18/19)
 
 > ⚠️ **Status normalised 2026-09-08.** The `status:` field previously held a whole sentence —
 > *"MOSTLY-SUPERSEDED — T1 and T4 landed on main via a parallel session; only T2 remains"* — which is
-> the only machine-readable status source (`docs/workflow.md` § Plan status vocabulary) and is not a
+> the only machine-readable status source ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Plan status vocabulary) and is not a
 > free-text field. The state it described is exactly `PARTIAL`: **T1 and T4 landed on main via a
 > parallel session; only T2 remains, and it needs renewed owner approval.** Nothing about the plan
 > changed; the sentence moved here.

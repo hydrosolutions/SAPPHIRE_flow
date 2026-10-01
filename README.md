@@ -29,7 +29,7 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 > deployment".** Owner rulings:
 > [2026-09-10](docs/plans/264-qc-rules-select-on-network.md) (*"the Swiss deployment is a sandbox,
 > not production"*; that framing *"overstated"*) and 2026-09-23. The risk triggers in
-> [the workflow guide](docs/workflow.md) still apply on their own merits — a migration is still a
+> [the project safeguards](AGENTS.md#agent-skills-and-project-safeguards) still apply on their own merits — a migration is still a
 > migration — but the deployment being live is not one of them.
 >
 > ⚠️ **Two qualifications, so this is not read wider than it is.** *(a)* Quality-control flags are
@@ -70,7 +70,7 @@ All contributions adhere to the standards below. Read the relevant one before wo
 on its subsystem:
 
 - [Conventions](docs/conventions.md) — naming, patterns, error handling
-- [Workflow](docs/workflow.md) — orchestration protocol, plan structure, task exit gates
+- [Agent guidelines](AGENTS.md) — global-skill policy and project safeguards
 - [Type & Protocol spec](docs/spec/types-and-protocols.md) — authoritative type definitions
 - [CI/CD](docs/standards/cicd.md) — Docker topology, named volumes, health checks, deployment
 - [Security](docs/standards/security.md) — secrets, container hardening, auth, OWASP

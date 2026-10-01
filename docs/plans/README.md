@@ -1,7 +1,14 @@
 # SAPPHIRE Flow — Plan Index
 
-Maintained by hand — update whenever a plan's status changes, a new plan is added,
-or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
+Historical and current design index. Agent execution follows the globally installed
+skills and current user instructions; see `../../AGENTS.md`. Legacy orchestrator
+roles, READY gates and workflow citations below are historical, not agent instructions.
+Technical prerequisites, scientific decisions and owner approval boundaries still apply.
+Update entries when their recorded status or implementation evidence changes.
+Historical workflow citations (including archived plans) can be read in the
+[retired workflow at the last pre-removal revision](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md).
+The retired `check_readiness.py` helper and its former command examples are historical,
+not implementation prerequisites; they are available at the same revision.
 
 - ⚠️ **273** — [Nepal illustrative backend export](273-nepal-flow-map-demo-handoff.md) — `status: COMPLETE` **but NOT MERGED** — `feat/nepal-demo-export` is still unmerged into `main` (verified 2026-09-24), so it stays OUT of `archive/`. ⛔ *A plan reading COMPLETE for work that is not on `main` is the same hazard as one reading READY after merge, in the other direction.* Original note: reviewed v2 multi-cycle backend on `feat/nepal-demo-export`, 6311 regression tests passed (51 skipped, 15 deselected); ready for frontend import (not merged).
 - **340** — [Immutable forecast evidence capture](340-forecast-evidence-capture.md) — `PARTIAL`; T1 capture, T2 backup/restore tooling and T3 handoff merged in PRs #306, #311 and #312. DHM protected-target configuration and Nepal-sized backup/restore proof remain open; CHWRR publication stays disabled.
@@ -23,8 +30,8 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 
 YAML `status:` frontmatter is the only machine-readable status source for active
 plans in `docs/plans/`. The canonical active statuses are `DRAFT`, `READY`,
-`BLOCKED`, `DEFERRED`, `PARTIAL`, `SUPERSEDED`, and `COMPLETE`. Only `READY` is
-implementable. A missing active YAML status is reported as `NONE`, never inferred
+`BLOCKED`, `DEFERRED`, `PARTIAL`, `SUPERSEDED`, and `COMPLETE`. These labels describe
+recorded plan state; they are not a separate agent authorization gate. A missing active YAML status is reported as `NONE`, never inferred
 from body prose. Do not use `IN_PROGRESS` or `DONE` as active-plan statuses;
 execution progress belongs to the branch, run, or PR.
 
@@ -52,12 +59,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Writing new plans
 
-Plan tasks are the single completion ledger. Every non-trivial task states an
-observable **Outcome**, bounded **In / Out**, exact **Verification**, and—when
-behavior changes—the **Pre-change** failure that the same evidence exposes. Use
-`N/A` only for documentation, mechanical, or integration/gate tasks and say why.
-Do not add a separate acceptance-map table or persistent run-state file.
-
+Use the invoked global skill for planning and delivery. Keep the design, its scope,
+technical prerequisites and verification evidence clear; this index does not define
+an additional agent workflow.
 
 ## Nepal observation integration
 

@@ -4,7 +4,7 @@ created: 2026-09-26
 plan: 401
 title: A reviewer access token for the review dashboards — read everything a review needs, for one client's stations, write nothing
 scope: Add a third HTTP access-token role, `reviewer`, for the dashboards we use to review our forecast products (the BAFU/Swiss dashboard, the Nepal dashboard). A reviewer token is GET-only and tenant-bound and scoped exactly like a consumer token, and additionally reaches routes classified REVIEW (the first two arrive with Plan 402). Includes the role, the database constraint change, the auth dependency, CLI issuance, the route-classification test, the rollback procedure and the documents. NOT publishing or any other write (tokens stay GET-only — publishing is a named person's act, Plan 341); NOT access to unpublished forecasts where Plan 341's gate is active (341 decides); NOT human sign-in, sessions or MFA; NOT opening any existing admin-only route to reviewers; NOT changing what consumer or admin tokens can do (T2 only aligns one out-of-scope error message, which revealed only an out-of-scope forecast's existence).
-risk: high   # security/auth + migration (docs/workflow.md § High-risk work)
+risk: high   # security/auth + migration (retired workflow § High-risk work)
 depends_on: []
 blocks: [402, 404]
 related: [042, 147, 215, 268, 341, 402, 404]
@@ -20,7 +20,7 @@ source: 2026-09-26 — owner, while reviewing Plan 402: "could we have a special
 **READY — HIGH RISK.** Set 2026-09-26 by the orchestrator session on the owner's instruction,
 after the ordinary Claude + Codex rounds, the owner-commissioned security review, and a final check
 of the exact text (Claude and Codex both clean on `296f20a6`). High risk (authentication and a
-migration, `docs/workflow.md` § High-risk work): the implementation PR needs one more
+migration, [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § High-risk work): the implementation PR needs one more
 owner-commissioned review before it is opened. All decisions are closed.
 
 ## Why this exists
@@ -143,7 +143,7 @@ this plan's; if it is moved, the Nepal token needs no change.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Task Exit Gate).
 
 ### T1 — the role, its invariants, the migration and the rollback procedure
 
@@ -296,7 +296,6 @@ default (`341:32,34,52,114`), and **each In-listed location is changed in the br
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/401-reviewer-access-token-role.md
 ```
 
 After staging deploy (orchestrator): run the migration; create one reviewer token with

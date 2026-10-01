@@ -4,7 +4,7 @@ created: 2026-09-30
 plan: 518
 title: Artifact + warm-start provenance are written atomically — a failed provenance write leaves no half-stored artifact
 scope: Move the warm-start provenance INSERT of a retrain into the same real database transaction as the artifact INSERT (extend the Plan 147 Slice E audited-writer seam), delete the weights file when that transaction rolls back, pin it with red-first real-Postgres tests, and correct the docs that say atomicity is not claimed. Basin lineage is decided explicitly (kept out, rationale corrected). The existing orphan on the mini is a separate owner-approved hand step, not code.
-risk: medium   # NOT high-risk by the docs/workflow.md criteria — see D8; the owner may still flag it
+risk: medium   # NOT high-risk by the retired workflow criteria — see D8; the owner may still flag it
 related: [399, 405, 147, 120, 157, 350, 514, 517, 323]
 open_decisions: [Q1, Q2, Q3, Q4]
 ---
@@ -13,7 +13,7 @@ open_decisions: [Q1, Q2, Q3, Q4]
 
 ## Status
 
-**DRAFT.** Only the orchestrator sets READY, after independent review (one Claude, one Codex; mandatory).
+**DRAFT.** Follow the global skill and `AGENTS.md`; required independent review still applies.
 Nothing here touches a host or a database; T6 (the existing orphan) is an operational hand step the owner decides.
 
 ## Why
@@ -65,7 +65,7 @@ are separate commits, so **any** failure of the second leaves the first committe
 | D5 | **Retrain (`promote=False`) only.** A fresh train (`promote=True`) has no donor and records nothing (Plan 399 T4); its path keeps store + promote + audit exactly as today, but **gains the same file cleanup** because the audit-insert-failure case leaks the file today (T3 measures it). | Same cleanup, no new write. |
 | D6 | **Fake / `audited_writer is None` path: explicitly exempt from database atomicity, but still fails loudly.** Fakes have no transactions. The flow keeps calling the injected `warm_start_writer.record(...)` after the store; a raise from it propagates. A unit test pins that. Production cannot reach this path: `audited_writer` is built whenever `_conn` exists. | Reusing `model_import`'s `_InMemoryAuditedWriter` would drag a second snapshot mechanism into the train flow for no production benefit. |
 | D7 | **Basin lineage stays out of this plan; its stale rationale is corrected.** See "Lineage decision". | Different failure semantics and a second flow (`onboard`) share it. |
-| D8 | **Not high-risk** (ordinary pair; owner may flag otherwise). Criteria checked: no auth/secrets/privilege change; no migration; no external contract or API change; no Prefect scheduling or entrypoint change; no ForecastInterface boundary change; no scientific behaviour change. The seam is shared with promote/audit (Plan 147), but the change to it is one **added key** in `make_audited_stores`; the promote path's statements are untouched. The new file deletion is bound to the path this call just wrote. That the mini runs it is not grounds (workflow.md). | Judge by what the change does. |
+| D8 | **Not high-risk** (ordinary pair; owner may flag otherwise). Criteria checked: no auth/secrets/privilege change; no migration; no external contract or API change; no Prefect scheduling or entrypoint change; no ForecastInterface boundary change; no scientific behaviour change. The seam is shared with promote/audit (Plan 147), but the change to it is one **added key** in `make_audited_stores`; the promote path's statements are untouched. The new file deletion is bound to the path this call just wrote. That the mini runs it is not grounds (retired workflow). | Judge by what the change does. |
 | D9 | **Per-unit failure policy is unchanged.** The store call is outside the per-unit training guard, so a provenance failure aborts the run. Kept: it is loud. T1 confirms this from the code. | Not a new decision. |
 
 ## Lineage decision (Plan 120 `_record_lineage_task`)

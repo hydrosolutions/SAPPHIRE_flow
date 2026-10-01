@@ -4,7 +4,7 @@ created: 2026-09-26
 plan: 404
 title: Keep the member and group forecasts that QC rejects — in their own record, never as a forecast
 scope: Record every station (member) or group-station forecast whose forecast QC verdict is `qc_failed` — its values, units, cadence and every parameter's flags — in a separate rejected-forecast record, not in the `forecasts` table, and serve it through one `/api/v1` route open to reviewer and admin service tokens and to named humans with a station review grant, so the flow map can show what forecast QC rejected and why. Where Plan 341's publication gate is active for a tenant, a reviewer token sees which rule rejected a forecast but not its values. The forecast cycle's behaviour is otherwise unchanged — fallback, alerting, combination, model state, re-runs (Plans 327/328), the freshness heartbeat and every reader of `forecasts` see exactly what they see today. NOT any change to forecast QC rules, thresholds or verdicts; NOT combined forecasts (already stored failed, Plan 253 OD-1); NOT hindcasts; NOT backfilling earlier rejections; NOT publishing or alerting on a rejected forecast.
-risk: high   # new table + migration, live-database writes, external-facing route (docs/workflow.md § High-risk work)
+risk: high   # new table + migration, live-database writes, external-facing route (retired workflow § High-risk work)
 depends_on: [401, 402]
 blocks: []
 related: [251, 253, 327, 328, 340, 341]
@@ -23,7 +23,7 @@ human principal merged, so the route also admits a named human, from the browser
 2026-09-28); that change went through three independent Claude + Codex pairs the owner asked for (the
 last: Codex clean; Claude's minors folded, and focused Codex checks clean on `fd914ae6`). The
 forecast-cycle design (D1-D6) is unchanged since its data- and forecast-cycle-safety review. High risk
-(a new table, live writes from the forecast cycle and an external-facing route, `docs/workflow.md`
+(a new table, live writes from the forecast cycle and an external-facing route, [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)
 § High-risk work): the implementation PR needs one more owner-commissioned review before it is
 opened. Depends on Plan 401 (merged, #320) and Plan 402 (READY, not yet built). All decisions
 (D1-D6) are closed.
@@ -178,7 +178,7 @@ ceiling (`limit` default 20, ≤ 50, since each item carries a full ensemble), e
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Task Exit Gate).
 
 ### T1 — the table and its store
 
@@ -443,7 +443,6 @@ logs it, because it is optional diagnostics written after the run's real outputs
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/404-store-qc-rejected-member-forecasts.md
 ```
 
 After staging deploy (orchestrator):

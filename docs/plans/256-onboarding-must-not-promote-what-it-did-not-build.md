@@ -234,7 +234,7 @@ live write. **Plan 260** owns the remediation and is blocked on this.
 
 An inconclusive result is acceptable **only** if it records every query, its result, and the
 hypotheses thereby eliminated. "Could not be determined" with no evidence is not an outcome — an
-earlier draft admitted this task could not fail, which `docs/workflow.md:20` forbids.
+earlier draft admitted this task could not fail, which [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) forbids.
 
 **Pre-change.** N/A — investigation task.
 

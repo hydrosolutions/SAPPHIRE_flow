@@ -1,95 +1,42 @@
-"""Source-regression checks for the durable workflow policy."""
-
-from __future__ import annotations
+"""Guard the single instruction source and project safeguards."""
 
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_POLICY_DOCS = (
-    _REPO_ROOT / "AGENTS.md",
-    _REPO_ROOT / "docs/workflow.md",
-)
-_WORKFLOW = _POLICY_DOCS[-1]
-_PLAN_INDEX = _REPO_ROOT / "docs/plans/README.md"
-_CANONICAL_STATUSES = (
-    "DRAFT",
-    "READY",
-    "BLOCKED",
-    "DEFERRED",
-    "PARTIAL",
-    "SUPERSEDED",
-    "COMPLETE",
-)
-_DRAFT_POLICY = (
-    "Planning and independent-review agents may read a DRAFT plan, but "
-    "implementation agents may not execute it."
-)
-_READY_POLICY = (
-    "The ORCHESTRATOR sets `status: READY` after at least one independent review "
-    "is complete (delegated by the owner 2026-09-17); no other agent may."
-)
-_SUPERSEDED_READY_POLICIES = (
-    "Only the human owner sets READY",
-    "owner-confirmed and available for implementation",
-    "awaiting owner confirmation",
-)
-_TAGGING_POLICY = (
-    "Every code commit includes a patch version bump. "
-    "Never create a tag on a feature branch.\n"
-    "On pushes to `main`, `.github/workflows/tag-main.yml` creates the version "
-    "tag when absent."
-)
-
-
-def _read(path: Path) -> str:
-    return path.read_text()
 
 
 def _normalized(path: Path) -> str:
-    return " ".join(_read(path).replace("**", "").split())
+    return " ".join(path.read_text().replace("**", "").split())
 
 
-def _section(text: str, start: str, end: str) -> str:
-    return text.split(start, maxsplit=1)[1].split(end, maxsplit=1)[0]
+class TestAgentInstructionPolicy:
+    def test_workflow_comes_from_global_skills(self) -> None:
+        guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
-
-class TestPlanReadinessPolicy:
-    def test_draft_is_reviewable_but_not_implementable(self) -> None:
-        for path in _POLICY_DOCS:
-            assert _DRAFT_POLICY in _normalized(path)
-
-    def test_orchestrator_sets_ready_after_independent_review(self) -> None:
-        for path in _POLICY_DOCS:
-            assert _READY_POLICY in _normalized(path)
-
-    def test_superseded_ready_wording_is_absent(self) -> None:
-        for path in _POLICY_DOCS:
-            normalized_text = _normalized(path)
-
-            for stale_policy in _SUPERSEDED_READY_POLICIES:
-                assert stale_policy not in normalized_text
-
-
-class TestActiveStatusPolicy:
-    def test_workflow_and_index_name_the_same_statuses(self) -> None:
-        workflow_section = _section(
-            _read(_WORKFLOW), "### Plan status vocabulary", "## Multi-Model Review"
+        assert (
+            "Agent workflows come from the globally installed PCE skills." in guidelines
         )
-        index_section = _section(
-            _read(_PLAN_INDEX), "## Status convention", "## Archived by"
-        )
+        assert not (_REPO_ROOT / "docs/workflow.md").exists()
+        assert not (_REPO_ROOT / "scripts/check_readiness.py").exists()
+        assert "The ORCHESTRATOR sets" not in guidelines
+        assert "## Plan Readiness" not in guidelines
 
-        for section in (workflow_section, index_section):
-            for status in _CANONICAL_STATUSES:
-                assert f"`{status}`" in section
-            assert (
-                "Do not use `IN_PROGRESS` or `DONE` as active-plan statuses" in section
-            )
-            assert "`ARCHIVED` is a location, not an active status" in section
-            assert "missing active YAML status is reported as `NONE`" in section
+    def test_owner_retains_approval_and_merge_authority(self) -> None:
+        guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
+
+        assert "the human owner approves and merges every PR" in guidelines
+        assert "No agent merges." in guidelines
+        assert "owner-commissioned relevant independent review" in guidelines
 
 
 class TestTaggingPolicy:
-    def test_policy_documents_delegate_tagging_to_main_workflow(self) -> None:
-        for path in _POLICY_DOCS:
-            assert " ".join(_TAGGING_POLICY.split()) in _normalized(path)
+    def test_tagging_is_delegated_to_main_workflow(self) -> None:
+        guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
+        policy = (
+            "Every code commit includes a patch version bump. "
+            "Never create a tag on a feature branch. "
+            "On pushes to `main`, `.github/workflows/tag-main.yml` creates the version "
+            "tag when absent."
+        )
+
+        assert policy in guidelines

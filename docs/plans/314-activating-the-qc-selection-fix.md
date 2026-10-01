@@ -23,7 +23,7 @@ both decisions after the work they govern.)*
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+**DRAFT.** Follow the global skill and `AGENTS.md`; required independent review still applies.
 
 🛑 **PREMISE SUSPENDED for this iteration — owner, 2026-09-23** (`docs/v1-scope.md` § QC posture).
 This plan exists to make activation safe on a live system. The owner has since recorded that
@@ -41,7 +41,7 @@ exist in that setting.**
 **This plan becomes relevant again when the data becomes operational.** Until then it is a
 placeholder for that moment, not work to schedule.
 
-⚠️ **High-risk work** (`docs/workflow.md`): it changes scientific behaviour on the live Swiss
+⚠️ **High-risk work** ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)): it changes scientific behaviour on the live Swiss
 deployment, so it needs a relevant independent review in ADDITION to the ordinary Claude/Codex
 pair, on the exact state that will land.
 

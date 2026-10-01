@@ -20,7 +20,7 @@ source: 2026-09-24 owner — every warning candidate needs an attributed publish
 
 ## Status and scope
 
-**DRAFT — not implementable.** This plan takes the alert-evaluation and warning-decision work out of the former combined Plan 340. It depends on Plan 340's as-used forecast evidence and Plan 341's human principal, selected forecast publication and durable publication event. It does not send email/Slack, generate CAP, edit thresholds/models/QC rules, implement a bulletin, or build `sapphire-flow-map`. Operational warning behavior, storage and API authorization make it high-risk under `docs/workflow.md`.
+**DRAFT — not implementable.** This plan takes the alert-evaluation and warning-decision work out of the former combined Plan 340. It depends on Plan 340's as-used forecast evidence and Plan 341's human principal, selected forecast publication and durable publication event. It does not send email/Slack, generate CAP, edit thresholds/models/QC rules, implement a bulletin, or build `sapphire-flow-map`. Operational warning behavior, storage and API authorization make it high-risk under [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md).
 
 The existing `alerts` table is a mutable active projection with `raised | acknowledged | resolved`; repeated triggers can replace detection or acknowledgement fields (`store/alert_store.py`). The existing `POST /api/v1/alerts/{id}/acknowledge` returns 501. Those states are not a hydrologist's publication judgment. New evaluation and decision history must be keyed to a specific cycle and kept separately.
 

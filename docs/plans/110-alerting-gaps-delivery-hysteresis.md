@@ -25,7 +25,7 @@ authenticated, human-publication-gated API only. Webhook delivery is a later opt
 disabled for the MVP; email/Slack distribution is not an MVP backend promise. This DRAFT records
 delivery and hysteresis gaps but is not an implementation-ready phase plan. Before later delivery
 work reaches READY, decide recipients/channel behavior and rewrite it with bounded tasks,
-verification and a dependency graph under `docs/workflow.md`.
+verification and a dependency graph under [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md).
 
 > Three gaps the Alerting map documents as current behaviour. Each needs an owner
 > decision: implement, or deliberately defer + record it. Grouped because they are the
