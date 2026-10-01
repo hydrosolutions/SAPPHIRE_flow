@@ -1358,3 +1358,36 @@ rather than infer source from today's config; there is currently no authoring/se
 workflow. Pydantic boundary ValidationError text can include protected payloads too.
 Future public or scheduled wiring must project safe errors instead of logging/returning
 raw validation/driver exceptions. These remain explicit holds, not completed safeguards.
+
+
+### Dormant forecast data-use partition
+
+Migration `0069` refuses every `expired_rating_test` forecast INSERT at PostgreSQL,
+including owner SQL and COPY under normal execution (not deliberate DBA guard
+disabling). `data_use` and consumed lineage cannot be changed by
+UPDATE. No output enable flag, session override or runtime/operator grant is added.
+The provisional-input permission does not attest output deployment compatibility.
+A separate reviewed rollout must replace the unconditional guard, close ordinary
+raw-SQL/publication/alert/state readers and authorize the required narrow join writes.
+Ordinary PgForecastStore reads are class-bound, but `forecasts.input_lineage` still
+inherits table-wide runtime SELECT and generic forecast-table browser visibility.
+The protected join exclusion does not redact this column. The column contains no
+TEST payload while the INSERT refusal is deployed. T1d must close these inherited
+raw-column/browser readers **before activation**; this slice does not deliver that
+closure.
+Synthetic disposable structural tests may remove only the refusal trigger transactionally;
+this is test setup, never an operator activation procedure.
+
+Role bootstrap excludes `forecast_input_stations` from catalog runtime SELECT and
+revokes its stale table/column ACLs in the existing early safe-state block, including
+on later preflight failure. Backup SELECT is preserved. Generic table-browser inventory,
+detail and rows never admit this relation. Combined contributor evidence checks use
+the store's purpose; other-class evidence is unavailable, not implicitly trusted.
+SQL snapshot checks are bounded structure/identity checks; strict canonical parsing
+remains a type/store obligation. Review any future direct writer before activation.
+
+The `types/forecast_lineage.py` snapshot/decode ValueError path can include Pydantic
+ValidationError text with protected `input_value` fragments (including delivery IDs
+and consumed values). Safe error projection for this exact path remains a preactivation
+wiring hold: future public/scheduled writers must not log or return raw parser/driver
+exceptions. This documentation does not add sanitizer behavior or authorize exposure.

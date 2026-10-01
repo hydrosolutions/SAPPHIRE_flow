@@ -8,8 +8,12 @@ if TYPE_CHECKING:
 import pytest
 import sqlalchemy as sa
 
-from tests.integration.db.test_migration_provisional_discharge import TABLES
+from tests.integration.db.test_migration_provisional_discharge import (
+    TABLES as PROVISIONAL_TABLES,
+)
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
+
+TABLES = (*PROVISIONAL_TABLES, "forecast_input_stations")
 
 
 class TestProvisionalDischargeRoleBoundary:
@@ -266,3 +270,61 @@ class TestProvisionalDischargeRoleBoundary:
                         f"public.provisional_discharge_permissions FROM {role}"
                     )
                 )
+
+    @pytest.mark.parametrize("abort", [False, True])
+    @pytest.mark.parametrize("grantee", ["sapphire_api", "sapphire_worker", "PUBLIC"])
+    def test_lineage_stale_acl_revoked_even_before_failed_preflight(
+        self, role_harness: _RoleBootstrapHarness, abort: bool, grantee: str
+    ) -> None:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "GRANT SELECT, INSERT, UPDATE ON forecast_input_stations "
+                    f"TO {grantee}"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    "GRANT SELECT(station_id), INSERT(station_id), "
+                    "UPDATE(station_id) ON forecast_input_stations "
+                    f"TO {grantee}"
+                )
+            )
+            if abort:
+                conn.execute(
+                    sa.text("CREATE TABLE public.lineage_bootstrap_abort (id integer)")
+                )
+                conn.execute(
+                    sa.text(
+                        "ALTER TABLE public.lineage_bootstrap_abort "
+                        "OWNER TO sapphire_backup"
+                    )
+                )
+        try:
+            result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+            assert (result.returncode != 0) == abort, result.stderr
+            for role, password in (
+                ("sapphire_api", "api-fixture"),
+                ("sapphire_worker", "worker-fixture"),
+            ):
+                url = role_harness.role_url(role, password)
+                assert role_harness.denied(
+                    url, "SELECT station_id FROM forecast_input_stations"
+                )
+                assert role_harness.denied(
+                    url,
+                    "INSERT INTO forecast_input_stations (station_id) VALUES (NULL)",
+                )
+            with role_harness.owner_engine.connect() as conn:
+                assert conn.scalar(
+                    sa.text(
+                        "SELECT has_table_privilege('sapphire_backup', "
+                        "'forecast_input_stations', 'SELECT')"
+                    )
+                )
+        finally:
+            if abort:
+                with role_harness.owner_engine.begin() as conn:
+                    conn.execute(sa.text("DROP TABLE public.lineage_bootstrap_abort"))

@@ -7,7 +7,9 @@ import sqlalchemy as sa
 
 from sapphire_flow.api.routes import tables
 from tests.integration.api.test_dashboard_forecasts import _client, app_overrides_clear
-from tests.integration.db.test_migration_provisional_discharge import TABLES
+from tests.integration.db.test_migration_provisional_discharge import (
+    TABLES as PROVISIONAL_TABLES,
+)
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
 from tests.integration.store.test_provisional_discharge_store import seed
 
@@ -15,6 +17,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
+
+
+TABLES = (*PROVISIONAL_TABLES, "forecast_input_stations")
 
 
 @pytest.fixture

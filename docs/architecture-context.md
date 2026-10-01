@@ -151,7 +151,13 @@ Three different things get called *"retry"*, and they are not variants of one fe
 | **(b)** | **Re-issue a corrected forecast** for an issue time already answered — a bad input was fixed, a model was repaired | ✅ **Yes, for rows 1 and 2 of the table below** (Plan 328). The stored forecast is marked `superseded` and the replacement written in one transaction; the original stays on record with its values and its evidence. ⛔ **Row 3 is not included and stays refused** |
 | **(c)** | **Overwrite silently**, newest wins | ⛔ **Forbidden — permanently, not "until the lifecycle is live".** Alerts fire on the freshly computed in-memory ensemble while the table would keep the old row, so a silent overwrite makes what we KEEP and what we ACT ON diverge with no trace. A published forecast raises the stakes; it is not what creates the problem |
 
-**Same key does not mean same content.** `(station_id, model_id, issued_at, parameter)` says nothing about the inputs, the artifact, the configuration or the output — a re-run after a model repair produces a *different* forecast under the *same* key. `ON CONFLICT DO NOTHING` would therefore silently conceal the repair. A re-run that meets an existing forecast is classified by the table below, **evaluated in order, first match wins** (`services/forecast_retry.py::classify_forecast_retry`):
+**Same key does not mean same content.** `(station_id, model_id, issued_at, parameter, data_use)` says nothing about the inputs, the artifact, the configuration or the output — a re-run after a model repair produces a *different* forecast under the *same* key. `ON CONFLICT DO NOTHING` would therefore silently conceal the repair. A re-run that meets an existing forecast is classified by the table below, **evaluated in order, first match wins** (`services/forecast_retry.py::classify_forecast_retry`):
+
+This table describes STANDARD retries. The class-local key includes `data_use` since
+migration `0069`; the store is bound to one purpose (STANDARD by default). For the
+TEST-only lineage check and its exact ordering, see the [Plan 327 data-use
+amendment](plans/327-a-forecast-cycle-cannot-be-re-run.md). TEST insertion remains
+disabled; this does not widen publication or downstream reader eligibility.
 
 | # | condition | outcome |
 |---|---|---|
@@ -1951,6 +1957,8 @@ forecasts:
   model_id: TEXT FK                          # entry point name → models.id
   model_artifact_id: UUID FK → model_artifacts.id  # which trained artifact produced this forecast
   issued_at: TIMESTAMPTZ                     # forecast issue time
+  data_use: TEXT NOT NULL DEFAULT 'standard'  # immutable purpose; not validity
+  input_lineage: TEXT NULL                   # required for TEST, absent for STANDARD
   nwp_cycle_reference_time: TIMESTAMPTZ      # which NWP cycle produced the forcing
   nwp_cycle_source: TEXT NOT NULL DEFAULT 'primary'  # CHECK ('primary'|'fallback')
   representation: TEXT                       # "members" or "quantiles"
@@ -1970,7 +1978,7 @@ forecasts:
   updated_at: TIMESTAMPTZ
 ```
 
-Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at, parameter) WHERE status != 'superseded'` to prevent duplicate forecasts per cycle. `(rating_curve_id)` for curve→forecast joins (v1).
+Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at, parameter, data_use) WHERE status != 'superseded'` to prevent duplicate forecasts per cycle. `(rating_curve_id)` for curve→forecast joins (v1).
 
 ### `forecast_values` table
 

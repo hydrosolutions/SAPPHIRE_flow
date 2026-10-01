@@ -296,14 +296,15 @@ REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_api, sapphire_worker;
 
--- Protected provisional tables never join the runtime grant set. Strip stale
+-- Protected input/provenance tables never join the runtime grant set. Strip stale
 -- table AND column ACLs before any grants or later backup preflight can fail.
 -- Keep the operator safe-state block first; do not move work ahead of it.
 DO $$
 DECLARE t text; r text; cols text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
-                            'rating_reference_proofs', 'provisional_discharges'] LOOP
+                            'rating_reference_proofs', 'provisional_discharges',
+                            'forecast_input_stations'] LOOP
         SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
         WHERE attrelid = to_regclass('public.' || t) AND attnum > 0 AND NOT attisdropped;
         FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
@@ -335,7 +336,7 @@ GRANT CONNECT ON DATABASE sapphire TO sapphire_api, sapphire_worker;
 -- prefect-server connects as the owner (unchanged by this slice).
 REVOKE CONNECT ON DATABASE prefect FROM PUBLIC;
 
--- Runtime reads cover ordinary domain tables, but NEVER protected provisional
+-- Runtime reads cover ordinary domain tables, but NEVER protected input/provenance
 -- content. Do not grant everything and revoke later: psql autocommits, and a
 -- later preflight failure would leave protected measurements readable.
 -- r/p/v/m/f matches ALL TABLES: ordinary/partitioned tables, views, materialized
@@ -346,7 +347,8 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND c.relname NOT IN ('provisional_discharge_permissions', 'measurement_feed_evidence',
-                       'rating_reference_proofs', 'provisional_discharges')
+                       'rating_reference_proofs', 'provisional_discharges',
+                       'forecast_input_stations')
 ORDER BY c.relname
 \gexec
 

@@ -51,7 +51,7 @@ class DeliveryCurveDependencyError(ValueError):
 
 class ForecastRetryConflictError(SapphireError):
     """Plan 327 — a forecast cycle re-run met an existing forecast under the
-    same natural key ``(station_id, model_id, issued_at, parameter)`` and the
+    same class-local key (see Plan 327's forecast-data-use amendment) and the
     recomputation matched decision-table ROW 3 (values and artifact equal, QC
     verdict differs): the one row nobody has decided how to treat.
 

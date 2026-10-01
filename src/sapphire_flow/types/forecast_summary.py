@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import ForecastDataUse
+
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import InputQualityFlag, QcFlag
@@ -28,6 +30,7 @@ class ForecastSummaryRow:
     qc_status: QcStatus
     nwp_cycle_source: NwpCycleSource
     created_at: UtcDatetime
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
     input_quality: InputQualityLevel | None = None
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     # Plan 402 T3: the forecast's QC flags — [] when none, distinct from

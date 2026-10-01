@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from sapphire_flow.types.enums import InputQualityLevel, QcStatus
+from sapphire_flow.types.enums import ForecastDataUse, InputQualityLevel, QcStatus
+from sapphire_flow.types.forecast_lineage import ForecastInputLineage
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -79,6 +80,17 @@ class OperationalForecast:
     Set at forecast-storage time by Task 4; Task 2 only plumbs the column.
     """
     evidence: ForecastEvidence | None = None
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(cast("object", self.data_use), ForecastDataUse):
+            raise ValueError("forecast data use must be typed")
+        if self.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+            if not isinstance(self.input_lineage, ForecastInputLineage):
+                raise ValueError("test forecast requires input lineage")
+        elif self.input_lineage is not None:
+            raise ValueError("standard forecast cannot carry test input lineage")
 
     @property
     def provenance(self) -> ForecastProvenance:

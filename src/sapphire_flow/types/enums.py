@@ -15,6 +15,11 @@ class QcStatus(Enum):
     QC_UNCHECKED = "qc_unchecked"
 
 
+class ForecastDataUse(Enum):
+    STANDARD = "standard"
+    EXPIRED_RATING_TEST = "expired_rating_test"
+
+
 class ForecastStatus(Enum):
     RAW = "raw"
     REVIEWED = "reviewed"

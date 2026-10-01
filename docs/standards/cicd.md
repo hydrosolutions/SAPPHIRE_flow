@@ -1660,3 +1660,12 @@ refused by both the append store and SQL guards; do not retry under owner creden
 or change isolation to bypass another safety hold. Future nonowner writer setup must
 review the source-table privileges required by TABLE SHARE/FOR SHARE separately.
 No additional grant or live execution path is provided by this migration.
+
+
+Revision `0069` also protects the forecast input-station lineage join. Role bootstrap
+keeps `forecast_input_stations` in the existing early table/column ACL revocation and
+catalog SELECT exclusion sets, after operator safe-state and before backup preflight.
+Rebootstrap must preserve denial even with stale PUBLIC column grants and a failed
+later preflight. Backup-role SELECT remains unchanged. The generic database browser
+excludes the join from inventory, detail and rows. No TEST writer or runtime grant is
+enabled by this migration; normal owner SQL/COPY still hits the deployed refusal.
