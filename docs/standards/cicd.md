@@ -1523,3 +1523,42 @@ activation, measure a six-station run and restore on the DHM target, and confirm
 that the daily interval clears the expected backlog. An individual forecast may still be published
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
+
+## Dormant provisional-discharge migration
+
+Revision `0068` creates separate protected measurement/feed/reference/conversion
+relations. It seeds no permission or provisional values. Normal workers and the API
+remain unwired and cannot read or write protected content. Keep this path disabled:
+the full reader inventory, compatible rollback inventory, proof-recording authority
+and activation command are not implemented. The existing delivery operator remains
+delivery-only; do not borrow its credential or the migration owner credential for
+conversion jobs. No deployment or live grant is authorized by these schema changes.
+
+Downgrade refuses if **any** protected relation has rows, including reference proofs
+or a permission record. It never deletes evidence to permit rollback. Empty-schema
+roundtrip tests use disposable PostGIS16. Protected data belongs to the existing
+restricted backup/retention boundary. Future activation still needs the full reviewed
+inventory and rollback policy; a successful migration or fixture conversion proves
+neither activation readiness nor forecast delivery.
+
+Runtime bootstrap grants SELECT only to ordinary public table/view relations;
+protected provisional relations never receive transient blanket grants. Protected
+stale table/column ACLs are removed during runtime convergence, before later backup
+preflights. A deliberate backup-ownership abort is tested with real API/worker
+sessions and a committed protected canary. The existing operator safe-state block
+remains first. A failed bootstrap still fails deployment; denied protected access
+is not permission to continue starting services after that failure.
+
+A gate's only permitted state change is table-owner-session enabled→disabled with
+all metadata unchanged. It is a fail-closed stop, not activation authority: no runtime
+write grant, enable command, re-enable update or permission deletion is added.
+Disable and append serialize through a tenant transaction advisory lock. Owner SQL
+errors can include protected bound values; do not publish raw database diagnostics.
+Protected FK dependencies block delivery deletion/replacement and must not be
+removed by cascading deletes. Full future activation/audit/rollback work remains held.
+
+Protected writes require READ COMMITTED transactions. Fixed-snapshot levels are
+refused by both the append store and SQL guards; do not retry under owner credentials
+or change isolation to bypass another safety hold. Future nonowner writer setup must
+review the source-table privileges required by TABLE SHARE/FOR SHARE separately.
+No additional grant or live execution path is provided by this migration.
