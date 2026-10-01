@@ -1556,3 +1556,9 @@ Disable and append serialize through a tenant transaction advisory lock. Owner S
 errors can include protected bound values; do not publish raw database diagnostics.
 Protected FK dependencies block delivery deletion/replacement and must not be
 removed by cascading deletes. Full future activation/audit/rollback work remains held.
+
+Protected writes require READ COMMITTED transactions. Fixed-snapshot levels are
+refused by both the append store and SQL guards; do not retry under owner credentials
+or change isolation to bypass another safety hold. Future nonowner writer setup must
+review the source-table privileges required by TABLE SHARE/FOR SHARE separately.
+No additional grant or live execution path is provided by this migration.

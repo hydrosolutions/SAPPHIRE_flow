@@ -80,6 +80,8 @@ def convert_provisional_discharge(
         raise ValueError("curve validity interval is invalid")
     if feed_evidence.verified_at > at or reference_proof.verified_at > at:
         raise ValueError("reference evidence is future dated")
+    if observation.timestamp < curve.valid_from:
+        raise ValueError("measurement is before curve validity start")
     if observation.timestamp > at:
         raise ValueError("measurement is future dated")
     snapshot = curve_snapshot(curve)

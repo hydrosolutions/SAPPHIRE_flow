@@ -28,6 +28,7 @@ from sapphire_flow.types.rating_reference import (
     content_digest,
     measurement_snapshot,
 )
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 from tests.unit.services.test_provisional_discharge import NOW, convert, inputs
 
@@ -62,10 +63,14 @@ def seed_reference(
 
 def seed(
     conn: sa.Connection,
+    *,
+    tenant_id: TenantId = DEFAULT_TENANT_ID,
 ) -> tuple[Observation, RatingCurve, MeasurementFeedEvidence, RatingReferenceProof]:
     obs, curve, feed, proof = inputs()
     obs = replace(obs, id=uuid4())
-    station = make_station_config(station_id=obs.station_id, code=str(uuid4()))
+    station = make_station_config(
+        station_id=obs.station_id, code=str(uuid4()), tenant_id=tenant_id
+    )
     feed = replace(
         feed,
         tenant_id=station.tenant_id,
@@ -473,4 +478,86 @@ class TestProvisionalWritePermission:
                 result, captured_at=actual_now
             )
             == result.fingerprint
+        )
+
+
+class TestPersistedCurveChronology:
+    @pytest.mark.parametrize("position", ["before", "start", "within", "expired"])
+    @pytest.mark.parametrize("writer", ["store", "sql"])
+    def test_original_validity_start_is_not_waived(
+        self,
+        db_connection: sa.Connection,
+        position: str,
+        writer: str,
+    ) -> None:
+        import json
+
+        obs, curve, feed, proof = seed(db_connection)
+        candidate = convert(obs, curve, feed, proof)
+        timestamp = {
+            "before": curve.valid_from - timedelta(microseconds=1),
+            "start": curve.valid_from,
+            "within": curve.valid_from + timedelta(days=1),
+            "expired": curve.valid_to + timedelta(days=1),
+        }[position]
+        obs = replace(obs, timestamp=timestamp)
+        db_connection.execute(sa.update(observations).values(timestamp=timestamp))
+        feed = replace(feed, id=uuid4(), measurement=measurement_snapshot(obs))
+        seed_reference(db_connection, measurement_feed_evidence, feed)
+        document = json.loads(candidate.content)
+        document["measurement"] = json.loads(feed.measurement.content)
+        document["feed_evidence"] = asdict(feed)
+        content = canonical_content(document)
+        candidate = replace(
+            candidate,
+            measurement=feed.measurement,
+            feed_evidence_id=feed.id,
+            content=content,
+            fingerprint=content_digest(content),
+        )
+        permit_fixture(db_connection, candidate.tenant_id)
+
+        def write() -> None:
+            if writer == "store":
+                PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                    candidate, captured_at=NOW
+                )
+            else:
+                db_connection.execute(
+                    sa.insert(provisional_discharges).values(
+                        **raw_values(candidate), captured_at=NOW
+                    )
+                )
+
+        if position == "before":
+            with (
+                pytest.raises(
+                    (ValueError, sa.exc.DBAPIError),
+                    match="before curve validity|disagreement",
+                ),
+                db_connection.begin_nested(),
+            ):
+                write()
+        else:
+            write()
+            assert (
+                PgProvisionalDischargeStore(db_connection).fetch_provisional_discharge(
+                    candidate.fingerprint
+                )
+                == candidate
+            )
+        assert (
+            db_connection.scalar(sa.select(sa.func.count()).select_from(observations))
+            == 1
+        )
+        assert (
+            db_connection.scalar(sa.select(observations.c.parameter)) == "water_level"
+        )
+        assert db_connection.scalar(sa.select(observations.c.timestamp)) == timestamp
+        assert (
+            db_connection.scalar(sa.select(rating_curves.c.valid_from))
+            == curve.valid_from
+        )
+        assert (
+            db_connection.scalar(sa.select(rating_curves.c.valid_to)) == curve.valid_to
         )

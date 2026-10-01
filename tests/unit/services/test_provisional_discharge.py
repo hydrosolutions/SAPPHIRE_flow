@@ -249,3 +249,53 @@ class TestProvisionalConversion:
         obs, curve, feed, proof = inputs()
         with pytest.raises(ValueError, match="QC rule generation"):
             convert(replace(obs, qc_rule_version=None), curve, feed, proof)
+
+
+class TestProvisionalCurveChronology:
+    @pytest.mark.parametrize("position", ["before", "start", "within", "expired"])
+    def test_only_backward_application_before_original_start_is_held(
+        self, position: str
+    ) -> None:
+        from datetime import timedelta
+
+        obs, curve, feed, proof = inputs()
+        timestamp = {
+            "before": curve.valid_from - timedelta(microseconds=1),
+            "start": curve.valid_from,
+            "within": curve.valid_from + timedelta(days=1),
+            "expired": curve.valid_to + timedelta(days=1),
+        }[position]
+        obs = replace(obs, timestamp=timestamp)
+        feed = replace(feed, measurement=measurement_snapshot(obs))
+        if position == "before":
+            with pytest.raises(ValueError, match="before curve validity"):
+                convert(obs, curve, feed, proof)
+        else:
+            result = convert(obs, curve, feed, proof)
+            assert isinstance(result, ProvisionalDischarge)
+            assert result.measurement == measurement_snapshot(obs)
+            assert result.curve == curve_snapshot(curve)
+            assert result.discharge == 15.0
+
+    def test_does_not_fall_back_to_an_older_curve_for_pre_start_measurement(
+        self,
+    ) -> None:
+        from datetime import timedelta
+
+        obs, curve, feed, proof = inputs()
+        older = replace(
+            curve,
+            id=uuid4(),
+            version=99,
+            valid_from=curve.valid_from - timedelta(days=365),
+        )
+        obs = replace(obs, timestamp=curve.valid_from - timedelta(days=1))
+        feed = replace(feed, measurement=measurement_snapshot(obs))
+        with pytest.raises(ValueError, match="before curve validity"):
+            convert_provisional_discharge(
+                observation=obs,
+                curves=[older, curve],
+                feed_evidence=feed,
+                reference_proof=proof,
+                at=NOW,
+            )

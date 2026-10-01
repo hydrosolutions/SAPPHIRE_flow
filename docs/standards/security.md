@@ -1334,3 +1334,27 @@ resolution. Raw owner SQL/driver exceptions can echo restricted bound content; n
 claim is made that owner SQL errors are redacted. These stores are unwired, have no
 public error route, and no runtime SQL writer is granted. Any future wiring must
 project safe errors rather than expose exception text or database parameters.
+
+**Supported write isolation is READ COMMITTED only.** The typed append store and
+SQL guards reject REPEATABLE READ, SERIALIZABLE and other isolation settings before
+protected insertion. This covers feed/reference attestations, provisional values,
+permission insertion and owner disable. Advisory/table locks do not refresh a fixed
+MVCC snapshot: without this refusal, a transaction could miss a committed disable or
+newer curve. READ COMMITTED wait-path tests observe actual database blocking before
+committing the other session, then prove gate/candidate rechecking refuses the append.
+Immutable historical reads and the pure converter are not restricted to this isolation.
+
+Conversion retains the original lower validity bound: measured time must be at or
+after the newest curve's `valid_from`. There is no older-curve fallback or timestamp
+shift. Once that curve is expired at actual capture time, readings within its original
+valid interval are allowed only as provisional test-purpose inputs, as are readings
+at/after expiry. This does not certify each input as temporally expired and never
+upgrades any result into the ordinary observation/valid-forecast path.
+
+Future nonowner writers must have a separately reviewed source-lock privilege matrix:
+TABLE SHARE and FOR SHARE may require underlying table privileges beyond SELECT.
+No such grants are added here. Authoring must resolve contradictory feed attestations
+rather than infer source from today's config; there is currently no authoring/selection
+workflow. Pydantic boundary ValidationError text can include protected payloads too.
+Future public or scheduled wiring must project safe errors instead of logging/returning
+raw validation/driver exceptions. These remain explicit holds, not completed safeguards.

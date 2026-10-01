@@ -168,9 +168,21 @@ BEGIN
     RAISE EXCEPTION 'protected provisional evidence is immutable';
 END $$;
 
+CREATE FUNCTION public.provisional_permission_insert() RETURNS trigger
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected provisional writes require READ COMMITTED';
+    END IF;
+    RETURN NEW;
+END $$;
+
 CREATE FUNCTION public.provisional_permission_disable() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected provisional writes require READ COMMITTED';
+    END IF;
     PERFORM pg_advisory_xact_lock(hashtextextended(
         'provisional-discharge:' || NEW.tenant_id::text, 0));
     IF session_user IS DISTINCT FROM (
@@ -210,8 +222,12 @@ $$;
 CREATE FUNCTION public.provisional_reference_insert() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp
 SET timezone = 'UTC' AS $$
-DECLARE d jsonb := NEW.content::jsonb; parent jsonb;
+DECLARE d jsonb; parent jsonb;
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected provisional writes require READ COMMITTED';
+    END IF;
+    d := NEW.content::jsonb;
     IF NOT (d->>'id' = NEW.id::text AND d->>'tenant_id' = NEW.tenant_id::text
         AND d->>'station_id' = NEW.station_id::text
         AND d->>'endpoint' ~ '^https://[^/?#@:]+(:[0-9]+)?(/[^?#]*)?$'
@@ -255,9 +271,13 @@ END $$;
 CREATE FUNCTION public.provisional_discharge_insert() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp
 SET timezone = 'UTC' AS $$
-DECLARE d jsonb := NEW.content::jsonb; o public.observations;
+DECLARE d jsonb; o public.observations;
     c public.rating_curves; feed jsonb; proof jsonb; newest uuid;
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected provisional writes require READ COMMITTED';
+    END IF;
+    d := NEW.content::jsonb;
     IF NEW.captured_at > clock_timestamp() THEN
         RAISE EXCEPTION 'provisional capture time is in the future';
     END IF;
@@ -285,7 +305,7 @@ BEGIN
         AND jsonb_array_length(o.qc_flags) > 0
         AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(o.qc_flags) f
                         WHERE f->>'status' IS DISTINCT FROM 'qc_passed')
-        AND o.timestamp <= NEW.captured_at
+        AND o.timestamp >= c.valid_from AND o.timestamp <= NEW.captured_at
         AND c.id = newest AND c.valid_from < c.valid_to AND c.valid_to <=
             NEW.captured_at
         AND public.provisional_measurement_content(d->'measurement')
@@ -346,6 +366,11 @@ def upgrade() -> None:
             "EXECUTE FUNCTION public.provisional_immutable()"
         )
     op.execute(
+        "CREATE TRIGGER trg_provisional_permission_insert BEFORE INSERT "
+        "ON public.provisional_discharge_permissions FOR EACH ROW "
+        "EXECUTE FUNCTION public.provisional_permission_insert()"
+    )
+    op.execute(
         "CREATE TRIGGER trg_provisional_permission_disable BEFORE UPDATE "
         "ON public.provisional_discharge_permissions FOR EACH ROW "
         "EXECUTE FUNCTION public.provisional_permission_disable()"
@@ -394,5 +419,6 @@ def downgrade() -> None:
         "provisional_measurement_content(jsonb)",
         "provisional_immutable()",
         "provisional_permission_disable()",
+        "provisional_permission_insert()",
     ):
         op.execute(f"DROP FUNCTION public.{name}")

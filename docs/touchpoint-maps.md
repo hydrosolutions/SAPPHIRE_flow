@@ -1564,3 +1564,11 @@ protected canary, plus ordinary API-role table-list success and protected-name 4
 Do not repair a permission error by granting protected reads. SQL insertion checks
 snapshot/identity/QC/domain consistency; only the typed store re-converts Q. Later
 writer grants/activation must review that numerical authority boundary explicitly.
+
+- Protected writers require READ COMMITTED. Test committed and lock-wait changes to
+  both activation state and newest curve; a table/advisory lock alone does not refresh
+  a REPEATABLE READ/SERIALIZABLE snapshot. Attestation and permission guards share the
+  write-isolation restriction; immutable historical reads do not.
+- Conversion refuses readings before the newest curve's original `valid_from`, with
+  no older-curve fallback. Within-validity readings remain provisional/test-purpose
+  when converted using a curve expired at actual capture; never silently upgrade them.

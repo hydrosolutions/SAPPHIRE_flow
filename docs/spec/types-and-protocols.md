@@ -5164,3 +5164,16 @@ the pure converter retains its injected-time contract. Reference offsets are exp
 evidence, never inferred from equal/different reference labels. Gate metadata remains
 fixed, with only an owner-session enabled→disabled stop permitted. Runtime writes,
 re-enable, deletion and TRUNCATE remain denied. This is not an activation protocol.
+
+Protected persistence requires the PostgreSQL transaction isolation setting to be
+`read committed`. The typed append and every SQL attestation/provisional/permission
+INSERT or owner-disable guard reject fixed-snapshot isolation. Historical immutable
+reads remain available under other levels. Locks alone cannot establish fresh gate
+or newest-curve visibility under REPEATABLE READ/SERIALIZABLE.
+
+The expired-curve exception does not authorize backward application before the
+selected curve's original `valid_from`. Equality, within-original-interval readings
+and post-expiry readings may yield only provisional/test-purpose inputs once the
+curve is expired at actual capture. No older-curve fallback, date shift or automatic
+ordinary/valid upgrade is performed. Future writer lock privileges, contradictory
+attestation authoring and safe validation-error projection remain unimplemented holds.

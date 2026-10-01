@@ -43,6 +43,11 @@ class PgProvisionalDischargeStore:
     def store_provisional_discharge(
         self, discharge: ProvisionalDischarge, *, captured_at: UtcDatetime
     ) -> str:
+        isolation = self._conn.execute(
+            sa.text("SELECT current_setting('transaction_isolation')")
+        ).scalar_one()
+        if isolation != "read committed":
+            raise ValueError("protected provisional writes require READ COMMITTED")
         database_now = self._conn.execute(
             sa.select(sa.func.clock_timestamp())
         ).scalar_one()
