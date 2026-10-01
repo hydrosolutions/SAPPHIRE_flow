@@ -4,10 +4,20 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 from uuid import UUID
 
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    FiniteFloat,
+    StringConstraints,
+)
+
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.domain import QcFlag
+from sapphire_flow.types.enums import ObservationSource, QcStatus, SpatialRepresentation
 from sapphire_flow.types.rating_reference import canonical_content, content_digest
 
 if TYPE_CHECKING:
@@ -15,6 +25,62 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ForecastId, StationId
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.weather import WeatherForecastRecord
+
+
+_Nonempty = Annotated[str, StringConstraints(pattern=r"\S")]
+
+
+class _QcFlagBoundary(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    rule_id: _Nonempty
+    rule_version: _Nonempty
+    status: QcStatus
+    detail: str | None
+
+
+class _ObservationSnapshotBoundary(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    id: UUID
+    station_id: UUID
+    timestamp: AwareDatetime
+    parameter: _Nonempty
+    value: int | FiniteFloat | None
+    source: ObservationSource
+    rating_curve_id: UUID | None
+    rating_curve_correction_version: _Nonempty | None
+    qc_status: QcStatus
+    qc_flags: list[_QcFlagBoundary]
+    qc_rule_version: _Nonempty | None
+    delivery_id: _Nonempty | None
+
+
+class _HistoricalSnapshotBoundary(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    station_id: UUID
+    source: _Nonempty
+    version: _Nonempty
+    valid_time: AwareDatetime
+    parameter: _Nonempty
+    spatial_type: SpatialRepresentation
+    band_id: int | None
+    member_id: int | None
+    value: int | FiniteFloat
+
+
+class _WeatherSnapshotBoundary(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    id: UUID
+    station_id: UUID
+    nwp_source: _Nonempty
+    cycle_time: AwareDatetime
+    valid_time: AwareDatetime
+    parameter: _Nonempty
+    spatial_type: SpatialRepresentation
+    band_id: int | None
+    member_id: int | None
+    value: int | FiniteFloat
+    is_gap: bool
+    gap_status: Literal["recovered", "unrecoverable"] | None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -26,78 +92,48 @@ class ForecastInputSnapshot:
     content: str
 
     def __post_init__(self) -> None:
-        fields = {
-            "observation": {
-                "id",
-                "station_id",
-                "timestamp",
-                "parameter",
-                "value",
-                "source",
-                "rating_curve_id",
-                "rating_curve_correction_version",
-                "qc_status",
-                "qc_flags",
-                "qc_rule_version",
-                "delivery_id",
-            },
-            "historical_forcing": {
-                "station_id",
-                "source",
-                "version",
-                "valid_time",
-                "parameter",
-                "spatial_type",
-                "band_id",
-                "member_id",
-                "value",
-            },
-            "weather_forecast": {
-                "id",
-                "station_id",
-                "nwp_source",
-                "cycle_time",
-                "valid_time",
-                "parameter",
-                "spatial_type",
-                "band_id",
-                "member_id",
-                "value",
-                "is_gap",
-                "gap_status",
-            },
-        }
-        raw: object = json.loads(self.content)
-        if self.kind not in fields or not isinstance(raw, dict):
-            raise ValueError("unknown consumed input snapshot kind")
-        data = cast("dict[str, Any]", raw)
-        if set(data) != fields[self.kind] or not self.units.strip():
+        if not isinstance(cast("object", self.units), str) or not self.units.strip():
             raise ValueError(
                 "consumed input snapshot requires complete source and units"
             )
-        if canonical_content(data) != self.content:
-            raise ValueError("consumed input snapshot must be canonical")
-        if not isinstance(data["parameter"], str) or not data["parameter"].strip():
-            raise ValueError("consumed input parameter is missing")
-        value = data["value"]
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
-            raise ValueError("consumed input value must be finite or missing")
-        time_fields = ("timestamp",) if self.kind == "observation" else ("valid_time",)
-        if self.kind == "weather_forecast":
-            time_fields += ("cycle_time",)
-        for field in time_fields:
-            if datetime.fromisoformat(data[field]).utcoffset() is None:
-                raise ValueError("consumed input time must be timezone aware")
-        source = data.get("source", data.get("nwp_source"))
-        if not isinstance(source, str) or not source.strip():
-            raise ValueError("consumed input source is missing")
-        UUID(data["station_id"])
-        if "id" in data:
-            UUID(data["id"])
+        parsers = {
+            "observation": _ObservationSnapshotBoundary,
+            "historical_forcing": _HistoricalSnapshotBoundary,
+            "weather_forecast": _WeatherSnapshotBoundary,
+        }
+        if self.kind not in parsers:
+            raise ValueError("unknown consumed input snapshot kind")
+        try:
+            parsed = parsers[self.kind].model_validate_json(self.content)
+            if canonical_content(parsed.model_dump()) != self.content:
+                raise ValueError(
+                    "snapshot must use canonical UUID and UTC timestamp spelling"
+                )
+            if isinstance(parsed, _ObservationSnapshotBoundary):
+                from sapphire_flow.types.observation import Observation
+
+                fields = parsed.model_dump(exclude={"qc_flags"})
+                flags = [QcFlag(**flag.model_dump()) for flag in parsed.qc_flags]
+                Observation(
+                    **fields, qc_flags=flags, created_at=ensure_utc(parsed.timestamp)
+                )
+            else:
+                if (parsed.spatial_type == SpatialRepresentation.ELEVATION_BAND) != (
+                    parsed.band_id is not None
+                ):
+                    raise ValueError(
+                        "snapshot spatial representation and band disagree"
+                    )
+                if (
+                    isinstance(parsed, _WeatherSnapshotBoundary)
+                    and parsed.is_gap
+                    and parsed.gap_status is None
+                ):
+                    raise ValueError(
+                        "snapshot gap_status is required for a weather gap"
+                    )
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"consumed input snapshot invalid: {exc}") from exc
 
 
 def snapshot_consumed_input(
@@ -135,7 +171,10 @@ class ForecastStaticAttributes:
     def __post_init__(self) -> None:
         if not isinstance(cast("object", self.station_id), UUID):
             raise ValueError("consumed static attributes require a station identity")
-        if not self.source.strip() or not self.version.strip():
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (cast("object", self.source), cast("object", self.version))
+        ):
             raise ValueError("consumed static attributes require source and version")
         if type(self.values) is not tuple or not self.values:
             raise ValueError("consumed static attributes require immutable values")
@@ -196,6 +235,14 @@ class ForecastInputLineage:
             for item in self.contributor_forecast_ids
         ):
             raise ValueError("input lineage requires typed forecast identities")
+        if len(set(self.snapshots)) != len(self.snapshots):
+            raise ValueError("duplicate consumed input snapshots")
+        static_keys = {
+            (item.station_id, item.source, item.version)
+            for item in self.static_attributes
+        }
+        if len(static_keys) != len(self.static_attributes):
+            raise ValueError("duplicate consumed static attribute source versions")
         if not (
             self.snapshots
             or self.static_attributes
@@ -204,7 +251,8 @@ class ForecastInputLineage:
         ):
             raise ValueError("input lineage requires consumed inputs")
         if not self.transformation_versions or any(
-            not version.strip() for version in self.transformation_versions
+            not isinstance(cast("object", version), str) or not version.strip()
+            for version in self.transformation_versions
         ):
             raise ValueError("input lineage requires transformation versions")
         if any(
@@ -252,28 +300,33 @@ class ForecastInputLineage:
     def from_content(cls, content: str) -> ForecastInputLineage:
         from sapphire_flow.types.ids import ForecastId, StationId
 
-        data = json.loads(content)
-        result = cls(
-            static_attributes=tuple(
-                ForecastStaticAttributes(
-                    station_id=StationId(UUID(item["station_id"])),
-                    source=item["source"],
-                    version=item["version"],
-                    values=tuple(item["values"].items()),
-                )
-                for item in data["static_attributes"]
-            ),
-            snapshots=tuple(
-                ForecastInputSnapshot(**item) for item in data["snapshots"]
-            ),
-            provisional_discharge_fingerprints=tuple(
-                data["provisional_discharge_fingerprints"]
-            ),
-            contributor_forecast_ids=tuple(
-                ForecastId(UUID(i)) for i in data["contributor_forecast_ids"]
-            ),
-            transformation_versions=tuple(data["transformation_versions"]),
-        )
-        if result.content != content:
-            raise ValueError("input lineage must be canonical")
-        return result
+        try:
+            data = json.loads(content)
+            result = cls(
+                static_attributes=tuple(
+                    ForecastStaticAttributes(
+                        station_id=StationId(UUID(item["station_id"])),
+                        source=item["source"],
+                        version=item["version"],
+                        values=tuple(item["values"].items()),
+                    )
+                    for item in data["static_attributes"]
+                ),
+                snapshots=tuple(
+                    ForecastInputSnapshot(**item) for item in data["snapshots"]
+                ),
+                provisional_discharge_fingerprints=tuple(
+                    data["provisional_discharge_fingerprints"]
+                ),
+                contributor_forecast_ids=tuple(
+                    ForecastId(UUID(i)) for i in data["contributor_forecast_ids"]
+                ),
+                transformation_versions=tuple(data["transformation_versions"]),
+            )
+            if result.content != content:
+                raise ValueError("input lineage must be canonical")
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise ValueError(
+                "consumed input lineage is malformed or noncanonical"
+            ) from exc

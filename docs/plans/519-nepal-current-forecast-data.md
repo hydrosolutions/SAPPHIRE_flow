@@ -417,6 +417,12 @@ static attributes, existing immutable provisional fingerprints and actual contri
 IDs with explicit transformation versions. It is mandatory for TEST, absent for
 STANDARD and persisted with values/evidence. The database derives the immutable
 source-station/tenant join, including legitimate same-tenant cross-station inputs.
+It records direct sources and contributor outputs; each retained contributor preserves
+its own input-station joins, without copying a transitive closure. Strict canonical
+parsing is enforced by the type/store boundary; SQL independently checks bounded
+per-kind structure and available source identities, not full serializer equivalence
+or historical-record existence. See the types spec for the exact boundary. Future
+non-store writers require reviewed canonical parsing before any activation.
 Completeness remains the future T3 assembler contract, not a claim inferred from
 nonempty caller metadata. No assembler, model/FI, publication or direct-reader sweep
 is delivered by this slice. No raw lineage is added to public responses.

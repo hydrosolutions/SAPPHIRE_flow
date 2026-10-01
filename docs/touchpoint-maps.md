@@ -1642,3 +1642,11 @@ in disposable PostGIS; all integrity/immutability triggers remain active.
 No test-mode activation, runtime grants, direct-reader sweep, public lineage exposure,
 publication, FI/state or alert changes are provided here. Full downstream consumption
 lineage and reviewed inventory-backed activation remain prerequisites.
+
+For the protected lineage join, include `docker/bootstrap-roles.sql`'s early stale
+ACL revokes/catalog exclusion and `api/routes/tables.py`'s inventory exclusion.
+Run protected-role failed-preflight/stale-column tests and generic inventory/detail/rows
+404 tests with real API/worker logins; preserve operator safe-state ordering and backup
+coverage. Distinguish strict Python canonical parsing from bounded SQL shape/available
+identity checks and T3 consumption completeness. Contributor station protection is
+retained through the contributor's own join, not a copied transitive closure.

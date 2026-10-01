@@ -187,3 +187,24 @@ def _value_key(
             )
         ),
     )
+
+
+def retry_conflict_message(
+    row: ForecastRetryRow,
+    *,
+    stored: OperationalForecast,
+    recomputed: OperationalForecast,
+) -> str:
+    detail = describe_difference(row, stored=stored, recomputed=recomputed)
+    message = (
+        f"Forecast {stored.id} already exists for "
+        f"({recomputed.station_id}, {recomputed.model_id}, "
+        f"{recomputed.issued_at.isoformat()}, {recomputed.ensemble.parameter}) "
+        f"and the re-run is not identical — {detail}"
+    )
+    if recomputed.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+        message += (
+            ". Retain the original result and issue time; record and investigate the "
+            "QC/input provenance conflict. Do not retimestamp the failed run."
+        )
+    return message

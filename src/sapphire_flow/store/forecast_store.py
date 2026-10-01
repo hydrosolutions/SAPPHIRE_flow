@@ -30,6 +30,7 @@ from sapphire_flow.services.forecast_retry import (
     ForecastRetryRow,
     classify_forecast_retry,
     describe_difference,
+    retry_conflict_message,
 )
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.store.forecast_values_integrity import forecast_values_integrity
@@ -77,7 +78,7 @@ def _is_current() -> sa.ColumnElement[bool]:
 
 
 def _combined_contributor_gap(
-    txn: sa.Connection, evidence: ForecastEvidence
+    txn: sa.Connection, evidence: ForecastEvidence, data_use: ForecastDataUse
 ) -> str | None:
     if evidence.snapshot is None:
         return "contributor_snapshot_unavailable"
@@ -99,9 +100,12 @@ def _combined_contributor_gap(
         except ValueError:
             return "contributor_references_invalid"
         row = txn.execute(
-            sa.select(
-                forecast_evidence.c.status, forecast_evidence.c.snapshot_sha256
-            ).where(forecast_evidence.c.forecast_id == forecast_id)
+            sa.select(forecast_evidence.c.status, forecast_evidence.c.snapshot_sha256)
+            .join(forecasts, forecasts.c.id == forecast_evidence.c.forecast_id)
+            .where(
+                forecast_evidence.c.forecast_id == forecast_id,
+                forecasts.c.data_use == data_use.value,
+            )
         ).one_or_none()
         if row is None:
             return "contributor_evidence_not_persisted"
@@ -192,7 +196,9 @@ class PgForecastStore:
                     else "thresholds_unavailable"
                 )
             if forecast.combination_strategy is not None:
-                contributor_gap = _combined_contributor_gap(txn, evidence)
+                contributor_gap = _combined_contributor_gap(
+                    txn, evidence, self._data_use
+                )
                 if contributor_gap is not None:
                     status = EvidenceStatus.INCOMPLETE
                     reason = (
@@ -655,12 +661,7 @@ def _resolve_retry(
         detail=detail,
     )
     raise ForecastRetryConflictError(
-        f"Forecast {existing_id} already exists for "
-        f"({forecast.station_id}, {forecast.model_id}, "
-        f"{forecast.issued_at.isoformat()}, {forecast.ensemble.parameter}) "
-        f"and the re-run is not identical — {detail}. "
-        "Retain the original result and issue time; record and investigate the "
-        "QC/input provenance conflict. Do not retimestamp the failed run.",
+        retry_conflict_message(row, stored=stored, recomputed=forecast),
         row=row,
         forecast_id=existing_id,
         station_id=forecast.station_id,

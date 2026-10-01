@@ -1363,7 +1363,8 @@ raw validation/driver exceptions. These remain explicit holds, not completed saf
 ### Dormant forecast data-use partition
 
 Migration `0069` refuses every `expired_rating_test` forecast INSERT at PostgreSQL,
-including owner SQL and COPY. `data_use` and consumed lineage cannot be changed by
+including owner SQL and COPY under normal execution (not deliberate DBA guard
+disabling). `data_use` and consumed lineage cannot be changed by
 UPDATE. No output enable flag, session override or runtime/operator grant is added.
 The provisional-input permission does not attest output deployment compatibility.
 A separate reviewed rollout must replace the unconditional guard, close ordinary
@@ -1371,3 +1372,11 @@ raw-SQL/publication/alert/state readers and authorize the required narrow join w
 Protected raw lineage remains internal; ordinary PgForecastStore reads are class-bound.
 Synthetic disposable structural tests may remove only the refusal trigger transactionally;
 this is test setup, never an operator activation procedure.
+
+Role bootstrap excludes `forecast_input_stations` from catalog runtime SELECT and
+revokes its stale table/column ACLs in the existing early safe-state block, including
+on later preflight failure. Backup SELECT is preserved. Generic table-browser inventory,
+detail and rows never admit this relation. Combined contributor evidence checks use
+the store's purpose; other-class evidence is unavailable, not implicitly trusted.
+SQL snapshot checks are bounded structure/identity checks; strict canonical parsing
+remains a type/store obligation. Review any future direct writer before activation.

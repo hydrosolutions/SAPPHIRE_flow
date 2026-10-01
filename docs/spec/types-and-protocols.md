@@ -2021,7 +2021,11 @@ Snapshot factories reuse Observation, RawHistoricalForcing and WeatherForecastRe
 fields, add explicit units and exclude capture/creation clocks. Snapshots keep only
 consumed records, not whole upstream files. NaN/Infinity cannot enter canonical JSON;
 missing observations keep their explicit null. Serialization and SHA-256 derive from
-actual canonical content, never a supplied opaque hash. Input ordering is canonical;
+actual canonical content, never a supplied opaque hash. Direct construction and decoding strictly parse each source kind through Pydantic
+boundaries, preserve QC/gap/spatial-band invariants, and require canonical UUID/UTC
+spelling. Null/malformed times raise ValueError. Duplicate full dynamic snapshots and
+duplicate static (station, source, version) entries refuse; combine consumed static
+names within that one map. Input ordering is canonical;
 transformation pipeline ordering remains significant. Mutable source restatements
 cannot change the retained snapshot. Provisional fingerprints reference the immutable
 same-gauge curve/reference/conversion records instead of copying protected payloads.
@@ -2036,18 +2040,38 @@ status, superseded history, summaries/counts, latest and cycle markers cannot wi
 that class. STANDARD retries retain the existing four-row table. Test retries compare
 lineage only after QC-conflict refusal and before IDENTICAL (Plan 327 amendment).
 
-Migration `0069` stores immutable classification and canonical lineage on the forecast
-header in the same transaction as values/evidence. Its trigger derives
-`forecast_input_stations` from the output and consumed sources; composite station/tenant
-FKs retain source identity. Same-tenant cross-station group inputs are permitted.
-Provisional and contributor references must exist under the same tenant; contributors
-must have the same class and retained evidence. Each snapshot is tied to its own source
-station, not the output gauge. The join is append-only. Downgrade refuses any test row
-or retained join. No runtime/operator write grants are added for the join; a future
-reviewed writer needs explicitly scoped grants and deployment-inventory activation.
-The independent unconditional INSERT guard prevents test rows before that work.
-Direct readers, publication, alerts and model-state isolation remain separate work;
-this storage slice does not claim those paths are closed.
+Migration `0069` stores immutable classification and lineage in the same transaction
+as values/evidence. Its SQL trigger checks exact per-kind key sets, JSON scalar and
+metadata types, numeric bounds, QC/gap/spatial-band relationships and parseable
+explicit-zone times. PostgreSQL JSON parsing is **not** the canonical Python serializer:
+canonical whitespace/key order, duplicate JSON keys/source snapshots, UUID spelling and
+UTC spelling are type/store-level checks, not independently certified by this trigger.
+Any future non-store writer requires reviewed strict parsing/canonicalization before
+T1c replaces the deployed refusal. Structural SQL tests do not claim equivalence.
+
+Observation and weather snapshots bind existing record ID/station/source/parameter/time
+identities at insert. Referenced curves must belong to their own source station. SQL
+does not compare retained values, QC or units with later-mutable current rows.
+Historical forcing retains the caller-declared source/version/time snapshot and binds
+its station/tenant; it does not assert persistent source-record existence. Statics bind
+their source station, not an invented static-source authority. T3 must establish actual
+consumption, source/version authority and completeness for all kinds.
+
+The append-only `forecast_input_stations` join derives output stations, directly named
+dynamic/static/provisional stations and each contributor's output station. Same-tenant
+cross-station dependencies are valid. Composite FKs preserve station/tenant identity.
+Contributor input stations are **not copied transitively**: retained contributors keep
+their own protected joins. Provisional/contributor references must exist in the same
+tenant; contributors must have the same class and retained evidence. Downgrade refuses
+any test row or retained join. Bootstrap excludes the join from runtime reads and
+revokes stale table/column grants before preflight; backup coverage remains. Generic
+browser inventory/detail/rows exclude it before querying.
+
+No runtime/operator write grants are added. A future writer needs separately reviewed
+privileges and deployment-inventory activation. The unconditional INSERT guard blocks
+test rows in normal owner/runtime execution, including COPY. Deliberate DBA disabling
+of guards is outside the runtime threat model. Direct-reader/publication/alert/model-state
+closure remains separate work; this slice does not claim those paths are closed.
 
 ### OperationalForecast
 

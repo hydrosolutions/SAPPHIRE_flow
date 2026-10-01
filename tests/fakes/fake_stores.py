@@ -29,7 +29,7 @@ from sapphire_flow.services.forecast_retry import (
     SUPERSEDING_ROWS,
     ForecastRetryRow,
     classify_forecast_retry,
-    describe_difference,
+    retry_conflict_message,
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
@@ -464,9 +464,7 @@ class FakeForecastStore:
                 return existing_id
             if row not in SUPERSEDING_ROWS:
                 raise ForecastRetryConflictError(
-                    f"Forecast {existing_id} already exists for {key} and the "
-                    f"re-run is not identical — "
-                    f"{describe_difference(row, stored=stored, recomputed=forecast)}",
+                    retry_conflict_message(row, stored=stored, recomputed=forecast),
                     row=row,
                     forecast_id=existing_id,
                     station_id=forecast.station_id,

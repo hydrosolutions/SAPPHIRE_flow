@@ -484,3 +484,224 @@ class TestStructuralForecastIsolation:
             conn.begin_nested(),
         ):
             conn.execute(sa.delete(stations).where(stations.c.id == sid))
+
+    @pytest.mark.parametrize(
+        "contributor_use",
+        [ForecastDataUse.STANDARD, ForecastDataUse.EXPIRED_RATING_TEST],
+    )
+    def test_cross_class_contributor_evidence_is_incomplete(
+        self,
+        structural_connection: sa.Connection,
+        monkeypatch: pytest.MonkeyPatch,
+        contributor_use: ForecastDataUse,
+    ) -> None:
+        from sapphire_flow.services.forecast_evidence import capture_combined_evidence
+        from sapphire_flow.types.domain import ForecastQcRuleSet
+        from sapphire_flow.types.forecast_evidence import EvidenceStatus
+        from tests.integration.store.test_forecast_evidence_store import _evidence
+
+        monkeypatch.setenv("SAPPHIRE_IMAGE_DIGEST", "sha256:" + "a" * 64)
+        ordinary, test = _pair(structural_connection)
+        standard, testing = _stores(structural_connection)
+        test = replace(
+            ordinary if contributor_use is ForecastDataUse.STANDARD else test,
+            evidence=_evidence(),
+        )
+        (
+            standard if contributor_use is ForecastDataUse.STANDARD else testing
+        ).store_forecast(test)
+        evidence = capture_combined_evidence(
+            model_id=ordinary.model_id,
+            strategy="pooled",
+            contributors=(test,),
+            weights=None,
+            qc_rules=ForecastQcRuleSet(version="1", rules=()),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=None,
+        ).with_thresholds(())
+        combined = replace(
+            ordinary,
+            id=ForecastId(uuid4()),
+            issued_at=_ISSUED_B,
+            combination_strategy="pooled",
+            evidence=evidence,
+        )
+        standard.store_forecast(combined)
+        saved = standard.fetch_evidence(combined.id)
+        assert saved.status is EvidenceStatus.INCOMPLETE
+        assert ("contributor_evidence_not_persisted" in (saved.reason or "")) == (
+            contributor_use is ForecastDataUse.EXPIRED_RATING_TEST
+        )
+
+    @pytest.mark.parametrize(
+        "purpose", [ForecastDataUse.STANDARD, ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    def test_retry_conflict_message_real_fake_parity(
+        self, structural_connection: sa.Connection, purpose: ForecastDataUse
+    ) -> None:
+        from tests.fakes.fake_stores import FakeForecastStore
+
+        ordinary, test = _pair(structural_connection)
+        first = ordinary if purpose is ForecastDataUse.STANDARD else test
+        real = _stores(structural_connection)[
+            purpose is ForecastDataUse.EXPIRED_RATING_TEST
+        ]
+        fake = FakeForecastStore(data_use=purpose)
+        messages = []
+        for store in (real, fake):
+            store.store_forecast(first)
+            with pytest.raises(ForecastRetryConflictError) as error:
+                store.store_forecast(
+                    replace(first, id=ForecastId(uuid4()), qc_status=QcStatus.QC_FAILED)
+                )
+            messages.append(str(error.value))
+        assert messages[0] == messages[1]
+        assert ("Do not retimestamp" in messages[0]) == (
+            purpose is ForecastDataUse.EXPIRED_RATING_TEST
+        )
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"version": {}},
+            {"member_id": []},
+            {"band_id": 2},
+            {"value": "NaN"},
+            {"extra": "field"},
+        ],
+    )
+    def test_direct_sql_rejects_malformed_historical_structure(
+        self, structural_connection: sa.Connection, changes: dict[str, object]
+    ) -> None:
+        import json
+
+        from sapphire_flow.types.rating_reference import canonical_content
+
+        conn = structural_connection
+        _, test = _pair(conn)
+        record = dict(
+            station_id=str(test.station_id),
+            source="recap",
+            version="v1",
+            valid_time="2026-10-01T00:00:00+00:00",
+            parameter="temperature",
+            spatial_type="point",
+            band_id=None,
+            member_id=None,
+            value=1.0,
+        )
+        lineage = json.loads(test.input_lineage.content)
+        lineage["snapshots"] = [
+            dict(
+                kind="historical_forcing",
+                units="K",
+                content=canonical_content(record | changes),
+            )
+        ]
+        with pytest.raises(sa.exc.DBAPIError, match="snapshot"), conn.begin_nested():
+            conn.execute(
+                sa.insert(forecasts).values(
+                    id=test.id,
+                    station_id=test.station_id,
+                    model_id=test.model_id,
+                    issued_at=test.issued_at,
+                    representation="members",
+                    parameter="discharge",
+                    units="m3/s",
+                    data_use="expired_rating_test",
+                    input_lineage=canonical_content(lineage),
+                )
+            )
+
+    @pytest.mark.parametrize(
+        "kind,changes",
+        [
+            ("observation", {"qc_flags": {}}),
+            ("observation", {"qc_status": "missing"}),
+            (
+                "observation",
+                {
+                    "qc_flags": [
+                        dict(rule_id="r", rule_version="v", status="raw", detail=None)
+                    ]
+                },
+            ),
+            ("observation", {"rating_curve_correction_version": []}),
+            ("weather_forecast", {"is_gap": "false"}),
+            ("weather_forecast", {"is_gap": True}),
+            ("weather_forecast", {"member_id": []}),
+            ("weather_forecast", {"valid_time": None}),
+        ],
+    )
+    def test_direct_sql_per_kind_metadata_and_valid_control(
+        self,
+        structural_connection: sa.Connection,
+        kind: str,
+        changes: dict[str, object],
+    ) -> None:
+        import json
+
+        from sapphire_flow.db.metadata import observations, weather_forecasts
+        from sapphire_flow.types.rating_reference import canonical_content
+
+        conn = structural_connection
+        _, test = _pair(conn)
+        if kind == "observation":
+            row = dict(
+                conn.execute(
+                    sa.select(observations).where(
+                        observations.c.station_id == test.station_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            row.pop("created_at")
+        else:
+            row = dict(
+                id=uuid4(),
+                station_id=test.station_id,
+                nwp_source="icon",
+                cycle_time=NOW,
+                valid_time=NOW,
+                parameter="temperature",
+                spatial_type="point",
+                band_id=None,
+                member_id=1,
+                value=1.0,
+            )
+            conn.execute(sa.insert(weather_forecasts).values(**row))
+            row.update(is_gap=False, gap_status=None)
+        lineage = json.loads(test.input_lineage.content)
+        header = dict(
+            id=test.id,
+            station_id=test.station_id,
+            model_id=test.model_id,
+            issued_at=test.issued_at,
+            representation="members",
+            parameter="discharge",
+            units="m3/s",
+            data_use="expired_rating_test",
+        )
+        lineage["snapshots"] = [
+            dict(
+                kind=kind,
+                units="fixture-units",
+                content=canonical_content(row | changes),
+            )
+        ]
+        with pytest.raises(sa.exc.DBAPIError, match="snapshot"), conn.begin_nested():
+            conn.execute(
+                sa.insert(forecasts).values(
+                    **header, input_lineage=canonical_content(lineage)
+                )
+            )
+        lineage["snapshots"][0]["content"] = canonical_content(row)
+        with conn.begin_nested() as transaction:
+            conn.execute(
+                sa.insert(forecasts).values(
+                    **header, input_lineage=canonical_content(lineage)
+                )
+            )
+            transaction.rollback()

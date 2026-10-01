@@ -14,19 +14,19 @@ from sapphire_flow.db.metadata import metadata as _app_metadata
 
 router = APIRouter(tags=["tables"])
 
-# Protected conversion inputs/proofs never belong to the generic admin browser.
+# Protected inputs/proofs/lineage never belong to the generic admin browser.
 # Exclude them before COUNT and before either by-name read, not by granting access.
-_PROTECTED_PROVISIONAL_TABLES = frozenset(
+_PROTECTED_INPUT_TABLES = frozenset(
     {
         "measurement_feed_evidence",
         "rating_reference_proofs",
         "provisional_discharges",
         "provisional_discharge_permissions",
+        "forecast_input_stations",
     }
 )
 SAPPHIRE_TABLES: frozenset[str] = (
-    frozenset(t.name for t in _app_metadata.tables.values())
-    - _PROTECTED_PROVISIONAL_TABLES
+    frozenset(t.name for t in _app_metadata.tables.values()) - _PROTECTED_INPUT_TABLES
 )
 
 PAGE_SIZE = 50
@@ -88,7 +88,7 @@ def table_list(
     from sapphire_flow.api import templates
 
     reflected = get_reflected(conn)
-    tables_info = []
+    tables_info: list[dict[str, object]] = []
     for name in sorted(reflected.tables.keys()):
         if name not in SAPPHIRE_TABLES:
             continue
