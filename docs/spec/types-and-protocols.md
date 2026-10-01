@@ -2030,7 +2030,10 @@ missing observations keep their explicit null. Serialization and SHA-256 derive 
 actual canonical content, never a supplied opaque hash. Direct construction and decoding strictly parse each source kind through Pydantic
 boundaries, preserve QC/gap/spatial-band invariants, and require canonical UUID/UTC
 spelling. Null/malformed times raise ValueError. Duplicate full dynamic snapshots and
-duplicate static (station, source, version) entries refuse; combine consumed static
+duplicate static (station, source, version) entries refuse. Different contents for the
+same dynamic source identity are not rejected by this container. T3 must establish
+actual consumed versions and resolve ambiguity; acceptance here is not version authority.
+Combine consumed static
 names within that one map. Input ordering is canonical;
 transformation pipeline ordering remains significant. Mutable source restatements
 cannot change the retained snapshot. Provisional fingerprints reference the immutable
@@ -2045,6 +2048,9 @@ Other-class writes refuse; other-class by-ID/evidence reads return None. Explici
 status, superseded history, summaries/counts, latest and cycle markers cannot widen
 that class. STANDARD retries retain the existing four-row table. Test retries compare
 lineage only after QC-conflict refusal and before IDENTICAL (Plan 327 amendment).
+New persisted evidence manifests add `data_use` and `input_lineage_sha256` for both
+classes. STANDARD uses `"standard"` and null respectively. These additive metadata
+keys do not change STANDARD retry decisions or imply scientific validity.
 
 Migration `0069` stores immutable classification and lineage in the same transaction
 as values/evidence. Its SQL trigger checks exact per-kind key sets, JSON scalar and
@@ -2132,6 +2138,8 @@ class OperationalForecast:
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
     rating_curve_id: RatingCurveId | None = None   # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4)
     evidence: ForecastEvidence | None = None        # Plan 340 T1; None for earlier in-memory callers
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None  # required for TEST; absent for STANDARD
 
     @property
     def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
@@ -3197,14 +3205,11 @@ class ObservationStore(Protocol):
 ```python
 class ForecastStore(Protocol):
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId: ...
-        # Plan 327: a re-run whose natural key (station_id, model_id, issued_at,
-        # parameter) already exists is classified by the decision table
-        # (services/forecast_retry.py). Row 4 (IDENTICAL) returns the STORED id,
-        # writes nothing and raises nothing — that is what makes a cycle that
-        # died partway re-runnable. Plan 328: rows 1 and 2 mark the stored row
-        # SUPERSEDED and insert the replacement in the SAME transaction,
-        # returning the replacement's id; the original keeps its values and its
-        # evidence. Row 3 raises ForecastRetryConflictError.
+        # Purpose-bound store: STANDARD by default. Reads/writes cannot cross class.
+        # Class-local key: (station_id, model_id, issued_at, parameter, data_use).
+        # Retry decisions/ordering: Plan 327 § D1 and its data-use amendment.
+        # IDENTICAL returns the stored ID without writes; SUPERSEDING_ROWS replace
+        # atomically while retaining the original. QC-conflict row 3 refuses.
         # Every other storage failure still propagates raw (Plan 038 D5).
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None: ...
     def fetch_evidence(self, forecast_id: ForecastId) -> PersistedForecastEvidence | None: ...

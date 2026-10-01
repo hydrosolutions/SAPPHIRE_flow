@@ -1385,3 +1385,9 @@ detail and rows never admit this relation. Combined contributor evidence checks 
 the store's purpose; other-class evidence is unavailable, not implicitly trusted.
 SQL snapshot checks are bounded structure/identity checks; strict canonical parsing
 remains a type/store obligation. Review any future direct writer before activation.
+
+The `types/forecast_lineage.py` snapshot/decode ValueError path can include Pydantic
+ValidationError text with protected `input_value` fragments (including delivery IDs
+and consumed values). Safe error projection for this exact path remains a preactivation
+wiring hold: future public/scheduled writers must not log or return raw parser/driver
+exceptions. This documentation does not add sanitizer behavior or authorize exposure.

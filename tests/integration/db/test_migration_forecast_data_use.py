@@ -121,6 +121,11 @@ class TestDeployedRuntimeRoleGuard:
         with role_harness.owner_engine.begin() as conn:
             ordinary, test = _pair(conn)
         engine = sa.create_engine(role_harness.role_url(role, password))
+        refusal = (
+            "test forecast writes are disabled pending deployment isolation"
+            if role == "sapphire_worker"
+            else "disabled|permission denied"
+        )
         try:
             with engine.begin() as conn:
                 assert conn.scalar(sa.text("SELECT session_user")) == role
@@ -129,13 +134,11 @@ class TestDeployedRuntimeRoleGuard:
                 )
                 # API may refuse at its ACL before reaching the trigger. This
                 # proves login-level denial; owner SQL/COPY tests prove the guard.
-                with pytest.raises(
-                    sa.exc.DBAPIError, match="disabled|permission denied"
-                ):
+                with pytest.raises(sa.exc.DBAPIError, match=refusal):
                     store.store_forecast(test)
             with (
                 engine.begin() as conn,
-                pytest.raises(sa.exc.DBAPIError, match="disabled|permission denied"),
+                pytest.raises(sa.exc.DBAPIError, match=refusal),
                 conn.begin_nested(),
             ):
                 conn.execute(
