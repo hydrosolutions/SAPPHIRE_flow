@@ -37,7 +37,7 @@ import forecast_interface as fi
 import polars as pl
 import pytest
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
 from sapphire_flow.models.aquacast import AQUACAST_TO_CANONICAL_NAME, AquacastShim
 
 _ISSUE = datetime(2025, 1, 1, tzinfo=UTC)
@@ -1101,3 +1101,541 @@ class TestConfigPathAndHashCannotDrift:
 
         assert Path(shim.config_path).is_file()
         assert Path(shim.config_path).name == "cmal_small.yaml"
+
+
+class TestMemberAreaFailures:
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    @pytest.mark.parametrize("bad_area", [None, 0.0, -1.0, float("nan"), float("inf")])
+    def test_bad_member_does_not_block_healthy_member(
+        self, method: str, bad_area: float | None
+    ) -> None:
+        native = _discharge_success({"healthy": 2.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        healthy = _canonical_station_inputs(
+            area_km2=864.0, discharge_m3_s=10.0, precip_mm=3.0, temp_c=4.0
+        )
+        bad = _canonical_station_inputs(
+            area_km2=bad_area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        artifact, rng = object(), Random(42)
+        state = rng.getstate()
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE, _VALID]}
+        )
+        result = getattr(shim, method)(
+            artifact,
+            inputs=fi.ModelInputs(stations={"bad": bad, "healthy": healthy}),
+            rng=rng,
+            **kwargs,
+        )
+        assert isinstance(result, fi.ModelSuccess)
+        assert set(result.output.variables) == {"bad", "healthy"}
+        good = result.output.variables["healthy"]["discharge"]
+        assert good.deterministic is not None
+        assert good.deterministic.data["value"].to_list() == pytest.approx([20.0])
+        assert good.metadata.unit is fi.Unit.M3_PER_S
+        assert result.output.model_name == "cmal_pool_pt"
+        assert result.output.issue_datetime == _ISSUE
+        failed = result.output.variables["bad"]["discharge"]
+        assert failed.status is fi.VariableStatus.FAILURE
+        assert failed.flags == frozenset({fi.ForecastFlag.DATA_AVAILABILITY})
+        assert failed.metadata.unit is fi.Unit.M3_PER_S
+        assert failed.deterministic is failed.quantiles is failed.trajectories is None
+        assert failed.epistemic_uncertainty is None
+        calls = getattr(shim._inner, f"{method}_calls")  # noqa: SLF001
+        assert len(calls) == 1
+        assert set(calls[0]["inputs"].stations) == {"healthy"}
+        assert calls[0]["artifact"] is artifact
+        assert calls[0]["rng"] is rng
+        assert rng.getstate() == state
+        assert all(calls[0][key] == value for key, value in kwargs.items())
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_outbound_area_failure_preserves_healthy_output(self, method: str) -> None:
+        native = _discharge_success({"healthy": 2.0, "bad": 4.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+
+        # No discharge history to convert: the bad area is first needed outbound.
+        def station(area: float) -> fi.StationInputs:
+            return fi.StationInputs(
+                static={"area": area},
+                dynamic={
+                    _DAILY: fi.SpatialInputs(
+                        data={
+                            fi.SpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputs(
+                                past_known={
+                                    "aquacast": {
+                                        "temperature": _series(
+                                            "temperature", 2.0, fi.Unit.DEG_C
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    )
+                },
+            )
+
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        result = getattr(shim, method)(
+            object(),
+            inputs=fi.ModelInputs(
+                stations={"healthy": station(864.0), "bad": station(0.0)}
+            ),
+            rng=Random(0),
+            **kwargs,
+        )
+        assert isinstance(result, fi.ModelSuccess)
+        assert (
+            result.output.variables["bad"]["discharge"].status
+            is fi.VariableStatus.FAILURE
+        )
+        good = result.output.variables["healthy"]["discharge"]
+        assert good.deterministic is not None
+        assert good.deterministic.data["value"].to_list() == pytest.approx([20.0])
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_inner_total_failure_is_returned_unchanged(self, method: str) -> None:
+        failure = fi.ModelFailure(
+            model_name="native-model",
+            issue_datetime=_VALID,
+            cause=fi.FailureCause.RESOURCE,
+            message="unavailable",
+        )
+        shim = _shim_with_fake_inner(predict_result=failure, hindcast_result=failure)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0}.items()
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        assert (
+            getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+            is failure
+        )
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_all_invalid_does_not_call_inner(self, method: str) -> None:
+        shim = _shim_with_fake_inner()
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"missing": None, "zero": 0.0}.items()
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE, _VALID]}
+        )
+        result = getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+        assert isinstance(result, fi.ModelFailure)
+        assert result.cause is fi.FailureCause.INPUT_DATA
+        assert result.issue_datetime == _ISSUE
+        assert result.model_name == "cmal_pool_pt"
+        assert getattr(shim._inner, f"{method}_calls") == []  # noqa: SLF001
+
+    def test_empty_station_bundle_is_rejected_by_locked_fi(self) -> None:
+        with pytest.raises(ValueError, match="at least one station"):
+            fi.ModelInputs(stations={})
+
+    @pytest.mark.parametrize("area", [0.0, 86.4])
+    def test_empty_hindcast_dates_are_argument_error(self, area: float) -> None:
+        shim = _shim_with_fake_inner()
+        inputs = fi.ModelInputs(
+            stations={
+                "station": _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="at least one issue datetime"):
+            shim.hindcast(object(), inputs=inputs, issue_datetimes=[], rng=Random(0))
+        assert shim._inner.hindcast_calls == []  # noqa: SLF001
+
+    @pytest.mark.parametrize("method", ["train", "retrain"])
+    def test_training_stays_strict_for_mixed_members(self, method: str) -> None:
+        shim = _shim_with_fake_inner()
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0}.items()
+            }
+        )
+        args = (inputs,) if method == "train" else (object(), inputs)
+        with pytest.raises(ConfigurationError, match="finite and positive"):
+            getattr(shim, method)(*args, config={}, rng=Random(0))
+        assert getattr(shim._inner, f"{method}_calls") == []  # noqa: SLF001
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_outbound_failure_only_replaces_affected_variable(
+        self, method: str
+    ) -> None:
+        native = _discharge_success({"station": 4.0})
+        assert isinstance(native, fi.ModelSuccess)
+        discharge = native.output.variables["station"]["discharge"]
+        temperature = fi.VariableOutput(
+            metadata=fi.VariableMetadata(
+                unit=fi.Unit.DEG_C, timedelta=_DAILY, forecast_horizon=1, offset=0
+            ),
+            deterministic=discharge.deterministic,
+            status=fi.VariableStatus.SUCCESS,
+        )
+        native.output.variables["station"]["temperature"] = temperature
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        basin_average = fi.SpatialRepresentation.BASIN_AVERAGE
+        inputs = fi.ModelInputs(
+            stations={
+                "station": fi.StationInputs(
+                    static={"area": 0.0},
+                    dynamic={
+                        _DAILY: fi.SpatialInputs(
+                            data={
+                                basin_average: fi.DynamicInputs(
+                                    past_known={
+                                        "aquacast": {
+                                            "temperature": _series(
+                                                "temperature", 2.0, fi.Unit.DEG_C
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        )
+                    },
+                )
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        result = getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+        assert isinstance(result, fi.ModelSuccess)
+        variables = result.output.variables["station"]
+        assert variables["temperature"] is temperature
+        assert variables["discharge"].status is fi.VariableStatus.FAILURE
+        assert variables["discharge"].metadata.unit is fi.Unit.M3_PER_S
+        assert variables["discharge"].deterministic is None
+        assert variables["discharge"].flags == frozenset(
+            {fi.ForecastFlag.DATA_AVAILABILITY}
+        )
+
+    def test_unknown_output_station_is_not_an_area_failure(self) -> None:
+        shim = _shim_with_fake_inner(
+            predict_result=_discharge_success({"unknown": 1.0})
+        )
+        inputs = fi.ModelInputs(
+            stations={
+                "good": _canonical_station_inputs(
+                    area_km2=86.4, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+            }
+        )
+        with pytest.raises(ConfigurationError, match="not present in the inputs"):
+            shim.predict(object(), inputs=inputs, issue_datetime=_ISSUE, rng=Random(0))
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_failed_target_uses_served_metadata_without_sibling_flags(
+        self, method: str
+    ) -> None:
+        native = _discharge_success({"good": 2.0})
+        assert isinstance(native, fi.ModelSuccess)
+        original = native.output.variables["good"]["discharge"]
+        assert original.deterministic is not None
+        frame = original.deterministic.data
+        frame = pl.concat([frame, frame.with_columns(pl.col("datetime") + _DAILY)])
+        metadata = fi.VariableMetadata(
+            unit=fi.Unit.MM_PER_DAY, timedelta=_DAILY, forecast_horizon=2, offset=1
+        )
+        native.output.variables["good"]["discharge"] = fi.VariableOutput(
+            metadata=metadata,
+            deterministic=fi.DeterministicData(data=frame),
+            status=fi.VariableStatus.SUCCESS,
+            flags=frozenset({fi.ForecastFlag.HIGH_EPISTEMIC_UNCERTAINTY}),
+        )
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0}.items()
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        result = getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+        assert isinstance(result, fi.ModelSuccess)
+        failed = result.output.variables["bad"]["discharge"]
+        assert failed.metadata.forecast_horizon == 2
+        assert failed.metadata.offset == 1
+        assert failed.metadata.timedelta == _DAILY
+        assert failed.flags == frozenset({fi.ForecastFlag.DATA_AVAILABILITY})
+        good = result.output.variables["good"]["discharge"]
+        assert good.flags == frozenset({fi.ForecastFlag.HIGH_EPISTEMIC_UNCERTAINTY})
+        assert good.deterministic is not None
+        assert good.deterministic.data["datetime"].to_list() == [
+            _VALID,
+            _VALID + _DAILY,
+        ]
+
+    @pytest.mark.parametrize("defect", ["missing", "unit", "ambiguous"])
+    def test_unsupported_failure_metadata_is_explicit_output_error(
+        self, defect: str
+    ) -> None:
+        native = _discharge_success({"good": 2.0, "other": 3.0})
+        assert isinstance(native, fi.ModelSuccess)
+        variables = native.output.variables
+        if defect == "missing":
+            variables = {
+                key: {"unrelated": values["discharge"]}
+                for key, values in variables.items()
+            }
+            native = fi.ModelSuccess(
+                output=fi.ModelOutput(
+                    model_name="cmal_pool_pt",
+                    issue_datetime=_ISSUE,
+                    variables=variables,
+                )
+            )
+        elif defect == "unit":
+            for values in variables.values():
+                values["discharge"].metadata.unit = fi.Unit.DEG_C
+        else:
+            variables["other"]["discharge"].metadata.offset = 1
+        shim = _shim_with_fake_inner(predict_result=native)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "other": 86.4, "bad": 0.0}.items()
+            }
+        )
+        match = {
+            "missing": "omitted declared target",
+            "unit": "unit differs",
+            "ambiguous": "ambiguous failure metadata",
+        }[defect]
+        with pytest.raises(ModelOutputError, match=match):
+            shim.predict(object(), inputs=inputs, issue_datetime=_ISSUE, rng=Random(0))
+
+    def test_existing_outbound_failure_does_not_need_area(self) -> None:
+        native = _discharge_success({"good": 2.0})
+        assert isinstance(native, fi.ModelSuccess)
+        metadata = fi.VariableMetadata(
+            unit=fi.Unit.MM_PER_DAY, timedelta=_DAILY, forecast_horizon=3, offset=2
+        )
+        native.output.variables["bad"] = {
+            "discharge": fi.VariableOutput(
+                metadata=metadata, status=fi.VariableStatus.FAILURE
+            )
+        }
+        shim = _shim_with_fake_inner(predict_result=native)
+        station = _canonical_station_inputs(
+            area_km2=86.4, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        # Native-unit input avoids inbound conversion; no output data needs scaling.
+        bad = fi.StationInputs(
+            static={},
+            dynamic={
+                _DAILY: fi.SpatialInputs(
+                    data={
+                        fi.SpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputs(
+                            past_known={
+                                "aquacast": {
+                                    "discharge": _series(
+                                        "discharge", 1.0, fi.Unit.MM_PER_DAY
+                                    )
+                                }
+                            }
+                        )
+                    }
+                )
+            },
+        )
+        result = shim.predict(
+            object(),
+            inputs=fi.ModelInputs(
+                stations={
+                    "good": station,
+                    "bad": bad,
+                    "excluded": _canonical_station_inputs(
+                        area_km2=0.0, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                    ),
+                }
+            ),
+            issue_datetime=_ISSUE,
+            rng=Random(0),
+        )
+        assert isinstance(result, fi.ModelSuccess)
+        failed = result.output.variables["bad"]["discharge"]
+        assert failed.status is fi.VariableStatus.FAILURE
+        assert failed.metadata.forecast_horizon == 3
+        assert failed.metadata.offset == 2
+        assert failed.metadata.unit is fi.Unit.M3_PER_S
+        assert not failed.flags
+
+        excluded = result.output.variables["excluded"]["discharge"]
+        assert excluded.metadata.forecast_horizon == 1
+        assert excluded.metadata.offset == 0
+        assert excluded.flags == frozenset({fi.ForecastFlag.DATA_AVAILABILITY})
+
+    def test_failed_members_use_each_declared_targets_own_metadata(self) -> None:
+        native = _discharge_success({"good": 2.0})
+        assert isinstance(native, fi.ModelSuccess)
+        discharge = native.output.variables["good"]["discharge"]
+        temperature = fi.VariableOutput(
+            metadata=fi.VariableMetadata(
+                unit=fi.Unit.DEG_C,
+                timedelta=timedelta(hours=6),
+                forecast_horizon=1,
+                offset=3,
+            ),
+            deterministic=discharge.deterministic,
+            status=fi.VariableStatus.SUCCESS,
+        )
+        native.output.variables["good"]["temperature"] = temperature
+        requirement = _native_requirement()
+        requirement.targets["temperature"] = _target(fi.Unit.DEG_C)
+        shim = _shim_with_fake_inner(
+            predict_result=native, input_requirement=requirement
+        )
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0}.items()
+            }
+        )
+        result = shim.predict(
+            object(), inputs=inputs, issue_datetime=_ISSUE, rng=Random(0)
+        )
+        assert isinstance(result, fi.ModelSuccess)
+        failed = result.output.variables["bad"]
+        assert set(failed) == {"discharge", "temperature"}
+        assert failed["temperature"].metadata == temperature.metadata
+        assert failed["discharge"].metadata.timedelta == _DAILY
+        assert failed["discharge"].metadata.unit is fi.Unit.M3_PER_S
+
+    def test_hindcast_keeps_each_issue_block_and_inner_identity(self) -> None:
+        native = _discharge_success({"good": 2.0})
+        assert isinstance(native, fi.ModelSuccess)
+        var = native.output.variables["good"]["discharge"]
+        assert var.deterministic is not None
+        frame = var.deterministic.data
+        later = frame.with_columns(
+            pl.col("issue_datetime") + _DAILY, pl.col("datetime") + _DAILY
+        )
+        native.output.variables["good"]["discharge"] = fi.VariableOutput(
+            metadata=var.metadata,
+            status=fi.VariableStatus.SUCCESS,
+            deterministic=fi.DeterministicData(data=pl.concat([frame, later])),
+        )
+        shim = _shim_with_fake_inner(hindcast_result=native)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 864.0, "bad": 0.0}.items()
+            }
+        )
+        result = shim.hindcast(
+            object(), inputs=inputs, issue_datetimes=[_ISSUE, _VALID], rng=Random(0)
+        )
+        assert isinstance(result, fi.ModelSuccess)
+        assert result.output.model_name == native.output.model_name
+        assert result.output.issue_datetime == native.output.issue_datetime
+        good = result.output.variables["good"]["discharge"]
+        assert good.deterministic is not None
+        assert good.deterministic.data["issue_datetime"].to_list() == [_ISSUE, _VALID]
+        assert good.deterministic.data["datetime"].to_list() == [
+            _VALID,
+            _VALID + _DAILY,
+        ]
+        assert good.deterministic.data["value"].to_list() == pytest.approx([20.0, 20.0])
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_injected_failure_metadata_is_independent(self, method: str) -> None:
+        native = _discharge_success({"good": 2.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0, "also_bad": -1.0}.items()
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        result = getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+        assert isinstance(result, fi.ModelSuccess)
+        result.output.variables["bad"]["discharge"].metadata.offset = 10
+        assert result.output.variables["also_bad"]["discharge"].metadata.offset == 0
+        assert result.output.variables["good"]["discharge"].metadata.offset == 0
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_excluded_member_diagnostic_contains_no_input_value(
+        self, method: str
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        native = _discharge_success({"good": 2.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        good = _canonical_station_inputs(
+            area_km2=86.4, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        bad = _canonical_station_inputs(
+            area_km2=None, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        bad.static["area"] = "sensitive-area-canary"
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        with capture_logs() as events:
+            result = getattr(shim, method)(
+                object(),
+                inputs=fi.ModelInputs(stations={"good": good, "bad": bad}),
+                rng=Random(0),
+                **kwargs,
+            )
+        assert isinstance(result, fi.ModelSuccess)
+        assert events == [
+            {
+                "event": "aquacast.station_excluded",
+                "station_key": "bad",
+                "model_name": "cmal_pool_pt",
+                "reason": "invalid_catchment_area",
+                "log_level": "warning",
+            }
+        ]

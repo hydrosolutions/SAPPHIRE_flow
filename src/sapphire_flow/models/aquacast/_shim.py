@@ -49,6 +49,7 @@ from importlib import resources
 from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeVar
 
 import polars as pl
+import structlog
 from forecast_interface import (
     AggregationMethod,
     DeterministicData,
@@ -56,6 +57,7 @@ from forecast_interface import (
     DynamicInputSpec,
     EpistemicUncertaintyData,
     FailureCause,
+    ForecastFlag,
     InputRequirement,
     InputSeries,
     ModelFailure,
@@ -68,9 +70,11 @@ from forecast_interface import (
     StationInputs,
     TrajectoryData,
     Unit,
+    VariableOutput,
+    VariableStatus,
 )
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
 from sapphire_flow.models.aquacast._units import (
     AreaConversionError,
     m3_per_s_to_mm_per_day,
@@ -89,8 +93,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         ModelResult,
         PastKnownVariable,
         TrainedArtifact,
-        VariableOutput,
     )
+
+log = structlog.get_logger(__name__)
 
 _CONFIG_PACKAGE: Final[str] = "sapphire_flow.models.aquacast.configs"
 
@@ -436,6 +441,27 @@ def _to_aquacast_inputs(inputs: ModelInputs) -> ModelInputs:
     )
 
 
+def _inference_inputs(
+    inputs: ModelInputs,
+    *,
+    model_name: str,
+) -> tuple[ModelInputs | None, dict[str, AreaConversionError]]:
+    stations: dict[str, StationInputs] = {}
+    failures: dict[str, AreaConversionError] = {}
+    for key, station in inputs.stations.items():
+        try:
+            stations[key] = _to_aquacast_station_inputs(key, station)
+        except AreaConversionError as exc:
+            failures[key] = exc
+            log.warning(
+                "aquacast.station_excluded",
+                station_key=key,
+                model_name=model_name,
+                reason="invalid_catchment_area",
+            )
+    return (ModelInputs(stations=stations) if stations else None), failures
+
+
 # ---------------------------------------------------------------------------------
 # T3 — data translation, outbound (aquacast-native -> canonical).
 # ---------------------------------------------------------------------------------
@@ -480,7 +506,16 @@ def _variable_output_outbound(
 ) -> VariableOutput:
     if name != _DISCHARGE or var.metadata.unit is not Unit.MM_PER_DAY:
         return var
-    factor = _discharge_scale(area_km2=area_km2, station=station, to_aquacast=False)
+    if var.status is VariableStatus.FAILURE and not any(
+        (var.deterministic, var.quantiles, var.trajectories, var.epistemic_uncertainty)
+    ):
+        return var.model_copy(
+            update={"metadata": var.metadata.model_copy(update={"unit": Unit.M3_PER_S})}
+        )
+    try:
+        factor = _discharge_scale(area_km2=area_km2, station=station, to_aquacast=False)
+    except AreaConversionError:
+        return _area_variable_failure(var, name=name)
     return var.model_copy(
         update={
             "metadata": var.metadata.model_copy(update={"unit": Unit.M3_PER_S}),
@@ -513,21 +548,74 @@ def _to_canonical_output(output: ModelOutput, *, inputs: ModelInputs) -> ModelOu
     )
 
 
-def _to_canonical_result(result: ModelResult, *, inputs: ModelInputs) -> ModelResult:
+def _area_variable_failure(var: VariableOutput, *, name: str) -> VariableOutput:
+    return VariableOutput(
+        metadata=var.metadata.model_copy(
+            update={"unit": _translate_target_unit(name, var.metadata.unit)}
+        ),
+        status=VariableStatus.FAILURE,
+        flags=var.flags | {ForecastFlag.DATA_AVAILABILITY},
+    )
+
+
+def _to_canonical_result(
+    result: ModelResult,
+    *,
+    inputs: ModelInputs,
+    failed_stations: Sequence[str] = (),
+    targets: Mapping[str, Unit] | None = None,
+) -> ModelResult:
     if isinstance(result, ModelFailure):
         return result
-    return ModelSuccess(output=_to_canonical_output(result.output, inputs=inputs))
+    output = _to_canonical_output(result.output, inputs=inputs)
+    if failed_stations:
+        # Failed entries have no data. Use the model's actual returned target
+        # cadence/horizon, not a guessed horizon from its input declaration.
+        if not targets:
+            raise ModelOutputError("aquacast failure entries require declared targets")
+        templates: dict[str, VariableOutput] = {}
+        for name, unit in targets.items():
+            candidates = [
+                station_vars[name]
+                for station_vars in output.variables.values()
+                if name in station_vars
+            ]
+            if not candidates:
+                raise ModelOutputError(
+                    f"aquacast output omitted declared target {name!r}"
+                )
+            # Existing no-data failures may carry nominal timing rather than the
+            # served timing. Keep them unchanged; prefer members with real output.
+            candidates = [
+                var for var in candidates if var.status is not VariableStatus.FAILURE
+            ] or candidates
+            metadata = candidates[0].metadata
+            if metadata.unit is not unit:
+                raise ModelOutputError(
+                    f"aquacast output unit differs for target {name!r}"
+                )
+            if any(var.metadata != metadata for var in candidates[1:]):
+                raise ModelOutputError(
+                    "unsupported aquacast shim output: ambiguous failure metadata "
+                    f"for target {name!r}"
+                )
+            templates[name] = candidates[0]
+        for station in failed_stations:
+            output.variables[station] = {
+                name: VariableOutput(
+                    metadata=templates[name].metadata.model_copy(),
+                    status=VariableStatus.FAILURE,
+                    flags=frozenset({ForecastFlag.DATA_AVAILABILITY}),
+                )
+                for name in targets
+            }
+    return ModelSuccess(output=output)
 
 
 def _area_failure(
     exc: AreaConversionError, *, model_name: str, issue_datetime: datetime
 ) -> ModelFailure:
-    """A missing/invalid station `area` is an ANTICIPATED input-data failure — the
-    mandatory FI rule is `ModelFailure`, never a raise, for exactly this case
-    (`AGENTS.md` § ForecastInterface Adherence). `AreaConversionError` is the ONLY
-    `ConfigurationError` subtype this boundary intercepts; every other
-    `ConfigurationError` (e.g. D1's non-daily precipitation guard) keeps raising —
-    those are configuration/programming defects, not anticipated bad station data."""
+    """Report total inbound failure after no station could be translated."""
     return ModelFailure(
         model_name=model_name,
         issue_datetime=issue_datetime,
@@ -690,16 +778,28 @@ class AquacastShim:
         issue_datetime: datetime,
         rng: Random,
     ) -> ModelResult:
-        try:
-            aquacast_inputs = _to_aquacast_inputs(inputs)
-        except AreaConversionError as exc:
+        aquacast_inputs, failures = _inference_inputs(
+            inputs, model_name=self._model_name
+        )
+        if aquacast_inputs is None:
             return _area_failure(
-                exc, model_name=self._model_name, issue_datetime=issue_datetime
+                next(iter(failures.values())),
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
             )
         result = self._inner.predict(
             artifact, inputs=aquacast_inputs, issue_datetime=issue_datetime, rng=rng
         )
-        return _to_canonical_result(result, inputs=aquacast_inputs)
+        return _to_canonical_result(
+            result,
+            inputs=aquacast_inputs,
+            failed_stations=tuple(failures),
+            targets={
+                name: spec.unit for name, spec in self.input_requirement.targets.items()
+            }
+            if failures and isinstance(result, ModelSuccess)
+            else None,
+        )
 
     def serialize_artifact(self, artifact: TrainedArtifact) -> bytes:
         return self._inner.serialize_artifact(artifact)
@@ -721,19 +821,30 @@ class AquacastShim:
                 f"{type(self._inner).__name__} does not implement hindcast; "
                 f"{type(self).__name__} cannot proxy it"
             )
-        try:
-            aquacast_inputs = _to_aquacast_inputs(inputs)
-        except AreaConversionError as exc:
-            # Mirrors aquacast's OWN hindcast (`operational/model.py`), which reports
-            # a whole-batch failure against `issue_list[0]` — the earliest requested
-            # issue — since `ModelFailure.issue_datetime` is singular.
+        if not issue_datetimes:
+            raise ValueError("hindcast requires at least one issue datetime")
+        aquacast_inputs, failures = _inference_inputs(
+            inputs, model_name=self._model_name
+        )
+        if aquacast_inputs is None:
             return _area_failure(
-                exc, model_name=self._model_name, issue_datetime=issue_datetimes[0]
+                next(iter(failures.values())),
+                model_name=self._model_name,
+                issue_datetime=issue_datetimes[0],
             )
         result = inner_hindcast(
             artifact, inputs=aquacast_inputs, issue_datetimes=issue_datetimes, rng=rng
         )
-        return _to_canonical_result(result, inputs=aquacast_inputs)
+        return _to_canonical_result(
+            result,
+            inputs=aquacast_inputs,
+            failed_stations=tuple(failures),
+            targets={
+                name: spec.unit for name, spec in self.input_requirement.targets.items()
+            }
+            if failures and isinstance(result, ModelSuccess)
+            else None,
+        )
 
 
 class CmalPoolPT(AquacastShim):

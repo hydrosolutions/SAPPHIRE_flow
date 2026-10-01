@@ -15,17 +15,10 @@ For a catchment of area ``A`` km²::
 
 so ``m³/s = mm_per_day * A / 86.4``. The constant is exact, not fitted.
 
-**Plan 181 fixer.** A missing/non-numeric/non-finite/non-positive area is an
-*anticipated* per-station input-data problem (a station whose declared statics are
-incomplete or corrupt), not a programming bug — the mandatory FI rule
-(`AGENTS.md` § ForecastInterface Adherence) is that an anticipated `predict`/
-`hindcast` failure must be RETURNED as `ModelFailure`, never raised. `_require_area`
-therefore raises the dedicated `AreaConversionError` (a `ConfigurationError`
-subclass, so existing `pytest.raises(ConfigurationError, ...)` call sites are
-unaffected) precisely so `_shim.py`'s `predict`/`hindcast` can catch THIS failure
-mode specifically — and only this one — without also swallowing an unrelated
-`ConfigurationError` (e.g. Plan 181 D1's non-daily precipitation guard), which is a
-genuine configuration/programming defect that should keep raising.
+Missing or invalid area is an anticipated per-station input problem. The dedicated
+`AreaConversionError` lets predict/hindcast report explicit FI variable failures
+without discarding healthy stations. Only total inbound failure becomes
+`ModelFailure`; unrelated configuration errors and training errors still raise.
 """
 
 from __future__ import annotations
@@ -42,16 +35,15 @@ _MM_DAY_KM2_TO_M3_S: Final[float] = 1e6 * 1e-3 / 86400.0
 class AreaConversionError(ConfigurationError):
     """A station's `area` static is missing, non-numeric, non-finite, or
     non-positive — an anticipated per-station INPUT_DATA failure, not a programming
-    bug. `_shim.py`'s `predict`/`hindcast` catch this specific type and return
-    `ModelFailure(cause=FailureCause.INPUT_DATA, ...)` per the mandatory FI rule."""
+    bug. The shim maps only this specific error to FI input-failure outcomes."""
 
 
 def _require_area(area_km2: object, *, station: str) -> float:
     """Area is a *divisor* in one direction, so a zero or non-finite value must fail
     loudly rather than yield ``inf``/``nan`` discharge. ``area`` is one of the model's
     declared statics, so a missing one is a data-availability problem for THAT
-    station, surfaced by raising here and converted to a `ModelFailure` at the
-    `predict`/`hindcast` boundary (`_shim.py`)."""
+    station, surfaced by raising here and converted to an FI failure outcome at
+    the `predict`/`hindcast` boundary (`_shim.py`)."""
     if not isinstance(area_km2, int | float) or isinstance(area_km2, bool):
         raise AreaConversionError(
             f"station {station!r}: catchment area must be numeric for the "
