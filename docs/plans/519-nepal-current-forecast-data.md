@@ -168,7 +168,12 @@ supersedes within the test class, preserving the previous immutable evidence. Ot
 return the identical ID. For equal values and artifact, a simultaneous lineage AND
 QC-verdict change deliberately remains row-3 REFUSED, not superseded: the historical
 QC-policy conflict contract still requires operator review. Test that exact joint-change
-case; do not move the lineage check ahead of QC refusal. Fingerprints exclude run IDs
+case; do not move the lineage check ahead of QC refusal. The refusal message/runbook
+must tell the operator to retain the existing result, record the conflict and investigate
+changed QC/curve provenance. A later genuine scheduled issue may proceed; do not retimestamp
+a failed run, overwrite the held row or claim it succeeded. Same-key replacement under a
+changed QC policy needs separate explicit approval, not an undocumented bypass.
+Fingerprints exclude run IDs
 and wall-clock capture times and include immutable input versions; numerical equality
 alone cannot alias new provenance.
 Cross-class records never enter the comparison at all.
@@ -447,8 +452,13 @@ observation-alert tests and `tests/integration/services/test_forecast_data_use_i
 (new). Run `uv run pytest tests/unit/services/test_training_data.py tests/unit/services/test_hindcast.py tests/unit/services/test_component_derivation.py tests/unit/services/test_observation_alert_checker.py tests/integration/services/test_forecast_data_use_isolation.py -q`.
 Bounded source inspection must account for every direct forecast-table reference in
 `src/`, `scripts/` and backup/restore tooling, with file/line and safe default recorded
-in the PR; tests exercise bypasses rather than merely count references. Include old
-by-ID/historical/explicit-status paths, ordinary state read and backup round trip.
+in the PR; tests exercise bypasses rather than merely count references. The listed
+files are starting points, not a closed inventory: include `ops/watchdog.py`,
+`ops/evidence_backup_host.py`, `store/forecast_preservation_store.py`,
+`flows/collect_bafu_forecasts.py`, `cli/register_deployments.py` and `api/__init__.py`
+where the bounded sweep finds a relevant reader. Standard watchdog freshness must not
+be refreshed by test-only production; test availability is reported separately. Include
+old by-ID/historical/explicit-status paths, ordinary state read and backup round trip.
 
 **Pre-change:** failing canary tests demonstrate existing unfiltered forecast reader
 paths; physical provisional-input exclusion is a new-store regression from T1a.
@@ -579,8 +589,10 @@ without mistaking absence, an old cycle-health record or a crash for success/fai
 
 **In:** new `types/forecast_attempt.py`, `store/forecast_attempt_store.py`, metadata and
 additive migration, cycle write seam and focused tests. Owns the latest-only projection
-schema and conditional writer keyed by station/model/parameter/use-class. Existing
-cycle health says only any-forecast-produced and cannot answer this contract; reuse its
+schema and conditional writer keyed by station/model/parameter/use-class. This task
+also attaches T1c's shared activation-guard function to the new attempt relation and
+owns its PostgreSQL disabled-gate/runtime-role test; T1c cannot attach a trigger to a
+relation that does not yet exist. Existing cycle health says only any-forecast-produced and cannot answer this contract; reuse its
 safe-reason vocabulary, not its aggregate as a fabricated per-model verdict. No history
 analytics. Writes ordered by cycle/attempt identity; older concurrent runs cannot replace
 newer outcomes. Success references a committed same-class forecast; failed persistence
@@ -592,7 +604,8 @@ cannot mark success. A crash leaves unfinished/unknown/stale state honestly.
 `tests/unit/flows/test_forecast_attempt_reporting.py`; run
 `uv run pytest tests/integration/store/test_forecast_attempt_store.py tests/unit/flows/test_forecast_attempt_reporting.py tests/unit/flows/test_run_forecast_cycle_resume.py -q`.
 Cover out-of-order/concurrent attempts, both use classes, success/result mismatch,
-rollback, no-prior-data and crash-in-progress plus a healthy sibling.
+rollback, no-prior-data and crash-in-progress plus a healthy sibling. Direct test-attempt writes
+while activation is disabled must be rejected by the new relation's DB trigger.
 
 **Pre-change:** new contracts fail against absent projection; show existing aggregate
 cycle success cannot distinguish failed and successful model siblings.
@@ -637,7 +650,9 @@ and existing selector/view; no copied selector implementation or new plotting fe
 **Out:** edits to the separate map repository, false consumer approval or deploying keys.
 
 **Verification:** `uv run pytest tests/unit/api/test_map_contract.py tests/unit/tools/test_check_map_contract_version.py -q`; use the documented native generator and drift command
-from those tests, reviewed before execution. Bounded handoff receipt identifies the map
+from those tests: `uv run python tools/generate_map_contract.py` after the additive
+contract-version change, and `uv run python tools/check_map_contract_version.py --base-ref origin/main`.
+The equality test above is the drift gate. Bounded handoff receipt identifies the map
 agent/PR that accepts the contract and their remaining proxy/browser tests. Without that
 receipt, record a coordination hold, not completed end-to-end delivery.
 
