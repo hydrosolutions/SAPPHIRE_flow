@@ -1650,3 +1650,10 @@ Run protected-role failed-preflight/stale-column tests and generic inventory/det
 coverage. Distinguish strict Python canonical parsing from bounded SQL shape/available
 identity checks and T3 consumption completeness. Contributor station protection is
 retained through the contributor's own join, not a copied transitive closure.
+
+Migration roundtrip fixtures must seed/read historical forecast schemas through
+explicit legacy SQL or reflection, not the current PgForecastStore/current forecast
+metadata. The publication migration regression compares the complete legacy header,
+member values and incomplete-evidence row through `0062 → 0063 → 0062`; newer store
+columns must not be required to test an older additive migration. Do not add production
+fallbacks for historical schemas to satisfy migration fixtures.
