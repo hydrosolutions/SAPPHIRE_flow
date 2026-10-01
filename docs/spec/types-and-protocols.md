@@ -3226,8 +3226,18 @@ class ObservationStore(Protocol):
 
 #### ForecastStore
 
+Ordinary human review listing requires an explicit `STANDARD` store purpose after
+station/tenant authorization and before any summary/count/detail read. Missing or
+wrong purpose returns safe 503 without counts or values, including empty pages.
+There is no fallback to STANDARD for an unknown dependency. Detail and review
+serialization independently refuse non-STANDARD forecasts. STANDARD pagination is
+unchanged.
+
 ```python
 class ForecastStore(Protocol):
+    @property
+    def data_use(self) -> ForecastDataUse: ...
+        # Read-only construction-time purpose, identical in Pg and Fake.
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId: ...
         # Purpose-bound store: STANDARD by default. Reads/writes cannot cross class.
         # Class-local key: (station_id, model_id, issued_at, parameter, data_use).

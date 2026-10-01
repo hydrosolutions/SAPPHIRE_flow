@@ -427,6 +427,10 @@ class FakeForecastStore:
         # a synthetic `pre_capture_forecast` marker rather than `None`.
         self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
 
+    @property
+    def data_use(self) -> ForecastDataUse:
+        return self._data_use
+
     def _current_id_for_key(
         self, key: tuple[StationId, ModelId, UtcDatetime, str, ForecastDataUse]
     ) -> ForecastId | None:

@@ -668,3 +668,124 @@ def test_human_test_forecast_is_not_found_even_with_test_store(
         response = client.post(url, json=body)
     assert response.status_code == 404
     assert response.json() == {"error": "Forecast not found", "detail": None}
+
+
+@pytest.mark.parametrize("offset", [0, 1, 2])
+@pytest.mark.parametrize("purpose", ["standard", "expired_rating_test"])
+@pytest.mark.parametrize("authorization", ["authorized", "no_grant"])
+def test_review_list_refuses_wrong_purpose_before_pagination(
+    client: TestClient,
+    fake_stores: dict[str, Any],
+    publication_data: tuple[Any, FakePublicationStore],
+    offset: int,
+    purpose: str,
+    authorization: str,
+) -> None:
+    from sapphire_flow.types.enums import ForecastDataUse, QcStatus
+    from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+    from tests.fakes.fake_stores import FakeForecastStore
+
+    class ObservedForecastStore(FakeForecastStore):
+        summary_reads = 0
+        detail_reads = 0
+
+        def fetch_forecast_summaries(self, *args: Any, **kwargs: Any) -> Any:
+            self.summary_reads += 1
+            return super().fetch_forecast_summaries(*args, **kwargs)
+
+        def fetch_forecast(self, *args: Any, **kwargs: Any) -> Any:
+            self.detail_reads += 1
+            return super().fetch_forecast(*args, **kwargs)
+
+    station, _ = publication_data
+    data_use = ForecastDataUse(purpose)
+    store = ObservedForecastStore(data_use=data_use)
+    lineage = (
+        ForecastInputLineage(
+            provisional_discharge_fingerprints=("a" * 64,),
+            transformation_versions=("v1",),
+        )
+        if data_use is ForecastDataUse.EXPIRED_RATING_TEST
+        else None
+    )
+    for model in ("first", "second"):
+        store.store_forecast(
+            replace(
+                _forecast(station.id, model),
+                data_use=data_use,
+                input_lineage=lineage,
+                qc_status=QcStatus.QC_PASSED,
+            )
+        )
+    fake_stores["forecast_store"] = store
+    app.dependency_overrides[require_human_principal] = lambda: HumanPrincipal(
+        user_id=UserId(uuid4()),
+        tenant_id=station.tenant_id,
+        grants=frozenset()
+        if authorization == "no_grant"
+        else frozenset(
+            {StationGrant(station_id=station.id, permission=HumanPermission.REVIEW)}
+        ),
+    )
+    response = client.get(
+        "/api/v1/review/forecasts",
+        params={
+            "station_id": str(station.id),
+            "start": "2026-09-28T00:00:00+00:00",
+            "end": "2026-09-29T00:00:00+00:00",
+            "limit": 1,
+            "offset": offset,
+        },
+    )
+    if authorization == "no_grant":
+        assert response.status_code == 404
+        assert (store.summary_reads, store.detail_reads) == (0, 0)
+        assert "items" not in response.json()
+        assert "total" not in response.json()
+    elif data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Forecast review unavailable",
+            "detail": None,
+        }
+        assert (store.summary_reads, store.detail_reads) == (0, 0)
+    else:
+        assert response.status_code == 200
+        assert response.json()["total"] == 2
+        assert len(response.json()["items"]) == (1 if offset < 2 else 0)
+        assert store.summary_reads == 1
+        assert store.detail_reads == (1 if offset < 2 else 0)
+
+
+@pytest.mark.parametrize("authorization", ["authorized", "no_grant", "foreign_tenant"])
+def test_review_list_unknown_purpose_fails_closed_after_authorization(
+    client: TestClient,
+    fake_stores: dict[str, Any],
+    publication_data: tuple[Any, FakePublicationStore],
+    authorization: str,
+) -> None:
+    station, _ = publication_data
+    # No purpose or read methods: even attempting a read fails this test.
+    fake_stores["forecast_store"] = object()
+    app.dependency_overrides[require_human_principal] = lambda: HumanPrincipal(
+        user_id=UserId(uuid4()),
+        tenant_id=TenantId(uuid4())
+        if authorization == "foreign_tenant"
+        else station.tenant_id,
+        grants=frozenset()
+        if authorization == "no_grant"
+        else frozenset(
+            {StationGrant(station_id=station.id, permission=HumanPermission.REVIEW)}
+        ),
+    )
+    response = client.get(
+        "/api/v1/review/forecasts",
+        params={
+            "station_id": str(station.id),
+            "start": "2026-09-28T00:00:00+00:00",
+            "end": "2026-09-29T00:00:00+00:00",
+        },
+    )
+    assert response.status_code == (503 if authorization == "authorized" else 404)
+    assert "total" not in response.json()
+    assert "items" not in response.json()

@@ -183,3 +183,124 @@ def test_sql_test_selection_insert_refused(db_connection: sa.Connection) -> None
                 version=1,
             )
         )
+
+
+@pytest.mark.parametrize(
+    "purpose", [ForecastDataUse.STANDARD, ForecastDataUse.EXPIRED_RATING_TEST]
+)
+def test_publication_readers_filter_class_not_superseded_status(
+    db_connection: sa.Connection,
+    purpose: ForecastDataUse,
+) -> None:
+    from datetime import timedelta
+
+    from sapphire_flow.db.metadata import (
+        forecast_publication_decisions,
+        forecast_publication_events,
+    )
+
+    store, principal, ordinary_id, candidate = seed_test_candidate(db_connection)
+    decision = _publish(store, principal, ordinary_id)
+    visible_id = ordinary_id if purpose is ForecastDataUse.STANDARD else candidate.id
+    # Transactional fixture only: coherent legacy refs cannot be written in production.
+    with db_connection.begin_nested():
+        if purpose is ForecastDataUse.EXPIRED_RATING_TEST:
+            tables = (
+                forecast_publication_selections,
+                forecast_publication_decisions,
+                forecast_publication_events,
+            )
+            for table in tables:
+                db_connection.execute(
+                    sa.text(
+                        f"DROP TRIGGER trg_{table.name}_standard_only ON {table.name}"
+                    )
+                )
+            db_connection.execute(
+                sa.update(forecast_publication_selections).values(
+                    selected_forecast_id=candidate.id
+                )
+            )
+            row = dict(
+                db_connection.execute(sa.select(forecast_publication_decisions))
+                .mappings()
+                .one()
+            )
+            row.update(
+                id=uuid4(), forecast_id=candidate.id, idempotency_key="synthetic-test"
+            )
+            db_connection.execute(
+                sa.insert(forecast_publication_decisions).values(**row)
+            )
+            event = dict(
+                db_connection.execute(sa.select(forecast_publication_events))
+                .mappings()
+                .one()
+            )
+            event.update(
+                sequence=event["sequence"] + 1,
+                decision_id=row["id"],
+                forecast_id=candidate.id,
+            )
+            db_connection.execute(
+                sa.insert(forecast_publication_events).values(**event)
+            )
+            for table in tables:
+                db_connection.execute(
+                    sa.text(
+                        f"CREATE TRIGGER trg_{table.name}_standard_only BEFORE INSERT "
+                        f"OR UPDATE ON {table.name} FOR EACH ROW EXECUTE FUNCTION "
+                        f"public.reject_test_forecast_publication()"
+                    )
+                )
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == visible_id)
+            .values(status="superseded")
+        )
+        selection = store.fetch_selection(decision.key)
+        ids, total = store.fetch_selected_ids(
+            candidate.station_id,
+            candidate.issued_at - timedelta(days=1),
+            candidate.issued_at + timedelta(days=1),
+        )
+        latest = store.fetch_latest_selected_id(
+            candidate.station_id, candidate.ensemble.parameter
+        )
+        decisions = store.fetch_decisions(visible_id)
+        events = store.fetch_events(
+            after_sequence=0, limit=50, tenant_ids=frozenset({principal.tenant_id})
+        )
+        if purpose is ForecastDataUse.STANDARD:
+            assert (
+                selection is not None and selection.selected_forecast_id == ordinary_id
+            )
+            assert (ids, total) == ([ordinary_id], 1)
+            assert latest == ordinary_id
+            assert [d.forecast_id for d in decisions] == [ordinary_id]
+        else:
+            assert selection is None
+            assert (ids, total) == ([], 0)
+            assert latest is None
+            assert decisions == []
+        assert [e.decision.forecast_id for e in events] == [ordinary_id]
+
+
+@pytest.mark.parametrize(
+    "purpose", [ForecastDataUse.STANDARD, ForecastDataUse.EXPIRED_RATING_TEST]
+)
+def test_forecast_store_public_purpose_is_read_only(
+    db_connection: sa.Connection,
+    purpose: ForecastDataUse,
+) -> None:
+    from sapphire_flow.protocols.stores import ForecastStore
+    from tests.fakes.fake_stores import FakeForecastStore
+
+    for store in (
+        PgForecastStore(db_connection, data_use=purpose),
+        FakeForecastStore(data_use=purpose),
+    ):
+        assert isinstance(store, ForecastStore)
+        assert store.data_use is purpose
+        with pytest.raises(AttributeError, match="no setter"):
+            store.data_use = ForecastDataUse.STANDARD  # pyright: ignore[reportAttributeAccessIssue]

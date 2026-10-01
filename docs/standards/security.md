@@ -1371,6 +1371,14 @@ unconditionally refuses, independently of unchanged `0069`. Existing append-only
 protect rejection class and lineage. API/workers cannot activate anything; the delivery-only
 operator gains no authority or privileges. No new private relation or catalog grant is added.
 
+Ordinary review listing checks the store's public read-only purpose after station and
+tenant authorization, before any count or forecast read. Unknown/non-STANDARD purpose
+returns a safe 503 without metadata/counts, even beyond the last page. No-grant and
+foreign-tenant refusals keep their existing 404 ordering. Review serialization also
+refuses TEST payloads. Publication readers filter the primary forecast's class;
+replaced/event-reference safety relies on database guards and migration preflight,
+not reader sanitization of arbitrary states created after disabling those guards.
+
 Rejection lineage SQL checks only top-level shape, not source/tenant linkage or actual
 consumption. These remain explicit preactivation holds. `rejected_forecasts.input_lineage`,
 like `forecasts.input_lineage`, inherits table-wide SELECT and generic-browser visibility.

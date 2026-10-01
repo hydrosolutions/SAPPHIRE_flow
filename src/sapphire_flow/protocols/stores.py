@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         AlertStatus,
         FlowRegime,
         ForcingType,
+        ForecastDataUse,
         ForecastStatus,
         ObservationSource,
         PipelineCheckType,
@@ -198,6 +199,11 @@ class ForecastStore(Protocol):
     reads have the same class boundary as current reads. Classification is not
     a scientific-validity certificate. Test writers remain database-disabled.
     """
+
+    @property
+    def data_use(self) -> ForecastDataUse:
+        """Construction-time read/write purpose; never widened by a read."""
+        raise NotImplementedError
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         """Plan 327/328 — a re-run meeting an existing forecast under the

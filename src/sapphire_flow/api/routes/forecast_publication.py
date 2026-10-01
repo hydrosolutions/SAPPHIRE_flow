@@ -92,6 +92,8 @@ def _human_forecast(
 def _review_forecast(
     forecast: Any, stores: dict[str, Any], now: UtcDatetime
 ) -> ReviewForecast:
+    if forecast.data_use is not ForecastDataUse.STANDARD:
+        raise HTTPException(status_code=404, detail="Forecast not found")
     tenant_id = station_tenant_id(stores, forecast.station_id)
     pub = require_publication_store(stores)
     metadata, decisions = publication_metadata(pub, forecast, tenant_id)
@@ -135,7 +137,10 @@ def list_review_forecasts(
     end_dt = parse_api_datetime(end, "end")
     if end_dt <= start_dt or end_dt - start_dt > timedelta(days=31):
         raise HTTPException(status_code=400, detail="Review range must be 1-31 days")
-    rows, total = stores["forecast_store"].fetch_forecast_summaries(
+    forecast_store = stores["forecast_store"]
+    if getattr(forecast_store, "data_use", None) is not ForecastDataUse.STANDARD:
+        raise HTTPException(status_code=503, detail="Forecast review unavailable")
+    rows, total = forecast_store.fetch_forecast_summaries(
         sid, start_dt, end_dt, limit=limit, offset=offset
     )
     now = clock()

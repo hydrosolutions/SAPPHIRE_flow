@@ -475,7 +475,19 @@ assignments enter rejection capture only after a numerical QC failure; passing-o
 invalid results and non-QC failures do not become rejected records. Mixed parameter
 verdicts, nonfinite encoding and abandoned-batch rollback retain their existing contract.
 Normal publication lock order, authorization, replay, withdrawal and selected
-superseded STANDARD history remain unchanged.
+superseded STANDARD history remain unchanged. Ordinary review listing verifies an
+explicit read-only STANDARD store purpose after authorization and before counts or
+pagination; unknown/TEST dependencies return safe 503, not partially filtered pages.
+Detail and serialization retain independent class refusal. Publication reader filters
+apply to the primary forecast; reference consistency relies on the database guards
+and preflight, not sanitization of arbitrary guard-disabled mixed-reference states.
+
+Disposable regressions cover two-row HTTP pages (including empty pages and no-grant
+refusal), coherent TEST-primary publication reader exclusion alongside superseded
+STANDARD history, and all seven legacy `0069` publication/status preflight branches.
+Failed upgrades leave revision and all legacy table rows unchanged. Rejection shape
+tests distinguish the lineage CHECK from malformed/empty-shape trigger errors; they
+do not establish source authority. Fixture-only guard removal is not an activation path.
 
 `0069` remains byte-for-byte unchanged. Both forecast and rejection TEST INSERT/COPY
 paths unconditionally refuse owner/runtime execution. No activation schema, store,

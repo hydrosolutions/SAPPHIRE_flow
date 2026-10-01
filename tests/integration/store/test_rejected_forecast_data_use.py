@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import replace
 from datetime import timedelta
@@ -180,9 +181,52 @@ def test_structural_class_reads_counts_and_immutable_lineage(
     assert test_store.fetch_rejected_forecasts(*window)[1] == 2
 
 
-@pytest.mark.parametrize("lineage", [None, "{}", "[]", '{"snapshots":null}'])
+_SHAPE = {
+    "snapshots": [],
+    "static_attributes": [],
+    "provisional_discharge_fingerprints": ["a" * 64],
+    "contributor_forecast_ids": [],
+    "transformation_versions": ["v1"],
+}
+
+
+@pytest.mark.parametrize(
+    "lineage,message",
+    [
+        (None, "ck_rejected_forecasts_input_lineage"),
+        ("{}", "test rejection input lineage is malformed"),
+        ("[]", "test rejection input lineage is malformed"),
+        ('{"snapshots":null}', "test rejection input lineage is malformed"),
+        (
+            json.dumps({**_SHAPE, "extra": []}),
+            "test rejection input lineage is malformed",
+        ),
+        *[
+            (
+                json.dumps({**_SHAPE, field: None}),
+                "test rejection input lineage is malformed",
+            )
+            for field in _SHAPE
+        ],
+        *[
+            (
+                json.dumps({**_SHAPE, field: {}}),
+                "test rejection input lineage is malformed",
+            )
+            for field in _SHAPE
+        ],
+        (
+            json.dumps({**_SHAPE, "provisional_discharge_fingerprints": []}),
+            "test rejection input lineage is empty",
+        ),
+        (
+            json.dumps({**_SHAPE, "transformation_versions": []}),
+            "test rejection input lineage is empty",
+        ),
+    ],
+)
 def test_sql_rejection_requires_lineage_shape(
-    db_connection: sa.Connection, lineage: str | None
+    db_connection: sa.Connection, lineage: str | None, message: str
 ) -> None:
     from uuid import uuid4
 
@@ -197,7 +241,7 @@ def test_sql_rejection_requires_lineage_shape(
         )
     )
     with (
-        pytest.raises(sa.exc.DBAPIError, match="lineage"),
+        pytest.raises(sa.exc.DBAPIError, match=message),
         db_connection.begin_nested(),
     ):
         db_connection.execute(

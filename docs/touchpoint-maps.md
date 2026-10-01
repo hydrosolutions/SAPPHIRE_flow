@@ -1639,6 +1639,14 @@ and TEST reviewed/published lifecycle changes. Preserve selected superseded STAN
 authorization, replay, withdrawal and concurrency tests. Run the new publication/rejection
 data-use store, real-role and migration tests plus existing API/store/concurrency gates.
 Downgrade must refuse either retained TEST class, not just rejection columns.
+Review list tests must inject TEST and unknown-purpose dependencies before any count
+or row read; include pagination past the last page, no-grant/foreign-tenant refusal,
+and unchanged STANDARD counts/pages. Keep `ForecastStore.data_use` read-only with
+Pg/Fake parity. Reader tests cover coherent TEST primary references and superseded
+STANDARD history; replaced/event-reference safety relies on database invariants.
+Preflight tests use legacy SQL at `0069` for statuses and every current/replaced
+reference, checking unchanged revision/history. Shape tests distinguish CHECK, shape
+trigger and dormant refusal, without implying stronger lineage authority.
 
 No private relation, grant or activation capability is added. Rejection lineage inherits
 raw table/browser access; T1d must close it together with forecast lineage before activation.
