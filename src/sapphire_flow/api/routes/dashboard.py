@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.routes.tables import get_reflected, ordinary_forecast_rows
+from sapphire_flow.types.enums import ForecastDataUse
 
 router = APIRouter(tags=["dashboard"])
 
@@ -129,14 +130,14 @@ def dashboard(
     if forecast_table is not None and forecast_count > 0:
         latest = conn.execute(
             sa.select(sa.func.max(forecast_table.c.issued_at)).where(
-                forecast_table.c.data_use == "standard"
+                forecast_table.c.data_use == ForecastDataUse.STANDARD.value
             )
         ).scalar_one()
         forecast_latest = latest.strftime("%Y-%m-%d %H:%M") if latest else None
         rows = (
             conn.execute(
                 sa.select(forecast_table.c.status, sa.func.count().label("cnt"))
-                .where(forecast_table.c.data_use == "standard")
+                .where(forecast_table.c.data_use == ForecastDataUse.STANDARD.value)
                 .group_by(forecast_table.c.status)
             )
             .mappings()

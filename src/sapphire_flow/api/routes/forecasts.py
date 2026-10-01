@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected, visible_columns
+from sapphire_flow.types.enums import ForecastDataUse
 
 router = APIRouter(tags=["forecasts"])
 
@@ -32,13 +33,13 @@ def forecast_list(
     if has_forecasts:
         q = (
             sa.select(*visible_columns(forecasts))
-            .where(forecasts.c.data_use == "standard")
+            .where(forecasts.c.data_use == ForecastDataUse.STANDARD.value)
             .order_by(forecasts.c.issued_at.desc())
         )
         count_q = (
             sa.select(sa.func.count())
             .select_from(forecasts)
-            .where(forecasts.c.data_use == "standard")
+            .where(forecasts.c.data_use == ForecastDataUse.STANDARD.value)
         )
 
         if station_id:
@@ -92,7 +93,8 @@ def forecast_detail(
     row = (
         conn.execute(
             sa.select(*visible_columns(forecasts)).where(
-                forecasts.c.id == forecast_id, forecasts.c.data_use == "standard"
+                forecasts.c.id == forecast_id,
+                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
             )
         )
         .mappings()
@@ -145,7 +147,8 @@ def forecast_data_json(
     forecast = (
         conn.execute(
             sa.select(*visible_columns(forecasts)).where(
-                forecasts.c.id == forecast_id, forecasts.c.data_use == "standard"
+                forecasts.c.id == forecast_id,
+                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
             )
         )
         .mappings()

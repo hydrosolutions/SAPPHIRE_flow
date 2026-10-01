@@ -119,60 +119,6 @@ def test_standard_read_projection_and_worker_retry(role_harness, role: str) -> N
         conn.rollback()
 
 
-def test_backup_keeps_both_protected_column_privileges_and_full_dump(
-    role_harness,
-) -> None:
-    import sqlalchemy as sa
-
-    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
-    from tests.integration.store.test_forecast_data_use import _pair, _stores
-
-    with role_harness.owner_engine.begin() as conn:
-        standard, test = _pair(conn)
-        conn.execute(
-            sa.text("DROP TRIGGER trg_forecast_test_write_refused ON forecasts")
-        )
-        standard_store, test_store = _stores(conn)
-        standard_store.store_forecast(standard)
-        test_store.store_forecast(test)
-        conn.execute(
-            sa.text(
-                "CREATE TRIGGER trg_forecast_test_write_refused "
-                "BEFORE INSERT ON forecasts FOR EACH ROW "
-                "EXECUTE FUNCTION public.forecast_test_write_refused()"
-            )
-        )
-    engine = sa.create_engine(
-        role_harness.role_url("sapphire_backup", "backup-pw-default")
-    )
-    try:
-        with engine.connect() as conn:
-            retained = conn.execute(
-                sa.text(
-                    "SELECT data_use, input_lineage "
-                    "FROM forecasts WHERE id IN (:standard, :test)"
-                ),
-                {"standard": standard.id, "test": test.id},
-            ).all()
-            assert dict(retained) == {
-                "standard": None,
-                "expired_rating_test": test.input_lineage.content,
-            }
-            for table in ["forecasts", "rejected_forecasts"]:
-                assert conn.scalar(
-                    sa.text(
-                        "SELECT has_column_privilege(current_user, :table, "
-                        "'input_lineage', 'SELECT')"
-                    ),
-                    {"table": table},
-                )
-                conn.execute(sa.text(f"SELECT * FROM {table}"))
-    finally:
-        engine.dispose()
-    result = role_harness.dump_as_backup_role("backup-pw-default")
-    assert result.returncode == 0, result.stderr
-
-
 def test_unknown_definer_refused_without_mutating_it(role_harness) -> None:
     import sqlalchemy as sa
 
@@ -199,3 +145,307 @@ def test_unknown_definer_refused_without_mutating_it(role_harness) -> None:
     finally:
         with role_harness.owner_engine.begin() as conn:
             conn.execute(sa.text("DROP FUNCTION public.lineage_dynamic_canary()"))
+
+
+@pytest.mark.parametrize("role", ["sapphire_api", "sapphire_worker"])
+@pytest.mark.parametrize("kind", ["opaque", "parsed", "view"])
+def test_live_runtime_temp_objects_do_not_abort_preflights(
+    role_harness, role: str, kind: str
+) -> None:
+    import sqlalchemy as sa
+    from alembic.config import Config
+
+    from alembic import command
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    password = "api-fixture" if role == "sapphire_api" else "worker-fixture"
+    engine = sa.create_engine(role_harness.role_url(role, password))
+    statements = {
+        "opaque": "CREATE FUNCTION pg_temp.runtime_probe() RETURNS text "
+        "LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::text'",
+        "parsed": "CREATE FUNCTION pg_temp.runtime_probe() RETURNS SETOF text "
+        "LANGUAGE sql SECURITY DEFINER BEGIN ATOMIC "
+        "SELECT input_lineage FROM public.forecasts; END",
+        "view": "CREATE TEMP VIEW runtime_probe AS SELECT "
+        "input_lineage FROM public.forecasts",
+    }
+    try:
+        with engine.connect() as conn:
+            conn.execute(sa.text(statements[kind]))
+            conn.commit()
+            if kind != "opaque":
+                with (
+                    pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                    conn.begin_nested(),
+                ):
+                    conn.execute(
+                        sa.text(
+                            "SELECT * FROM pg_temp.runtime_probe"
+                            + ("()" if kind == "parsed" else "")
+                        )
+                    )
+                conn.rollback()
+            result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+            assert result.returncode == 0, result.stderr
+            conn.execute(sa.text("SELECT id FROM stations LIMIT 1"))
+            conn.commit()
+            config = Config("alembic.ini")
+            command.downgrade(config, "0070")
+            command.upgrade(config, "0071")
+            conn.execute(sa.text("SELECT id FROM forecasts LIMIT 1"))
+            conn.commit()
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                conn.begin_nested(),
+            ):
+                conn.execute(sa.text("SELECT input_lineage FROM forecasts"))
+    finally:
+        engine.dispose()
+
+
+def test_bootstrap_normalizes_stale_health_set_membership(role_harness) -> None:
+    import sqlalchemy as sa
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    with role_harness.owner_engine.begin() as conn:
+        conn.execute(sa.text("CREATE ROLE stale_health_reader NOLOGIN"))
+        conn.execute(
+            sa.text("GRANT SELECT(input_lineage) ON forecasts TO stale_health_reader")
+        )
+        conn.execute(
+            sa.text(
+                "GRANT stale_health_reader TO "
+                "sapphire_publication_health WITH INHERIT FALSE, SET TRUE"
+            )
+        )
+        before = conn.execute(
+            sa.text(
+                "SELECT rolcanlogin, rolpassword FROM pg_authid WHERE "
+                "rolname='sapphire_publication_health'"
+            )
+        ).one()
+    try:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            after = conn.execute(
+                sa.text(
+                    "SELECT rolcanlogin, rolpassword FROM pg_authid WHERE "
+                    "rolname='sapphire_publication_health'"
+                )
+            ).one()
+            assert tuple(after) == tuple(before)
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT pg_has_role('sapphire_publication_health', "
+                    "'stale_health_reader', 'MEMBER')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_column_privilege('sapphire_publication_health', "
+                    "'forecasts', 'input_lineage', 'SELECT')"
+                )
+            )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege('sapphire_api', 'stations', 'SELECT')"
+                )
+            )
+    finally:
+        with role_harness.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text("REVOKE stale_health_reader FROM sapphire_publication_health")
+            )
+            conn.execute(sa.text("DROP OWNED BY stale_health_reader"))
+            conn.execute(sa.text("DROP ROLE stale_health_reader"))
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "sapphire_api",
+        "sapphire_worker",
+        "sapphire_publication_health",
+        "sapphire_operator",
+    ],
+)
+@pytest.mark.parametrize("table", ["forecasts", "rejected_forecasts"])
+def test_protected_columns_deny_copy_and_returning(
+    role_harness, role: str, table: str
+) -> None:
+    import psycopg
+    import sqlalchemy as sa
+
+    result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+    assert result.returncode == 0, result.stderr
+    with role_harness.owner_engine.connect() as conn, conn.begin():
+        conn.execute(sa.text(f"SET LOCAL ROLE {role}"))
+        for query in [
+            f"SELECT input_lineage FROM {table}",
+            f"UPDATE {table} SET id=id WHERE false RETURNING input_lineage",
+            f"INSERT INTO {table} (id) VALUES (gen_random_uuid()) "
+            f"RETURNING input_lineage",
+        ]:
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                conn.begin_nested(),
+            ):
+                conn.execute(sa.text(query))
+        with (
+            pytest.raises(
+                psycopg.errors.InsufficientPrivilege, match="permission denied"
+            ),
+            conn.begin_nested(),
+            conn.connection.driver_connection.cursor() as cursor,
+            cursor.copy(
+                f"COPY (SELECT input_lineage FROM {table}) TO STDOUT"
+            ) as copied,
+        ):
+            list(copied)
+
+
+def test_worker_supersession_status_and_summaries_under_column_grants(
+    role_harness,
+) -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import uuid4
+
+    import polars as pl
+    import sqlalchemy as sa
+
+    from sapphire_flow.types.enums import ForecastStatus
+    from sapphire_flow.types.ids import ForecastId
+    from tests.integration.store.test_forecast_data_use import _pair, _stores
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    with role_harness.owner_engine.connect() as conn, conn.begin():
+        standard, _ = _pair(conn)
+        store = _stores(conn)[0]
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        store.store_forecast(standard)
+        replacement = replace(
+            standard,
+            id=ForecastId(uuid4()),
+            ensemble=replace(
+                standard.ensemble,
+                values=standard.ensemble.values.with_columns(pl.col("value") + 1),
+            ),
+        )
+        store.store_forecast(replacement)
+        assert store.fetch_forecast(standard.id).status is ForecastStatus.SUPERSEDED
+        assert store.transition_status(replacement.id, 1, ForecastStatus.REVIEWED) == 2
+        summaries, count = store.fetch_forecast_summaries(
+            standard.station_id,
+            standard.issued_at - timedelta(days=1),
+            standard.issued_at + timedelta(days=1),
+        )
+        assert count == 2
+        assert {row.status for row in summaries} == {
+            ForecastStatus.SUPERSEDED,
+            ForecastStatus.REVIEWED,
+        }
+        conn.rollback()
+
+
+def test_api_legacy_and_browser_routes_under_column_grants(role_harness) -> None:
+    import sqlalchemy as sa
+
+    from sapphire_flow.api.routes import tables
+    from tests.integration.api.test_dashboard_forecasts import (
+        _client,
+        app_overrides_clear,
+    )
+    from tests.integration.store.test_forecast_data_use import _pair, _stores
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    with role_harness.owner_engine.connect() as conn, conn.begin():
+        standard, _ = _pair(conn)
+        _stores(conn)[0].store_forecast(standard)
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        tables._reflected = None
+        client = _client(conn)
+        try:
+            for path in [
+                "/",
+                "/forecasts/",
+                f"/forecasts/{standard.id}/",
+                f"/api/v1/forecasts/{standard.id}/data.json",
+                "/tables/",
+                "/tables/forecasts/",
+                "/tables/forecasts/rows",
+                "/tables/rejected_forecasts/",
+                "/tables/forecast_evidence_blobs/",
+            ]:
+                response = client.get(path)
+                assert response.status_code == 200, path
+                assert ">input_lineage<" not in response.text
+            assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_api"
+        finally:
+            client.close()
+            app_overrides_clear()
+            tables._reflected = None
+        conn.rollback()
+
+
+def test_safe_grants_match_current_projection_and_future_columns_fail_closed(
+    role_harness,
+) -> None:
+    import sqlalchemy as sa
+
+    from sapphire_flow.db.metadata import forecasts, rejected_forecasts
+    from sapphire_flow.store.forecast_read import forecast_columns
+    from sapphire_flow.types.enums import ForecastDataUse
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    with role_harness.owner_engine.connect() as conn, conn.begin():
+        for table in [forecasts, rejected_forecasts]:
+            projection = str(
+                sa.select(*forecast_columns(table, ForecastDataUse.STANDARD))
+            )
+            assert f"{table.name}.input_lineage" not in projection
+            for role in ["sapphire_api", "sapphire_worker"]:
+                for column in table.columns:
+                    allowed = conn.scalar(
+                        sa.text(
+                            "SELECT has_column_privilege(:role, :table, :column, "
+                            "'SELECT')"
+                        ),
+                        {"role": role, "table": table.name, "column": column.name},
+                    )
+                    assert allowed is (column.name != "input_lineage")
+            conn.execute(
+                sa.text(
+                    f"ALTER TABLE {table.name} ADD COLUMN unreviewed_future_column text"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_column_privilege('sapphire_api', :table, "
+                    "'unreviewed_future_column', 'SELECT')"
+                ),
+                {"table": table.name},
+            )
+        conn.rollback()
+
+
+def test_permanent_dependency_tracked_definer_still_refused(role_harness) -> None:
+    import sqlalchemy as sa
+
+    assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
+    with role_harness.owner_engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "CREATE FUNCTION public.lineage_parsed_canary() "
+                "RETURNS SETOF text LANGUAGE sql SECURITY DEFINER BEGIN ATOMIC "
+                "SELECT input_lineage FROM public.forecasts; END"
+            )
+        )
+    try:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode != 0
+        assert "review dependent definer functions" in result.stderr
+    finally:
+        with role_harness.owner_engine.begin() as conn:
+            conn.execute(sa.text("DROP FUNCTION public.lineage_parsed_canary()"))

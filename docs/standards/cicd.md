@@ -1647,6 +1647,12 @@ Bootstrap revokes stale PUBLIC/runtime table and lineage-column grants before la
 preflights and before applying safe grants. Unknown inherited/SET ROLE or indirect
 owner-object authority refuses; have the owner review it, never auto-grant around it.
 A failed migration rolls back atomically, unlike bootstrap's committed early revokes.
+Bootstrap ignores actual session-local temporary functions/views in all object preflights
+and applies existing managed health-role restrictions before lineage checks. Ownership
+refusal, LOGIN/credentials and later narrow grants remain unchanged. Init runs migration
+**before** bootstrap: unsafe inherited migration authority still refuses atomically. An
+authorized operator must resolve managed-role drift through approved role maintenance
+before retry; bootstrap ordering does not promise init can repair every starting state.
 Downgrade keeps the restrictive ACLs and does not remove retained evidence. TEST INSERT
 and COPY refusal in `0069`/`0070` is unchanged. This partial boundary does not close the
 remaining ordinary-reader, mixed restore, publication-health or activation holds.

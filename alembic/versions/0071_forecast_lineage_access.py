@@ -63,23 +63,29 @@ BEGIN
         )
         SELECT 1 FROM exposed e JOIN pg_class c ON c.oid = e.objid
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' OR EXISTS (
+        WHERE n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
+          AND (n.nspname = 'public' OR EXISTS (
             SELECT 1 FROM pg_roles r CROSS JOIN pg_roles runtime_role
             WHERE runtime_role.rolname IN
                 ('sapphire_api', 'sapphire_worker', 'sapphire_operator',
                     'sapphire_publication_health')
               AND pg_has_role(runtime_role.oid, r.oid, 'SET')
               AND has_any_column_privilege(r.oid, c.oid, 'SELECT')
-        )
+        ))
     ) THEN
         RAISE EXCEPTION
             'protected forecast lineage: review dependent views before runtime grants';
     END IF;
     IF EXISTS (
-        SELECT 1 FROM pg_proc f JOIN pg_depend d
+        SELECT 1 FROM pg_proc f
+        JOIN pg_namespace n ON n.oid = f.pronamespace
+        JOIN pg_depend d
           ON d.classid = 'pg_proc'::regclass AND d.objid = f.oid
         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attname = 'input_lineage'
-        WHERE d.refclassid = 'pg_class'::regclass
+        WHERE n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
+          AND d.refclassid = 'pg_class'::regclass
           AND d.refobjid IN ('public.forecasts'::regclass,
               'public.rejected_forecasts'::regclass)
           AND d.refobjsubid IN (0, a.attnum)
@@ -112,6 +118,8 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
         WHERE f.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
           AND f.oid NOT IN (
               'public.lock_publication_grants(uuid,uuid,uuid)'::regprocedure,
               'public.lock_publication_candidate(uuid)'::regprocedure)

@@ -284,6 +284,25 @@ JOIN pg_catalog.pg_roles member ON member.oid = am.member
 WHERE member.rolname IN ('sapphire_api', 'sapphire_worker')
 \gexec
 
+-- Plan 341 T2: host backup-health writer. Created without login so existing
+-- staging deployments need no new credential. During activation the operator
+-- enables LOGIN with a separate host-only password; bootstrap retains LOGIN
+-- on subsequent deploys while re-converging the narrow grants below.
+SELECT 'CREATE ROLE sapphire_publication_health NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_publication_health'
+)
+\gexec
+ALTER ROLE sapphire_publication_health NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS;
+SELECT format('REVOKE %I FROM sapphire_publication_health', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_publication_health'
+\gexec
+
 -- (3) Revoke all prior object privileges before the GRANTs below re-apply the
 --     intended least-privilege set, so a stale grant from an earlier over-
 --     broad deploy (e.g. UPDATE/DELETE on audit_log) cannot linger past this
@@ -371,23 +390,29 @@ BEGIN
         )
         SELECT 1 FROM exposed e JOIN pg_class c ON c.oid = e.objid
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' OR EXISTS (
+        WHERE n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
+          AND (n.nspname = 'public' OR EXISTS (
             SELECT 1 FROM pg_roles r CROSS JOIN pg_roles runtime_role
             WHERE runtime_role.rolname IN
                 ('sapphire_api', 'sapphire_worker', 'sapphire_operator',
                     'sapphire_publication_health')
               AND pg_has_role(runtime_role.oid, r.oid, 'SET')
               AND has_any_column_privilege(r.oid, c.oid, 'SELECT')
-        )
+        ))
     ) THEN
         RAISE EXCEPTION
             'protected forecast lineage: review dependent views before runtime grants';
     END IF;
     IF EXISTS (
-        SELECT 1 FROM pg_proc f JOIN pg_depend d
+        SELECT 1 FROM pg_proc f
+        JOIN pg_namespace n ON n.oid = f.pronamespace
+        JOIN pg_depend d
           ON d.classid = 'pg_proc'::regclass AND d.objid = f.oid
         JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attname = 'input_lineage'
-        WHERE d.refclassid = 'pg_class'::regclass
+        WHERE n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
+          AND d.refclassid = 'pg_class'::regclass
           AND d.refobjid IN ('public.forecasts'::regclass,
               'public.rejected_forecasts'::regclass)
           AND d.refobjsubid IN (0, a.attnum)
@@ -420,6 +445,8 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
         WHERE f.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.oid <> pg_my_temp_schema()
+          AND NOT pg_is_other_temp_schema(n.oid)
           AND f.oid NOT IN (
               'public.lock_publication_grants(uuid,uuid,uuid)'::regprocedure,
               'public.lock_publication_candidate(uuid)'::regprocedure)
@@ -576,8 +603,8 @@ GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
 GRANT INSERT ON model_artifact_warm_start TO sapphire_worker;
 -- Plan 404 T1: the append-only rejected-forecast record. INSERT-only — the
 -- role-independent append-only trigger (migration 0065) already refuses
--- UPDATE/DELETE/TRUNCATE even for the table owner; sapphire_api's blanket
--- SELECT above covers T3's read route, and never gets a write grant here.
+-- UPDATE/DELETE/TRUNCATE even for the table owner; the safe-column SELECT
+-- above covers the read route, and sapphire_api gets no write grant here.
 GRANT INSERT ON rejected_forecasts TO sapphire_worker;
 
 -- sapphire_worker must NOT be able to read the auth tables. The blanket
@@ -594,24 +621,6 @@ GRANT INSERT ON rejected_forecasts TO sapphire_worker;
 REVOKE SELECT ON access_tokens, access_token_stations,
     users, user_external_identities, human_station_grants FROM sapphire_worker;
 
--- Plan 341 T2: host backup-health writer. Created without login so existing
--- staging deployments need no new credential. During activation the operator
--- enables LOGIN with a separate host-only password; bootstrap retains LOGIN
--- on subsequent deploys while re-converging the narrow grants below.
-SELECT 'CREATE ROLE sapphire_publication_health NOLOGIN NOSUPERUSER NOCREATEDB '
-       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
-WHERE NOT EXISTS (
-    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_publication_health'
-)
-\gexec
-ALTER ROLE sapphire_publication_health NOSUPERUSER NOCREATEDB NOCREATEROLE
-    NOINHERIT NOREPLICATION NOBYPASSRLS;
-SELECT format('REVOKE %I FROM sapphire_publication_health', granted.rolname)
-FROM pg_catalog.pg_auth_members am
-JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
-JOIN pg_catalog.pg_roles member ON member.oid = am.member
-WHERE member.rolname = 'sapphire_publication_health'
-\gexec
 -- DROP OWNED removes stale column grants and default ACLs as well as table
 -- grants. Refuse to run it if this role unexpectedly owns an object.
 DO $$

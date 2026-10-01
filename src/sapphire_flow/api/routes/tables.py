@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.db.metadata import metadata as _app_metadata
+from sapphire_flow.types.enums import ForecastDataUse
 
 router = APIRouter(tags=["tables"])
 
@@ -34,7 +35,7 @@ PAGE_SIZE = 50
 
 def ordinary_forecast_rows(table: sa.Table) -> sa.ColumnElement[bool]:
     if table.name in {"forecasts", "rejected_forecasts"}:
-        return table.c.data_use == "standard"
+        return table.c.data_use == ForecastDataUse.STANDARD.value
     headers = _app_metadata.tables["forecasts"].alias("ordinary_forecast")
     if table.name in {
         "forecast_values",
@@ -44,21 +45,25 @@ def ordinary_forecast_rows(table: sa.Table) -> sa.ColumnElement[bool]:
     }:
         return sa.exists(
             sa.select(headers.c.id).where(
-                headers.c.id == table.c.forecast_id, headers.c.data_use == "standard"
+                headers.c.id == table.c.forecast_id,
+                headers.c.data_use == ForecastDataUse.STANDARD.value,
             )
         )
     if table.name == "forecast_evidence_blobs":
         evidence = _app_metadata.tables["forecast_evidence"].alias("ordinary_evidence")
-        return sa.exists(
-            sa.select(evidence.c.forecast_id)
-            .join(headers, headers.c.id == evidence.c.forecast_id)
-            .where(
-                headers.c.data_use == "standard",
-                sa.or_(
-                    evidence.c.snapshot_sha256 == table.c.sha256,
-                    evidence.c.artifact_sha256 == table.c.sha256,
-                ),
+
+        def standard_references(column: sa.ColumnElement[Any]) -> sa.Select[Any]:
+            return (
+                sa.select(column)
+                .select_from(evidence)
+                .join(headers, headers.c.id == evidence.c.forecast_id)
+                .where(headers.c.data_use == ForecastDataUse.STANDARD.value)
+                .where(column.is_not(None))
             )
+
+        return sa.or_(
+            table.c.sha256.in_(standard_references(evidence.c.snapshot_sha256)),
+            table.c.sha256.in_(standard_references(evidence.c.artifact_sha256)),
         )
     return sa.true()
 

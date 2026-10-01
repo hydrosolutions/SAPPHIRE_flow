@@ -193,6 +193,35 @@ class TestDeployedForecastGuard:
             )
 
 
+def _assert_raw_lineage_guard(
+    conn: sa.Connection, forecast: OperationalForecast, message: str
+) -> None:
+    from sapphire_flow.db.metadata import forecast_evidence, forecast_values
+
+    assert forecast.input_lineage is not None
+    tables = (forecasts, forecast_values, forecast_evidence)
+    before = [
+        conn.scalar(sa.select(sa.func.count()).select_from(table)) for table in tables
+    ]
+    with pytest.raises(sa.exc.DBAPIError, match=message), conn.begin_nested():
+        conn.execute(
+            sa.insert(forecasts).values(
+                id=forecast.id,
+                station_id=forecast.station_id,
+                model_id=forecast.model_id,
+                issued_at=forecast.issued_at,
+                representation="members",
+                parameter="discharge",
+                units="m3/s",
+                data_use=ForecastDataUse.EXPIRED_RATING_TEST.value,
+                input_lineage=forecast.input_lineage.content,
+            )
+        )
+    assert [
+        conn.scalar(sa.select(sa.func.count()).select_from(table)) for table in tables
+    ] == before
+
+
 class TestStructuralForecastIsolation:
     @pytest.mark.parametrize("different", [False, True])
     @pytest.mark.parametrize("test_first", [False, True])
@@ -378,6 +407,11 @@ class TestStructuralForecastIsolation:
         )
         with pytest.raises(StoreError, match="protected forecast"):
             _stores(structural_connection)[1].store_forecast(test)
+        _assert_raw_lineage_guard(
+            structural_connection,
+            test,
+            "forecast provisional input identity or tenant disagreement",
+        )
 
     def test_wrong_purpose_status_transition_is_denied(
         self, structural_connection: sa.Connection
@@ -420,6 +454,9 @@ class TestStructuralForecastIsolation:
         )
         with pytest.raises(StoreError, match="protected forecast"):
             _stores(conn)[1].store_forecast(changed)
+        _assert_raw_lineage_guard(
+            conn, changed, "forecast provisional input identity or tenant disagreement"
+        )
 
     def test_contributors_require_same_class_and_retained_evidence(
         self, structural_connection: sa.Connection
@@ -438,6 +475,11 @@ class TestStructuralForecastIsolation:
         )
         with pytest.raises(StoreError, match="protected forecast"):
             store.store_forecast(combined)
+        _assert_raw_lineage_guard(
+            structural_connection,
+            replace(combined, issued_at=_ISSUED_B),
+            "forecast contributor identity, class or tenant disagreement",
+        )
         combined = replace(
             combined,
             input_lineage=replace(

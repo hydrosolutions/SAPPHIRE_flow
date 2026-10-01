@@ -2085,10 +2085,12 @@ test rows in normal owner/runtime execution, including COPY. Deliberate DBA disa
 of guards is outside the runtime threat model. Direct-reader/alert/model-state
 closure remains separate work. Migration `0070` separately closes normal publication
 and test reviewed/published lifecycle paths; it does not enable any TEST writer.
-Specifically, `forecasts.input_lineage` inherits table-wide runtime SELECT and is not
-column-redacted by the generic forecast-table browser. It contains no TEST payload
-while insertion is disabled. Closing these raw-column/browser reads is an explicit
-T1d prerequisite **before activation**, not an already-delivered safeguard.
+Revision `0071` removes runtime/PUBLIC table-wide and raw-lineage SELECT from both
+forecast parent tables. API/worker readers receive explicit safe-column grants;
+STANDARD store projections do not request raw lineage. Legacy forecast, dashboard and
+generic browser queries filter STANDARD, including forecast-linked children and shared
+blob references. This is partial T1d, not activation readiness: remaining ordinary
+reader/evaluation/state/tooling and mixed restore/publication-health holds still apply.
 
 Contributor references initially require the same class. Mixed STANDARD/TEST
 combinations are unsupported pending separately reviewed T3c handling. Never omit an
@@ -2300,9 +2302,11 @@ refusal for owner/runtime execution. No activation capability or grant is added.
 The existing append-only guard also protects class and lineage. SQL checks only
 nonempty top-level lineage shape; canonical parsing belongs to the typed boundary.
 Rejection SQL source-identity/tenant linkage and actual-consumption completeness
-remain **preactivation holds**, not established by this schema. Both forecast and
-rejection raw lineage columns still inherit table SELECT/browser visibility; T1d
-must close both before any activation. No TEST data can enter while refusals remain.
+remain **preactivation holds**, not established by this schema. Revision `0071` protects
+both raw lineage columns with explicit safe-column runtime SELECT grants and matching
+STANDARD projections. Generic browser queries exclude TEST rows and raw lineage.
+This partial T1d boundary does not close the remaining reader or activation holds.
+No TEST data can enter through normal execution while the refusals remain.
 
 Its constructor's `transaction_factory` has NO
 default — every caller passes it explicitly: the flow's production bundle
@@ -2313,8 +2317,9 @@ never writes this store, and a write on a store built with `None` raises
 `ConfigurationError`. The migration (0065) adds a role-independent
 append-only guard (UPDATE/DELETE/TRUNCATE refused even for the table
 owner, mirroring migration 0057's `forecast_evidence` trigger).
-`sapphire_worker` gets INSERT only; `sapphire_api` reads via its existing
-blanket SELECT.
+`sapphire_worker` retains INSERT; API/worker reads use explicit safe-column SELECT,
+not blanket table SELECT. Neither role can read `input_lineage`. STANDARD store reads
+project NULL for that column; approved backup and owner access remain unchanged.
 
 **Flow-side capture (D5/D6, `flows/run_forecast_cycle.py`).** The flow
 mints one `attempt_id` per execution (bound into the structlog context for

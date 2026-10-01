@@ -1403,8 +1403,13 @@ remain unchanged. Downgrade retains these ACL restrictions.
 Bootstrap commits early revokes before later preflights. A failed transactional migration
 instead rolls its changes back: failure is not proof that the old ACL was repaired.
 Inherited/SET ROLE authority, catalog-dependent owner views (including whole-row reads),
-and unknown executable application SECURITY DEFINER functions refuse preflight rather
-than silently changing unrelated objects. The two maintained publication-lock functions
+and unknown executable permanent application SECURITY DEFINER functions refuse
+preflight rather than silently changing unrelated objects. All three object scans exclude
+actual PostgreSQL temporary namespaces, including parsed-body functions and views held
+by live runtime sessions; permanent unsafe controls still refuse. Existing managed
+publication-health restrictive attributes/membership normalization runs before bootstrap
+preflight, after operator safe-state, without changing LOGIN/credentials or later ownership
+checks and narrow grants. The two maintained publication-lock functions
 and extension-owned functions remain trusted infrastructure. Catalog inspection cannot
 certify arbitrary owner-created copies or future owner DDL; review those separately.
 
@@ -1426,8 +1431,19 @@ SQL snapshot checks are bounded structure/identity checks; strict canonical pars
 remains a type/store obligation. Review any future direct writer before activation.
 
 Snapshot/decode validation errors suppress raw Pydantic details and exception chains.
-Purpose-bound TEST store SQLAlchemy failures become a safe fatal `StoreError`, without
-raw statement/parameters/driver traceback. STANDARD storage errors retain their existing
+Purpose-bound TEST store SQLAlchemy failures raise a safe `StoreError` for that store
+operation, without raw statement/parameters in conventional rendered tracebacks. This is
+not guaranteed flow termination: existing best-effort rejected capture catches and logs
+storage failures. Renderers must honor suppressed context; trusted inspection of Python
+`__context__` is outside this rendered-output boundary. STANDARD storage errors retain their existing
 raw exception contract; retry/conflict decisions are not translated. This is not a global
-SQL logging sanitizer: SQL echo/debug parameter logging and direct owner SQL remain
-privileged tooling, not an authorized public or scheduled TEST writer.
+SQL logging sanitizer: PostgreSQL statement/error logs, psycopg/debug parameter logging,
+SQL echo and direct owner SQL remain privileged tooling, not authorized TEST wiring.
+
+Future nonowner TEST contributors also require separately reviewed read/write authority:
+the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denied by
+`0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
+Explicit deferred tooling includes `scripts/plan100_forecast_feed_resilience.py`,
+`tools/standing_snapshot.py` and mixed-class `scripts/restore-rehearsal.sh` verification.
+Modern API/Forecast Lab injected-purpose, evaluation/training/hindcast/state/health,
+full mixed protected restore/publication-health and T1c/T3 consumption remain held.

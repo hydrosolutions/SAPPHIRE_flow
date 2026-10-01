@@ -133,10 +133,17 @@ def test_downgrade_refuses_existing_test_data(
                 f"ROW EXECUTE FUNCTION public.{function}()"
             )
         )
+    with engine.connect() as conn:
+        starting_revision = conn.scalar(
+            sa.text("SELECT version_num FROM alembic_version")
+        )
     with pytest.raises(RuntimeError, match="downgrade refused"):
         command.downgrade(config, "0069")
     with engine.connect() as conn:
-        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0070"
+        assert (
+            conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+            == starting_revision
+        )
 
 
 def _legacy_rows(conn: sa.Connection) -> dict[str, list[str]]:

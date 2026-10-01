@@ -227,3 +227,58 @@ def test_rejection_browser_projects_only_standard_rows(
     finally:
         client.close()
         app_overrides_clear()
+
+
+def test_blob_count_and_pages_exclude_unreferenced_payload(
+    db_connection: sa.Connection, mixed_forecasts: tuple[str, str]
+) -> None:
+    from sapphire_flow.db.metadata import forecast_evidence_blobs
+
+    db_connection.execute(
+        sa.insert(forecast_evidence_blobs).values(
+            sha256="f" * 64, payload=b"unreferenced-data", byte_length=17
+        )
+    )
+    predicate = tables.ordinary_forecast_rows(forecast_evidence_blobs)
+    count = db_connection.scalar(
+        sa.select(sa.func.count()).select_from(forecast_evidence_blobs).where(predicate)
+    )
+    paged = [
+        db_connection.scalar(
+            sa.select(forecast_evidence_blobs.c.sha256)
+            .where(predicate)
+            .order_by(forecast_evidence_blobs.c.sha256)
+            .limit(1)
+            .offset(offset)
+        )
+        for offset in range(count)
+    ]
+    assert len(paged) == 2
+    assert "f" * 64 not in paged
+    client = _client(db_connection)
+    try:
+        response = client.get("/tables/forecast_evidence_blobs/")
+        assert response.status_code == 200
+        assert "unreferenced-data" not in response.text
+        assert "compressed-as-used-inputs" not in response.text
+        assert "model-weights" not in response.text
+    finally:
+        client.close()
+        app_overrides_clear()
+
+
+def test_blob_query_uses_uncorrelated_standard_membership() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    from sapphire_flow.db.metadata import forecast_evidence_blobs
+
+    sql = str(
+        sa.select(forecast_evidence_blobs.c.sha256)
+        .where(tables.ordinary_forecast_rows(forecast_evidence_blobs))
+        .compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert sql.count(" IN (SELECT ") == 2
+    assert "EXISTS" not in sql
+    assert (
+        "ordinary_evidence.snapshot_sha256 = forecast_evidence_blobs.sha256" not in sql
+    )

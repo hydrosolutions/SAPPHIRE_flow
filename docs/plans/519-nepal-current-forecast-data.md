@@ -425,9 +425,10 @@ or historical-record existence. See the types spec for the exact boundary. Futur
 non-store writers require reviewed canonical parsing before any activation.
 Completeness remains the future T3 assembler contract, not a claim inferred from
 nonempty caller metadata. No assembler, model/FI, publication or direct-reader sweep
-is delivered by this slice. `forecasts.input_lineage` still inherits runtime table-wide
-SELECT and generic forecast-table browser visibility; T1d must close those reads before
-activation. The protected join exclusion is not raw-column redaction.
+was delivered by that storage slice. Partial T1d revision `0071` now protects both raw
+lineage columns through explicit runtime safe-column grants and STANDARD projections;
+legacy/dashboard/browser readers exclude TEST. Remaining reader, evaluation, state,
+tooling and mixed restore/publication-health closure is still required before activation.
 Mixed-class contributor combinations are initially unsupported by this same-class
 storage boundary, pending separately reviewed T3c handling. Never omit actual
 contributors to fit the constraint; reject/defer such a combination.
@@ -499,10 +500,9 @@ activation-ready**. The existing provisional-input permission is INPUT-only.
 The rejection SQL guard checks only nonempty top-level lineage shape. Source identity,
 tenant linkage and complete actual consumption are unimplemented preactivation holds.
 Typed canonical lineage is validated at the store boundary, never by throwing from
-service payload construction. Both `forecasts.input_lineage` and
-`rejected_forecasts.input_lineage` inherit raw table SELECT/browser access. T1d must
-close both columns and parser/driver error projection before enabling any TEST writer.
-No protection of those raw columns is claimed by this slice. T3 state/alert/combination
+service payload construction. Partial T1d revision `0071` now protects both raw lineage
+columns and supplies safe Python rendered parser/TEST store error boundaries. This is
+not complete T1d or TEST writer authority. Remaining ordinary readers and T3 state/alert/combination
 and actual-consumption closures remain held. `0070` downgrade refuses retained TEST
 forecasts **or** rejections, since `0069` lacks the publication/status safeguards.
 
