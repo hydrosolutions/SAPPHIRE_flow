@@ -33,7 +33,7 @@ _STEP_NAME = "Install system deps for cfgrib / rioxarray / exactextract"
 # (workflow file, job id) for every job carrying the apt step.
 _SITES = (
     (".github/workflows/ci.yml", "unit"),
-    (".github/workflows/ci.yml", "integration"),
+    (".github/workflows/ci.yml", "integration-shard"),
     (".github/workflows/integration-nightly.yml", "integration-nightly"),
 )
 

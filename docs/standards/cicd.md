@@ -582,7 +582,7 @@ git push / open PR
   Tier 2 unit     → pytest tests/unit/ across FOUR sharded jobs, `-n auto` in each (system deps)
   Tier 2 unit-coverage → coverage combine over the four shards → one whole-suite number
   Tier 2 wheel    → wheel-only-guard (no-build uv sync)
-  Tier 3 integration → pytest tests/integration/ (postgres service)
+  Tier 3 integration → pytest tests/integration/ across TWO parallel shard jobs; pytest is serial inside each (postgres service)
   Tier 4 build    → docker buildx build, trivy image, syft SBOM
   (Tier 5 e2e)    → not yet implemented
         │ all tiers green → PR is mergeable
@@ -603,7 +603,11 @@ uv sync --frozen
 uv run check
 uv run check tests/unit/test_check.py              # optional focused example; not full validation
 uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing
-uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
+set -euo pipefail
+PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args heavy)"
+uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow"
+PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args rest)"
+uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow"
 uv run ruff format --check src/ tests/
 uv run ruff check src/ tests/
 uv run pyright --outputjson src/ > /tmp/pyright.json || true
@@ -665,9 +669,11 @@ Prerequisites decide which commands can really run:
 - System libraries: unit and integration tests that import cfgrib/rioxarray/
   exactextract need the same native libraries CI installs (`libeccodes0`,
   `libexpat1`, `libgeos-c1v5`, or platform equivalents).
-- PostgreSQL/PostGIS: the integration command needs a reachable database
-  matching `DATABASE_URL`. CI provides `postgis/postgis:16-3.4`; locally use
-  Docker or another PostGIS 16 service. Do not use xdist for integration.
+- PostgreSQL/PostGIS: each integration shard command needs a reachable database
+  matching `DATABASE_URL`. CI provides one `postgis/postgis:16-3.4` service per
+  shard runner, while many tests also create isolated Testcontainers databases.
+  Locally use Docker or another PostGIS 16 service. Do not use xdist for
+  integration.
 - Docker: image smoke/build validation needs a Docker daemon and a local
   `RECAP_DG_CLIENT_TOKEN` env var for the build secret.
 - Trivy, Syft and ShellCheck must be installed locally for their commands.
@@ -685,6 +691,10 @@ concurrency plugins are enabled. The unit and integration jobs upload small
 JUnit XML duration artifacts for 14 days. These artifacts aid diagnosis and do
 not replace the existing coverage data, coverage combine step, scan gates or
 severity thresholds.
+
+The first integration shard split uses the latest available JUnit evidence to
+keep the reviewed six-file `heavy` shard and a computed `rest` shard. Current
+summed testcase time is 278.162s for `heavy` and 309.646s for `rest`. The two shards run as separate GitHub jobs, but pytest stays serial inside each job. This follow-up duplicates the integration setup cost across two runners and intentionally adds a six-collection native proof in the `heavy` leg; that proof took 21.32s on the implementation machine. The earlier T2 unit-shard slice remains separate evidence and does not prove this integration follow-up. Current runner-minute estimates are therefore approximate and include duplicated setup plus the proof overhead; GitHub Actions measurements decide whether a later rebalance is needed.
 
 ### Known external-dependency caveats
 
@@ -705,8 +715,9 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 
 Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
 
-- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration` 25, `build-image-and-scan` 60. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires. (Values re-read from `ci.yml` on 2026-09-24, Plan 319; the previous figures had drifted.)
+- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
 - **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
+- **The `integration-shard` job is a two-leg SHARD MATRIX** with `fail-fast: false`. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
 
 <!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
@@ -743,11 +754,13 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 2 | `wheel-only-guard` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client` | — | Same command | No |
 | 2 | `wheel-only-guard` | Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client` | Step 1 guard | Same command | No |
-| 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
-| 3 | `integration` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
-| 3 | `integration` | `uv sync --frozen` | — | `uv sync` | No |
-| 3 | `integration` | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (the `--ignore` has been there since 2026-04-21, `d39aa8a`; live-API tests belong to the nightly, not the PR path) | — | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
-| 3 | `integration` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
+| 3 | `integration-shard` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 3 | `integration-shard` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 3 | `integration-shard` | `uv sync --frozen` | — | `uv sync` | No |
+| 3 | `integration-shard` | `uv run python tools/integration_shards.py --check-partition` in one matrix leg | current checkout and native pytest collection | Same command after `uv sync --frozen` | No |
+| 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (two parallel CI jobs, one for `heavy` and one for `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | — | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
+| 3 | `integration-shard` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, unique `integration-junit-<shard>` names, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — bounded diagnostic artifact upload only | Yes — Actions artifact service |
+| 3 | `integration` | Aggregate verdict: fail unless `needs.integration-shard.result == 'success'` | `integration-shard` | n/a — local equivalent is both shard commands passing | Yes — preserves the existing required check context |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |

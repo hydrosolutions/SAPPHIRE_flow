@@ -126,6 +126,35 @@ If these changes leave the target unmet, record the measured shortfall and revis
 this plan for another reviewed optimization; no automatic extra sharding, new
 cache, timeout expansion or integration parallelization is authorized here.
 
+### D1 follow-up — Bounded integration feedback split
+
+After the first CI feedback slice landed, current evidence still showed the
+integration job as a long required path. The follow-up slice keeps the same
+public runner class and validation scope, but runs the non-live, non-slow
+integration suite as two parallel CI jobs on separate GitHub-hosted runners, with pytest still serial inside each job.
+
+The shard source of truth is `tools/integration_shards.py`: a curated `heavy`
+set and a computed `rest` catch-all. The workflow asks that module for pytest
+arguments, preserves the current private Git auth setup, system dependencies,
+`UV_FROZEN`, PostGIS service, `--ignore=tests/integration/live`, and
+`-m "not slow"`, and uploads unique bounded JUnit artifacts per shard. One
+already-set-up integration leg runs the native partition proof. The `integration`
+job remains as a tiny aggregate required-check surface and fails unless the
+matrix result is exactly `success`; shard checks are diagnostic.
+
+Fresh implementation evidence on current `main` found 1,353 selected non-live
+nodes across 96 files and 1,354 all-non-live nodes across 97 files when repo
+`addopts` is cleared. The latest JUnit artifact maps class names back to actual
+files for all 1,353 cases: the reviewed six-file `heavy` shard accounts for
+278.162s and the computed `rest` shard for 309.646s of 587.808s summed testcase
+time. The follow-up duplicates setup across two runners and adds proof overhead to the `heavy` leg. The native partition proof intentionally runs six native collection commands, not the earlier four-command estimate, to prove both selected-node multiplicity and all-non-live file ownership. On the implementation machine it took 21.32s. This estimate is separate from the earlier T2 unit-shard slice and may require a later rebalance after real CI measurement; this slice makes no target-achieved claim. An earlier
+29s subtotal was an obsolete parser error that only counted XML entries with a
+`file` attribute. The one slow-only non-live file remains assigned to the
+catch-all and is still excluded from the PR path by `-m "not slow"`. The only
+known UUID-derived parametrization instability was repaired with explicit pytest
+ids without changing route payloads or assertions. Nightly integration remains
+sequential and unchanged.
+
 ### D2 — Assign semantic versions at an explicit release, not every merge
 
 Use conventional tag-derived package versions (`setuptools-scm` with setuptools
