@@ -148,8 +148,8 @@ class ForecastInputSnapshot:
                     raise ValueError(
                         "snapshot gap_status is required for a weather gap"
                     )
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"consumed input snapshot invalid: {exc}") from exc
+        except (ValueError, TypeError):
+            raise ValueError("consumed input snapshot invalid") from None
 
 
 def snapshot_consumed_input(
@@ -342,7 +342,7 @@ class ForecastInputLineage:
             if result.content != content:
                 raise ValueError("input lineage must be canonical")
             return result
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError):
             raise ValueError(
                 "consumed input lineage is malformed or noncanonical"
-            ) from exc
+            ) from None

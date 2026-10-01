@@ -33,6 +33,7 @@ from sapphire_flow.services.forecast_retry import (
     retry_conflict_message,
 )
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
+from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.store.forecast_values_integrity import forecast_values_integrity
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -148,228 +149,233 @@ class PgForecastStore:
         return self._data_use
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
-        if forecast.data_use is not self._data_use:
-            raise ValueError("forecast data use differs from store purpose")
-        with self._begin() as txn:
-            # Plan 327 — a cycle that died partway is re-runnable. An
-            # IDENTICAL recomputation (decision-table row 4) returns the
-            # stored identity and writes nothing. Plan 328 T2 — a row 1 or
-            # row 2 re-run MARKS the stored forecast superseded and falls
-            # through to the INSERT below, in this same transaction; row 3
-            # REFUSES.
-            # The lookup mirrors `uq_forecasts_station_model_issued_param`'s
-            # partial predicate, so a row marked `superseded` drops out of
-            # both at once — which is what lets the replacement occupy the
-            # natural key the original held.
-            #
-            # A CONCURRENT duplicate can still slip between this SELECT and
-            # the INSERT below; it then raises an unwrapped SQLAlchemy
-            # `IntegrityError`, exactly as it does today (Plan 038 D5).
-            existing_id = txn.execute(
-                sa.select(forecasts.c.id)
-                .where(forecasts.c.data_use == self._data_use.value)
-                .where(forecasts.c.station_id == forecast.station_id)
-                .where(forecasts.c.model_id == forecast.model_id)
-                .where(forecasts.c.issued_at == forecast.issued_at)
-                .where(forecasts.c.parameter == forecast.ensemble.parameter)
-                .where(forecasts.c.status != "superseded")
-            ).scalar_one_or_none()
-            if existing_id is not None:
-                resumed = _resolve_retry(txn, ForecastId(existing_id), forecast)
-                if resumed is not None:
-                    return resumed
-            txn.execute(sa.insert(forecasts).values(**_forecast_row(forecast)))
-            rows = _build_value_rows(forecast)
-            if rows:
-                txn.execute(sa.insert(forecast_values), rows)
-            evidence = forecast.evidence or incomplete_evidence(
-                "prediction_capture_unavailable"
-            )
-            thresholds_json = (
-                serialize_thresholds(evidence.thresholds)
-                if evidence.thresholds is not None
-                else None
-            )
-            status = evidence.status
-            reason = evidence.reason
-            if thresholds_json is None:
-                status = EvidenceStatus.INCOMPLETE
-                reason = (
-                    f"{reason};thresholds_unavailable"
-                    if reason
-                    else "thresholds_unavailable"
+        with protect_lineage_errors(self._data_use):
+            if forecast.data_use is not self._data_use:
+                raise ValueError("forecast data use differs from store purpose")
+            with self._begin() as txn:
+                # Plan 327 — a cycle that died partway is re-runnable. An
+                # IDENTICAL recomputation (decision-table row 4) returns the
+                # stored identity and writes nothing. Plan 328 T2 — a row 1 or
+                # row 2 re-run MARKS the stored forecast superseded and falls
+                # through to the INSERT below, in this same transaction; row 3
+                # REFUSES.
+                # The lookup mirrors `uq_forecasts_station_model_issued_param`'s
+                # partial predicate, so a row marked `superseded` drops out of
+                # both at once — which is what lets the replacement occupy the
+                # natural key the original held.
+                #
+                # A CONCURRENT duplicate can still slip between this SELECT and
+                # the INSERT below; it then raises an unwrapped SQLAlchemy
+                # `IntegrityError`, exactly as it does today (Plan 038 D5).
+                existing_id = txn.execute(
+                    sa.select(forecasts.c.id)
+                    .where(forecasts.c.data_use == self._data_use.value)
+                    .where(forecasts.c.station_id == forecast.station_id)
+                    .where(forecasts.c.model_id == forecast.model_id)
+                    .where(forecasts.c.issued_at == forecast.issued_at)
+                    .where(forecasts.c.parameter == forecast.ensemble.parameter)
+                    .where(forecasts.c.status != "superseded")
+                ).scalar_one_or_none()
+                if existing_id is not None:
+                    resumed = _resolve_retry(txn, ForecastId(existing_id), forecast)
+                    if resumed is not None:
+                        return resumed
+                txn.execute(sa.insert(forecasts).values(**_forecast_row(forecast)))
+                rows = _build_value_rows(forecast)
+                if rows:
+                    txn.execute(sa.insert(forecast_values), rows)
+                evidence = forecast.evidence or incomplete_evidence(
+                    "prediction_capture_unavailable"
                 )
-            if forecast.combination_strategy is not None:
-                contributor_gap = _combined_contributor_gap(
-                    txn, evidence, self._data_use
+                thresholds_json = (
+                    serialize_thresholds(evidence.thresholds)
+                    if evidence.thresholds is not None
+                    else None
                 )
-                if contributor_gap is not None:
+                status = evidence.status
+                reason = evidence.reason
+                if thresholds_json is None:
                     status = EvidenceStatus.INCOMPLETE
                     reason = (
-                        f"{reason};{contributor_gap}" if reason else contributor_gap
+                        f"{reason};thresholds_unavailable"
+                        if reason
+                        else "thresholds_unavailable"
                     )
-            manifest = json.loads(evidence.manifest_json)
-            value_count, value_hash = forecast_values_integrity(txn, forecast.id)
-            manifest.update(
-                data_use=forecast.data_use.value,
-                input_lineage_sha256=(
-                    forecast.input_lineage.fingerprint
-                    if forecast.input_lineage
-                    else None
-                ),
-                forecast_id=str(forecast.id),
-                forecast_values_count=value_count,
-                forecast_values_sha256=value_hash,
-                station_id=str(forecast.station_id),
-                parameter=forecast.ensemble.parameter,
-                issued_at=forecast.issued_at.isoformat(),
-                model_artifact_id=(
-                    str(forecast.model_artifact_id)
-                    if forecast.model_artifact_id is not None
-                    else None
-                ),
-                nwp_cycle_reference_time=(
-                    forecast.nwp_cycle_reference_time.isoformat()
-                    if forecast.nwp_cycle_reference_time is not None
-                    else None
-                ),
-                nwp_cycle_source=forecast.nwp_cycle_source.value,
-                rating_curve_id=(
-                    str(forecast.rating_curve_id)
-                    if forecast.rating_curve_id is not None
-                    else None
-                ),
-                qc_status=forecast.qc_status.value,
-                qc_flags=[
-                    {
-                        "rule_id": flag.rule_id,
-                        "rule_version": flag.rule_version,
-                        "status": flag.status.value,
-                        "detail": flag.detail,
-                    }
-                    for flag in forecast.qc_flags
-                ],
-                input_quality=(
-                    forecast.input_quality.value
-                    if forecast.input_quality is not None
-                    else None
-                ),
-                input_quality_flags=[
-                    {
-                        "category": flag.category.value,
-                        "level": flag.level.value,
-                        "detail": flag.detail,
-                    }
-                    for flag in forecast.input_quality_flags
-                ],
-                thresholds_sha256=(
-                    hashlib.sha256(thresholds_json.encode("utf-8")).hexdigest()
-                    if thresholds_json is not None
-                    else None
-                ),
-            )
-            for digest, payload in (
-                (evidence.snapshot_sha256, evidence.snapshot),
-                (evidence.artifact_sha256, evidence.artifact),
-            ):
-                if digest is None or payload is None:
-                    continue
-                if hashlib.sha256(payload).hexdigest() != digest:
-                    raise ValueError("forecast evidence blob hash mismatch")
-                txn.execute(
-                    pg_insert(forecast_evidence_blobs)
-                    .values(sha256=digest, payload=payload, byte_length=len(payload))
-                    .on_conflict_do_nothing(index_elements=["sha256"])
-                )
-                retained = txn.execute(
-                    sa.select(
-                        forecast_evidence_blobs.c.payload,
-                        forecast_evidence_blobs.c.byte_length,
-                    ).where(forecast_evidence_blobs.c.sha256 == digest)
-                ).one()
-                if (
-                    retained.payload != payload
-                    or retained.byte_length != len(retained.payload)
-                    or hashlib.sha256(retained.payload).hexdigest() != digest
-                ):
-                    raise ValueError("retained forecast evidence blob mismatch")
-            txn.execute(
-                sa.insert(forecast_evidence).values(
-                    forecast_id=forecast.id,
-                    status=status.value,
-                    manifest_json=json.dumps(
-                        manifest, sort_keys=True, separators=(",", ":")
+                if forecast.combination_strategy is not None:
+                    contributor_gap = _combined_contributor_gap(
+                        txn, evidence, self._data_use
+                    )
+                    if contributor_gap is not None:
+                        status = EvidenceStatus.INCOMPLETE
+                        reason = (
+                            f"{reason};{contributor_gap}" if reason else contributor_gap
+                        )
+                manifest = json.loads(evidence.manifest_json)
+                value_count, value_hash = forecast_values_integrity(txn, forecast.id)
+                manifest.update(
+                    data_use=forecast.data_use.value,
+                    input_lineage_sha256=(
+                        forecast.input_lineage.fingerprint
+                        if forecast.input_lineage
+                        else None
                     ),
-                    snapshot_sha256=evidence.snapshot_sha256,
-                    artifact_sha256=evidence.artifact_sha256,
-                    thresholds_json=thresholds_json,
-                    reason=reason,
+                    forecast_id=str(forecast.id),
+                    forecast_values_count=value_count,
+                    forecast_values_sha256=value_hash,
+                    station_id=str(forecast.station_id),
+                    parameter=forecast.ensemble.parameter,
+                    issued_at=forecast.issued_at.isoformat(),
+                    model_artifact_id=(
+                        str(forecast.model_artifact_id)
+                        if forecast.model_artifact_id is not None
+                        else None
+                    ),
+                    nwp_cycle_reference_time=(
+                        forecast.nwp_cycle_reference_time.isoformat()
+                        if forecast.nwp_cycle_reference_time is not None
+                        else None
+                    ),
+                    nwp_cycle_source=forecast.nwp_cycle_source.value,
+                    rating_curve_id=(
+                        str(forecast.rating_curve_id)
+                        if forecast.rating_curve_id is not None
+                        else None
+                    ),
+                    qc_status=forecast.qc_status.value,
+                    qc_flags=[
+                        {
+                            "rule_id": flag.rule_id,
+                            "rule_version": flag.rule_version,
+                            "status": flag.status.value,
+                            "detail": flag.detail,
+                        }
+                        for flag in forecast.qc_flags
+                    ],
+                    input_quality=(
+                        forecast.input_quality.value
+                        if forecast.input_quality is not None
+                        else None
+                    ),
+                    input_quality_flags=[
+                        {
+                            "category": flag.category.value,
+                            "level": flag.level.value,
+                            "detail": flag.detail,
+                        }
+                        for flag in forecast.input_quality_flags
+                    ],
+                    thresholds_sha256=(
+                        hashlib.sha256(thresholds_json.encode("utf-8")).hexdigest()
+                        if thresholds_json is not None
+                        else None
+                    ),
                 )
-            )
-        return forecast.id
+                for digest, payload in (
+                    (evidence.snapshot_sha256, evidence.snapshot),
+                    (evidence.artifact_sha256, evidence.artifact),
+                ):
+                    if digest is None or payload is None:
+                        continue
+                    if hashlib.sha256(payload).hexdigest() != digest:
+                        raise ValueError("forecast evidence blob hash mismatch")
+                    txn.execute(
+                        pg_insert(forecast_evidence_blobs)
+                        .values(
+                            sha256=digest, payload=payload, byte_length=len(payload)
+                        )
+                        .on_conflict_do_nothing(index_elements=["sha256"])
+                    )
+                    retained = txn.execute(
+                        sa.select(
+                            forecast_evidence_blobs.c.payload,
+                            forecast_evidence_blobs.c.byte_length,
+                        ).where(forecast_evidence_blobs.c.sha256 == digest)
+                    ).one()
+                    if (
+                        retained.payload != payload
+                        or retained.byte_length != len(retained.payload)
+                        or hashlib.sha256(retained.payload).hexdigest() != digest
+                    ):
+                        raise ValueError("retained forecast evidence blob mismatch")
+                txn.execute(
+                    sa.insert(forecast_evidence).values(
+                        forecast_id=forecast.id,
+                        status=status.value,
+                        manifest_json=json.dumps(
+                            manifest, sort_keys=True, separators=(",", ":")
+                        ),
+                        snapshot_sha256=evidence.snapshot_sha256,
+                        artifact_sha256=evidence.artifact_sha256,
+                        thresholds_json=thresholds_json,
+                        reason=reason,
+                    )
+                )
+            return forecast.id
 
     def fetch_evidence(
         self, forecast_id: ForecastId
     ) -> PersistedForecastEvidence | None:
-        row = (
-            self._conn.execute(
-                sa.select(forecast_evidence)
-                .join(forecasts, forecasts.c.id == forecast_evidence.c.forecast_id)
-                .where(forecasts.c.data_use == self._data_use.value)
-                .where(forecast_evidence.c.forecast_id == forecast_id)
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None:
-            exists = self._conn.execute(
-                sa.select(forecasts.c.id)
-                .where(forecasts.c.id == forecast_id)
-                .where(forecasts.c.data_use == self._data_use.value)
-            ).scalar_one_or_none()
-            if exists is None:
-                return None
-            return PersistedForecastEvidence(
-                status=EvidenceStatus.INCOMPLETE,
-                manifest_json="{}",
-                snapshot=None,
-                snapshot_sha256=None,
-                artifact=None,
-                artifact_sha256=None,
-                thresholds_json=None,
-                reason="pre_capture_forecast",
-            )
-
-        def blob(digest: str | None) -> bytes | None:
-            if digest is None:
-                return None
-            payload = self._conn.execute(
-                sa.select(forecast_evidence_blobs.c.payload).where(
-                    forecast_evidence_blobs.c.sha256 == digest
+        with protect_lineage_errors(self._data_use):
+            row = (
+                self._conn.execute(
+                    sa.select(forecast_evidence)
+                    .join(forecasts, forecasts.c.id == forecast_evidence.c.forecast_id)
+                    .where(forecasts.c.data_use == self._data_use.value)
+                    .where(forecast_evidence.c.forecast_id == forecast_id)
                 )
-            ).scalar_one()
-            data = bytes(payload)
-            if hashlib.sha256(data).hexdigest() != digest:
-                raise ValueError("forecast evidence blob hash mismatch")
-            return data
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                exists = self._conn.execute(
+                    sa.select(forecasts.c.id)
+                    .where(forecasts.c.id == forecast_id)
+                    .where(forecasts.c.data_use == self._data_use.value)
+                ).scalar_one_or_none()
+                if exists is None:
+                    return None
+                return PersistedForecastEvidence(
+                    status=EvidenceStatus.INCOMPLETE,
+                    manifest_json="{}",
+                    snapshot=None,
+                    snapshot_sha256=None,
+                    artifact=None,
+                    artifact_sha256=None,
+                    thresholds_json=None,
+                    reason="pre_capture_forecast",
+                )
 
-        return PersistedForecastEvidence(
-            status=EvidenceStatus(row["status"]),
-            manifest_json=row["manifest_json"],
-            snapshot=blob(row["snapshot_sha256"]),
-            snapshot_sha256=row["snapshot_sha256"],
-            artifact=blob(row["artifact_sha256"]),
-            artifact_sha256=row["artifact_sha256"],
-            thresholds_json=row["thresholds_json"],
-            reason=row["reason"],
-        )
+            def blob(digest: str | None) -> bytes | None:
+                if digest is None:
+                    return None
+                payload = self._conn.execute(
+                    sa.select(forecast_evidence_blobs.c.payload).where(
+                        forecast_evidence_blobs.c.sha256 == digest
+                    )
+                ).scalar_one()
+                data = bytes(payload)
+                if hashlib.sha256(data).hexdigest() != digest:
+                    raise ValueError("forecast evidence blob hash mismatch")
+                return data
+
+            return PersistedForecastEvidence(
+                status=EvidenceStatus(row["status"]),
+                manifest_json=row["manifest_json"],
+                snapshot=blob(row["snapshot_sha256"]),
+                snapshot_sha256=row["snapshot_sha256"],
+                artifact=blob(row["artifact_sha256"]),
+                artifact_sha256=row["artifact_sha256"],
+                thresholds_json=row["thresholds_json"],
+                reason=row["reason"],
+            )
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
         # Plan 328 T3 — BY-ID access is PRESERVED for a superseded forecast.
         # Its evidence is permanent (migration 0057 forbids removing it), and
         # evidence nobody can read back defeats its own purpose. The returned
         # `status` is what distinguishes it from a current forecast.
-        return _fetch_forecast(self._conn, forecast_id, self._data_use)
+        with protect_lineage_errors(self._data_use):
+            return _fetch_forecast(self._conn, forecast_id, self._data_use)
 
     def fetch_latest_forecast(
         self,
@@ -381,21 +387,22 @@ class PgForecastStore:
         # all, and a superseded forecast shares its replacement's `issued_at`,
         # so `ORDER BY issued_at DESC LIMIT 1` would return an arbitrary one
         # of the two: intermittently the forecast we replaced.
-        sub = (
-            sa.select(forecasts.c.id)
-            .where(forecasts.c.station_id == station_id)
-            .where(_is_current())
-            .where(forecasts.c.data_use == self._data_use.value)
-        )
-        if model_id is not None:
-            sub = sub.where(forecasts.c.model_id == model_id)
-        if parameter is not None:
-            sub = sub.where(forecasts.c.parameter == parameter)
-        sub = sub.order_by(forecasts.c.issued_at.desc()).limit(1).scalar_subquery()
-        fid_row = self._conn.execute(sa.select(sub)).scalar_one_or_none()
-        if fid_row is None:
-            return None
-        return self.fetch_forecast(ForecastId(fid_row))
+        with protect_lineage_errors(self._data_use):
+            sub = (
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.station_id == station_id)
+                .where(_is_current())
+                .where(forecasts.c.data_use == self._data_use.value)
+            )
+            if model_id is not None:
+                sub = sub.where(forecasts.c.model_id == model_id)
+            if parameter is not None:
+                sub = sub.where(forecasts.c.parameter == parameter)
+            sub = sub.order_by(forecasts.c.issued_at.desc()).limit(1).scalar_subquery()
+            fid_row = self._conn.execute(sa.select(sub)).scalar_one_or_none()
+            if fid_row is None:
+                return None
+            return self.fetch_forecast(ForecastId(fid_row))
 
     def fetch_forecasts_for_cycle(
         self,
@@ -405,18 +412,19 @@ class PgForecastStore:
     ) -> list[OperationalForecast]:
         # Plan 328 T3 — CURRENT only; see `fetch_latest_forecast`. The
         # Forecast Lab takes the first candidate this returns.
-        stmt = (
-            sa.select(forecasts.c.id)
-            .where(forecasts.c.issued_at == issued_at)
-            .where(_is_current())
-            .where(forecasts.c.data_use == self._data_use.value)
-        )
-        if station_id is not None:
-            stmt = stmt.where(forecasts.c.station_id == station_id)
-        if parameter is not None:
-            stmt = stmt.where(forecasts.c.parameter == parameter)
-        fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
-        return self._fetch_by_ids(fids)
+        with protect_lineage_errors(self._data_use):
+            stmt = (
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.issued_at == issued_at)
+                .where(_is_current())
+                .where(forecasts.c.data_use == self._data_use.value)
+            )
+            if station_id is not None:
+                stmt = stmt.where(forecasts.c.station_id == station_id)
+            if parameter is not None:
+                stmt = stmt.where(forecasts.c.parameter == parameter)
+            fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
+            return self._fetch_by_ids(fids)
 
     def transition_status(
         self,
@@ -424,20 +432,21 @@ class PgForecastStore:
         expected_version: int,
         new_status: ForecastStatus,
     ) -> int:
-        result = self._conn.execute(
-            sa.update(forecasts)
-            .where(forecasts.c.id == forecast_id)
-            .where(forecasts.c.data_use == self._data_use.value)
-            .where(forecasts.c.version == expected_version)
-            .values(
-                status=new_status.value,
-                version=expected_version + 1,
-                updated_at=sa.func.now(),
+        with protect_lineage_errors(self._data_use):
+            result = self._conn.execute(
+                sa.update(forecasts)
+                .where(forecasts.c.id == forecast_id)
+                .where(forecasts.c.data_use == self._data_use.value)
+                .where(forecasts.c.version == expected_version)
+                .values(
+                    status=new_status.value,
+                    version=expected_version + 1,
+                    updated_at=sa.func.now(),
+                )
             )
-        )
-        if result.rowcount == 0:
-            raise ConflictError(f"Version mismatch for forecast {forecast_id}")
-        return expected_version + 1
+            if result.rowcount == 0:
+                raise ConflictError(f"Version mismatch for forecast {forecast_id}")
+            return expected_version + 1
 
     def fetch_forecasts_in_range(
         self,
@@ -448,28 +457,29 @@ class PgForecastStore:
         status: ForecastStatus | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]:
-        stmt = (
-            sa.select(forecasts.c.id)
-            .where(forecasts.c.station_id == station_id)
-            .where(forecasts.c.data_use == self._data_use.value)
-            .where(forecasts.c.issued_at >= start)
-            .where(forecasts.c.issued_at < end)
-        )
-        if model_id is not None:
-            stmt = stmt.where(forecasts.c.model_id == model_id)
-        if status is not None:
-            stmt = stmt.where(forecasts.c.status == status.value)
-        else:
-            # Plan 328 T3 — an UNFILTERED range read is a read of what is
-            # current. A caller that wants the replaced rows asks for them:
-            # `status=ForecastStatus.SUPERSEDED` still returns them.
-            stmt = stmt.where(_is_current()).where(
-                forecasts.c.data_use == self._data_use.value
+        with protect_lineage_errors(self._data_use):
+            stmt = (
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.station_id == station_id)
+                .where(forecasts.c.data_use == self._data_use.value)
+                .where(forecasts.c.issued_at >= start)
+                .where(forecasts.c.issued_at < end)
             )
-        if parameter is not None:
-            stmt = stmt.where(forecasts.c.parameter == parameter)
-        fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
-        return self._fetch_by_ids(fids)
+            if model_id is not None:
+                stmt = stmt.where(forecasts.c.model_id == model_id)
+            if status is not None:
+                stmt = stmt.where(forecasts.c.status == status.value)
+            else:
+                # Plan 328 T3 — an UNFILTERED range read is a read of what is
+                # current. A caller that wants the replaced rows asks for them:
+                # `status=ForecastStatus.SUPERSEDED` still returns them.
+                stmt = stmt.where(_is_current()).where(
+                    forecasts.c.data_use == self._data_use.value
+                )
+            if parameter is not None:
+                stmt = stmt.where(forecasts.c.parameter == parameter)
+            fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
+            return self._fetch_by_ids(fids)
 
     def fetch_forecast_summaries(
         self,
@@ -491,44 +501,48 @@ class PgForecastStore:
         # ⛔ NOT because it is the only way to find a superseded id — it is
         # not: the admin `/forecasts/` list and the generic `/tables/` browser
         # expose it too.
-        filters = [
-            forecasts.c.data_use == self._data_use.value,
-            forecasts.c.station_id == station_id,
-            forecasts.c.issued_at >= start,
-            forecasts.c.issued_at < end,
-        ]
-        if model_id is not None:
-            filters.append(forecasts.c.model_id == model_id)
-        if parameter is not None:
-            filters.append(forecasts.c.parameter == parameter)
-        if degraded_only:
-            # Plan 253 T1c / OD-2: an unknown (NULL) input_quality is never
-            # reported as degraded — this IN excludes both NULL and 'full'.
-            filters.append(
-                forecasts.c.input_quality.in_(
-                    [InputQualityLevel.PARTIAL.value, InputQualityLevel.DEGRADED.value]
+        with protect_lineage_errors(self._data_use):
+            filters = [
+                forecasts.c.data_use == self._data_use.value,
+                forecasts.c.station_id == station_id,
+                forecasts.c.issued_at >= start,
+                forecasts.c.issued_at < end,
+            ]
+            if model_id is not None:
+                filters.append(forecasts.c.model_id == model_id)
+            if parameter is not None:
+                filters.append(forecasts.c.parameter == parameter)
+            if degraded_only:
+                # Plan 253 T1c / OD-2: an unknown (NULL) input_quality is never
+                # reported as degraded — this IN excludes both NULL and 'full'.
+                filters.append(
+                    forecasts.c.input_quality.in_(
+                        [
+                            InputQualityLevel.PARTIAL.value,
+                            InputQualityLevel.DEGRADED.value,
+                        ]
+                    )
                 )
+
+            where = sa.and_(*filters)
+
+            total: int = self._conn.execute(
+                sa.select(sa.func.count()).select_from(forecasts).where(where)
+            ).scalar_one()
+
+            rows = (
+                self._conn.execute(
+                    sa.select(*forecast_columns(forecasts, self._data_use))
+                    .where(where)
+                    .order_by(forecasts.c.issued_at.desc(), forecasts.c.id.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+                .mappings()
+                .all()
             )
 
-        where = sa.and_(*filters)
-
-        total: int = self._conn.execute(
-            sa.select(sa.func.count()).select_from(forecasts).where(where)
-        ).scalar_one()
-
-        rows = (
-            self._conn.execute(
-                sa.select(forecasts)
-                .where(where)
-                .order_by(forecasts.c.issued_at.desc(), forecasts.c.id.desc())
-                .limit(limit)
-                .offset(offset)
-            )
-            .mappings()
-            .all()
-        )
-
-        return [_row_to_summary(row) for row in rows], total
+            return [_row_to_summary(row) for row in rows], total
 
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
@@ -537,22 +551,23 @@ class PgForecastStore:
         # replacement in the same transaction, so this MAX does not move in
         # practice; filtering keeps the marker a statement about what is
         # served rather than about what was ever written.
-        stmt = (
-            sa.select(sa.func.max(forecasts.c.issued_at))
-            .where(forecasts.c.combination_strategy.is_(None))
-            .where(forecasts.c.issued_at <= cutoff)
-            .where(_is_current())
-            .where(forecasts.c.data_use == self._data_use.value)
-        )
-        result = self._conn.execute(stmt).scalar_one_or_none()
-        return utc_or_none(result)
+        with protect_lineage_errors(self._data_use):
+            stmt = (
+                sa.select(sa.func.max(forecasts.c.issued_at))
+                .where(forecasts.c.combination_strategy.is_(None))
+                .where(forecasts.c.issued_at <= cutoff)
+                .where(_is_current())
+                .where(forecasts.c.data_use == self._data_use.value)
+            )
+            result = self._conn.execute(stmt).scalar_one_or_none()
+            return utc_or_none(result)
 
     def _fetch_by_ids(self, fids: list[ForecastId]) -> list[OperationalForecast]:
         if not fids:
             return []
         rows = (
             self._conn.execute(
-                sa.select(forecasts, forecast_values)
+                sa.select(*forecast_columns(forecasts, self._data_use), forecast_values)
                 .join(
                     forecast_values,
                     forecast_values.c.forecast_id == forecasts.c.id,
@@ -577,7 +592,7 @@ def _fetch_forecast(
 ) -> OperationalForecast | None:
     rows = (
         conn.execute(
-            sa.select(forecasts, forecast_values)
+            sa.select(*forecast_columns(forecasts, data_use), forecast_values)
             .join(
                 forecast_values,
                 forecast_values.c.forecast_id == forecasts.c.id,

@@ -8,6 +8,7 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store.rejected_forecast_store import PgRejectedForecastStore
 from sapphire_flow.types.enums import ForecastDataUse, QcStatus
 from sapphire_flow.types.forecast_lineage import ForecastInputLineage
@@ -40,8 +41,13 @@ def test_rejected_test_write_disabled(db_connection: sa.Connection) -> None:
         transaction_factory=savepoint_factory(db_connection),
         data_use=ForecastDataUse.EXPIRED_RATING_TEST,
     )
-    with pytest.raises(sa.exc.DBAPIError, match="test rejection writes are disabled"):
+    import traceback
+
+    with pytest.raises(StoreError, match="protected forecast") as caught:
         store.write_batch([entry], abandon=threading.Event())
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "provisional_discharge_fingerprints" not in rendered
+    assert "a" * 64 not in rendered
     assert store.fetch_rejected_forecasts(
         sid, _NOW - timedelta(days=1), _NOW + timedelta(days=1)
     ) == ([], 0)

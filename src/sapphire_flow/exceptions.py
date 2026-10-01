@@ -55,9 +55,9 @@ class ForecastRetryConflictError(SapphireError):
     recomputation matched decision-table ROW 3 (values and artifact equal, QC
     verdict differs): the one row nobody has decided how to treat.
 
-    This is the ONLY store-write failure translated into a domain error —
-    Plan 038 D5 stands (Pg store writes are deliberately not wrapped), so an
-    unrelated storage failure still propagates as a raw SQLAlchemy exception.
+    For STANDARD writes this is the only translated store-write failure:
+    unrelated storage failures retain the raw SQLAlchemy exception contract.
+    Protected TEST stores separately suppress driver payloads with StoreError.
     A row-4 (identical) retry is not a conflict and raises nothing: it
     succeeds quietly and returns the stored identity.
 

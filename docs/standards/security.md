@@ -1380,10 +1380,9 @@ replaced/event-reference safety relies on database guards and migration prefligh
 not reader sanitization of arbitrary states created after disabling those guards.
 
 Rejection lineage SQL checks only top-level shape, not source/tenant linkage or actual
-consumption. These remain explicit preactivation holds. `rejected_forecasts.input_lineage`,
-like `forecasts.input_lineage`, inherits table-wide SELECT and generic-browser visibility.
-No raw-column protection is claimed: T1d must close both before enabling writes. Parser and
-driver errors still require safe projection before scheduled/public test wiring.
+consumption. These remain explicit preactivation holds. Revision `0071` protects both
+`rejected_forecasts.input_lineage` and `forecasts.input_lineage` as described below.
+This partial reader boundary does not authorize scheduled/public TEST wiring.
 
 ### Dormant forecast data-use partition
 
@@ -1395,12 +1394,26 @@ The provisional-input permission does not attest output deployment compatibility
 A separate reviewed rollout must replace the unconditional guard, close ordinary
 raw-SQL/alert/state readers and authorize the required narrow join writes.
 Normal publication exclusion is separately enforced by `0070`.
-Ordinary PgForecastStore reads are class-bound, but `forecasts.input_lineage` still
-inherits table-wide runtime SELECT and generic forecast-table browser visibility.
-The protected join exclusion does not redact this column. The column contains no
-TEST payload while the INSERT refusal is deployed. T1d must close these inherited
-raw-column/browser readers **before activation**; this slice does not deliver that
-closure.
+Revision `0071` removes runtime/PUBLIC table-wide SELECT and protected-column SELECT
+on both forecast parent tables. API/worker grants list allowed columns explicitly;
+STANDARD stores request a NULL lineage projection, not the protected column. Bootstrap
+excludes both parents from automatic catalog grants. Owner and approved backup access
+remain unchanged. Downgrade retains these ACL restrictions.
+
+Bootstrap commits early revokes before later preflights. A failed transactional migration
+instead rolls its changes back: failure is not proof that the old ACL was repaired.
+Inherited/SET ROLE authority, catalog-dependent owner views (including whole-row reads),
+and unknown executable application SECURITY DEFINER functions refuse preflight rather
+than silently changing unrelated objects. The two maintained publication-lock functions
+and extension-owned functions remain trusted infrastructure. Catalog inspection cannot
+certify arbitrary owner-created copies or future owner DDL; review those separately.
+
+Legacy forecast list/detail/data readers, dashboard counts/latest/status, and generic
+browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
+STANDARD history remains readable. Shared blobs remain visible through a STANDARD
+reference. The browser never projects either raw lineage column. This is partial T1d:
+modern API/Forecast Lab injected-purpose safety, evaluation/state/health/tooling paths,
+and mixed-class restore/publication-health proof remain preactivation holds.
 Synthetic disposable structural tests may remove only the refusal trigger transactionally;
 this is test setup, never an operator activation procedure.
 
@@ -1412,8 +1425,9 @@ the store's purpose; other-class evidence is unavailable, not implicitly trusted
 SQL snapshot checks are bounded structure/identity checks; strict canonical parsing
 remains a type/store obligation. Review any future direct writer before activation.
 
-The `types/forecast_lineage.py` snapshot/decode ValueError path can include Pydantic
-ValidationError text with protected `input_value` fragments (including delivery IDs
-and consumed values). Safe error projection for this exact path remains a preactivation
-wiring hold: future public/scheduled writers must not log or return raw parser/driver
-exceptions. This documentation does not add sanitizer behavior or authorize exposure.
+Snapshot/decode validation errors suppress raw Pydantic details and exception chains.
+Purpose-bound TEST store SQLAlchemy failures become a safe fatal `StoreError`, without
+raw statement/parameters/driver traceback. STANDARD storage errors retain their existing
+raw exception contract; retry/conflict decisions are not translated. This is not a global
+SQL logging sanitizer: SQL echo/debug parameter logging and direct owner SQL remain
+privileged tooling, not an authorized public or scheduled TEST writer.
