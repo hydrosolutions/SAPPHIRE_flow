@@ -5110,3 +5110,45 @@ src/sapphire_flow/
 └── config/
     └── deployment.py       # DeploymentConfig
 ```
+
+## Protected provisional discharge (dormant)
+
+- `MeasurementFeedEvidenceId` and `RatingReferenceProofId` wrap UUIDs.
+- Frozen keyword-only slotted `MeasurementFeedEvidence` binds tenant, station,
+  observation ID and `MeasurementSnapshot` to the explicit sanitized endpoint/API
+  station ID, evidence reference, verifying actor and aware verification time.
+  `MeasurementSnapshot` copies all observation fields except mutable QC. Its
+  canonical JSON string is immutable, unlike `Observation.qc_flags`.
+- Frozen keyword-only slotted `RatingReferenceProof` pins tenant/station/curve ID
+  and the full immutable `CurveSnapshot`, feed identity, metre units, confirmed
+  `gauge_zero`/`masl` references and finite `offset_m`. Zero is not a default or
+  proof of compatibility: it must be explicitly evidenced. Curve dates remain
+  unchanged. Point order is canonicalized; point content is retained.
+- `ProvisionalDischarge` carries the scope/parent/proof identities, copied snapshots,
+  finite discharge and canonical conversion content/fingerprint. Content includes
+  measured-value provenance, complete persisted QC flags (including internal detail)
+  and rule generation, curve content, feed/reference evidence and converter version.
+  Rule order is canonicalized. Capture/run time is not content identity.
+- `RatingReferenceStore.fetch_feed_evidence(id)` and `.fetch_reference_proof(id)`
+  return the corresponding protected value or `None`. `PgRatingReferenceStore`
+  implements only these reads on an injected connection. There is no approval writer.
+- `ProvisionalDischargeStore.store_provisional_discharge(value, *, captured_at)`
+  returns the content fingerprint. It locks and revalidates persisted sources,
+  proofs and newest-curve chronology before insert-only idempotent persistence.
+  `.fetch_provisional_discharge(fingerprint)` returns immutable historical content
+  without substituting today's mutable source values. Neither method commits.
+- `convert_provisional_discharge` is pure and unwired. It requires evidenced
+  measurement identity, persisted passing QC with a nonempty rule generation and
+  passing rule list, matching reference proof, newest same-gauge curve by
+  `(valid_from, version)` and an already expired interval. It refuses ambiguity,
+  future/nonexpired newest candidates, future measurements/evidence, unknown units
+  or references, out-of-domain levels and nonfinite output. It reuses `RatingConverter`
+  without changing ordinary endpoint clamping. The store repeats validation using
+  locked database rows; a caller-provided QC verdict is not persistence authority.
+
+Migration `0068` enforces scope FKs, fingerprint consistency, immutable evidence and
+fail-closed provisional inserts. Runtime protected-content privileges remain denied.
+No ordinary ObservationStore reader joins this storage. Applicable configured-rule
+verification and evidence ingestion, full activation, forecast propagation, protected
+read authorization and training/evaluation exclusion wiring remain future work.
+This is storage/conversion preparation, not a delivered test forecast pathway.

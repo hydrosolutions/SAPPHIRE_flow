@@ -1260,3 +1260,44 @@ These are infrastructure-level mitigations that provide **prevention and real-ti
 SAPPHIRE Flow's security boundary ends at the container. The application assumes the host VM is trustworthy. If this assumption is violated, the application provides after-the-fact detection (audit log gaps, hash mismatches) but cannot prevent data modification.
 
 The deployment guide clearly documents this boundary and the IT team's responsibilities. The SAPPHIRE development team does not implement, monitor, or maintain host-level security.
+
+### Protected provisional-discharge storage (dormant)
+
+Migration `0068` adds physically separate `provisional_discharges`,
+`measurement_feed_evidence`, `rating_reference_proofs` and
+`provisional_discharge_permissions`. Ordinary observations, their sources, readers,
+training inputs and QC semantics are unchanged. These relations contain restricted
+copied measurement/QC/curve evidence. Do not publish their content or diagnostics.
+
+The API, worker, delivery-only `sapphire_operator` and publication-health roles have
+no proof, feed-evidence or provisional-data privileges. The bootstrap revokes broad
+SELECT and stale column grants, then grants API/worker only SELECT on the gate's
+`tenant_id` and `state`. The migration also strips inherited default relation grants.
+There is no proof/association approval writer, activation command, credential change,
+new role or role membership. Backup retains its existing protected full-database
+read capability; this is not consumer access or new publication authority.
+
+Role-independent `SECURITY INVOKER` triggers refuse UPDATE, DELETE and TRUNCATE,
+including owner DML. Provisional INSERT fails without an explicit enabled tenant
+permission. Invoker functions pin their search path and schema-qualify their reads.
+Composite FKs bind tenant/station/measurement/curve/proof identities. The store and
+SQL guard compare persisted measurement, exact QC generation/flags, current curve
+content and persisted proofs under locks. Content hashes include all copied facts,
+not run/capture times. Changed facts append; original evidence is never upserted.
+A curve-table SHARE lock excludes concurrent new candidates as well as curve edits;
+this is deliberately conservative and unsuitable for unreviewed high-volume wiring.
+
+`MeasurementFeedEvidence` is a narrow explicit attestation, not inferred from
+`ObservationSource.MEASURED` or today's adapter config. It pins the measured-value
+snapshot to a sanitized endpoint/API station identity and evidence reference,
+actor and time. Restated values need new evidence; QC-only changes reuse the feed
+attestation but create new conversion lineage. Reference proofs pin exact curve
+content, confirmed reference labels, metre units and an explicit finite metre offset,
+including evidenced zero offsets. Missing or incompatible evidence holds conversion.
+
+**Still held:** authorized feed/proof recording, applicable-rule configuration
+verification, complete deployment/rollback inventory and activation capability,
+forecast-class isolation and downstream invalidity/exclusion/read contracts. The
+permission relation is guard scaffolding, not a usable activation protocol; no
+production role can write it. Disposable owner fixture seeds are tests, not operator
+instructions. Do not enable this path or deploy a conversion writer from this slice.

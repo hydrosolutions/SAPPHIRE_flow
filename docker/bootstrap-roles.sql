@@ -848,3 +848,25 @@ JOIN pg_catalog.pg_proc p
 \else
     ALTER ROLE sapphire_operator NOLOGIN;
 \endif
+
+-- Dormant provisional-discharge boundary: broad SELECT must not expose protected
+-- measurements, reference proofs or conversion snapshots. No role can enable it.
+REVOKE ALL ON provisional_discharge_permissions, measurement_feed_evidence,
+    rating_reference_proofs, provisional_discharges
+    FROM PUBLIC, sapphire_api, sapphire_worker, sapphire_operator, sapphire_publication_health;
+DO $$
+DECLARE t text; r text; cols text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
+                            'rating_reference_proofs', 'provisional_discharges'] LOOP
+        SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
+        WHERE attrelid = to_regclass('public.' || t) AND attnum > 0 AND NOT attisdropped;
+        FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
+                                'sapphire_operator', 'sapphire_publication_health'] LOOP
+            EXECUTE format('REVOKE SELECT (%s), INSERT (%s), UPDATE (%s), REFERENCES (%s) ON public.%I FROM %s',
+                           cols, cols, cols, cols, t, CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+        END LOOP;
+    END LOOP;
+END $$;
+GRANT SELECT (tenant_id, state) ON provisional_discharge_permissions
+    TO sapphire_api, sapphire_worker;

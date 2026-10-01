@@ -1523,3 +1523,20 @@ activation, measure a six-station run and restore on the DHM target, and confirm
 that the daily interval clears the expected backlog. An individual forecast may still be published
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
+
+## Dormant provisional-discharge migration
+
+Revision `0068` creates separate protected measurement/feed/reference/conversion
+relations. It seeds no permission or provisional values. Normal workers and the API
+remain unwired and cannot read or write protected content. Keep this path disabled:
+the full reader inventory, compatible rollback inventory, proof-recording authority
+and activation command are not implemented. The existing delivery operator remains
+delivery-only; do not borrow its credential or the migration owner credential for
+conversion jobs. No deployment or live grant is authorized by these schema changes.
+
+Downgrade refuses if **any** protected relation has rows, including reference proofs
+or a permission record. It never deletes evidence to permit rollback. Empty-schema
+roundtrip tests use disposable PostGIS16. Protected data belongs to the existing
+restricted backup/retention boundary. Future activation still needs the full reviewed
+inventory and rollback policy; a successful migration or fixture conversion proves
+neither activation readiness nor forecast delivery.
