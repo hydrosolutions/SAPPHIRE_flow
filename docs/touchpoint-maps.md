@@ -1572,3 +1572,10 @@ writer grants/activation must review that numerical authority boundary explicitl
 - Conversion refuses readings before the newest curve's original `valid_from`, with
   no older-curve fallback. Within-validity readings remain provisional/test-purpose
   when converted using a curve expired at actual capture; never silently upgrade them.
+
+- The D5 observation-read inventory includes the protected append store's unfiltered
+  locked evidence reload. This is not a forecast-input consumer: strict reconversion
+  refuses QC_UNCHECKED and all other nonpassing statuses, missing QC generation,
+  empty rule flags or any nonpassing flag. SQL independently rejects the same states.
+  Keep this exact inventory entry and the persisted-versus-caller QC matrix together;
+  do not exclude store modules from the scanner or widen accepted forecasting statuses.

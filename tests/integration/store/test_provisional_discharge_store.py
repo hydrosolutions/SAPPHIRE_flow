@@ -167,13 +167,37 @@ class TestProvisionalDischargeStore:
         assert ordinary == []
         assert db_connection.scalar(sa.select(observations.c.value)) == args[0].value
 
+    @pytest.mark.parametrize(
+        "qc_change",
+        [
+            pytest.param({"qc_status": "raw"}, id="raw"),
+            pytest.param({"qc_status": "qc_unchecked"}, id="unchecked"),
+            pytest.param({"qc_status": "qc_failed"}, id="failed"),
+            pytest.param({"qc_status": "qc_suspect"}, id="suspect"),
+            pytest.param({"qc_status": "missing", "value": None}, id="missing"),
+            pytest.param({"qc_rule_version": None}, id="passed-no-generation"),
+            pytest.param({"qc_flags": []}, id="passed-no-rules"),
+            pytest.param(
+                {
+                    "qc_flags": [
+                        {
+                            "rule_id": "range_check",
+                            "rule_version": "1",
+                            "status": "qc_failed",
+                        }
+                    ]
+                },
+                id="passed-with-failing-rule",
+            ),
+        ],
+    )
     def test_persisted_not_caller_qc_is_authority(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, qc_change: dict[str, object]
     ) -> None:
         args = seed(db_connection)
         result = convert(*args)
         permit_fixture(db_connection, result.tenant_id)
-        db_connection.execute(sa.update(observations).values(qc_status="raw"))
+        db_connection.execute(sa.update(observations).values(**qc_change))
         with pytest.raises(ValueError, match="QC"):
             PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
                 result, captured_at=NOW
@@ -187,6 +211,13 @@ class TestProvisionalDischargeStore:
                     **raw_values(result), captured_at=NOW
                 )
             )
+
+        assert (
+            db_connection.scalar(
+                sa.select(sa.func.count()).select_from(provisional_discharges)
+            )
+            == 0
+        )
 
     def test_changed_qc_appends_without_reapproving_feed(
         self, db_connection: sa.Connection

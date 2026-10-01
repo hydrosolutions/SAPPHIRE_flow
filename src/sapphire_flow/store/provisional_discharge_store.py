@@ -66,6 +66,7 @@ class PgProvisionalDischargeStore:
         )
         if row is None:
             raise ValueError("persisted measured level is absent or foreign")
+        # Reload evidence unfiltered; strict reconversion rejects nonpassing QC.
         measured = PgObservationStore(self._conn).fetch_observations(
             station_id=discharge.station_id,
             parameter=row["parameter"],

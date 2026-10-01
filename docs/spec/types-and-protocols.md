@@ -5177,3 +5177,11 @@ and post-expiry readings may yield only provisional/test-purpose inputs once the
 curve is expired at actual capture. No older-curve fallback, date shift or automatic
 ordinary/valid upgrade is performed. Future writer lock privileges, contradictory
 attestation authoring and safe validation-error projection remain unimplemented holds.
+
+The protected append store deliberately reloads the locked measured observation
+without a QC fetch filter, to validate its actual persisted evidence state. This
+read is inventoried under the D5 consumer policy but does not feed a model. Strict
+reconversion requires QC_PASSED, a QC generation and nonempty all-passing flags;
+unchecked, failed, suspect, raw and missing rows cannot produce a protected append.
+A stale caller's passing snapshot cannot override persisted QC. The SQL guard
+independently enforces this boundary; ordinary forecast acceptance is unchanged.

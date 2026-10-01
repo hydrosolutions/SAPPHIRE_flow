@@ -625,6 +625,9 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
         "MODEL_INPUT_QC_STATUSES",
     ),
     "src/sapphire_flow/services/training_data.py": ("QcStatus.QC_PASSED",),
+    # Locked evidence revalidation, not model input. Strict reconversion rejects
+    # unchecked/nonpassing rows and missing generation or passing-rule evidence.
+    "src/sapphire_flow/store/provisional_discharge_store.py": ("<unfiltered>",),
 }
 
 
