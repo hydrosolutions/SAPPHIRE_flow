@@ -1,0 +1,53 @@
+# docker-compose.nepal-cloud.yml — the Nepal cloud host (Plan 511).
+# Layers on top of docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.nepal-cloud.yml up -d
+#
+# Requires in the environment / .env: VERSION and SAPPHIRE_DOMAIN
+# (nepal-staging.hydrosolutions.ch). First deployment: docs/deployment/nepal-cloud-host.md.
+#
+# What this overlay does:
+#   * Applies config/overlays/nepal-cloud.toml on api, prefect-worker,
+#     prefect-worker-ingest AND init (the four services that read config).
+#   * Tells `init` not to register the BAFU collector deployments.
+#   * Gives caddy the domain and the Nepal Caddyfile (HTTPS on the host, only
+#     /api/v1/ forwarded, HSTS).
+#   * Publishes NOTHING else: no `ports:` on api, prefect-server or postgres.
+#     The base file's caddy already publishes 80 and 443.
+
+x-nepal-overlay-env: &nepal-overlay-env
+  SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/nepal-cloud.toml
+
+x-nepal-overlay-mount: &nepal-overlay-mount
+  ./config/overlays/nepal-cloud.toml:/app/config/overlays/nepal-cloud.toml:ro
+
+services:
+  prefect-worker:
+    environment: *nepal-overlay-env
+    volumes:
+      - *nepal-overlay-mount
+
+  prefect-worker-ingest:
+    environment: *nepal-overlay-env
+    volumes:
+      - *nepal-overlay-mount
+
+  api:
+    environment: *nepal-overlay-env
+    volumes:
+      - *nepal-overlay-mount
+
+  init:
+    environment:
+      <<: *nepal-overlay-env
+      # Plan 511 D4: the Swiss BAFU collectors are not registered on this host.
+      SAPPHIRE_SKIP_DEPLOYMENTS: collect-bafu-forecasts,collect-bafu-observations
+    volumes:
+      - *nepal-overlay-mount
+
+  caddy:
+    environment:
+      SAPPHIRE_DOMAIN: ${SAPPHIRE_DOMAIN:?SAPPHIRE_DOMAIN is required; set it in .env}
+    volumes:
+      # Replaces the base ./Caddyfile mount (compose merges volumes by target).
+      - ./Caddyfile.nepal:/etc/caddy/Caddyfile
