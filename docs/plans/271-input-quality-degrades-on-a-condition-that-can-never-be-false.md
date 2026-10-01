@@ -126,11 +126,11 @@ Not a Plan 261 regression, and not new: every forecast in the retained window, ~
 ## 🔴 The conflict — FOUR sources, three answers
 
 What should `warm_up_source` be for a model that holds no state? ⚠️ **Round 2 found a FOURTH
-source** — the type/Protocol spec, which `CLAUDE.md` calls *authoritative for implementation*. TWO documents say `NULL`, and T3 must correct both or documentation exit gate 3 fails.
+source** — the type/Protocol spec, which `AGENTS.md` calls *authoritative for implementation*. TWO documents say `NULL`, and T3 must correct both or documentation exit gate 3 fails.
 
 | source | answer | where |
 |---|---|---|
-| **Our type/Protocol spec** (`CLAUDE.md` calls it *authoritative for implementation*) | **`NULL`** — `# NULL for ML models` | `docs/spec/types-and-protocols.md:1791` |
+| **Our type/Protocol spec** (`AGENTS.md` calls it *authoritative for implementation*) | **`NULL`** — `# NULL for ML models` | `docs/spec/types-and-protocols.md:1791` |
 | **Our architecture document** | **`NULL`** — "NULL for ML models" | `docs/architecture-context.md:1845` |
 | **The ForecastInterface contract** (co-designed with hydrosolutions) | **`FRESH`** — "a state-free FI model … always runs `WarmUpSource.FRESH` — already legal SAP3 behaviour for stateless models" | `ForecastInterface/docs/model_interface.md:82` |
 | **The running code** | **`COLD_START`** | `services/operational_inputs.py:96-113` → `services/input_quality.py:120-127` |
@@ -177,7 +177,7 @@ Adopt FI's `FRESH`, and **amend BOTH documents that say `NULL` in the same chang
 `docs/spec/types-and-protocols.md:1791` and `docs/architecture-context.md:1845` — so the
 repository carries one answer instead of three. Three reasons:
 
-1. FI is the cross-organisation contract and `CLAUDE.md:54-69` makes compliance mandatory.
+1. FI is the cross-organisation contract and `AGENTS.md § ForecastInterface Adherence` makes compliance mandatory.
    This is the "our side violates the FI → fix our side" path, not the "file an FI issue" path.
 2. Keep field semantics distinct: `input_quality = None` means *unknown/legacy row*
    (`architecture-context.md:110`), whereas combined `warm_up_source = None` means no
@@ -187,12 +187,12 @@ repository carries one answer instead of three. Three reasons:
 
 ⚠️ **The amendment is the deliberate part.** Correcting a trusted internal document to match an
 external contract must be a recorded decision, not a quiet edit. If the owner prefers `NULL`,
-that is a divergence from FI and must go upstream as an FI issue per `CLAUDE.md`, not be taken
+that is a divergence from FI and must go upstream as an FI issue per `AGENTS.md`, not be taken
 silently.
 
 ⛔ **This is NOT an FI gap.** FI's state-free design is deliberate and documented, and FI has
 already specified the SAP3 mapping. Filing an FI issue here would be the wrong one of
-`CLAUDE.md`'s two paths.
+`AGENTS.md`'s two paths.
 
 ## What already exists, so nobody re-scopes it
 

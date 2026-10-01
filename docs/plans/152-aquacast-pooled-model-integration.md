@@ -353,7 +353,7 @@ merged, its lookback/horizon max-collapsed as bare step counts (210 daily vs 168
 applied at whichever resolution won a `frozenset` coin toss), and be handed a single-resolution
 frame. It would produce numbers, and they would be wrong.
 
-**Per `CLAUDE.md` § FI Adherence this is path 1**: the FI expresses multi-resolution correctly
+**Per `AGENTS.md` § FI Adherence this is path 1**: the FI expresses multi-resolution correctly
 (`InputRequirement.dynamic` is *keyed by* `time_step`); **we** collapse it. The fix belongs on the
 SAP3 side — no FI issue.
 
@@ -740,7 +740,7 @@ expected.**
    (`services/model_onboarding.py:437`, `:715`). If it fails, escalate — do not work around it.
 
 **Exit gate:** committed audit + owner decision on the target station set (D2). Heredoc probe per
-`CLAUDE.md` § Ad-hoc Analyses, not a checked-in script.
+`AGENTS.md` § Ad-hoc Analyses, not a checked-in script.
 
 ### T0b — Fail loudly on a multi-resolution requirement → **SPLIT OUT: Plan 156**
 Moved verbatim to `docs/plans/archive/156-fi-multiresolution-fail-loud-guard.md`. It is a standalone safety
@@ -785,7 +785,7 @@ point of running it third rather than last.
 `cmal_pool_PT` was constructed from its `config.yaml`, `best.pt` deserialized, and `predict()` run
 against a **synthetic SAPPHIRE-shaped feed** (one station, 210 daily past steps ending at issue−1,
 15 future forcing steps starting at the issue, 50 statics). Throwaway heredoc probe per
-`CLAUDE.md` § Ad-hoc Analyses; the aquacast env was installed in a scratch clone, **not** added to
+`AGENTS.md` § Ad-hoc Analyses; the aquacast env was installed in a scratch clone, **not** added to
 this repo.
 
 **Confirmed — every output-path claim in this plan is now empirical, not argued:**
@@ -824,7 +824,7 @@ this repo.
    `build_qc` → `compute_annual_maxima`, i.e. an unanticipated crash rather than a returned
    `ModelFailure`. So the README's "ungauged mode" is not reachable by withholding the FI input; it
    needs a config change (`data.quality_control`) or the `predict --withhold-past-discharge` path.
-   **G1 stands at full 210-day depth.** *(Worth raising with the colleague: per `CLAUDE.md` § FI
+   **G1 stands at full 210-day depth.** *(Worth raising with the colleague: per `AGENTS.md` § FI
    Adherence an anticipated failure should be RETURNED, not raised — this looks like an FI-contract
    deviation on the aquacast side, and is a candidate upstream issue rather than a SAP3 workaround.)*
 
@@ -1200,6 +1200,6 @@ predict at all.
   signal, while T4–T6 still honour it for the *final* verdict.
 - `docs/plans/archive/130-temperature-reanalysis-live-tail.md` — READY, unimplemented; T1 dependency under D2
   option (A).
-- `CLAUDE.md` § ForecastInterface Adherence — the FI-gap escalation rule.
+- `AGENTS.md` § ForecastInterface Adherence — the FI-gap escalation rule.
 - hydrosolutions/aquacast: `docs/operational/fi_integration.md`, `docs/forecast-interface-usage.md`,
   `aquacast/operational/`.

@@ -94,7 +94,7 @@ period-ending labels (`services/operational_inputs.py:225`).
   provenance? The FI
   adapter selects requirements solely by `timedelta` (`adapters/forecast_interface.py:496`, `:1310`).
   If a model must be able to *declare* a phase, that is an FI change and
-  `CLAUDE.md` § ForecastInterface Adherence requires an upstream issue, **not** a SAP3-side
+  `AGENTS.md` § ForecastInterface Adherence requires an upstream issue, **not** a SAP3-side
   workaround. If phase is purely our preprocessing concern, the adapter stays as it is and we
   guarantee the grid before `predict()`. **This decision gates T4.** ⚠️ It does NOT gate T1 — T1 is
   the task that TAKES it. An earlier revision said D1 gates T1, which is circular and contradicted

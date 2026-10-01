@@ -7,7 +7,6 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _POLICY_DOCS = (
     _REPO_ROOT / "AGENTS.md",
-    _REPO_ROOT / "CLAUDE.md",
     _REPO_ROOT / "docs/workflow.md",
 )
 _WORKFLOW = _POLICY_DOCS[-1]

@@ -4,7 +4,7 @@
 
 One runner, following the M-A10 precedent (`coloc_run.py`): a tested,
 loader-agnostic core (`run_ma6_comparison`) taking an injected `Ma6Inputs`
-bundle (CLAUDE.md dependency injection — no I/O in business logic), and
+bundle (AGENTS.md dependency injection — no I/O in business logic), and
 `main()` wiring the real T1-T5 production paths (`ma6_pairs`,
 `ma6_estimands`, `ma6_representativeness`, `ma6_mass_fraction`,
 `ma6_lapse_check`) into that same bundle. This module computes NOTHING new
@@ -365,7 +365,7 @@ class RetentionRow:
     jjas_retained_fraction: float | None
 
 
-# --- the injected input bundle (CLAUDE.md dependency injection) ---
+# --- the injected input bundle (AGENTS.md dependency injection) ---
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -696,7 +696,7 @@ class Ma6Report:
 def run_ma6_comparison(
     inputs: Ma6Inputs, *, clock: Callable[[], datetime] = lambda: datetime.now(UTC)
 ) -> Ma6Report:
-    """The pure, testable core (CLAUDE.md dependency injection — no I/O):
+    """The pure, testable core (AGENTS.md dependency injection — no I/O):
     every table's content, computed from `inputs` alone."""
     magnitudes: list[StationMagnitudeCell | AbsentResult] = []
     categorical: list[CategoricalScores | AbsentResult] = []

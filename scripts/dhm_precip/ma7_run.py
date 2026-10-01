@@ -10,7 +10,7 @@ uncertainty (D5/D9), the elevation-band and reporting-resolution
 transferability cuts side by side with the D6 attribution explicitly
 declined, and Olangchunggola's open D7 status.
 
-`run_ma7_report()` is the tested, loader-agnostic core (CLAUDE.md
+`run_ma7_report()` is the tested, loader-agnostic core (AGENTS.md
 dependency injection: an `Ma7Inputs` bundle is passed in, never a bare call
 to the real pipeline inside business logic) — exercised against synthetic
 `MaskedGaugeSeries` fixtures with no real workbook required, following
@@ -150,7 +150,7 @@ class MissingStationMetadataError(ValueError):
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Ma7Inputs:
-    """T4's DI seam (CLAUDE.md dependency injection) — `run_ma7_report`'s
+    """T4's DI seam (AGENTS.md dependency injection) — `run_ma7_report`'s
     tested core takes this bundle and never touches disk itself, mirroring
     `coloc_run.DhmRetainedProvider`/`ma6_run.Ma6Inputs`."""
 

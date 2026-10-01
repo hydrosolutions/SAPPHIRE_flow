@@ -2,7 +2,7 @@
 the atomic tmp -> os.replace writer, and the D11 provenance manifest.
 
 Pydantic sits at the JSON boundary only (`_*Model` classes); every domain
-type above that line is a frozen dataclass (CLAUDE.md "parse, don't
+type above that line is a frozen dataclass (AGENTS.md "parse, don't
 validate"), mirroring the precedent in `scripts/dhm_precip/manifest_io.py`.
 """
 

@@ -340,7 +340,7 @@ The following are infrastructure-level security measures — the IT team's respo
 | **fail2ban** | Blocks IPs after repeated failed SSH attempts. Complements IP allowlisting. | High |
 | **`auditd`** | OS-level audit logging of SSH sessions, `sudo` usage, file access. Feeds into SIEM if available. | High |
 | **Full disk encryption (LUKS)** | Protects against physical disk theft. Requires manual unlock or TPM on reboot. | High |
-| **`./secrets/` file permissions** | `chmod 600`, owned by root. Prevents other OS users from reading secrets on the host. | High |
+| **`./secrets/` file permissions** | `chmod 600`, owned by root. Prevents other OS users from reading secrets on the host. **Linux cloud hosts (Plan 511):** bind-mounted secrets keep host ownership and the containers drop capabilities, so the directory is `750 root:docker` and the files `644` root-owned — the directory, not the file mode, excludes other users (`docs/deployment/nepal-cloud-host.md` § 2; to be confirmed at first boot). | High |
 | **Firewall** | Only port 443 (HTTPS) and SSH open. All other ports blocked at the OS level (in addition to Docker network isolation). | Critical |
 | **Unattended upgrades** | Automatic OS security patches. | High |
 | **`pgaudit` extension** | PostgreSQL audit logging of all SQL queries. Detects direct database access that bypasses the application API. See "Threat model" section below. | Recommended |
@@ -464,6 +464,8 @@ All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mount
 
 Required secrets:
 - `db_password` — PostgreSQL password for application users
+- `sapphire_api_db_password`, `sapphire_worker_db_password`, `sapphire_backup_db_password` — the distinct passwords of the least-privilege `sapphire_api`, `sapphire_worker` and `sapphire_backup` database roles (Plan 147 Slice D; Plan 162 T1). All three are declared in the base `docker-compose.yml` and mounted into `init`, which bootstraps the roles, so a stack cannot start without them. Generate each independently of `db_password`.
+- Build-time secrets (environment-sourced, never on disk): `recap_dg_client_token` and `aquacast_token`, needed to build the images (`docs/deployment/nepal-cloud-host.md`).
 - `access_token_pepper` — server-side pepper for `access_tokens.token_hash` (Plan 147 Slice C, REALIZED). Mounted only into the `api` service (auth verification + the token-management CLI, run via `docker compose exec api`). The API refuses to boot without it (fail-closed, no unpeppered fallback).
 - `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config) *(v1)*
 - `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption) *(v1)*
@@ -726,6 +728,10 @@ The goal is *attributable* risk — when a CVE lands or a build breaks, `git log
 ### Python dependency policy
 
 - `uv.lock` is committed. Resolver output is reproducible; `uv sync --frozen` is used in every CI workflow step that installs dependencies.
+- The 2026-10-01 security update locks transitive `urllib3` to 2.8.0, addressing
+  CVE-2026-97687 (HTTPS proxy TLS configuration override) and CVE-2026-97689
+  (unbounded chunk-parser memory allocation). No scanner exemption is added;
+  future dependency resolutions must continue to pass the vulnerability gates.
 - `pyproject.toml` declares `[tool.uv] required-version = "==0.11.7"` so local `uv` binaries that drift from the repo-standard version fail fast rather than silently re-resolving.
 - `pyproject.toml` also declares an explicit `[[tool.uv.index]]` block naming PyPI as the default index. This is informational / future-proofing — not a restrictive control — ahead of any private-index introduction.
 - Dependabot raises reviewed upgrade PRs across four ecosystems: `uv` (Python deps), `docker` (Dockerfile base images and `COPY --from=` stages), `docker-compose` (compose services), and `github-actions` (workflow `uses:` entries). Configuration lives at `.github/dependabot.yml`.

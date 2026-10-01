@@ -247,7 +247,7 @@ Script handles the rest; prints clear guidance if it can't continue.
 ### 1.7 v0 live 🎉
 
 - [ ] Tag `v0.1.0` (first non-internal release) — bump minor, not patch.
-- [ ] Update CLAUDE.md + MEMORY.md to reflect v0 deployed status.
+- [ ] Update AGENTS.md + MEMORY.md to reflect v0 deployed status.
 - [ ] Communicate to stakeholders (hydrosolutions team, Nepal DHM
       contacts).
 
@@ -261,7 +261,7 @@ Sprint 1's Mac-Mini glue is being built. Merge order is
 
 ### 2.1 Plan 070 — pre-commit + `uv run check` — DONE (2026-05-11)
 
-- [x] Phase 1 (A1+A2+A3): pre-commit config + hooks installed + CLAUDE.md
+- [x] Phase 1 (A1+A2+A3): pre-commit config + hooks installed + AGENTS.md
       §Pre-commit hooks section. Commit `0223e8e` / v0.1.422.
 - [x] Phase 2 (B1+B2): `src/sapphire_flow/cli/check.py` with
       `main() -> int`; `[project.scripts] check = ...`; cicd.md

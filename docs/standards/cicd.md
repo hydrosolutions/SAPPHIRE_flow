@@ -458,13 +458,13 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 ### Locally built `sapphire-flow` app image — version tags
 
 - Tag format: `sapphire-flow:${VERSION}`, where `${VERSION}` matches the Python package version in `pyproject.toml` / `src/sapphire_flow/__init__.py`.
-- `${VERSION}` is bumped by `bump-my-version` on every commit per the `CLAUDE.md` version-bumping rule.
+- `${VERSION}` is bumped by `bump-my-version` on every commit per the `AGENTS.md` version-bumping rule.
 - Operators set the `${VERSION}` env var (via `.env` or compose overrides) when deploying a new build, then run the upgrade procedure above.
 - This is the only image reference in the stack that moves on a normal deploy cadence.
 
 ### Git version tags are BEST-EFFORT and gappy — do not treat them as a release ledger
 
-`git tag v0.1.x` on `main` after merge (CLAUDE.md § Version Bumping) is a convenience, not an inventory.
+`git tag v0.1.x` on `main` after merge (AGENTS.md § Version Bumping) is a convenience, not an inventory.
 
 **Since Plan 197 (2026-08-21), the tag is created automatically** by `.github/workflows/tag-main.yml`,
 which runs on every push to `main`: it reads `${VERSION}` from `pyproject.toml` at the pushed commit and
@@ -486,7 +486,7 @@ Two things make the tag series legitimately incomplete, and both remain expected
   re-bumped, and the number it originally claimed is simply skipped. `0.1.768` and `0.1.770` are examples
   — both were claimed, neither exists on `main`.
 - **A version may span more than one commit, and the tag may land on any of them.** Plan-doc-only
-  commits to `main` do not bump (CLAUDE.md § Version Bumping), so several consecutive commits can carry
+  commits to `main` do not bump (AGENTS.md § Version Bumping), so several consecutive commits can carry
   one version. The workflow's idempotent skip (create only if the tag is absent) means the tag is
   created by whichever of those commits' workflow runs executes first — usually, but not guaranteed to
   be, the commit that introduced the version, since GitHub does not order concurrent workflow runs
@@ -540,7 +540,7 @@ CI builds the `sapphire-flow` image on every pull request under the `build-image
 
 ## Gate lifecycle: developer edit → CI → merge
 
-<!-- Added by Plan 070 §D-Final-Pass — consolidates A3 (CLAUDE.md pre-commit section),
+<!-- Added by Plan 070 §D-Final-Pass — consolidates A3 (AGENTS.md pre-commit section),
      B2 (uv run check subsection), and C1 (extended tiers table) into one narrative. -->
 
 Two gates protect every change before it reaches `main`:
@@ -598,7 +598,7 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 
 ### Cross-references
 
-- `CLAUDE.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
+- `AGENTS.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
 - [`docs/plans/archive/070-precommit-and-gate-parity.md`](../plans/archive/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. A4 wires the pyright ratchet at `pre-push`, with CI as the backstop.
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
 - [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
@@ -803,7 +803,7 @@ For pre-merge confidence developers can run `uv run pytest tests/unit`
 manually.
 
 `uv run check` is the developer ergonomics counterpart to the
-`pre-commit` developer-tier gate (see `CLAUDE.md` §Pre-commit hooks and
+`pre-commit` developer-tier gate (see `AGENTS.md` §Pre-commit hooks and
 `docs/plans/archive/070-precommit-and-gate-parity.md` for the full design).
 The CI `lint` job keeps its own standalone ruff steps; this helper does
 not modify CI behaviour.
@@ -911,7 +911,7 @@ A missing overlay file raises `FileNotFoundError` at startup. There is no silent
 
 ### Docker Compose pattern
 
-Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). `docker-compose.macmini.yml` likewise passes `mac-mini.toml` to `init` (Plan 513): that overlay declares `[tenants.chwrr]`, which the `init` tenant step creates — an overlay-less `init` on a host that declares tenants would silently skip them. The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
+Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). `docker-compose.nepal-cloud.yml` (Plan 511) does the same for `nepal-cloud.toml` on all four services, sets `SAPPHIRE_SKIP_DEPLOYMENTS` on `init` (a comma-separated list of deployment names `register_deployments` does not register; an unknown name is an error), and gives Caddy `SAPPHIRE_DOMAIN` and `Caddyfile.nepal`. `docker-compose.macmini.yml` likewise passes `mac-mini.toml` to `init` (Plan 513): that overlay declares `[tenants.chwrr]`, which the `init` tenant step creates — an overlay-less `init` on a host that declares tenants would silently skip them. The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
 
 ```
 docker compose -f docker-compose.yml -f docker-compose.staging.yml up

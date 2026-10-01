@@ -151,7 +151,7 @@ def audit_completeness(
     which grid slots in ``[start, end)`` are present vs missing.
 
     ``now`` is the wall-clock instant the audit is run at (injected — see
-    CLAUDE.md's dependency-injection rule; the CLI boundary in ``main()``
+    AGENTS.md's dependency-injection rule; the CLI boundary in ``main()``
     is the only place that reads the real clock). Slots younger than
     ``_PUBLISH_LAG_HORIZON`` relative to ``now`` cannot yet have been
     published and are excluded from ``expected``/`missing` — reported

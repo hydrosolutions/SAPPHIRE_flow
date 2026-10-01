@@ -1,7 +1,7 @@
 """M-A4 (Plan 171) — typed errors for the ERA5-Land acquisition/transform
 pipeline. One hierarchy, one CLI exit-code mapping (task 4a).
 
-CLAUDE.md: never a bare `except`; every raised error here carries context.
+AGENTS.md: never a bare `except`; every raised error here carries context.
 """
 
 from __future__ import annotations

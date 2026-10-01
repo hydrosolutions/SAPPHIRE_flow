@@ -3,7 +3,7 @@
 ``docs/requirements/04-basin-static-artifact-contract.md`` is authoritative for
 field meanings. These are frozen, parsed-at-the-boundary domain types — the
 Pydantic boundary models that produce them live in
-``services/basin_package_loader.py`` (CLAUDE.md "Parse, don't validate").
+``services/basin_package_loader.py`` (AGENTS.md "Parse, don't validate").
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Collect the facts a standing review needs, and flag claimed-vs-measured drift.
 
 Mechanical only: no judgement, no ranking. It answers "what does the repo claim,
-and what is actually true" — the delta is the signal. The verdict is authored on
-top of this by the `standing` skill.
+and what is actually true" — the delta is the signal. Interpret the collected
+facts separately; this tool does not produce a review verdict.
 
     uv run python tools/standing_snapshot.py                 # human summary
     uv run python tools/standing_snapshot.py --out snap.json # + machine-readable

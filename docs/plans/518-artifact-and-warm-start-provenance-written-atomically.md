@@ -143,7 +143,7 @@ per D6.
 - Checked and **no change needed**: `docs/conventions.md` (lists only the grant), `docs/standards/orchestration.md`
   (no atomicity text found), Plan 399 (asserts no atomicity, per Plan 405 §46).
 - `docs/plans/README.md`: status row.
-**Verification:** `grep -rn "Atomicity is NOT\|Nothing cleans" docs/touchpoint-maps.md` returns nothing stale; version bump per CLAUDE.md.
+**Verification:** `grep -rn "Atomicity is NOT\|Nothing cleans" docs/touchpoint-maps.md` returns nothing stale; version bump per AGENTS.md.
 **Pre-change:** N/A (documentation).
 
 ### T6 — The existing orphan (operational; the owner decides; NOT run by this plan)

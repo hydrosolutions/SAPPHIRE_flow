@@ -65,7 +65,7 @@ Resolve this before exiting DRAFT.
   needed.
 - JSON API routes (`api_alerts.py`, `api_forecasts.py`, `api_stations.py`)
   unless the scope decision above changes.
-- Coverage threshold enforcement — CLAUDE.md explicitly warns against
+- Coverage threshold enforcement — AGENTS.md explicitly warns against
   coverage chasing.
 
 ---

@@ -137,7 +137,7 @@ pick up the new `post-commit` hook on its own.
 If `pre-commit install` errors with `Cowardly refusing to install hooks
 with core.hooksPath set`, run `git config --unset-all core.hooksPath`
 first — some IDEs (and tools like `husky`) set that key automatically.
-See `CLAUDE.md` §Pre-commit hooks for the full hook policy.
+See `AGENTS.md` §Pre-commit hooks for the full hook policy.
 
 ### 4. Run database migrations
 

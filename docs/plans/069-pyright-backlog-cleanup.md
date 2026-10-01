@@ -85,7 +85,7 @@ of 2026-06-01.
 The `lint` CI job currently runs only ruff + ruff format. Static
 type-checking is our largest protection against refactor regressions
 in a codebase heavy on generics (`Protocol` signatures, `NewType`,
-frozen dataclasses) per CLAUDE.md's type-driven-development rules.
+frozen dataclasses) per AGENTS.md's type-driven-development rules.
 Leaving it off indefinitely erodes that investment.
 
 ### The shape of the backlog (measured 2026-04-22, post-carve-out)
@@ -395,7 +395,7 @@ prose files listed above.
 **File**: `tools/pyright_baseline.json` (new)
 
 This is a reusable CI utility (not a one-time script), so it is written as a
-`.py` file per CLAUDE.md's "reusable logic → proper Python scripts" rule.
+`.py` file per AGENTS.md's "reusable logic → proper Python scripts" rule.
 
 1. Write `tools/pyright_baseline.py` — a script that runs
    `uv run pyright --outputjson src/` and reduces the output to:
