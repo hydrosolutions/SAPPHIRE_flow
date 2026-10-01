@@ -13,6 +13,30 @@ source: 2026-09-25 — the owner, after the midnight scaffold's second same-day 
 
 # Plan 327 — a forecast cycle cannot be re-run
 
+## Forecast data-use amendment (2026-10-01)
+
+The natural key is now `(station_id, model_id, issued_at, parameter, data_use)`.
+`STANDARD` is the default processing class, **not** a scientific-validity certificate.
+Cross-class records never enter retry comparison. Ordinary rows 1–4 remain unchanged.
+For `EXPIRED_RATING_TEST`, evaluate values (row 1), artifact (row 2), then QC verdict
+(row 3) in that order. After row 3 and before IDENTICAL (row 4), changed canonical
+consumed-input lineage supersedes within the test class. `INPUT_LINEAGE_DIFFERS`
+has enum value 5; its evaluation position is deliberately before row 4.
+A simultaneous QC/lineage change with equal values/artifact remains row-3 REFUSED.
+Optional evidence, run IDs and capture clocks remain outside retry equality.
+
+On refusal, retain the original result, issue time and evidence. Record the conflict
+and investigate QC policy and input/curve provenance. Do not retimestamp the failed
+run, overwrite the held row or claim success. A genuine later scheduled issue is
+independent. Same-key replacement under changed QC needs separate explicit approval.
+
+Migration `0069` unconditionally refuses test-class INSERTs, including owner SQL and
+COPY. No setting, role or provisional-input permission enables them. A later reviewed
+inventory-backed rollout must replace that guard before any test output can exist.
+Synthetic structural tests remove only this guard inside disposable transactions;
+they prove schema/retry behavior, not production activation or consumer isolation.
+
+
 ⚠️ **Plan number PROVISIONAL until the owner grants it.** 340-344 are held by a concurrent session.
 
 ## Status

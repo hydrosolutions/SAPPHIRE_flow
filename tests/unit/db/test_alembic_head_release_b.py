@@ -96,7 +96,7 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
 # Two migrations sharing a down_revision give alembic two heads and break every
 # upgrade, so the number is assigned at merge time, not at authoring time.
-_RELEASE_B_HEAD = "0068"
+_RELEASE_B_HEAD = "0069"
 
 
 def _down_revisions() -> dict[str, str | None]:

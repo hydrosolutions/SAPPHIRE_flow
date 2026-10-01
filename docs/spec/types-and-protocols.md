@@ -2001,6 +2001,54 @@ class ModelArtifactProvenance:
 
 Module: `types/model.py`
 
+### Forecast data use and consumed input lineage
+
+`ForecastDataUse` (`types/enums.py`) has `STANDARD = "standard"` and
+`EXPIRED_RATING_TEST = "expired_rating_test"`. This immutable axis is independent of
+lifecycle, input quality and numerical QC. STANDARD does not certify validity.
+`OperationalForecast.data_use` defaults to STANDARD. Test forecasts require
+`input_lineage: ForecastInputLineage`; STANDARD keeps this projection absent.
+`ForecastSummaryRow` carries classification but never raw lineage.
+
+`ForecastInputLineage` (`types/forecast_lineage.py`) is frozen and contains tuples of
+as-used `ForecastInputSnapshot` records, `ForecastStaticAttributes`, protected provisional-discharge
+fingerprints, actual contributor forecast IDs and ordered transformation versions.
+Static snapshots retain each source station, explicit source/version and consumed
+name/value pairs (finite numbers or explicit missing values). Names are unique and
+serialization orders them deterministically; changing a value or source version
+changes retry identity. No static discovery or assembler wiring is provided.
+Snapshot factories reuse Observation, RawHistoricalForcing and WeatherForecastRecord
+fields, add explicit units and exclude capture/creation clocks. Snapshots keep only
+consumed records, not whole upstream files. NaN/Infinity cannot enter canonical JSON;
+missing observations keep their explicit null. Serialization and SHA-256 derive from
+actual canonical content, never a supplied opaque hash. Input ordering is canonical;
+transformation pipeline ordering remains significant. Mutable source restatements
+cannot change the retained snapshot. Provisional fingerprints reference the immutable
+same-gauge curve/reference/conversion records instead of copying protected payloads.
+
+The caller must derive **complete actual consumption**, including resampling/group
+contributors. Nonempty lineage does not prove completeness. Assemblers and combination
+propagation are not wired by this storage slice. No production test writer is enabled.
+
+`PgForecastStore(..., data_use=STANDARD)` binds every read/write method to one purpose.
+Other-class writes refuse; other-class by-ID/evidence reads return None. Explicit
+status, superseded history, summaries/counts, latest and cycle markers cannot widen
+that class. STANDARD retries retain the existing four-row table. Test retries compare
+lineage only after QC-conflict refusal and before IDENTICAL (Plan 327 amendment).
+
+Migration `0069` stores immutable classification and canonical lineage on the forecast
+header in the same transaction as values/evidence. Its trigger derives
+`forecast_input_stations` from the output and consumed sources; composite station/tenant
+FKs retain source identity. Same-tenant cross-station group inputs are permitted.
+Provisional and contributor references must exist under the same tenant; contributors
+must have the same class and retained evidence. Each snapshot is tied to its own source
+station, not the output gauge. The join is append-only. Downgrade refuses any test row
+or retained join. No runtime/operator write grants are added for the join; a future
+reviewed writer needs explicitly scoped grants and deployment-inventory activation.
+The independent unconditional INSERT guard prevents test rows before that work.
+Direct readers, publication, alerts and model-state isolation remain separate work;
+this storage slice does not claim those paths are closed.
+
 ### OperationalForecast
 
 Wraps the `forecasts` + `forecast_values` join. Contains a `ForecastEnsemble` for the

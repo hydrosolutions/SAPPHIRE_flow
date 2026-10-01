@@ -37,6 +37,7 @@ from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
+    ForecastDataUse,
     ForecastStatus,
     InputQualityCategory,
     InputQualityLevel,
@@ -51,6 +52,7 @@ from sapphire_flow.types.forecast_evidence import (
     PersistedForecastEvidence,
     incomplete_evidence,
 )
+from sapphire_flow.types.forecast_lineage import ForecastInputLineage
 from sapphire_flow.types.forecast_summary import ForecastSummaryRow
 from sapphire_flow.types.ids import (
     ArtifactId,
@@ -125,7 +127,11 @@ class PgForecastStore:
         conn: sa.Connection,
         *,
         transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None,
+        data_use: ForecastDataUse = ForecastDataUse.STANDARD,
     ) -> None:
+        if not isinstance(cast("object", data_use), ForecastDataUse):
+            raise ValueError("forecast store data use must be typed")
+        self._data_use = data_use
         self._conn = conn
         self._begin = (
             transaction_factory
@@ -134,6 +140,8 @@ class PgForecastStore:
         )
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        if forecast.data_use is not self._data_use:
+            raise ValueError("forecast data use differs from store purpose")
         with self._begin() as txn:
             # Plan 327 — a cycle that died partway is re-runnable. An
             # IDENTICAL recomputation (decision-table row 4) returns the
@@ -151,6 +159,7 @@ class PgForecastStore:
             # `IntegrityError`, exactly as it does today (Plan 038 D5).
             existing_id = txn.execute(
                 sa.select(forecasts.c.id)
+                .where(forecasts.c.data_use == self._data_use.value)
                 .where(forecasts.c.station_id == forecast.station_id)
                 .where(forecasts.c.model_id == forecast.model_id)
                 .where(forecasts.c.issued_at == forecast.issued_at)
@@ -192,6 +201,12 @@ class PgForecastStore:
             manifest = json.loads(evidence.manifest_json)
             value_count, value_hash = forecast_values_integrity(txn, forecast.id)
             manifest.update(
+                data_use=forecast.data_use.value,
+                input_lineage_sha256=(
+                    forecast.input_lineage.fingerprint
+                    if forecast.input_lineage
+                    else None
+                ),
                 forecast_id=str(forecast.id),
                 forecast_values_count=value_count,
                 forecast_values_sha256=value_hash,
@@ -288,16 +303,19 @@ class PgForecastStore:
     ) -> PersistedForecastEvidence | None:
         row = (
             self._conn.execute(
-                sa.select(forecast_evidence).where(
-                    forecast_evidence.c.forecast_id == forecast_id
-                )
+                sa.select(forecast_evidence)
+                .join(forecasts, forecasts.c.id == forecast_evidence.c.forecast_id)
+                .where(forecasts.c.data_use == self._data_use.value)
+                .where(forecast_evidence.c.forecast_id == forecast_id)
             )
             .mappings()
             .one_or_none()
         )
         if row is None:
             exists = self._conn.execute(
-                sa.select(forecasts.c.id).where(forecasts.c.id == forecast_id)
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.id == forecast_id)
+                .where(forecasts.c.data_use == self._data_use.value)
             ).scalar_one_or_none()
             if exists is None:
                 return None
@@ -341,7 +359,7 @@ class PgForecastStore:
         # Its evidence is permanent (migration 0057 forbids removing it), and
         # evidence nobody can read back defeats its own purpose. The returned
         # `status` is what distinguishes it from a current forecast.
-        return _fetch_forecast(self._conn, forecast_id)
+        return _fetch_forecast(self._conn, forecast_id, self._data_use)
 
     def fetch_latest_forecast(
         self,
@@ -357,6 +375,7 @@ class PgForecastStore:
             sa.select(forecasts.c.id)
             .where(forecasts.c.station_id == station_id)
             .where(_is_current())
+            .where(forecasts.c.data_use == self._data_use.value)
         )
         if model_id is not None:
             sub = sub.where(forecasts.c.model_id == model_id)
@@ -380,6 +399,7 @@ class PgForecastStore:
             sa.select(forecasts.c.id)
             .where(forecasts.c.issued_at == issued_at)
             .where(_is_current())
+            .where(forecasts.c.data_use == self._data_use.value)
         )
         if station_id is not None:
             stmt = stmt.where(forecasts.c.station_id == station_id)
@@ -397,6 +417,7 @@ class PgForecastStore:
         result = self._conn.execute(
             sa.update(forecasts)
             .where(forecasts.c.id == forecast_id)
+            .where(forecasts.c.data_use == self._data_use.value)
             .where(forecasts.c.version == expected_version)
             .values(
                 status=new_status.value,
@@ -420,6 +441,7 @@ class PgForecastStore:
         stmt = (
             sa.select(forecasts.c.id)
             .where(forecasts.c.station_id == station_id)
+            .where(forecasts.c.data_use == self._data_use.value)
             .where(forecasts.c.issued_at >= start)
             .where(forecasts.c.issued_at < end)
         )
@@ -431,7 +453,9 @@ class PgForecastStore:
             # Plan 328 T3 — an UNFILTERED range read is a read of what is
             # current. A caller that wants the replaced rows asks for them:
             # `status=ForecastStatus.SUPERSEDED` still returns them.
-            stmt = stmt.where(_is_current())
+            stmt = stmt.where(_is_current()).where(
+                forecasts.c.data_use == self._data_use.value
+            )
         if parameter is not None:
             stmt = stmt.where(forecasts.c.parameter == parameter)
         fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
@@ -458,6 +482,7 @@ class PgForecastStore:
         # not: the admin `/forecasts/` list and the generic `/tables/` browser
         # expose it too.
         filters = [
+            forecasts.c.data_use == self._data_use.value,
             forecasts.c.station_id == station_id,
             forecasts.c.issued_at >= start,
             forecasts.c.issued_at < end,
@@ -507,6 +532,7 @@ class PgForecastStore:
             .where(forecasts.c.combination_strategy.is_(None))
             .where(forecasts.c.issued_at <= cutoff)
             .where(_is_current())
+            .where(forecasts.c.data_use == self._data_use.value)
         )
         result = self._conn.execute(stmt).scalar_one_or_none()
         return utc_or_none(result)
@@ -522,19 +548,22 @@ class PgForecastStore:
                     forecast_values.c.forecast_id == forecasts.c.id,
                 )
                 .where(forecasts.c.id.in_(fids))
+                .where(forecasts.c.data_use == self._data_use.value)
                 .order_by(forecasts.c.issued_at, forecast_values.c.valid_time)
             )
             .mappings()
             .all()
         )
-        grouped: dict[ForecastId, list] = defaultdict(list)
+        grouped: dict[ForecastId, list[RowMapping]] = defaultdict(list)
         for row in rows:
             grouped[ForecastId(row["id"])].append(row)
         return [_rows_to_domain(group) for group in grouped.values()]
 
 
 def _fetch_forecast(
-    conn: sa.Connection, forecast_id: ForecastId
+    conn: sa.Connection,
+    forecast_id: ForecastId,
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD,
 ) -> OperationalForecast | None:
     rows = (
         conn.execute(
@@ -544,6 +573,7 @@ def _fetch_forecast(
                 forecast_values.c.forecast_id == forecasts.c.id,
             )
             .where(forecasts.c.id == forecast_id)
+            .where(forecasts.c.data_use == data_use.value)
             .order_by(forecast_values.c.valid_time)
         )
         .mappings()
@@ -572,7 +602,7 @@ def _resolve_retry(
     ``None`` therefore means "proceed to the INSERT", which is also what an
     unclassifiable retry gets.
     """
-    stored = _fetch_forecast(txn, existing_id)
+    stored = _fetch_forecast(txn, existing_id, forecast.data_use)
     if stored is None:
         # Unreachable through this store: header and values share ONE
         # transaction, so a header without its values cannot be committed
@@ -628,7 +658,9 @@ def _resolve_retry(
         f"Forecast {existing_id} already exists for "
         f"({forecast.station_id}, {forecast.model_id}, "
         f"{forecast.issued_at.isoformat()}, {forecast.ensemble.parameter}) "
-        f"and the re-run is not identical — {detail}",
+        f"and the re-run is not identical — {detail}. "
+        "Retain the original result and issue time; record and investigate the "
+        "QC/input provenance conflict. Do not retimestamp the failed run.",
         row=row,
         forecast_id=existing_id,
         station_id=forecast.station_id,
@@ -678,6 +710,10 @@ def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
     """
     return dict(
         id=forecast.id,
+        data_use=forecast.data_use.value,
+        input_lineage=(
+            forecast.input_lineage.content if forecast.input_lineage else None
+        ),
         station_id=forecast.station_id,
         model_id=forecast.model_id,
         model_artifact_id=forecast.model_artifact_id,
@@ -734,11 +770,11 @@ def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
     )
 
 
-def _build_value_rows(forecast: OperationalForecast) -> list[dict]:  # type: ignore[type-arg]
+def _build_value_rows(forecast: OperationalForecast) -> list[dict[str, object]]:
     df = forecast.ensemble.values
     issued_at = forecast.issued_at
     is_members = forecast.representation == EnsembleRepresentation.MEMBERS
-    rows = []
+    rows: list[dict[str, object]] = []
     for row in df.iter_rows(named=True):
         vt = row["valid_time"]
         lead = int((vt.timestamp() - issued_at.timestamp()) // 3600)
@@ -879,6 +915,12 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     warm_up_raw = header["warm_up_source"]
     return OperationalForecast(
         id=ForecastId(header["id"]),
+        data_use=ForecastDataUse(header["data_use"]),
+        input_lineage=(
+            ForecastInputLineage.from_content(header["input_lineage"])
+            if header["input_lineage"] is not None
+            else None
+        ),
         station_id=station_id,
         model_id=ModelId(header["model_id"]),
         model_artifact_id=(
@@ -925,6 +967,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
 def _row_to_summary(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
     return ForecastSummaryRow(
         id=ForecastId(row["id"]),
+        data_use=ForecastDataUse(row["data_use"]),
         station_id=StationId(row["station_id"]),
         model_id=ModelId(row["model_id"]),
         issued_at=utc_from_row(row["issued_at"]),

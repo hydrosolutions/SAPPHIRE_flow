@@ -1166,6 +1166,16 @@ sa.Index(
 forecasts = sa.Table(
     "forecasts",
     metadata,
+    sa.Column("data_use", sa.Text, nullable=False, server_default="standard"),
+    sa.Column("input_lineage", sa.Text, nullable=True),
+    sa.CheckConstraint(
+        "data_use IN ('standard', 'expired_rating_test')", name="ck_forecasts_data_use"
+    ),
+    sa.CheckConstraint(
+        "(data_use = 'standard' AND input_lineage IS NULL) OR "
+        "(data_use = 'expired_rating_test' AND input_lineage IS NOT NULL)",
+        name="ck_forecasts_input_lineage",
+    ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
@@ -1274,6 +1284,23 @@ forecasts = sa.Table(
         name="uq_forecasts_publication_identity",
     ),
 )
+
+forecast_input_stations = sa.Table(
+    "forecast_input_stations",
+    metadata,
+    sa.Column(
+        "forecast_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("forecasts.id"),
+        primary_key=True,
+    ),
+    sa.Column("station_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+)
+sa.Index("ix_forecast_input_stations_station", forecast_input_stations.c.station_id)
 
 forecast_values = sa.Table(
     "forecast_values",
@@ -1739,6 +1766,7 @@ sa.Index(
     forecasts.c.model_id,
     forecasts.c.issued_at,
     forecasts.c.parameter,
+    forecasts.c.data_use,
     unique=True,
     postgresql_where=forecasts.c.status != "superseded",
 )

@@ -1358,3 +1358,16 @@ rather than infer source from today's config; there is currently no authoring/se
 workflow. Pydantic boundary ValidationError text can include protected payloads too.
 Future public or scheduled wiring must project safe errors instead of logging/returning
 raw validation/driver exceptions. These remain explicit holds, not completed safeguards.
+
+
+### Dormant forecast data-use partition
+
+Migration `0069` refuses every `expired_rating_test` forecast INSERT at PostgreSQL,
+including owner SQL and COPY. `data_use` and consumed lineage cannot be changed by
+UPDATE. No output enable flag, session override or runtime/operator grant is added.
+The provisional-input permission does not attest output deployment compatibility.
+A separate reviewed rollout must replace the unconditional guard, close ordinary
+raw-SQL/publication/alert/state readers and authorize the required narrow join writes.
+Protected raw lineage remains internal; ordinary PgForecastStore reads are class-bound.
+Synthetic disposable structural tests may remove only the refusal trigger transactionally;
+this is test setup, never an operator activation procedure.

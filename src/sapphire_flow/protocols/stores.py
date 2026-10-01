@@ -192,6 +192,13 @@ class ObservationStore(Protocol):
 
 @runtime_checkable
 class ForecastStore(Protocol):
+    """Purpose-bound access: STANDARD by default, never an all-class reader.
+
+    Wrong-purpose writes refuse; by-ID/evidence, history and explicit-status
+    reads have the same class boundary as current reads. Classification is not
+    a scientific-validity certificate. Test writers remain database-disabled.
+    """
+
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         """Plan 327/328 — a re-run meeting an existing forecast under the
         natural key is classified by ``services/forecast_retry.py``'s ordered

@@ -1623,3 +1623,22 @@ writer grants/activation must review that numerical authority boundary explicitl
   empty rule flags or any nonpassing flag. SQL independently rejects the same states.
   Keep this exact inventory entry and the persisted-versus-caller QC matrix together;
   do not exclude store modules from the scanner or widen accepted forecasting statuses.
+
+
+### Forecast data-use storage boundary
+
+When changing forecast identity, consult `types/forecast_lineage.py`,
+`services/forecast_retry.py`, `store/forecast_store.py`, `forecast_input_stations`,
+migration `0069`, the ForecastStore protocol and FakeForecastStore together.
+Every store method is purpose-bound, including evidence, by-ID, explicit-status,
+superseded history, summaries/counts and cycle markers. Never rely on `_is_current`
+alone. STANDARD behavior is unchanged; classification is not validity certification.
+
+Verify `test_forecast_data_use_retry.py`, `test_forecast_data_use.py`,
+`test_migration_forecast_data_use.py`, existing retry/supersession/evidence tests and
+the migration-head gate. Deployed guard tests use the unmodified SQL refusal and
+actual runtime logins. Structural tests transactionally remove only that refusal
+in disposable PostGIS; all integrity/immutability triggers remain active.
+No test-mode activation, runtime grants, direct-reader sweep, public lineage exposure,
+publication, FI/state or alert changes are provided here. Full downstream consumption
+lineage and reviewed inventory-backed activation remain prerequisites.

@@ -403,6 +403,31 @@ class filtering. Keep normal selected-but-superseded access semantics intact.
 current ID reuse/supersession, plus a same-output/changed-lineage test that currently
 returns IDENTICAL. New class construction/migration tests fail until implemented.
 
+#### T1b storage implementation boundary
+
+The storage slice uses migration `0069` and an **unconditional** PostgreSQL refusal
+of `EXPIRED_RATING_TEST` forecast INSERTs, including the owner and COPY. It adds no
+activation flag, session override or runtime/operator write grants. The existing
+provisional-input permission is not output-deployment authority. T1c must replace
+this refusal through separately reviewed inventory-backed activation; until then
+there is no production test-output writer.
+
+Typed canonical consumed lineage retains dynamic source snapshots, consumed station
+static attributes, existing immutable provisional fingerprints and actual contributor
+IDs with explicit transformation versions. It is mandatory for TEST, absent for
+STANDARD and persisted with values/evidence. The database derives the immutable
+source-station/tenant join, including legitimate same-tenant cross-station inputs.
+Completeness remains the future T3 assembler contract, not a claim inferred from
+nonempty caller metadata. No assembler, model/FI, publication or direct-reader sweep
+is delivered by this slice. No raw lineage is added to public responses.
+
+Structural tests remove only the dormant refusal trigger inside disposable PostGIS
+transactions, restoring it by rollback (the nonempty downgrade fixture restores it
+before commit). Those tests are distinct from unmodified owner/runtime-role guard
+tests and do not provide a production activation capability. Existing STANDARD retry
+rows 1–4 and superseded historical access stay intact. See Plan 327's amendment for
+the post-QC/pre-IDENTICAL test-lineage supersession rule and conflict handling.
+
 ### T1c — Rejection, publication and deployment activation guards
 
 **Outcome:** no test write before authorized compatible deployment, and no test result can
