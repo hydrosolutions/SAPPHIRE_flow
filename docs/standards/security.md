@@ -728,6 +728,10 @@ The goal is *attributable* risk — when a CVE lands or a build breaks, `git log
 ### Python dependency policy
 
 - `uv.lock` is committed. Resolver output is reproducible; `uv sync --frozen` is used in every CI workflow step that installs dependencies.
+- The 2026-10-01 security update locks transitive `urllib3` to 2.8.0, addressing
+  CVE-2026-97687 (HTTPS proxy TLS configuration override) and CVE-2026-97689
+  (unbounded chunk-parser memory allocation). No scanner exemption is added;
+  future dependency resolutions must continue to pass the vulnerability gates.
 - `pyproject.toml` declares `[tool.uv] required-version = "==0.11.7"` so local `uv` binaries that drift from the repo-standard version fail fast rather than silently re-resolving.
 - `pyproject.toml` also declares an explicit `[[tool.uv.index]]` block naming PyPI as the default index. This is informational / future-proofing — not a restrictive control — ahead of any private-index introduction.
 - Dependabot raises reviewed upgrade PRs across four ecosystems: `uv` (Python deps), `docker` (Dockerfile base images and `COPY --from=` stages), `docker-compose` (compose services), and `github-actions` (workflow `uses:` entries). Configuration lives at `.github/dependabot.yml`.
