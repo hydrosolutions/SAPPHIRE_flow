@@ -115,7 +115,10 @@ train on a reduced station set. Other configuration/programming errors propagate
 The supported locked daily CMAL path has one served cadence/horizon/offset per
 target, including relaxed horizons and batch hindcasts. Failed inbound members use
 that target's unambiguous returned metadata, canonical units, and no sibling flags
-or data. This is nominal failed-product metadata, not invented prediction rows.
+or data. Each injected failure owns its metadata copy. This is nominal
+failed-product metadata, not invented prediction rows. Inbound exclusion emits
+`aquacast.station_excluded` with station key, model name and the safe reason
+`invalid_catchment_area`; it never logs the area value or exception text.
 Missing targets, incompatible units or inconsistent same-target timing raise
 `ModelOutputError`: the shim cannot represent that unsupported result faithfully.
 This is an Aquacast-specific invariant, not a restriction on valid FI outputs in

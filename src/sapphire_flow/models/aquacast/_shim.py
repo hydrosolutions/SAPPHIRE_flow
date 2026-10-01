@@ -49,6 +49,7 @@ from importlib import resources
 from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeVar
 
 import polars as pl
+import structlog
 from forecast_interface import (
     AggregationMethod,
     DeterministicData,
@@ -93,6 +94,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         PastKnownVariable,
         TrainedArtifact,
     )
+
+log = structlog.get_logger(__name__)
 
 _CONFIG_PACKAGE: Final[str] = "sapphire_flow.models.aquacast.configs"
 
@@ -440,6 +443,8 @@ def _to_aquacast_inputs(inputs: ModelInputs) -> ModelInputs:
 
 def _inference_inputs(
     inputs: ModelInputs,
+    *,
+    model_name: str,
 ) -> tuple[ModelInputs | None, dict[str, AreaConversionError]]:
     stations: dict[str, StationInputs] = {}
     failures: dict[str, AreaConversionError] = {}
@@ -448,6 +453,12 @@ def _inference_inputs(
             stations[key] = _to_aquacast_station_inputs(key, station)
         except AreaConversionError as exc:
             failures[key] = exc
+            log.warning(
+                "aquacast.station_excluded",
+                station_key=key,
+                model_name=model_name,
+                reason="invalid_catchment_area",
+            )
     return (ModelInputs(stations=stations) if stations else None), failures
 
 
@@ -592,7 +603,7 @@ def _to_canonical_result(
         for station in failed_stations:
             output.variables[station] = {
                 name: VariableOutput(
-                    metadata=templates[name].metadata,
+                    metadata=templates[name].metadata.model_copy(),
                     status=VariableStatus.FAILURE,
                     flags=frozenset({ForecastFlag.DATA_AVAILABILITY}),
                 )
@@ -767,7 +778,9 @@ class AquacastShim:
         issue_datetime: datetime,
         rng: Random,
     ) -> ModelResult:
-        aquacast_inputs, failures = _inference_inputs(inputs)
+        aquacast_inputs, failures = _inference_inputs(
+            inputs, model_name=self._model_name
+        )
         if aquacast_inputs is None:
             return _area_failure(
                 next(iter(failures.values())),
@@ -810,7 +823,9 @@ class AquacastShim:
             )
         if not issue_datetimes:
             raise ValueError("hindcast requires at least one issue datetime")
-        aquacast_inputs, failures = _inference_inputs(inputs)
+        aquacast_inputs, failures = _inference_inputs(
+            inputs, model_name=self._model_name
+        )
         if aquacast_inputs is None:
             return _area_failure(
                 next(iter(failures.values())),

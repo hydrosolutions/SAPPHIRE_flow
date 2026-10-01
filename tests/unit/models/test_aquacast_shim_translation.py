@@ -1578,3 +1578,64 @@ class TestMemberAreaFailures:
             _VALID + _DAILY,
         ]
         assert good.deterministic.data["value"].to_list() == pytest.approx([20.0, 20.0])
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_injected_failure_metadata_is_independent(self, method: str) -> None:
+        native = _discharge_success({"good": 2.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        inputs = fi.ModelInputs(
+            stations={
+                key: _canonical_station_inputs(
+                    area_km2=area, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+                )
+                for key, area in {"good": 86.4, "bad": 0.0, "also_bad": -1.0}.items()
+            }
+        )
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        result = getattr(shim, method)(object(), inputs=inputs, rng=Random(0), **kwargs)
+        assert isinstance(result, fi.ModelSuccess)
+        result.output.variables["bad"]["discharge"].metadata.offset = 10
+        assert result.output.variables["also_bad"]["discharge"].metadata.offset == 0
+        assert result.output.variables["good"]["discharge"].metadata.offset == 0
+
+    @pytest.mark.parametrize("method", ["predict", "hindcast"])
+    def test_excluded_member_diagnostic_contains_no_input_value(
+        self, method: str
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        native = _discharge_success({"good": 2.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        good = _canonical_station_inputs(
+            area_km2=86.4, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        bad = _canonical_station_inputs(
+            area_km2=None, discharge_m3_s=1.0, precip_mm=0.0, temp_c=0.0
+        )
+        bad.static["area"] = "sensitive-area-canary"
+        kwargs = (
+            {"issue_datetime": _ISSUE}
+            if method == "predict"
+            else {"issue_datetimes": [_ISSUE]}
+        )
+        with capture_logs() as events:
+            result = getattr(shim, method)(
+                object(),
+                inputs=fi.ModelInputs(stations={"good": good, "bad": bad}),
+                rng=Random(0),
+                **kwargs,
+            )
+        assert isinstance(result, fi.ModelSuccess)
+        assert events == [
+            {
+                "event": "aquacast.station_excluded",
+                "station_key": "bad",
+                "model_name": "cmal_pool_pt",
+                "reason": "invalid_catchment_area",
+                "log_level": "warning",
+            }
+        ]
