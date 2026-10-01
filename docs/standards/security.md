@@ -1260,3 +1260,101 @@ These are infrastructure-level mitigations that provide **prevention and real-ti
 SAPPHIRE Flow's security boundary ends at the container. The application assumes the host VM is trustworthy. If this assumption is violated, the application provides after-the-fact detection (audit log gaps, hash mismatches) but cannot prevent data modification.
 
 The deployment guide clearly documents this boundary and the IT team's responsibilities. The SAPPHIRE development team does not implement, monitor, or maintain host-level security.
+
+### Protected provisional-discharge storage (dormant)
+
+Migration `0068` adds physically separate `provisional_discharges`,
+`measurement_feed_evidence`, `rating_reference_proofs` and
+`provisional_discharge_permissions`. Ordinary observations, their sources, readers,
+training inputs and QC semantics are unchanged. These relations contain restricted
+copied measurement/QC/curve evidence. Do not publish their content or diagnostics.
+
+The API, worker, delivery-only `sapphire_operator` and publication-health roles have
+no proof, feed-evidence or provisional-data privileges. Runtime SELECT enumeration excludes these relations entirely, including during
+a failed bootstrap. Stale table and column grants (including PUBLIC grants) are
+removed before runtime re-grants and later backup preflights. Successful bootstrap
+grants API/worker only SELECT on the gate's
+`tenant_id` and `state`. The migration also strips inherited default relation grants.
+There is no proof/association approval writer, activation command, credential change,
+new role or role membership. Backup retains its existing protected full-database
+read capability; this is not consumer access or new publication authority.
+
+Role-independent `SECURITY INVOKER` triggers refuse evidence UPDATE, DELETE and
+TRUNCATE, including owner DML. Gate deletion/TRUNCATE is also refused. The sole gate
+UPDATE exception is the actual table-owner session changing enabled to disabled
+without changing any other field. Re-enable and metadata rewriting remain refused;
+runtime roles have no gate write grants. Tenant advisory transaction locks serialize
+this fail-closed disable with append without adding UPDATE privileges for row locks.
+Provisional INSERT fails without an explicit enabled tenant permission. Invoker functions pin their search path and schema-qualify their reads.
+Composite FKs bind tenant/station/measurement/curve/proof identities. The store and
+SQL guard compare persisted measurement, exact QC generation/flags, current curve
+content and persisted proofs under locks. Content hashes include all copied facts,
+not run/capture times. Changed facts append; original evidence is never upserted.
+A curve-table SHARE lock excludes concurrent new candidates as well as curve edits;
+this is deliberately conservative and unsuitable for unreviewed high-volume wiring.
+
+`MeasurementFeedEvidence` is a narrow explicit attestation, not inferred from
+`ObservationSource.MEASURED` or today's adapter config. It pins the measured-value
+snapshot to a sanitized endpoint/API station identity and evidence reference,
+actor and time. Restated values need new evidence; QC-only changes reuse the feed
+attestation but create new conversion lineage. Reference proofs pin exact curve
+content, confirmed reference labels, metre units and an explicit finite metre offset,
+including evidenced zero offsets. Missing or incompatible evidence holds conversion.
+
+**Still held:** authorized feed/proof recording, applicable-rule configuration
+verification, complete deployment/rollback inventory and activation capability,
+forecast-class isolation and downstream invalidity/exclusion/read contracts. The
+permission relation is guard scaffolding, not a usable activation protocol; no
+production role can write it. Disposable owner fixture seeds are tests, not operator
+instructions. Do not enable this path or deploy a conversion writer from this slice.
+
+The SQL insert guard establishes snapshot, identity, QC and domain consistency; it
+**does not recompute discharge**. Owner-only direct SQL can submit a different finite
+Q with matching content and SHA. The typed append store re-converts and refuses that
+mismatch. No runtime role can INSERT this data. Numerical authority and this database
+boundary must be explicitly reviewed before any later writer grant or activation;
+do not describe the current SQL trigger as proof of numerical conversion.
+
+The generic admin table browser excludes all four protected provisional relations
+from inventory/COUNT and both detail/rows-by-name paths. Admin authentication is not
+permission to expose protected snapshots; excluded names return 404 without granting
+DB reads. Ordinary authorized table browsing remains available.
+
+Persisted capture times cannot exceed PostgreSQL `clock_timestamp()`, enforced by
+both the append store and INSERT trigger. A caller cannot expire a current curve by
+supplying a future capture time. The pure converter keeps its injected time for
+isolated tests; original curve validity and measured timestamps are not rewritten.
+Reference labels and offsets are evidenced assertions: equal labels do not imply zero
+offset, and different labels do not imply a nonzero offset. No datum is inferred.
+
+Protected parent FKs intentionally hold delivery replacement that would delete a
+referenced measurement or curve. There is no delete cascade or evidence cleanup to
+bypass that hold. Operator replacement must stop and seek an authorized retention
+resolution. Raw owner SQL/driver exceptions can echo restricted bound content; no
+claim is made that owner SQL errors are redacted. These stores are unwired, have no
+public error route, and no runtime SQL writer is granted. Any future wiring must
+project safe errors rather than expose exception text or database parameters.
+
+**Supported write isolation is READ COMMITTED only.** The typed append store and
+SQL guards reject REPEATABLE READ, SERIALIZABLE and other isolation settings before
+protected insertion. This covers feed/reference attestations, provisional values,
+permission insertion and owner disable. Advisory/table locks do not refresh a fixed
+MVCC snapshot: without this refusal, a transaction could miss a committed disable or
+newer curve. READ COMMITTED wait-path tests observe actual database blocking before
+committing the other session, then prove gate/candidate rechecking refuses the append.
+Immutable historical reads and the pure converter are not restricted to this isolation.
+
+Conversion retains the original lower validity bound: measured time must be at or
+after the newest curve's `valid_from`. There is no older-curve fallback or timestamp
+shift. Once that curve is expired at actual capture time, readings within its original
+valid interval are allowed only as provisional test-purpose inputs, as are readings
+at/after expiry. This does not certify each input as temporally expired and never
+upgrades any result into the ordinary observation/valid-forecast path.
+
+Future nonowner writers must have a separately reviewed source-lock privilege matrix:
+TABLE SHARE and FOR SHARE may require underlying table privileges beyond SELECT.
+No such grants are added here. Authoring must resolve contradictory feed attestations
+rather than infer source from today's config; there is currently no authoring/selection
+workflow. Pydantic boundary ValidationError text can include protected payloads too.
+Future public or scheduled wiring must project safe errors instead of logging/returning
+raw validation/driver exceptions. These remain explicit holds, not completed safeguards.

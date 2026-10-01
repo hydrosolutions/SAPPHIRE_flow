@@ -69,10 +69,12 @@ if TYPE_CHECKING:
         ForecastId,
         ForeignForecastId,
         HindcastForecastId,
+        MeasurementFeedEvidenceId,
         ModelId,
         ObservationId,
         PackageId,
         RatingCurveId,
+        RatingReferenceProofId,
         StationGroupId,
         StationId,
         TenantId,
@@ -88,7 +90,12 @@ if TYPE_CHECKING:
         RawObservation,
     )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
+    from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
     from sapphire_flow.types.rating_curve import RatingCurve
+    from sapphire_flow.types.rating_reference import (
+        MeasurementFeedEvidence,
+        RatingReferenceProof,
+    )
     from sapphire_flow.types.rejected_forecast import (
         PersistedRejectedForecast,
         RejectedForecastEntry,
@@ -1172,3 +1179,25 @@ class NwpGridStore(Protocol):
         self, base_path: Path, nwp_source: str, cycle_time: UtcDatetime
     ) -> GriddedForecast:
         raise NotImplementedError
+
+
+class RatingReferenceStore(Protocol):
+    """Read-only protected proofs; approval/attestation writers are not available."""
+
+    def fetch_feed_evidence(
+        self, evidence_id: MeasurementFeedEvidenceId
+    ) -> MeasurementFeedEvidence | None: ...
+
+    def fetch_reference_proof(
+        self, proof_id: RatingReferenceProofId
+    ) -> RatingReferenceProof | None: ...
+
+
+class ProvisionalDischargeStore(Protocol):
+    def store_provisional_discharge(
+        self, discharge: ProvisionalDischarge, *, captured_at: UtcDatetime
+    ) -> str: ...
+
+    def fetch_provisional_discharge(
+        self, fingerprint: str
+    ) -> ProvisionalDischarge | None: ...

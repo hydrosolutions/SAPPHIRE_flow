@@ -5110,3 +5110,78 @@ src/sapphire_flow/
 └── config/
     └── deployment.py       # DeploymentConfig
 ```
+
+## Protected provisional discharge (dormant)
+
+- `MeasurementFeedEvidenceId` and `RatingReferenceProofId` wrap UUIDs.
+- Frozen keyword-only slotted `MeasurementFeedEvidence` binds tenant, station,
+  observation ID and `MeasurementSnapshot` to the explicit sanitized endpoint/API
+  station ID, evidence reference, verifying actor and aware verification time.
+  `MeasurementSnapshot` copies all observation fields except mutable QC. Its
+  canonical JSON string is immutable, unlike `Observation.qc_flags`.
+- Frozen keyword-only slotted `RatingReferenceProof` pins tenant/station/curve ID
+  and the full immutable `CurveSnapshot`, feed identity, metre units, confirmed
+  `gauge_zero`/`masl` references and finite `offset_m`. Zero is not a default or
+  proof of compatibility: it must be explicitly evidenced. Curve dates remain
+  unchanged. Point order is canonicalized; point content is retained.
+- `ProvisionalDischarge` carries the scope/parent/proof identities, copied snapshots,
+  finite discharge and canonical conversion content/fingerprint. Content includes
+  measured-value provenance, complete persisted QC flags (including internal detail)
+  and rule generation, curve content, feed/reference evidence and converter version.
+  Rule order is canonicalized. Capture/run time is not content identity.
+- `RatingReferenceStore.fetch_feed_evidence(id)` and `.fetch_reference_proof(id)`
+  return the corresponding protected value or `None`. `PgRatingReferenceStore`
+  implements only these reads on an injected connection. There is no approval writer.
+- `ProvisionalDischargeStore.store_provisional_discharge(value, *, captured_at)`
+  returns the content fingerprint. It locks and revalidates persisted sources,
+  proofs and newest-curve chronology before insert-only idempotent persistence.
+  `.fetch_provisional_discharge(fingerprint)` returns immutable historical content
+  without substituting today's mutable source values. Neither method commits.
+- `convert_provisional_discharge` is pure and unwired. It requires evidenced
+  measurement identity, persisted passing QC with a nonempty rule generation and
+  passing rule list, matching reference proof, newest same-gauge curve by
+  `(valid_from, version)` and an already expired interval. It refuses ambiguity,
+  future/nonexpired newest candidates, future measurements/evidence, unknown units
+  or references, out-of-domain levels and nonfinite output. It reuses `RatingConverter`
+  without changing ordinary endpoint clamping. The store repeats validation using
+  locked database rows; a caller-provided QC verdict is not persistence authority.
+
+Migration `0068` enforces scope FKs, fingerprint consistency, immutable evidence and
+fail-closed provisional inserts. Runtime protected-content privileges remain denied.
+No ordinary ObservationStore reader joins this storage. Applicable configured-rule
+verification and evidence ingestion, full activation, forecast propagation, protected
+read authorization and training/evaluation exclusion wiring remain future work.
+This is storage/conversion preparation, not a delivered test forecast pathway.
+
+The strict numerical boundary is `PgProvisionalDischargeStore`'s re-conversion.
+The SQL guard checks snapshot/identity/QC/domain consistency but does not recompute Q;
+a privileged owner could supply a different finite Q with consistent content/SHA.
+No runtime INSERT grant exists. Any future writer/activation review must explicitly
+resolve this boundary. Generic admin table reads exclude all four protected relations.
+
+Persistence additionally rejects `captured_at` later than PostgreSQL's actual clock;
+the pure converter retains its injected-time contract. Reference offsets are explicit
+evidence, never inferred from equal/different reference labels. Gate metadata remains
+fixed, with only an owner-session enabled→disabled stop permitted. Runtime writes,
+re-enable, deletion and TRUNCATE remain denied. This is not an activation protocol.
+
+Protected persistence requires the PostgreSQL transaction isolation setting to be
+`read committed`. The typed append and every SQL attestation/provisional/permission
+INSERT or owner-disable guard reject fixed-snapshot isolation. Historical immutable
+reads remain available under other levels. Locks alone cannot establish fresh gate
+or newest-curve visibility under REPEATABLE READ/SERIALIZABLE.
+
+The expired-curve exception does not authorize backward application before the
+selected curve's original `valid_from`. Equality, within-original-interval readings
+and post-expiry readings may yield only provisional/test-purpose inputs once the
+curve is expired at actual capture. No older-curve fallback, date shift or automatic
+ordinary/valid upgrade is performed. Future writer lock privileges, contradictory
+attestation authoring and safe validation-error projection remain unimplemented holds.
+
+The protected append store deliberately reloads the locked measured observation
+without a QC fetch filter, to validate its actual persisted evidence state. This
+read is inventoried under the D5 consumer policy but does not feed a model. Strict
+reconversion requires QC_PASSED, a QC generation and nonempty all-passing flags;
+unchecked, failed, suspect, raw and missing rows cannot produce a protected append.
+A stale caller's passing snapshot cannot override persisted QC. The SQL guard
+independently enforces this boundary; ordinary forecast acceptance is unchanged.

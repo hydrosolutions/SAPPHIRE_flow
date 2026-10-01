@@ -1574,3 +1574,30 @@ prove the change.
   check. `handover/it-operations.md` names the deployment inputs and recovery
   steps; `handover/hydrology-operations.md` explains what evidence a reviewer
   can inspect and which review/API steps remain future work.
+
+### Protected provisional storage and generic table browsing
+
+When adding protected conversion/reference relations, review both
+`docker/bootstrap-roles.sql`'s ordinary-table grant enumeration and
+`api/routes/tables.py::SAPPHIRE_TABLES`. The four dormant provisional relations are
+excluded from both: no transient bootstrap SELECT grants, no generic inventory COUNT,
+and no by-name detail/rows access. Check failed-bootstrap real-session access with a
+protected canary, plus ordinary API-role table-list success and protected-name 404s.
+Do not repair a permission error by granting protected reads. SQL insertion checks
+snapshot/identity/QC/domain consistency; only the typed store re-converts Q. Later
+writer grants/activation must review that numerical authority boundary explicitly.
+
+- Protected writers require READ COMMITTED. Test committed and lock-wait changes to
+  both activation state and newest curve; a table/advisory lock alone does not refresh
+  a REPEATABLE READ/SERIALIZABLE snapshot. Attestation and permission guards share the
+  write-isolation restriction; immutable historical reads do not.
+- Conversion refuses readings before the newest curve's original `valid_from`, with
+  no older-curve fallback. Within-validity readings remain provisional/test-purpose
+  when converted using a curve expired at actual capture; never silently upgrade them.
+
+- The D5 observation-read inventory includes the protected append store's unfiltered
+  locked evidence reload. This is not a forecast-input consumer: strict reconversion
+  refuses QC_UNCHECKED and all other nonpassing statuses, missing QC generation,
+  empty rule flags or any nonpassing flag. SQL independently rejects the same states.
+  Keep this exact inventory entry and the persisted-versus-caller QC matrix together;
+  do not exclude store modules from the scanner or widen accepted forecasting statuses.

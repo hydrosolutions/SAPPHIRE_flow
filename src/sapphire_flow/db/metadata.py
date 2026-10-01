@@ -2617,3 +2617,139 @@ access_token_stations = sa.Table(
     ),
     sa.PrimaryKeyConstraint("token_id", "station_id"),
 )
+
+# Protected, dormant provisional-discharge storage. No ordinary observation joins.
+provisional_discharge_permissions = sa.Table(
+    "provisional_discharge_permissions",
+    metadata,
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), primary_key=True
+    ),
+    sa.Column("state", sa.Text, nullable=False, server_default="disabled"),
+    sa.Column("permission_reference", sa.Text, nullable=True),
+    sa.Column("inventory_digest", sa.Text, nullable=True),
+    sa.CheckConstraint(
+        "state IN ('disabled', 'enabled')", name="ck_provisional_permission_state"
+    ),
+    sa.CheckConstraint(
+        "state = 'disabled' OR (length(permission_reference) > 0 "
+        "AND inventory_digest ~ '^[0-9a-f]{64}$' "
+        "AND permission_reference IS NOT NULL AND inventory_digest IS NOT NULL)",
+        name="ck_provisional_permission_evidence",
+    ),
+)
+
+measurement_feed_evidence = sa.Table(
+    "measurement_feed_evidence",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("content", sa.Text, nullable=False),
+    sa.Column("fingerprint", sa.Text, nullable=False, unique=True),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"], ["observations.id", "observations.station_id"]
+    ),
+    sa.UniqueConstraint(
+        "id", "tenant_id", "station_id", "observation_id", name="uq_feed_evidence_scope"
+    ),
+    sa.CheckConstraint(
+        "fingerprint = encode(sha256(convert_to(content, 'UTF8')), 'hex')",
+        name="ck_feed_evidence_digest",
+    ),
+)
+sa.Index("ix_feed_evidence_station", measurement_feed_evidence.c.station_id)
+sa.Index("ix_feed_evidence_observation", measurement_feed_evidence.c.observation_id)
+
+rating_reference_proofs = sa.Table(
+    "rating_reference_proofs",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("content", sa.Text, nullable=False),
+    sa.Column("fingerprint", sa.Text, nullable=False, unique=True),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["rating_curve_id", "station_id"],
+        ["rating_curves.id", "rating_curves.station_id"],
+    ),
+    sa.UniqueConstraint(
+        "id",
+        "tenant_id",
+        "station_id",
+        "rating_curve_id",
+        name="uq_rating_reference_scope",
+    ),
+    sa.CheckConstraint(
+        "fingerprint = encode(sha256(convert_to(content, 'UTF8')), 'hex')",
+        name="ck_rating_reference_digest",
+    ),
+)
+sa.Index("ix_rating_reference_station", rating_reference_proofs.c.station_id)
+sa.Index("ix_rating_reference_curve", rating_reference_proofs.c.rating_curve_id)
+
+provisional_discharges = sa.Table(
+    "provisional_discharges",
+    metadata,
+    sa.Column("fingerprint", sa.Text, primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("feed_evidence_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("reference_proof_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("discharge", sa.Float, nullable=False),
+    sa.Column("content", sa.Text, nullable=False),
+    sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"], ["observations.id", "observations.station_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["rating_curve_id", "station_id"],
+        ["rating_curves.id", "rating_curves.station_id"],
+    ),
+    sa.ForeignKeyConstraint(
+        ["feed_evidence_id", "tenant_id", "station_id", "observation_id"],
+        [
+            "measurement_feed_evidence.id",
+            "measurement_feed_evidence.tenant_id",
+            "measurement_feed_evidence.station_id",
+            "measurement_feed_evidence.observation_id",
+        ],
+    ),
+    sa.ForeignKeyConstraint(
+        ["reference_proof_id", "tenant_id", "station_id", "rating_curve_id"],
+        [
+            "rating_reference_proofs.id",
+            "rating_reference_proofs.tenant_id",
+            "rating_reference_proofs.station_id",
+            "rating_reference_proofs.rating_curve_id",
+        ],
+    ),
+    sa.CheckConstraint(
+        "fingerprint = encode(sha256(convert_to(content, 'UTF8')), 'hex')",
+        name="ck_provisional_discharge_digest",
+    ),
+    sa.CheckConstraint(
+        "discharge > '-Infinity'::float8 AND discharge < 'Infinity'::float8",
+        name="ck_provisional_discharge_finite",
+    ),
+)
+sa.Index("ix_provisional_discharge_station", provisional_discharges.c.station_id)
+sa.Index(
+    "ix_provisional_discharge_observation", provisional_discharges.c.observation_id
+)
+sa.Index("ix_provisional_discharge_curve", provisional_discharges.c.rating_curve_id)
+sa.Index("ix_provisional_discharge_feed", provisional_discharges.c.feed_evidence_id)
+sa.Index("ix_provisional_discharge_proof", provisional_discharges.c.reference_proof_id)
