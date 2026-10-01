@@ -1100,13 +1100,17 @@ idempotently by the `init` service, as the DB owner, immediately after `alembic 
 creates two scoped, non-superuser roles and grants them per-table:
 
 - **`sapphire_api`** — connects as itself (`docker-compose.yml` `DATABASE_URL_TEMPLATE`), its own
-  Docker secret (`sapphire_api_db_password`, distinct from the owner's `db_password`). Broad
-  `SELECT`; `INSERT`/`UPDATE` on `access_tokens`; `INSERT`, `DELETE` on `access_token_stations`
+  Docker secret (`sapphire_api_db_password`, distinct from the owner's `db_password`). Ordinary
+  table SELECT excludes protected inputs; `forecasts` and `rejected_forecasts` use explicit
+  safe-column SELECT without `input_lineage` (see the raw-lineage boundary below).
+  `INSERT`/`UPDATE` on `access_tokens`; `INSERT`, `DELETE` on `access_token_stations`
   (`DELETE` added Plan 215 T7 — `revoke-station` and the `set-scope-mode ... tenant` cleanup both
   delete grant rows, running as this role); `INSERT`-only on `audit_log`. No write grant on any other
   domain table — matches the GET-only HTTP surface (G4).
 - **`sapphire_worker`** — connects as itself (`prefect-worker`/`prefect-worker-ingest`), its own
-  secret (`sapphire_worker_db_password`). Broad `SELECT`; per-table `INSERT`/`UPDATE`/`DELETE` on the
+  secret (`sapphire_worker_db_password`). Ordinary table SELECT excludes protected inputs and
+  auth/identity tables; forecast parents use the same explicit safe-column SELECT, not raw
+  lineage. Per-table `INSERT`/`UPDATE`/`DELETE` on the
   domain tables the flow/CLI write paths actually write (see `conventions.md` § Service users for the
   exact matrix); `INSERT`-only on `audit_log`. Plan 340 T1 also grants `INSERT` only on
   `forecast_evidence` and `forecast_evidence_blobs`. Migration 0057 rejects `UPDATE`, `DELETE` and
