@@ -143,6 +143,10 @@ class PgForecastStore:
             else conn.engine.begin
         )
 
+    @property
+    def data_use(self) -> ForecastDataUse:
+        return self._data_use
+
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         if forecast.data_use is not self._data_use:
             raise ValueError("forecast data use differs from store purpose")

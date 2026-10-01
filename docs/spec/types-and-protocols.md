@@ -2059,7 +2059,7 @@ explicit-zone times. PostgreSQL JSON parsing is **not** the canonical Python ser
 canonical whitespace/key order, duplicate JSON keys/source snapshots, UUID spelling and
 UTC spelling are type/store-level checks, not independently certified by this trigger.
 Any future non-store writer requires reviewed strict parsing/canonicalization before
-T1c replaces the deployed refusal. Structural SQL tests do not claim equivalence.
+a later reviewed activation replaces the deployed refusal. Structural SQL tests do not claim equivalence.
 
 Observation and weather snapshots bind existing record ID/station/source/parameter/time
 identities at insert. Referenced curves must belong to their own source station. SQL
@@ -2082,8 +2082,9 @@ browser inventory/detail/rows exclude it before querying.
 No runtime/operator write grants are added. A future writer needs separately reviewed
 privileges and deployment-inventory activation. The unconditional INSERT guard blocks
 test rows in normal owner/runtime execution, including COPY. Deliberate DBA disabling
-of guards is outside the runtime threat model. Direct-reader/publication/alert/model-state
-closure remains separate work; this slice does not claim those paths are closed.
+of guards is outside the runtime threat model. Direct-reader/alert/model-state
+closure remains separate work. Migration `0070` separately closes normal publication
+and test reviewed/published lifecycle paths; it does not enable any TEST writer.
 Specifically, `forecasts.input_lineage` inherits table-wide runtime SELECT and is not
 column-redacted by the generic forecast-table browser. It contains no TEST payload
 while insertion is disabled. Closing these raw-column/browser reads is an explicit
@@ -2218,6 +2219,8 @@ class RejectedAssignmentPayload:
     issued_at: UtcDatetime
     parameters: tuple[RejectedParameterPayload, ...]
     group_id: StationGroupId | None = None
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -2249,6 +2252,8 @@ class PersistedRejectedForecast:
     qc_status: QcStatus
     qc_flags: tuple[QcFlag, ...]
     values: dict[str, tuple[tuple[UtcDatetime, float], ...]]
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None
 ```
 
 Module: `types/rejected_forecast.py`.
@@ -2280,7 +2285,26 @@ class RejectedForecastStore(Protocol):
 ```
 
 `PgRejectedForecastStore` (`store/rejected_forecast_store.py`) is the
-production implementation. Its constructor's `transaction_factory` has NO
+production implementation. Like `FakeRejectedForecastStore`, it binds reads, counts
+and writes to its constructor's `data_use` (STANDARD default). `write_batch` validates
+all entry payload purposes and lineage before encoding any values or opening its
+transaction. Payload construction remains non-throwing. TEST requires typed
+`ForecastInputLineage` and at least one QC_FAILED parameter in the assignment;
+other parameters retain their own passed/suspect/unchecked verdicts. Passing-only
+invalid output is not a rejection. STANDARD retains its existing capture semantics
+and cannot carry test lineage. `RejectedForecastEntry` carries these facts through
+its payload. Read rows retain the canonical lineage and immutable class.
+
+Migration `0070` adds both rejection columns and an unconditional TEST INSERT/COPY
+refusal for owner/runtime execution. No activation capability or grant is added.
+The existing append-only guard also protects class and lineage. SQL checks only
+nonempty top-level lineage shape; canonical parsing belongs to the typed boundary.
+Rejection SQL source-identity/tenant linkage and actual-consumption completeness
+remain **preactivation holds**, not established by this schema. Both forecast and
+rejection raw lineage columns still inherit table SELECT/browser visibility; T1d
+must close both before any activation. No TEST data can enter while refusals remain.
+
+Its constructor's `transaction_factory` has NO
 default — every caller passes it explicitly: the flow's production bundle
 (`flows/_db.py::make_pg_stores`) builds one dedicated `NullPool` engine via
 `rejected_capture_transaction_factory(url)` (a 5s connect timeout, never
@@ -3202,8 +3226,18 @@ class ObservationStore(Protocol):
 
 #### ForecastStore
 
+Ordinary human review listing requires an explicit `STANDARD` store purpose after
+station/tenant authorization and before any summary/count/detail read. Missing or
+wrong purpose returns safe 503 without counts or values, including empty pages.
+There is no fallback to STANDARD for an unknown dependency. Detail and review
+serialization independently refuse non-STANDARD forecasts. STANDARD pagination is
+unchanged.
+
 ```python
 class ForecastStore(Protocol):
+    @property
+    def data_use(self) -> ForecastDataUse: ...
+        # Read-only construction-time purpose, identical in Pg and Fake.
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId: ...
         # Purpose-bound store: STANDARD by default. Reads/writes cannot cross class.
         # Class-local key: (station_id, model_id, issued_at, parameter, data_use).

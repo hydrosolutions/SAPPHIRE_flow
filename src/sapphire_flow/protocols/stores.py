@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         AlertStatus,
         FlowRegime,
         ForcingType,
+        ForecastDataUse,
         ForecastStatus,
         ObservationSource,
         PipelineCheckType,
@@ -199,6 +200,11 @@ class ForecastStore(Protocol):
     a scientific-validity certificate. Test writers remain database-disabled.
     """
 
+    @property
+    def data_use(self) -> ForecastDataUse:
+        """Construction-time read/write purpose; never widened by a read."""
+        raise NotImplementedError
+
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         """Plan 327/328 — a re-run meeting an existing forecast under the
         natural key is classified by ``services/forecast_retry.py``'s ordered
@@ -292,8 +298,11 @@ class ForecastStore(Protocol):
 
 @runtime_checkable
 class RejectedForecastStore(Protocol):
-    """Plan 404 T1 — the append-only record for a QC-rejected member or
-    group-station forecast, never `forecasts` (D2)."""
+    """Purpose-bound, append-only QC rejection capture; STANDARD by default.
+
+    Validate all payload purposes and lineage before encoding or writing.
+    Reads and counts never widen the construction-time purpose.
+    """
 
     def write_batch(
         self,

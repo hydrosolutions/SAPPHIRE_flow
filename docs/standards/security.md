@@ -1360,6 +1360,31 @@ Future public or scheduled wiring must project safe errors instead of logging/re
 raw validation/driver exceptions. These remain explicit holds, not completed safeguards.
 
 
+### Dormant rejection and publication guards
+
+Migration `0070` adds normal-publication exclusion and dormant rejection classification.
+Publication guards reject current/replaced TEST references and reviewed/published TEST
+states even through direct SQL. Typed rejection capture validates the whole batch before
+encoding or writing; rejection payload construction gains no throwing validation.
+TEST rejection INSERT/COPY
+unconditionally refuses, independently of unchanged `0069`. Existing append-only guards
+protect rejection class and lineage. API/workers cannot activate anything; the delivery-only
+operator gains no authority or privileges. No new private relation or catalog grant is added.
+
+Ordinary review listing checks the store's public read-only purpose after station and
+tenant authorization, before any count or forecast read. Unknown/non-STANDARD purpose
+returns a safe 503 without metadata/counts, even beyond the last page. No-grant and
+foreign-tenant refusals keep their existing 404 ordering. Review serialization also
+refuses TEST payloads. Publication readers filter the primary forecast's class;
+replaced/event-reference safety relies on database guards and migration preflight,
+not reader sanitization of arbitrary states created after disabling those guards.
+
+Rejection lineage SQL checks only top-level shape, not source/tenant linkage or actual
+consumption. These remain explicit preactivation holds. `rejected_forecasts.input_lineage`,
+like `forecasts.input_lineage`, inherits table-wide SELECT and generic-browser visibility.
+No raw-column protection is claimed: T1d must close both before enabling writes. Parser and
+driver errors still require safe projection before scheduled/public test wiring.
+
 ### Dormant forecast data-use partition
 
 Migration `0069` refuses every `expired_rating_test` forecast INSERT at PostgreSQL,
@@ -1368,7 +1393,8 @@ disabling). `data_use` and consumed lineage cannot be changed by
 UPDATE. No output enable flag, session override or runtime/operator grant is added.
 The provisional-input permission does not attest output deployment compatibility.
 A separate reviewed rollout must replace the unconditional guard, close ordinary
-raw-SQL/publication/alert/state readers and authorize the required narrow join writes.
+raw-SQL/alert/state readers and authorize the required narrow join writes.
+Normal publication exclusion is separately enforced by `0070`.
 Ordinary PgForecastStore reads are class-bound, but `forecasts.input_lineage` still
 inherits table-wide runtime SELECT and generic forecast-table browser visibility.
 The protected join exclusion does not redact this column. The column contains no

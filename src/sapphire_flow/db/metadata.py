@@ -1166,6 +1166,10 @@ sa.Index(
 forecasts = sa.Table(
     "forecasts",
     metadata,
+    sa.CheckConstraint(
+        "data_use = 'standard' OR status NOT IN ('reviewed', 'published')",
+        name="ck_forecasts_test_publication",
+    ),
     sa.Column("data_use", sa.Text, nullable=False, server_default="standard"),
     sa.Column("input_lineage", sa.Text, nullable=True),
     sa.CheckConstraint(
@@ -1330,6 +1334,17 @@ forecast_values = sa.Table(
 rejected_forecasts = sa.Table(
     "rejected_forecasts",
     metadata,
+    sa.Column("data_use", sa.Text, nullable=False, server_default="standard"),
+    sa.Column("input_lineage", sa.Text, nullable=True),
+    sa.CheckConstraint(
+        "data_use IN ('standard', 'expired_rating_test')",
+        name="ck_rejected_forecasts_data_use",
+    ),
+    sa.CheckConstraint(
+        "(data_use = 'standard' AND input_lineage IS NULL) OR (data_use ="
+        " 'expired_rating_test' AND input_lineage IS NOT NULL)",
+        name="ck_rejected_forecasts_input_lineage",
+    ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column("attempt_id", UUID(as_uuid=True), nullable=False),
     sa.Column(

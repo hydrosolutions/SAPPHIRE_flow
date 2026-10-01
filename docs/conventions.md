@@ -438,7 +438,10 @@ raw --> reviewed --> published
 - **reviewed**: Forecaster has selected preferred model per station (and optionally adjusted values).
 - **published**: Visible in public API and bulletins.
 
-Transitions enforced server-side with optimistic locking.
+Transitions enforced server-side with optimistic locking. TEST-use forecasts cannot
+enter `reviewed` or `published`; numerical QC success cannot remove their test class.
+Normal publication decisions and selections accept STANDARD only. TEST forecast and
+rejection writes remain unconditionally disabled pending reviewed isolation/rollout.
 
 > **v0 note**: v0 uses only `raw` status -- Flow 3 (forecast review/publish) is deferred to v1.
 

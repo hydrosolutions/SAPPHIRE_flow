@@ -408,9 +408,9 @@ returns IDENTICAL. New class construction/migration tests fail until implemented
 The storage slice uses migration `0069` and an **unconditional** PostgreSQL refusal
 of `EXPIRED_RATING_TEST` forecast INSERTs, including the owner and COPY. It adds no
 activation flag, session override or runtime/operator write grants. The existing
-provisional-input permission is not output-deployment authority. T1c must replace
-this refusal through separately reviewed inventory-backed activation; until then
-there is no production test-output writer.
+provisional-input permission is not output-deployment authority. The partial T1c publication/rejection slice keeps
+this refusal unchanged. Replacement requires separately reviewed inventory-backed
+activation after T1d/T3 closure; until then there is no production test-output writer.
 
 Typed canonical consumed lineage retains dynamic source snapshots, consumed station
 static attributes, existing immutable provisional fingerprints and actual contributor
@@ -465,6 +465,50 @@ superseded behaviour unchanged. SQL trigger assertions run on PostgreSQL, not fa
 **Pre-change:** tests create a numerically passed invalid candidate and demonstrate that
 current publication rejects none of its scientific use facts; guarded test insertion
 must fail until an authorized activation record exists. Do not activate live systems.
+
+#### T1c partial publication/rejection implementation boundary
+
+The approved bounded slice adds migration `0070`: immutable rejection classification
+and typed lineage at capture, purpose-bound rejection reads/counts/writes, locked-store
+publication refusal, and database publication-reference/lifecycle protections. TEST
+assignments enter rejection capture only after a numerical QC failure; passing-only
+invalid results and non-QC failures do not become rejected records. Mixed parameter
+verdicts, nonfinite encoding and abandoned-batch rollback retain their existing contract.
+Normal publication lock order, authorization, replay, withdrawal and selected
+superseded STANDARD history remain unchanged. Ordinary review listing verifies an
+explicit read-only STANDARD store purpose after authorization and before counts or
+pagination; unknown/TEST dependencies return safe 503, not partially filtered pages.
+Detail and serialization retain independent class refusal. Publication reader filters
+apply to the primary forecast; reference consistency relies on the database guards
+and preflight, not sanitization of arbitrary guard-disabled mixed-reference states.
+
+Disposable regressions cover two-row HTTP pages (including empty pages and no-grant
+refusal), coherent TEST-primary publication reader exclusion alongside superseded
+STANDARD history, and all seven legacy `0069` publication/status preflight branches.
+Failed upgrades leave revision and all legacy table rows unchanged. Rejection shape
+tests distinguish the lineage CHECK from malformed/empty-shape trigger errors; they
+do not establish source authority. Fixture-only guard removal is not an activation path.
+
+`0069` remains byte-for-byte unchanged. Both forecast and rejection TEST INSERT/COPY
+paths unconditionally refuse owner/runtime execution. No activation schema, store,
+CLI, flag, new private relation or role grant is delivered. Deployment inventory
+recording is held: caller-supplied image strings cannot establish supported-release
+compatibility, authority or complete reader/writer coverage. This release is **not
+activation-ready**. The existing provisional-input permission is INPUT-only.
+
+The rejection SQL guard checks only nonempty top-level lineage shape. Source identity,
+tenant linkage and complete actual consumption are unimplemented preactivation holds.
+Typed canonical lineage is validated at the store boundary, never by throwing from
+service payload construction. Both `forecasts.input_lineage` and
+`rejected_forecasts.input_lineage` inherit raw table SELECT/browser access. T1d must
+close both columns and parser/driver error projection before enabling any TEST writer.
+No protection of those raw columns is claimed by this slice. T3 state/alert/combination
+and actual-consumption closures remain held. `0070` downgrade refuses retained TEST
+forecasts **or** rejections, since `0069` lacks the publication/status safeguards.
+
+Only disposable structural fixtures remove the precise dormant INSERT refusal,
+restoring by rollback (or explicitly before committing migration fixtures). They
+retain other guards and establish no operator activation procedure.
 
 ### T1d — Close ordinary-reader and evaluation escape paths
 
