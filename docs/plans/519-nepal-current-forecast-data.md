@@ -315,6 +315,10 @@ past forcing is represented as declared nulls plus quality flags; FI max_nan dec
 whether prediction proceeds. Do not replace it with blanket refusal. Unexpected schema
 errors and fatal storage failures remain visible failures.
 
+Coordination recorded 2026-10-01: T3b is the sole implementation owner of this
+bounded seam. Plan 514 marks its overlapping static/conformance tasks as delegated,
+not delivered; its independent telemetry and unresolved decisions remain there.
+
 Plan 514 stays DRAFT and is not executed as a prerequisite. Before editing the shared
 code, the implementing agents must record this limited scope ownership in 514 and
 reduce its remaining scope accordingly, or assign the repair there and remove it here. No concurrent
@@ -559,6 +563,44 @@ predictions, fatal persistence errors still raise. Upstream FI contract checks a
 
 **Pre-change:** one short-future member currently returns an empty whole group; replace
 that expectation with a failing asymmetric regression, not only both-short tests.
+
+#### T3b local implementation evidence (2026-10-01; not deployment acceptance)
+
+- Based on `origin/main` `eb806843`. The ten asymmetric RED cases failed before
+  production edits (short future, undeclared mixed/null statics, missing declared
+  statics, empty past forcing and anticipated assembly shortfall).
+- Focused group service + FI-resolver flow gate: 67 passed, including real FI
+  `max_nan` refusal/tolerance, pre-fill quality preservation, expected-roster
+  retention, healthy-member persistence, and fatal DB/persistence controls.
+- The installed locked FI is 0.1.20; aquacast 0.1.356 at `5460f898` declares
+  CMAL-small past Q/P/T lookback 30 with `max_nan=0`; future P/T `max_nan=0`,
+  AT_MOST horizon 10 with minimum 1. No declarations were changed.
+- The time grid is materialized only for absent declared past-forcing columns or
+  empty past-forcing frames. Required past-target history is identified only by
+  explicit past-known declarations, not output names; absent required target
+  rows/columns exclude that member, never manufacture a null target history.
+  The FI boundary projects `required_past_targets` from actual past-known target
+  names; `None` preserves native unspecified behavior and an explicit empty set
+  means weather-only inputs. Forcing-only `declared_lookbacks` stays unchanged. Nonempty complete-schema histories retain original rows and missing-row
+  quality evidence; length/shape shortfalls remain model-owned. A real-FI regression
+  delivers sparse rows unchanged, then a fake model returns an explicit per-entry
+  failure while its healthy sibling succeeds. No universal gap-padding claim.
+- Only `InsufficientDataError` is recovered as a defensive anticipated-assembly
+  contract; no current operational assembler raiser is claimed. Real exclusions
+  are static/future/binding/cadence/missing-required-target checks.
+  Configuration/schema/programming faults remain visible group failures, not
+  silently relabelled shortages. `StoreError` and shared-policy connection-fatal
+  errors (including raw driver failures) remain fatal; other database errors
+  remain visible group failures under the existing policy.
+- Unresolved model-contract limitation: the in-repo aquacast shim's `predict`
+  converts all stations before invoking the inner model and converts a single
+  bad-area error to whole-run `ModelFailure`. A synthetic healthy-area/zero-area
+  pair reproduces this; healthy alone succeeds. FI requires per-entry failure
+  when another entry can run. A separate model-compliance repair owns this defect;
+  T3b does not hide it with SAP3 gating or claim universal healthy-member isolation.
+- No live access, restricted-data reads, state activation, deployment or consumer
+  acceptance was performed. Whole-group telemetry and latest-attempt persistence
+  remain separate work. Plan 514's delegated tasks are not independently delivered.
 
 ### T3c — Output propagation, rejected results, combination and alerts
 

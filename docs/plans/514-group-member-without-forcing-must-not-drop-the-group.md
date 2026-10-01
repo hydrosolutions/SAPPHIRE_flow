@@ -26,6 +26,24 @@ input frames, statics included, handed to the FI adapter, and the SAP3-internal 
 from which inputs (a null-filled member may now be served or refused by `max_nan`, where today the whole group
 crashes).
 
+## Scope ownership — 2026-10-01
+
+Plan 519 T3b owns the bounded group-member repair: declared-static projection
+and missing-declared-static isolation; declared-schema/null handling for missing
+past inputs with preserved quality flags and the FI `max_nan` gate; and anticipated
+per-member assembly/future shortfall isolation with the expected roster and reasons.
+This is delegated work, **not delivered work**. Do not implement this seam in parallel.
+
+T1/T2 and their T2d documentation, and the input-conformance/quality-carrier portions
+of T3/T4/T8, are delegated to that repair. Their descriptions below remain design
+history, not a second implementation queue. T4's broader result/telemetry framework
+is not imported. T5–T7 whole-group health counters, FI failure-cause telemetry and
+pipeline-health records remain here, as do independent unresolved owner decisions.
+Q5's future-member isolation is owned by T3b rather than a prerequisite here;
+this note does not settle health thresholds, notifications or deployment decisions.
+The historical PR split/dependency graph is superseded only for this delegated
+subset; no live pilot checkpoint or delivery claim is made by local repair tests.
+
 ## Owner decisions (2026-09-30)
 
 - **(a) Consistent with the 2026-09-08 decision (Plan 239 T1b: past-forcing gaps become an input-quality flag,

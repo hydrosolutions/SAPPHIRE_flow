@@ -1822,12 +1822,19 @@ class ModelDataRequirements:
     spatial_input_type: SpatialRepresentation
     ensemble_mode: EnsembleMode = EnsembleMode.SINGLE   # SINGLE: model emits one trajectory; ENSEMBLE: forcing carries member-suffixed columns, fanned out per member
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()  # per-parameter FI-declared aggregation, e.g. frozenset({("discharge", AggregationMethod.MAX)})
-    declared_lookbacks: frozenset[tuple[str, int]] = frozenset()  # per-parameter FI-declared lookback, e.g. frozenset({("precipitation", 45), ("temperature", 14)})
+    declared_lookbacks: frozenset[tuple[str, int]] = frozenset()  # forcing-only FI-declared lookback, e.g. frozenset({("precipitation", 45), ("temperature", 14)})
+    required_past_targets: frozenset[str] | None = None  # None=legacy unspecified; empty=no target history
 ```
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
 
-`declared_lookbacks` (Plan 239 T1b review) carries each past variable's OWN declared
+`required_past_targets` projects only actual FI past-known target declarations.
+It must be a subset of `target_parameters` with nonempty names. `None` preserves
+legacy/native unspecified behavior; an explicit empty set declares no target
+input history. This does not change artifact formats, FI declarations, or model
+short/sparse-history checks.
+
+`declared_lookbacks` (Plan 239 T1b review) carries each past **forcing** variable's OWN declared
 `PastKnownVariable.lookback`. `lookback_steps` above is the MAXIMUM across every declared past
 variable, because input assembly fetches one frame wide enough for all of them — judging gap
 severity on that maximum reported a hole in a bucket the model never reads (a model declaring
@@ -4932,11 +4939,37 @@ assignment's payload is no longer discarded on that path. The group path's
 `run_group_forecast` (`services/run_group_forecast.py`) likewise no longer
 returns a bare `dict[StationId, StationForecastResult]`; it returns
 `GroupForecastOutcome(results: dict[StationId, StationForecastResult],
-rejected: tuple[RejectedAssignmentPayload, ...] = ())` — one entry per
+rejected: tuple[RejectedAssignmentPayload, ...] = (),
+expected_station_ids: tuple[StationId, ...] = (),
+unavailable_members: tuple[GroupMemberInputIssue, ...] = ())` — one entry per
 rejected station (D3), or raises `GroupForecastError` (carrying the
 rejections gathered so far plus the original exception) if a later
 station's build raised an ordinary error after an earlier one was already
 rejected.
+
+The group input service also exposes `GroupInputAssembly`: the full expected
+execution roster, optional assembled `GroupModelInputs`, per-station metadata,
+and typed `GroupMemberInputIssue(station_id, reason)` exclusions. The legacy
+assembler remains a tuple/None wrapper; the forecast cycle uses the structured
+outcome even when every member is unavailable. `GroupMemberInputReason` identifies
+cadence mismatch, missing declared static, unsafe mixed numeric static conversion,
+insufficient future coverage, anticipated insufficient input, missing forecast
+binding, or missing explicitly required past-target history. This is not persisted attempt state and does not classify a whole-model
+failure or QC rejection as an input shortage. Required past targets are the
+FI boundary projection of actual past-known names intersected with output
+targets, carried by `ModelDataRequirements.required_past_targets`. `None` means
+legacy/unspecified, while an explicit empty set means no target input history.
+`declared_lookbacks` remains forcing-only; neither it nor output names alone
+implies a target-history requirement. Missing required rows/columns are refused per
+member, not converted to synthetic null histories. Nonempty short/sparse target
+histories and native models without these declarations retain existing behavior.
+
+`OperationalInputMetadata.past_forcing_before_conformance` is an optional internal
+Polars frame (default None, excluded from dataclass comparison/repr). Group assembly
+retains the unmodified past forcing there so quality flags and failed-batch gap
+diagnostics use pre-fill membership with the caller's input-quality settings. The
+model receives only the conformed numeric frames. This adds no FI contract or
+public data/diagnostic field.
 
 ### Forecast combination service
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -7,8 +8,10 @@ import pytest
 import xarray as xr
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.model import (
+    ModelDataRequirements,
     ModelInputs,
     StationInputData,
     stack_model_inputs,
@@ -244,3 +247,52 @@ class TestStackModelInputs:
             assert sliced.static is not None
             expected_elev = statics[sid]["mean_elev_m"].to_list()
             assert sliced.static["mean_elev_m"].to_list() == expected_elev
+
+
+class TestModelDataRequirementsPastTargets:
+    @pytest.fixture
+    def legacy_requirements(self) -> ModelDataRequirements:
+        return ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset({"precipitation"}),
+            static_features=frozenset(),
+            supported_time_steps=frozenset({_STEP}),
+            lookback_steps=3,
+            forecast_horizon_steps=3,
+            spatial_input_type=SpatialRepresentation.POINT,
+        )
+
+    def test_native_unspecified_is_distinct_from_explicit_weather_only(
+        self, legacy_requirements: ModelDataRequirements
+    ) -> None:
+        assert legacy_requirements.required_past_targets is None
+        weather_only = replace(legacy_requirements, required_past_targets=frozenset())
+        required_q = replace(
+            legacy_requirements, required_past_targets=frozenset({"discharge"})
+        )
+        assert len({legacy_requirements, weather_only, required_q}) == 3
+
+    def test_legacy_config_round_trip_keeps_unspecified_default(
+        self, legacy_requirements: ModelDataRequirements
+    ) -> None:
+        config = asdict(legacy_requirements)
+        del config["required_past_targets"]
+        assert ModelDataRequirements(**config) == legacy_requirements
+
+    @pytest.mark.parametrize(
+        "names, message",
+        [
+            (frozenset({"temperature"}), "subset of target_parameters"),
+            (frozenset({""}), "nonempty strings"),
+            (frozenset({" "}), "nonempty strings"),
+        ],
+    )
+    def test_invalid_target_history_declaration_is_refused(
+        self,
+        legacy_requirements: ModelDataRequirements,
+        names: frozenset[str],
+        message: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            replace(legacy_requirements, required_past_targets=names)

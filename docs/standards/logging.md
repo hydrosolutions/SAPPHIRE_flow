@@ -237,6 +237,34 @@ Examples:
 | `pipeline` | `health_check_completed` |
 | `request` | `started`, `completed` |
 
+### Group-member input outcomes
+
+`run_group_forecast.station_inputs_unavailable` is a WARNING with `group_id`,
+`model_id`, `station_id`, `issue_time` and a closed `reason`: `cadence_mismatch`,
+`missing_declared_static`, `declared_static_not_representable`,
+`insufficient_future`, `inputs_unavailable`, `missing_forecast_binding`, or
+`missing_required_target`.
+These describe an input exclusion, not a forecast/QC verdict. Anticipated assembly
+recovery catches `InsufficientDataError` only, as a defensive service contract;
+no current operational assembler raiser is claimed. Configuration/schema/programming
+errors still reach the existing group assembly failure event. `StoreError` and
+errors classified connection-fatal by the shared policy (including raw driver
+failures) are fatal; other database errors remain visible group failures. `nwp.insufficient_coverage` retains its per-station coverage detail.
+
+The structured `GroupInputAssembly` and `GroupForecastOutcome` retain expected
+station IDs separately from prediction inputs/results and carry input exclusions.
+They do not add persisted attempt state or group-health telemetry. Missing past
+forcing is conformed to declared null columns, not excluded here. Only absent
+columns or empty frames materialize the expected time grid; a nonempty frame with
+all declared columns retains its rows. Its missing-row quality flags remain, and
+length/shape shortfalls remain the model's responsibility, not invented NaNs.
+Target history is never null-grid-filled: an absent frame or column is a member
+shortfall only for explicitly declared past-known targets. Output target names
+alone imply no history requirement; weather-only declarations are unaffected.
+The FI adapter's existing `station_input_nan_tolerance_exceeded` event explains a tolerance refusal.
+Pre-conformance frames preserve per-station forcing-gap quality in both successful
+results and `predict_batch_failed` / `batch_missing_station_outputs` diagnostics.
+
 ### Canonical model onboarding events (Flow 13)
 
 All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (compatibility, smoke test, skill gate) emit only `_completed`/`_failed` — `_started` omitted since these complete in <1s.

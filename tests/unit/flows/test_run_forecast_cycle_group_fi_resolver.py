@@ -549,3 +549,142 @@ class TestGroupFiResolverInTheForecastCycle:
             resolve(StationId(uuid4()))
         with pytest.raises(ConfigurationError, match="without a code"):
             resolve(blank)
+
+
+class TestGroupMemberInputIsolationInCycle:
+    @pytest.mark.parametrize("shortfall", ["future", "assembly", "binding"])
+    def test_healthy_member_is_persisted_when_sibling_cannot_assemble(
+        self, monkeypatch: pytest.MonkeyPatch, shortfall: str
+    ) -> None:
+        from sapphire_flow.exceptions import InsufficientDataError
+
+        stores, sid_a, sid_b = _seed_group_of_two()
+        if shortfall == "future":
+            original = stores.nwp_store.fetch_weather_forecasts
+
+            def fetch(**kwargs: Any) -> Any:
+                return [] if kwargs["station_id"] == sid_b else original(**kwargs)
+
+            monkeypatch.setattr(stores.nwp_store, "fetch_weather_forecasts", fetch)
+        elif shortfall == "assembly":
+            original_obs = stores.obs_store.fetch_observations
+
+            def fetch_obs(**kwargs: Any) -> Any:
+                if kwargs["station_id"] == sid_b:
+                    raise InsufficientDataError("fixture input unavailable")
+                return original_obs(**kwargs)
+
+            monkeypatch.setattr(stores.obs_store, "fetch_observations", fetch_obs)
+        else:
+            original_sources = stores.station_store.fetch_weather_sources
+
+            def sources(station_id: StationId) -> Any:
+                return [] if station_id == sid_b else original_sources(station_id)
+
+            monkeypatch.setattr(stores.station_store, "fetch_weather_sources", sources)
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
+        assert {row.station_id for row in _group_rows(stores)} == {sid_a}
+        skips = [
+            row
+            for row in events
+            if row["event"] == "run_group_forecast.station_inputs_unavailable"
+        ]
+        assert any(row["station_id"] == str(sid_b) for row in skips)
+        assert _predict_batch_failures(events) == []
+
+    def test_database_assembly_failure_is_fatal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy.exc import DisconnectionError
+
+        from sapphire_flow.exceptions import StoreError
+
+        stores, _, sid_b = _seed_group_of_two()
+        original = stores.obs_store.fetch_observations
+
+        def fail_member(**kwargs: Any) -> Any:
+            if kwargs["station_id"] == sid_b:
+                raise DisconnectionError("fixture database connection lost")
+            return original(**kwargs)
+
+        monkeypatch.setattr(stores.obs_store, "fetch_observations", fail_member)
+        with pytest.raises(StoreError, match="Connection-fatal"):
+            _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
+
+    def test_persistence_failure_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stores, _, _ = _seed_group_of_two()
+
+        def fail_store(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("fixture forecast write failed")
+
+        monkeypatch.setattr(stores.forecast_store, "store_forecast", fail_store)
+        with pytest.raises(RuntimeError, match="forecast write failed"):
+            _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
+
+    def test_nonconnection_database_error_remains_visible_group_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        stores, _, sid_b = _seed_group_of_two()
+        original = stores.obs_store.fetch_observations
+
+        def fail_member(**kwargs: Any) -> Any:
+            if kwargs["station_id"] == sid_b:
+                raise IntegrityError(
+                    "fixture query", {}, ValueError("fixture constraint")
+                )
+            return original(**kwargs)
+
+        monkeypatch.setattr(stores.obs_store, "fetch_observations", fail_member)
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
+        assert any(
+            row["event"] == "forecast_cycle.group_input_assembly_failed"
+            for row in events
+        )
+        assert not any(
+            row["event"] == "run_group_forecast.station_inputs_unavailable"
+            for row in events
+        )
+        assert _group_rows(stores) == []
+
+    @pytest.mark.parametrize("requires_target", [True, False])
+    def test_absent_target_history_only_excludes_explicitly_dependent_member(
+        self, monkeypatch: pytest.MonkeyPatch, requires_target: bool
+    ) -> None:
+        stores, sid_a, sid_b = _seed_group_of_two()
+        original = stores.obs_store.fetch_observations
+
+        def no_sibling_observations(**kwargs: Any) -> Any:
+            return [] if kwargs["station_id"] == sid_b else original(**kwargs)
+
+        monkeypatch.setattr(
+            stores.obs_store, "fetch_observations", no_sibling_observations
+        )
+        raw = SyntheticGroupFIModel()
+        spec = raw.input_requirement.dynamic[_STEP].data[
+            fi_boundary.FISpatialRepresentation.POINT
+        ]
+        if requires_target:
+            spec.past_known["obs"]["discharge"] = fi_boundary.PastKnownVariable(
+                lookback=3, max_nan=3, unit=fi_boundary.Unit.M3_PER_S
+            )
+        else:
+            del spec.past_known["obs"]["discharge"]
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: raw})
+        expected = {sid_a} if requires_target else {sid_a, sid_b}
+        assert {row.station_id for row in _group_rows(stores)} == expected
+        exclusions = [
+            row
+            for row in events
+            if row["event"] == "run_group_forecast.station_inputs_unavailable"
+        ]
+        if requires_target:
+            assert [(row["station_id"], row["reason"]) for row in exclusions] == [
+                (str(sid_b), "missing_required_target")
+            ]
+        else:
+            assert exclusions == []
+        assert _predict_batch_failures(events) == []

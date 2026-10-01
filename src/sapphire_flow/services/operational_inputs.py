@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -71,6 +71,10 @@ class OperationalInputMetadata:
     # dataframe conversion below keeps no QC column, so the fact is taken
     # from the observations and carried here.
     observation_qc_coverage: ObservationQcCoverage
+    # Group schema conformance must not erase pre-fill temporal/column gaps.
+    past_forcing_before_conformance: pl.DataFrame | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
