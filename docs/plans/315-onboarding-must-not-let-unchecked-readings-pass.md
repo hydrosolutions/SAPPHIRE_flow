@@ -27,7 +27,7 @@ caveat).
 
 ## Status
 
-**DRAFT.** ⛔ Only the orchestrator sets READY.
+**DRAFT.** Follow the global skill and `AGENTS.md`; required independent review still applies.
 
 ⏸️ **This plan runs LAST — owner, 2026-09-23.** Its premise is that the QC ladder has landed and
 the rule set has stopped changing shape. Scheduling it earlier measures a moving target. See D1.

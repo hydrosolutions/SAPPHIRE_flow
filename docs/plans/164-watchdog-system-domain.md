@@ -11,7 +11,7 @@ supersedes: []
 
 
 > ⚠️ **Status normalised 2026-09-08.** This read `DEPRIORITISED`, which is not in the canonical
-> vocabulary (`docs/workflow.md` § Plan status vocabulary). `DEFERRED` — *intentionally postponed to
+> vocabulary ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Plan status vocabulary). `DEFERRED` — *intentionally postponed to
 > a later version* — is what it meant. No change of intent.
 # Plan 164 — Watchdog as a LaunchDaemon
 

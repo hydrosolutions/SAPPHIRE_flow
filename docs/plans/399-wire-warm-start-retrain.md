@@ -501,8 +501,8 @@ T4 verifies readback.*
     | a deterministic model refusal (no fine-tuning config, feature-manifest mismatch) | **STOP and report** — ours to fix |
     | an identified transient failure | retry **once**, then escalate |
     | anything else | **STOP and preserve it for diagnosis** — ⛔ *do not retry an exception you cannot classify* |
-- ⛔ **The staging run is ORCHESTRATOR-GATED.** *`AGENTS.md`: staging deploys are the orchestrator's;
-  the owner keeps production. This task does not self-authorise the run.*
+- ⛔ **The staging run needs the applicable owner authorization.** Production remains
+  owner-controlled under `AGENTS.md`. This task does not self-authorise the run.
 
 **Out.** ⛔ Promoting the result, assigning it, or letting it serve a forecast — that is a separate,
 owner-gated act. ⛔ Judging whether it is any good (skill comparison, outside this plan).

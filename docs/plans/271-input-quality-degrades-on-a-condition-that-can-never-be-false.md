@@ -593,11 +593,11 @@ counts and exact filtered-ID equality. No unconditional fleet percentage gate.
    Plan 270 are unchanged. Review the diff for accidental fixture/numeric changes.
 6. Focused tests and task checks pass. Before merge, after the final code change,
    the full `uv run pytest` suite must pass locally or in CI, with repository lint,
-   formatting and type gates satisfied (`docs/workflow.md` § Task Exit Gate).
+   formatting and type gates satisfied ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Task Exit Gate).
 
 **Review handoff.** This DRAFT is ready to be submitted for independent Claude and
 Codex review, not ready for implementation. Neither reviewer approves this author's
-output or changes status. Under `docs/workflow.md` § High-risk work, the FI boundary
+output or changes status. Under [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § High-risk work, the FI boundary
 and user-visible metadata change also require an additional owner-commissioned
 relevant independent review before READY and again before the implementation PR;
 the earlier expert consultation does not review this material revision. D5 and D6

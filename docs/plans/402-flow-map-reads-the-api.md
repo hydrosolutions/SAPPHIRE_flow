@@ -4,7 +4,7 @@ created: 2026-09-25
 plan: 402
 title: The flow map reads the /api/v1 interface — QC rule sets and station skill endpoints, forecast QC flags, and a committed API contract
 scope: Give the flow map (a review tool for our forecast products, not an operational dashboard) everything it needs to review QC and skill through the /api/v1 interface, read-only, using a tenant-bound reviewer token (Plan 401) — a reviewer-gated endpoint serving the observation AND forecast QC rule sets, a reviewer-gated per-station skill endpoint, two additive fields on existing responses (visible to every authenticated role, D13), and a committed, drift-tested OpenAPI contract covering only the routes the map reads. NOT any change to QC rules, thresholds, selection or verdicts; NOT any skill computation; NOT any other change to what a consumer token can read; NOT the Forecast Lab snapshot, which stays forecast-lab-snapshot/v2 unchanged; NOT a QC what-if/dry-run (D9); NOT forcing or basin attributes (last priority, follow-on); NOT declaring or storing per-station thresholds (269) — it only serves the ones ingest applies (D15), DHM/Nepal rules (303) or changes to network selection (264).
-risk: high   # external-facing API contract (docs/workflow.md § High-risk work)
+risk: high   # external-facing API contract (retired workflow § High-risk work)
 depends_on: [401]
 blocks: [404]
 related: [143, 147, 198, 235, 251, 253, 264, 268, 269, 272, 300, 303, 323, 324, 329, 340, 341, 404]
@@ -23,7 +23,7 @@ READY on 2026-09-26, returned to DRAFT on 2026-09-27 for D15 (PR #324 made inges
 observation QC thresholds; the owner chose to serve them), then reviewed through a D15 round, a
 reconciliation against `main`, and three independent Claude + Codex pairs the owner asked for (the
 last: Codex clean; Claude's minors folded, and focused Codex checks of that fold clean on `fd914ae6`).
-High risk (an external-facing API contract, `docs/workflow.md` § High-risk work): the implementation
+High risk (an external-facing API contract, [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § High-risk work): the implementation
 PR needs one more owner-commissioned review before it is opened. D9 (a QC what-if dry run) stays open
 as a separate follow-on and does not block this plan. Depends on Plan 401, merged (#320).
 
@@ -423,7 +423,7 @@ observations is unchanged by the typing.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md` § Task Exit Gate). Every new route
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Task Exit Gate). Every new route
 is added to `tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive` as REVIEW (Plan 401).
 
 ### T1 — `GET /api/v1/qc/rules`
@@ -682,7 +682,6 @@ diff.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/402-flow-map-reads-the-api.md
 ```
 
 After staging deploy (orchestrator), before the map is told:

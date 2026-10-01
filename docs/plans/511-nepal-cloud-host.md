@@ -28,7 +28,8 @@ Nepal onboarding, models or data feeds, which are separate tracks.
   `docs/decisions/2026-09-30-dhm-data-hosting-assumption.md`. It is not DHM's consent. **Loading the data onto this host triggers the backup follow-on (D9): plan
   it first.** The host is
   **staging**, never production; anything beyond staging (production deployment, merging) stays with the
-  owner (AGENTS.md § Orchestration authority).
+  owner (`AGENTS.md` § Agent skills and project safeguards). Staging work still needs
+  the applicable owner authorization; this plan does not grant new deployment permission.
 - **Different host, different data terms from the Swiss instance** (Swiss data path: Plan 049 T4): the Swiss BAFU
   material never goes on this host.
 - **The map side is ready for an `https://` origin.** The Worker takes `SAPPHIRE_API_BASE_URL`, the

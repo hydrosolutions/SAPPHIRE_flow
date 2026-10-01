@@ -170,7 +170,7 @@ period-ending labels (`services/operational_inputs.py:225`).
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)).
 
 ### T1 — settle the remaining open decisions
 
@@ -507,7 +507,6 @@ for an unknown phase** — that is the same false-`FULL` failure Plan 253 had to
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/254-phase-aware-execution.md
 ```
 
 Five conditions hold in addition:

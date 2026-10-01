@@ -605,7 +605,7 @@ Plan 151 Phase 3 touches `types/forcing_track.py` (new), `adapters/forecast_inte
 ## Phases
 
 Every task is red-first, with the standard exit gate: `uv run pytest -q` + `uv run pyright` +
-`uv run ruff check`. Multi-model review before READY and post-implementation per `docs/workflow.md`.
+`uv run ruff check`. Multi-model review before READY and post-implementation per [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md).
 
 ### T0 — Feasibility audit against the *delivered* artifacts (no production code)
 **A gate, not a formality.** It was originally blocked on a human round-trip; **the artifacts turned

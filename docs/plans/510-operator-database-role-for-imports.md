@@ -5,7 +5,7 @@ revised: 2026-09-29   # round 4 folded in (Claude and Codex, all NEEDS CHANGES, 
 plan: 510
 title: Three levels of database identity — tenants created at deploy time, a narrow database-limited operator role for delivery replacement, no routine job on the owner superuser
 scope: Stop routine operator jobs from needing the owner (superuser) credential. Tenant creation moves to deploy time (Plan 513); a least-privilege operator role, row-limited by the database itself, covers the rare delivery-replacement job; schema changes stay with the owner at deploy. Needed for v1.
-risk: high   # secrets, database roles, a migration/trigger, Docker wiring (docs/workflow.md § High-risk work)
+risk: high   # secrets, database roles, a migration/trigger, Docker wiring (retired workflow § High-risk work)
 depends_on: [147, 268, 513]   # 268's code is implemented through T7; its operator run (T8) was done on 2026-09-29 by the owner-approved one-off route
 blocks: []
 related: [341, 401, 306, 307, 512]

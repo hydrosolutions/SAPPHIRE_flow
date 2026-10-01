@@ -160,7 +160,7 @@ broad and nothing else pins it:
 retrieved **with its reason** fails today.
 
 An earlier draft marked this `N/A` on the grounds that a missing-function failure is a mere signature
-error. That was wrong, and it dodged the RED `docs/workflow.md:20` requires: here the **absence of
+error. That was wrong, and it dodged the RED [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) requires: here the **absence of
 the channel is precisely the defect**. There is no way to learn why a station was refused, and a test
 that cannot obtain the reason is failing for exactly that reason — not incidentally. The plan changes
 observable behaviour (a caller can now act on the reason), so `N/A`, which is reserved for

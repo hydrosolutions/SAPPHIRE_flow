@@ -4,7 +4,7 @@ created: 2026-09-30
 plan: 514
 title: A group member with a null static or empty forcing must not drop the whole group; a dropped group must show in cycle health
 scope: (S) The group's static frame is projected to the model's DECLARED statics before stacking (measured cause of the 2026-09-30 12:00Z drop: undeclared null attributes), and a member whose DECLARED static is missing is skipped per member (group-local), never dropping the group. (A) In the group input path every stacked frame is conformed to the model's declared schema (missing declared columns are null-filled, never a stacking crash), so one member with missing forcing cannot drop the group; the FI adapter's max_nan gate then decides whether that member is served. (B) Every recoverable whole-group drop and every skipped or null-filled member becomes visible - counted in cycle health and written once per group-model execution to the pipeline-health table.
-risk: high   # FI-boundary edit (docs/workflow.md high-risk list) and scientific behaviour: which stations get a forecast
+risk: high   # FI-boundary edit (retired workflow high-risk list) and scientific behaviour: which stations get a forecast
 related: [262, 312, 116, 120, 155, 223, 239, 257, 327, 404, 323, 517]
 open_decisions: [Q1, Q2, Q3, Q5, Q6, Q8]
 source: 2026-09-29 pilot run `powerful-leech` - investigation by the orchestrator session; revised 2026-09-30 after one Claude and one Codex review; revised again 2026-09-30 (rev 2) after the measured 12:00Z worker log; rev 3 2026-09-30 after second Claude and Codex re-reviews; rev 4 2026-09-30 after the round-3 reviews; rev 5 2026-09-30 after the round-4 reviews
@@ -15,10 +15,11 @@ source: 2026-09-29 pilot run `powerful-leech` - investigation by the orchestrato
 ## Status
 
 **DRAFT - HIGH RISK (proposed; the owner decides).** Multi-model review is mandatory
-(`docs/workflow.md` § Multi-Model Review), plus the one extra owner-commissioned review high-risk work gets. Only
-the orchestrator sets READY.
+([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Multi-Model Review), plus the one extra owner-commissioned review high-risk work gets.
+Execution follows the global skill and current user instructions under `AGENTS.md`;
+there is no separate orchestrator or READY authorization gate.
 
-**Why high risk (corrected 2026-09-30).** `docs/workflow.md` (~144-165) does not treat "touches the live
+**Why high risk (corrected 2026-09-30).** [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) (~144-165) does not treat "touches the live
 deployment" as a ground. The two grounds that apply are: (1) the plan edits the **FI-boundary path** (the group
 input frames, statics included, handed to the FI adapter, and the SAP3-internal cause carried by the adapter's boundary error, T4);
 (2) it changes **scientific behaviour with operational consequences** - which stations receive a forecast, and
@@ -459,7 +460,7 @@ cycle; repeated records respect D10.
 - `docs/plans/README.md`: the 514 row already exists; update it only if the title changes.
 **Verification**: grep each new event and check-type name in `docs/`; `git diff --stat` shows only these files.
 
-### T9a / T9b - Live check (staging host, orchestrator action)
+### T9a / T9b - Live check (staging host, authorized operator action)
 **Outcome**: evidence on the running system, not on Prefect state. T9a after PR1 (statics); T9b after PR2
 (conformance + health).
 - **Before recreating any container, save the worker logs** to a file on the host and record the path (the

@@ -444,8 +444,7 @@ Plan 262 is `READY` and its T4 **In** says the import runs *"through the existin
 `import-model-artifact` deployment — no new import machinery"*. This plan adds a parameter to that
 deployment. Whether 262's T4 is amended to name the new route, or 262 simply consumes it, is a
 **material change to a READY plan and needs its own review** — it is not something this plan may
-decide on 262's behalf. ⛔ Nobody but the orchestrator sets READY, and nobody sets it on another
-plan by implication.
+decide on 262's behalf. This plan does not approve changes to another plan by implication.
 
 ## Exit gates
 
@@ -513,7 +512,7 @@ uv run pyright src
 }
 ```
 
-⚠️ *Independent review 2026-09-21 (minor): `docs/workflow.md:32` requires a closing JSON
+⚠️ *Independent review 2026-09-21 (minor): [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) requires a closing JSON
 dependency graph and this plan had none. The 262 amendment is recorded as an external gate on T4
 rather than as prose, because the prose version stated the requirement without making it block
 anything.*

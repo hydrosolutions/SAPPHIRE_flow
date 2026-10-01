@@ -17,8 +17,7 @@ source: 2026-09-26 — the owner, after the round-5 review of Plans 323/400 foun
 ## Status
 
 **DRAFT.** Five review rounds have run (§ Review record, rounds 6-10); **round 10 was READY from
-both reviewers**, with LOW findings folded since — **this fold is unreviewed.** ⛔ No implementation until an independent review of this exact state is complete and
-the orchestrator sets READY. **Implementation follows Plan 323** (`depends_on`): T4's before/after
+both reviewers**, with LOW findings folded since — **this fold is unreviewed.** ⛔ No implementation until the required independent review of this exact state is complete. **Implementation follows Plan 323** (`depends_on`): T4's before/after
 evidence reads 323's `observation_qc_unjudged` records. T1's sourcing needs no code and no deploy,
 so the yearbook values may be gathered earlier.
 

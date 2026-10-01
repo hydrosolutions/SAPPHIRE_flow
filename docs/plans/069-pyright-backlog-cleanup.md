@@ -17,7 +17,7 @@ Phase 2+. See §Cross-plan coordination for the full merge order.
 **Scope**: Re-enable pyright type-checking as a CI merge gate by
 (a) verifying and documenting the existing `pyrightconfig.json` (already strict
 globally, with a `flows/` carve-out for Prefect decorator type erasure),
-(b) fixing the stale `--strict` CLI reference in `docs/workflow.md`,
+(b) fixing the stale `--strict` CLI reference in [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md),
 (c) capturing the post-Plan-073 error count (live count, expected ≈579 as
 of 2026-06-01) as a ratchet baseline, and
 (d) draining the remaining backlog under that ratchet. No runtime behaviour
@@ -177,7 +177,7 @@ at a time.
   `pythonVersion: "3.12"`, `executionEnvironments` carve-out silencing
   Unknown-cluster rules inside `flows/`. This is the authoritative
   config; it already exists and is correct.
-- `docs/workflow.md` — Task Exit Gate still references the removed
+- [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) — Task Exit Gate still references the removed
   `uv run pyright --strict src/` flag; T1b fixes this.
 - `uv.lock` — `pyright 1.1.408` (direct dev dep).
 - `src/sapphire_flow/types/`, `.../protocols/`, `.../exceptions.py` —
@@ -338,7 +338,7 @@ rationale; no stderr warnings from pyright about unknown config keys.
 
 #### T1b — Fix stale `--strict` references across docs
 
-**Files**: `docs/workflow.md` (primary), plus every other docs/ file that
+**Files**: [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) (primary), plus every other docs/ file that
 still references the removed flag.
 
 1. Replace `uv run pyright --strict src/` → `uv run pyright src/`
@@ -351,7 +351,7 @@ still references the removed flag.
    returns **7 hits**. Only **5** are command-form and MUST be rewritten
    (verify live at execution time — other PRs may land new references
    before T1b runs):
-   - `docs/workflow.md:102` — Task Exit Gate section (primary target).
+   - [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) — Task Exit Gate section (primary target).
    - `docs/v0-scope.md:404`
    - `docs/architecture-context.md:3041`
    - `docs/plans/066-train-models-retrain-strategy.md:94`

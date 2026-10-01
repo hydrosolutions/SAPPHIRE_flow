@@ -19,7 +19,7 @@ source: 2026-09-10 — owner requested a low-priority plan to bring SAPPHIRE Flo
 
 **DRAFT — NOT READY. Low priority.** This is an external-facing, user-visible warning
 contract and a database/API change. Resolve its independent-review findings and follow the
-high-risk review rules in `docs/workflow.md` before the orchestrator may set it READY.
+high-risk review safeguards in `AGENTS.md` before implementation.
 
 **MVP decision (owner, 2026-09-24):** CAP remains `DISABLED` for the CHWRR MVP dashboard and initial
 post-event workflow. This plan is a later optional publication path; the MVP must not depend on its

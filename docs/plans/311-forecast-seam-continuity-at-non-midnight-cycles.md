@@ -203,8 +203,8 @@ counts the missing day while no row exists to fill it.
 
 ⛔ **Not yet the owner's words.** This is the closure T1's measurement earns, written out so the
 owner can confirm or correct it in one reading. Until they do, `open_decisions` stays as it is and
-`blocks: [262]` stands. ⚠️ *The orchestrator may set a plan READY; it may not close an owner
-decision. This section is a proposal, not an authority.*
+`blocks: [262]` stands. ⚠️ *An agent may not close an owner decision. This section is a
+proposal, not an authority.*
 
 ### D1 — proposed: **(a) now, and (d) is what T1 actually established.**
 

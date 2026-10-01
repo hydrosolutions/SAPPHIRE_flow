@@ -1,19 +1,14 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
-Reusable per-subsystem **routing checklists**. When a task touches a subsystem, the
-Multi-Model Review **context packet** (see `docs/workflow.md` § Multi-Model Review →
-Context packet) points into the relevant map below: it names the touchpoints to
-inspect, the contracts that must not change silently, and the verification to run —
-without re-deriving the subsystem.
+Reusable per-subsystem routing checklists. When a task touches a subsystem,
+inspect the relevant map for touchpoints, contracts that must not change silently,
+and verification to run. Project safeguards live in `AGENTS.md`; agent workflows
+come from globally installed skills.
 
-These are **routing signposts, not architecture docs**, governed by the right-sizing
-fitness test in `docs/workflow.md` § Multi-Model Review → Right-sizing: every bullet
-names a symbol/subsystem to go read; no bullet teaches how the code works; a “must not
-change silently” contract covers only a surprising, high-consequence, cross-cutting
-invariant. Symbol names only — no line numbers, and no file paths *except* where the
-path itself is the routing target (Dockerfile, `docker-compose*.yml`, launchd plists,
-standards docs), as in the infra map. Verify a map against the code (an independent
-code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touched.
+These are routing signposts, not architecture docs. Name symbols/subsystems to
+inspect rather than copying implementation explanations. Include only surprising,
+high-consequence cross-cutting invariants. Verify affected maps against the code
+when changing them.
 
 ## Maps
 

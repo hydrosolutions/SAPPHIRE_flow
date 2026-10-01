@@ -617,7 +617,7 @@ starting point, not a citation.*
 
 ⛔ **Read this in the future tense.** Plan 228 is `READY`, its D4 is the authoritative rule, and the
 code implements it (`floor_to_time_step` / `aligned_lookback_bounds`, `services/training_data.py:244-283`). This plan is `DRAFT` — a proposal, not an
-instruction (`docs/workflow.md:64-89`). **T8 is the task that would make the supersession real; until
+instruction ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)). **T8 is the task that would make the supersession real; until
 it runs, phase zero is correct.**
 
 D4 says *"every path aggregates onto UTC calendar buckets … nothing aligns to a forecast's own
@@ -785,7 +785,7 @@ This is deliberately the convention and the type, not the consumers.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:198`).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)).
 
 ⚠️ Task IDs are non-contiguous (T1, T2, T4, T6, T7, T8, T9, T10). The gaps are from the 2026-09-05 and
 2026-09-08 splits into Plans 254 and 258. **The IDs are stable and referenced by those plans — do not
@@ -1120,7 +1120,6 @@ names its owning plans.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/252-time-grids-are-step-and-phase.md
 ```
 
 Four conditions hold in addition:
@@ -1220,7 +1219,7 @@ applied in this pass:
   them.)* The
   whole-hour constraint is forced by hourly forcing, not a preference. **Flagged for owner
   confirmation** — this is a reconciliation of two texts, not a new owner decision.
-- **`docs/workflow.md:378-390` corrected to `:198`** (measured 2026-09-09). The same stale citation
+- **[retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) corrected to `:198`** (measured 2026-09-09). The same stale citation
   is still present in Plan 254.
 - **Two open questions promoted out of the prose.** OQ-1 (T4 rejects a non-dividing step with no
   step-bearing config field) and OQ-2 (interval bounds assigned to 258 by this plan, to 251 by 254,

@@ -15,7 +15,7 @@ priority: low
 ## Status
 
 **DRAFT, low priority.** Read-only investigation first (T1, T2); the durable remover (T3) and the binding branch
-(T4) and the optional gate (T5) follow. Only the orchestrator sets READY. Whatever is done to the staging database
+(T4) and the optional gate (T5) follow. Follow the global skill and `AGENTS.md`; required independent review still applies. Whatever is done to the staging database
 is an owner-approved action.
 
 **Numbering.** Drafted as 516 on 2026-09-30, renumbered to 517 the same day because 516 was already taken by `516-region-bundle-export-route.md`.

@@ -156,7 +156,7 @@ change. ⚠️ `meteoswiss_sreld` and `camels-ch` remain unread and still block 
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
+Every code task carries the Task Exit Gate ([retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md)).
 
 ### T1 — settle D1–D3, and answer the MeteoSwiss daily-day question first
 
@@ -233,7 +233,6 @@ rollback covering them, and no second cutover exists.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py docs/plans/267-adopt-end-period-stamping.md
 ```
 
 1. **The assembler and the scorer change together** — never one without the other.

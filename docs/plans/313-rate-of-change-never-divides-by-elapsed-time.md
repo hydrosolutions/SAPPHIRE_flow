@@ -20,9 +20,9 @@ the number.
 
 ## Status
 
-**DRAFT.** No review has run. ⛔ Only the orchestrator may set READY.
+**DRAFT.** No review has run. Follow the global skill and `AGENTS.md`; required independent review still applies.
 
-⚠️ **This is high-risk work under `docs/workflow.md` § High-risk work** on two of its named
+⚠️ **This is high-risk work under [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § High-risk work** on two of its named
 grounds: *user-visible behaviour* and *scientific behaviour with material operational
 consequences*, on a rule that runs today against the live Swiss deployment. It therefore
 needs one relevant independent review **in addition to** the ordinary Claude/Codex pair
@@ -254,7 +254,7 @@ this plan exists.
 only. `tests/unit/services/test_qc.py` — the four cases below plus the minimal helper
 widening they need (`_make_obs` currently takes whole `hours` and hard-codes
 `source=ObservationSource.MEASURED`). The patch version bump in `pyproject.toml` required by
-`docs/workflow.md` § Hard boundaries.
+[retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md) § Hard boundaries.
 
 **Out.** ⛔ `_apply_spike` and its `max_delta` (§ Out of scope). ⛔ `forecast_qc.py`'s
 `temporal_consistency`. ⛔ `check`'s signature, the cadence inference, rule selection, the

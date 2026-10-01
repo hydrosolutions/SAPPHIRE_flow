@@ -16,7 +16,7 @@ source: 2026-09-24 owner — longer-term archive and replay may follow initial c
 
 ## Status and scope
 
-**DRAFT — not implementable.** This is the deferred cold-tier and diagnostic replay slice separated from the first-run capture in Plan 340 and from the operational scorecards in Plan 343. Plans 340, 342 and 343 keep evidence in protected storage with backup, restore checks and cleanup disabled until this plan passes. A CHWRR test publication may begin under those interim gates; destructive evidence cleanup may not. Storage migration and data-loss risk make this high-risk under `docs/workflow.md`.
+**DRAFT — not implementable.** This is the deferred cold-tier and diagnostic replay slice separated from the first-run capture in Plan 340 and from the operational scorecards in Plan 343. Plans 340, 342 and 343 keep evidence in protected storage with backup, restore checks and cleanup disabled until this plan passes. A CHWRR test publication may begin under those interim gates; destructive evidence cleanup may not. Storage migration and data-loss risk make this high-risk under [retired workflow](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/0dbe7217f1f7241a40d4ba5a9b5ef4a750fbc169/docs/workflow.md).
 
 ## Retention contract
 
