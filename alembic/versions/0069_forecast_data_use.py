@@ -110,7 +110,7 @@ BEGIN
             AND (item - ARRAY['kind', 'units', 'content']) = '{}'::jsonb
             AND jsonb_typeof(item->'content') = 'string'
             AND jsonb_typeof(record) = 'object'
-            AND item->>'kind' IN ('observation', 'historical_forcing', 
+            AND item->>'kind' IN ('observation', 'historical_forcing',
                 'weather_forecast')
             AND jsonb_typeof(item->'units') = 'string'
             AND length(btrim(item->>'units')) > 0
@@ -252,7 +252,7 @@ BEGIN
             END IF;
         END IF;
         IF record->>'rating_curve_id' IS NOT NULL AND NOT EXISTS (
-            SELECT 1 FROM public.rating_curves 
+            SELECT 1 FROM public.rating_curves
                 WHERE id = (record->>'rating_curve_id')::uuid
                 AND station_id = sid) THEN
             RAISE EXCEPTION 'forecast input curve belongs to another source station';

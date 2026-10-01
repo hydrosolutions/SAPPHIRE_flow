@@ -1369,7 +1369,12 @@ UPDATE. No output enable flag, session override or runtime/operator grant is add
 The provisional-input permission does not attest output deployment compatibility.
 A separate reviewed rollout must replace the unconditional guard, close ordinary
 raw-SQL/publication/alert/state readers and authorize the required narrow join writes.
-Protected raw lineage remains internal; ordinary PgForecastStore reads are class-bound.
+Ordinary PgForecastStore reads are class-bound, but `forecasts.input_lineage` still
+inherits table-wide runtime SELECT and generic forecast-table browser visibility.
+The protected join exclusion does not redact this column. The column contains no
+TEST payload while the INSERT refusal is deployed. T1d must close these inherited
+raw-column/browser readers **before activation**; this slice does not deliver that
+closure.
 Synthetic disposable structural tests may remove only the refusal trigger transactionally;
 this is test setup, never an operator activation procedure.
 

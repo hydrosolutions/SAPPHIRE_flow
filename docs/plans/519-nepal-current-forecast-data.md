@@ -425,7 +425,12 @@ or historical-record existence. See the types spec for the exact boundary. Futur
 non-store writers require reviewed canonical parsing before any activation.
 Completeness remains the future T3 assembler contract, not a claim inferred from
 nonempty caller metadata. No assembler, model/FI, publication or direct-reader sweep
-is delivered by this slice. No raw lineage is added to public responses.
+is delivered by this slice. `forecasts.input_lineage` still inherits runtime table-wide
+SELECT and generic forecast-table browser visibility; T1d must close those reads before
+activation. The protected join exclusion is not raw-column redaction.
+Mixed-class contributor combinations are initially unsupported by this same-class
+storage boundary, pending separately reviewed T3c handling. Never omit actual
+contributors to fit the constraint; reject/defer such a combination.
 
 Structural tests remove only the dormant refusal trigger inside disposable PostGIS
 transactions, restoring it by rollback (the nonempty downgrade fixture restores it

@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     FiniteFloat,
     StringConstraints,
@@ -27,7 +28,22 @@ if TYPE_CHECKING:
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 
+def _consumed_value(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("consumed values must be finite numbers or missing")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError("consumed values must be finite") from exc
+    if not math.isfinite(number):
+        raise ValueError("consumed values must be finite")
+    return 0.0 if number == 0 else number
+
+
 _Nonempty = Annotated[str, StringConstraints(pattern=r"\S")]
+_FiniteValue = Annotated[FiniteFloat, BeforeValidator(_consumed_value)]
 
 
 class _QcFlagBoundary(BaseModel):
@@ -44,7 +60,7 @@ class _ObservationSnapshotBoundary(BaseModel):
     station_id: UUID
     timestamp: AwareDatetime
     parameter: _Nonempty
-    value: int | FiniteFloat | None
+    value: _FiniteValue | None
     source: ObservationSource
     rating_curve_id: UUID | None
     rating_curve_correction_version: _Nonempty | None
@@ -64,7 +80,7 @@ class _HistoricalSnapshotBoundary(BaseModel):
     spatial_type: SpatialRepresentation
     band_id: int | None
     member_id: int | None
-    value: int | FiniteFloat
+    value: _FiniteValue
 
 
 class _WeatherSnapshotBoundary(BaseModel):
@@ -78,7 +94,7 @@ class _WeatherSnapshotBoundary(BaseModel):
     spatial_type: SpatialRepresentation
     band_id: int | None
     member_id: int | None
-    value: int | FiniteFloat
+    value: _FiniteValue
     is_gap: bool
     gap_status: Literal["recovered", "unrecoverable"] | None
 
@@ -156,6 +172,7 @@ def snapshot_consumed_input(
         raise TypeError("unsupported consumed input record")
     data = asdict(record)
     data.pop("created_at", None)
+    data["value"] = _consumed_value(data["value"])
     return ForecastInputSnapshot(
         kind=kind, units=units, content=canonical_content(data)
     )
@@ -182,7 +199,7 @@ class ForecastStaticAttributes:
         for item in self.values:
             if type(item) is not tuple or len(item) != 2:
                 raise ValueError("consumed static attributes require name/value pairs")
-            name, value = item
+            name, _value = item
             if (
                 not isinstance(cast("object", name), str)
                 or not name.strip()
@@ -190,12 +207,11 @@ class ForecastStaticAttributes:
             ):
                 raise ValueError("consumed static attribute names must be unique")
             names.add(name)
-            if value is not None and (
-                isinstance(value, bool)
-                or not isinstance(cast("object", value), (float, int))
-                or not math.isfinite(value)
-            ):
-                raise ValueError("consumed static attributes must be finite or missing")
+        object.__setattr__(
+            self,
+            "values",
+            tuple((name, _consumed_value(value)) for name, value in self.values),
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

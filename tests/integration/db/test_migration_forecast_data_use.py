@@ -127,6 +127,8 @@ class TestDeployedRuntimeRoleGuard:
                 store = PgForecastStore(
                     conn, data_use=ForecastDataUse.EXPIRED_RATING_TEST
                 )
+                # API may refuse at its ACL before reaching the trigger. This
+                # proves login-level denial; owner SQL/COPY tests prove the guard.
                 with pytest.raises(
                     sa.exc.DBAPIError, match="disabled|permission denied"
                 ):

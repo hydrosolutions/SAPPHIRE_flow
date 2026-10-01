@@ -408,3 +408,125 @@ class TestStrictConsumedSnapshot:
         raw["static_attributes"][0][field] = value
         with pytest.raises(ValueError, match="lineage"):
             ForecastInputLineage.from_content(canonical_content(raw))
+
+
+class TestConsumedNumericCanonicalization:
+    @pytest.mark.parametrize("kind", ["observation", "historical", "weather"])
+    def test_factory_integer_and_float_values_have_one_identity(
+        self, kind: str
+    ) -> None:
+        from sapphire_flow.types.enums import SpatialRepresentation
+        from sapphire_flow.types.forecast_lineage import snapshot_consumed_input
+        from sapphire_flow.types.weather import WeatherForecastRecord
+        from tests.conftest import make_observation, make_raw_historical_forcing
+
+        observation = make_observation(value=5.0)
+        records = {
+            "observation": observation,
+            "historical": make_raw_historical_forcing(value=5.0),
+            "weather": WeatherForecastRecord(
+                id=observation.id,
+                station_id=observation.station_id,
+                cycle_time=observation.timestamp,
+                valid_time=observation.timestamp,
+                created_at=observation.created_at,
+                nwp_source="fixture",
+                parameter="temperature",
+                spatial_type=SpatialRepresentation.POINT,
+                band_id=None,
+                member_id=2,
+                value=5.0,
+            ),
+        }
+        record = records[kind]
+        first = snapshot_consumed_input(record, units="fixture")
+        assert (
+            snapshot_consumed_input(replace(record, value=5), units="fixture") == first
+        )
+        with pytest.raises(ValueError, match="finite"):
+            snapshot_consumed_input(replace(record, value=10**309), units="fixture")
+
+    def test_static_values_normalize_and_overflow_is_value_error(self) -> None:
+        from sapphire_flow.types.forecast_lineage import ForecastStaticAttributes
+        from tests.conftest import make_observation
+
+        attributes = ForecastStaticAttributes(
+            station_id=make_observation().station_id,
+            source="fixture",
+            version="v1",
+            values=(("area", 5.0), ("missing", None)),
+        )
+        lineage = ForecastInputLineage(
+            static_attributes=(attributes,), transformation_versions=("v1",)
+        )
+        integer = replace(
+            lineage,
+            static_attributes=(
+                replace(attributes, values=(("area", 5), ("missing", None))),
+            ),
+        )
+        assert integer.fingerprint == lineage.fingerprint
+        with pytest.raises(ValueError, match="finite"):
+            replace(attributes, values=(("area", 10**309),))
+
+    @pytest.mark.parametrize("value", [5, 10**309])
+    def test_serialized_integer_value_is_not_canonical(self, value: int) -> None:
+        import json
+
+        from sapphire_flow.types.forecast_lineage import snapshot_consumed_input
+        from sapphire_flow.types.rating_reference import canonical_content
+        from tests.conftest import make_observation
+
+        snapshot = snapshot_consumed_input(make_observation(value=5.0), units="m3/s")
+        malformed = canonical_content(json.loads(snapshot.content) | {"value": value})
+        with pytest.raises(ValueError, match="snapshot"):
+            replace(snapshot, content=malformed)
+        lineage = ForecastInputLineage(
+            snapshots=(snapshot,), transformation_versions=("v1",)
+        )
+        content = json.loads(lineage.content)
+        content["snapshots"][0]["content"] = malformed
+        with pytest.raises(ValueError, match="lineage"):
+            ForecastInputLineage.from_content(canonical_content(content))
+
+    def test_missing_value_and_integer_member_identity_are_preserved(self) -> None:
+        import json
+
+        from sapphire_flow.types.forecast_lineage import snapshot_consumed_input
+        from tests.conftest import make_observation, make_raw_historical_forcing
+
+        missing = replace(make_observation(), value=None, qc_status=QcStatus.MISSING)
+        assert (
+            json.loads(snapshot_consumed_input(missing, units="m3/s").content)["value"]
+            is None
+        )
+        source = make_raw_historical_forcing(member_id=2, value=5)
+        data = json.loads(snapshot_consumed_input(source, units="mm").content)
+        assert type(data["member_id"]) is int
+        assert data["member_id"] == 2
+        assert type(data["value"]) is float
+
+    def test_static_integer_serialization_is_rejected_on_decode(self) -> None:
+        import json
+
+        from sapphire_flow.types.forecast_lineage import ForecastStaticAttributes
+        from sapphire_flow.types.rating_reference import canonical_content
+        from tests.conftest import make_observation
+
+        attributes = ForecastStaticAttributes(
+            station_id=make_observation().station_id,
+            source="fixture",
+            version="v1",
+            values=(("area", 5),),
+        )
+        lineage = ForecastInputLineage(
+            static_attributes=(attributes,), transformation_versions=("v1",)
+        )
+        assert (
+            ForecastInputLineage.from_content(lineage.content).fingerprint
+            == lineage.fingerprint
+        )
+        raw = json.loads(lineage.content)
+        raw["static_attributes"][0]["values"]["area"] = 5
+        with pytest.raises(ValueError, match="lineage"):
+            ForecastInputLineage.from_content(canonical_content(raw))

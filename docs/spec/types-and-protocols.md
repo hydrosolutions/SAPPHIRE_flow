@@ -2016,7 +2016,13 @@ fingerprints, actual contributor forecast IDs and ordered transformation version
 Static snapshots retain each source station, explicit source/version and consumed
 name/value pairs (finite numbers or explicit missing values). Names are unique and
 serialization orders them deterministically; changing a value or source version
-changes retry identity. No static discovery or assembler wiring is provided.
+changes retry identity. Numeric consumed values use one finite-float spelling:
+snapshot factories and static constructors normalize integers to floats (and signed
+zero to positive zero); identity/band/member integers are unchanged. Direct serialized
+snapshot construction and lineage decoding require that canonical float spelling, so
+integer-spelled values refuse rather than creating a second valid identity. Overflow,
+booleans and nonfinite values raise ValueError. Observation missing nulls and static
+missing nulls remain null. No static discovery or assembler wiring is provided.
 Snapshot factories reuse Observation, RawHistoricalForcing and WeatherForecastRecord
 fields, add explicit units and exclude capture/creation clocks. Snapshots keep only
 consumed records, not whole upstream files. NaN/Infinity cannot enter canonical JSON;
@@ -2072,6 +2078,15 @@ privileges and deployment-inventory activation. The unconditional INSERT guard b
 test rows in normal owner/runtime execution, including COPY. Deliberate DBA disabling
 of guards is outside the runtime threat model. Direct-reader/publication/alert/model-state
 closure remains separate work; this slice does not claim those paths are closed.
+Specifically, `forecasts.input_lineage` inherits table-wide runtime SELECT and is not
+column-redacted by the generic forecast-table browser. It contains no TEST payload
+while insertion is disabled. Closing these raw-column/browser reads is an explicit
+T1d prerequisite **before activation**, not an already-delivered safeguard.
+
+Contributor references initially require the same class. Mixed STANDARD/TEST
+combinations are unsupported pending separately reviewed T3c handling. Never omit an
+actual contributor to fit this constraint; reject/defer that combination until its
+complete invalid/test lineage can be represented under the reviewed contract.
 
 ### OperationalForecast
 
