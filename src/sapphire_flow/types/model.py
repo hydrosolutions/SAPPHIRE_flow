@@ -317,6 +317,9 @@ class ModelDataRequirements:
     # stays hashable and free of an FI import.
     declared_horizon_semantics: str | None = None
     declared_min_future_steps: int | None = None
+    # None preserves legacy native declarations; empty explicitly needs no
+    # target history. Output target names alone do not imply input history.
+    required_past_targets: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:
@@ -325,6 +328,13 @@ class ModelDataRequirements:
             raise ValueError(
                 f"forecast_horizon_steps must be ≥ 1, got {self.forecast_horizon_steps}"
             )
+        if self.required_past_targets is not None:
+            if any(not name.strip() for name in self.required_past_targets):
+                raise ValueError("required_past_targets names must be nonempty strings")
+            if not self.required_past_targets.issubset(self.target_parameters):
+                raise ValueError(
+                    "required_past_targets must be a subset of target_parameters"
+                )
         names = [name for name, _ in self.declared_aggregations]
         if len(names) != len(set(names)):
             raise ValueError(

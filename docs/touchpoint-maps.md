@@ -498,7 +498,29 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   persistence) is still primary-only — see the store/state failure bullet
   below and `forecast-cycle-redesign.md` build sequence item 1.
 - GROUP dispatch: `discover_group_runs` / `run_group_forecast`, dedup via
-  `group_produced_pairs`
+  `group_produced_pairs`. `assemble_group_operational_inputs_outcome` retains the
+  expected execution roster and typed per-member input exclusions; the legacy
+  `assemble_group_operational_inputs` tuple/None wrapper is unchanged. Declared
+  statics are projected after resolution, missing declared values exclude only
+  that member, and mixed Int64/Float64 statics convert only within the lossless
+  integer bound (homogeneous integers remain integers). Absent past-forcing
+  columns or empty forcing frames become typed nulls on the expected grid;
+  nonempty complete-schema histories retain their rows, with model-owned
+  length/shape checks. `OperationalInputMetadata` retains original forcing frames
+  for quality assessment before the FI `max_nan` gate. Target history is never
+  null-grid-filled: only explicit past-known declarations identify required
+  target history, and wholly absent required rows/columns exclude that member.
+  The FI boundary alone projects `required_past_targets`; `None` preserves
+  native unspecified behavior and an empty set means no target history.
+  Output targets alone do not require history; forcing-only
+  `declared_lookbacks` stays unchanged. Future shortfalls and the defensive `InsufficientDataError` assembly
+  contract exclude only the affected member. Missing forecast bindings do not
+  block bound siblings. `StoreError` and shared-policy connection-fatal errors
+  (including raw driver failures) remain fatal; other database, schema and
+  configuration errors remain visible group failures, not member shortages. Forecast evidence records
+  only declared statics and actual prediction members, not the full basin package.
+  This does not repair model-internal whole-batch failures or implement the
+  separate group-health/attempt reporting proposals.
 - combination (STATION / Phase B only — GROUP dispatch never combines):
   `build_combined_forecasts`, `combine_ensembles_pooled`, `combine_ensembles_bma`
   — `CONSENSUS` is unimplemented and BMA is not operationally wired (the flow
