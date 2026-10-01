@@ -299,7 +299,7 @@ remains true and worth keeping from the original analysis is the failure *mechan
 because it is what makes the shortfall invisible: a missing tail produces **fewer rows,
 not nulls**, so the `max_nan=0` gate passes untouched
 (`adapters/forecast_interface.py:1029-1038`) and the shortfall reaches the model as a
-SHAPE failure. Per CLAUDE.md, `max_nan` is a pre-`predict` NaN gate only and shape
+SHAPE failure. Per AGENTS.md, `max_nan` is a pre-`predict` NaN gate only and shape
 shortfalls are the model's responsibility.
 
 **Sequencing (owner, 2026-09-09).** T1, T2 and T3a have no code dependency on 261 and are
@@ -359,7 +359,7 @@ any longer.
   config package data.
 - `src/sapphire_flow/models/aquacast/__init__.py` — export `CmalSmall`.
 - `pyproject.toml` — a `cmal_small` entry point; patch version bump. **And
-  `src/sapphire_flow/__init__.py`**, which the mandatory bump also rewrites (CLAUDE.md
+  `src/sapphire_flow/__init__.py`**, which the mandatory bump also rewrites (AGENTS.md
   § Version Bumping) — previously omitted from this list, independent review 2026-09-11 (minor).
 - The test modules the Verification below names: `tests/unit/models/test_aquacast_shim.py`,
   `tests/unit/services/test_model_import.py`, and the **extra-free** module carrying the digest
@@ -1130,7 +1130,7 @@ model.
 onboarded but not served.
 
 ⚖️ **This is not a regression and not a defect in this plan's work** — it is the
-**operational `GroupForecastModel` support** that `CLAUDE.md` already lists as an outstanding
+**operational `GroupForecastModel` support** that `AGENTS.md` already lists as an outstanding
 v0b/v0c follow-on. T5's value is that it converted a scoping line into a concrete, located gap: one
 resolver, threaded from the cycle's `station_store` into the discovered model.
 

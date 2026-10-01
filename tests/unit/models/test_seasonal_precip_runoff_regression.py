@@ -14,7 +14,7 @@ These tests prove:
    teacher-forcing).
 2. A SHORT antecedent-precip window (fewer raw rows than the declared
    lookback, no explicit NaN) is the model's own anticipated failure:
-   ``predict()`` returns ``ModelFailure``, never raises (CLAUDE.md
+   ``predict()`` returns ``ModelFailure``, never raises (AGENTS.md
    §ForecastInterface Adherence).
 3. Continuous-series assembly: with reanalysis rows present up to
    issue-time (representing RprelimD's live tail), the operational

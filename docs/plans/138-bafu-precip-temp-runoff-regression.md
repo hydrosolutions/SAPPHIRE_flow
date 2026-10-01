@@ -315,7 +315,7 @@ implementation. T2's own scope (the model code change) does not depend on T1's o
   to also gate the temperature window — and **parameterize its hardcoded `"antecedent-precip"` label**
   (`nwp_regression.py:575,605`, the docstring + `_ShortForcingWindowError` message) to a `feature_label`
   argument so temperature diagnostics don't lie (short/stale ⇒ `_ShortForcingWindowError` ⇒ `ModelFailure`,
-  never raise — CLAUDE.md FI rule). Also add the DC-3 **artifact feature-count guard** before the matmul
+  never raise — AGENTS.md FI rule). Also add the DC-3 **artifact feature-count guard** before the matmul
   (`nwp_regression.py:434`): a coefficient/feature-length mismatch returns `ModelFailure(INPUT_DATA)`, not a
   raw shape crash.
 - **Files:** `src/sapphire_flow/models/nwp_regression.py`; **`tests/unit/models/test_seasonal_precip_runoff_regression.py`**

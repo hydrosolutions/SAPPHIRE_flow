@@ -24,7 +24,7 @@ BafuWaterBodyKind = Literal["river", "lake"]
 
 class BafuGaugeDataStatus(Enum):
     """Whether the live gauge behind a BAFU icon currently has data. A named
-    domain state, not a bare bool (CLAUDE.md: enums over booleans for a
+    domain state, not a bare bool (AGENTS.md: enums over booleans for a
     two-state domain concept)."""
 
     PRESENT = auto()

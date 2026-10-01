@@ -1,7 +1,7 @@
 """Locked tests for the shared LINDAS rate limiter (Plan 175 T1).
 
 Fakes only — a fake clock and a recording sleeper, never real time or the
-network (CLAUDE.md testability: no bare ``time.sleep`` in tests either).
+network (AGENTS.md testability: no bare ``time.sleep`` in tests either).
 """
 
 from __future__ import annotations

@@ -606,7 +606,7 @@ class TestOperatorProvenanceFile:
 
 class TestOperatorProvenanceValidation:
     """`OperatorProvenance.__post_init__` — the domain-type invariants
-    (CLAUDE.md 'parse, don't validate'), checked directly against the
+    (AGENTS.md 'parse, don't validate'), checked directly against the
     frozen dataclass rather than only through the JSON boundary above."""
 
     def _kwargs(self, **overrides: object) -> dict[str, object]:

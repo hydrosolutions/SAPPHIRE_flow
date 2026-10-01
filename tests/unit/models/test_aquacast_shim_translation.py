@@ -866,7 +866,7 @@ class TestBoundaryTranslationData:
 class TestAreaMissingAtPredictTime:
     """Plan 181 D3 (fixer-corrected): a missing/invalid `area` at predict/hindcast
     time is an ANTICIPATED per-station input-data failure — the mandatory FI rule
-    (`CLAUDE.md` § ForecastInterface Adherence) is that this must be RETURNED as
+    (`AGENTS.md` § ForecastInterface Adherence) is that this must be RETURNED as
     `ModelFailure`, never raised. No fallback to a basin lookup either way."""
 
     def test_missing_area_returns_a_model_failure_naming_the_station(self) -> None:

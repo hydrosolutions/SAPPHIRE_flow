@@ -136,7 +136,7 @@ def fetch_forecast_binding(station_id) -> StationWeatherSource        # exactly 
 def fetch_reanalysis_bindings(station_id) -> list[StationWeatherSource]  # 0..n
 ```
 
-A caller then **cannot obtain** an unfiltered mixed list to misuse. This is the `CLAUDE.md`
+A caller then **cannot obtain** an unfiltered mixed list to misuse. This is the `AGENTS.md`
 "invalid states unrepresentable" discipline, and the only option that structurally ends the
 whack-a-mole: **three** reviews each found a **different** consumer that forgot to filter, which
 is the signature of a missing type, not of careless callers.

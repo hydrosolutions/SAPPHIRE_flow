@@ -36,7 +36,7 @@ version and 229 may land first.)*
 and describes the parameter/unit/aggregation triple as *"a coordination contract with SAP3"*.
 
 The contract defines the method, the default, and whose job it is. Nothing here is inexpressible,
-so `CLAUDE.md` § ForecastInterface Adherence puts this on path 1 — **our code violates the FI, so
+so `AGENTS.md` § ForecastInterface Adherence puts this on path 1 — **our code violates the FI, so
 our code is fixed.** Filing an FI issue would be reporting our own omission as their bug.
 
 ## What is wrong

@@ -161,7 +161,7 @@ _CANONICAL_TO_AQUAIRE: Final[dict[str, str]] = {
 def _default_store_opener(path: str) -> xr.Dataset:
     """Production store opener: read-only zarr v3 over s3fs. Imported lazily
     so unit tests never require ``s3fs`` or network access — every test
-    injects ``open_store`` instead (dependency injection, CLAUDE.md
+    injects ``open_store`` instead (dependency injection, AGENTS.md
     Testability)."""
     import s3fs  # noqa: PLC0415
 

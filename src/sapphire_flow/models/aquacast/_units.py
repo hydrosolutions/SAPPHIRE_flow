@@ -18,7 +18,7 @@ so ``m³/s = mm_per_day * A / 86.4``. The constant is exact, not fitted.
 **Plan 181 fixer.** A missing/non-numeric/non-finite/non-positive area is an
 *anticipated* per-station input-data problem (a station whose declared statics are
 incomplete or corrupt), not a programming bug — the mandatory FI rule
-(`CLAUDE.md` § ForecastInterface Adherence) is that an anticipated `predict`/
+(`AGENTS.md` § ForecastInterface Adherence) is that an anticipated `predict`/
 `hindcast` failure must be RETURNED as `ModelFailure`, never raised. `_require_area`
 therefore raises the dedicated `AreaConversionError` (a `ConfigurationError`
 subclass, so existing `pytest.raises(ConfigurationError, ...)` call sites are

@@ -115,7 +115,7 @@ class _ShortForcingWindowError(ValueError):
     explicit NaN — see ``training_data.py`` ``_raw_forcing_to_dataframe``,
     which pivots by row count and does not pad missing days). ``predict()``
     catches this specific exception and returns ``ModelFailure`` — never lets
-    it propagate (CLAUDE.md §ForecastInterface Adherence: "anticipated
+    it propagate (AGENTS.md §ForecastInterface Adherence: "anticipated
     failure must be returned, not raised").
     """
 
@@ -398,7 +398,7 @@ class _NwpRegressionBase:
         # Plan 129: subclass-declared extra predict features (e.g. the
         # antecedent-precip continuous window). An ANTICIPATED short/stale
         # window raises _ShortForcingWindowError — return ModelFailure, never
-        # let it propagate (CLAUDE.md §ForecastInterface Adherence).
+        # let it propagate (AGENTS.md §ForecastInterface Adherence).
         try:
             extra = self._extra_predict_features(dynamic, future_times, issue_datetime)
         except _ShortForcingWindowError as exc:

@@ -1,7 +1,7 @@
 # Project Conventions
 
 Patterns and conventions specific to SAPPHIRE Flow that complement the
-coding style rules in `CLAUDE.md`.
+coding style rules in `AGENTS.md`.
 
 > **v0 note**: This document describes the full v1 system. For v0, `v0-scope.md`
 > overrides where it differs — notably: no PgBouncer (direct connections only),
@@ -338,7 +338,7 @@ raise.
   these coincide in single-timezone deployments (Nepal, Switzerland).
 - **Python**: timezone-aware `datetime` objects.
 - **API format**: ISO 8601 with timezone — `"2026-07-01T12:00:00Z"`.
-- **No `datetime.now()`** in business logic — inject a clock (see CLAUDE.md).
+- **No `datetime.now()`** in business logic — inject a clock (see AGENTS.md).
 
 ### Temporal aggregation periods
 

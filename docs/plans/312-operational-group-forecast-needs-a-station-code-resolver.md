@@ -89,7 +89,7 @@ assembly, prediction and persistence all **exist**; in the T5 attempt discovery 
 **succeeded** and prediction was **attempted**. ⛔ Nothing was persisted — `run_group_forecast`
 returned `{}`, so there were no station results to write. *(Second review pass, minor: an earlier
 wording said all four "ran".)* This repairs the single missing wire; closing it does not discharge
-every GROUP follow-on `CLAUDE.md` lists.
+every GROUP follow-on `AGENTS.md` lists.
 
 ⚠️ **Not a regression**: the path was never wired. But ⛔ **"it could not have been noticed" is too
 strong** — a synthetic test could have caught it at any time. What is true is narrower: until Plan

@@ -202,7 +202,7 @@ class Refusal:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Ma8Inputs:
-    """T3's DI seam (CLAUDE.md dependency injection) -- `run_ma8_report`'s
+    """T3's DI seam (AGENTS.md dependency injection) -- `run_ma8_report`'s
     tested core takes this bundle and never touches disk itself, mirroring
     `ma7_run.Ma7Inputs`/`ma6_run.Ma6Inputs`. Every field is a RAW ingredient
     (an M-A6/M-A7 result object, or a Pyramid retained frame) -- the core

@@ -11,7 +11,7 @@ The Pyramid windows are built HERE, before pairing (`_year_window` over the
 registry's per-station spans), so each window's reported retention is that
 window's retained JJAS hours rather than the whole file's.
 
-`run_coloc_adjudication()` is the tested, loader-agnostic core (CLAUDE.md
+`run_coloc_adjudication()` is the tested, loader-agnostic core (AGENTS.md
 dependency injection: a `DhmRetainedProvider` is passed in, never a bare
 call to the real pipeline inside business logic) — exercised end-to-end
 against synthetic fixtures in `tests/unit/scripts/test_dhm_precip_coloc_run.py`
@@ -115,7 +115,7 @@ class DhmRetainedWindows:
 
 
 class DhmRetainedProvider(Protocol):
-    """Injected (CLAUDE.md testability) so `run_coloc_adjudication` never
+    """Injected (AGENTS.md testability) so `run_coloc_adjudication` never
     depends on the real production workbook to be exercised end-to-end in
     tests."""
 

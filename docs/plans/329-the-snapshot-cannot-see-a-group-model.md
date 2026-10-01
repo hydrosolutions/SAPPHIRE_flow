@@ -208,7 +208,7 @@ appears in the snapshot.
   inside the per-station loop (`snapshot.py:777-783`) ⇒ for a 139-member group, ~139 × 139 member
   rows are built and discarded per export, plus one extra round-trip for every non-member station.
   ⛔ *Not a blocker — but silence here is how a measured cost becomes a surprise.*
-- 🔴 **Documentation, which an earlier draft omitted entirely** (⛔ *`CLAUDE.md`: "every code change
+- 🔴 **Documentation, which an earlier draft omitted entirely** (⛔ *`AGENTS.md`: "every code change
   updates affected docs — no exceptions"*). ⛔ *An earlier version of this line said "**Four
   places**" above a table of **five**. **That is the round-2 blocker's shape exactly** — the count
   in the introducing sentence kept the old value while the table was corrected.* **FIVE surfaces
@@ -398,7 +398,7 @@ protection I described does not exist.*
     the changelog. ⛔ *This is the documented failure mode exactly — correct the text in one place,
     leave the original standing. Both reviewers found it independently.* § 6 now carries the table
     and an explicit ⛔ correction marker.
-  - 🔴 **T1 updated NO documentation**, in a repo whose `CLAUDE.md` forbids that. Five surfaces
+  - 🔴 **T1 updated NO documentation**, in a repo whose `AGENTS.md` forbids that. Five surfaces
     state something this change falsifies; all five are now named in T1's In-list. ⭐ *The snapshot
     spec matters most: because D1 closed on "nothing marks it group-scoped", that spec is the only
     place a map developer could ever learn an entry can exist with no station assignment row.*

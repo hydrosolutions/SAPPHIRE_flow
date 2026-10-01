@@ -1,7 +1,7 @@
 """Task 1c — the expectation manifest (D8, D8b, D8c, D11).
 
 Committed data (`expectations.toml`), authored before the code that gates it.
-Pydantic validates the TOML at this system boundary (CLAUDE.md: pydantic at
+Pydantic validates the TOML at this system boundary (AGENTS.md: pydantic at
 boundaries only); `Expectation` is the frozen domain type everything else
 consumes.
 """

@@ -13,7 +13,7 @@
   basin outright — a per-basin problem holds that basin in ``onboarding``
   (contract §10 language), it never drops it or aborts the package.
 
-**Parse, don't validate (CLAUDE.md HARD rule).** EVERY external row — a
+**Parse, don't validate (AGENTS.md HARD rule).** EVERY external row — a
 ``basins.gpkg`` feature, a ``static_attributes.parquet`` row, a ``bands.gpkg``
 feature, a ``validation_report.json`` per-basin entry — is parsed through a
 strict Pydantic boundary model (``_BasinRowModel`` / ``_StaticRowModel`` /

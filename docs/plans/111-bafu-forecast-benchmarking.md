@@ -359,7 +359,7 @@ score alongside the BAFU one so a single group-by answers the comparison. It **n
 `ModelId`, never writes a `ModelAssignment`, and never touches the `FALLBACK_MODEL_IDS`
 keyspace** that combination, alerting, and fallback gate on — so it is *structurally
 impossible* for this route to leak into Flow 1. That safety property is a guarantee, not an
-audit. A flat parquet file for a one-off publication artifact also matches CLAUDE.md's
+audit. A flat parquet file for a one-off publication artifact also matches AGENTS.md's
 "Ad-hoc Analyses and One-Time Scripts" convention and keeps a low-priority,
 off-critical-path plan out of the migration history entirely.
 
@@ -413,7 +413,7 @@ New code this route needs (none of it "free"):
   mean (mean pinball loss, mean CSI). All aggregation MUST group/filter by `scorer_run_id`.
 - **A grouping loop** for per-lead / per-season slicing — Flow 8 wires this for `ModelId`
   scores; the standalone route re-implements the small loop over its own returned scores.
-- **Doc updates (not optional — CLAUDE.md: "every code change updates affected docs").**
+- **Doc updates (not optional — AGENTS.md: "every code change updates affected docs").**
   For the chosen parquet route this is light: a single note in the Training/hindcast/skill
   `docs/touchpoint-maps.md` map recording that a standalone benchmark scorer writes a
   parquet archive **structurally separate from `skill_scores`**, so future agents do not
@@ -434,7 +434,7 @@ New code this route needs (none of it "free"):
   integration point that does not exist. `docs/touchpoint-maps.md` itself warns several of
   this subsystem's automations are manual-trigger-only or DRAFT.
 
-**Verification** (a deliverable, not an afterthought — CLAUDE.md testing philosophy):
+**Verification** (a deliverable, not an afterthought — AGENTS.md testing philosophy):
 
 - a pinball-loss unit test against a hand-computed reference value (and/or a direct
   `sklearn.metrics.mean_pinball_loss` cross-check);

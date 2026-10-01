@@ -524,7 +524,7 @@ def _area_failure(
 ) -> ModelFailure:
     """A missing/invalid station `area` is an ANTICIPATED input-data failure — the
     mandatory FI rule is `ModelFailure`, never a raise, for exactly this case
-    (`CLAUDE.md` § ForecastInterface Adherence). `AreaConversionError` is the ONLY
+    (`AGENTS.md` § ForecastInterface Adherence). `AreaConversionError` is the ONLY
     `ConfigurationError` subtype this boundary intercepts; every other
     `ConfigurationError` (e.g. D1's non-daily precipitation guard) keeps raising —
     those are configuration/programming defects, not anticipated bad station data."""

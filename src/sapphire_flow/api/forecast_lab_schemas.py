@@ -7,7 +7,7 @@ these models (D15), and both the REST route (T5) and the CLI export (T6)
 serialise exactly this model, produced by the single assembly function
 ``services.forecast_lab.snapshot.build_snapshot()`` (D1).
 
-Per CLAUDE.md, Pydantic is used here because this module IS the system
+Per AGENTS.md, Pydantic is used here because this module IS the system
 boundary (the wire contract to the separate SAPPHIRE-flow-map project) —
 these are never used as internal domain types elsewhere in this repo.
 

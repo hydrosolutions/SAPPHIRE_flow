@@ -174,7 +174,7 @@ class StationElevationInputs:
     together deliberately: both are plain floats in metres, and swapping
     their order at a call site would silently FLIP THE SIGN of every
     correction (`rate * (orography_elev_m - station_elev_m) / 1000`) — the
-    exact same-primitive-type mix-up CLAUDE.md's type-driven-development
+    exact same-primitive-type mix-up AGENTS.md's type-driven-development
     section calls out. `datum_reconciled` travels alongside them so a
     consumer of `SubFreezingMassFraction` never has to re-fetch
     `station_grid_elevation.csv` just to attach D7's label."""

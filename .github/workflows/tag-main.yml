@@ -1,6 +1,6 @@
 name: Tag main
 
-# Plan 197 — replaces the manual "tag on main after merge" step (CLAUDE.md
+# Plan 197 — replaces the manual "tag on main after merge" step (AGENTS.md
 # § Version Bumping), which was skipped 5 times in 3 days. D1: triggers on
 # push, NOT gated on CI success — a tag here is an identifier, not a release
 # gate (docs/standards/cicd.md § Image tagging and versioning). D6: no

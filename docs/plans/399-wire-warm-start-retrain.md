@@ -382,7 +382,7 @@ does not.
   owner's decision and the ask that the contract COMMENT be amended. ⛔ *An earlier version of this
   bullet asked for it as if outstanding.* ⇒ **Nothing to do here; T1 only re-checks it still matches
   the implemented refusal.*
-- 🔴 **DOCUMENTATION, which the plan had NONE of** (⛔ *`CLAUDE.md`: "every code change updates
+- 🔴 **DOCUMENTATION, which the plan had NONE of** (⛔ *`AGENTS.md`: "every code change updates
   affected docs — no exceptions"; the fi-issue paragraph was the plan's only doc deliverable*):
   | file | why |
   |---|---|
@@ -390,7 +390,7 @@ does not.
   | `docs/touchpoint-maps.md:60` | "ForecastInterface / model execution" — the map for this subsystem |
   | `docs/touchpoint-maps.md:883` | "Training / hindcast / skill" — the map for this flow |
   | `docs/design/v0-flow678-training-pipeline.md` | describes this pipeline and already mentions retrain |
-  ⛔ **Consult the two touchpoint maps BEFORE implementing** — `CLAUDE.md` requires it for any task
+  ⛔ **Consult the two touchpoint maps BEFORE implementing** — `AGENTS.md` requires it for any task
   touching those subsystems, and this plan cited no map at all.
 
 **Out.** ⛔ Changing `train`'s signature or behaviour. ⛔ The FI package (fi-issue 004). ⛔ Making
@@ -438,7 +438,7 @@ very next bullet ("NO storage and NO migration here") and is T4's (§ 14).*
   this task's parameter shape three phases before T3 needs it.*
   ⛔ **Read `docs/standards/orchestration.md` first** — mandatory for flow work, and this plan cited no
   standards document until now.
-- 🔴 **Documentation** (⛔ *`CLAUDE.md`: "every code change updates affected docs — no exceptions"*):
+- 🔴 **Documentation** (⛔ *`AGENTS.md`: "every code change updates affected docs — no exceptions"*):
   `docs/standards/orchestration.md`'s flow-parameter conventions if this adds one.
 
 **Out.** ⛔ Validating or typing the fine-tuning strategy — owner: opaque for v1 (§ 7). ⛔ Changing
@@ -501,7 +501,7 @@ T4 verifies readback.*
     | a deterministic model refusal (no fine-tuning config, feature-manifest mismatch) | **STOP and report** — ours to fix |
     | an identified transient failure | retry **once**, then escalate |
     | anything else | **STOP and preserve it for diagnosis** — ⛔ *do not retry an exception you cannot classify* |
-- ⛔ **The staging run is ORCHESTRATOR-GATED.** *`CLAUDE.md`: staging deploys are the orchestrator's;
+- ⛔ **The staging run is ORCHESTRATOR-GATED.** *`AGENTS.md`: staging deploys are the orchestrator's;
   the owner keeps production. This task does not self-authorise the run.*
 
 **Out.** ⛔ Promoting the result, assigning it, or letting it serve a forecast — that is a separate,

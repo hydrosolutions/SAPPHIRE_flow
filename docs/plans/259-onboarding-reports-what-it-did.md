@@ -191,7 +191,7 @@ acceptance evidence that T1's vocabulary describes the conditions the fleet is a
 
 ⚠️ **A one-time analysis, not a permanent collector.** An earlier draft proposed a
 `scripts/fleet_state_report.py`, which a review round correctly called scope creep — a permanent,
-separately-tested module for a single question. Per `CLAUDE.md` §Ad-hoc Analyses this is a
+separately-tested module for a single question. Per `AGENTS.md` §Ad-hoc Analyses this is a
 `uv run python3 << 'EOF'` heredoc against staging, read-only, whose **output** is the deliverable.
 
 ⚠️ **Not the T2 run report.** T2 reports what a run did; existing rows are indistinguishable from
