@@ -14,8 +14,19 @@ from sapphire_flow.db.metadata import metadata as _app_metadata
 
 router = APIRouter(tags=["tables"])
 
-SAPPHIRE_TABLES: frozenset[str] = frozenset(
-    t.name for t in _app_metadata.tables.values()
+# Protected conversion inputs/proofs never belong to the generic admin browser.
+# Exclude them before COUNT and before either by-name read, not by granting access.
+_PROTECTED_PROVISIONAL_TABLES = frozenset(
+    {
+        "measurement_feed_evidence",
+        "rating_reference_proofs",
+        "provisional_discharges",
+        "provisional_discharge_permissions",
+    }
+)
+SAPPHIRE_TABLES: frozenset[str] = (
+    frozenset(t.name for t in _app_metadata.tables.values())
+    - _PROTECTED_PROVISIONAL_TABLES
 )
 
 PAGE_SIZE = 50

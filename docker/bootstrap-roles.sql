@@ -296,6 +296,28 @@ REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_api, sapphire_worker;
 
+-- Protected provisional tables never join the runtime grant set. Strip stale
+-- table AND column ACLs before any grants or later backup preflight can fail.
+-- Keep the operator safe-state block first; do not move work ahead of it.
+DO $$
+DECLARE t text; r text; cols text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
+                            'rating_reference_proofs', 'provisional_discharges'] LOOP
+        SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
+        WHERE attrelid = to_regclass('public.' || t) AND attnum > 0 AND NOT attisdropped;
+        FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
+                                'sapphire_operator', 'sapphire_publication_health'] LOOP
+            IF r = 'PUBLIC' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                EXECUTE format('REVOKE ALL ON public.%I FROM %s', t,
+                               CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+                EXECUTE format('REVOKE SELECT (%s), INSERT (%s), UPDATE (%s), REFERENCES (%s) ON public.%I FROM %s',
+                               cols, cols, cols, cols, t, CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+            END IF;
+        END LOOP;
+    END LOOP;
+END $$;
+
 -- Neither app role may create objects in `public` (PG16 already denies
 -- CREATE on `public` to PUBLIC by default since PG15 — explicit here so the
 -- invariant holds regardless of the cluster's default, and is documented).
@@ -313,13 +335,20 @@ GRANT CONNECT ON DATABASE sapphire TO sapphire_api, sapphire_worker;
 -- prefect-server connects as the owner (unchanged by this slice).
 REVOKE CONNECT ON DATABASE prefect FROM PUBLIC;
 
--- Broad SELECT — both roles are read-heavy across the domain schema; the
--- least-privilege boundary this slice enforces is per-table
--- INSERT/UPDATE/DELETE below (F3(b): "not blanket UPDATE/DELETE"), not SELECT
--- breadth. Re-running this line after a later migration adds a new table
--- extends SELECT to it automatically; a NEW table's write grants still need
--- an explicit line below (documented in conventions.md § Service users).
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO sapphire_api, sapphire_worker;
+-- Runtime reads cover ordinary domain tables, but NEVER protected provisional
+-- content. Do not grant everything and revoke later: psql autocommits, and a
+-- later preflight failure would leave protected measurements readable.
+-- r/p/v/m/f matches ALL TABLES: ordinary/partitioned tables, views, materialized
+-- views and foreign tables. Never sequences/indexes or another schema.
+SELECT format('GRANT SELECT ON TABLE %I.%I TO sapphire_api, sapphire_worker',
+              n.nspname, c.relname)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND c.relname NOT IN ('provisional_discharge_permissions', 'measurement_feed_evidence',
+                       'rating_reference_proofs', 'provisional_discharges')
+ORDER BY c.relname
+\gexec
 
 -- Both roles INSERT into BIGSERIAL-keyed tables (audit_log, pipeline_health);
 -- USAGE (+SELECT, for currval()) on sequences is required for that INSERT to
@@ -415,7 +444,7 @@ GRANT INSERT ON model_artifact_warm_start TO sapphire_worker;
 GRANT INSERT ON rejected_forecasts TO sapphire_worker;
 
 -- sapphire_worker must NOT be able to read the auth tables. The blanket
--- `GRANT SELECT ON ALL TABLES ...` above intentionally includes
+-- The ordinary-table SELECT grant above intentionally includes
 -- access_tokens/access_token_stations (a schema-wide convenience grant —
 -- see the comment above that GRANT), but a Prefect worker running flows has
 -- no business reading token hashes/scopes; only sapphire_api's auth path
@@ -848,3 +877,7 @@ JOIN pg_catalog.pg_proc p
 \else
     ALTER ROLE sapphire_operator NOLOGIN;
 \endif
+
+-- Minimal invoker guard reads only; no activation or protected-content grants.
+GRANT SELECT (tenant_id, state) ON provisional_discharge_permissions
+    TO sapphire_api, sapphire_worker;

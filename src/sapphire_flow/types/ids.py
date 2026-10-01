@@ -86,3 +86,6 @@ BasinVersionId = NewType("BasinVersionId", UUID)
 # an AccessTokenId (a WritePrincipal is never materialized from an
 # access-token; see `types/write_principal.py`).
 PrincipalId = NewType("PrincipalId", str)
+
+MeasurementFeedEvidenceId = NewType("MeasurementFeedEvidenceId", UUID)
+RatingReferenceProofId = NewType("RatingReferenceProofId", UUID)

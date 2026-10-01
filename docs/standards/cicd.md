@@ -734,7 +734,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
 | 2 | `unit` | `Plan 201 regression — known ordering leak stays fixed (sequential)` — runs the 4-file Plan 201 reproducer sequentially and asserts it passes (Plan 201 T3 layer 2) | — | `uv run pytest -q tests/unit/cli/test_export_forecast_lab.py tests/unit/flows/test_compute_skills.py tests/unit/scripts/test_backfill_meteoswiss_history_script.py tests/unit/services/skill/test_combined_skill.py` | No |
 | 2 | `unit` | `Run unit shard` — `COVERAGE_CORE=sysmon uv run pytest $(uv run python tools/unit_shards.py --pytest-args <shard>) -n auto --cov=src/sapphire_flow --cov-report= --junitxml ...` (Plan 319 + faster-feedback slice; runs once per matrix leg, asserts sysmon is the active statement-coverage core, and echoes that leg's wall-clock as a `::notice::`). Was a single unsharded `uv run pytest tests/unit/ … --cov-report=term-missing` step until 2026-09-24 | — | `uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
-| 2 | `unit` | `Upload this shard's JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: always()`) | `Run unit shard` | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
+| 2 | `unit` | `Upload this shard's JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: ${{ !cancelled() }}`) | `Run unit shard` | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
 | 2 | `unit` | `Upload this shard's coverage data` (`uses: actions/upload-artifact`, `if-no-files-found: error`) | `Run unit shard` | n/a — a local run needs no stitching | Yes — feeds the `unit-coverage` job |
 | 2 | `unit-coverage` | `Configure git auth for the private clones` | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `unit-coverage` | `uv sync --frozen` | — | `uv sync` | No |
@@ -747,7 +747,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 3 | `integration` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 3 | `integration` | `uv sync --frozen` | — | `uv sync` | No |
 | 3 | `integration` | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (the `--ignore` has been there since 2026-04-21, `d39aa8a`; live-API tests belong to the nightly, not the PR path) | — | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
-| 3 | `integration` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: always()`) | integration pytest | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
+| 3 | `integration` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — local pytest prints durations when requested | Yes — writes a bounded diagnostic artifact and does not change failure handling |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
@@ -1621,3 +1621,42 @@ activation, measure a six-station run and restore on the DHM target, and confirm
 that the daily interval clears the expected backlog. An individual forecast may still be published
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
+
+## Dormant provisional-discharge migration
+
+Revision `0068` creates separate protected measurement/feed/reference/conversion
+relations. It seeds no permission or provisional values. Normal workers and the API
+remain unwired and cannot read or write protected content. Keep this path disabled:
+the full reader inventory, compatible rollback inventory, proof-recording authority
+and activation command are not implemented. The existing delivery operator remains
+delivery-only; do not borrow its credential or the migration owner credential for
+conversion jobs. No deployment or live grant is authorized by these schema changes.
+
+Downgrade refuses if **any** protected relation has rows, including reference proofs
+or a permission record. It never deletes evidence to permit rollback. Empty-schema
+roundtrip tests use disposable PostGIS16. Protected data belongs to the existing
+restricted backup/retention boundary. Future activation still needs the full reviewed
+inventory and rollback policy; a successful migration or fixture conversion proves
+neither activation readiness nor forecast delivery.
+
+Runtime bootstrap grants SELECT only to ordinary public table/view relations;
+protected provisional relations never receive transient blanket grants. Protected
+stale table/column ACLs are removed during runtime convergence, before later backup
+preflights. A deliberate backup-ownership abort is tested with real API/worker
+sessions and a committed protected canary. The existing operator safe-state block
+remains first. A failed bootstrap still fails deployment; denied protected access
+is not permission to continue starting services after that failure.
+
+A gate's only permitted state change is table-owner-session enabled→disabled with
+all metadata unchanged. It is a fail-closed stop, not activation authority: no runtime
+write grant, enable command, re-enable update or permission deletion is added.
+Disable and append serialize through a tenant transaction advisory lock. Owner SQL
+errors can include protected bound values; do not publish raw database diagnostics.
+Protected FK dependencies block delivery deletion/replacement and must not be
+removed by cascading deletes. Full future activation/audit/rollback work remains held.
+
+Protected writes require READ COMMITTED transactions. Fixed-snapshot levels are
+refused by both the append store and SQL guards; do not retry under owner credentials
+or change isolation to bypass another safety hold. Future nonowner writer setup must
+review the source-table privileges required by TABLE SHARE/FOR SHARE separately.
+No additional grant or live execution path is provided by this migration.
