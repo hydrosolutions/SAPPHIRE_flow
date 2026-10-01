@@ -72,7 +72,7 @@ services:
     secrets:
       - db_password
     restart: unless-stopped
-    networks: [backend, frontend]
+    networks: [backend]
     volumes:
       - prefect_data:/data/prefect
     logging:

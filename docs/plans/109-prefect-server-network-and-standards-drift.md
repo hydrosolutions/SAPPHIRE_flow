@@ -11,6 +11,7 @@ status: DRAFT
 **Cross-plan (2026-09-30):** Plan 511 T2 (Nepal cloud host) and the deferred Plan 049 both need
 `prefect-server` off the `frontend` network. Whichever plan lands the one-line change first, the other
 records it here — do not land it twice.
+**Landed (2026-09-30, on branch `feat/plan-511-t2-nepal-cloud-deploy`, awaiting merge):** the base `docker-compose.yml` change (`prefect-server` `networks: [backend]`) was made by Plan 511 T2, with a compose test.
 **Surfaced by:** the Prefect / Docker / deployment touchpoint map (`docs/touchpoint-maps.md`),
 codex-confirmed 2026-07-08. Do **not** start until reviewed — this is a next-session plan.
 
