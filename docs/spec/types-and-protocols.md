@@ -2001,6 +2001,99 @@ class ModelArtifactProvenance:
 
 Module: `types/model.py`
 
+### Forecast data use and consumed input lineage
+
+`ForecastDataUse` (`types/enums.py`) has `STANDARD = "standard"` and
+`EXPIRED_RATING_TEST = "expired_rating_test"`. This immutable axis is independent of
+lifecycle, input quality and numerical QC. STANDARD does not certify validity.
+`OperationalForecast.data_use` defaults to STANDARD. Test forecasts require
+`input_lineage: ForecastInputLineage`; STANDARD keeps this projection absent.
+`ForecastSummaryRow` carries classification but never raw lineage.
+
+`ForecastInputLineage` (`types/forecast_lineage.py`) is frozen and contains tuples of
+as-used `ForecastInputSnapshot` records, `ForecastStaticAttributes`, protected provisional-discharge
+fingerprints, actual contributor forecast IDs and ordered transformation versions.
+Static snapshots retain each source station, explicit source/version and consumed
+name/value pairs (finite numbers or explicit missing values). Names are unique and
+serialization orders them deterministically; changing a value or source version
+changes retry identity. Numeric consumed values use one finite-float spelling:
+snapshot factories and static constructors normalize integers to floats (and signed
+zero to positive zero); identity/band/member integers are unchanged. Direct serialized
+snapshot construction and lineage decoding require that canonical float spelling, so
+integer-spelled values refuse rather than creating a second valid identity. Overflow,
+booleans and nonfinite values raise ValueError. Observation missing nulls and static
+missing nulls remain null. No static discovery or assembler wiring is provided.
+Snapshot factories reuse Observation, RawHistoricalForcing and WeatherForecastRecord
+fields, add explicit units and exclude capture/creation clocks. Snapshots keep only
+consumed records, not whole upstream files. NaN/Infinity cannot enter canonical JSON;
+missing observations keep their explicit null. Serialization and SHA-256 derive from
+actual canonical content, never a supplied opaque hash. Direct construction and decoding strictly parse each source kind through Pydantic
+boundaries, preserve QC/gap/spatial-band invariants, and require canonical UUID/UTC
+spelling. Null/malformed times raise ValueError. Duplicate full dynamic snapshots and
+duplicate static (station, source, version) entries refuse. Different contents for the
+same dynamic source identity are not rejected by this container. T3 must establish
+actual consumed versions and resolve ambiguity; acceptance here is not version authority.
+Combine consumed static
+names within that one map. Input ordering is canonical;
+transformation pipeline ordering remains significant. Mutable source restatements
+cannot change the retained snapshot. Provisional fingerprints reference the immutable
+same-gauge curve/reference/conversion records instead of copying protected payloads.
+
+The caller must derive **complete actual consumption**, including resampling/group
+contributors. Nonempty lineage does not prove completeness. Assemblers and combination
+propagation are not wired by this storage slice. No production test writer is enabled.
+
+`PgForecastStore(..., data_use=STANDARD)` binds every read/write method to one purpose.
+Other-class writes refuse; other-class by-ID/evidence reads return None. Explicit
+status, superseded history, summaries/counts, latest and cycle markers cannot widen
+that class. STANDARD retries retain the existing four-row table. Test retries compare
+lineage only after QC-conflict refusal and before IDENTICAL (Plan 327 amendment).
+New persisted evidence manifests add `data_use` and `input_lineage_sha256` for both
+classes. STANDARD uses `"standard"` and null respectively. These additive metadata
+keys do not change STANDARD retry decisions or imply scientific validity.
+
+Migration `0069` stores immutable classification and lineage in the same transaction
+as values/evidence. Its SQL trigger checks exact per-kind key sets, JSON scalar and
+metadata types, numeric bounds, QC/gap/spatial-band relationships and parseable
+explicit-zone times. PostgreSQL JSON parsing is **not** the canonical Python serializer:
+canonical whitespace/key order, duplicate JSON keys/source snapshots, UUID spelling and
+UTC spelling are type/store-level checks, not independently certified by this trigger.
+Any future non-store writer requires reviewed strict parsing/canonicalization before
+T1c replaces the deployed refusal. Structural SQL tests do not claim equivalence.
+
+Observation and weather snapshots bind existing record ID/station/source/parameter/time
+identities at insert. Referenced curves must belong to their own source station. SQL
+does not compare retained values, QC or units with later-mutable current rows.
+Historical forcing retains the caller-declared source/version/time snapshot and binds
+its station/tenant; it does not assert persistent source-record existence. Statics bind
+their source station, not an invented static-source authority. T3 must establish actual
+consumption, source/version authority and completeness for all kinds.
+
+The append-only `forecast_input_stations` join derives output stations, directly named
+dynamic/static/provisional stations and each contributor's output station. Same-tenant
+cross-station dependencies are valid. Composite FKs preserve station/tenant identity.
+Contributor input stations are **not copied transitively**: retained contributors keep
+their own protected joins. Provisional/contributor references must exist in the same
+tenant; contributors must have the same class and retained evidence. Downgrade refuses
+any test row or retained join. Bootstrap excludes the join from runtime reads and
+revokes stale table/column grants before preflight; backup coverage remains. Generic
+browser inventory/detail/rows exclude it before querying.
+
+No runtime/operator write grants are added. A future writer needs separately reviewed
+privileges and deployment-inventory activation. The unconditional INSERT guard blocks
+test rows in normal owner/runtime execution, including COPY. Deliberate DBA disabling
+of guards is outside the runtime threat model. Direct-reader/publication/alert/model-state
+closure remains separate work; this slice does not claim those paths are closed.
+Specifically, `forecasts.input_lineage` inherits table-wide runtime SELECT and is not
+column-redacted by the generic forecast-table browser. It contains no TEST payload
+while insertion is disabled. Closing these raw-column/browser reads is an explicit
+T1d prerequisite **before activation**, not an already-delivered safeguard.
+
+Contributor references initially require the same class. Mixed STANDARD/TEST
+combinations are unsupported pending separately reviewed T3c handling. Never omit an
+actual contributor to fit this constraint; reject/defer that combination until its
+complete invalid/test lineage can be represented under the reviewed contract.
+
 ### OperationalForecast
 
 Wraps the `forecasts` + `forecast_values` join. Contains a `ForecastEnsemble` for the
@@ -2045,6 +2138,8 @@ class OperationalForecast:
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
     rating_curve_id: RatingCurveId | None = None   # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4)
     evidence: ForecastEvidence | None = None        # Plan 340 T1; None for earlier in-memory callers
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD
+    input_lineage: ForecastInputLineage | None = None  # required for TEST; absent for STANDARD
 
     @property
     def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
@@ -3110,14 +3205,11 @@ class ObservationStore(Protocol):
 ```python
 class ForecastStore(Protocol):
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId: ...
-        # Plan 327: a re-run whose natural key (station_id, model_id, issued_at,
-        # parameter) already exists is classified by the decision table
-        # (services/forecast_retry.py). Row 4 (IDENTICAL) returns the STORED id,
-        # writes nothing and raises nothing — that is what makes a cycle that
-        # died partway re-runnable. Plan 328: rows 1 and 2 mark the stored row
-        # SUPERSEDED and insert the replacement in the SAME transaction,
-        # returning the replacement's id; the original keeps its values and its
-        # evidence. Row 3 raises ForecastRetryConflictError.
+        # Purpose-bound store: STANDARD by default. Reads/writes cannot cross class.
+        # Class-local key: (station_id, model_id, issued_at, parameter, data_use).
+        # Retry decisions/ordering: Plan 327 § D1 and its data-use amendment.
+        # IDENTICAL returns the stored ID without writes; SUPERSEDING_ROWS replace
+        # atomically while retaining the original. QC-conflict row 3 refuses.
         # Every other storage failure still propagates raw (Plan 038 D5).
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None: ...
     def fetch_evidence(self, forecast_id: ForecastId) -> PersistedForecastEvidence | None: ...

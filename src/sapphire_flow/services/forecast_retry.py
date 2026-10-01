@@ -1,7 +1,7 @@
 """Plan 327 — classify a forecast cycle re-run against what is already stored.
 
 The decision table (Plan 327 § D1) is evaluated IN ORDER, first match wins, so
-the four outcomes are mutually exclusive by construction. Reference the ROW
+the outcomes are mutually exclusive by construction. Reference the ROW
 NUMBER at every call site; describing a row in prose is how earlier versions of
 this contract drifted apart.
 """
@@ -12,7 +12,7 @@ import math
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sapphire_flow.types.enums import EnsembleRepresentation
+from sapphire_flow.types.enums import EnsembleRepresentation, ForecastDataUse
 
 if TYPE_CHECKING:
     from sapphire_flow.types.forecast import OperationalForecast
@@ -25,6 +25,7 @@ class ForecastRetryRow(Enum):
     ARTIFACT_DIFFERS = 2
     QC_VERDICT_DIFFERS = 3
     IDENTICAL = 4
+    INPUT_LINEAGE_DIFFERS = 5
 
 
 #: Plan 328 T2 — the rows whose re-run SUPERSEDES the stored forecast and
@@ -32,6 +33,7 @@ class ForecastRetryRow(Enum):
 SUPERSEDING_ROWS = (
     ForecastRetryRow.VALUES_DIFFER,
     ForecastRetryRow.ARTIFACT_DIFFERS,
+    ForecastRetryRow.INPUT_LINEAGE_DIFFERS,
 )
 
 #: ⛔ Row 3 stays refused permanently and is nobody's to replace. Widening it
@@ -45,7 +47,7 @@ def classify_forecast_retry(
     recomputed: OperationalForecast,
 ) -> ForecastRetryRow:
     """Classify ``recomputed`` against the ``stored`` forecast sharing its
-    natural key ``(station_id, model_id, issued_at, parameter)``.
+    natural key ``(station_id, model_id, issued_at, parameter, data_use)``.
 
     ⛔ Evidence state is NOT a classifier (Plan 327 § D1). Every operational
     forecast carries an incomplete-evidence marker and a pre-``0057`` forecast
@@ -59,6 +61,8 @@ def classify_forecast_retry(
     ``combination_strategy``/``source_model_ids``. Widening the comparison
     means amending the table in Plan 327, not editing this function.
     """
+    if stored.data_use is not recomputed.data_use:
+        raise ValueError("cannot compare forecasts with different data use")
     # ROW 1 — the values differ, aligned by valid time and quantile/member.
     # `representation` and `units` are part of this comparison rather than a
     # row of their own: a members frame and a quantiles frame cannot be
@@ -80,6 +84,11 @@ def classify_forecast_retry(
     # free-text `detail` is deliberately excluded.
     if _qc_verdict(stored) != _qc_verdict(recomputed):
         return ForecastRetryRow.QC_VERDICT_DIFFERS
+
+    if stored.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+        assert stored.input_lineage is not None and recomputed.input_lineage is not None
+        if stored.input_lineage.fingerprint != recomputed.input_lineage.fingerprint:
+            return ForecastRetryRow.INPUT_LINEAGE_DIFFERS
 
     # ROW 4 — otherwise: identical.
     return ForecastRetryRow.IDENTICAL
@@ -108,6 +117,8 @@ def describe_difference(
                 f"recomputed {recomputed.qc_status.value} "
                 f"{_qc_verdict(recomputed)[1]})"
             )
+        case ForecastRetryRow.INPUT_LINEAGE_DIFFERS:
+            return "consumed input lineage differs"
         case ForecastRetryRow.IDENTICAL:
             return "row 4: identical"
 
@@ -176,3 +187,24 @@ def _value_key(
             )
         ),
     )
+
+
+def retry_conflict_message(
+    row: ForecastRetryRow,
+    *,
+    stored: OperationalForecast,
+    recomputed: OperationalForecast,
+) -> str:
+    detail = describe_difference(row, stored=stored, recomputed=recomputed)
+    message = (
+        f"Forecast {stored.id} already exists for "
+        f"({recomputed.station_id}, {recomputed.model_id}, "
+        f"{recomputed.issued_at.isoformat()}, {recomputed.ensemble.parameter}) "
+        f"and the re-run is not identical — {detail}"
+    )
+    if recomputed.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+        message += (
+            ". Retain the original result and issue time; record and investigate the "
+            "QC/input provenance conflict. Do not retimestamp the failed run."
+        )
+    return message

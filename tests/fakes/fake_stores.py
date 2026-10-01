@@ -29,7 +29,7 @@ from sapphire_flow.services.forecast_retry import (
     SUPERSEDING_ROWS,
     ForecastRetryRow,
     classify_forecast_retry,
-    describe_difference,
+    retry_conflict_message,
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
@@ -50,6 +50,7 @@ from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     FlowRegime,
     ForcingType,
+    ForecastDataUse,
     ForecastStatus,
     InputQualityLevel,
     ModelArtifactStatus,
@@ -414,16 +415,19 @@ class FakeForecastStore:
     (`tests/integration/store/test_forecast_store_retry.py`,
     `tests/integration/flows/test_forecast_cycle_resume_pg.py`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, data_use: ForecastDataUse = ForecastDataUse.STANDARD) -> None:
+        self._data_use = data_use
         self._forecasts: dict[ForecastId, OperationalForecast] = {}
-        self._by_key: dict[tuple[StationId, ModelId, UtcDatetime, str], ForecastId] = {}
+        self._by_key: dict[
+            tuple[StationId, ModelId, UtcDatetime, str, ForecastDataUse], ForecastId
+        ] = {}
         # A forecast MISSING from this map has no evidence row: the
         # pre-migration-0057 historical case, which `fetch_evidence` reports as
         # a synthetic `pre_capture_forecast` marker rather than `None`.
         self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
 
     def _current_id_for_key(
-        self, key: tuple[StationId, ModelId, UtcDatetime, str]
+        self, key: tuple[StationId, ModelId, UtcDatetime, str, ForecastDataUse]
     ) -> ForecastId | None:
         """Mirror `uq_forecasts_station_model_issued_param`'s PARTIAL
         predicate: a SUPERSEDED row does not occupy the natural key.
@@ -442,11 +446,14 @@ class FakeForecastStore:
         return existing_id
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
+        if forecast.data_use is not self._data_use:
+            raise ValueError("forecast data use differs from store purpose")
         key = (
             forecast.station_id,
             forecast.model_id,
             forecast.issued_at,
             forecast.ensemble.parameter,
+            forecast.data_use,
         )
         superseding: ForecastId | None = None
         existing_id = self._current_id_for_key(key)
@@ -457,9 +464,7 @@ class FakeForecastStore:
                 return existing_id
             if row not in SUPERSEDING_ROWS:
                 raise ForecastRetryConflictError(
-                    f"Forecast {existing_id} already exists for {key} and the "
-                    f"re-run is not identical — "
-                    f"{describe_difference(row, stored=stored, recomputed=forecast)}",
+                    retry_conflict_message(row, stored=stored, recomputed=forecast),
                     row=row,
                     forecast_id=existing_id,
                     station_id=forecast.station_id,
@@ -526,16 +531,24 @@ class FakeForecastStore:
                 forecast.model_id,
                 forecast.issued_at,
                 forecast.ensemble.parameter,
+                forecast.data_use,
             )
         ] = forecast.id
         return forecast.id
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
-        return self._forecasts.get(forecast_id)
+        forecast = self._forecasts.get(forecast_id)
+        return (
+            forecast
+            if forecast is not None and forecast.data_use is self._data_use
+            else None
+        )
 
     def fetch_evidence(
         self, forecast_id: ForecastId
     ) -> PersistedForecastEvidence | None:
+        if self.fetch_forecast(forecast_id) is None:
+            return None
         persisted = self._evidence.get(forecast_id)
         if persisted is not None:
             return persisted
@@ -561,7 +574,8 @@ class FakeForecastStore:
         matches = [
             f
             for f in self._forecasts.values()
-            if f.station_id == station_id
+            if f.data_use is self._data_use
+            and f.station_id == station_id
             and f.status is not ForecastStatus.SUPERSEDED
             and (model_id is None or f.model_id == model_id)
             and (parameter is None or f.ensemble.parameter == parameter)
@@ -577,7 +591,8 @@ class FakeForecastStore:
         return [
             f
             for f in self._forecasts.values()
-            if f.issued_at == issued_at
+            if f.data_use is self._data_use
+            and f.issued_at == issued_at
             and f.status is not ForecastStatus.SUPERSEDED
             and (station_id is None or f.station_id == station_id)
             and (parameter is None or f.ensemble.parameter == parameter)
@@ -589,7 +604,7 @@ class FakeForecastStore:
         expected_version: int,
         new_status: ForecastStatus,
     ) -> int:
-        f = self._forecasts.get(forecast_id)
+        f = self.fetch_forecast(forecast_id)
         if f is None:
             raise ConflictError(f"Forecast {forecast_id} not found")
         if f.version != expected_version:
@@ -614,7 +629,8 @@ class FakeForecastStore:
         return [
             f
             for f in self._forecasts.values()
-            if f.station_id == station_id
+            if f.data_use is self._data_use
+            and f.station_id == station_id
             and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
             and (
@@ -640,6 +656,7 @@ class FakeForecastStore:
         matches = [
             ForecastSummaryRow(
                 id=f.id,
+                data_use=f.data_use,
                 station_id=f.station_id,
                 model_id=f.model_id,
                 issued_at=f.issued_at,
@@ -654,7 +671,8 @@ class FakeForecastStore:
                 qc_flags=f.qc_flags,
             )
             for f in self._forecasts.values()
-            if f.station_id == station_id
+            if f.data_use is self._data_use
+            and f.station_id == station_id
             and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
             and (parameter is None or f.ensemble.parameter == parameter)
@@ -674,7 +692,8 @@ class FakeForecastStore:
         matches = [
             f.issued_at
             for f in self._forecasts.values()
-            if f.combination_strategy is None
+            if f.data_use is self._data_use
+            and f.combination_strategy is None
             and f.issued_at <= cutoff
             and f.status is not ForecastStatus.SUPERSEDED
         ]
