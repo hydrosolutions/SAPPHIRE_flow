@@ -788,6 +788,9 @@ class ForecastInterfaceAdapter:
         [spatial_rep] = spatial_reps
         return ModelDataRequirements(
             target_parameters=frozenset(req.targets),
+            required_past_targets=frozenset(
+                name for name, _variable in past_variables if name in req.targets
+            ),
             past_dynamic_features=frozenset(past_dynamic_features),
             future_dynamic_features=frozenset(future_dynamic_features),
             static_features=frozenset(req.static),

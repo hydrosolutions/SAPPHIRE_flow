@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
+from math import isnan
 from typing import TYPE_CHECKING
 
 import polars as pl
 import structlog
 
-from sapphire_flow.exceptions import GroupForecastError, ModelOutputError, StoreError
+from sapphire_flow.exceptions import (
+    GroupForecastError,
+    InsufficientDataError,
+    ModelOutputError,
+    StoreError,
+)
 from sapphire_flow.services.forecast_evidence import capture_group_evidence
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
@@ -23,6 +30,7 @@ from sapphire_flow.services.run_station_forecast import (
     check_forecast_parameter,
     worst_qc_status,
 )
+from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import ArtifactScope, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
@@ -82,6 +90,30 @@ class _StationResultOutcome:
     rejected: RejectedAssignmentPayload | None
 
 
+class GroupMemberInputReason(Enum):
+    CADENCE_MISMATCH = "cadence_mismatch"
+    MISSING_DECLARED_STATIC = "missing_declared_static"
+    MISSING_REQUIRED_TARGET = "missing_required_target"
+    DECLARED_STATIC_NOT_REPRESENTABLE = "declared_static_not_representable"
+    INSUFFICIENT_FUTURE = "insufficient_future"
+    INPUTS_UNAVAILABLE = "inputs_unavailable"
+    MISSING_FORECAST_BINDING = "missing_forecast_binding"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupMemberInputIssue:
+    station_id: StationId
+    reason: GroupMemberInputReason
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupInputAssembly:
+    expected_station_ids: tuple[StationId, ...]
+    inputs: GroupModelInputs | None
+    metadata_by_station: dict[StationId, OperationalInputMetadata]
+    unavailable_members: tuple[GroupMemberInputIssue, ...]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class GroupForecastOutcome:
     """Plan 404 T2 — `run_group_forecast`'s return: passing stations' results
@@ -90,6 +122,8 @@ class GroupForecastOutcome:
 
     results: dict[StationId, StationForecastResult]
     rejected: tuple[RejectedAssignmentPayload, ...] = ()
+    expected_station_ids: tuple[StationId, ...] = ()
+    unavailable_members: tuple[GroupMemberInputIssue, ...] = ()
 
 
 def _station_id_first(df: pl.DataFrame) -> pl.DataFrame:
@@ -135,6 +169,176 @@ def _assert_consistent_station_inputs(
         )
 
 
+def _missing_static(static: pl.DataFrame | None, names: list[str]) -> bool:
+    if static is None or static.is_empty():
+        return True
+    return any(
+        name not in static.columns
+        or static[name][0] is None
+        or (isinstance(static[name][0], float) and isnan(static[name][0]))
+        for name in names
+    )
+
+
+def _reconcile_static_numbers(
+    members: list[tuple[StationModelInputs, OperationalInputMetadata]],
+    skip: Callable[[StationId, GroupMemberInputReason], None],
+) -> list[tuple[StationModelInputs, OperationalInputMetadata]]:
+    frames = [inp.data.static for inp, _ in members if inp.data.static is not None]
+    if not frames:
+        return members
+    mixed = [
+        name
+        for name in frames[0].columns
+        if {frame.schema[name] for frame in frames} == {pl.Int64, pl.Float64}
+    ]
+    result: list[tuple[StationModelInputs, OperationalInputMetadata]] = []
+    for inp, metadata in members:
+        static = inp.data.static
+        if static is not None and mixed:
+            if any(
+                static.schema[name] == pl.Int64 and abs(static[name][0]) > 2**53
+                for name in mixed
+            ):
+                skip(
+                    inp.station_id,
+                    GroupMemberInputReason.DECLARED_STATIC_NOT_REPRESENTABLE,
+                )
+                continue
+            static = static.with_columns(
+                pl.col(name).cast(pl.Float64) for name in mixed
+            )
+            inp = replace(inp, data=replace(inp.data, static=static))
+        result.append((inp, metadata))
+    return result
+
+
+def _conform_past_frames(
+    frames: list[tuple[StationId, pl.DataFrame]],
+    features: frozenset[str],
+    reference: StationModelInputs,
+    lookback_steps: int,
+) -> list[tuple[StationId, pl.DataFrame]]:
+    if not features:
+        return [(sid, pl.DataFrame()) for sid, _ in frames]
+    names = sorted(features)
+    allowed = {"timestamp", *names}
+    for _, frame in frames:
+        if unexpected := set(frame.columns) - allowed:
+            raise pl.exceptions.SchemaError(
+                f"Unexpected group input columns: {sorted(unexpected)}"
+            )
+    dtypes = {
+        name: next(
+            (
+                frame.schema[name]
+                for _, frame in frames
+                if name in frame.columns and frame.schema[name] != pl.Null
+            ),
+            pl.Float64,
+        )
+        for name in names
+    }
+    timestamp_dtype = next(
+        (
+            frame.schema["timestamp"]
+            for _, frame in frames
+            if "timestamp" in frame.columns
+        ),
+        pl.Datetime("us", "UTC"),
+    )
+    result: list[tuple[StationId, pl.DataFrame]] = []
+    for sid, frame in frames:
+        missing = set(names) - set(frame.columns)
+        if missing or frame.is_empty():
+            grid = pl.DataFrame(
+                {
+                    "timestamp": pl.Series(
+                        list(
+                            expected_past_buckets(
+                                reference.issue_time,
+                                reference.time_step,
+                                lookback_steps,
+                            )
+                        ),
+                        dtype=timestamp_dtype,
+                    )
+                }
+            )
+            frame = (
+                grid.join(frame, on="timestamp", how="full", coalesce=True).sort(
+                    "timestamp"
+                )
+                if "timestamp" in frame.columns
+                else grid
+            )
+            frame = frame.with_columns(
+                pl.lit(None, dtype=dtypes[name]).alias(name) for name in sorted(missing)
+            )
+        frame = frame.with_columns(
+            pl.col(name).cast(dtypes[name])
+            for name in names
+            if frame.schema[name] == pl.Null
+        ).select("timestamp", *names)
+        result.append((sid, frame))
+    return result
+
+
+def _future_adequate(
+    future: pl.DataFrame,
+    model: GroupForecastModel,
+    model_id: ModelId,
+    group: StationGroup,
+    station_id: StationId,
+) -> bool:
+    requirements = model.data_requirements
+    if not requirements.future_dynamic_features:
+        return True
+    required_steps = resolve_required_steps(
+        model, model_id, requirements.forecast_horizon_steps
+    ).steps
+    coverage = assess_future_coverage(
+        future,
+        required_features=requirements.future_dynamic_features,
+        required_steps=required_steps,
+        ensemble_mode=requirements.ensemble_mode,
+    )
+    if not coverage.adequate:
+        log.warning(
+            "nwp.insufficient_coverage",
+            group_id=str(group.id),
+            model_id=str(model_id),
+            station_id=str(station_id),
+            required_steps=required_steps,
+            available_steps=coverage.available_steps,
+            detail=coverage.detail,
+        )
+    return coverage.adequate
+
+
+def _select_group_members(
+    inputs: GroupModelInputs, station_ids: tuple[StationId, ...]
+) -> GroupModelInputs:
+    ids = [str(sid) for sid in station_ids]
+
+    def select(frame: pl.DataFrame) -> pl.DataFrame:
+        return frame.filter(pl.col(_STATION_ID_COLUMN).is_in(ids))
+
+    return replace(
+        inputs,
+        station_ids=station_ids,
+        past_targets=select(inputs.past_targets),
+        past_dynamic=select(inputs.past_dynamic),
+        future_dynamic=select(inputs.future_dynamic),
+        static=select(inputs.static) if inputs.static is not None else None,
+        source_evidence=tuple(
+            (sid, evidence)
+            for sid, evidence in inputs.source_evidence
+            if sid in station_ids
+        ),
+    )
+
+
 def assemble_group_operational_inputs(
     *,
     group: StationGroup,
@@ -153,10 +357,68 @@ def assemble_group_operational_inputs(
     forecast_horizon_steps: int,
     time_step: timedelta,
 ) -> tuple[GroupModelInputs, dict[StationId, OperationalInputMetadata]] | None:
-    station_results = [
-        (
-            sid,
-            assemble_station_operational_inputs(
+    assembly = assemble_group_operational_inputs_outcome(
+        group=group,
+        model=model,
+        model_id=model_id,
+        issue_time=issue_time,
+        cycle_time=cycle_time,
+        nwp_source_by_station=nwp_source_by_station,
+        forcing_source=forcing_source,
+        weather_forecast_store=weather_forecast_store,
+        obs_store=obs_store,
+        station_store=station_store,
+        basin_store=basin_store,
+        model_state_store=model_state_store,
+        clock=clock,
+        forecast_horizon_steps=forecast_horizon_steps,
+        time_step=time_step,
+    )
+    if assembly.inputs is None:
+        return None
+    return assembly.inputs, assembly.metadata_by_station
+
+
+def assemble_group_operational_inputs_outcome(
+    *,
+    group: StationGroup,
+    model: GroupForecastModel,
+    model_id: ModelId,
+    issue_time: UtcDatetime,
+    cycle_time: UtcDatetime,
+    nwp_source_by_station: dict[StationId, str],
+    forcing_source: WeatherReanalysisSource,
+    weather_forecast_store: WeatherForecastStore,
+    obs_store: ObservationStore,
+    station_store: StationStore,
+    basin_store: BasinStore,
+    model_state_store: ModelStateStore,
+    clock: Callable[[], UtcDatetime],
+    forecast_horizon_steps: int,
+    time_step: timedelta,
+) -> GroupInputAssembly:
+    expected = tuple(sorted(group.station_ids, key=str))
+    unavailable: list[GroupMemberInputIssue] = []
+    serviceable: list[tuple[StationModelInputs, OperationalInputMetadata]] = []
+    requirements = model.data_requirements
+
+    def skip(sid: StationId, reason: GroupMemberInputReason) -> None:
+        unavailable.append(GroupMemberInputIssue(station_id=sid, reason=reason))
+        log.warning(
+            "run_group_forecast.station_inputs_unavailable",
+            group_id=str(group.id),
+            station_id=str(sid),
+            model_id=str(model_id),
+            issue_time=str(issue_time),
+            reason=reason.value,
+        )
+
+    for sid in expected:
+        if sid not in nwp_source_by_station:
+            skip(sid, GroupMemberInputReason.MISSING_FORECAST_BINDING)
+            continue
+        try:
+            result = assemble_station_operational_inputs(
                 station_id=sid,
                 model=model,
                 model_id=model_id,
@@ -172,66 +434,115 @@ def assemble_group_operational_inputs(
                 clock=clock,
                 forecast_horizon_steps=forecast_horizon_steps,
                 time_step=time_step,
-            ),
+            )
+        except StoreError:
+            raise
+        except InsufficientDataError:
+            # Defensive service contract; current assemblers mostly return None
+            # or empty frames for anticipated shortages.
+            skip(sid, GroupMemberInputReason.INPUTS_UNAVAILABLE)
+            continue
+        except Exception as exc:
+            _raise_store_error_if_connection_fatal(
+                exc, group=group, model_id=model_id, operation="input_assembly"
+            )
+            raise
+        if result is None:
+            skip(sid, GroupMemberInputReason.CADENCE_MISMATCH)
+            continue
+        station_input, metadata = result
+        required_targets = requirements.required_past_targets
+        targets = station_input.data.past_targets
+        if required_targets and (
+            targets.is_empty() or not required_targets.issubset(targets.columns)
+        ):
+            skip(sid, GroupMemberInputReason.MISSING_REQUIRED_TARGET)
+            continue
+        static = station_input.data.static
+        names = sorted(requirements.static_features)
+        if names and _missing_static(static, names):
+            skip(sid, GroupMemberInputReason.MISSING_DECLARED_STATIC)
+            continue
+        projected = static.select(names) if names and static is not None else None
+        station_input = replace(
+            station_input, data=replace(station_input.data, static=projected)
         )
-        for sid in sorted(group.station_ids, key=str)
-    ]
+        if not _future_adequate(
+            station_input.data.future_dynamic, model, model_id, group, sid
+        ):
+            skip(sid, GroupMemberInputReason.INSUFFICIENT_FUTURE)
+            continue
+        serviceable.append((station_input, metadata))
 
-    skipped_station_ids = [sid for sid, result in station_results if result is None]
-    for sid in skipped_station_ids:
-        log.warning(
-            "run_group_forecast.station_inputs_unavailable",
-            group_id=str(group.id),
-            station_id=str(sid),
-            model_id=str(model_id),
-            issue_time=str(issue_time),
-        )
-
-    serviceable_results = [
-        (sid, inputs, metadata)
-        for sid, result in station_results
-        if result is not None
-        for inputs, metadata in [result]
-    ]
-    if not serviceable_results:
+    serviceable = _reconcile_static_numbers(serviceable, skip)
+    if not serviceable:
         log.warning(
             "run_group_forecast.no_serviceable_stations",
             group_id=str(group.id),
             model_id=str(model_id),
             issue_time=str(issue_time),
         )
-        return None
+        return GroupInputAssembly(
+            expected_station_ids=expected,
+            inputs=None,
+            metadata_by_station={},
+            unavailable_members=tuple(unavailable),
+        )
 
-    station_inputs = [inputs for _, inputs, _ in serviceable_results]
-    metadata_by_station = {sid: metadata for sid, _, metadata in serviceable_results}
+    station_inputs = [inputs for inputs, _ in serviceable]
     _assert_consistent_station_inputs(station_inputs)
-
-    static_parts = [
-        (station_input.station_id, static)
-        for station_input in station_inputs
-        if (static := station_input.data.static) is not None
-    ]
-
     first = station_inputs[0]
+    # Output target names do not imply input history. Project only when the
+    # model provides explicit past-known declarations; native legacy models
+    # without that declaration retain their original target frames.
+    target_names = sorted(requirements.required_past_targets or ())
+    past_targets = [
+        (
+            inp.station_id,
+            (
+                inp.data.past_targets.select("timestamp", *target_names)
+                if target_names
+                else pl.DataFrame()
+            )
+            if requirements.required_past_targets is not None
+            else inp.data.past_targets,
+        )
+        for inp in station_inputs
+    ]
+    past_dynamic = _conform_past_frames(
+        [(inp.station_id, inp.data.past_dynamic) for inp in station_inputs],
+        requirements.past_dynamic_features,
+        first,
+        requirements.lookback_steps,
+    )
+    metadata_by_station = {
+        inp.station_id: replace(
+            metadata, past_forcing_before_conformance=inp.data.past_dynamic
+        )
+        for inp, metadata in serviceable
+    }
+    static_parts = [
+        (inp.station_id, inp.data.static)
+        for inp in station_inputs
+        if inp.data.static is not None
+    ]
     inputs = GroupModelInputs(
         group_id=group.id,
-        station_ids=tuple(station_input.station_id for station_input in station_inputs),
-        past_targets=_stack_station_frames(
-            [
-                (station_input.station_id, station_input.data.past_targets)
-                for station_input in station_inputs
-            ]
-        ),
-        past_dynamic=_stack_station_frames(
-            [
-                (station_input.station_id, station_input.data.past_dynamic)
-                for station_input in station_inputs
-            ]
-        ),
+        station_ids=tuple(inp.station_id for inp in station_inputs),
+        past_targets=_stack_station_frames(past_targets),
+        past_dynamic=_stack_station_frames(past_dynamic),
         future_dynamic=_stack_station_frames(
             [
-                (station_input.station_id, station_input.data.future_dynamic)
-                for station_input in station_inputs
+                (
+                    inp.station_id,
+                    inp.data.future_dynamic.select(
+                        "timestamp",
+                        *sorted(set(inp.data.future_dynamic.columns) - {"timestamp"}),
+                    )
+                    if requirements.future_dynamic_features
+                    else pl.DataFrame(),
+                )
+                for inp in station_inputs
             ]
         ),
         static=_stack_station_frames(static_parts) if static_parts else None,
@@ -239,13 +550,17 @@ def assemble_group_operational_inputs(
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
         source_evidence=tuple(
-            (station_input.station_id, station_input.source_evidence)
-            for station_input in station_inputs
-            if station_input.source_evidence is not None
+            (inp.station_id, inp.source_evidence)
+            for inp in station_inputs
+            if inp.source_evidence is not None
         ),
     )
-
-    return inputs, metadata_by_station
+    return GroupInputAssembly(
+        expected_station_ids=expected,
+        inputs=inputs,
+        metadata_by_station=metadata_by_station,
+        unavailable_members=tuple(unavailable),
+    )
 
 
 def discover_group_runs(
@@ -400,7 +715,11 @@ def _build_station_result(
     # PER STATION, so the flags describe THIS station only — a gap at one
     # station of a group must never label its siblings.
     forcing_flags = past_forcing_flags(
-        past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+        past_dynamic=(
+            input_metadata.past_forcing_before_conformance
+            if input_metadata.past_forcing_before_conformance is not None
+            else group_inputs.for_station(station_id).past_dynamic
+        ),
         features=data_requirements.past_dynamic_features,
         anchor=group_inputs.issue_time,
         time_step=group_inputs.time_step,
@@ -461,6 +780,7 @@ def _group_forcing_gap_details(
     group_inputs: GroupModelInputs,
     data_requirements: ModelDataRequirements,
     iq_config: InputQualityConfig,
+    metadata_by_station: dict[StationId, OperationalInputMetadata],
 ) -> dict[str, list[str]]:
     """Per-station past-forcing gaps, for a batch that already failed.
 
@@ -476,8 +796,14 @@ def _group_forcing_gap_details(
     details: dict[str, list[str]] = {}
     declared = dict(data_requirements.declared_lookbacks)
     for station_id in group_inputs.station_ids:
+        metadata = metadata_by_station.get(station_id)
+        original = (
+            metadata.past_forcing_before_conformance if metadata is not None else None
+        )
         flags = past_forcing_flags(
-            past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+            past_dynamic=original
+            if original is not None
+            else group_inputs.for_station(station_id).past_dynamic,
             features=data_requirements.past_dynamic_features,
             anchor=group_inputs.issue_time,
             time_step=group_inputs.time_step,
@@ -509,42 +835,33 @@ def run_group_forecast(
     id_gen: Callable[[], UUID],
     rng: random.Random,
     water_level_datums_masl: dict[StationId, float | None] | None = None,
+    unavailable_members: tuple[GroupMemberInputIssue, ...] = (),
 ) -> GroupForecastOutcome:
-    # Plan 090 D1/D2/D3 (GROUP path): before predict_batch, a group model that
-    # declares future NWP forcing must have adequate coverage for EVERY member
-    # station it forecasts — else predict_batch would emit a truncated batch. On
-    # shortfall for any station, skip the group model gracefully (empty
-    # outcome) so the fallback chain still runs, mirroring the STATION path.
-    future_features = model.data_requirements.future_dynamic_features
-    if future_features:
-        # Plan 159 T0d (INTERIM): a model's declared horizon may be a CEILING rather
-        # than a floor. Strict by default; see `services/horizon_semantics.py`.
-        horizon = resolve_required_steps(
+    expected = tuple(sorted(group.station_ids, key=str))
+    unavailable = list(unavailable_members)
+    serviceable_ids: list[StationId] = []
+    for sid in group_inputs.station_ids:
+        if _future_adequate(
+            group_inputs.for_station(sid).future_dynamic,
             model,
             assignment.model_id,
-            model.data_requirements.forecast_horizon_steps,
-        )
-        required_steps = horizon.steps
-        ensemble_mode = model.data_requirements.ensemble_mode
-        for station_id in group_inputs.station_ids:
-            station_future = group_inputs.for_station(station_id).future_dynamic
-            coverage = assess_future_coverage(
-                station_future,
-                required_features=future_features,
-                required_steps=required_steps,
-                ensemble_mode=ensemble_mode,
-            )
-            if not coverage.adequate:
-                log.warning(
-                    "nwp.insufficient_coverage",
-                    group_id=str(group.id),
-                    model_id=str(assignment.model_id),
-                    station_id=str(station_id),
-                    required_steps=required_steps,
-                    available_steps=coverage.available_steps,
-                    detail=coverage.detail,
+            group,
+            sid,
+        ):
+            serviceable_ids.append(sid)
+        else:
+            unavailable.append(
+                GroupMemberInputIssue(
+                    station_id=sid, reason=GroupMemberInputReason.INSUFFICIENT_FUTURE
                 )
-                return GroupForecastOutcome(results={})
+            )
+    if not serviceable_ids:
+        return GroupForecastOutcome(
+            results={},
+            expected_station_ids=expected,
+            unavailable_members=tuple(unavailable),
+        )
+    group_inputs = _select_group_members(group_inputs, tuple(serviceable_ids))
 
     try:
         artifact_result = artifact_store.fetch_active_artifact(
@@ -566,7 +883,11 @@ def run_group_forecast(
             model_id=str(assignment.model_id),
             error=str(exc),
         )
-        return GroupForecastOutcome(results={})
+        return GroupForecastOutcome(
+            results={},
+            expected_station_ids=expected,
+            unavailable_members=tuple(unavailable),
+        )
 
     if artifact_result is None:
         log.warning(
@@ -574,7 +895,11 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
         )
-        return GroupForecastOutcome(results={})
+        return GroupForecastOutcome(
+            results={},
+            expected_station_ids=expected,
+            unavailable_members=tuple(unavailable),
+        )
 
     artifact_id, artifact_bytes = artifact_result
     rng_state = rng.getstate()
@@ -604,9 +929,14 @@ def run_group_forecast(
                 group_inputs=group_inputs,
                 data_requirements=model.data_requirements,
                 iq_config=config.input_quality,
+                metadata_by_station=metadata_by_station,
             ),
         )
-        return GroupForecastOutcome(results={})
+        return GroupForecastOutcome(
+            results={},
+            expected_station_ids=expected,
+            unavailable_members=tuple(unavailable),
+        )
     except StoreError:
         raise
     except Exception as exc:
@@ -625,9 +955,14 @@ def run_group_forecast(
                 group_inputs=group_inputs,
                 data_requirements=model.data_requirements,
                 iq_config=config.input_quality,
+                metadata_by_station=metadata_by_station,
             ),
         )
-        return GroupForecastOutcome(results={})
+        return GroupForecastOutcome(
+            results={},
+            expected_station_ids=expected,
+            unavailable_members=tuple(unavailable),
+        )
 
     expected_station_ids = set(group_inputs.station_ids)
     if not batch_result:
@@ -639,6 +974,7 @@ def run_group_forecast(
                 group_inputs=group_inputs,
                 data_requirements=model.data_requirements,
                 iq_config=config.input_quality,
+                metadata_by_station=metadata_by_station,
             ),
         )
 
@@ -653,6 +989,7 @@ def run_group_forecast(
             group_inputs=group_inputs,
             data_requirements=model.data_requirements,
             iq_config=config.input_quality,
+            metadata_by_station=metadata_by_station,
         )
         log.warning(
             "run_group_forecast.batch_missing_station_outputs",
@@ -718,4 +1055,9 @@ def run_group_forecast(
         if outcome.result is not None:
             results[station_id] = outcome.result
 
-    return GroupForecastOutcome(results=results, rejected=tuple(rejected_payloads))
+    return GroupForecastOutcome(
+        results=results,
+        rejected=tuple(rejected_payloads),
+        expected_station_ids=expected,
+        unavailable_members=tuple(unavailable),
+    )

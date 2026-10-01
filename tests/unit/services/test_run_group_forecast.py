@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -152,6 +153,7 @@ def _make_group(*station_ids: StationId) -> StationGroup:
 def _call_assemble_group(
     group: StationGroup,
     nwp_source_by_station: dict[StationId, str],
+    model: FakeGroupForecastModel | None = None,
 ) -> (
     tuple[
         GroupModelInputs,
@@ -161,7 +163,31 @@ def _call_assemble_group(
 ):
     return service.assemble_group_operational_inputs(
         group=group,
-        model=FakeGroupForecastModel(),
+        model=model or FakeGroupForecastModel(),
+        model_id=_MODEL_ID,
+        issue_time=_ISSUE,
+        cycle_time=_CYCLE,
+        nwp_source_by_station=nwp_source_by_station,
+        forcing_source=FakeWeatherReanalysisSource(),
+        weather_forecast_store=FakeWeatherForecastStore(),
+        obs_store=FakeObservationStore(),
+        station_store=FakeStationStore(),
+        basin_store=FakeBasinStore(),
+        model_state_store=FakeModelStateStore(),
+        clock=_clock,
+        forecast_horizon_steps=2,
+        time_step=_STEP,
+    )
+
+
+def _call_assemble_group_outcome(
+    group: StationGroup,
+    nwp_source_by_station: dict[StationId, str],
+    model: FakeGroupForecastModel | None = None,
+) -> service.GroupInputAssembly:
+    return service.assemble_group_operational_inputs_outcome(
+        group=group,
+        model=model or FakeGroupForecastModel(),
         model_id=_MODEL_ID,
         issue_time=_ISSUE,
         cycle_time=_CYCLE,
@@ -490,9 +516,18 @@ def test_assembles_group_inputs_and_metadata_by_station(
         calls,
     )
 
+    model = FakeGroupForecastModel()
+    model.data_requirements = replace(
+        model.data_requirements,
+        static_features=frozenset({"area_km2", "elevation_m"}),
+        past_dynamic_features=frozenset({"precipitation"}),
+        future_dynamic_features=frozenset({"temperature"}),
+        forecast_horizon_steps=2,
+    )
     result = _call_assemble_group(
         _make_group(sid_a, sid_b),
         {sid_a: "icon-a", sid_b: "icon-b"},
+        model,
     )
 
     assert result is not None
@@ -513,7 +548,10 @@ def test_assembles_group_inputs_and_metadata_by_station(
         assert_frame_equal(sliced.future_dynamic, expected.data.future_dynamic)
         assert sliced.static is not None
         assert expected.data.static is not None
-        assert_frame_equal(sliced.static, expected.data.static)
+        assert_frame_equal(
+            sliced.static,
+            expected.data.static.select(sorted(expected.data.static.columns)),
+        )
 
 
 def test_skips_station_when_station_assembly_returns_none(
@@ -1201,6 +1239,7 @@ class _NwpBatchGroupModel:
         )
         self.batch_result = batch_result
         self.predict_calls = 0
+        self.predict_inputs: GroupModelInputs | None = None
         self.deserialize_calls: list[bytes] = []
 
     def deserialize_artifact(self, raw: bytes) -> bytes:
@@ -1214,7 +1253,8 @@ class _NwpBatchGroupModel:
         rng: random.Random,
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         self.predict_calls += 1
-        return self.batch_result
+        self.predict_inputs = inputs
+        return {sid: self.batch_result[sid] for sid in inputs.station_ids}
 
 
 def _precip_group_inputs(group: StationGroup, future_rows: int) -> GroupModelInputs:
@@ -1267,12 +1307,19 @@ class TestGroupCoverageGuard:
     truncated batch forecast when a member station's future frame is short.
     """
 
-    def test_short_future_frame_skips_group_model(self) -> None:
+    def test_short_future_frame_preserves_healthy_member(self) -> None:
         sid_a = StationId(uuid4())
         sid_b = StationId(uuid4())
         group = _make_group(sid_a, sid_b)
-        # 1 future row but the model needs forecast_horizon_steps=2.
-        group_inputs = _precip_group_inputs(group, future_rows=1)
+        # Only B is short; A must still run with the same group/artifact identity.
+        group_inputs = _precip_group_inputs(group, future_rows=2)
+        group_inputs = replace(
+            group_inputs,
+            future_dynamic=group_inputs.future_dynamic.filter(
+                (pl.col("station_id") != str(sid_b))
+                | (pl.col("timestamp") == _ISSUE + _STEP)
+            ),
+        )
         artifact_store = FakeModelArtifactStore()
         _seed_group_artifact(artifact_store, group)
         model = _NwpBatchGroupModel(
@@ -1282,7 +1329,7 @@ class TestGroupCoverageGuard:
             }
         )
 
-        results = _call_run_group_forecast(
+        outcome = _call_run_group_forecast_outcome(
             group=group,
             group_inputs=group_inputs,
             metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
@@ -1290,8 +1337,19 @@ class TestGroupCoverageGuard:
             artifact_store=artifact_store,
         )
 
-        assert results == {}
-        assert model.predict_calls == 0
+        assert set(outcome.results) == {sid_a}
+        assert set(outcome.expected_station_ids) == {sid_a, sid_b}
+        assert outcome.unavailable_members == (
+            service.GroupMemberInputIssue(
+                station_id=sid_b,
+                reason=service.GroupMemberInputReason.INSUFFICIENT_FUTURE,
+            ),
+        )
+        assert model.predict_calls == 1
+        assert model.predict_inputs is not None
+        assert model.predict_inputs.station_ids == (sid_a,)
+        assert model.predict_inputs.group_id == group.id
+        assert group.station_ids == frozenset({sid_a, sid_b})
 
     def test_adequate_future_frame_runs_group_model(self) -> None:
         sid_a = StationId(uuid4())
@@ -1421,3 +1479,742 @@ class TestUncheckedObservationProvenanceReachesTheGroupForecast:
             results[unchecked_sid].forecasts[0].input_quality
             is InputQualityLevel.DEGRADED
         )
+
+
+class TestGroupMemberInputIsolation:
+    @pytest.mark.parametrize("unused", [None, 7, "unread"])
+    def test_undeclared_static_does_not_poison_group(
+        self, monkeypatch: MonkeyPatch, unused: object
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        model = FakeGroupForecastModel()
+        model.data_requirements = replace(
+            model.data_requirements, static_features=frozenset({"area"})
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                a: (
+                    _make_station_inputs(
+                        a, 1.0, pl.DataFrame({"area": [1.0], "unused": [unused]})
+                    ),
+                    _make_metadata(1.0),
+                ),
+                b: (
+                    _make_station_inputs(
+                        b, 2.0, pl.DataFrame({"area": [2.0], "unused": [3.0]})
+                    ),
+                    _make_metadata(2.0),
+                ),
+            },
+            [],
+        )
+        assembled = _call_assemble_group(_make_group(a, b), {a: "nwp", b: "nwp"}, model)
+        assert assembled is not None
+        inputs, _ = assembled
+        assert inputs.station_ids == (a, b)
+        assert inputs.static is not None
+        assert inputs.static.columns == ["station_id", "area"]
+
+    @pytest.mark.parametrize(
+        "bad_static",
+        [
+            None,
+            pl.DataFrame({"other": [1.0]}),
+            pl.DataFrame({"area": [None]}),
+            pl.DataFrame({"area": [float("nan")]}),
+        ],
+    )
+    def test_missing_declared_static_is_member_local(
+        self, monkeypatch: MonkeyPatch, bad_static: pl.DataFrame | None
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        model = FakeGroupForecastModel()
+        model.data_requirements = replace(
+            model.data_requirements, static_features=frozenset({"area"})
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                a: (_make_station_inputs(a, 1.0, bad_static), _make_metadata(1.0)),
+                b: (
+                    _make_station_inputs(b, 2.0, pl.DataFrame({"area": [2.0]})),
+                    _make_metadata(2.0),
+                ),
+            },
+            [],
+        )
+        with structlog.testing.capture_logs() as logs:
+            assembled = _call_assemble_group(
+                _make_group(a, b), {a: "nwp", b: "nwp"}, model
+            )
+        assert assembled is not None
+        inputs, metadata = assembled
+        assert inputs.station_ids == (b,)
+        assert metadata[b].nwp_age_hours == 2.0
+        assert any(
+            row.get("station_id") == str(a)
+            and row.get("reason") == "missing_declared_static"
+            for row in logs
+        )
+
+    def test_empty_past_forcing_conforms_without_refusing_member(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        bad = _make_station_inputs(a, 1.0)
+        bad = replace(bad, data=replace(bad.data, past_dynamic=pl.DataFrame()))
+        good = _make_station_inputs(b, 2.0, complete_past_dynamic=True)
+        _patch_station_assembler(
+            monkeypatch,
+            {a: (bad, _make_metadata(1.0)), b: (good, _make_metadata(2.0))},
+            [],
+        )
+        assembled = _call_assemble_group(_make_group(a, b), {a: "nwp", b: "nwp"})
+        assert assembled is not None
+        inputs, _ = assembled
+        assert inputs.station_ids == (a, b)
+        missing = inputs.for_station(a).past_dynamic
+        assert missing.height == 720
+        assert missing["precipitation"].null_count() == 720
+        assert missing.schema["precipitation"] == pl.Float64
+        assert_frame_equal(inputs.for_station(b).past_dynamic, good.data.past_dynamic)
+
+    def test_anticipated_assembly_failure_preserves_sibling(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        from sapphire_flow.exceptions import InsufficientDataError
+
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        good = _make_station_inputs(b, 2.0)
+
+        def assemble(
+            **kwargs: object,
+        ) -> tuple[StationModelInputs, OperationalInputMetadata]:
+            if kwargs["station_id"] == a:
+                raise InsufficientDataError("fixture inputs unavailable")
+            return good, _make_metadata(2.0)
+
+        monkeypatch.setattr(service, "assemble_station_operational_inputs", assemble)
+        assembled = _call_assemble_group(_make_group(a, b), {a: "nwp", b: "nwp"})
+        assert assembled is not None
+        inputs, _ = assembled
+        assert inputs.station_ids == (b,)
+
+
+class TestGroupAssemblyContracts:
+    @pytest.mark.parametrize(
+        "values, expected_ids, dtype",
+        [
+            ([1, 2.0], (1, 2), pl.Float64),
+            ([1.0, 2], (1, 2), pl.Float64),
+            ([2**53 + 1, 2**53 + 1], (1, 2), pl.Int64),
+            ([2**53 + 1, 2.0], (2,), pl.Float64),
+        ],
+    )
+    def test_declared_static_numeric_types_are_lossless(
+        self,
+        monkeypatch: MonkeyPatch,
+        values: list[int | float],
+        expected_ids: tuple[int, ...],
+        dtype: pl.DataType,
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        model = FakeGroupForecastModel()
+        model.data_requirements = replace(
+            model.data_requirements, static_features=frozenset({"area"})
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                sid: (
+                    _make_station_inputs(sid, 1.0, pl.DataFrame({"area": [value]})),
+                    _make_metadata(1.0),
+                )
+                for sid, value in zip((a, b), values, strict=True)
+            },
+            [],
+        )
+        assembly = _call_assemble_group_outcome(
+            _make_group(a, b), {a: "nwp", b: "nwp"}, model
+        )
+        assert assembly.expected_station_ids == (a, b)
+        assert assembly.inputs is not None
+        assert assembly.inputs.station_ids == tuple(
+            StationId(UUID(int=n)) for n in expected_ids
+        )
+        assert assembly.inputs.static is not None
+        assert assembly.inputs.static.schema["area"] == dtype
+        if dtype == pl.Int64:
+            assert assembly.inputs.static["area"].to_list() == values
+        if len(expected_ids) == 1:
+            assert assembly.unavailable_members == (
+                service.GroupMemberInputIssue(
+                    station_id=a,
+                    reason=service.GroupMemberInputReason.DECLARED_STATIC_NOT_REPRESENTABLE,
+                ),
+            )
+
+    def test_model_without_static_requirements_receives_no_static_frame(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                a: (
+                    _make_station_inputs(a, 1.0, pl.DataFrame({"unused": [None]})),
+                    _make_metadata(1.0),
+                ),
+                b: (
+                    _make_station_inputs(b, 2.0, pl.DataFrame({"unused": [3.0]})),
+                    _make_metadata(2.0),
+                ),
+            },
+            [],
+        )
+        assembly = _call_assemble_group_outcome(_make_group(a, b), {a: "nwp", b: "nwp"})
+        assert assembly.inputs is not None
+        assert assembly.inputs.static is None
+        assert assembly.inputs.station_ids == (a, b)
+
+    def test_all_unavailable_retains_expected_roster_and_reasons(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        _patch_station_assembler(monkeypatch, {a: None}, [])
+        assembly = _call_assemble_group_outcome(_make_group(a, b), {a: "nwp"})
+        assert assembly.inputs is None
+        assert assembly.expected_station_ids == (a, b)
+        assert assembly.unavailable_members == (
+            service.GroupMemberInputIssue(
+                station_id=a, reason=service.GroupMemberInputReason.CADENCE_MISMATCH
+            ),
+            service.GroupMemberInputIssue(
+                station_id=b,
+                reason=service.GroupMemberInputReason.MISSING_FORECAST_BINDING,
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "future",
+        [
+            pl.DataFrame(),
+            _time_frame({"timestamp": [_ISSUE + _STEP], "precipitation": [1.0]}),
+        ],
+    )
+    def test_missing_or_short_future_is_isolated_before_stack(
+        self, monkeypatch: MonkeyPatch, future: pl.DataFrame
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        group = _make_group(a, b)
+        model = FakeGroupForecastModel()
+        model.data_requirements = _NwpBatchGroupModel({}).data_requirements
+        inputs = _precip_group_inputs(group, future_rows=2)
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                sid: (
+                    StationModelInputs(
+                        station_id=sid,
+                        data=replace(inputs.for_station(sid), future_dynamic=future)
+                        if sid == a
+                        else inputs.for_station(sid),
+                        issue_time=_ISSUE,
+                        forecast_horizon_steps=2,
+                        time_step=_STEP,
+                    ),
+                    _make_metadata(float(n)),
+                )
+                for n, sid in enumerate((a, b), 1)
+            },
+            [],
+        )
+        assembly = _call_assemble_group_outcome(group, {a: "nwp", b: "nwp"}, model)
+        assert assembly.inputs is not None
+        assert assembly.inputs.station_ids == (b,)
+        assert assembly.expected_station_ids == (a, b)
+        assert (
+            assembly.unavailable_members[0].reason
+            is service.GroupMemberInputReason.INSUFFICIENT_FUTURE
+        )
+        assert assembly.metadata_by_station[b].nwp_age_hours == 2.0
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            RuntimeError("unexpected"),
+            StoreError("store failed"),
+            DisconnectionError("connection lost"),
+        ],
+    )
+    def test_assembly_does_not_swallow_unexpected_or_store_errors(
+        self, monkeypatch: MonkeyPatch, exc: Exception
+    ) -> None:
+        a = StationId(UUID(int=1))
+
+        def fail(**kwargs: object) -> None:
+            raise exc
+
+        monkeypatch.setattr(service, "assemble_station_operational_inputs", fail)
+        expected = StoreError if isinstance(exc, DisconnectionError) else type(exc)
+        message = (
+            "Connection-fatal" if isinstance(exc, DisconnectionError) else str(exc)
+        )
+        with pytest.raises(expected, match=message):
+            _call_assemble_group_outcome(_make_group(a), {a: "nwp"})
+
+    def test_configuration_failure_is_not_assumed_member_local(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        a = StationId(UUID(int=1))
+
+        def fail(**kwargs: object) -> None:
+            raise ConfigurationError("invalid global declaration")
+
+        monkeypatch.setattr(service, "assemble_station_operational_inputs", fail)
+        with pytest.raises(ConfigurationError, match="global declaration"):
+            _call_assemble_group_outcome(_make_group(a), {a: "nwp"})
+
+    def test_declared_static_string_numeric_mismatch_is_not_coerced(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        model = FakeGroupForecastModel()
+        model.data_requirements = replace(
+            model.data_requirements, static_features=frozenset({"area"})
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                a: (
+                    _make_station_inputs(a, 1.0, pl.DataFrame({"area": ["bad"]})),
+                    _make_metadata(1.0),
+                ),
+                b: (
+                    _make_station_inputs(b, 2.0, pl.DataFrame({"area": [2.0]})),
+                    _make_metadata(2.0),
+                ),
+            },
+            [],
+        )
+        with pytest.raises(pl.exceptions.SchemaError, match="incompatible"):
+            _call_assemble_group_outcome(_make_group(a, b), {a: "nwp", b: "nwp"}, model)
+
+    @pytest.mark.parametrize(
+        "mode", ["empty", "partial", "order", "null", "empty_schema", "targets"]
+    )
+    def test_declared_past_schema_conformance(
+        self, monkeypatch: MonkeyPatch, mode: str
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        good = _make_station_inputs(b, 2.0, complete_past_dynamic=True)
+        data = good.data
+        frame = data.past_dynamic
+        if mode == "empty":
+            frame = pl.DataFrame()
+        elif mode == "partial":
+            frame = frame.drop("temperature")
+        elif mode == "order":
+            frame = frame.select("temperature", "precipitation", "timestamp")
+        elif mode == "null":
+            frame = frame.with_columns(pl.lit(None).alias("temperature"))
+        elif mode == "empty_schema":
+            frame = frame.head(0)
+        data = replace(
+            data,
+            past_dynamic=frame,
+            past_targets=pl.DataFrame() if mode == "targets" else data.past_targets,
+        )
+        bad = replace(good, station_id=a, data=data)
+        _patch_station_assembler(
+            monkeypatch,
+            {a: (bad, _make_metadata(1.0)), b: (good, _make_metadata(2.0))},
+            [],
+        )
+        model = FakeGroupForecastModel()
+        model.data_requirements = replace(
+            model.data_requirements,
+            required_past_targets=frozenset({"discharge"}),
+        )
+        assembly = _call_assemble_group_outcome(
+            _make_group(a, b), {a: "nwp", b: "nwp"}, model
+        )
+        assert assembly.inputs is not None
+        if mode == "targets":
+            assert assembly.inputs.station_ids == (b,)
+            assert (
+                assembly.unavailable_members[0].reason.value
+                == "missing_required_target"
+            )
+        else:
+            assert assembly.inputs.station_ids == (a, b)
+            actual = assembly.inputs.for_station(a)
+            assert actual.past_dynamic.columns == [
+                "timestamp",
+                "precipitation",
+                "temperature",
+            ]
+            assert actual.past_dynamic.height == 720
+            assert actual.past_dynamic.schema["temperature"] == pl.Float64
+        assert_frame_equal(
+            assembly.inputs.for_station(b).past_dynamic, good.data.past_dynamic
+        )
+
+    def test_unexpected_past_column_remains_an_assembly_error(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        a = StationId(UUID(int=1))
+        inp = _make_station_inputs(a, 1.0)
+        inp = replace(
+            inp,
+            data=replace(
+                inp.data,
+                past_dynamic=inp.data.past_dynamic.with_columns(
+                    pl.lit(1.0).alias("misnamed")
+                ),
+            ),
+        )
+        _patch_station_assembler(monkeypatch, {a: (inp, _make_metadata(1.0))}, [])
+        with pytest.raises(
+            pl.exceptions.SchemaError, match="Unexpected group input columns"
+        ):
+            _call_assemble_group_outcome(_make_group(a), {a: "nwp"})
+
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_prefill_gap_quality_survives_success_and_failure(
+        self, monkeypatch: MonkeyPatch, fails: bool
+    ) -> None:
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        group = _make_group(a, b)
+        bad = _make_station_inputs(a, 1.0)
+        bad = replace(bad, data=replace(bad.data, past_dynamic=pl.DataFrame()))
+        good = _make_station_inputs(b, 2.0, complete_past_dynamic=True)
+        _patch_station_assembler(
+            monkeypatch,
+            {a: (bad, _make_metadata(1.0)), b: (good, _make_metadata(2.0))},
+            [],
+        )
+        assembly = _call_assemble_group_outcome(group, {a: "nwp", b: "nwp"})
+        assert assembly.inputs is not None
+        store = FakeModelArtifactStore()
+        _seed_group_artifact(store, group)
+        model = _BatchGroupModel(
+            {sid: ({"discharge": _make_ensemble(sid, 1.0)}, None) for sid in (a, b)},
+            exc=ModelOutputError("fixture refusal") if fails else None,
+        )
+        with structlog.testing.capture_logs() as logs:
+            result = _call_run_group_forecast_outcome(
+                group=group,
+                group_inputs=assembly.inputs,
+                metadata_by_station=assembly.metadata_by_station,
+                model=model,
+                artifact_store=store,
+            )
+        if fails:
+            failed = next(
+                row
+                for row in logs
+                if row["event"] == "run_group_forecast.predict_batch_failed"
+            )
+            assert set(failed["forcing_gaps"]) == {str(a)}
+        else:
+            flags_a = result.results[a].forecasts[0].input_quality_flags
+            flags_b = result.results[b].forecasts[0].input_quality_flags
+            assert any(
+                flag.category is InputQualityCategory.FORCING for flag in flags_a
+            )
+            assert not any(
+                flag.category is InputQualityCategory.FORCING for flag in flags_b
+            )
+
+    @pytest.mark.parametrize("tolerance, served", [(0, (2,)), (3, (1, 2))])
+    def test_real_fi_max_nan_decides_null_filled_member(
+        self, monkeypatch: MonkeyPatch, tolerance: int, served: tuple[int, ...]
+    ) -> None:
+        from sapphire_flow.adapters import forecast_interface as fi
+        from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+            SyntheticGroupFIModel,
+        )
+
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        group = _make_group(a, b)
+        raw = SyntheticGroupFIModel()
+        spec = raw.input_requirement.dynamic[_STEP].data[
+            fi.FISpatialRepresentation.POINT
+        ]
+        spec.past_known["obs"]["precipitation"] = fi.PastKnownVariable(
+            lookback=3, max_nan=tolerance, unit=fi.Unit.MM
+        )
+        adapter = fi.ForecastInterfaceAdapter(
+            raw, station_code_resolver=lambda sid: {a: "gauge-a", b: "gauge-b"}[sid]
+        )
+        good = _make_station_inputs(b, 2.0)
+        good = replace(
+            good,
+            data=replace(
+                good.data,
+                past_dynamic=_complete_past_dynamic().select(
+                    "timestamp", "precipitation"
+                ),
+                future_dynamic=_time_frame(
+                    {
+                        "timestamp": [_ISSUE + n * _STEP for n in range(1, 4)],
+                        "precipitation": [1.0] * 3,
+                        "temperature": [5.0] * 3,
+                    }
+                ),
+            ),
+        )
+        bad = replace(
+            good, station_id=a, data=replace(good.data, past_dynamic=pl.DataFrame())
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {a: (bad, _make_metadata(1.0)), b: (good, _make_metadata(2.0))},
+            [],
+        )
+        assembly = _call_assemble_group_outcome(group, {a: "nwp", b: "nwp"}, adapter)  # type: ignore[arg-type]
+        assert assembly.inputs is not None
+        assert assembly.inputs.station_ids == (a, b)
+        assert (
+            assembly.inputs.for_station(a).past_dynamic["precipitation"].null_count()
+            == 3
+        )
+        store = FakeModelArtifactStore()
+        _seed_group_artifact(store, group)
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=assembly.inputs,
+            metadata_by_station=assembly.metadata_by_station,
+            model=adapter,
+            artifact_store=store,
+        )  # type: ignore[arg-type]
+        assert set(outcome.results) == {StationId(UUID(int=n)) for n in served}
+        assert outcome.expected_station_ids == (a, b)
+
+    def test_sparse_nonempty_history_keeps_rows_and_model_owned_shortfall(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        from sapphire_flow.adapters import forecast_interface as fi
+        from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+            SyntheticGroupFIModel,
+        )
+
+        received_lengths: dict[str, int] = {}
+
+        class ShortHistoryGroupModel(SyntheticGroupFIModel):
+            def predict(
+                self,
+                artifact: bytes,
+                *,
+                inputs: fi.ModelInputs,
+                issue_datetime: datetime,
+                rng: random.Random,
+            ) -> fi.ModelResult:
+                result = super().predict(
+                    artifact, inputs=inputs, issue_datetime=issue_datetime, rng=rng
+                )
+                assert isinstance(result, fi.ModelSuccess)
+                for code, station in inputs.stations.items():
+                    dynamic = station.dynamic[_STEP].data[
+                        fi.FISpatialRepresentation.POINT
+                    ]
+                    length = dynamic.past_known["obs"]["precipitation"].data.height
+                    received_lengths[code] = length
+                    if length < 3:
+                        output = result.output.variables[code]["discharge"]
+                        result.output.variables[code]["discharge"] = fi.VariableOutput(
+                            metadata=output.metadata,
+                            status=fi.VariableStatus.FAILURE,
+                            flags=frozenset({fi.ForecastFlag.DATA_AVAILABILITY}),
+                        )
+                return result
+
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        group = _make_group(a, b)
+        raw = ShortHistoryGroupModel()
+        spec = raw.input_requirement.dynamic[_STEP].data[
+            fi.FISpatialRepresentation.POINT
+        ]
+        spec.past_known["obs"]["precipitation"] = fi.PastKnownVariable(
+            lookback=3, max_nan=0, unit=fi.Unit.MM
+        )
+        adapter = fi.ForecastInterfaceAdapter(
+            raw, station_code_resolver=lambda sid: {a: "gauge-a", b: "gauge-b"}[sid]
+        )
+        complete = _time_frame(
+            {
+                "timestamp": [_ISSUE - n * _STEP for n in (3, 2, 1)],
+                "precipitation": [1.0, 2.0, 3.0],
+            }
+        )
+        sparse = complete.filter(pl.col("timestamp") != _ISSUE - 2 * _STEP)
+        good = _make_station_inputs(b, 2.0)
+        good = replace(
+            good,
+            data=replace(
+                good.data,
+                past_dynamic=complete,
+                future_dynamic=_time_frame(
+                    {
+                        "timestamp": [_ISSUE + n * _STEP for n in range(1, 4)],
+                        "precipitation": [1.0] * 3,
+                        "temperature": [5.0] * 3,
+                    }
+                ),
+            ),
+        )
+        bad = replace(good, station_id=a, data=replace(good.data, past_dynamic=sparse))
+        _patch_station_assembler(
+            monkeypatch,
+            {
+                a: (bad, _make_metadata(1.0)),
+                b: (good, _make_metadata(2.0)),
+            },
+            [],
+        )
+        assembly = _call_assemble_group_outcome(group, {a: "nwp", b: "nwp"}, adapter)  # type: ignore[arg-type]
+        assert assembly.inputs is not None
+        assert_frame_equal(assembly.inputs.for_station(a).past_dynamic, sparse)
+        store = FakeModelArtifactStore()
+        _seed_group_artifact(store, group)
+        with structlog.testing.capture_logs() as logs:
+            outcome = _call_run_group_forecast_outcome(
+                group=group,
+                group_inputs=assembly.inputs,
+                metadata_by_station=assembly.metadata_by_station,
+                model=adapter,
+                artifact_store=store,  # type: ignore[arg-type]
+            )
+        assert received_lengths == {"gauge-a": 2, "gauge-b": 3}
+        assert set(outcome.results) == {b}
+        gaps = next(
+            row["forcing_gaps"]
+            for row in logs
+            if row["event"] == "run_group_forecast.batch_missing_station_outputs"
+        )
+        assert set(gaps) == {str(a)}
+        assert "1 of 3 missing overall" in gaps[str(a)][0]
+        assert not any(
+            row["event"] == "forecast_interface.station_input_nan_tolerance_exceeded"
+            for row in logs
+        )
+
+    @pytest.mark.parametrize("requires_target", [True, False])
+    @pytest.mark.parametrize(
+        "target_frame",
+        [
+            pl.DataFrame(),
+            _time_frame({"timestamp": [_ISSUE - _STEP], "unrelated": [1.0]}),
+        ],
+    )
+    def test_absent_required_target_is_not_synthetic_tolerable_history(
+        self,
+        monkeypatch: MonkeyPatch,
+        requires_target: bool,
+        target_frame: pl.DataFrame,
+    ) -> None:
+        from sapphire_flow.adapters import forecast_interface as fi
+        from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+            SyntheticGroupFIModel,
+        )
+
+        a, b = StationId(UUID(int=1)), StationId(UUID(int=2))
+        group = _make_group(a, b)
+        raw = SyntheticGroupFIModel()
+        spec = raw.input_requirement.dynamic[_STEP].data[
+            fi.FISpatialRepresentation.POINT
+        ]
+        spec.past_known["obs"]["precipitation"] = fi.PastKnownVariable(
+            lookback=3, max_nan=0, unit=fi.Unit.MM
+        )
+        if requires_target:
+            spec.past_known["obs"]["discharge"] = fi.PastKnownVariable(
+                lookback=3, max_nan=3, unit=fi.Unit.M3_PER_S
+            )
+        else:
+            del spec.past_known["obs"]["discharge"]
+        adapter = fi.ForecastInterfaceAdapter(
+            raw, station_code_resolver=lambda sid: {a: "gauge-a", b: "gauge-b"}[sid]
+        )
+        good = _make_station_inputs(b, 2.0)
+        good = replace(
+            good,
+            data=replace(
+                good.data,
+                past_dynamic=_time_frame(
+                    {
+                        "timestamp": [_ISSUE - n * _STEP for n in (3, 2, 1)],
+                        "precipitation": [1.0] * 3,
+                    }
+                ),
+                future_dynamic=_time_frame(
+                    {
+                        "timestamp": [_ISSUE + n * _STEP for n in range(1, 4)],
+                        "precipitation": [1.0] * 3,
+                        "temperature": [5.0] * 3,
+                    }
+                ),
+            ),
+        )
+        bad = replace(
+            good, station_id=a, data=replace(good.data, past_targets=target_frame)
+        )
+        _patch_station_assembler(
+            monkeypatch,
+            {a: (bad, _make_metadata(1.0)), b: (good, _make_metadata(2.0))},
+            [],
+        )
+        assembly = _call_assemble_group_outcome(group, {a: "nwp", b: "nwp"}, adapter)  # type: ignore[arg-type]
+        assert assembly.inputs is not None
+        expected = (b,) if requires_target else (a, b)
+        assert assembly.inputs.station_ids == expected
+        assert assembly.expected_station_ids == (a, b)
+        if requires_target:
+            assert (
+                assembly.unavailable_members[0].reason.value
+                == "missing_required_target"
+            )
+        store = FakeModelArtifactStore()
+        _seed_group_artifact(store, group)
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=assembly.inputs,
+            metadata_by_station=assembly.metadata_by_station,
+            model=adapter,
+            artifact_store=store,
+        )  # type: ignore[arg-type]
+        assert set(outcome.results) == set(expected)
+
+    def test_raw_driver_connection_failure_is_fatal(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        import psycopg
+
+        a = StationId(UUID(int=1))
+
+        def fail(**kwargs: object) -> None:
+            raise psycopg.errors.AdminShutdown("fixture shutdown")
+
+        monkeypatch.setattr(service, "assemble_station_operational_inputs", fail)
+        with pytest.raises(StoreError, match="Connection-fatal"):
+            _call_assemble_group_outcome(_make_group(a), {a: "nwp"})
+
+    def test_nonconnection_sql_error_is_not_mislabeled_fatal_or_shortage(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        a = StationId(UUID(int=1))
+
+        def fail(**kwargs: object) -> None:
+            raise IntegrityError(
+                "fixture statement", {}, ValueError("fixture constraint")
+            )
+
+        monkeypatch.setattr(service, "assemble_station_operational_inputs", fail)
+        with pytest.raises(IntegrityError, match="fixture constraint"):
+            _call_assemble_group_outcome(_make_group(a), {a: "nwp"})

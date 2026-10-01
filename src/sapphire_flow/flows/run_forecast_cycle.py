@@ -3128,7 +3128,7 @@ def run_forecast_cycle_flow(
             build_superset_requirements,
         )
         from sapphire_flow.services.run_group_forecast import (
-            assemble_group_operational_inputs,
+            assemble_group_operational_inputs_outcome,
             discover_group_runs,
             run_group_forecast,
         )
@@ -3808,20 +3808,10 @@ def run_forecast_cycle_flow(
                         continue
 
                     model = models[model_id]  # type: ignore[index]
-                    missing_binding_ids = [
-                        sid for sid in member_ids if sid not in forecast_bindings
-                    ]
-                    if missing_binding_ids:
-                        # A member with no valid FORECAST binding already failed
-                        # (and was counted once) during the up-front resolution
-                        # above — a group forecast needs all its members, so this
-                        # group fails too. Do not double-count stations_failed.
-                        raise ConfigurationError(
-                            f"group {group.id} has member(s) with no valid "
-                            f"FORECAST weather-source binding: {missing_binding_ids}"
-                        )
                     nwp_source_by_station = {
-                        sid: forecast_bindings[sid].nwp_source for sid in member_ids
+                        sid: forecast_bindings[sid].nwp_source
+                        for sid in member_ids
+                        if sid in forecast_bindings
                     }
                     baselines_by_station = {
                         sid: all_baselines.get(sid, []) for sid in member_ids
@@ -3829,7 +3819,7 @@ def run_forecast_cycle_flow(
                     restricted_group = replace(group, station_ids=frozenset(member_ids))
 
                     try:
-                        group_inputs_result = assemble_group_operational_inputs(
+                        group_assembly = assemble_group_operational_inputs_outcome(
                             group=restricted_group,
                             model=model,  # type: ignore[arg-type]
                             model_id=model_id,
@@ -3860,12 +3850,14 @@ def run_forecast_cycle_flow(
                         )
                         continue
 
-                    if group_inputs_result is None:
+                    if group_assembly.inputs is None:
                         log.info("forecast_cycle.group_skipped_no_serviceable_stations")
                         continue
 
-                    group_inputs, metadata_by_station = group_inputs_result
+                    group_inputs = group_assembly.inputs
+                    metadata_by_station = group_assembly.metadata_by_station
                     group_outcome = run_group_forecast(
+                        unavailable_members=group_assembly.unavailable_members,
                         group=restricted_group,
                         group_inputs=group_inputs,
                         metadata_by_station=metadata_by_station,
