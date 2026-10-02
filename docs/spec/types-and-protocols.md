@@ -2090,7 +2090,8 @@ forecast parent tables. API/worker readers receive explicit safe-column grants;
 STANDARD store projections do not request raw lineage. Legacy forecast, dashboard and
 generic browser queries filter STANDARD, including forecast-linked children and shared
 blob references. This is partial T1d, not activation readiness: remaining ordinary
-reader/evaluation/state/tooling and mixed restore/publication-health holds still apply.
+reader/evaluation/state and mixed restore/publication-health holds still apply;
+the named operator readers follow the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 
 Contributor references initially require the same class. Mixed STANDARD/TEST
 combinations are unsupported pending separately reviewed T3c handling. Never omit an
@@ -3260,7 +3261,8 @@ No response field or test-view selector is added.
 
 Human review/publication/latest/history enforce the bounded purpose and result
 contract in [Bounded publication consumer isolation](#bounded-publication-consumer-isolation).
-This is partial T1d, not activation authority or evaluation/state/health/tooling/restore closure.
+This is partial T1d, not activation authority or evaluation/state/health/restore closure.
+Named operator-tool closure is scoped by the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 
 #### ForecastStore
 
@@ -5412,6 +5414,7 @@ that omit a nonwithdrawn referenced detail are outside that invariant; this patc
 does not define a new public error contract for them. Mixed missing/unsafe-detail
 canaries still require whole-batch class refusal before metadata.
 
-This does not close ordinary-input/evaluation canaries, tooling projections, mixed
+The publication slice does not close ordinary-input/evaluation canaries, mixed
 backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+Named tooling projections follow the [operator contract](../standards/security.md#operator-forecast-tooling-isolation).
 Full backups must continue to preserve both forecast classes and protected lineage.

@@ -1680,7 +1680,8 @@ trigger and dormant refusal, without implying stronger lineage authority.
 No activation capability is added. Revision `0071` protects both raw lineage columns
 through explicit safe-column runtime SELECT grants and STANDARD projections; legacy,
 dashboard and generic browser queries exclude TEST. This is partial T1d: remaining
-reader/evaluation/state/tooling and mixed restore/publication-health holds still apply.
+reader/evaluation/state and mixed restore/publication-health holds still apply;
+the named operator tools follow the [tooling contract](standards/security.md#operator-forecast-tooling-isolation).
 SQL source/tenant linkage and actual-consumption completeness for rejection lineage remain
 held. The two unconditional TEST write refusals are necessary until those closures and
 verified deployment/rollback coverage exist. Backup still covers the full database.
@@ -1729,8 +1730,9 @@ selected-superseded STANDARD history tests. Include real Pg purpose refusal,
 auth ordering, publication replay/concurrency and modern API/Lab regressions.
 Do not add a forecast dependency to the publication change feed.
 
-This does not close ordinary-input/evaluation canaries, tooling projections, mixed
+The publication slice does not close ordinary-input/evaluation canaries, mixed
 backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+The named tooling projections follow the tooling contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
 ## Release identity changes touch
@@ -1738,3 +1740,12 @@ Full backups must continue to preserve both forecast classes and protected linea
 Changes to root package versioning, `tools/release_identity.py`, Docker release build args, or release receipts touch packaging, CI/CD, security, Docker Compose, and operator runbooks.
 Verify dynamic SCM version generation, CI no-tag overrides, Docker labels, compose build args for both default and Aquacast images, and credential-free receipt behavior together.
 Do not reintroduce automatic tag publication in GitHub Actions.
+
+
+### Forecast operator tooling
+
+Follow the [operator tooling contract](standards/security.md#operator-forecast-tooling-isolation) for the loose domain script, legacy
+wrapper and standing snapshot class/audit counters. Verify actual runtime-role
+projection, historical/superseded rows, window boundaries, CLI compatibility and
+operator JSON/render labels. Keep both scripts excluded from the runtime image.
+No grant, backup, state or activation change is implied.

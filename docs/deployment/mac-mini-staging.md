@@ -500,8 +500,11 @@ docker compose exec -u app prefect-worker sh -c 'touch /data/nwp_grids/.w /tmp/s
 ```
 
 Run Plan 100 administration checks from the worker environment with
-`scripts/plan100_forecast_feed_resilience.py` before and after priority
-reconciliation. The reconciliation subcommand is dry-run by default; use
+`scripts/forecast_feed_resilience.py` before and after priority reconciliation.
+The legacy `scripts/plan100_forecast_feed_resilience.py` command remains a compatible
+wrapper with the same flags and output filename. See the
+[tooling contract](../standards/security.md#operator-forecast-tooling-isolation) for
+STANDARD-only safe headers and standing snapshot's changed class/audit JSON keys. The reconciliation subcommand is dry-run by default; use
 `--apply --backup-reference <snapshot> --maintenance-mode-confirmed` only after:
 
 1. The immutable Step 0 snapshot has been captured.

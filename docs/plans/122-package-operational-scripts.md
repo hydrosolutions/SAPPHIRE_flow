@@ -289,3 +289,9 @@ Codex review (2026-07-19) verified the core technical claims and caught six comp
 incomplete onboard.py retirement sweep, the validate/onboard script-test retargets, the registration
 count (11→12), the orchestration-doc row, and stale citations — **all folded**. **READY (owner,
 2026-07-19)** — implementation authorised; hold at PR; code goes through the `implement` workflow.
+
+
+Compatibility note: the legacy Plan100 path now delegates to the loose domain-named
+`scripts/forecast_feed_resilience.py`. It remains excluded from runtime packaging;
+this does not implement the CLI-packaging work deferred above. See the
+[tooling contract](../standards/security.md#operator-forecast-tooling-isolation).

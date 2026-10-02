@@ -1,24 +1,7 @@
-"""Plan 328 T3 — the two DEVELOPER-TOOL readers of `forecasts`.
+"""Historical tooling includes superseded rows within each explicit data class.
 
-⚠️ **These assertions are SOURCE-LEVEL, and that is a deliberate compromise.**
-`scripts/plan100_forecast_feed_resilience.py` and `tools/standing_snapshot.py`
-are ad-hoc operator tools: one takes a live database and CLI date range, the
-other an ssh target. Standing either up in a test would cost far more than the
-disposition is worth, and would test the harness rather than the query.
-
-What a source-level check CAN do is fail the moment someone adds a status
-predicate to either query — which is the only way these two dispositions
-change. ⛔ It cannot prove the tools behave correctly; the served surfaces
-carry behavioural assertions instead
-(`tests/integration/api/test_dashboard_forecasts.py`).
-
-🔴 **Both checks are STRUCTURAL, not positional or line-based.** The first
-version of this file sliced a fixed 600 characters and filtered by lines
-containing the word `forecasts`, so a predicate added on the NEXT line — or
-just past the slice — filtered the query while every assertion passed. That is
-the defect Plan 328 exists to fix, reproduced in its own test. Each check now
-extracts the WHOLE query (or union branch) and collapses whitespace before
-looking at it, so a line break cannot hide anything.
+Runtime-role integration tests prove projection and result behavior. These bounded
+source checks retain the independent no-lifecycle-filter contract.
 """
 
 from __future__ import annotations
@@ -37,38 +20,33 @@ def _source(relative: str) -> str:
     return (_ROOT / relative).read_text(encoding="utf-8")
 
 
-def _triple_quoted_blocks(source: str) -> list[str]:
-    return re.findall(r'"""(.*?)"""', source, re.DOTALL)
-
-
 def _flatten(text: str) -> str:
     """Collapse every run of whitespace, so a predicate cannot hide behind a
     line break from a check that reads the query as one string."""
     return " ".join(text.split())
 
 
-class TestTheDiagnosticExportStaysUnfiltered:
-    """`scripts/plan100_forecast_feed_resilience.py` — a forensic dump of an
-    issue-time window. Hiding replaced rows is the opposite of what it is
-    for: the blackout it investigates is precisely the kind of incident where
-    you want to see that a forecast was replaced."""
+class TestTheDiagnosticExportStaysHistorical:
+    def test_safe_projection_keeps_status_but_never_filters_lifecycle(self) -> None:
+        import ast
 
-    def test_the_blackout_query_has_no_status_predicate(self) -> None:
-        blocks = [
-            _flatten(block)
-            for block in _triple_quoted_blocks(
-                _source("scripts/plan100_forecast_feed_resilience.py")
-            )
-            if "FROM forecasts" in block and _FORECASTS_TABLE.search(block)
+        tree = ast.parse(_source("scripts/forecast_feed_resilience.py"))
+        capture = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "capture_snapshot"
+        )
+        calls = [node for node in ast.walk(capture) if isinstance(node, ast.Call)]
+        predicates = [
+            ast.unparse(arg)
+            for call in calls
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "where"
+            for arg in call.args
         ]
-
-        assert blocks, "guard: the blackout query must still select from forecasts"
-        for query in blocks:
-            assert "status" not in query.lower(), (
-                f"the diagnostic export must stay a HISTORICAL reader — a "
-                f"status filter would hide replaced rows from an incident "
-                f"dump. Offending query: {query}"
-            )
+        assert any("ForecastDataUse.STANDARD" in item for item in predicates)
+        assert not any("forecasts.c.status" in item for item in predicates)
+        # Real runtime-role output/history behavior is exercised in integration/tools.
+        assert "forecasts.c.status" in ast.unparse(capture)
 
 
 class TestTheStandingSnapshotStaysUnfiltered:
