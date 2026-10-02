@@ -520,11 +520,21 @@ Bootstrap keeps early revokes separate from transactional migration failure beha
 backup/owner authority and `0069`/`0070` refusal remain unchanged. Modern forecast detail/station/rejection routes and Forecast Lab now refuse
 unknown/TEST-purpose dependencies before forecast queries and independently refuse
 wrong-class results. This preserves authorization ordering, safe error envelopes,
-STANDARD pagination/history and passive assignment-only bundle use. Adjacent human
-review/publication/latest/history pre-query boundaries, evaluation/training/hindcast/
-state/health/tooling readers, full mixed-class restore/publication-health canaries,
-and T1c source/tenant consumption linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
+STANDARD pagination/history and passive assignment-only bundle use. Human review/publication/latest/history now enforce the bounded purpose/result
+boundaries below. Evaluation/training/hindcast/state/health/tooling readers,
+full mixed-class restore/publication-health canaries, and T1c source/tenant
+consumption linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
 
+
+
+The bounded publication reader slice implements the
+[publication consumer contract](../spec/types-and-protocols.md#bounded-publication-consumer-isolation):
+pre-query purpose refusal for human detail/publish/withdraw and latest/history,
+all-summary then all-detail validation for review pages, and full history-batch
+validation before metadata. Existing auth ordering, review missing-detail/total,
+withdrawn no-fetch, cursors and selected-superseded STANDARD history remain.
+The publication change feed has no forecast dependency and is unchanged.
+This does not complete T1d or authorize activation.
 
 **Outcome:** every ordinary read path excludes test output and cannot reveal provisional
 input or restricted evidence; no indirect baseline, component or skill consumer leaks it.

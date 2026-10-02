@@ -1650,8 +1650,9 @@ STANDARD-before/after-unsafe cycle candidates before model/QC selection.
 Rejected store purpose is a read-only Protocol/Pg/Fake property; write/capture behavior
 is unchanged. Run the three route tests, Forecast Lab route/source/snapshot/CLI tests,
 store purpose/data-use tests, publication/history/auth regressions and schema drift.
-Adjacent human review/publication/latest/history pre-query closure remains deferred;
-shared detail serialization alone does not close it. Other T1d/T1c/T3 holds remain.
+Human review/publication/latest/history use the explicit guards and batch checks
+in the publication consumer boundary below; shared serialization is only a backstop.
+Other T1d/T1c/T3 holds remain.
 
 ### Publication and rejection data-use boundary
 
@@ -1717,6 +1718,21 @@ metadata. The publication migration regression compares the complete legacy head
 member values and incomplete-evidence row through `0062 → 0063 → 0062`; newer store
 columns must not be required to test an older additive migration. Do not add production
 fallbacks for historical schemas to satisfy migration fixtures.
+
+### Bounded publication consumer isolation
+
+For `api/routes/forecast_publication.py`, preserve the
+[publication consumer contract](spec/types-and-protocols.md#bounded-publication-consumer-isolation).
+Run wrong-purpose/no-query canaries, early/late unsafe summary/detail batches,
+mixed missing/unsafe details, review omission/total, withdrawn no-fetch and
+selected-superseded STANDARD history tests. Include real Pg purpose refusal,
+auth ordering, publication replay/concurrency and modern API/Lab regressions.
+Do not add a forecast dependency to the publication change feed.
+
+This does not close ordinary-input/evaluation canaries, tooling projections, mixed
+backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+Full backups must continue to preserve both forecast classes and protected lineage.
+
 ## Release identity changes touch
 
 Changes to root package versioning, `tools/release_identity.py`, Docker release build args, or release receipts touch packaging, CI/CD, security, Docker Compose, and operator runbooks.

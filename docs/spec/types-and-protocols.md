@@ -3258,9 +3258,9 @@ and assignment-only skill helper do not perform forecast checks. Scalar cycle ma
 rely on purpose binding and store filtering; a timestamp cannot prove its own class.
 No response field or test-view selector is added.
 
-Adjacent human review/publication/latest/history callers share the detail serializer
-backstop but their separate pre-query closure remains deferred. This is partial T1d,
-not activation authority or evaluation/state/health/tooling/restore closure.
+Human review/publication/latest/history enforce the bounded purpose and result
+contract in [Bounded publication consumer isolation](#bounded-publication-consumer-isolation).
+This is partial T1d, not activation authority or evaluation/state/health/tooling/restore closure.
 
 #### ForecastStore
 
@@ -5382,3 +5382,36 @@ reconversion requires QC_PASSED, a QC generation and nonempty all-passing flags;
 unchecked, failed, suspect, raw and missing rows cannot produce a protected append.
 A stale caller's passing snapshot cannot override persisted QC. The SQL guard
 independently enforces this boundary; ordinary forecast acceptance is unchanged.
+
+### Bounded publication consumer isolation
+
+Human review detail/publish/withdraw now refuse unknown or TEST-purpose forecast
+stores with the fixed ordinary-read 503 before forecast lookup or publication work.
+Authentication and identifier parsing still precede the guard; station-specific
+scope is unavailable until a healthy STANDARD lookup. Missing, foreign and nonstandard
+results from that lookup retain indistinguishable 404 responses. Review lists keep
+the existing `Forecast review unavailable` purpose-refusal envelope, validate all
+summaries before any detail lookup, then validate all nonmissing details before any
+publication assessment or metadata. Unsafe pages fail wholly with ordinary-read 503;
+missing review details retain the existing omission-with-original-total behavior.
+Latest/history preserve scope, tenant and active-publication checks before purpose
+refusal, which precedes publication locks/selections/events. Latest wrong-class detail
+is 404 before metadata; mixed history is whole-response 503 before any metadata.
+Withdrawn history requires no forecast detail. Existing nonwithdrawn missing-detail
+behavior is unchanged, not a newly supported recovery path. Cursors and selected
+superseded STANDARD history remain unchanged. The change feed has no forecast-store
+dependency and receives no irrelevant purpose guard; existing publication SQL class
+filters and reference guards remain its boundary.
+
+Supported PostgreSQL history retains exact forecast references through
+`fk_forecast_publication_decision_exact_forecast`, immutable STANDARD publication
+reference guards, and the existing publication read lock. STANDARD by-ID reads
+include superseded rows. Therefore the batch collection does not newly make a
+referenced forecast disappear under supported wiring. Arbitrary injected stores
+that omit a nonwithdrawn referenced detail are outside that invariant; this patch
+does not define a new public error contract for them. Mixed missing/unsafe-detail
+canaries still require whole-batch class refusal before metadata.
+
+This does not close ordinary-input/evaluation canaries, tooling projections, mixed
+backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+Full backups must continue to preserve both forecast classes and protected lineage.
