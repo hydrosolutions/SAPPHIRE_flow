@@ -2090,7 +2090,7 @@ forecast parent tables. API/worker readers receive explicit safe-column grants;
 STANDARD store projections do not request raw lineage. Legacy forecast, dashboard and
 generic browser queries filter STANDARD, including forecast-linked children and shared
 blob references. This is partial T1d, not activation readiness: remaining ordinary
-reader/evaluation/state and mixed restore/publication-health holds still apply beyond
+reader/evaluation/state holds still apply beyond
 the [bounded input canaries](../standards/security.md#ordinary-input-isolation-canaries);
 the named operator readers follow the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 
@@ -5419,7 +5419,7 @@ canaries still require whole-batch class refusal before metadata.
 
 The publication slice alone does not close ordinary-input/evaluation canaries;
 see the [bounded input evidence](../standards/security.md#ordinary-input-isolation-canaries). Mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work and activation
-remain held.
+backup/restore proof has [bounded local canaries](../standards/security.md#mixed-backup-restore-canaries);
+T3 state/health/alert/actual-consumption work and activation remain held.
 Named tooling projections follow the [operator contract](../standards/security.md#operator-forecast-tooling-isolation).
 Full backups must continue to preserve both forecast classes and protected lineage.
