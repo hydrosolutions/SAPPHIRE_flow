@@ -428,7 +428,8 @@ nonempty caller metadata. No assembler, model/FI, publication or direct-reader s
 was delivered by that storage slice. Partial T1d revision `0071` now protects both raw
 lineage columns through explicit runtime safe-column grants and STANDARD projections;
 legacy/dashboard/browser readers exclude TEST. Remaining reader, evaluation, state
-and mixed restore/publication-health closure is still required before activation.
+and mixed restore/publication-health closure is still required before activation,
+beyond the [bounded input canaries](../standards/security.md#ordinary-input-isolation-canaries).
 Named operator-tool closure is scoped by the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 Mixed-class contributor combinations are initially unsupported by this same-class
 storage boundary, pending separately reviewed T3c handling. Never omit actual
@@ -523,7 +524,8 @@ unknown/TEST-purpose dependencies before forecast queries and independently refu
 wrong-class results. This preserves authorization ordering, safe error envelopes,
 STANDARD pagination/history and passive assignment-only bundle use. Human review/publication/latest/history now enforce the bounded purpose/result
 boundaries below. Named operator readers follow the tooling checkpoint below.
-Evaluation/training/hindcast/state/health readers,
+Beyond the [bounded input canaries](../standards/security.md#ordinary-input-isolation-canaries),
+hindcast/skills/components/onboarding/calibration and state/health readers,
 full mixed-class restore/publication-health canaries, and T1c source/tenant
 consumption linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
 
@@ -957,4 +959,16 @@ with a legacy CLI wrapper; standing snapshot separates class history from labell
 all-class audit totals. See the [canonical tooling contract](../standards/security.md#operator-forecast-tooling-isolation),
 including the intentional operator JSON counter-key change. Historical/superseded
 STANDARD rows and reconciliation safeguards remain. This is partial T1d only: mixed
-ordinary-input/evaluation, full restore/publication-health, T1c and T3 holds remain.
+remaining ordinary-input/evaluation, full restore/publication-health, T1c and T3 holds
+remain beyond the bounded input checkpoint below.
+
+
+### Bounded ordinary-input canary checkpoint
+
+Real factory-created ordinary PostgreSQL stores now have mixed-storage canaries for
+API/worker fetch/batch/latest, plus worker-only station/group training target assembly
+and observation-alert decisions.
+See the [canonical scope and remaining holds](../standards/security.md#ordinary-input-isolation-canaries).
+This is regression evidence for existing separation, not a runtime behavior change.
+Hindcast/skills/components/onboarding/calibration and full mixed backup/restore/health
+proof remain deferred, alongside T1c/T3. This does not complete T1d or authorize activation.
