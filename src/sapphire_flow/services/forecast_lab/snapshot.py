@@ -67,6 +67,7 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_model_display,
     fetch_observation_window,
 )
+from sapphire_flow.services.forecast_read import require_standard_forecast_store
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ModelCombinationStrategy
 from sapphire_flow.types.ids import BMA_MODEL_ID, POOLED_MODEL_ID
@@ -746,6 +747,7 @@ def build_snapshot(
     defaults to `PRIMARY` — exactly the pre-Plan-204 behaviour (no combined
     block) — but both real callers (the route, the CLI) inject the
     deployment-configured value explicitly."""
+    require_standard_forecast_store(stores.forecast_store)
     generated_at = ensure_utc(clock())
     data_cutoff_at = generated_at
     window_start = ensure_utc(generated_at - timedelta(hours=observation_hours))

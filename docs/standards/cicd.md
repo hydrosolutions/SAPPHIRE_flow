@@ -514,7 +514,7 @@ cleared, without making dependency download caches miss on every commit.
 CI image proof is feature-branch evidence, not official release evidence. The
 existing default image job builds and scans the default image once, then checks
 release labels, runtime package identity, packaged resources, and absence of
-Aquacast/Torch against the captured immutable image ID after the scan/SBOM/smoke
+Aquacast/Torch and the SAP3 Aquacast shim registration boundary against the captured immutable image ID after the scan/SBOM/smoke
 gates. A separate Aquacast-only sibling job builds `WITH_AQUACAST=1` with the
 existing BuildKit secrets, `load: true`, `push: false`, and no build-record,
 image, or cache upload. It preserves the exact Dependabot degraded-secret rule:

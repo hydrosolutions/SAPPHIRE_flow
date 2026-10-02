@@ -58,7 +58,7 @@ RUN test -n "$SAPPHIRE_RELEASE_VERSION" \
     && if [ "$WITH_AQUACAST" = "1" ]; then \
          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW="$SAPPHIRE_RELEASE_VERSION" \
            uv sync --frozen --no-dev --no-editable --extra aquacast \
-         && .venv/bin/python -c "import aquacast, torch; from sapphire_flow.models.aquacast import discovery"; \
+         && .venv/bin/python -c "import aquacast, torch; from sapphire_flow.models.aquacast import AquacastShim, CmalPoolPT, CmalSmall; assert issubclass(CmalPoolPT, AquacastShim); assert issubclass(CmalSmall, AquacastShim)"; \
        else \
          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW="$SAPPHIRE_RELEASE_VERSION" \
            uv sync --frozen --no-dev --no-editable; \

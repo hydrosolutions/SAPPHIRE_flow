@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from sapphire_flow.api.forecast_lab_schemas import (
     SapphireForecastQuantilesSchema,
     SapphireForecastUnavailableSchema,
 )
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.forecast_lab.db_sources import (
     ForecastLabStores,
     fetch_latest_forecast_for_model,
@@ -46,6 +48,7 @@ from sapphire_flow.services.forecast_lab.snapshot import build_snapshot
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    ForecastDataUse,
     ForecastStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
@@ -2976,3 +2979,74 @@ class TestGroupAssignedModelsInTheSnapshot:
         for entry in fallbacks.values():
             assert isinstance(entry, SapphireForecastAvailableSchema)
             assert not entry.model.is_primary
+
+
+class TestSnapshotPurposeBoundary:
+    @pytest.mark.parametrize("strategy", list(ModelCombinationStrategy))
+    def test_empty_snapshot_refuses_before_clock_or_sources(
+        self, strategy: ModelCombinationStrategy
+    ) -> None:
+        stores = replace(
+            _stores(seed_default_cycle=False),
+            forecast_store=FakeForecastStore(
+                data_use=ForecastDataUse.EXPIRED_RATING_TEST
+            ),
+        )
+
+        def forbidden_clock() -> UtcDatetime:
+            pytest.fail("clock called before purpose refusal")
+
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            build_snapshot(
+                stores,
+                stations=[],
+                archive_base_path=None,
+                combination_strategy=strategy,
+                clock=forbidden_clock,
+            )
+
+
+class TestSnapshotLatestResultBoundary:
+    @pytest.mark.parametrize("result_class", ["test", "unknown"])
+    def test_unsafe_per_model_latest_fails_whole_snapshot(
+        self, result_class: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        unsafe = (
+            SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST)
+            if result_class == "test"
+            else SimpleNamespace()
+        )
+
+        class Store(FakeForecastStore):
+            def fetch_latest_forecast(
+                self,
+                station_id: StationId,
+                model_id: ModelId | None = None,
+                parameter: str | None = None,
+            ) -> Any:
+                return unsafe
+
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=Store(),
+            seed_default_cycle=False,
+        )
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                clock=_frozen_clock(),
+            )

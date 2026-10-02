@@ -169,7 +169,28 @@ def test_aquacast_payload_checks_real_capability_imports() -> None:
     payload = image_identity_probe._aquacast_payload()
     assert "import aquacast" in payload
     assert "import torch" in payload
-    assert "from sapphire_flow.models.aquacast import discovery" in payload
+    assert "from sapphire_flow.models.aquacast import AquacastShim" in payload
+    assert "CmalPoolPT" in payload
+    assert "CmalSmall" in payload
+    assert "issubclass" in payload
+    assert "discovery" not in payload
+    dockerfile = (_REPO_ROOT / "Dockerfile").read_text()
+    assert "CmalPoolPT" in dockerfile
+    assert "CmalSmall" in dockerfile
+    assert "import aquacast, torch" in dockerfile
+    assert "discovery" not in dockerfile
+
+
+def test_aquacast_payload_executes_supported_registration_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_required_resources(tmp_path)
+    monkeypatch.setenv("EXPECTED_VERSION", sapphire_flow.__version__)
+    monkeypatch.setattr(resources, "files", lambda package: tmp_path)
+    monkeypatch.setitem(sys.modules, "aquacast", object())
+    monkeypatch.setitem(sys.modules, "torch", object())
+
+    exec(image_identity_probe._aquacast_payload(), {"__name__": "__main__"})
 
 
 def test_shared_payload_executes_real_resource_probe(

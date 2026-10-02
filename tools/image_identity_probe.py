@@ -147,8 +147,13 @@ def _aquacast_payload() -> str:
         + r"""
 import aquacast
 import torch
-from sapphire_flow.models.aquacast import discovery
-print(discovery.__name__)
+from sapphire_flow.models.aquacast import AquacastShim, CmalPoolPT, CmalSmall
+for model_cls in (CmalPoolPT, CmalSmall):
+    if not issubclass(model_cls, AquacastShim):
+        raise SystemExit(f"{model_cls.__name__} is not an AquacastShim")
+    if not getattr(model_cls, "CONFIG_FILENAME", ""):
+        raise SystemExit(f"{model_cls.__name__} has no bound config")
+print(CmalPoolPT.__name__)
 """
     )
 

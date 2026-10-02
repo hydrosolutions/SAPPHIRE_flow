@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.forecast_read import (
+    require_standard_results,
+    require_standard_store,
+)
 from sapphire_flow.api.human_auth import require_human_station_permission
 from sapphire_flow.api.publication_gate import PublicationGate, get_publication_gate
 from sapphire_flow.api.review_auth import require_reviewer_or_human
@@ -62,6 +66,7 @@ def _parse_datetime(value: str, field_name: str) -> UtcDatetime:
 def _to_response(
     row: PersistedRejectedForecast, *, withheld: bool
 ) -> RejectedForecastResponse:
+    require_standard_results((row,))
     values: dict[str, list[RejectedForecastValuePoint]] | None = None
     if not withheld:
         values = {
@@ -149,6 +154,7 @@ def get_rejected_forecasts(
     end_dt = _parse_datetime(end, "end") if end is not None else now
     mid: ModelId | None = ModelId(model_id) if model_id is not None else None
 
+    require_standard_store(stores["rejected_forecast_store"])
     rows, total = stores["rejected_forecast_store"].fetch_rejected_forecasts(
         StationId(sid),
         start_dt,
@@ -158,6 +164,7 @@ def get_rejected_forecasts(
         offset=offset,
     )
 
+    require_standard_results(rows)
     return PaginatedResponse[RejectedForecastResponse](
         items=[_to_response(r, withheld=withheld) for r in rows],
         total=total,

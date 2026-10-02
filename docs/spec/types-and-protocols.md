@@ -2265,6 +2265,10 @@ Module: `types/rejected_forecast.py`.
 ```python
 @runtime_checkable
 class RejectedForecastStore(Protocol):
+    @property
+    def data_use(self) -> ForecastDataUse: ...
+        # Read-only construction-time purpose, identical in Pg and Fake.
+
     def write_batch(
         self, entries: Sequence[RejectedForecastEntry], *, abandon: threading.Event
     ) -> None: ...
@@ -3228,6 +3232,35 @@ class ObservationStore(Protocol):
         # Used by Flow 12 Branch A to find observations that need reprocessing.
         # Not implemented in v0 (no rating curves). See v0-scope.md §B.
 ```
+
+### Ordinary consumer forecast reads
+
+Modern forecast detail, station forecast pages and rejected-forecast pages require
+explicit read-only `ForecastDataUse.STANDARD` store purpose before any forecast
+count/page/detail or publication-selection query. Missing, untyped and TEST purposes
+fail with fixed safe 503; they are never silently rebound. Existing authentication,
+station/human permission, tenant, date and station-existence ordering stays intact.
+A syntactically valid authenticated forecast-by-ID request with a miswired store
+returns the same 503 for every ID before fetching; its station cannot yet be known.
+With a healthy STANDARD store, missing/out-of-scope/non-STANDARD results share the
+same 404. The detail serializer independently checks class before values or flags.
+
+All returned summary/rejection/selected-detail classes are checked before rendering
+any page item or downstream publication metadata. A wrong or unknown class refuses
+the entire page with 503, never a filtered page with contaminated totals. STANDARD
+diagnostics, pagination, QC and selected superseded history are unchanged.
+
+Forecast Lab checks purpose in shared assembly before clock/marker/section reads,
+including empty snapshots, and in each direct forecast source method. HTTP eligibility,
+scope and publication-gated refusal precede assembly. Wrong result classes fail the
+whole snapshot/export rather than become partial availability. The passive bundle
+and assignment-only skill helper do not perform forecast checks. Scalar cycle markers
+rely on purpose binding and store filtering; a timestamp cannot prove its own class.
+No response field or test-view selector is added.
+
+Adjacent human review/publication/latest/history callers share the detail serializer
+backstop but their separate pre-query closure remains deferred. This is partial T1d,
+not activation authority or evaluation/state/health/tooling/restore closure.
 
 #### ForecastStore
 
