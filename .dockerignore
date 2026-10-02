@@ -10,3 +10,5 @@ docs/
 *.md
 !README.md
 .env
+
+src/sapphire_flow/_version.py

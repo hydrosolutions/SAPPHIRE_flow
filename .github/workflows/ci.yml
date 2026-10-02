@@ -42,6 +42,15 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       # recap-dg-client is a private repo (Plan 082 Task 2H) — every job that
       # runs `uv sync` clones it, so git needs authenticated HTTPS access.
       # Scoped via insteadOf to ONLY this repo URL.
@@ -72,7 +81,7 @@ jobs:
       # Plan 402 T4 (D14): a PR that changes the committed flow-map OpenAPI
       # contract must bump its info.version. PR-only — direct pushes to
       # `main` never carry this file's changes except through a merged PR
-      # (hold-at-PR, AGENTS.md § Version Bumping).
+      # (hold-at-PR; AGENTS.md § Release Version Identity).
       - name: Check map contract version
         if: github.event_name == 'pull_request'
         run: uv run python tools/check_map_contract_version.py --base-ref "${{ github.event.pull_request.base.sha }}"
@@ -142,6 +151,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
@@ -284,25 +302,41 @@ jobs:
           # if uv.lock changed) rather than trust a listing that might be cut
           # short.
           count=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.changed_files') || count=""
-          # Reject empty AND non-numeric: `[ "$count" -gt 3000 ]` exits 2 on a
-          # non-number, and `bash -e` does NOT abort on a failed `elif` CONDITION,
-          # so a malformed count (jq yields "null" when the field is absent) would
-          # fall through to the listing and could set UV_LOCK_CHANGED=false.
           if ! [[ "$count" =~ ^[0-9]+$ ]]; then
             echo "::error::Could not read this PR's changed-file count via gh (got '${count}'); failing closed (treating as if uv.lock changed)."
             echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
           elif [ "$count" -gt 3000 ]; then
             echo "::error::This PR touches $count files, past the pull-request-files API's 3000-file hard cap; the file listing could be incomplete. Failing closed (treating as if uv.lock changed)."
             echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
-          elif gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/pr-files.txt"; then
-            if grep -qxF 'uv.lock' "$RUNNER_TEMP/pr-files.txt"; then
-              echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          elif gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > "$RUNNER_TEMP/pr-files-pages.json"; then
+            if jq -sr --argjson expected "$count" '
+              if all(.[]; type == "array") then
+                [.[][] |
+                  if (.filename | type) == "string" and ((.previous_filename // "") | type) == "string" then
+                    {filename: .filename, previous_filename: (.previous_filename // null)}
+                  else
+                    error("malformed pull-request file record")
+                  end
+                ] as $records |
+                if ($records | length) == $expected then
+                  $records[]? | .filename, (.previous_filename // empty)
+                else
+                  error("pull-request file record count mismatch")
+                end
+              else
+                error("malformed paginated pull-request files response")
+              end
+            ' "$RUNNER_TEMP/pr-files-pages.json" > "$RUNNER_TEMP/pr-files.txt"; then
+              if grep -qxF 'uv.lock' "$RUNNER_TEMP/pr-files.txt"; then
+                echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+              else
+                echo "UV_LOCK_CHANGED=false" >> "$GITHUB_ENV"
+              fi
             else
-              echo "UV_LOCK_CHANGED=false" >> "$GITHUB_ENV"
+              echo "::error::Could not parse a complete PR changed-file listing via gh; failing closed (treating as if uv.lock changed)."
+              echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
             fi
           else
-            # Capture the command's success BEFORE testing its output: an API
-            # failure must fail closed, never read as "no lock change".
             echo "::error::Could not read this PR's changed files via gh; failing closed (treating as if uv.lock changed)."
             echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
           fi
@@ -514,6 +548,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
@@ -587,6 +630,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
@@ -647,6 +699,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
@@ -822,6 +883,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
         timeout-minutes: 3  # downloads the buildx plugin
       # B0 — Build the image and load it into the local docker daemon so the
@@ -830,10 +900,15 @@ jobs:
         id: build-image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         timeout-minutes: 8  # Docker Hub base images + uv sync inside; 124s observed
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: ./Dockerfile
           tags: sapphire-flow:ci-${{ github.sha }}
+          build-args: |
+            SAPPHIRE_RELEASE_VERSION=0.dev0+g${{ github.sha }}
+            SAPPHIRE_SOURCE_REVISION=${{ github.sha }}
           load: true
           push: false
           # recap-dg-client is a private repo (Plan 082 Task 2H) — the
@@ -1221,6 +1296,135 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cdx.json
           if-no-files-found: error
+      - name: Prove default image release identity
+        if: ${{ !cancelled() && steps.sbom-require.outcome == 'success' }}
+        timeout-minutes: 2
+        env:
+          EXPECTED_VERSION: 0.dev0+g${{ github.sha }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: >-
+          python3 tools/image_identity_probe.py
+          --variant default
+          --image-tag sapphire-flow:ci-${{ github.sha }}
+          --expected-version "$EXPECTED_VERSION"
+          --expected-revision "$EXPECTED_REVISION"
+
+  aquacast-release-image-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: { contents: read, pull-requests: read }
+    env:
+      AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        timeout-minutes: 3
+      - name: Assert checkout matches GitHub SHA
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+        timeout-minutes: 3
+      - name: Detect uv.lock change (Aquacast image proof Dependabot guard)
+        timeout-minutes: 3
+        if: >-
+          env.AQUACAST_TOKEN_PRESENT != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.actor == 'dependabot[bot]'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          count=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.changed_files') || count=""
+          if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read this PR's changed-file count via gh (got '${count}'); failing closed (treating as if uv.lock changed)."
+            echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          elif [ "$count" -gt 3000 ]; then
+            echo "::error::This PR touches $count files, past the pull-request-files API's 3000-file hard cap; the file listing could be incomplete. Failing closed (treating as if uv.lock changed)."
+            echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          elif gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" > "$RUNNER_TEMP/pr-files-pages.json"; then
+            if jq -sr --argjson expected "$count" '
+              if all(.[]; type == "array") then
+                [.[][] |
+                  if (.filename | type) == "string" and ((.previous_filename // "") | type) == "string" then
+                    {filename: .filename, previous_filename: (.previous_filename // null)}
+                  else
+                    error("malformed pull-request file record")
+                  end
+                ] as $records |
+                if ($records | length) == $expected then
+                  $records[]? | .filename, (.previous_filename // empty)
+                else
+                  error("pull-request file record count mismatch")
+                end
+              else
+                error("malformed paginated pull-request files response")
+              end
+            ' "$RUNNER_TEMP/pr-files-pages.json" > "$RUNNER_TEMP/pr-files.txt"; then
+              if grep -qxF 'uv.lock' "$RUNNER_TEMP/pr-files.txt"; then
+                echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+              else
+                echo "UV_LOCK_CHANGED=false" >> "$GITHUB_ENV"
+              fi
+            else
+              echo "::error::Could not parse a complete PR changed-file listing via gh; failing closed (treating as if uv.lock changed)."
+              echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "::error::Could not read this PR's changed files via gh; failing closed (treating as if uv.lock changed)."
+            echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          fi
+      - name: AQUACAST_TOKEN absent — fail image proof
+        if: >-
+          env.AQUACAST_TOKEN_PRESENT != 'true' &&
+          !(github.event_name == 'pull_request' &&
+            github.actor == 'dependabot[bot]' &&
+            env.UV_LOCK_CHANGED == 'false')
+        run: |
+          echo "::error::AQUACAST_TOKEN is not available to this run. The Aquacast image proof cannot build the real private extra unless this is the supported Dependabot degraded case with uv.lock unchanged."
+          exit 1
+      - name: AQUACAST_TOKEN absent — image proof not performed
+        if: >-
+          env.AQUACAST_TOKEN_PRESENT != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.actor == 'dependabot[bot]' &&
+          env.UV_LOCK_CHANGED == 'false'
+        run: |
+          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof was NOT performed; do not claim both images were verified."
+          echo "### Aquacast image proof not performed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Supported Dependabot degraded case: AQUACAST_TOKEN absent and uv.lock unchanged." >> "$GITHUB_STEP_SUMMARY"
+      - name: Build Aquacast app image
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        timeout-minutes: 15
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: sapphire-flow-aquacast:ci-proof-${{ github.sha }}
+          build-args: |
+            WITH_AQUACAST=1
+            SAPPHIRE_RELEASE_VERSION=0.dev0+g${{ github.sha }}
+            SAPPHIRE_SOURCE_REVISION=${{ github.sha }}
+          load: true
+          push: false
+          secrets: |
+            recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+            aquacast_token=${{ secrets.AQUACAST_TOKEN }}
+      - name: Prove Aquacast image release identity
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 3
+        env:
+          EXPECTED_VERSION: 0.dev0+g${{ github.sha }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: >-
+          python3 tools/image_identity_probe.py
+          --variant aquacast
+          --image-tag sapphire-flow-aquacast:ci-proof-${{ github.sha }}
+          --expected-version "$EXPECTED_VERSION"
+          --expected-revision "$EXPECTED_REVISION"
 
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).

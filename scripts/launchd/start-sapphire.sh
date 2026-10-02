@@ -24,6 +24,30 @@ DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
 # scripts/launchd/run-recap-probe.sh's RECAP_PROBE_SCRIPT etc.
 REPO_ROOT="${SAPPHIRE_REPO_ROOT:-/Users/sapphire/SAPPHIRE_flow}"
 BACKUP_DIR="${SAPPHIRE_BACKUP_DIR:-/Volumes/sapphire-backup/pg_dumps}"
+SAPPHIRE_PYTHON="${SAPPHIRE_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
+
+require_sapphire_python() {
+    if [ "${SAPPHIRE_PYTHON#/}" = "${SAPPHIRE_PYTHON}" ]; then
+        echo "SAPPHIRE_PYTHON must be an absolute path: ${SAPPHIRE_PYTHON}" >&2
+        exit 1
+    fi
+    if [ ! -x "${SAPPHIRE_PYTHON}" ]; then
+        echo "SAPPHIRE_PYTHON is not executable: ${SAPPHIRE_PYTHON}" >&2
+        echo "Run 'uv sync' during provisioning or set SAPPHIRE_PYTHON to a Python >=3.12 interpreter." >&2
+        exit 1
+    fi
+    "${SAPPHIRE_PYTHON}" - <<'PY'
+from __future__ import annotations
+
+import sys
+
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        "SAPPHIRE_PYTHON must be Python >=3.12; "
+        f"got {sys.version_info.major}.{sys.version_info.minor}"
+    )
+PY
+}
 
 # --- Backup target device verification (Plan 194 D1) ------------------------
 # Mirrors the identical trio of functions in scripts/bootstrap-mac-mini.sh —
@@ -102,6 +126,22 @@ backup_target_verified() {
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0
 fi
+
+cd "${REPO_ROOT}"
+require_sapphire_python
+
+"${SAPPHIRE_PYTHON}" - <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+
+from tools.release_env_identity import DotenvIdentityError, read_identity
+
+try:
+    read_identity(Path(".env"), require_present=True)
+except DotenvIdentityError as exc:
+    raise SystemExit(str(exc)) from exc
+PY
 
 WAIT_MAX=240
 WAITED=0

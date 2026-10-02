@@ -2,6 +2,7 @@
 .DS_Store
 
 # Python-generated files
+src/sapphire_flow/_version.py
 __pycache__/
 *.py[oc]
 build/
