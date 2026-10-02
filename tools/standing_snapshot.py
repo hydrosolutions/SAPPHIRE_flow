@@ -457,8 +457,17 @@ union all select 'observations_latest',
 union all select 'weather_forecast_rows', count(*)::text from weather_forecasts
 union all select 'weather_forecast_cycle',
   coalesce(max(cycle_time)::text, '-') from weather_forecasts
-union all select 'forecasts', count(*)::text from forecasts
-union all select 'forecasts_latest',
+union all select 'forecasts_standard_count', count(*)::text from forecasts
+  where data_use = 'standard'
+union all select 'forecasts_standard_latest_issued_at',
+  coalesce(max(issued_at)::text, '-') from forecasts where data_use = 'standard'
+union all select 'forecasts_expired_rating_test_count', count(*)::text from forecasts
+  where data_use = 'expired_rating_test'
+union all select 'forecasts_expired_rating_test_latest_issued_at',
+  coalesce(max(issued_at)::text, '-') from forecasts
+  where data_use = 'expired_rating_test'
+union all select 'forecasts_all_classes_audit_count', count(*)::text from forecasts
+union all select 'forecasts_all_classes_audit_latest_issued_at',
   coalesce(max(issued_at)::text, '-') from forecasts
 union all select 'hindcasts', count(*)::text from hindcast_forecasts
 union all select 'skill_scores', count(*)::text from skill_scores
@@ -611,6 +620,10 @@ def emit(snapshot: Snapshot) -> None:
     if live:
         _rule("LIVE HOST")
         print(f"  api: {live['api_health']}")
+        print(
+            "  Forecast all-class totals are audit-only; "
+            "issue times are not freshness verdicts."
+        )
         for key, value in live["counters"].items():
             print(f"    {key:<24} {value}")
         for check in live["pipeline_health"]:

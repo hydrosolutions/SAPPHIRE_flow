@@ -47,6 +47,7 @@ _EXCLUDED_NAMES = frozenset(
         "audit_distribution_shift.py",
         "063_e2e_verify.py",
         "plan100_forecast_feed_resilience.py",
+        "forecast_feed_resilience.py",
         "nepal_forcing_run.py",
         "nepal_forcing_seed.sql",
         "recap_probe_loop.py",

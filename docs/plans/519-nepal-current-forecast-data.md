@@ -427,8 +427,9 @@ Completeness remains the future T3 assembler contract, not a claim inferred from
 nonempty caller metadata. No assembler, model/FI, publication or direct-reader sweep
 was delivered by that storage slice. Partial T1d revision `0071` now protects both raw
 lineage columns through explicit runtime safe-column grants and STANDARD projections;
-legacy/dashboard/browser readers exclude TEST. Remaining reader, evaluation, state,
-tooling and mixed restore/publication-health closure is still required before activation.
+legacy/dashboard/browser readers exclude TEST. Remaining reader, evaluation, state
+and mixed restore/publication-health closure is still required before activation.
+Named operator-tool closure is scoped by the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 Mixed-class contributor combinations are initially unsupported by this same-class
 storage boundary, pending separately reviewed T3c handling. Never omit actual
 contributors to fit the constraint; reject/defer such a combination.
@@ -521,7 +522,8 @@ backup/owner authority and `0069`/`0070` refusal remain unchanged. Modern foreca
 unknown/TEST-purpose dependencies before forecast queries and independently refuse
 wrong-class results. This preserves authorization ordering, safe error envelopes,
 STANDARD pagination/history and passive assignment-only bundle use. Human review/publication/latest/history now enforce the bounded purpose/result
-boundaries below. Evaluation/training/hindcast/state/health/tooling readers,
+boundaries below. Named operator readers follow the tooling checkpoint below.
+Evaluation/training/hindcast/state/health readers,
 full mixed-class restore/publication-health canaries, and T1c source/tenant
 consumption linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
 
@@ -852,8 +854,9 @@ for this final full-suite requirement.
 
 One agent owns each reviewed implementation pass. Slice PRs along the phases once the
 design checkpoint is resolved, preserving safe default-off operation until prerequisites
-are met. Every code PR updates affected docs and includes the currently mandated patch
-bump. Every implementation PR carries the canonical Effort URL as a neutral reference,
+are met. Every code PR updates affected docs and follows the current `AGENTS.md`
+release-identity policy: no routine static version bump, and no agent-created release
+tags or release publication. Every implementation PR carries the canonical Effort URL as a neutral reference,
 never an auto-closing instruction. Required independent reviews and owner merge apply.
 Keep detailed review reports local, concise outcomes/unresolved findings on PRs.
 
@@ -945,3 +948,13 @@ to a verified endpoint/API station identity. A restatement needs new feed eviden
 QC-only reprocessing snapshots its new QC generation without re-attesting the feed.
 Proof/association recording, configured-rule verification, full activation inventory
 and all CLI/flow wiring remain held. No runtime or delivery-operator grant is added.
+
+
+### Bounded operator tooling reader checkpoint
+
+The loose forecast-feed diagnostic script now uses explicit safe STANDARD headers,
+with a legacy CLI wrapper; standing snapshot separates class history from labelled
+all-class audit totals. See the [canonical tooling contract](../standards/security.md#operator-forecast-tooling-isolation),
+including the intentional operator JSON counter-key change. Historical/superseded
+STANDARD rows and reconciliation safeguards remain. This is partial T1d only: mixed
+ordinary-input/evaluation, full restore/publication-health, T1c and T3 holds remain.

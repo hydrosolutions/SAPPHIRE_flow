@@ -14,11 +14,11 @@ _TOOL_PATH = Path(__file__).parents[3] / "tools" / "standing_snapshot.py"
 
 
 @pytest.fixture()
-def mod() -> ModuleType:
+def mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     spec = importlib.util.spec_from_file_location("standing_snapshot_tool", _TOOL_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["standing_snapshot_tool"] = module
+    monkeypatch.setitem(sys.modules, "standing_snapshot_tool", module)
     spec.loader.exec_module(module)
     return module
 
@@ -124,3 +124,59 @@ class TestParsePlanStatus:
 
         assert plan is not None
         assert plan.status == "SUPERSEDED"
+
+
+class TestForecastAuditLabels:
+    def test_collect_and_render_preserve_explicit_class_labels(
+        self,
+        mod: ModuleType,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import io
+
+        expected = {
+            "forecasts_standard_count": "2",
+            "forecasts_standard_latest_issued_at": "2026-10-01",
+            "forecasts_expired_rating_test_count": "1",
+            "forecasts_expired_rating_test_latest_issued_at": "2026-10-02",
+            "forecasts_all_classes_audit_count": "3",
+            "forecasts_all_classes_audit_latest_issued_at": "2026-10-02",
+        }
+        monkeypatch.setattr(
+            mod.urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: io.BytesIO(b'{"status":"ok"}'),
+        )
+
+        def psql(host: str, sql: str) -> str:
+            if "count(*)" in sql:
+                # Exercise actual SQL labels, not a made-up caller dictionary.
+                import re
+
+                keys = re.findall(r"select '([^']+)'", sql)
+                return "\n".join(f"{key}|{expected.get(key, '0')}" for key in keys)
+            return ""
+
+        monkeypatch.setattr(mod, "_psql", psql)
+        findings = []
+        live = mod.collect_live("unused", "http://unused", findings)
+        assert {key: live["counters"][key] for key in expected} == expected
+        assert "forecasts" not in live["counters"]
+        snapshot = mod.Snapshot(
+            repo={
+                "branch": "test",
+                "head": "test",
+                "version": "dev",
+                "alembic_heads": [],
+                "dirty": False,
+                "worktrees": [],
+            },
+            plans={"active_count": 0, "archived_count": 0, "by_status": {}},
+            live=live,
+        )
+        mod.emit(snapshot)
+        rendered = capsys.readouterr().out
+        assert "forecasts_standard_count" in rendered
+        assert "forecasts_all_classes_audit_count" in rendered
+        assert "audit-only" in rendered.lower()

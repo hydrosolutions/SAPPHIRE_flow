@@ -1436,8 +1436,8 @@ Legacy forecast list/detail/data readers, dashboard counts/latest/status, and ge
 browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
 STANDARD history remains readable. Shared blobs remain visible through a STANDARD
 reference. The browser never projects either raw lineage column. This is partial T1d:
-evaluation/state/health/tooling paths and mixed-class restore/publication-health
-proof remain holds. Publication consumer pre-query boundaries are described below.
+evaluation/state/health paths and mixed-class restore/publication-health
+proof remain holds. The named operator tools follow the contract below. Publication consumer pre-query boundaries are described below.
 Modern forecast detail/station/rejection routes and Forecast Lab require explicit
 STANDARD store purpose before forecast counts/pages/detail or scalar cycle reads.
 Unknown/TEST dependencies return safe 503; wrong-class detail returns the same 404 as
@@ -1469,8 +1469,8 @@ SQL echo and direct owner SQL remain privileged tooling, not authorized TEST wir
 Future nonowner TEST contributors also require separately reviewed read/write authority:
 the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denied by
 `0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
-Explicit deferred tooling includes `scripts/plan100_forecast_feed_resilience.py`,
-`tools/standing_snapshot.py` and mixed-class `scripts/restore-rehearsal.sh` verification.
+The operator tooling boundary is documented below. Mixed-class
+`scripts/restore-rehearsal.sh` verification remains deferred.
 Evaluation/training/hindcast/state/health, full mixed protected restore/publication-health
 and T1c/T3 consumption remain held.
 
@@ -1483,6 +1483,68 @@ retain their order. By-ID misconfiguration yields uniform 503 before station sco
 is knowable; healthy STANDARD missing/foreign/wrong-class details remain 404.
 This adds no grants, publication permission or TEST writer authority.
 
-This does not close ordinary-input/evaluation canaries, tooling projections, mixed
+The publication slice does not close ordinary-input/evaluation canaries, mixed
 backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+The named operator tooling projections follow the contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
+
+
+### Operator forecast tooling isolation
+
+`scripts/forecast_feed_resilience.py` is the loose domain implementation;
+`scripts/plan100_forecast_feed_resilience.py` remains its direct-CLI compatibility
+wrapper. Neither is packaged as a runtime CLI or copied into the runtime image.
+All five subcommands, flags/defaults, priority reconciliation safeguards and the
+`plan100_step0_snapshot.json` filename/top-level JSON keys are retained. The wrapper
+delegates to its sibling loose file: both files must travel together, preferably in
+a repository checkout. Standalone copying of only the legacy file is not supported.
+
+These queries require a compatible migrated database. `data_use` starts at `0069`:
+the new standing counter query is incompatible with pre-`0069` schemas, whereas the
+former query did not require that column. The safe projection and runtime role
+contract require `0071` and corresponding role
+bootstrap. The supported rollout requires schema `0071` and its roles. The last
+root-observed host schema `0067` is not compatible; this code grants no live invocation
+or upgrade authority. Standing snapshot retains its existing empty-counter behavior
+when the counter query fails. Empty counters are not compatibility or successful-read
+proof. No pre-`0069` fallback may silently drop the class filter.
+
+`blackout_forecasts` selects an explicit reviewed safe forecast-header projection
+for `STANDARD` only. It never selects or emits `input_lineage`, forecast values or
+linked evidence. All other existing header fields remain. The issue-time window
+is lower-inclusive/upper-exclusive; ordering remains issue time, station and model.
+No status/QC/current predicate is added: superseded STANDARD history stays present.
+Both blackout windows retain fixed parameterized PostgreSQL timestamp binding from
+CLI strings. The alert window's prior VARCHAR/timestamptz binding failure is repaired
+without a new timestamp parser, defaults or timezone policy; boundaries/order stay
+unchanged for default ISO and explicit offset inputs.
+This operator export is not authorized consumer/publication output. Future columns
+require explicit projection review rather than automatic inclusion.
+
+Standing snapshot has an intentional operator JSON key change. The old ambiguous
+`forecasts` and `forecasts_latest` keys are removed. `live.counters` now contains:
+
+- `forecasts_standard_count` and `forecasts_standard_latest_issued_at`;
+- `forecasts_expired_rating_test_count` and
+  `forecasts_expired_rating_test_latest_issued_at`;
+- `forecasts_all_classes_audit_count` and
+  `forecasts_all_classes_audit_latest_issued_at`.
+
+Values remain strings; an empty-class latest timestamp is `-`. Both class histories
+include superseded rows. All-class fields and their rendering are audit-only, never
+ordinary freshness. None of these issue-time aggregates establishes freshness, QC,
+validity or model coverage. Other counters, health/findings and read-only transport
+are unchanged. No in-repository keyed consumer of the removed names was found;
+external snapshot consumers may need an explicit update. This is not a claim that
+the operator JSON schema stayed unchanged.
+
+Disposable role-backed tests prove safe projection under actual API/worker grants,
+class-disjoint history and raw-lineage denial. The full standing counter query is
+exercised as an operator aggregate; forecast-only branches are also tested under
+runtime safe-column grants. No role privileges are expanded. Structural TEST seeds
+remove only the dormant forecast writer guard inside a rolled-back test transaction;
+this is not activation authority.
+
+This closes only the named tooling readers. Ordinary-input/evaluation canaries,
+mixed restore/publication-health proof and T1c/T3 actual-consumption/state/health/alert
+work remain held. Full backups must retain both classes and protected lineage.
