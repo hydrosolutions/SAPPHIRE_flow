@@ -1436,8 +1436,9 @@ Legacy forecast list/detail/data readers, dashboard counts/latest/status, and ge
 browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
 STANDARD history remains readable. Shared blobs remain visible through a STANDARD
 reference. The browser never projects either raw lineage column. This is partial T1d:
-evaluation/state/health paths and mixed-class restore/publication-health
-proof remain holds. The named operator tools follow the contract below. Publication consumer pre-query boundaries are described below.
+Remaining evaluation/state/health paths and mixed-class restore/publication-health
+proof remain holds. The bounded factory/training/observation-alert canaries are scoped
+[below](#ordinary-input-isolation-canaries). The named operator tools follow the contract below. Publication consumer pre-query boundaries are described below.
 Modern forecast detail/station/rejection routes and Forecast Lab require explicit
 STANDARD store purpose before forecast counts/pages/detail or scalar cycle reads.
 Unknown/TEST dependencies return safe 503; wrong-class detail returns the same 404 as
@@ -1471,8 +1472,9 @@ the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denie
 `0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
 The operator tooling boundary is documented below. Mixed-class
 `scripts/restore-rehearsal.sh` verification remains deferred.
-Evaluation/training/hindcast/state/health, full mixed protected restore/publication-health
-and T1c/T3 consumption remain held.
+Beyond the [bounded input canaries](#ordinary-input-isolation-canaries),
+hindcast/skills/components/onboarding/calibration, state/health, full mixed protected
+restore/publication-health and T1c/T3 consumption remain held.
 
 ### Bounded publication consumer isolation
 
@@ -1483,8 +1485,10 @@ retain their order. By-ID misconfiguration yields uniform 503 before station sco
 is knowable; healthy STANDARD missing/foreign/wrong-class details remain 404.
 This adds no grants, publication permission or TEST writer authority.
 
-The publication slice does not close ordinary-input/evaluation canaries, mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+The publication slice alone does not close ordinary-input/evaluation canaries;
+see the later [bounded input evidence](#ordinary-input-isolation-canaries). Mixed
+backup/restore proof, T3 state/health/alert/actual-consumption work and activation
+remain held.
 The named operator tooling projections follow the contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
@@ -1545,6 +1549,38 @@ runtime safe-column grants. No role privileges are expanded. Structural TEST see
 remove only the dormant forecast writer guard inside a rolled-back test transaction;
 this is not activation authority.
 
-This closes only the named tooling readers. Ordinary-input/evaluation canaries,
+This closes only the named tooling readers. Beyond the later
+[bounded input canaries](#ordinary-input-isolation-canaries), remaining evaluation,
 mixed restore/publication-health proof and T1c/T3 actual-consumption/state/health/alert
 work remain held. Full backups must retain both classes and protected lineage.
+
+### Ordinary input isolation canaries
+
+`tests/integration/services/test_forecast_data_use_isolation.py` exercises actual
+factory-created PostgreSQL observation stores. API and worker roles cover ordinary
+fetch/batch/latest plus protected-read denial. Only the worker role executes
+station/group training target assembly and observation-alert service canaries.
+Nonempty typed `QC_PASSED` ordinary `MANUAL_IMPORT` and historically valid
+`RATING_CURVE_DERIVED` discharge remain readable. Same-time and newer extreme
+provisional discharge, with exact typed measurement/feed/curve/reference evidence,
+cannot alter these ordinary results. Ordinary control changes alter targets and
+alerts; provisional-only history neither raises an alert nor resolves an existing one.
+
+Training evidence covers two hourly-aligned discharge targets within a four-hour
+window, not complete input coverage. Requirements exclude forcing/static features;
+no forcing data is fetched, and the real basin store is passed but not read. Existing
+SAP3 test doubles supply requirements only: no model training, prediction or FI
+execution runs. Ordinary history is seeded with valid typed QC state; this is not
+Stage1 QC execution evidence or a new requirement for optional QC flags/rule metadata.
+No ordinary-QC negative control or additional unit-test cases are claimed here.
+
+This is evidence for existing physical storage/factory separation, not a runtime
+filter or provisional-reader injection contract. Synthetic owner permission exists
+only in disposable rollback transactions; runtime protected reads remain denied.
+No TEST forecast writer, publication guard or role grant is bypassed.
+
+This bounded slice does **not** close hindcast, skills, components, onboarding or
+calibration canaries; full mixed-class backup/restore and narrow-principal publication
+health proof remain separate. T1c consumption linkage/activation and T3 complete-lookback
+lineage, state, freshness and forecast/combined-alert isolation remain held. Observation
+alert evidence is not forecast-alert evidence or authority for operational use.

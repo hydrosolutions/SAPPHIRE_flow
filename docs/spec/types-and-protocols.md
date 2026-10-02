@@ -2090,7 +2090,8 @@ forecast parent tables. API/worker readers receive explicit safe-column grants;
 STANDARD store projections do not request raw lineage. Legacy forecast, dashboard and
 generic browser queries filter STANDARD, including forecast-linked children and shared
 blob references. This is partial T1d, not activation readiness: remaining ordinary
-reader/evaluation/state and mixed restore/publication-health holds still apply;
+reader/evaluation/state and mixed restore/publication-health holds still apply beyond
+the [bounded input canaries](../standards/security.md#ordinary-input-isolation-canaries);
 the named operator readers follow the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 
 Contributor references initially require the same class. Mixed STANDARD/TEST
@@ -3262,6 +3263,8 @@ No response field or test-view selector is added.
 Human review/publication/latest/history enforce the bounded purpose and result
 contract in [Bounded publication consumer isolation](#bounded-publication-consumer-isolation).
 This is partial T1d, not activation authority or evaluation/state/health/restore closure.
+Completed factory/training/observation-alert canaries are scoped by the
+[bounded input contract](../standards/security.md#ordinary-input-isolation-canaries).
 Named operator-tool closure is scoped by the [tooling contract](../standards/security.md#operator-forecast-tooling-isolation).
 
 #### ForecastStore
@@ -5414,7 +5417,9 @@ that omit a nonwithdrawn referenced detail are outside that invariant; this patc
 does not define a new public error contract for them. Mixed missing/unsafe-detail
 canaries still require whole-batch class refusal before metadata.
 
-The publication slice does not close ordinary-input/evaluation canaries, mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+The publication slice alone does not close ordinary-input/evaluation canaries;
+see the [bounded input evidence](../standards/security.md#ordinary-input-isolation-canaries). Mixed
+backup/restore proof, T3 state/health/alert/actual-consumption work and activation
+remain held.
 Named tooling projections follow the [operator contract](../standards/security.md#operator-forecast-tooling-isolation).
 Full backups must continue to preserve both forecast classes and protected lineage.

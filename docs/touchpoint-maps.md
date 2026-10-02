@@ -1680,7 +1680,8 @@ trigger and dormant refusal, without implying stronger lineage authority.
 No activation capability is added. Revision `0071` protects both raw lineage columns
 through explicit safe-column runtime SELECT grants and STANDARD projections; legacy,
 dashboard and generic browser queries exclude TEST. This is partial T1d: remaining
-reader/evaluation/state and mixed restore/publication-health holds still apply;
+reader/evaluation/state and mixed restore/publication-health holds still apply beyond
+the [bounded input canaries](standards/security.md#ordinary-input-isolation-canaries);
 the named operator tools follow the [tooling contract](standards/security.md#operator-forecast-tooling-isolation).
 SQL source/tenant linkage and actual-consumption completeness for rejection lineage remain
 held. The two unconditional TEST write refusals are necessary until those closures and
@@ -1730,8 +1731,10 @@ selected-superseded STANDARD history tests. Include real Pg purpose refusal,
 auth ordering, publication replay/concurrency and modern API/Lab regressions.
 Do not add a forecast dependency to the publication change feed.
 
-The publication slice does not close ordinary-input/evaluation canaries, mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
+The publication slice alone does not close ordinary-input/evaluation canaries;
+see the [bounded input evidence](standards/security.md#ordinary-input-isolation-canaries). Mixed
+backup/restore proof, T3 state/health/alert/actual-consumption work and activation
+remain held.
 The named tooling projections follow the tooling contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
@@ -1749,3 +1752,12 @@ wrapper and standing snapshot class/audit counters. Verify actual runtime-role
 projection, historical/superseded rows, window boundaries, CLI compatibility and
 operator JSON/render labels. Keep both scripts excluded from the runtime image.
 No grant, backup, state or activation change is implied.
+
+
+### Ordinary training and observation-alert isolation
+
+Follow the [bounded ordinary-input canary contract](standards/security.md#ordinary-input-isolation-canaries).
+The actual factory/store, station/group target assembly and observation-alert paths
+have mixed-storage controls. Preserve legitimate manual/rating history and the
+protected provisional boundary. Hindcast/skills/components/onboarding/calibration,
+full backup/restore/health proof and T1c/T3 remain separate holds.
