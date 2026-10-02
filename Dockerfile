@@ -14,8 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git libgeos-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md ./
-RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
+COPY pyproject.toml setup.py uv.lock README.md ./
 
 # recap-dg-client (Plan 082 Task 2H) is a private git dependency
 # (hydrosolutions/recap-dg-client) with no published wheel — `uv sync`
@@ -43,20 +42,37 @@ RUN --mount=type=secret,id=recap_dg_client_token \
     git config --global url."https://x-access-token:$(cat /run/secrets/recap_dg_client_token)@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git" \
     && if [ "$WITH_AQUACAST" = "1" ]; then \
          git config --global url."https://x-access-token:$(cat /run/secrets/aquacast_token)@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git" \
-         && uv sync --frozen --no-dev --extra aquacast; \
+         && uv sync --frozen --no-dev --no-install-project --extra aquacast; \
        else \
-         uv sync --frozen --no-dev; \
+         uv sync --frozen --no-dev --no-install-project; \
        fi \
     && rm -f /root/.gitconfig
 
+ARG SAPPHIRE_RELEASE_VERSION
+ARG SAPPHIRE_SOURCE_REVISION
 COPY src/ src/
 COPY alembic.ini ./
 COPY alembic/ alembic/
+RUN test -n "$SAPPHIRE_RELEASE_VERSION" \
+    && test -n "$SAPPHIRE_SOURCE_REVISION" \
+    && if [ "$WITH_AQUACAST" = "1" ]; then \
+         SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW="$SAPPHIRE_RELEASE_VERSION" \
+           uv sync --frozen --no-dev --no-editable --extra aquacast \
+         && .venv/bin/python -c "import aquacast, torch; from sapphire_flow.models.aquacast import discovery"; \
+       else \
+         SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW="$SAPPHIRE_RELEASE_VERSION" \
+           uv sync --frozen --no-dev --no-editable; \
+       fi
 
 
 # python:3.12.13-slim (manifest-list digest pinned 2026-04-21; re-pinned 2026-06-02
 # to the debian 13.5 rebuild — clears CVE-2026-4878 libcap2 + prior OpenSSL/pip CVEs — per Plan 064 B1)
 FROM python:3.14.6-slim@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
+
+ARG SAPPHIRE_RELEASE_VERSION
+ARG SAPPHIRE_SOURCE_REVISION
+LABEL org.opencontainers.image.version="$SAPPHIRE_RELEASE_VERSION" \
+      org.opencontainers.image.revision="$SAPPHIRE_SOURCE_REVISION"
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 

@@ -64,6 +64,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 EXPECTED_PATH="/Users/sapphire/SAPPHIRE_flow"
 BACKUP_DIR="/Volumes/sapphire-backup/pg_dumps"
 CAMELS_CH_DIR="${HOME}/camels-ch"
+SAPPHIRE_PYTHON="${SAPPHIRE_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
 
 # --- Backup target device verification (Plan 194 D1) ------------------------
 # Mirrors the identical trio of functions in scripts/launchd/start-sapphire.sh
@@ -138,6 +139,29 @@ backup_target_verified() {
     [ "${backup_dev}" != "${data_dev}" ] || return 1
 
     mount | grep -q " on ${mount_root} "
+}
+
+require_sapphire_python() {
+    if [ "${SAPPHIRE_PYTHON#/}" = "${SAPPHIRE_PYTHON}" ]; then
+        fail "SAPPHIRE_PYTHON must be an absolute path: ${SAPPHIRE_PYTHON}"
+        return 1
+    fi
+    if [ ! -x "${SAPPHIRE_PYTHON}" ]; then
+        fail "SAPPHIRE_PYTHON is not executable: ${SAPPHIRE_PYTHON}"
+        fail "Run 'uv sync' during provisioning or set SAPPHIRE_PYTHON to a Python >=3.12 interpreter."
+        return 1
+    fi
+    "${SAPPHIRE_PYTHON}" - <<'PY'
+from __future__ import annotations
+
+import sys
+
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        "SAPPHIRE_PYTHON must be Python >=3.12; "
+        f"got {sys.version_info.major}.{sys.version_info.minor}"
+    )
+PY
 }
 
 run() {
@@ -740,17 +764,32 @@ else
     success "CAMELS-CH present"
 fi
 
-# --- Step 8: VERSION ----------------------------------------------------------
-FAILED_STEP="VERSION resolve"
-hdr "8. Version tag"
-if [ -z "${VERSION:-}" ]; then
-    VERSION="latest"
-    warn "VERSION unset — defaulting to 'latest' (not a pinned release)"
-    warn "For production, export VERSION=vX.Y.Z before bootstrap."
+# --- Step 8: release identity -------------------------------------------------
+FAILED_STEP="release identity resolve"
+hdr "8. Release identity"
+cd "${REPO_ROOT}"
+if ! require_sapphire_python || ! "${SAPPHIRE_PYTHON}" - <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+
+from tools.release_env_identity import DotenvIdentityError, read_identity
+
+try:
+    read_identity(Path(".env"), require_present=True)
+except DotenvIdentityError as exc:
+    raise SystemExit(str(exc)) from exc
+PY
+then
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        warn "release identity .env is incomplete (dry-run: would abort here; continuing)"
+    else
+        fail "release identity .env is incomplete; run the release receipt procedure first"
+        exit 1
+    fi
 else
-    success "VERSION=${VERSION}"
+    success "release identity .env present"
 fi
-export VERSION
 
 # --- Step 9: Compose up -------------------------------------------------------
 FAILED_STEP="docker compose up"

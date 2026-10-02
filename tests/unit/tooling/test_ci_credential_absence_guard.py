@@ -27,10 +27,13 @@ predicate would misclassify that human-triggered run as degrade-eligible.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -177,6 +180,7 @@ class TestLockChangeDetection:
         run = step["run"]
         assert ".filename" in run
         assert ".previous_filename" in run
+        assert "jq -sr" in run
 
     def test_detect_step_matches_uv_lock_exactly_not_a_substring(self) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
@@ -248,17 +252,9 @@ class TestLockChangeDetection:
         # assignment must fail this test.
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         run = step["run"]
-        grep_idx = run.index("if grep -qxF 'uv.lock'")
-        inner = run[grep_idx:]
-        then_idx = inner.index("then")
-        else_idx = inner.index("\n  else\n")
-        fi_idx = inner.index("\n  fi\n")
-        then_branch = inner[then_idx:else_idx]
-        else_branch = inner[else_idx:fi_idx]
-        assert "UV_LOCK_CHANGED=true" in then_branch
-        assert "UV_LOCK_CHANGED=false" not in then_branch
-        assert "UV_LOCK_CHANGED=false" in else_branch
-        assert "UV_LOCK_CHANGED=true" not in else_branch
+        assert "if grep -qxF 'uv.lock' \"$RUNNER_TEMP/pr-files.txt\"; then" in run
+        assert 'echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"' in run
+        assert 'echo "UV_LOCK_CHANGED=false" >> "$GITHUB_ENV"' in run
 
     def test_only_the_detect_step_ever_sets_uv_lock_changed(self) -> None:
         # If any later step could also write UV_LOCK_CHANGED, the fail
@@ -424,3 +420,328 @@ class TestCicdMdDocumentsBothSecretStores:
         assert "Dependabot" in section
         assert "Actions" in section
         assert "both" in section.lower()
+
+
+_AQUACAST_IMAGE_JOB = "aquacast-release-image-proof"
+
+
+def _job_step(job_name: str, step_name: str) -> dict[str, Any]:
+    for step in _ci_yml()["jobs"][job_name]["steps"]:
+        if step.get("name") == step_name:
+            return step
+    raise AssertionError(f"no step named {step_name!r} in job {job_name!r}")
+
+
+def _normalized_job_if(job_name: str, step_name: str) -> str:
+    return " ".join(_job_step(job_name, step_name)["if"].split())
+
+
+class TestAquacastImageProofCredentialGuard:
+    def test_job_permissions_are_read_only_for_pr_file_guard(self) -> None:
+        assert _ci_yml()["jobs"][_AQUACAST_IMAGE_JOB].get("permissions") == {
+            "contents": "read",
+            "pull-requests": "read",
+        }
+
+    def test_job_level_env_declares_token_presence(self) -> None:
+        job = _ci_yml()["jobs"][_AQUACAST_IMAGE_JOB]
+        assert job.get("env", {}).get("AQUACAST_TOKEN_PRESENT") == (
+            "${{ secrets.AQUACAST_TOKEN != '' }}"
+        )
+
+    def test_detect_step_condition_matches_unit_guard(self) -> None:
+        assert _normalized_job_if(
+            _AQUACAST_IMAGE_JOB,
+            "Detect uv.lock change (Aquacast image proof Dependabot guard)",
+        ) == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]'"
+        )
+
+    def test_detect_step_uses_complete_paginated_count_checked_pattern(self) -> None:
+        run = _job_step(
+            _AQUACAST_IMAGE_JOB,
+            "Detect uv.lock change (Aquacast image proof Dependabot guard)",
+        )["run"]
+        assert "gh api --paginate" in run
+        assert "pr-files-pages.json" in run
+        assert "jq -sr --argjson expected" in run
+        assert "($records | length) == $expected" in run
+        assert "previous_filename" in run
+        assert "grep -qxF 'uv.lock'" in run
+        assert "listed=$(jq 'length'" not in run
+        assert "--jq '.'" not in run
+
+    def test_unsupported_absent_token_condition_fails_closed(self) -> None:
+        assert _normalized_job_if(
+            _AQUACAST_IMAGE_JOB, "AQUACAST_TOKEN absent — fail image proof"
+        ) == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "!(github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]' && "
+            "env.UV_LOCK_CHANGED == 'false')"
+        )
+
+    def test_supported_dependabot_degraded_case_is_non_claiming(self) -> None:
+        step = _job_step(
+            _AQUACAST_IMAGE_JOB, "AQUACAST_TOKEN absent — image proof not performed"
+        )
+        assert _normalized_job_if(
+            _AQUACAST_IMAGE_JOB, "AQUACAST_TOKEN absent — image proof not performed"
+        ) == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]' && "
+            "env.UV_LOCK_CHANGED == 'false'"
+        )
+        assert "NOT performed" in step["run"]
+        assert "do not claim both images were verified" in step["run"]
+
+
+_DETECT_STEPS = [
+    pytest.param(
+        _JOB_NAME,
+        "Detect uv.lock change (Dependabot degraded-coverage guard)",
+        id="unit",
+    ),
+    pytest.param(
+        _AQUACAST_IMAGE_JOB,
+        "Detect uv.lock change (Aquacast image proof Dependabot guard)",
+        id="aquacast-image-proof",
+    ),
+]
+
+
+def _detect_step(job_name: str, step_name: str) -> dict[str, Any]:
+    if job_name == _JOB_NAME:
+        return _step(step_name)
+    return _job_step(job_name, step_name)
+
+
+class TestLockChangeDetectionShellBehavior:
+    def _run_detect_step(
+        self,
+        tmp_path: Path,
+        *,
+        job_name: str,
+        step_name: str,
+        count_payload: str,
+        file_payloads: list[str],
+        files_exit: int = 0,
+    ) -> str:
+        step = _detect_step(job_name, step_name)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env python3\n"
+            "from __future__ import annotations\n"
+            "import sys\n"
+            f"count_payload = {count_payload!r}\n"
+            f"file_payloads = {file_payloads!r}\n"
+            f"files_exit = {files_exit!r}\n"
+            "if sys.argv[-1].endswith('/files'):\n"
+            "    if files_exit != 0:\n"
+            "        raise SystemExit(files_exit)\n"
+            "    for payload in file_payloads:\n"
+            "        print(payload)\n"
+            "else:\n"
+            "    print(count_payload)\n"
+        )
+        gh.chmod(0o755)
+        env_file = tmp_path / "github_env"
+        runner_temp = tmp_path / "runner"
+        runner_temp.mkdir()
+        script = (
+            step["run"]
+            .replace("${{ github.repository }}", "owner/repo")
+            .replace("${{ github.event.pull_request.number }}", "123")
+        )
+        proc = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            cwd=_REPO_ROOT,
+            env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GITHUB_ENV": str(env_file),
+                "RUNNER_TEMP": str(runner_temp),
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        return env_file.read_text()
+
+    def _run_case(
+        self,
+        tmp_path: Path,
+        job_name: str,
+        step_name: str,
+        *,
+        count_payload: str,
+        file_payloads: list[str],
+        files_exit: int = 0,
+    ) -> str:
+        return self._run_detect_step(
+            tmp_path,
+            job_name=job_name,
+            step_name=step_name,
+            count_payload=count_payload,
+            file_payloads=file_payloads,
+            files_exit=files_exit,
+        )
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_complete_empty_inventory_sets_false(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="0",
+            file_payloads=["[]"],
+        )
+        assert env == "UV_LOCK_CHANGED=false\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_single_page_without_lock_sets_false(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="1",
+            file_payloads=['[{"filename":"pyproject.toml"}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=false\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_thirty_one_files_two_pages_without_lock_sets_false(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        first_page = ",".join(
+            f'{{"filename":"docs/file-{index}.md"}}' for index in range(30)
+        )
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="31",
+            file_payloads=[f"[{first_page}]", '[{"filename":"README.md"}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=false\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_later_page_with_lock_sets_true(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="2",
+            file_payloads=[
+                '[{"filename":"pyproject.toml"}]',
+                '[{"filename":"uv.lock"}]',
+            ],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_rename_to_lock_sets_true(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="1",
+            file_payloads=[
+                '[{"filename":"uv.lock","previous_filename":"uv.lock.old"}]',
+            ],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_rename_from_lock_sets_true(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="1",
+            file_payloads=[
+                '[{"filename":"uv.lock.bak","previous_filename":"uv.lock"}]',
+            ],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_under_cap_partial_listing_fails_closed(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="2",
+            file_payloads=['[{"filename":"README.md"}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_api_cap_fails_closed(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="3001",
+            file_payloads=['[{"filename":"pyproject.toml"}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_malformed_count_fails_closed(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="null",
+            file_payloads=['[{"filename":"pyproject.toml"}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_malformed_file_record_fails_closed(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="1",
+            file_payloads=['[{"filename": null}]'],
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"
+
+    @pytest.mark.parametrize(("job_name", "step_name"), _DETECT_STEPS)
+    def test_failed_file_query_fails_closed(
+        self, tmp_path: Path, job_name: str, step_name: str
+    ) -> None:
+        env = self._run_case(
+            tmp_path,
+            job_name,
+            step_name,
+            count_payload="1",
+            file_payloads=[],
+            files_exit=22,
+        )
+        assert env == "UV_LOCK_CHANGED=true\n"

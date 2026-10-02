@@ -35,6 +35,15 @@ jobs:
           # base commit — every other checkout in this repo uses the default
           # fetch-depth 1, which would not have the base commit available.
           fetch-depth: 0
+      - name: Set SCM version override for editable root installs
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.11.7"

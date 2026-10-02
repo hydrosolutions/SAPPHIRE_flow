@@ -969,3 +969,106 @@ services:
         old = "FROM docker.io/library/python:3.14.6-slim@sha256:aaa AS builder\n"
         new = "FROM docker.io/library/python:3.14.7-slim@sha256:bbb AS builder\n"
         assert classify_dockerfile_diff(old, new) == []
+
+
+class TestBuildBackendProvenanceReview:
+    def test_build_system_change_requires_review(self) -> None:
+        old = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+"""
+        new = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools==84.0.0", "setuptools-scm==10.3.4"]
+build-backend = "setuptools.build_meta"
+"""
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:build-backend-provenance"
+
+    def test_future_uv_build_constraints_require_review(self) -> None:
+        old = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+[tool.uv]
+build-constraint-dependencies = ["setuptools==84.0.0"]
+"""
+        new = old.replace("setuptools==84.0.0", "setuptools==84.0.1")
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:build-backend-provenance"
+
+    def test_setuptools_scm_config_change_requires_review(self) -> None:
+        old = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools_scm]
+tag_regex = "^v(?P<version>.*)$"
+"""
+        new = old.replace("^v(?P<version>.*)$", "^release-(?P<version>.*)$")
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:build-backend-provenance"
+
+    def test_uv_cache_key_change_requires_review(self) -> None:
+        old = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }]
+"""
+        new = old.replace("pyproject.toml", "uv.lock")
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:build-backend-provenance"
+
+    def test_backend_path_change_requires_review(self) -> None:
+        old = """[project]
+requires-python = ">=3.12"
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+"""
+        new = old + 'backend-path = ["build_backend"]\n'
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:build-backend-provenance"
+
+    def test_root_lock_version_disappearance_is_allowed(self) -> None:
+        old = """[[package]]
+name = "sapphire-flow"
+version = "0.1.1044"
+
+[[package]]
+name = "cfgrib"
+version = "1.0.0"
+"""
+        new = """[[package]]
+name = "sapphire-flow"
+
+[[package]]
+name = "cfgrib"
+version = "1.0.0"
+"""
+        assert classify_uv_lock_diff(old, new) == []
+
+
+class TestSetupPyBuildInputIsWatched:
+    def test_setup_py_is_in_watched_files(self) -> None:
+        assert "setup.py" in WATCHED_FILES
+
+    def test_setup_py_change_requires_review(self) -> None:
+        result = classify_pr({"setup.py": ("old", "new")})
+
+        finding = _only(list(result.findings))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.file == "setup.py"

@@ -30,13 +30,11 @@ class TestAgentInstructionPolicy:
 
 
 class TestTaggingPolicy:
-    def test_tagging_is_delegated_to_main_workflow(self) -> None:
+    def test_release_identity_is_owner_published_after_merge(self) -> None:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
-        policy = (
-            "Every code commit includes a patch version bump. "
-            "Never create a tag on a feature branch. "
-            "On pushes to `main`, `.github/workflows/tag-main.yml` creates the version "
-            "tag when absent."
-        )
 
-        assert policy in guidelines
+        assert "Code commits do not run `bump-my-version`" in guidelines
+        assert "do not edit release-version metadata" in guidelines
+        assert "The human owner publishes release identity after merge" in guidelines
+        assert "from a clean reviewed `main`" in guidelines
+        assert ".github/workflows/tag-main.yml" not in guidelines

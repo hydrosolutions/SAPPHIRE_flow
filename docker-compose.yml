@@ -15,6 +15,9 @@
 # the manual `docker build --secret id=recap_dg_client_token,env=... .` workaround.
 x-app-build: &app-build
   context: .
+  args:
+    SAPPHIRE_RELEASE_VERSION: ${SAPPHIRE_RELEASE_VERSION:?SAPPHIRE_RELEASE_VERSION is required}
+    SAPPHIRE_SOURCE_REVISION: ${SAPPHIRE_SOURCE_REVISION:?SAPPHIRE_SOURCE_REVISION is required}
   secrets:
     - recap_dg_client_token
 
@@ -93,6 +96,8 @@ services:
       context: .
       args:
         WITH_AQUACAST: "1"
+        SAPPHIRE_RELEASE_VERSION: ${SAPPHIRE_RELEASE_VERSION:?SAPPHIRE_RELEASE_VERSION is required}
+        SAPPHIRE_SOURCE_REVISION: ${SAPPHIRE_SOURCE_REVISION:?SAPPHIRE_SOURCE_REVISION is required}
       secrets:
         - recap_dg_client_token
         - aquacast_token

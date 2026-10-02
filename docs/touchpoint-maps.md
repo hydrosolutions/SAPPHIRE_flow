@@ -941,7 +941,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 
 - `docs/standards/orchestration.md` (pools, scheduling, concurrency — its v0-vs-v1 caveats decide what is real), `docs/standards/cicd.md` (compose, volumes, migrations, tagging, upgrade/rollback, per-pool limits), `docs/standards/security.md` (non-root, capabilities, secrets)
 - `docs/deployment/mac-mini-staging.md` — the live-host runbook
-- `.env` — the `VERSION` operators pin (minted per AGENTS.md § Version Bumping)
+- `.env` — operators persist the public Compose identity triple: `VERSION`, `SAPPHIRE_RELEASE_VERSION`, and `SAPPHIRE_SOURCE_REVISION`; secret bytes in the same file must not be printed, sourced by agent-authored scripts, or copied into rollback evidence
 
 **Core implementation touchpoints:**
 
@@ -971,7 +971,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 
 - **Every host-restart path must bring up the identical overlay set.** `start-sapphire.sh` and `bootstrap-mac-mini.sh` must use the same `-f` set — an overlay in one but not the other silently diverges on the next reboot (the Plan-100 "restart dropped the NWP overlay → NWP silently off → feed dark while flows stayed green" incident). Grep both whenever an overlay changes.
 - **No registry: `docker compose up -d` without `--build` reuses the existing `sapphire-flow:${VERSION}` image** — a code change deployed without `--build` is a **no-op that looks successful**. See `cicd.md` for the publish-gap + rollback procedure.
-- **`VERSION`-unset behavior diverges**: `docker-compose.yml`'s `${VERSION:?…}` hard-fails, while `bootstrap-mac-mini.sh` defaults to `latest`. Change one, check the other.
+- **Release identity unset behavior is fail-closed**: `docker-compose.yml` requires the public identity variables, and `bootstrap-mac-mini.sh` / `start-sapphire.sh` validate the repo-root `.env` identity before Compose startup. Change one, check the other fresh-shell consumers.
 - **The backup-target device predicate (Plan 194) is not a config surface.** `bootstrap-mac-mini.sh` / `start-sapphire.sh` derive the data path from `REPO_ROOT` (never `/`); the watchdog derives it from `Path.home()` and the mount root from `backup_dir.parent` — none of these are CLI flags or config fields, deliberately (the watchdog is a launchd HOST process reading CLI args only; `SAPPHIRE_CONFIG_OVERLAY` never reaches it — see `watchdog.py`'s `main()`). Don't reintroduce a `backup_mount_root` field/flag; it would duplicate a pure function of an existing value. The old sentinel file (`.sapphire-backup-volume`) is a human label only — no code path treats its presence as proof.
 - **The operator's row limit lives in the database.** The literals in migration `0067` (`GUARDED_DELIVERY_ID`, `GUARDED_TENANT_CODE`) are tied to `DELIVERY_ID` / `DELIVERY_TENANT_CODE` by a unit test; the bootstrap's expected trigger set is tied to the migration's; the operator must never gain `UPDATE`/`DELETE`/`TRUNCATE` on `stations` or `tenants` (re-tenanting a Swiss station would make every Swiss row deletable); a second delivery is a new migration, not config. Guard-trigger ingest overhead was measured once, single laptop container (medians within about 0-10 % of the trigger-less runs, inside the run spread; `security.md`). The bootstrap ends operator sessions on every `init`. `lock_tenant` (advisory lock, one key mapping for every caller and role) is not undone by removing the role.
 - **Non-root by contract** — root exists only during `entrypoint.sh` (drops via `gosu`); `prefect-server` is the single documented root exception. Don't add a `user:` override or widen `cap_add` outside `security.md`.
@@ -1693,3 +1693,8 @@ metadata. The publication migration regression compares the complete legacy head
 member values and incomplete-evidence row through `0062 → 0063 → 0062`; newer store
 columns must not be required to test an older additive migration. Do not add production
 fallbacks for historical schemas to satisfy migration fixtures.
+## Release identity changes touch
+
+Changes to root package versioning, `tools/release_identity.py`, Docker release build args, or release receipts touch packaging, CI/CD, security, Docker Compose, and operator runbooks.
+Verify dynamic SCM version generation, CI no-tag overrides, Docker labels, compose build args for both default and Aquacast images, and credential-free receipt behavior together.
+Do not reintroduce automatic tag publication in GitHub Actions.

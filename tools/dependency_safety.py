@@ -2,7 +2,7 @@
 """Plan 119 dependency-bump safety gate — BLOCK/REVIEW/ALLOW classifier.
 
 Diffs a fixed watched-file set (see `WATCHED_FILES` — docker-compose.yml,
-Dockerfile, pyproject.toml, uv.lock, ci.yml, and the gate's own self-policy
+Dockerfile, pyproject.toml, setup.py, uv.lock, ci.yml, and the gate's own self-policy
 files) against the PR base commit and classifies the change:
 
   BLOCK  — a stateful (persistent-named-volume) service image major bump in
@@ -96,6 +96,7 @@ WATCHED_FILES: tuple[str, ...] = (
     "docker-compose.yml",
     "Dockerfile",
     "pyproject.toml",
+    "setup.py",
     "uv.lock",
     ".github/workflows/ci.yml",
     # Gate self-policy files (2026-07-15 hardening): a PR that weakens the
@@ -578,8 +579,22 @@ def classify_dockerfile_diff(old_text: str, new_text: str) -> list[Finding]:
     return findings
 
 
+def _build_backend_inputs(data: dict[str, Any]) -> tuple[object, ...]:
+    build_system = _as_dict(data.get("build-system"))
+    tool = _as_dict(data.get("tool"))
+    tool_uv = _as_dict(tool.get("uv"))
+    setuptools = _as_dict(tool.get("setuptools"))
+    return (
+        build_system,
+        tool_uv.get("build-constraint-dependencies"),
+        tool_uv.get("cache-keys"),
+        _as_dict(tool.get("setuptools_scm")),
+        setuptools,
+    )
+
+
 def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
-    """BLOCK on any `requires-python` change; REVIEW on the FI git-pin rev."""
+    """BLOCK on any `requires-python` change; REVIEW on FI/build-backend provenance."""
     findings: list[Finding] = []
 
     old_rp_match = _REQUIRES_PYTHON_RE.search(old_text)
@@ -604,6 +619,27 @@ def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
     new_rev_match = _FI_REV_RE.search(new_text)
     old_rev = old_rev_match.group(1) if old_rev_match else None
     new_rev = new_rev_match.group(1) if new_rev_match else None
+    try:
+        old_data = tomllib.loads(old_text)
+        new_data = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError:
+        old_data = {}
+        new_data = {}
+    old_backend = _build_backend_inputs(old_data)
+    new_backend = _build_backend_inputs(new_data)
+    if old_backend != new_backend:
+        key = "pyproject.toml:build-backend-provenance"
+        message = (
+            "⚠️ root build backend inputs changed. Isolated build backends execute "
+            "during package construction; verify exact pins, provenance, and "
+            "docs/standards/security.md before merge."
+        )
+        findings.append(
+            Finding(
+                verdict=Verdict.REVIEW, file="pyproject.toml", key=key, message=message
+            )
+        )
+
     if old_rev != new_rev:
         key = "pyproject.toml:forecastinterface-git-pin"
         message = (
@@ -773,6 +809,7 @@ _CLASSIFIERS: dict[str, Callable[[str, str], list[Finding]]] = {
     "docker-compose.yml": classify_docker_compose_diff,
     "Dockerfile": classify_dockerfile_diff,
     "pyproject.toml": classify_pyproject_diff,
+    "setup.py": _make_self_policy_classifier("setup.py"),
     "uv.lock": classify_uv_lock_diff,
     ".github/workflows/ci.yml": classify_ci_workflow_diff,
     ".dependency-safety-allowlist": classify_allowlist_diff,
