@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from sapphire_flow.api.forecast_lab_schemas import (
     SapphireForecastQuantilesSchema,
     SapphireForecastUnavailableSchema,
 )
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.forecast_lab.db_sources import (
     ForecastLabStores,
     fetch_latest_forecast_for_model,
@@ -46,6 +48,7 @@ from sapphire_flow.services.forecast_lab.snapshot import build_snapshot
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    ForecastDataUse,
     ForecastStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
@@ -2976,3 +2979,30 @@ class TestGroupAssignedModelsInTheSnapshot:
         for entry in fallbacks.values():
             assert isinstance(entry, SapphireForecastAvailableSchema)
             assert not entry.model.is_primary
+
+
+class TestSnapshotPurposeBoundary:
+    @pytest.mark.parametrize("strategy", list(ModelCombinationStrategy))
+    def test_empty_snapshot_refuses_before_clock_or_sources(
+        self, strategy: ModelCombinationStrategy
+    ) -> None:
+        stores = replace(
+            _stores(seed_default_cycle=False),
+            forecast_store=FakeForecastStore(
+                data_use=ForecastDataUse.EXPIRED_RATING_TEST
+            ),
+        )
+
+        def forbidden_clock() -> UtcDatetime:
+            pytest.fail("clock called before purpose refusal")
+
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            build_snapshot(
+                stores,
+                stations=[],
+                archive_base_path=None,
+                combination_strategy=strategy,
+                clock=forbidden_clock,
+            )

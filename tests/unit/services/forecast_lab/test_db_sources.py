@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.forecast_lab.db_sources import (
     ForecastLabStores,
     fetch_active_model_assignments,
@@ -29,6 +30,7 @@ from sapphire_flow.services.forecast_lab.db_sources import (
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
+    ForecastDataUse,
     ForecastStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
@@ -889,3 +891,72 @@ class TestSupersededForecastsAreNotServed:
             )
             is None
         )
+
+
+class TestOrdinaryForecastSources:
+    @pytest.mark.parametrize(
+        "purpose", [None, "standard", ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    @pytest.mark.parametrize("source", ["latest", "marker", "combined", "no_cycle"])
+    def test_wrong_purpose_refuses_before_query(
+        self, purpose: object, source: str
+    ) -> None:
+        class Store:
+            data_use = purpose
+
+            def __getattr__(self, name: str) -> object:
+                pytest.fail("forecast source queried before purpose refusal: " + name)
+
+        stores = replace(_make_stores(), forecast_store=Store())  # type: ignore[arg-type]
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            if source == "latest":
+                fetch_latest_forecast_for_model(
+                    stores, StationId(uuid4()), ModelId("model")
+                )
+            elif source == "marker":
+                fetch_latest_publication_cycle_time(stores, data_cutoff_at=_EPOCH)
+            else:
+                fetch_combined_forecast_for_cycle(
+                    stores,
+                    StationId(uuid4()),
+                    ModelId("_pooled"),
+                    None if source == "no_cycle" else _EPOCH,
+                )
+
+    @pytest.mark.parametrize("source", ["latest", "combined"])
+    def test_wrong_result_refuses_before_protected_fields(self, source: str) -> None:
+        class Result:
+            data_use = ForecastDataUse.EXPIRED_RATING_TEST
+
+            def __getattr__(self, name: str) -> object:
+                pytest.fail("protected source canary accessed: " + name)
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_latest_forecast(self, *args: object) -> Result:
+                return Result()
+
+            def fetch_forecasts_for_cycle(self, *args: object) -> list[Result]:
+                return [Result()]
+
+        stores = replace(_make_stores(), forecast_store=Store())  # type: ignore[arg-type]
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            if source == "latest":
+                fetch_latest_forecast_for_model(
+                    stores, StationId(uuid4()), ModelId("model")
+                )
+            else:
+                fetch_combined_forecast_for_cycle(
+                    stores, StationId(uuid4()), ModelId("_pooled"), _EPOCH
+                )
+
+
+class TestPassiveForecastLabBundle:
+    def test_assignment_only_reader_does_not_check_forecast_store(self) -> None:
+        stores = replace(_make_stores(), forecast_store=object())  # type: ignore[arg-type]
+        assert fetch_active_model_assignments(stores, StationId(uuid4())) == []

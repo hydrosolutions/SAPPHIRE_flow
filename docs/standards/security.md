@@ -1421,8 +1421,15 @@ Legacy forecast list/detail/data readers, dashboard counts/latest/status, and ge
 browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
 STANDARD history remains readable. Shared blobs remain visible through a STANDARD
 reference. The browser never projects either raw lineage column. This is partial T1d:
-modern API/Forecast Lab injected-purpose safety, evaluation/state/health/tooling paths,
-and mixed-class restore/publication-health proof remain preactivation holds.
+adjacent human review/publication/latest/history pre-query safety, evaluation/state/
+health/tooling paths and mixed-class restore/publication-health proof remain holds.
+Modern forecast detail/station/rejection routes and Forecast Lab require explicit
+STANDARD store purpose before forecast counts/pages/detail or scalar cycle reads.
+Unknown/TEST dependencies return safe 503; wrong-class detail returns the same 404 as
+absence, while mixed pages/snapshots fail wholly without exposing counts or values.
+Known station/tenant/human authorization precedes these checks. By-ID misconfiguration
+returns uniform 503 before lookup: station-specific scope is not yet knowable.
+Shared detail serialization is a backstop for other callers, not their pre-query gate.
 Synthetic disposable structural tests may remove only the refusal trigger transactionally;
 this is test setup, never an operator activation procedure.
 
@@ -1449,5 +1456,5 @@ the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denie
 `0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
 Explicit deferred tooling includes `scripts/plan100_forecast_feed_resilience.py`,
 `tools/standing_snapshot.py` and mixed-class `scripts/restore-rehearsal.sh` verification.
-Modern API/Forecast Lab injected-purpose, evaluation/training/hindcast/state/health,
+Adjacent publication/review pre-query paths, evaluation/training/hindcast/state/health,
 full mixed protected restore/publication-health and T1c/T3 consumption remain held.

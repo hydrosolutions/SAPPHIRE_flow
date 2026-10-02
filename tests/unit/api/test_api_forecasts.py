@@ -5,10 +5,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import pytest
+from fastapi import HTTPException
+
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
+    ForecastDataUse,
     ForecastStatus,
     InputQualityCategory,
     InputQualityLevel,
@@ -402,3 +406,106 @@ class TestSupersededForecastOverTheApi:
 
         assert body["ensemble"]["series"], "a superseded forecast keeps its values"
         assert body["ensemble"]["valid_times"]
+
+
+class TestOrdinaryForecastReadBoundary:
+    @pytest.mark.parametrize(
+        "purpose", [None, "standard", ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    def test_wrong_purpose_refuses_before_detail_read(
+        self, client: TestClient, fake_stores: dict[str, Any], purpose: object
+    ) -> None:
+        class Store:
+            data_use = purpose
+
+            def fetch_forecast(self, forecast_id: object) -> None:
+                raise AssertionError("forecast query before purpose refusal")
+
+        fake_stores["forecast_store"] = Store()
+        response = client.get(f"/api/v1/forecasts/{uuid4()}")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+        assert response.headers["cache-control"] == "no-store"
+
+    def test_unknown_purpose_refuses_before_detail_read(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        class Store:
+            def fetch_forecast(self, forecast_id: object) -> None:
+                raise AssertionError("forecast query before purpose refusal")
+
+        fake_stores["forecast_store"] = Store()
+        assert client.get(f"/api/v1/forecasts/{uuid4()}").status_code == 503
+
+    @pytest.mark.parametrize(
+        "purpose", [None, "standard", ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    def test_wrong_result_has_absent_body_without_reading_fields(
+        self, client: TestClient, fake_stores: dict[str, Any], purpose: object
+    ) -> None:
+        class Result:
+            data_use = purpose
+
+            def __getattr__(self, name: str) -> object:
+                raise AssertionError("protected-value-canary accessed: " + name)
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_forecast(self, forecast_id: object) -> Result:
+                return Result()
+
+        absent = client.get(f"/api/v1/forecasts/{uuid4()}")
+        fake_stores["forecast_store"] = Store()
+        response = client.get(f"/api/v1/forecasts/{uuid4()}")
+        assert response.status_code == 404
+        assert response.json() == absent.json()
+
+    def test_detail_serializer_refuses_before_canary_fields(self) -> None:
+        from sapphire_flow.api.routes.api_forecasts import to_forecast_detail
+
+        class Result:
+            data_use = ForecastDataUse.EXPIRED_RATING_TEST
+
+            def __getattr__(self, name: str) -> object:
+                raise AssertionError("protected-value-canary accessed: " + name)
+
+        with pytest.raises(HTTPException, match="Forecast not found") as exc:
+            to_forecast_detail(Result())  # type: ignore[arg-type]
+        assert exc.value.status_code == 404
+
+
+class TestForecastReadAuthorizationOrder:
+    def test_missing_bearer_precedes_unknown_store(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from sapphire_flow.api import app
+        from sapphire_flow.api.security import require_principal
+
+        app.dependency_overrides.pop(require_principal)
+        fake_stores["forecast_store"] = object()
+        assert client.get(f"/api/v1/forecasts/{uuid4()}").status_code == 401
+
+    def test_healthy_standard_foreign_result_has_absent_body(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from sapphire_flow.api import app
+        from sapphire_flow.api.security import Principal, require_principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+
+        fc = _make_operational_forecast(station_id=StationId(uuid4()))
+        fake_stores["forecast_store"].store_forecast(fc)
+        app.dependency_overrides[require_principal] = lambda: Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        absent = client.get(f"/api/v1/forecasts/{uuid4()}")
+        foreign = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert foreign.status_code == absent.status_code == 404
+        assert foreign.json() == absent.json()

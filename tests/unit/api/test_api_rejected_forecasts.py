@@ -18,7 +18,7 @@ from sapphire_flow.api.review_auth import require_reviewer_or_human
 from sapphire_flow.api.security import Principal, generate_raw_token
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcFlag
-from sapphire_flow.types.enums import AccessTokenRole, QcStatus
+from sapphire_flow.types.enums import AccessTokenRole, ForecastDataUse, QcStatus
 from sapphire_flow.types.human_auth import HumanPermission, HumanPrincipal, StationGrant
 from sapphire_flow.types.ids import (
     AccessTokenId,
@@ -800,3 +800,161 @@ class TestRejectedForecastsCors:
             },
         )
         assert resp.status_code == 400
+
+
+class TestOrdinaryRejectedReadBoundary:
+    @pytest.mark.parametrize(
+        "purpose", [None, "standard", ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    @pytest.mark.parametrize("offset", [0, 100])
+    def test_wrong_purpose_never_queries_page(
+        self, purpose: object, offset: int
+    ) -> None:
+        from sapphire_flow.api.publication_gate import PublicationGate
+        from sapphire_flow.api.routes.api_rejected_forecasts import (
+            get_rejected_forecasts,
+        )
+        from tests.fakes.fake_stores import FakeStationStore
+
+        station = make_station_config()
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+
+        class Store:
+            data_use = purpose
+
+            def fetch_rejected_forecasts(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                pytest.fail("rejected count/page queried before purpose refusal")
+
+        principal = Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        with pytest.raises(
+            HTTPException, match="Ordinary forecast reads are unavailable"
+        ) as exc:
+            get_rejected_forecasts(
+                str(station.id),
+                model_id=None,
+                start=None,
+                end=None,
+                limit=20,
+                offset=offset,
+                stores={
+                    "station_store": station_store,
+                    "rejected_forecast_store": Store(),
+                },
+                principal=principal,
+                gate=PublicationGate(),
+            )
+        assert exc.value.status_code == 503
+
+    def test_rejected_serializer_refuses_even_when_values_withheld(self) -> None:
+        from sapphire_flow.api.routes.api_rejected_forecasts import _to_response
+
+        class Result:
+            data_use = ForecastDataUse.EXPIRED_RATING_TEST
+
+            def __getattr__(self, name: str) -> object:
+                pytest.fail("protected rejection canary accessed: " + name)
+
+        with pytest.raises(
+            HTTPException, match="Ordinary forecast reads are unavailable"
+        ) as exc:
+            _to_response(Result(), withheld=True)  # type: ignore[arg-type]
+        assert exc.value.status_code == 503
+
+
+class TestRejectedPageResultAndAuthorization:
+    @pytest.mark.parametrize("reader", ["reviewer", "admin", "human"])
+    def test_whole_page_refused_before_rendering_even_when_withheld(
+        self, client: TestClient, rejected_fake_stores: dict[str, Any], reader: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.api import app
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
+
+        station = make_station_config()
+        rejected_fake_stores["station_store"].store_station(station)
+        if reader == "human":
+            principal = HumanPrincipal(
+                user_id=UserId(uuid4()),
+                tenant_id=station.tenant_id,
+                grants=frozenset(
+                    {
+                        StationGrant(
+                            station_id=station.id, permission=HumanPermission.REVIEW
+                        )
+                    }
+                ),
+            )
+        else:
+            principal = Principal(
+                token_id=AccessTokenId(uuid4()),
+                role=AccessTokenRole(reader),
+                tenant_id=station.tenant_id,
+                station_ids=frozenset({station.id}),
+            )
+        _override_principal(app, principal)
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_rejected_forecasts(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                return [
+                    SimpleNamespace(data_use=ForecastDataUse.STANDARD),
+                    SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST),
+                ], 987654
+
+        rejected_fake_stores["rejected_forecast_store"] = Store()
+        response = client.get(f"/api/v1/stations/{station.id}/rejected-forecasts")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+
+    @pytest.mark.parametrize(
+        "reader", ["foreign_reviewer", "human_no_grant", "unknown_station"]
+    )
+    def test_scope_and_existence_precede_wrong_purpose(
+        self, client: TestClient, rejected_fake_stores: dict[str, Any], reader: str
+    ) -> None:
+        from sapphire_flow.api import app
+
+        station = make_station_config()
+        if reader != "unknown_station":
+            rejected_fake_stores["station_store"].store_station(station)
+        principal: object = (
+            HumanPrincipal(
+                user_id=UserId(uuid4()), tenant_id=station.tenant_id, grants=frozenset()
+            )
+            if reader == "human_no_grant"
+            else Principal(
+                token_id=AccessTokenId(uuid4()),
+                role=AccessTokenRole.REVIEWER,
+                tenant_id=station.tenant_id,
+                station_ids=frozenset({station.id})
+                if reader == "unknown_station"
+                else frozenset(),
+            )
+        )
+        _override_principal(app, principal)
+        rejected_fake_stores["rejected_forecast_store"] = object()
+        assert (
+            client.get(f"/api/v1/stations/{station.id}/rejected-forecasts").status_code
+            == 404
+        )

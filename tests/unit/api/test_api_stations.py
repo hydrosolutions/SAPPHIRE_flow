@@ -3,8 +3,11 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+import pytest
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.dhm_delivery import DELIVERY_ID
@@ -12,6 +15,7 @@ from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.enums import (
     AccessTokenRole,
     EnsembleRepresentation,
+    ForecastDataUse,
     ForecastStatus,
     InputQualityCategory,
     InputQualityLevel,
@@ -793,3 +797,150 @@ class TestSupersededForecastsInTheStationListing:
         assert body["total"] == 2
         assert by_id[str(original.id)] == ForecastStatus.SUPERSEDED.value
         assert by_id[str(replacement.id)] == ForecastStatus.RAW.value
+
+
+class TestOrdinaryForecastPageBoundary:
+    @pytest.mark.parametrize(
+        "purpose", [None, "standard", ForecastDataUse.EXPIRED_RATING_TEST]
+    )
+    @pytest.mark.parametrize("offset", [0, 100])
+    def test_wrong_purpose_refuses_before_count_or_page(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        purpose: object,
+        offset: int,
+    ) -> None:
+        class Store:
+            data_use = purpose
+
+            def fetch_forecast_summaries(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                raise AssertionError(
+                    "forecast count/page queried before purpose refusal"
+                )
+
+        fake_stores["forecast_store"] = Store()
+        response = client.get(f"/api/v1/stations/{uuid4()}/forecasts?offset={offset}")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+
+    def test_all_classes_checked_before_first_row_rendering(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        class UnrenderableStandard:
+            data_use = ForecastDataUse.STANDARD
+
+            def __getattr__(self, name: str) -> object:
+                raise AssertionError(
+                    "first row rendered before validating the complete page"
+                )
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_forecast_summaries(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                return [
+                    UnrenderableStandard(),
+                    SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST),
+                ], 987654
+
+        fake_stores["forecast_store"] = Store()
+        response = client.get(f"/api/v1/stations/{uuid4()}/forecasts")
+        assert response.status_code == 503
+        assert "987654" not in response.text
+
+
+class TestForecastPagePublicationOrder:
+    def test_wrong_purpose_precedes_publication_lock_and_count(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from sapphire_flow.api import app
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
+
+        station = make_station_config()
+        fake_stores["station_store"].store_station(station)
+        fake_stores["forecast_store"] = object()
+
+        class PublicationStore:
+            def __getattr__(self, name: str) -> object:
+                raise AssertionError(
+                    "publication query before purpose refusal: " + name
+                )
+
+        fake_stores["publication_store"] = PublicationStore()
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
+        response = client.get(f"/api/v1/stations/{station.id}/forecasts?offset=999")
+        assert response.status_code == 503
+
+    def test_foreign_scope_precedes_wrong_purpose(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from sapphire_flow.api import app
+        from sapphire_flow.api.security import Principal, require_principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+
+        fake_stores["forecast_store"] = object()
+        app.dependency_overrides[require_principal] = lambda: Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        assert client.get(f"/api/v1/stations/{uuid4()}/forecasts").status_code == 404
+
+    def test_gated_page_checks_all_classes_before_metadata(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from sapphire_flow.api import app
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
+
+        station = make_station_config()
+        fake_stores["station_store"].store_station(station)
+        first, second = uuid4(), uuid4()
+
+        class PublicationStore:
+            def lock_read_snapshot(self) -> None:
+                pass
+
+            def fetch_selected_ids(self, *args: object, **kwargs: object) -> object:
+                return [first, second], 987654
+
+            def __getattr__(self, name: str) -> object:
+                raise AssertionError(
+                    "metadata rendered before page class check: " + name
+                )
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_forecast(self, fid: object) -> object:
+                return SimpleNamespace(
+                    data_use=ForecastDataUse.STANDARD
+                    if fid == first
+                    else ForecastDataUse.EXPIRED_RATING_TEST
+                )
+
+        fake_stores["forecast_store"] = Store()
+        fake_stores["publication_store"] = PublicationStore()
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
+        response = client.get(f"/api/v1/stations/{station.id}/forecasts")
+        assert response.status_code == 503
+        assert "987654" not in response.text

@@ -288,6 +288,23 @@ route) or a non-zero process exit (the CLI), because a failed statement
 inside the shared request-scoped transaction poisons every later query in
 that request; there is no partial-snapshot story for that failure mode.
 
+## Ordinary forecast isolation
+
+The shared snapshot builder and direct forecast source readers require explicitly
+STANDARD forecast-store purpose. Missing, untyped or TEST-purpose dependencies refuse
+before any forecast read, including the scalar cycle marker and empty snapshots.
+All returned forecast classes are checked before selection or rendering. A wrong
+class fails the whole snapshot, not just one source; it cannot influence primary
+selection, daily alignment, availability or freshness. HTTP maps only this narrow
+refusal to safe 503. Other database/configuration failures retain their existing
+behavior. CLI refusal leaves the prior output untouched and writes no partial file.
+
+Eligibility, scope and publication-gated 403 checks still precede this HTTP boundary.
+`ForecastLabStores` stays passive: `skill_read` also constructs it for assignment-only
+reads, which must not depend on forecast-store purpose. The two export entry points
+still share one builder. STANDARD latest/current-cycle and representation rules do
+not change. This does not enable Nepal invalid-view exports or any TEST writer.
+
 ## Verification — a sentinel, not a computed benchmark
 
 `verification.status` is always `"insufficient_data"` in this version.

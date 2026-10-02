@@ -8,6 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.forecast_read import (
+    require_standard_detail,
+    require_standard_store,
+)
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.publication_gate import (
     PublicationGate,
@@ -76,6 +80,7 @@ def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
 
 
 def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
+    require_standard_detail(f)
     return ForecastDetail(
         id=str(f.id),
         station_id=str(f.station_id),
@@ -121,7 +126,11 @@ def get_forecast(
     principal: Principal = Depends(require_principal),
     gate: PublicationGate = Depends(get_publication_gate),
 ) -> ForecastDetail | JSONResponse:
-    forecast = stores["forecast_store"].fetch_forecast(ForecastId(UUID(forecast_id)))
+    fid = ForecastId(UUID(forecast_id))
+    forecast_store = stores["forecast_store"]
+    require_standard_store(forecast_store)
+    forecast = forecast_store.fetch_forecast(fid)
+    require_standard_detail(forecast)
     # Plan 147 Slice C R2: scope-check AFTER fetch (need station_id off the
     # row) but BEFORE returning — an out-of-scope forecast is a 404, not a
     # 200 (`042:100-103`). Plan 401 T2: with the SAME body as an absent one —

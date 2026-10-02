@@ -304,6 +304,10 @@ class RejectedForecastStore(Protocol):
     Reads and counts never widen the construction-time purpose.
     """
 
+    @property
+    def data_use(self) -> ForecastDataUse:
+        raise NotImplementedError
+
     def write_batch(
         self,
         entries: Sequence[RejectedForecastEntry],

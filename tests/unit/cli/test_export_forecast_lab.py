@@ -4,6 +4,7 @@ survives a mid-write failure."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -14,9 +15,11 @@ from sapphire_flow.cli.export_forecast_lab import (
     export_forecast_lab_snapshot,
     main,
 )
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.forecast_lab.db_sources import ForecastLabStores
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    ForecastDataUse,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
     StationStatus,
@@ -391,3 +394,72 @@ class TestGroupMembershipDoesNotExpandTheExportedStationSet:
         )
 
         assert [s.station.code for s in snapshot.stations] == ["2009"]
+
+
+class TestOrdinaryExportBoundary:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_wrong_purpose_leaves_output_untouched(
+        self, tmp_path: Path, existing: bool
+    ) -> None:
+        output = tmp_path / "snapshot.json"
+        if existing:
+            output.write_bytes(b"previous-safe-snapshot")
+        stores = replace(
+            _stores(),
+            forecast_store=FakeForecastStore(
+                data_use=ForecastDataUse.EXPIRED_RATING_TEST
+            ),
+        )
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            export_forecast_lab_snapshot(
+                stores,
+                archive_base_path=None,
+                station_codes=[],
+                observation_hours=168,
+                output_path=output,
+                clock=lambda: _EPOCH,
+            )
+        assert (
+            output.read_bytes() == b"previous-safe-snapshot"
+            if existing
+            else not output.exists()
+        )
+        assert list(tmp_path.glob(".*.tmp")) == []
+
+    def test_faulty_standard_result_preserves_existing_output(
+        self, tmp_path: Path
+    ) -> None:
+        from types import SimpleNamespace
+
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        output = tmp_path / "snapshot.json"
+        output.write_bytes(b"previous-safe-snapshot")
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_latest_uncombined_issued_at(self, cutoff: object) -> object:
+                return _EPOCH
+
+            def fetch_forecasts_for_cycle(self, *args: object) -> list[object]:
+                return [SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST)]
+
+        stores = replace(_stores(station_store), forecast_store=Store())  # type: ignore[arg-type]
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            export_forecast_lab_snapshot(
+                stores,
+                archive_base_path=None,
+                station_codes=[],
+                observation_hours=168,
+                output_path=output,
+                clock=lambda: _EPOCH,
+                combination_strategy=ModelCombinationStrategy.POOLED,
+            )
+        assert output.read_bytes() == b"previous-safe-snapshot"
+        assert list(tmp_path.glob(".*.tmp")) == []
