@@ -13,6 +13,7 @@ from alembic.config import Config
 
 from alembic import command
 from sapphire_flow.db.metadata import forecasts
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.types.enums import ForecastDataUse
 from tests.integration.db.test_migration_0065_rejected_forecasts import (
@@ -134,7 +135,7 @@ class TestDeployedRuntimeRoleGuard:
                 )
                 # API may refuse at its ACL before reaching the trigger. This
                 # proves login-level denial; owner SQL/COPY tests prove the guard.
-                with pytest.raises(sa.exc.DBAPIError, match=refusal):
+                with pytest.raises(StoreError, match="protected forecast"):
                     store.store_forecast(test)
             with (
                 engine.begin() as conn,

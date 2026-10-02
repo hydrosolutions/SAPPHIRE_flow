@@ -361,20 +361,19 @@ raise.
 **REALIZED for v1.0-headless by Plan 147 Slice D** (`docker/bootstrap-roles.sql`,
 run idempotently by the `init` service after `alembic upgrade head` —
 `docs/standards/cicd.md` § DB role bootstrap). Both `sapphire_api` and
-`sapphire_worker` get broad `SELECT` (the least-privilege boundary this slice
-enforces is per-table `INSERT`/`UPDATE`/`DELETE`, **not** `SELECT` breadth —
-never blanket `UPDATE`/`DELETE`), **with one exception**: `sapphire_worker`'s
-blanket `SELECT` is revoked back off `access_tokens`/`access_token_stations`
-and Plan 341 T1's `users`/`user_external_identities`/`human_station_grants`
-(caught by a live docker-compose deploy rehearsal, not static review — a
-Prefect worker running flows has no business reading token hashes/scopes).
+`sapphire_worker` read ordinary domain tables, with protected-input relations excluded.
+For `forecasts` and `rejected_forecasts`, revision `0071` and bootstrap grant an explicit
+safe-column SELECT list, excluding `input_lineage`; STANDARD stores use matching safe
+projections. Worker SELECT also excludes `access_tokens`/`access_token_stations` and
+`users`/`user_external_identities`/`human_station_grants`. Write grants remain per-table;
+never blanket UPDATE/DELETE.
 Neither role has `CREATE`/`DROP`/superuser, and neither can `CONNECT` to the
 separate `prefect` database.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | Broad `SELECT` (including `rejected_forecasts`, read by the REVIEW_OR_HUMAN route — Plan 404 T1/T3); scoped writes to access-token tables and Plan 341 T1's `users`, `user_external_identities` and `human_station_grants` for operator CLI changes. Plan 341 T2 adds selection update, publication decision/event insert, sequence update and `pipeline_health` insert for the named-human publication store. `audit_log` is INSERT-only. The role cannot write `forecasts`, `alerts`, `rejected_forecasts` (INSERT-only for `sapphire_worker`, never `sapphire_api`) or protected-backup health/proofs; HTTP service tokens remain GET-only. |
-| `sapphire_worker` | Broad `SELECT` except all access-token and human identity/grant tables, explicitly revoked after the blanket grant on each bootstrap. Domain write grants remain listed in `docker/bootstrap-roles.sql`, including INSERT-only on `rejected_forecasts` (Plan 404 T1 — append-only, role-independent trigger refuses UPDATE/DELETE/TRUNCATE even for the table owner). INSERT-only on `model_artifact_warm_start` (Plan 399/405 — fine-tune provenance; the store never UPDATEs/DELETEs it). No human identity/grant writes are allowed. |
+| `sapphire_api` | Ordinary-table SELECT, excluding protected inputs; safe-column SELECT on `forecasts`/`rejected_forecasts` (no raw lineage); scoped writes to access-token tables and Plan 341 T1's `users`, `user_external_identities` and `human_station_grants` for operator CLI changes. Plan 341 T2 adds selection update, publication decision/event insert, sequence update and `pipeline_health` insert for the named-human publication store. `audit_log` is INSERT-only. The role cannot write `forecasts`, `alerts`, `rejected_forecasts` (INSERT-only for `sapphire_worker`, never `sapphire_api`) or protected-backup health/proofs; HTTP service tokens remain GET-only. |
+| `sapphire_worker` | Ordinary-table SELECT except protected inputs, access-token and human identity/grant tables. Explicit safe-column SELECT on `forecasts`/`rejected_forecasts` excludes raw lineage. Domain write grants remain listed in `docker/bootstrap-roles.sql`, including INSERT-only on `rejected_forecasts` (Plan 404 T1 — append-only, role-independent trigger refuses UPDATE/DELETE/TRUNCATE even for the table owner). INSERT-only on `model_artifact_warm_start` (Plan 399/405 — fine-tune provenance; the store never UPDATEs/DELETEs it). No human identity/grant writes are allowed. |
 | `sapphire_publication_health` | Plan 341 T2/T2b host-only role, created `NOLOGIN` until activated with a separate credential. May read evidence, attestations and publication decisions to compute the backlog, and write only the protected backup-health/proof projection; cannot write human publication decisions. |
 | `sapphire_operator` | Plan 510: the database-limited DHM delivery-import role, created `NOLOGIN`; login only when the operator overlay supplies a secret. Grants: `SELECT` on `tenants`, `stations`, `rating_curves`, `observations`; `INSERT` on `stations`; `INSERT`+`DELETE` on `rating_curves`; `INSERT`+`UPDATE`+`DELETE` on `observations`; `INSERT` only on `audit_log` (+ `USAGE` on `audit_log_id_seq`). **No** `UPDATE`/`DELETE`/`TRUNCATE` on `stations` or `tenants`, no `SELECT` on `audit_log`. Every write is limited by the migration `0067` guard triggers to delivery `dhm-barkhk-2026-09-08` at tenant `chwrr` stations; a bootstrap that finds a guard trigger missing or disabled grants it nothing. |
 | `sapphire_prefect` | Full access to `prefect` database only — **UNCHANGED by Slice D** (still the owner/migration credential via `docker/init-db.sh`; realizing a distinct scoped `sapphire_prefect` role is a documented residual, not in this slice's scope). |

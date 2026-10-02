@@ -204,10 +204,24 @@ class TestProvisionalDischargeRoleBoundary:
                     .mappings()
                     .all()
                 )
+                table_grant_exclusions = {*TABLES, "forecasts", "rejected_forecasts"}
                 assert all(
-                    row["current"] == (row["prior"] and row["relname"] not in TABLES)
+                    row["current"]
+                    == (row["prior"] and row["relname"] not in table_grant_exclusions)
                     for row in rows
                 )
+                from sapphire_flow.db.metadata import forecasts, rejected_forecasts
+
+                for table in (forecasts, rejected_forecasts):
+                    for column in table.columns:
+                        allowed = conn.scalar(
+                            sa.text(
+                                "SELECT has_column_privilege('sapphire_api', "
+                                ":table, :column, 'SELECT')"
+                            ),
+                            {"table": table.name, "column": column.name},
+                        )
+                        assert allowed is (column.name != "input_lineage")
                 assert not conn.scalar(
                     sa.text(
                         "SELECT has_table_privilege('sapphire_api', "

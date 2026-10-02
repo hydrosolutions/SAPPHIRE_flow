@@ -619,7 +619,7 @@ class TestForecastEvidenceRoleGrants:
 
 class TestRejectedForecastsRoleGrants:
     """Plan 404 T1 — the append-only `rejected_forecasts` record: worker
-    INSERT-only, api SELECT-only (via the blanket grant), neither role gets
+    INSERT-only, api safe-column SELECT-only, neither role gets
     UPDATE/DELETE/TRUNCATE — mirrors `TestForecastEvidenceRoleGrants` above."""
 
     def test_worker_can_insert_api_can_select(
@@ -628,10 +628,10 @@ class TestRejectedForecastsRoleGrants:
         with bootstrapped.owner_engine.begin() as conn:
             for role, table, privilege, want in (
                 ("sapphire_worker", "rejected_forecasts", "INSERT", True),
-                ("sapphire_worker", "rejected_forecasts", "SELECT", True),
+                ("sapphire_worker", "rejected_forecasts", "SELECT", False),
                 ("sapphire_worker", "rejected_forecasts", "UPDATE", False),
                 ("sapphire_worker", "rejected_forecasts", "DELETE", False),
-                ("sapphire_api", "rejected_forecasts", "SELECT", True),
+                ("sapphire_api", "rejected_forecasts", "SELECT", False),
                 ("sapphire_api", "rejected_forecasts", "INSERT", False),
                 ("sapphire_api", "rejected_forecasts", "UPDATE", False),
                 ("sapphire_api", "rejected_forecasts", "DELETE", False),

@@ -1635,6 +1635,28 @@ that the daily interval clears the expected backlog. An individual forecast may 
 while its proof is pending when the protected backup system is healthy.
 Neither Plan 340 nor the Mac mini test host enables CHWRR consumer publication.
 
+## Forecast raw-lineage ACL upgrade
+
+Revision `0071` and role bootstrap grant API/worker SELECT only on an explicit safe
+column list for `forecasts` and `rejected_forecasts`. Both `input_lineage` columns,
+whole-row SELECT and whole-row JSON reads are unavailable to these roles. Deploy the
+matching STANDARD store projections with the ACL upgrade. Do not restore blanket
+SELECT to repair an old image. The existing backup principal retains full dump access.
+
+Bootstrap revokes stale PUBLIC/runtime table and lineage-column grants before later
+preflights and before applying safe grants. Unknown inherited/SET ROLE or indirect
+owner-object authority refuses; have the owner review it, never auto-grant around it.
+A failed migration rolls back atomically, unlike bootstrap's committed early revokes.
+Bootstrap ignores actual session-local temporary functions/views in all object preflights
+and applies existing managed health-role restrictions before lineage checks. Ownership
+refusal, LOGIN/credentials and later narrow grants remain unchanged. Init runs migration
+**before** bootstrap: unsafe inherited migration authority still refuses atomically. An
+authorized operator must resolve managed-role drift through approved role maintenance
+before retry; bootstrap ordering does not promise init can repair every starting state.
+Downgrade keeps the restrictive ACLs and does not remove retained evidence. TEST INSERT
+and COPY refusal in `0069`/`0070` is unchanged. This partial boundary does not close the
+remaining ordinary-reader, mixed restore, publication-health or activation holds.
+
 ## Dormant forecast publication and rejection isolation
 
 Migration `0070` adds publication/status guards and STANDARD-default rejection columns.

@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.db.metadata import metadata as _app_metadata
+from sapphire_flow.types.enums import ForecastDataUse
 
 router = APIRouter(tags=["tables"])
 
@@ -30,6 +31,53 @@ SAPPHIRE_TABLES: frozenset[str] = (
 )
 
 PAGE_SIZE = 50
+
+
+def ordinary_forecast_rows(table: sa.Table) -> sa.ColumnElement[bool]:
+    if table.name in {"forecasts", "rejected_forecasts"}:
+        return table.c.data_use == ForecastDataUse.STANDARD.value
+    headers = _app_metadata.tables["forecasts"].alias("ordinary_forecast")
+    if table.name in {
+        "forecast_values",
+        "forecast_evidence",
+        "forecast_preservation_attestations",
+        "protected_backup_forecast_proofs",
+    }:
+        return sa.exists(
+            sa.select(headers.c.id).where(
+                headers.c.id == table.c.forecast_id,
+                headers.c.data_use == ForecastDataUse.STANDARD.value,
+            )
+        )
+    if table.name == "forecast_evidence_blobs":
+        evidence = _app_metadata.tables["forecast_evidence"].alias("ordinary_evidence")
+
+        def standard_references(column: sa.ColumnElement[Any]) -> sa.Select[Any]:
+            return (
+                sa.select(column)
+                .select_from(evidence)
+                .join(headers, headers.c.id == evidence.c.forecast_id)
+                .where(headers.c.data_use == ForecastDataUse.STANDARD.value)
+                .where(column.is_not(None))
+            )
+
+        return sa.or_(
+            table.c.sha256.in_(standard_references(evidence.c.snapshot_sha256)),
+            table.c.sha256.in_(standard_references(evidence.c.artifact_sha256)),
+        )
+    return sa.true()
+
+
+def visible_columns(table: sa.Table) -> list[sa.Column[Any]]:
+    return [
+        column
+        for column in table.columns
+        if not (
+            table.name in {"forecasts", "rejected_forecasts"}
+            and column.name == "input_lineage"
+        )
+    ]
+
 
 # Reflected metadata — populated on first request per engine
 _reflected: sa.MetaData | None = None
@@ -70,7 +118,7 @@ def _format_cell(value: Any) -> str:
 
 def _build_select(table: sa.Table) -> list[sa.ColumnElement[Any]]:
     cols: list[sa.ColumnElement[Any]] = []
-    for col in table.columns:
+    for col in visible_columns(table):
         type_str = str(col.type).upper()
         if "GEOMETRY" in type_str or "GEOGRAPHY" in type_str:
             cols.append(sa.func.ST_AsText(col).label(col.name))
@@ -93,11 +141,15 @@ def table_list(
         if name not in SAPPHIRE_TABLES:
             continue
         table = reflected.tables[name]
-        count = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
+        count = conn.execute(
+            sa.select(sa.func.count())
+            .select_from(table)
+            .where(ordinary_forecast_rows(table))
+        ).scalar_one()
         tables_info.append(
             {
                 "name": name,
-                "columns": len(table.columns),
+                "columns": len(visible_columns(table)),
                 "rows": count,
             }
         )
@@ -123,15 +175,26 @@ def table_detail(
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     table = reflected.tables[table_name]
-    total = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
+    total = conn.execute(
+        sa.select(sa.func.count())
+        .select_from(table)
+        .where(ordinary_forecast_rows(table))
+    ).scalar_one()
 
     cols = _build_select(table)
     offset = page * PAGE_SIZE
     rows_raw = (
-        conn.execute(sa.select(*cols).limit(PAGE_SIZE).offset(offset)).mappings().all()
+        conn.execute(
+            sa.select(*cols)
+            .where(ordinary_forecast_rows(table))
+            .limit(PAGE_SIZE)
+            .offset(offset)
+        )
+        .mappings()
+        .all()
     )
 
-    column_names = [c.name for c in table.columns]
+    column_names = [c.name for c in visible_columns(table)]
     rows = [[_format_cell(row[c]) for c in column_names] for row in rows_raw]
 
     return templates.TemplateResponse(
@@ -165,15 +228,26 @@ def table_rows_partial(
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     table = reflected.tables[table_name]
-    total = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
+    total = conn.execute(
+        sa.select(sa.func.count())
+        .select_from(table)
+        .where(ordinary_forecast_rows(table))
+    ).scalar_one()
 
     cols = _build_select(table)
     offset = page * PAGE_SIZE
     rows_raw = (
-        conn.execute(sa.select(*cols).limit(PAGE_SIZE).offset(offset)).mappings().all()
+        conn.execute(
+            sa.select(*cols)
+            .where(ordinary_forecast_rows(table))
+            .limit(PAGE_SIZE)
+            .offset(offset)
+        )
+        .mappings()
+        .all()
     )
 
-    column_names = [c.name for c in table.columns]
+    column_names = [c.name for c in visible_columns(table)]
     rows = [[_format_cell(row[c]) for c in column_names] for row in rows_raw]
 
     return templates.TemplateResponse(

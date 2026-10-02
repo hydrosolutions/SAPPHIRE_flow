@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 from sapphire_flow.db.metadata import rejected_forecasts
 from sapphire_flow.exceptions import CaptureAbandonedError, ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import EnsembleRepresentation, ForecastDataUse, QcStatus
 from sapphire_flow.types.forecast_lineage import ForecastInputLineage
@@ -220,28 +221,29 @@ class PgRejectedForecastStore:
         *,
         abandon: threading.Event,
     ) -> None:
-        if self._begin is None:
-            raise ConfigurationError(
-                "RejectedForecastStore.write_batch requires a transaction_factory "
-                "— this store was built with none (read-only construction)"
-            )
-        for entry in entries:
-            validate_rejected_assignment(entry.payload, self._data_use)
-        rows = [row for entry in entries for row in _build_rows(entry)]
-        with self._begin() as txn:
-            txn.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
-            txn.execute(
-                sa.text(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT}'")
-            )
-            if rows:
-                txn.execute(sa.insert(rejected_forecasts), rows)
-            # D6 — checked INSIDE the transaction, immediately before COMMIT:
-            # a save the caller gave up waiting on must never land after
-            # being logged as timed out.
-            if abandon.is_set():
-                raise CaptureAbandonedError(
-                    "rejected-forecast capture abandoned before commit"
+        with protect_lineage_errors(self._data_use):
+            if self._begin is None:
+                raise ConfigurationError(
+                    "RejectedForecastStore.write_batch requires a transaction_factory "
+                    "— this store was built with none (read-only construction)"
                 )
+            for entry in entries:
+                validate_rejected_assignment(entry.payload, self._data_use)
+            rows = [row for entry in entries for row in _build_rows(entry)]
+            with self._begin() as txn:
+                txn.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
+                txn.execute(
+                    sa.text(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT}'")
+                )
+                if rows:
+                    txn.execute(sa.insert(rejected_forecasts), rows)
+                # D6 — checked INSIDE the transaction, immediately before COMMIT:
+                # a save the caller gave up waiting on must never land after
+                # being logged as timed out.
+                if abandon.is_set():
+                    raise CaptureAbandonedError(
+                        "rejected-forecast capture abandoned before commit"
+                    )
 
     def fetch_rejected_forecasts(
         self,
@@ -252,33 +254,34 @@ class PgRejectedForecastStore:
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[PersistedRejectedForecast], int]:
-        filters = [
-            rejected_forecasts.c.data_use == self._data_use.value,
-            rejected_forecasts.c.station_id == station_id,
-            rejected_forecasts.c.issued_at >= start,
-            rejected_forecasts.c.issued_at < end,
-        ]
-        if model_id is not None:
-            filters.append(rejected_forecasts.c.model_id == model_id)
-        where = sa.and_(*filters)
+        with protect_lineage_errors(self._data_use):
+            filters = [
+                rejected_forecasts.c.data_use == self._data_use.value,
+                rejected_forecasts.c.station_id == station_id,
+                rejected_forecasts.c.issued_at >= start,
+                rejected_forecasts.c.issued_at < end,
+            ]
+            if model_id is not None:
+                filters.append(rejected_forecasts.c.model_id == model_id)
+            where = sa.and_(*filters)
 
-        total: int = self._conn.execute(
-            sa.select(sa.func.count()).select_from(rejected_forecasts).where(where)
-        ).scalar_one()
+            total: int = self._conn.execute(
+                sa.select(sa.func.count()).select_from(rejected_forecasts).where(where)
+            ).scalar_one()
 
-        rows = (
-            self._conn.execute(
-                sa.select(rejected_forecasts)
-                .where(where)
-                .order_by(
-                    rejected_forecasts.c.issued_at.desc(),
-                    rejected_forecasts.c.recorded_at.desc(),
-                    rejected_forecasts.c.id.desc(),
+            rows = (
+                self._conn.execute(
+                    sa.select(*forecast_columns(rejected_forecasts, self._data_use))
+                    .where(where)
+                    .order_by(
+                        rejected_forecasts.c.issued_at.desc(),
+                        rejected_forecasts.c.recorded_at.desc(),
+                        rejected_forecasts.c.id.desc(),
+                    )
+                    .limit(limit)
+                    .offset(offset)
                 )
-                .limit(limit)
-                .offset(offset)
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
-        return [_row_to_domain(row) for row in rows], total
+            return [_row_to_domain(row) for row in rows], total

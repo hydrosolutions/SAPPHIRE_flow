@@ -15,7 +15,7 @@ import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import forecasts
-from sapphire_flow.exceptions import ForecastRetryConflictError
+from sapphire_flow.exceptions import ForecastRetryConflictError, StoreError
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.provisional_discharge_store import PgProvisionalDischargeStore
 from sapphire_flow.types.enums import ForecastDataUse, ForecastStatus, QcStatus
@@ -156,9 +156,7 @@ class TestDeployedForecastGuard:
         ordinary, test = _pair(db_connection)
         standard_store, test_store = _stores(db_connection)
         assert standard_store.store_forecast(ordinary) == ordinary.id
-        with pytest.raises(
-            sa.exc.DBAPIError, match="test forecast writes are disabled"
-        ):
+        with pytest.raises(StoreError, match="protected forecast"):
             test_store.store_forecast(test)
         with (
             pytest.raises(sa.exc.DBAPIError, match="test forecast writes are disabled"),
@@ -193,6 +191,35 @@ class TestDeployedForecastGuard:
                 .where(forecasts.c.id == ordinary.id)
                 .values(data_use="expired_rating_test")
             )
+
+
+def _assert_raw_lineage_guard(
+    conn: sa.Connection, forecast: OperationalForecast, message: str
+) -> None:
+    from sapphire_flow.db.metadata import forecast_evidence, forecast_values
+
+    assert forecast.input_lineage is not None
+    tables = (forecasts, forecast_values, forecast_evidence)
+    before = [
+        conn.scalar(sa.select(sa.func.count()).select_from(table)) for table in tables
+    ]
+    with pytest.raises(sa.exc.DBAPIError, match=message), conn.begin_nested():
+        conn.execute(
+            sa.insert(forecasts).values(
+                id=forecast.id,
+                station_id=forecast.station_id,
+                model_id=forecast.model_id,
+                issued_at=forecast.issued_at,
+                representation="members",
+                parameter="discharge",
+                units="m3/s",
+                data_use=ForecastDataUse.EXPIRED_RATING_TEST.value,
+                input_lineage=forecast.input_lineage.content,
+            )
+        )
+    assert [
+        conn.scalar(sa.select(sa.func.count()).select_from(table)) for table in tables
+    ] == before
 
 
 class TestStructuralForecastIsolation:
@@ -378,8 +405,13 @@ class TestStructuralForecastIsolation:
                 test.input_lineage, provisional_discharge_fingerprints=("a" * 64,)
             ),
         )
-        with pytest.raises(sa.exc.DBAPIError, match="input identity or tenant"):
+        with pytest.raises(StoreError, match="protected forecast"):
             _stores(structural_connection)[1].store_forecast(test)
+        _assert_raw_lineage_guard(
+            structural_connection,
+            test,
+            "forecast provisional input identity or tenant disagreement",
+        )
 
     def test_wrong_purpose_status_transition_is_denied(
         self, structural_connection: sa.Connection
@@ -420,8 +452,11 @@ class TestStructuralForecastIsolation:
                 provisional_discharge_fingerprints=(provisional.fingerprint,),
             ),
         )
-        with pytest.raises(sa.exc.DBAPIError, match="input identity or tenant"):
+        with pytest.raises(StoreError, match="protected forecast"):
             _stores(conn)[1].store_forecast(changed)
+        _assert_raw_lineage_guard(
+            conn, changed, "forecast provisional input identity or tenant disagreement"
+        )
 
     def test_contributors_require_same_class_and_retained_evidence(
         self, structural_connection: sa.Connection
@@ -438,10 +473,13 @@ class TestStructuralForecastIsolation:
                 contributor_forecast_ids=(ordinary.id,),
             ),
         )
-        with pytest.raises(
-            sa.exc.DBAPIError, match="contributor identity, class or tenant"
-        ):
+        with pytest.raises(StoreError, match="protected forecast"):
             store.store_forecast(combined)
+        _assert_raw_lineage_guard(
+            structural_connection,
+            replace(combined, issued_at=_ISSUED_B),
+            "forecast contributor identity, class or tenant disagreement",
+        )
         combined = replace(
             combined,
             input_lineage=replace(
@@ -705,3 +743,20 @@ class TestStructuralForecastIsolation:
                 )
             )
             transaction.rollback()
+
+
+def test_dormant_test_write_traceback_withholds_lineage(
+    db_connection: sa.Connection,
+) -> None:
+    import traceback
+
+    from sapphire_flow.exceptions import StoreError
+
+    _, test = _pair(db_connection)
+    with pytest.raises(StoreError, match="protected forecast") as caught:
+        _stores(db_connection)[1].store_forecast(test)
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert test.input_lineage is not None
+    assert test.input_lineage.content not in rendered
+    assert "provisional_discharge_fingerprints" not in rendered
+    assert db_connection.scalar(sa.select(sa.func.count()).select_from(forecasts)) == 0

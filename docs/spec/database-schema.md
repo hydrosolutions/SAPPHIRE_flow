@@ -52,8 +52,10 @@ verdict (`qc_failed`, `qc_suspect`, `qc_passed`, or `qc_unchecked` when its
 QC/datum handling errored after an earlier parameter in the same assignment
 had already failed). Append-only: role-independent triggers reject UPDATE,
 DELETE and TRUNCATE even for the table-owning role, mirroring migration
-0057's `forecast_evidence` guard. `sapphire_worker` gets INSERT only;
-`sapphire_api` reads it via its existing blanket SELECT. Not in the ER
+0057's `forecast_evidence` guard. `sapphire_worker` retains INSERT. Revision `0071`
+and bootstrap grant API/worker SELECT only on explicit safe columns, excluding
+`input_lineage`; STANDARD stores project NULL instead of reading that column.
+Owner and approved backup access remain unchanged. Not in the ER
 diagrams below (append-only/evidence-style tables are narrated here rather
 than diagrammed, matching `forecast_evidence`'s own precedent).
 

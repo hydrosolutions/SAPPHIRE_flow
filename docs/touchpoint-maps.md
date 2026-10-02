@@ -1037,8 +1037,12 @@ never promoted) is committed by `_store_artifact_task` BEFORE the warm-start ins
 `PgWarmStartWriter`'s own connection, so an insert failure (first seen as a missing
 `sapphire_worker` grant on the Mac-mini) leaves file + row and no warm-start row. Nothing cleans
 it up; it is inert (not ACTIVE) and must be removed or re-provisioned by hand. 🔑 **A NEW table the
-worker writes needs its own `GRANT` line in `docker/bootstrap-roles.sql`** (blanket SELECT only
-covers reads); `tests/integration/db/test_role_bootstrap.py::TestWarmStartProvenanceUnderScopedRole`
+worker writes needs its own `GRANT` line in `docker/bootstrap-roles.sql`**.
+Protected relations are excluded from automatic SELECT. `forecasts` and `rejected_forecasts`
+use explicit safe-column SELECT grants: a new column requires deliberate projection and
+bootstrap review plus a **new additive grant migration** after `0071` merges. Do not rewrite
+historical `0071` or automatically grant every future column; unapproved columns fail closed.
+Keep safe-column/projection parity tests current; `tests/integration/db/test_role_bootstrap.py::TestWarmStartProvenanceUnderScopedRole`
 runs the real store write as `sapphire_worker`. The grant reaches a live DB only when `init`
 re-runs the bootstrap on deploy; no migration is involved.
 
@@ -1648,8 +1652,10 @@ Preflight tests use legacy SQL at `0069` for statuses and every current/replaced
 reference, checking unchanged revision/history. Shape tests distinguish CHECK, shape
 trigger and dormant refusal, without implying stronger lineage authority.
 
-No private relation, grant or activation capability is added. Rejection lineage inherits
-raw table/browser access; T1d must close it together with forecast lineage before activation.
+No activation capability is added. Revision `0071` protects both raw lineage columns
+through explicit safe-column runtime SELECT grants and STANDARD projections; legacy,
+dashboard and generic browser queries exclude TEST. This is partial T1d: remaining
+reader/evaluation/state/tooling and mixed restore/publication-health holds still apply.
 SQL source/tenant linkage and actual-consumption completeness for rejection lineage remain
 held. The two unconditional TEST write refusals are necessary until those closures and
 verified deployment/rollback coverage exist. Backup still covers the full database.
