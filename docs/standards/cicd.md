@@ -934,6 +934,10 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
 
 All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
+### Store-frame equality in tests
+
+When a test checks persisted forecast value contents rather than API ordering, compare complete Polars frames after sorting by the full value domain key. Use exact equality with row, column and dtype checks enabled. Do not project, deduplicate, or add numeric tolerances unless the test is explicitly about such a transformation.
+
 ### Slow + live test tiers
 
 Not every test runs in default CI. Two pytest markers partition the suite:
