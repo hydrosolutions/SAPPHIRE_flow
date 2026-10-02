@@ -1240,3 +1240,40 @@ class TestPublicationConsumerIsolation:
         }
         assert store.calls == ["detail", "detail"]
         assert metadata_calls == []
+
+    @pytest.mark.parametrize("missing_index", [0, 1])
+    @pytest.mark.parametrize("kind", ["test", "unknown"])
+    def test_review_validates_bad_class_even_beside_missing_detail(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        missing_index: int,
+        kind: str,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        forecasts = [_forecast(station.id, "a"), _forecast(station.id, "b")]
+        store.rows = [
+            SimpleNamespace(id=f.id, data_use=ForecastDataUse.STANDARD)
+            for f in forecasts
+        ]
+        bad = _wrong_class(forecasts[1 - missing_index], kind)
+        store.details[bad.id] = bad
+        fake_stores["forecast_store"] = store
+        # No metadata/assessment methods: the entire batch must be refused first.
+        fake_stores["publication_store"] = object()
+
+        response = _review_page(client, station)
+
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+        assert store.calls == ["summaries", "detail", "detail"]

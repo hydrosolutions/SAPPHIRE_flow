@@ -1421,8 +1421,8 @@ Legacy forecast list/detail/data readers, dashboard counts/latest/status, and ge
 browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
 STANDARD history remains readable. Shared blobs remain visible through a STANDARD
 reference. The browser never projects either raw lineage column. This is partial T1d:
-adjacent human review/publication/latest/history pre-query safety, evaluation/state/
-health/tooling paths and mixed-class restore/publication-health proof remain holds.
+evaluation/state/health/tooling paths and mixed-class restore/publication-health
+proof remain holds. Publication consumer pre-query boundaries are described below.
 Modern forecast detail/station/rejection routes and Forecast Lab require explicit
 STANDARD store purpose before forecast counts/pages/detail or scalar cycle reads.
 Unknown/TEST dependencies return safe 503; wrong-class detail returns the same 404 as
@@ -1456,37 +1456,17 @@ the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denie
 `0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
 Explicit deferred tooling includes `scripts/plan100_forecast_feed_resilience.py`,
 `tools/standing_snapshot.py` and mixed-class `scripts/restore-rehearsal.sh` verification.
-Adjacent publication/review pre-query paths, evaluation/training/hindcast/state/health,
-full mixed protected restore/publication-health and T1c/T3 consumption remain held.
+Evaluation/training/hindcast/state/health, full mixed protected restore/publication-health
+and T1c/T3 consumption remain held.
 
 ### Bounded publication consumer isolation
 
-Human review detail/publish/withdraw now refuse unknown or TEST-purpose forecast
-stores with the fixed ordinary-read 503 before forecast lookup or publication work.
-Authentication and identifier parsing still precede the guard; station-specific
-scope is unavailable until a healthy STANDARD lookup. Missing, foreign and nonstandard
-results from that lookup retain indistinguishable 404 responses. Review lists keep
-the existing `Forecast review unavailable` purpose-refusal envelope, validate all
-summaries before any detail lookup, then validate all nonmissing details before any
-publication assessment or metadata. Unsafe pages fail wholly with ordinary-read 503;
-missing review details retain the existing omission-with-original-total behavior.
-Latest/history preserve scope, tenant and active-publication checks before purpose
-refusal, which precedes publication locks/selections/events. Latest wrong-class detail
-is 404 before metadata; mixed history is whole-response 503 before any metadata.
-Withdrawn history requires no forecast detail. Existing nonwithdrawn missing-detail
-behavior is unchanged, not a newly supported recovery path. Cursors and selected
-superseded STANDARD history remain unchanged. The change feed has no forecast-store
-dependency and receives no irrelevant purpose guard; existing publication SQL class
-filters and reference guards remain its boundary.
-
-Supported PostgreSQL history retains exact forecast references through
-`fk_forecast_publication_decision_exact_forecast`, immutable STANDARD publication
-reference guards, and the existing publication read lock. STANDARD by-ID reads
-include superseded rows. Therefore the batch collection does not newly make a
-referenced forecast disappear under supported wiring. Arbitrary injected stores
-that omit a nonwithdrawn referenced detail are outside that invariant; this patch
-does not define a new public error contract for them. Mixed missing/unsafe-detail
-canaries still require whole-batch class refusal before metadata.
+The canonical [publication consumer contract](../spec/types-and-protocols.md#bounded-publication-consumer-isolation)
+requires purpose refusal before lookup/selection and whole-batch class validation
+before metadata. Authentication and known station/tenant/publication policy gates
+retain their order. By-ID misconfiguration yields uniform 503 before station scope
+is knowable; healthy STANDARD missing/foreign/wrong-class details remain 404.
+This adds no grants, publication permission or TEST writer authority.
 
 This does not close ordinary-input/evaluation canaries, tooling projections, mixed
 backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.

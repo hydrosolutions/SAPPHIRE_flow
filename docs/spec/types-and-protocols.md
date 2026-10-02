@@ -3258,9 +3258,9 @@ and assignment-only skill helper do not perform forecast checks. Scalar cycle ma
 rely on purpose binding and store filtering; a timestamp cannot prove its own class.
 No response field or test-view selector is added.
 
-Adjacent human review/publication/latest/history callers share the detail serializer
-backstop but their separate pre-query closure remains deferred. This is partial T1d,
-not activation authority or evaluation/state/health/tooling/restore closure.
+Human review/publication/latest/history enforce the bounded purpose and result
+contract in [Bounded publication consumer isolation](#bounded-publication-consumer-isolation).
+This is partial T1d, not activation authority or evaluation/state/health/tooling/restore closure.
 
 #### ForecastStore
 

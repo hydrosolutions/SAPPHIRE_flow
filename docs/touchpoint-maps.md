@@ -1650,8 +1650,9 @@ STANDARD-before/after-unsafe cycle candidates before model/QC selection.
 Rejected store purpose is a read-only Protocol/Pg/Fake property; write/capture behavior
 is unchanged. Run the three route tests, Forecast Lab route/source/snapshot/CLI tests,
 store purpose/data-use tests, publication/history/auth regressions and schema drift.
-Adjacent human review/publication/latest/history pre-query closure remains deferred;
-shared detail serialization alone does not close it. Other T1d/T1c/T3 holds remain.
+Human review/publication/latest/history use the explicit guards and batch checks
+in the publication consumer boundary below; shared serialization is only a backstop.
+Other T1d/T1c/T3 holds remain.
 
 ### Publication and rejection data-use boundary
 
@@ -1720,32 +1721,13 @@ fallbacks for historical schemas to satisfy migration fixtures.
 
 ### Bounded publication consumer isolation
 
-Human review detail/publish/withdraw now refuse unknown or TEST-purpose forecast
-stores with the fixed ordinary-read 503 before forecast lookup or publication work.
-Authentication and identifier parsing still precede the guard; station-specific
-scope is unavailable until a healthy STANDARD lookup. Missing, foreign and nonstandard
-results from that lookup retain indistinguishable 404 responses. Review lists keep
-the existing `Forecast review unavailable` purpose-refusal envelope, validate all
-summaries before any detail lookup, then validate all nonmissing details before any
-publication assessment or metadata. Unsafe pages fail wholly with ordinary-read 503;
-missing review details retain the existing omission-with-original-total behavior.
-Latest/history preserve scope, tenant and active-publication checks before purpose
-refusal, which precedes publication locks/selections/events. Latest wrong-class detail
-is 404 before metadata; mixed history is whole-response 503 before any metadata.
-Withdrawn history requires no forecast detail. Existing nonwithdrawn missing-detail
-behavior is unchanged, not a newly supported recovery path. Cursors and selected
-superseded STANDARD history remain unchanged. The change feed has no forecast-store
-dependency and receives no irrelevant purpose guard; existing publication SQL class
-filters and reference guards remain its boundary.
-
-Supported PostgreSQL history retains exact forecast references through
-`fk_forecast_publication_decision_exact_forecast`, immutable STANDARD publication
-reference guards, and the existing publication read lock. STANDARD by-ID reads
-include superseded rows. Therefore the batch collection does not newly make a
-referenced forecast disappear under supported wiring. Arbitrary injected stores
-that omit a nonwithdrawn referenced detail are outside that invariant; this patch
-does not define a new public error contract for them. Mixed missing/unsafe-detail
-canaries still require whole-batch class refusal before metadata.
+For `api/routes/forecast_publication.py`, preserve the
+[publication consumer contract](spec/types-and-protocols.md#bounded-publication-consumer-isolation).
+Run wrong-purpose/no-query canaries, early/late unsafe summary/detail batches,
+mixed missing/unsafe details, review omission/total, withdrawn no-fetch and
+selected-superseded STANDARD history tests. Include real Pg purpose refusal,
+auth ordering, publication replay/concurrency and modern API/Lab regressions.
+Do not add a forecast dependency to the publication change feed.
 
 This does not close ordinary-input/evaluation canaries, tooling projections, mixed
 backup/restore proof, T3 state/health/alert/actual-consumption work, or activation.
