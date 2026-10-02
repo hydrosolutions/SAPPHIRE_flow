@@ -1680,7 +1680,7 @@ trigger and dormant refusal, without implying stronger lineage authority.
 No activation capability is added. Revision `0071` protects both raw lineage columns
 through explicit safe-column runtime SELECT grants and STANDARD projections; legacy,
 dashboard and generic browser queries exclude TEST. This is partial T1d: remaining
-reader/evaluation/state and mixed restore/publication-health holds still apply beyond
+reader/evaluation/state holds still apply beyond
 the [bounded input canaries](standards/security.md#ordinary-input-isolation-canaries);
 the named operator tools follow the [tooling contract](standards/security.md#operator-forecast-tooling-isolation).
 SQL source/tenant linkage and actual-consumption completeness for rejection lineage remain
@@ -1733,8 +1733,8 @@ Do not add a forecast dependency to the publication change feed.
 
 The publication slice alone does not close ordinary-input/evaluation canaries;
 see the [bounded input evidence](standards/security.md#ordinary-input-isolation-canaries). Mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work and activation
-remain held.
+backup/restore proof now has [bounded local canaries](standards/security.md#mixed-backup-restore-canaries);
+T3 state/health/alert/actual-consumption work and activation remain held.
 The named tooling projections follow the tooling contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
@@ -1760,4 +1760,13 @@ Follow the [bounded ordinary-input canary contract](standards/security.md#ordina
 The actual factory/store, station/group target assembly and observation-alert paths
 have mixed-storage controls. Preserve legitimate manual/rating history and the
 protected provisional boundary. Hindcast/skills/components/onboarding/calibration,
-full backup/restore/health proof and T1c/T3 remain separate holds.
+T1c/T3 remain held. Separate [mixed restore canaries](standards/security.md#mixed-backup-restore-canaries)
+cover local preservation/publication-health proof, not off-box recovery.
+
+### Mixed backup and publication-health isolation
+
+Follow the [mixed restore canary contract](standards/security.md#mixed-backup-restore-canaries).
+Full dumps retain both classes and protected lineage; ordinary readers exclude TEST.
+Rebootstrap roles after no-ACL restore before asserting runtime denial. Publication
+health uses its dedicated narrow principal and guarded references, never a broad
+forecast join or backup credentials. Local synthetic proof is not deployment recovery.

@@ -1644,7 +1644,10 @@ authorized operator must resolve managed-role drift through approved role mainte
 before retry; bootstrap ordering does not promise init can repair every starting state.
 Downgrade keeps the restrictive ACLs and does not remove retained evidence. TEST INSERT
 and COPY refusal in `0069`/`0070` is unchanged. This partial boundary does not close the
-remaining ordinary-reader, mixed restore, publication-health or activation holds.
+remaining ordinary-reader or activation holds. Separate
+[mixed restore canaries](security.md#mixed-backup-restore-canaries) cover local synthetic
+snapshot preservation and narrow publication-health composition only, not deployed
+role rollout, password-validation, off-box recovery, image archival or retention proof.
 
 ## Dormant forecast publication and rejection isolation
 

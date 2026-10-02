@@ -1436,8 +1436,8 @@ Legacy forecast list/detail/data readers, dashboard counts/latest/status, and ge
 browser parent/child/evidence/blob reads filter STANDARD before pagination. Superseded
 STANDARD history remains readable. Shared blobs remain visible through a STANDARD
 reference. The browser never projects either raw lineage column. This is partial T1d:
-Remaining evaluation/state/health paths and mixed-class restore/publication-health
-proof remain holds. The bounded factory/training/observation-alert canaries are scoped
+Remaining evaluation/state/health paths remain held. Synthetic full-dump/restore
+and narrow publication-health evidence is scoped [below](#mixed-backup-restore-canaries). The bounded factory/training/observation-alert canaries are scoped
 [below](#ordinary-input-isolation-canaries). The named operator tools follow the contract below. Publication consumer pre-query boundaries are described below.
 Modern forecast detail/station/rejection routes and Forecast Lab require explicit
 STANDARD store purpose before forecast counts/pages/detail or scalar cycle reads.
@@ -1470,11 +1470,13 @@ SQL echo and direct owner SQL remain privileged tooling, not authorized TEST wir
 Future nonowner TEST contributors also require separately reviewed read/write authority:
 the `0069` SECURITY INVOKER lineage trigger reads contributor raw lineage, denied by
 `0071`. Do not grant that column or add a SECURITY DEFINER escape to enable output.
-The operator tooling boundary is documented below. Mixed-class
-`scripts/restore-rehearsal.sh` verification remains deferred.
+The operator tooling boundary is documented below. `scripts/restore-rehearsal.sh`
+retains its narrower checks; expanded mixed-content inspection belongs to the
+[separate local canaries](#mixed-backup-restore-canaries).
 Beyond the [bounded input canaries](#ordinary-input-isolation-canaries),
-hindcast/skills/components/onboarding/calibration, state/health, full mixed protected
-restore/publication-health and T1c/T3 consumption remain held.
+hindcast/skills/components/onboarding/calibration, state/health and T1c/T3 consumption
+remain held. See the [separate mixed restore canaries](#mixed-backup-restore-canaries)
+for bounded local preservation/publication-health proof, not deployment readiness.
 
 ### Bounded publication consumer isolation
 
@@ -1487,8 +1489,8 @@ This adds no grants, publication permission or TEST writer authority.
 
 The publication slice alone does not close ordinary-input/evaluation canaries;
 see the later [bounded input evidence](#ordinary-input-isolation-canaries). Mixed
-backup/restore proof, T3 state/health/alert/actual-consumption work and activation
-remain held.
+backup/restore proof is scoped by the [local canaries](#mixed-backup-restore-canaries);
+T3 state/health/alert/actual-consumption work and activation remain held.
 The named operator tooling projections follow the contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
@@ -1551,8 +1553,8 @@ this is not activation authority.
 
 This closes only the named tooling readers. Beyond the later
 [bounded input canaries](#ordinary-input-isolation-canaries), remaining evaluation,
-mixed restore/publication-health proof and T1c/T3 actual-consumption/state/health/alert
-work remain held. Full backups must retain both classes and protected lineage.
+T1c/T3 actual-consumption/state/health/alert work remains held. Separate
+[mixed restore canaries](#mixed-backup-restore-canaries) cover local preservation/proof only. Full backups must retain both classes and protected lineage.
 
 ### Ordinary input isolation canaries
 
@@ -1580,7 +1582,78 @@ only in disposable rollback transactions; runtime protected reads remain denied.
 No TEST forecast writer, publication guard or role grant is bypassed.
 
 This bounded slice does **not** close hindcast, skills, components, onboarding or
-calibration canaries; full mixed-class backup/restore and narrow-principal publication
-health proof remain separate. T1c consumption linkage/activation and T3 complete-lookback
+calibration canaries. The [mixed backup/restore canaries](#mixed-backup-restore-canaries)
+separately cover local preservation and narrow-principal publication-health proof. T1c consumption linkage/activation and T3 complete-lookback
 lineage, state, freshness and forecast/combined-alert isolation remain held. Observation
 alert evidence is not forecast-alert evidence or authority for operational use.
+
+### Mixed backup restore canaries
+
+`tests/integration/ops/test_mixed_forecast_backup_restore.py` and its scoped fixture
+exercise the actual exported-snapshot dump worker using `sapphire_backup` over TCP.
+The test injects the child environment and relocates `pg_dump` through `docker exec`
+into its owned source container. It proves snapshot/principal behavior, not secret-file
+loading or password validation on that dump leg; its authentication policy is not inferred.
+A full custom-format dump preserves nonempty STANDARD and TEST forecasts/rejections,
+values, raw lineage, protected provisional measurements/feed/reference/curve snapshots,
+content fingerprints and evidence. Exact as-stored row manifests survive restore into
+a separate fresh disposable database. Shared blobs remain deduplicated and TEST-only
+blobs remain present. Exact compared relations are `forecasts`, `forecast_input_stations`,
+`forecast_values`, `forecast_evidence`, `forecast_evidence_blobs`, `rejected_forecasts`,
+`observations`, `rating_curves`, `measurement_feed_evidence`, `rating_reference_proofs`,
+`provisional_discharges`, `provisional_discharge_permissions`, and the three
+`forecast_publication_decisions`/`forecast_publication_selections`/`forecast_publication_events`
+relations. The nonempty input-station association is also checked against fixture IDs,
+station and tenant. Other relations are not claimed as exact-manifest assertions;
+parent foreign keys and post-restore health checks are distinct evidence.
+
+A late ordinary publication decision is absent at the dump cutoff. The selected-history
+fixture uses an owner status update, matching the stored superseded-selection contract,
+not executing a retry/supersession workflow. Real publication-store reads for that
+publication station retain the selected superseded STANDARD result.
+
+Only the two exact dormant TEST refusal triggers are temporarily removed during
+synthetic seeding, then their exact definitions are restored before source commit/dump.
+Negative writes prove refusal remains active. Synthetic provisional permission is
+disabled before dumping. Publication guards remain enabled throughout. Created source
+and target container IDs are recorded before dump/recreate/restore, and cleanup checks
+only those owned handles. They are registered before startup so known partial-start
+handles can be cleaned up. Absence requires explicit Docker object-not-found for that ID;
+daemon/authentication/CLI errors cannot pass. Cleanup attempts every known handle and
+preserves an original failure if cleanup also fails. Resource-record write errors are
+collected and reported after cleanup, never allowed to skip stop/dispose/absence checks.
+Deterministic fake-handle tests inject readiness, record-write and stop failures without
+Docker. Testcontainers' framework-managed
+reaper is not adopted or stopped by this fixture. No development deployment or existing
+database is involved. This fixture is a disposable committed restore seed, unlike the
+rollback-only ordinary-input fixture; exact refusal guards are back before commit.
+
+Restore uses the rehearsal's single-transaction, exit-on-error, no-owner/no-ACL flags.
+Unmodified role bootstrap then establishes runtime ACLs. Actual API/worker readers
+retain ordinary positives, exclude TEST, and deny raw-lineage/wildcard/provisional,
+input-station/feed/proof and protected permission-column reads. Permitted `tenant_id`/
+`state` permission projections remain readable; not every permission column is denied.
+The actual backup principal retains full reads. Owner and permitted API attempts to
+create TEST publication references fail under unchanged guards.
+
+The actual worker preservation writer appends validated STANDARD and TEST attestations.
+The dedicated publication-health principal still cannot SELECT forecasts. Only exact
+legitimate ordinary publication attestations/decisions advance proof counts; TEST
+preservation alone does not. Persisted TEST attestation, invalid/verified health states,
+identity/target/retention fields and proof counts are checked. A TEST forecast paired
+with a legitimate ordinary decision fails without inventing a TEST publication decision.
+Missing attestations and mismatched decisions fail closed; ordinary proof writes are
+idempotent. This is supported guarded composition, not a new
+class join, broader grant or universal defense against guard-disabled corruption.
+
+The negative content comparison changes an expected manifest in memory, not a dump.
+It proves comparator sensitivity, not corrupted-dump detection. Expanded mixed-content
+inspection belongs to these tests; the unchanged restore-rehearsal CLI still verifies
+its existing representative evidence chain and pending-publication guarantees. Health
+image-archive descriptors are synthetic: this is not actual image archival, off-box
+replication, retention, real-data recovery or deployment-readiness evidence. Remaining
+hindcast/skills/components/onboarding/calibration, T1c and T3 state/freshness/forecast-alert/
+actual-consumption holds remain. These are baseline-green regression canaries for
+existing behavior, not runtime fixes or manufactured failing-source evidence. Permission
+refusals and expected-manifest negatives prove only their named boundaries. No activation
+or overall T1d closure is authorized.
