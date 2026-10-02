@@ -1644,6 +1644,9 @@ Keep `ForecastLabStores` passive: the third production constructor in `skill_rea
 uses assignment-only reads. Shared snapshot and direct forecast-source guards protect
 HTTP/CLI without changing eligibility, publication-gated 403 or partial-source rules.
 Exercise empty snapshots, scalar markers, whole-result refusal and unchanged CLI files.
+Include real TEST-purpose Pg rejection stores at offsets beyond the last page (station
+lookup may run, rejected queries must not), per-model latest snapshot failures, and
+STANDARD-before/after-unsafe cycle candidates before model/QC selection.
 Rejected store purpose is a read-only Protocol/Pg/Fake property; write/capture behavior
 is unchanged. Run the three route tests, Forecast Lab route/source/snapshot/CLI tests,
 store purpose/data-use tests, publication/history/auth regressions and schema drift.

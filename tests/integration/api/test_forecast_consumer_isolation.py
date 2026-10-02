@@ -121,3 +121,61 @@ class TestPgConsumerIsolation:
             assert exc.value.status_code == 503
         finally:
             sa.event.remove(structural_connection, "before_execute", forbid_query)
+
+
+class TestPgRejectedConsumerIsolation:
+    def test_test_purpose_empty_page_refuses_before_rejected_query(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.api.routes.api_rejected_forecasts import (
+            get_rejected_forecasts,
+        )
+        from sapphire_flow.store.rejected_forecast_store import PgRejectedForecastStore
+        from sapphire_flow.store.station_store import PgStationStore
+        from sapphire_flow.types.enums import ForecastDataUse
+        from tests.integration.store.test_rejected_forecast_store import _seed_station
+
+        sid = _seed_station(db_connection)
+        store = PgRejectedForecastStore(
+            db_connection,
+            transaction_factory=None,
+            data_use=ForecastDataUse.EXPIRED_RATING_TEST,
+        )
+        statements: list[str] = []
+
+        def record_query(
+            conn: object,
+            cursor: object,
+            statement: str,
+            parameters: object,
+            context: object,
+            executemany: bool,
+        ) -> None:
+            statements.append(statement)
+            if "rejected_forecasts" in statement:
+                raise AssertionError("rejected query before purpose refusal")
+
+        sa.event.listen(db_connection, "before_cursor_execute", record_query)
+        try:
+            with pytest.raises(HTTPException, match="Ordinary forecast reads") as exc:
+                get_rejected_forecasts(
+                    str(sid),
+                    model_id=None,
+                    start=None,
+                    end=None,
+                    limit=1,
+                    offset=999,
+                    stores={
+                        "station_store": PgStationStore(db_connection),
+                        "rejected_forecast_store": store,
+                    },
+                    principal=_principal(),
+                    gate=PublicationGate(),
+                )
+            assert exc.value.status_code == 503
+            assert any("stations" in statement for statement in statements)
+            assert all(
+                "rejected_forecasts" not in statement for statement in statements
+            )
+        finally:
+            sa.event.remove(db_connection, "before_cursor_execute", record_query)

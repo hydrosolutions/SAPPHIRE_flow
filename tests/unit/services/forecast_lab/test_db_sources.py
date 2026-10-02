@@ -960,3 +960,47 @@ class TestPassiveForecastLabBundle:
     def test_assignment_only_reader_does_not_check_forecast_store(self) -> None:
         stores = replace(_make_stores(), forecast_store=object())  # type: ignore[arg-type]
         assert fetch_active_model_assignments(stores, StationId(uuid4())) == []
+
+
+class TestMixedCycleCandidateBoundary:
+    @pytest.mark.parametrize("unsafe_class", ["test", "none", "raw_string", "missing"])
+    @pytest.mark.parametrize("unsafe_first", [False, True])
+    def test_all_candidate_classes_checked_before_selection(
+        self, unsafe_class: str, unsafe_first: bool
+    ) -> None:
+        from types import SimpleNamespace
+
+        standard = SimpleNamespace(
+            data_use=ForecastDataUse.STANDARD,
+            model_id=ModelId("_pooled"),
+            qc_status=QcStatus.QC_PASSED,
+        )
+
+        class Unsafe:
+            def __getattr__(self, name: str) -> object:
+                if name == "data_use":
+                    raise AttributeError(name)
+                raise AssertionError("model/QC filter before complete class validation")
+
+        unsafe = Unsafe()
+        if unsafe_class != "missing":
+            unsafe.data_use = {
+                "test": ForecastDataUse.EXPIRED_RATING_TEST,
+                "none": None,
+                "raw_string": "standard",
+            }[unsafe_class]
+        candidates = [unsafe, standard] if unsafe_first else [standard, unsafe]
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_forecasts_for_cycle(self, *args: object) -> list[object]:
+                return candidates
+
+        stores = replace(_make_stores(), forecast_store=Store())  # type: ignore[arg-type]
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            fetch_combined_forecast_for_cycle(
+                stores, StationId(uuid4()), ModelId("_pooled"), _EPOCH
+            )

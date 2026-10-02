@@ -3006,3 +3006,47 @@ class TestSnapshotPurposeBoundary:
                 combination_strategy=strategy,
                 clock=forbidden_clock,
             )
+
+
+class TestSnapshotLatestResultBoundary:
+    @pytest.mark.parametrize("result_class", ["test", "unknown"])
+    def test_unsafe_per_model_latest_fails_whole_snapshot(
+        self, result_class: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        unsafe = (
+            SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST)
+            if result_class == "test"
+            else SimpleNamespace()
+        )
+
+        class Store(FakeForecastStore):
+            def fetch_latest_forecast(
+                self,
+                station_id: StationId,
+                model_id: ModelId | None = None,
+                parameter: str | None = None,
+            ) -> Any:
+                return unsafe
+
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=Store(),
+            seed_default_cycle=False,
+        )
+        with pytest.raises(
+            ConfigurationError, match="Ordinary forecast reads are unavailable"
+        ):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                clock=_frozen_clock(),
+            )
