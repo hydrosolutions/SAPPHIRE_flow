@@ -8,6 +8,11 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.forecast_read import (
+    require_standard_detail,
+    require_standard_results,
+    require_standard_store,
+)
 from sapphire_flow.api.human_auth import (
     require_human_principal,
     require_human_station_permission,
@@ -78,9 +83,11 @@ def _human_forecast(
     principal: HumanPrincipal,
     permission: HumanPermission,
 ) -> Any:
+    require_standard_store(stores["forecast_store"])
     forecast = stores["forecast_store"].fetch_forecast(forecast_id)
-    if forecast is None or forecast.data_use is not ForecastDataUse.STANDARD:
+    if forecast is None:
         raise HTTPException(status_code=404, detail="Forecast not found")
+    require_standard_detail(forecast)
     if not principal.allows(forecast.station_id, permission):
         raise HTTPException(status_code=404, detail="Forecast not found")
     tenant_id = station_tenant_id(stores, forecast.station_id)
@@ -143,8 +150,10 @@ def list_review_forecasts(
     rows, total = forecast_store.fetch_forecast_summaries(
         sid, start_dt, end_dt, limit=limit, offset=offset
     )
+    require_standard_results(rows)
+    forecasts = [forecast_store.fetch_forecast(row.id) for row in rows]
+    require_standard_results(f for f in forecasts if f is not None)
     now = clock()
-    forecasts = [stores["forecast_store"].fetch_forecast(row.id) for row in rows]
     return PaginatedResponse[ReviewForecast](
         items=[_review_forecast(f, stores, now) for f in forecasts if f is not None],
         total=total,
@@ -252,6 +261,7 @@ def latest_published_forecast(
     ensure_station_in_scope(principal, sid)
     tenant_id = station_tenant_id(stores, sid)
     require_active_publication(tenant_id, gate)
+    require_standard_store(stores["forecast_store"])
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
     forecast_id = pub.fetch_latest_selected_id(sid, parameter)
@@ -262,6 +272,7 @@ def latest_published_forecast(
     )
     if forecast is None:
         raise HTTPException(status_code=404, detail="Forecast not found")
+    require_standard_detail(forecast)
     metadata, _ = publication_metadata(pub, forecast, tenant_id)
     return to_forecast_detail(forecast).model_copy(update=metadata)
 
@@ -283,6 +294,7 @@ def publication_history(
     tenant_id = station_tenant_id(stores, sid)
     require_active_publication(tenant_id, gate)
     after = parse_cursor(cursor)
+    require_standard_store(stores["forecast_store"])
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
     events = pub.fetch_events(
@@ -291,14 +303,16 @@ def publication_history(
         tenant_ids=frozenset({tenant_id}),
         station_ids=frozenset({sid}),
     )
+    forecasts = [
+        stores["forecast_store"].fetch_forecast(event.decision.forecast_id)
+        if event.withdrawal_state is WithdrawalState.NOT_WITHDRAWN
+        else None
+        for event in events
+    ]
+    require_standard_results(f for f in forecasts if f is not None)
     items: list[PublicationHistoryItem] = []
-    for event in events:
+    for event, forecast in zip(events, forecasts, strict=True):
         decision = event.decision
-        forecast = (
-            stores["forecast_store"].fetch_forecast(decision.forecast_id)
-            if event.withdrawal_state is WithdrawalState.NOT_WITHDRAWN
-            else None
-        )
         metadata: dict[str, Any] = {}
         if forecast is not None:
             metadata, _ = publication_metadata(pub, forecast, tenant_id)

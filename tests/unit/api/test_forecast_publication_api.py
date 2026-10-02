@@ -613,7 +613,7 @@ class TestActivationConfig:
 @pytest.mark.parametrize(
     "method,path", [("get", ""), ("post", "/publish"), ("post", "/withdraw")]
 )
-def test_human_test_forecast_is_not_found_even_with_test_store(
+def test_human_test_store_refuses_before_lookup(
     client: TestClient,
     fake_stores: dict[str, Any],
     publication_data: tuple[Any, FakePublicationStore],
@@ -666,8 +666,11 @@ def test_human_test_forecast_is_not_found_even_with_test_store(
             }
         )
         response = client.post(url, json=body)
-    assert response.status_code == 404
-    assert response.json() == {"error": "Forecast not found", "detail": None}
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "Ordinary forecast reads are unavailable",
+        "detail": None,
+    }
 
 
 @pytest.mark.parametrize("offset", [0, 1, 2])
@@ -789,3 +792,451 @@ def test_review_list_unknown_purpose_fails_closed_after_authorization(
     assert response.status_code == (503 if authorization == "authorized" else 404)
     assert "total" not in response.json()
     assert "items" not in response.json()
+
+
+class _PublicationReadProbe:
+    def __init__(self, purpose: object = "missing") -> None:
+        if purpose != "missing":
+            self.data_use = purpose
+        self.calls: list[str] = []
+        self.rows: list[Any] = []
+        self.details: dict[ForecastId, Any] = {}
+
+    def fetch_forecast_summaries(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("summaries")
+        return self.rows, len(self.rows)
+
+    def fetch_forecast(self, forecast_id: ForecastId) -> Any:
+        self.calls.append("detail")
+        return self.details.get(forecast_id)
+
+
+def _authorize_publication_human(station: Any) -> None:
+    app.dependency_overrides[require_human_principal] = lambda: HumanPrincipal(
+        user_id=UserId(uuid4()),
+        tenant_id=station.tenant_id,
+        grants=frozenset(
+            StationGrant(station_id=station.id, permission=p)
+            for p in (HumanPermission.REVIEW, HumanPermission.PUBLISH)
+        ),
+    )
+
+
+def _publication_request(client: Any, path: str, forecast_id: ForecastId) -> Any:
+    url = f"/api/v1/review/forecasts/{forecast_id}{path}"
+    if not path:
+        return client.get(url)
+    body = (
+        {"expected_forecast_version": 1, "idempotency_key": "isolation"}
+        if path == "/publish"
+        else {
+            "expected_selection_version": 1,
+            "reason_code": "data_error",
+            "reason_text": "test",
+            "idempotency_key": "isolation",
+        }
+    )
+    return client.post(url, json=body)
+
+
+def _review_page(client: Any, station: Any) -> Any:
+    return client.get(
+        "/api/v1/review/forecasts",
+        params={
+            "station_id": str(station.id),
+            "start": "2026-09-28T00:00:00+00:00",
+            "end": "2026-09-29T00:00:00+00:00",
+        },
+    )
+
+
+def _wrong_class(forecast: OperationalForecast, kind: str) -> Any:
+    from types import SimpleNamespace
+
+    from sapphire_flow.types.enums import ForecastDataUse
+
+    class ReturnedForecast(SimpleNamespace):
+        def __getattr__(self, name: str) -> Any:
+            return getattr(forecast, name)
+
+    return ReturnedForecast(
+        data_use=ForecastDataUse.EXPIRED_RATING_TEST if kind == "test" else None
+    )
+
+
+class TestPublicationConsumerIsolation:
+    @pytest.mark.parametrize("path", ["", "/publish", "/withdraw"])
+    @pytest.mark.parametrize("purpose", ["test", "missing", "none", "raw"])
+    def test_by_id_purpose_refuses_before_missing_lookup(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        path: str,
+        purpose: str,
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(
+            {
+                "test": ForecastDataUse.EXPIRED_RATING_TEST,
+                "missing": "missing",
+                "none": None,
+                "raw": "standard",
+            }[purpose]
+        )
+        fake_stores["forecast_store"] = store
+        fake_stores["publication_store"] = object()
+        response = _publication_request(client, path, ForecastId(uuid4()))
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+        assert store.calls == []
+
+    @pytest.mark.parametrize("path", ["", "/publish", "/withdraw"])
+    def test_authentication_precedes_purpose(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        path: str,
+    ) -> None:
+        from fastapi import HTTPException
+
+        def deny_human() -> HumanPrincipal:
+            raise HTTPException(401, "Human authentication required")
+
+        app.dependency_overrides[require_human_principal] = deny_human
+        store = _PublicationReadProbe()
+        fake_stores["forecast_store"] = store
+        response = _publication_request(client, path, ForecastId(uuid4()))
+        assert response.status_code == 401
+        assert store.calls == []
+
+    @pytest.mark.parametrize("stage", ["summary", "detail"])
+    @pytest.mark.parametrize("bad_index", [0, 1])
+    @pytest.mark.parametrize("kind", ["test", "unknown"])
+    def test_review_validates_entire_page_before_downstream_reads(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        stage: str,
+        bad_index: int,
+        kind: str,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        forecasts = [_forecast(station.id, "a"), _forecast(station.id, "b")]
+        store.rows = [SimpleNamespace(id=f.id, data_use=f.data_use) for f in forecasts]
+        store.details = {f.id: f for f in forecasts}
+        bad = _wrong_class(forecasts[bad_index], kind)
+        if stage == "summary":
+            store.rows[bad_index] = bad
+        else:
+            store.details[bad.id] = bad
+        fake_stores["forecast_store"] = store
+        # No publication methods: even an early healthy row must not be assessed.
+        fake_stores["publication_store"] = object()
+        response = _review_page(client, station)
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+        assert store.calls == (
+            ["summaries"] if stage == "summary" else ["summaries", "detail", "detail"]
+        )
+
+    @pytest.mark.parametrize(
+        "route", ["forecasts/latest-published", "forecast-publications"]
+    )
+    @pytest.mark.parametrize("purpose", ["test", "missing", "none", "raw"])
+    @pytest.mark.parametrize(
+        "authorization", ["authorized", "out_of_scope", "inactive"]
+    )
+    def test_station_reads_gate_purpose_before_publication_queries(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        route: str,
+        purpose: str,
+        authorization: str,
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        store = _PublicationReadProbe(
+            {
+                "test": ForecastDataUse.EXPIRED_RATING_TEST,
+                "missing": "missing",
+                "none": None,
+                "raw": "standard",
+            }[purpose]
+        )
+        fake_stores["forecast_store"] = store
+        fake_stores["publication_store"] = object()
+        if authorization == "out_of_scope":
+            app.dependency_overrides[require_principal] = lambda: _service_principal(
+                AccessTokenRole.CONSUMER, StationId(uuid4())
+            )
+        elif authorization == "inactive":
+            app.dependency_overrides[get_publication_gate] = lambda: PublicationGate()
+        response = client.get(
+            f"/api/v1/stations/{station.id}/{route}", params={"parameter": "discharge"}
+        )
+        assert response.status_code == (
+            503 if authorization in {"authorized", "inactive"} else 404
+        )
+        if authorization == "authorized":
+            assert response.json()["error"] == "Ordinary forecast reads are unavailable"
+        elif authorization == "inactive":
+            assert response.json()["error"] != "Ordinary forecast reads are unavailable"
+        assert store.calls == []
+
+    @pytest.mark.parametrize("kind", ["test", "unknown"])
+    @pytest.mark.parametrize(
+        "route", ["forecasts/latest-published", "forecast-publications"]
+    )
+    @pytest.mark.parametrize("bad_index", [0, 1])
+    def test_published_result_validation_precedes_all_metadata(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        route: str,
+        bad_index: int,
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, pub = publication_data
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        forecasts = [_forecast(station.id, "a"), _forecast(station.id, "b")]
+        for f in forecasts:
+            pub.add_publish(f, station.tenant_id, replace_selected=True)
+            store.details[f.id] = f
+        bad = _wrong_class(forecasts[bad_index], kind)
+        store.details[bad.id] = bad
+        fake_stores["forecast_store"] = store
+        from sapphire_flow.api.publication_views import publication_metadata
+
+        metadata_calls: list[str] = []
+
+        def metadata(*args: Any, **kwargs: Any) -> Any:
+            metadata_calls.append("metadata")
+            return publication_metadata(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "sapphire_flow.api.routes.forecast_publication.publication_metadata",
+            metadata,
+        )
+        if route == "forecasts/latest-published":
+            monkeypatch.setattr(pub, "fetch_latest_selected_id", lambda *args: bad.id)
+        response = client.get(
+            f"/api/v1/stations/{station.id}/{route}", params={"parameter": "discharge"}
+        )
+        assert response.status_code == (
+            404 if route == "forecasts/latest-published" else 503
+        )
+        assert metadata_calls == []
+        assert store.calls == (
+            ["detail"]
+            if route == "forecasts/latest-published"
+            else ["detail", "detail"]
+        )
+
+    def test_review_missing_detail_retains_total_compatibility(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        store.rows = [
+            SimpleNamespace(id=ForecastId(uuid4()), data_use=ForecastDataUse.STANDARD)
+        ]
+        fake_stores["forecast_store"] = store
+        response = _review_page(client, station)
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["items"] == []
+
+    def test_change_feed_does_not_require_forecast_dependency(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+    ) -> None:
+        station, pub = publication_data
+        forecast = _forecast(station.id, "selected")
+        pub.add_publish(forecast, station.tenant_id)
+        fake_stores["forecast_store"] = object()
+        response = client.get("/api/v1/forecast-publications")
+        assert response.status_code == 200
+        assert response.json()["items"][0]["forecast_id"] == str(forecast.id)
+
+    @pytest.mark.parametrize("path", ["", "/publish", "/withdraw"])
+    @pytest.mark.parametrize("result", ["missing", "foreign", "test", "unknown"])
+    def test_standard_by_id_keeps_indistinguishable_not_found(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        path: str,
+        result: str,
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        forecast = _forecast(
+            station.id if result != "foreign" else StationId(uuid4()), "a"
+        )
+        if result != "missing":
+            store.details[forecast.id] = (
+                _wrong_class(forecast, result)
+                if result in {"test", "unknown"}
+                else forecast
+            )
+        fake_stores["forecast_store"] = store
+        fake_stores["publication_store"] = object()
+        response = _publication_request(client, path, forecast.id)
+        assert response.status_code == 404
+        assert response.json() == {"error": "Forecast not found", "detail": None}
+        assert store.calls == ["detail"]
+
+    @pytest.mark.parametrize("purpose", [None, "standard"])
+    def test_review_keeps_existing_wrong_purpose_envelope(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        purpose: object,
+    ) -> None:
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        store = _PublicationReadProbe(purpose)
+        fake_stores["forecast_store"] = store
+        response = _review_page(client, station)
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Forecast review unavailable",
+            "detail": None,
+        }
+        assert store.calls == []
+
+    def test_empty_standard_pages_remain_available(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+    ) -> None:
+        station, _ = publication_data
+        _authorize_publication_human(station)
+        review = _review_page(client, station)
+        history = client.get(f"/api/v1/stations/{station.id}/forecast-publications")
+        latest = client.get(
+            f"/api/v1/stations/{station.id}/forecasts/latest-published",
+            params={"parameter": "discharge"},
+        )
+        assert review.status_code == history.status_code == 200
+        assert review.json()["total"] == 0
+        assert review.json()["items"] == history.json()["items"] == []
+        assert latest.status_code == 404
+
+    def test_selected_superseded_history_and_latest_stay_readable(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+    ) -> None:
+        station, pub = publication_data
+        forecast = replace(
+            _forecast(station.id, "selected"), status=ForecastStatus.SUPERSEDED
+        )
+        fake_stores["forecast_store"].store_forecast(forecast)
+        pub.add_publish(forecast, station.tenant_id)
+        history = client.get(f"/api/v1/stations/{station.id}/forecast-publications")
+        latest = client.get(
+            f"/api/v1/stations/{station.id}/forecasts/latest-published",
+            params={"parameter": forecast.ensemble.parameter},
+        )
+        assert latest.status_code == history.status_code == 200
+        assert latest.json()["id"] == str(forecast.id)
+        assert history.json()["items"][0]["forecast"]["status"] == "superseded"
+
+    def test_withdrawn_history_does_not_read_missing_forecasts(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, pub = publication_data
+        forecast = _forecast(station.id, "withdrawn")
+        pub.add_publish(forecast, station.tenant_id)
+        pub.add_withdraw(forecast)
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        fake_stores["forecast_store"] = store
+        response = client.get(f"/api/v1/stations/{station.id}/forecast-publications")
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == 2
+        assert all(item["forecast"] is None for item in response.json()["items"])
+        assert store.calls == []
+
+    @pytest.mark.parametrize("missing_index", [0, 1])
+    def test_history_validates_bad_class_even_beside_missing_detail(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        publication_data: tuple[Any, FakePublicationStore],
+        monkeypatch: pytest.MonkeyPatch,
+        missing_index: int,
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station, pub = publication_data
+        store = _PublicationReadProbe(ForecastDataUse.STANDARD)
+        forecasts = [_forecast(station.id, "a"), _forecast(station.id, "b")]
+        for forecast in forecasts:
+            pub.add_publish(forecast, station.tenant_id, replace_selected=True)
+        bad = _wrong_class(forecasts[1 - missing_index], "test")
+        store.details[bad.id] = bad
+        fake_stores["forecast_store"] = store
+        metadata_calls: list[str] = []
+
+        def metadata(*args: Any, **kwargs: Any) -> Any:
+            metadata_calls.append("metadata")
+            return {}, []
+
+        monkeypatch.setattr(
+            "sapphire_flow.api.routes.forecast_publication.publication_metadata",
+            metadata,
+        )
+        response = client.get(f"/api/v1/stations/{station.id}/forecast-publications")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+        assert store.calls == ["detail", "detail"]
+        assert metadata_calls == []
