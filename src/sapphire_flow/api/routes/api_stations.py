@@ -9,6 +9,10 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sapphire_flow.api.deps import get_connection, get_stores
+from sapphire_flow.api.forecast_read import (
+    require_standard_results,
+    require_standard_store,
+)
 from sapphire_flow.api.model_visibility import (
     model_tier_for_model_id,
     station_has_active_floor,
@@ -115,6 +119,7 @@ def _to_observation_response(o: Any) -> ObservationResponse:
 
 
 def _to_forecast_summary(row: Any) -> ForecastSummary:
+    require_standard_results((row,))
     return ForecastSummary(
         id=str(row.id),
         station_id=str(row.station_id),
@@ -316,6 +321,7 @@ def list_forecasts(
     if gate.active_tenant_ids:
         tenant_id = station_tenant_id(stores, sid)
         if gate.active(tenant_id):
+            require_standard_store(stores["forecast_store"])
             pub = require_publication_store(stores)
             pub.lock_read_snapshot()
             selected_ids, total = pub.fetch_selected_ids(
@@ -331,6 +337,7 @@ def list_forecasts(
             forecasts = [
                 stores["forecast_store"].fetch_forecast(fid) for fid in selected_ids
             ]
+            require_standard_results(f for f in forecasts if f is not None)
             return PaginatedResponse[ForecastSummary](
                 items=[
                     ForecastSummary.model_validate(
@@ -346,6 +353,7 @@ def list_forecasts(
                 offset=offset,
             )
 
+    require_standard_store(stores["forecast_store"])
     rows, total = stores["forecast_store"].fetch_forecast_summaries(
         sid,
         start_dt,
@@ -357,6 +365,7 @@ def list_forecasts(
         offset=offset,
     )
 
+    require_standard_results(rows)
     return PaginatedResponse[ForecastSummary](
         items=[_to_forecast_summary(r) for r in rows],
         total=total,

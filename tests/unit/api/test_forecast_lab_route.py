@@ -330,3 +330,79 @@ class TestGroupMembershipDoesNotExpandScope:
         assert [
             e["model"]["key"] for e in body["stations"][0]["sapphire_forecasts"]
         ] == ["cmal_small"]
+
+
+class TestForecastLabPurposeAndAuthorization:
+    @pytest.mark.parametrize("strategy", list(ModelCombinationStrategy))
+    def test_unknown_purpose_empty_scope_is_safe_503(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        strategy: ModelCombinationStrategy,
+    ) -> None:
+        fake_stores["forecast_store"] = object()
+        _set_principal(_consumer_principal(frozenset()))
+        app.dependency_overrides[get_forecast_combination_strategy] = lambda: strategy
+        response = client.get("/api/v1/forecast-lab/snapshot")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }
+
+    @pytest.mark.parametrize("case", ["unknown", "foreign", "ineligible", "gated"])
+    def test_authorization_precedes_wrong_purpose(
+        self, client: TestClient, fake_stores: dict[str, Any], case: str
+    ) -> None:
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
+
+        station = make_station_config(
+            code="2009",
+            station_kind=StationKind.LAKE
+            if case == "ineligible"
+            else StationKind.RIVER,
+        )
+        if case != "unknown":
+            fake_stores["station_store"].store_station(station)
+        if case == "foreign":
+            _set_principal(_consumer_principal(frozenset()))
+        if case == "gated":
+            app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+                active_tenant_ids=frozenset({station.tenant_id})
+            )
+        fake_stores["forecast_store"] = object()
+        response = client.get("/api/v1/forecast-lab/snapshot?station_code=2009")
+        assert response.status_code == (403 if case == "gated" else 404)
+
+    def test_faulty_standard_cycle_result_fails_the_whole_http_snapshot(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.types.enums import ForecastDataUse
+
+        station = make_station_config(code="2009")
+        fake_stores["station_store"].store_station(station)
+        app.dependency_overrides[get_forecast_combination_strategy] = lambda: (
+            ModelCombinationStrategy.POOLED
+        )
+
+        class Store:
+            data_use = ForecastDataUse.STANDARD
+
+            def fetch_latest_uncombined_issued_at(self, cutoff: object) -> object:
+                return ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
+
+            def fetch_forecasts_for_cycle(self, *args: object) -> list[object]:
+                return [SimpleNamespace(data_use=ForecastDataUse.EXPIRED_RATING_TEST)]
+
+        fake_stores["forecast_store"] = Store()
+        response = client.get("/api/v1/forecast-lab/snapshot?station_code=2009")
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "Ordinary forecast reads are unavailable",
+            "detail": None,
+        }

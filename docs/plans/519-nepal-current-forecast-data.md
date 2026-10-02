@@ -517,10 +517,13 @@ STANDARD projections protects both parent lineage columns; legacy/browser/dashbo
 queries filter STANDARD, including forecast-linked children and shared blob references.
 Snapshot parser and purpose-bound TEST driver exceptions use safe outward messages.
 Bootstrap keeps early revokes separate from transactional migration failure behavior;
-backup/owner authority and `0069`/`0070` refusal remain unchanged. Modern API/Forecast Lab
-unknown-purpose injection, evaluation/training/hindcast/state/health/tooling readers,
-full mixed-class restore/publication-health canaries, and T1c source/tenant consumption
-linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
+backup/owner authority and `0069`/`0070` refusal remain unchanged. Modern forecast detail/station/rejection routes and Forecast Lab now refuse
+unknown/TEST-purpose dependencies before forecast queries and independently refuse
+wrong-class results. This preserves authorization ordering, safe error envelopes,
+STANDARD pagination/history and passive assignment-only bundle use. Adjacent human
+review/publication/latest/history pre-query boundaries, evaluation/training/hindcast/
+state/health/tooling readers, full mixed-class restore/publication-health canaries,
+and T1c source/tenant consumption linkage remain explicit holds. No activation, deployment or full T1d closure is claimed.
 
 
 **Outcome:** every ordinary read path excludes test output and cannot reveal provisional

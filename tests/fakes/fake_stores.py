@@ -417,6 +417,8 @@ class FakeForecastStore:
     `tests/integration/flows/test_forecast_cycle_resume_pg.py`)."""
 
     def __init__(self, *, data_use: ForecastDataUse = ForecastDataUse.STANDARD) -> None:
+        if not isinstance(data_use, ForecastDataUse):
+            raise ValueError("forecast store data use must be typed")
         self._data_use = data_use
         self._forecasts: dict[ForecastId, OperationalForecast] = {}
         self._by_key: dict[
@@ -2497,6 +2499,10 @@ class FakeRejectedForecastStore:
         self._data_use = data_use
         self._rows: list[PersistedRejectedForecast] = []
         self.write_batch_calls: int = 0
+
+    @property
+    def data_use(self) -> ForecastDataUse:
+        return self._data_use
 
     def write_batch(
         self,

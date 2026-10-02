@@ -46,6 +46,7 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_eligible_stations,
 )
 from sapphire_flow.services.forecast_lab.snapshot import build_snapshot
+from sapphire_flow.services.forecast_read import ForecastReadUnavailableError
 from sapphire_flow.types.datetime import ensure_utc
 
 # NOT moved under TYPE_CHECKING, for the same reason as ForecastLabSnapshot
@@ -163,11 +164,14 @@ def get_forecast_lab_snapshot(
             status_code=403,
             detail="Forecast Lab is unavailable for publication-gated stations",
         )
-    return build_snapshot(
-        fl_stores,
-        stations=stations,
-        archive_base_path=archive_base_path,
-        observation_hours=observation_hours,
-        combination_strategy=combination_strategy,
-        clock=lambda: ensure_utc(datetime.now(UTC)),
-    )
+    try:
+        return build_snapshot(
+            fl_stores,
+            stations=stations,
+            archive_base_path=archive_base_path,
+            observation_hours=observation_hours,
+            combination_strategy=combination_strategy,
+            clock=lambda: ensure_utc(datetime.now(UTC)),
+        )
+    except ForecastReadUnavailableError:
+        raise HTTPException(503, "Ordinary forecast reads are unavailable") from None

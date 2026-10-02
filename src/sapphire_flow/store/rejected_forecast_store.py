@@ -215,6 +215,10 @@ class PgRejectedForecastStore:
             raise ValueError("rejected forecast store requires a typed purpose")
         self._data_use = data_use
 
+    @property
+    def data_use(self) -> ForecastDataUse:
+        return self._data_use
+
     def write_batch(
         self,
         entries: Sequence[RejectedForecastEntry],

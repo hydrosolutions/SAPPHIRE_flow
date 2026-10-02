@@ -34,6 +34,10 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from sapphire_flow.services.forecast_read import (
+    require_standard_forecast_results,
+    require_standard_forecast_store,
+)
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     QcStatus,
@@ -217,9 +221,13 @@ def fetch_latest_forecast_for_model(
 ) -> OperationalForecast | None:
     """D14 — reuses `ForecastStore.fetch_latest_forecast()` (no new query
     surface, no query-count contract)."""
-    return stores.forecast_store.fetch_latest_forecast(
+    require_standard_forecast_store(stores.forecast_store)
+    forecast = stores.forecast_store.fetch_latest_forecast(
         station_id, model_id, _DISCHARGE_PARAMETER
     )
+    if forecast is not None:
+        require_standard_forecast_results((forecast,))
+    return forecast
 
 
 def fetch_latest_publication_cycle_time(
@@ -248,6 +256,7 @@ def fetch_latest_publication_cycle_time(
     backfill/replay override can never publish early. `None` means no
     ordinary forecast has ever been recorded — there is no cycle to pin to
     yet."""
+    require_standard_forecast_store(stores.forecast_store)
     return stores.forecast_store.fetch_latest_uncombined_issued_at(data_cutoff_at)
 
 
@@ -266,11 +275,13 @@ def fetch_combined_forecast_for_cycle(
     empty — see Plan 222's D7). `publication_cycle_time=None` (no
     ordinary forecast recorded yet) means there is no current cycle to
     serve, so no row is ever returned."""
+    require_standard_forecast_store(stores.forecast_store)
     if publication_cycle_time is None:
         return None
     candidates = stores.forecast_store.fetch_forecasts_for_cycle(
         publication_cycle_time, station_id, _DISCHARGE_PARAMETER
     )
+    require_standard_forecast_results(candidates)
     # Plan 253 T2a / OD-1a: a QC_FAILED combination is stored (OD-1 --
     # evidence of what was rejected and why) but must never be served here
     # as an ordinary available forecast. This is a filter, not a schema
