@@ -225,27 +225,44 @@ deployment's overlay, redeploy, and confirm the composed config shows the mount 
 
 ### Upgrade procedure
 
-0. Export the private-clone build tokens: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` and `export AQUACAST_TOKEN=$(cat secrets/aquacast_token)` (or supply them from the CI/host secret store). Compose passes the env-sourced `recap_dg_client_token` BuildKit secret to all five building services (`prefect-worker`, `prefect-worker-ingest`, `prefect-worker-backup`, `api`, `init`). Only `prefect-worker` receives `aquacast_token` and builds with `WITH_AQUACAST=1`; the other four retain the default torch-free image and need only the recap token when built separately. Never pass tokens as build arguments or commit their values.
-1. Pull external images: `docker compose pull --ignore-buildable` (local-build-only — the `sapphire-flow` app image is built in step 3, not pulled; `--ignore-buildable` pulls only the external `postgres`/`prefect`/`caddy` images and skips the buildable app services, which have no registry)
-2. Stop workers (graceful): `docker compose stop prefect-worker prefect-worker-ingest` (v0 both workers; v1: `prefect-worker-ops prefect-worker-training`)
-3. Build **BOTH** images + run init:
-   ```bash
-   docker compose build prefect-worker          # sapphire-flow-aquacast:${VERSION}
-   docker compose run --rm --build init         # sapphire-flow:${VERSION}, then migrate
-   ```
-   ⚠️ **Two images exist since Plan 262 T2** — `prefect-worker` builds
-   `sapphire-flow-aquacast:${VERSION}` (the `aquacast` extra: torch and the whole ML stack)
-   while the other four build the default `sapphire-flow:${VERSION}`. `run --rm --build init`
-   builds **only the service it runs**, so without the explicit `build prefect-worker` first,
-   the ML image is never preflighted: `up -d` at step 4 would either build it implicitly —
-   moving a multi-minute arm64 build inside the window where the workers are stopped — or
-   fail outright. Build it FIRST so a broken ML build is discovered **before**
-   `alembic upgrade head` mutates the schema.
-   Requires `RECAP_DG_CLIENT_TOKEN` **and `AQUACAST_TOKEN`** exported per step 0. (Compose
-   supports `--build` on `run` since v2.13.)
-4. Restart all: `docker compose up -d` (step 3 already built both images, so `up -d` reuses
-   them — no redundant build; add `--build` only if an image is not already present, e.g.
-   after a host-level image prune)
+For current SAPPHIRE application releases, use the single canonical receipt-consumption recipe in
+[`docs/operations/mac-mini-deploy-runbook.md`](../operations/mac-mini-deploy-runbook.md#release-identity-receipt).
+That recipe is the copy-pasteable procedure. This section records the generic gate and rollback
+contract it must satisfy.
+
+0. After incoming receipt identity has been verified, but before stopping workers or running `init`,
+   preserve rollback anchors for the currently running default and Aquacast image IDs. Store rollback
+   evidence outside the checkout so later clean release-receipt builds are not dirtied. Retain the
+   prior release receipt when one exists; a first legacy cutover may only record that no prior receipt
+   is available. Existing anchors/evidence must be no-overwrite: matching retry evidence is accepted,
+   but mismatches fail closed before any mutating deploy command. Application images are local-only
+   unless a future registry receipt explicitly says otherwise.
+1. Consume a verified release receipt for both application image variants:
+   `sapphire-flow:<version>` and `sapphire-flow-aquacast:<version>`. Set
+   `SAPPHIRE_RELEASE_VERSION`, `SAPPHIRE_SOURCE_REVISION`, `VERSION`, and `RELEASE_RECEIPT` from
+   the owner-approved receipt. Do not invent these values from local tags. The receipt-consumption
+   recipe captures the previous public `.env` identity (including absent legacy keys) before it
+   atomically persists the verified incoming identity triple; it never copies secret-bearing `.env`
+   bytes into rollback evidence.
+2. Run the release identity preflight before any mutating Compose command. It must verify the
+   requested version/source, rendered services from both host overlays, both expected image tags,
+   and immutable local image IDs from the receipt.
+3. Do not rebuild or implicitly pull application images after the receipt passes. Use
+   `--no-build --pull never` for receipt consumption. A rebuild creates new mutable-tag image IDs
+   that the receipt did not prove.
+4. Stop both v0 workers (`prefect-worker` and `prefect-worker-ingest`; v1 equivalent:
+   `prefect-worker-ops` and `prefect-worker-training`) only after identity verification passes.
+5. Run `init` from the verified default image with explicit no-build/no-pull options:
+   `docker compose -f docker-compose.yml -f docker-compose.macmini.yml run --rm --build=false --pull never init`.
+   `init`/migration success must happen before restarting services.
+6. Restart the stack from the already-verified local images with both host overlays and no build or
+   pull: `docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d --no-build --pull never`.
+
+The private-clone tokens `RECAP_DG_CLIENT_TOKEN` and `AQUACAST_TOKEN` are build-time secrets for the
+separate receipt build/proof command only. Compose passes them as BuildKit secrets when building;
+never pass tokens as build arguments, commit their values, or require them for receipt consumption.
+Only the Aquacast variant receives `aquacast_token` and `WITH_AQUACAST=1`; the default variant stays
+torch-free.
 
 > **Plan 098 note**: both v0 workers must be quiesced in step 2 before `init`/`alembic upgrade head` re-runs — leaving `prefect-worker-ingest` running during the upgrade breaks the sequence. Phase 1 (routing `ingest-observations` to the `ingest` pool) and Phase 2 (the `prefect-worker-ingest` container that serves it) ship together in a single image build + compose update; a partial deploy leaves the `ingest` pool workerless and the obs feed dead.
 
@@ -457,86 +474,54 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 
 ### Locally built `sapphire-flow` app image — version tags
 
-- Tag format: `sapphire-flow:${VERSION}`, where `${VERSION}` matches the Python package version in `pyproject.toml` / `src/sapphire_flow/__init__.py`.
-- `${VERSION}` is bumped by `bump-my-version` on every commit per the `AGENTS.md` version-bumping rule.
-- Operators set the `${VERSION}` env var (via `.env` or compose overrides) when deploying a new build, then run the upgrade procedure above.
+- Tag format: `sapphire-flow:${VERSION}`. For owner-published canonical releases, `${VERSION}` must equal `SAPPHIRE_RELEASE_VERSION` and is checked by `uv run python tools/compose_release_identity.py` before compose builds. For developer builds, `${VERSION}` may be a Docker-safe tag while `SAPPHIRE_RELEASE_VERSION` keeps the PEP 440 runtime package identity.
+- Operators persist the public identity triple in repo-root `.env`: `VERSION`, `SAPPHIRE_RELEASE_VERSION`, and `SAPPHIRE_SOURCE_REVISION`. Fresh shells, launchd startup, bootstrap, and automated Compose consumers must read that persistent identity, not rely on a prior deploy shell's exports.
 - This is the only image reference in the stack that moves on a normal deploy cadence.
 
-### Git version tags are BEST-EFFORT and gappy — do not treat them as a release ledger
+### Release identity tags and receipts
 
-`git tag v0.1.x` on `main` after merge (AGENTS.md § Version Bumping) is a convenience, not an inventory.
+Routine PRs do not claim or bump a release version.
+The package version is dynamic and comes from Git release identity at build time.
+The old automatic `tag-main.yml` publisher is retired.
 
-**Since Plan 197 (2026-08-21), the tag is created automatically** by `.github/workflows/tag-main.yml`,
-which runs on every push to `main`: it reads `${VERSION}` from `pyproject.toml` at the pushed commit and
-creates the annotated tag `v${VERSION}` if it does not already exist on the remote, then exits — no
-manual step required. It is **deliberately not gated on CI**: a tag here is an identifier, not a release
-gate. No workflow in this repo triggers on a tag, the mac-mini deploy reads `${VERSION}` from `.env`
-rather than checking out a tag, and gating would punch permanent holes in a "which commit is this
-version" lookup whenever CI happened to be red on the commit that introduced it. The workflow also runs
-with no concurrency group: serialising it would let a third rapid merge cancel a queued run and leave
-that version permanently untagged, so the design tolerates the race instead — a losing run's `git push`
-is rejected with "already exists", which it treats as success after re-confirming the tag is now present.
-The 5 tags missing before this workflow existed were **not backfilled** (owner declined); this workflow
-changes the future only.
+After a reviewed merge, the human owner publishes release identity from a clean
+reviewed `main` checkout with `tools/release_identity.py publish`.
+The helper verifies the canonical remote, fetched `main`, existing release tags,
+old-publisher quiescence, and `refs/heads/release-state` before it attempts one
+atomic tag/state push.
+It is not a deployment command, not a deployment receipt, not a branch-protection
+replacement, and not a release ledger for external consumers. Bootstrap requires
+explicit complete paginated evidence that the retired old tag workflow has no
+nonterminal runs. Before the first owner bootstrap after retirement, verify the
+read-only numeric workflow endpoint for the former `.github/workflows/tag-main.yml`
+publisher and complete unfiltered run pagination; pre-retirement samples are not
+quiescence evidence.
 
-Two things make the tag series legitimately incomplete, and both remain expected rather than bugs:
+`tools/release_identity.py build-receipt --receipt PATH` writes a
+credential-free JSON receipt atomically and refuses to overwrite an existing
+path. The receipt records the version, source SHA, Git tree, remote tag object,
+release-state, local image IDs, labels, and runtime import results. Local image
+IDs are not registry digests.
 
-- **Versions claimed by a branch may never reach `main`.** Each branch computes its next patch from its
-  own `pyproject.toml`, so two branches routinely claim the same number; whichever merges second gets
-  re-bumped, and the number it originally claimed is simply skipped. `0.1.768` and `0.1.770` are examples
-  — both were claimed, neither exists on `main`.
-- **A version may span more than one commit, and the tag may land on any of them.** Plan-doc-only
-  commits to `main` do not bump (AGENTS.md § Version Bumping), so several consecutive commits can carry
-  one version. The workflow's idempotent skip (create only if the tag is absent) means the tag is
-  created by whichever of those commits' workflow runs executes first — usually, but not guaranteed to
-  be, the commit that introduced the version, since GitHub does not order concurrent workflow runs
-  against the same branch. Those commits carry identical `src/`, so the tag still answers "where is this
-  version" correctly even when it points at a later docs-only commit rather than the one that introduced
-  it.
+Docker deployment image tags still use the operator-provided `${VERSION}` value.
+Builds also require `SAPPHIRE_RELEASE_VERSION` and `SAPPHIRE_SOURCE_REVISION` so
+the image labels and runtime import can be tied to the verified release tag.
+The native `uv` project cache keys include `pyproject.toml`, Git commit/tag
+state, and `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW`.
+That invalidates editable-root metadata when the pretend version changes or is
+cleared, without making dependency download caches miss on every commit.
 
-Consequences worth knowing before you go looking for a missing tag:
-
-- **A gap in the tag series does not mean a lost release.** The authoritative version of any commit is
-  the `version` field in its own `pyproject.toml`; read that, not the nearest tag.
-- **`bump-my-version` compares against the last *tagged* version** and will print
-  `Specified version (0.1.77x) does not match last tagged version (0.1.76y)`. That is **noise**, not a
-  failure — the bump still applies. The thing that genuinely breaks the tool is `[tool.bumpversion]
-  current_version` drifting from the real `version`; see below.
-- **A tag may point at a commit carrying a different version.** `v0.1.768` points at the Plan 186 merge,
-  which actually carries `0.1.769`: the branch's final version was 768, but the merge resolved the
-  version conflict toward `main`'s higher number. Left in place deliberately — nothing keys on tags, and
-  moving a published tag is more disruptive than the inaccuracy it fixes.
-
-**If you need a real release ledger**, derive it from `main`'s history rather than from tags:
-
-```
-for c in $(git log --reverse --format=%H <since>..origin/main); do
-  printf "%s %s\n" "$(git log -1 --format=%h $c)" \
-    "$(git show $c:pyproject.toml | grep -m1 '^version')"
-done
-```
-
-### Third-party image references — digest pins, not version tags
-
-Third-party images are pinned by **manifest-list digest** (`image:tag@sha256:...`) rather than by a floating tag. The full list and policy live in `security.md` § Supply chain → Image pinning; the operational shape is:
-
-- `Dockerfile` builder + runtime stages — `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`.
-- `docker-compose.yml` — `postgis/postgis`, `prefecthq/prefect`, `caddy` all digest-pinned.
-- `.github/workflows/ci.yml` integration-services block — `postgis/postgis` digest-pinned, kept in sync with the compose digest.
-
-Digest pins are **reviewed immutable references**, not operational version tags. They move only through Dependabot PRs under review (Dependabot's `docker` and `docker-compose` ecosystems), never by operators at deploy time. The `bump-my-version` workflow that governs the local `sapphire-flow:${VERSION}` tag does **not** apply to these external images.
-
-### `:latest` — forbidden, superseded by digest pinning
-
-`:latest` (or any other floating tag) continues to be forbidden in any compose file or Dockerfile. The stronger rule since Plan 064 is **digest pinning** for all externally-pulled images, documented in [`security.md`](security.md) § Supply chain → Image pinning. Digest pinning supersedes the bare `:latest` prohibition: a digest reference is immutable by construction, whereas a non-`:latest` tag (e.g. `postgis:16-3.4`) is still a mutable pointer to whatever the upstream publisher currently serves.
-
-### CI validation builds vs a publish / release workflow
-
-CI builds the `sapphire-flow` image on every pull request under the `build-image-and-scan` job (see § CI workflow tiers below). The tag format there is `sapphire-flow:ci-${{ github.sha }}` — purely local to the CI runner, used to exercise the Dockerfile, run `trivy image`, and feed `syft` for SBOM generation. The image is discarded when the runner terminates; it is never pushed, tagged for release, or attached to a registry.
-
-**No image publish / release workflow is shipped today.** CI does not build and push on merges to `main`; the `${VERSION}` tag on the compose `sapphire-flow` image is set by the operator at deploy time (from `pyproject.toml`), not produced by CI. A future plan may add a registry-publish workflow — at which point this section will gain a "published release images" subsection. Until then, treat any claim that CI produces deployable image tags as out of date.
-
-(Plan 053's `## Future work` section deferred base-image digest pinning to a dedicated plan; [Plan 064](../plans/064-supply-chain-hardening.md) is the implementation record for the pins, CI build/scan tier, and SBOM artifact described here and in `security.md`.)
+CI image proof is feature-branch evidence, not official release evidence. The
+existing default image job builds and scans the default image once, then checks
+release labels, runtime package identity, packaged resources, and absence of
+Aquacast/Torch against the captured immutable image ID after the scan/SBOM/smoke
+gates. A separate Aquacast-only sibling job builds `WITH_AQUACAST=1` with the
+existing BuildKit secrets, verifies Aquacast/Torch presence plus the SAP3
+Aquacast shim registration boundary, and uses `load: true`, `push: false`, and
+no build-record, image, or cache upload. It preserves the exact Dependabot
+degraded-secret rule:
+only a pull request triggered by `dependabot[bot]` with absent `AQUACAST_TOKEN`
+and reliably unchanged `uv.lock` may skip Aquacast proof without claiming it.
 
 ## Gate lifecycle: developer edit → CI → merge
 
@@ -707,7 +692,7 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
 - [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
 
-See the CI workflow tiers table below for the per-step breakdown of the five workflow files it covers — `ci.yml`, `dependency-safety.yml`, `integration-nightly.yml`, `live-lindas-weekly.yml` and `live-lindas-weekly-autoretry.yml` — with local equivalents and CI-only reasons. The sixth workflow, `tag-main.yml`, is deliberately absent from that table; it is documented in § Image tagging and versioning.
+See the CI workflow tiers table below for the per-step breakdown of the five workflow files it covers — `ci.yml`, `dependency-safety.yml`, `integration-nightly.yml`, `live-lindas-weekly.yml` and `live-lindas-weekly-autoretry.yml` — with local equivalents and CI-only reasons. The retired `tag-main.yml` workflow is deliberately absent from that table; release identity is documented in § Release identity tags and receipts.
 
 ## CI workflow tiers
 
@@ -948,6 +933,10 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
 - **There is no `e2e` job.** Plan 064 specified one gated on this job — the image build/scan path — succeeding (`064:245`, `064:286`), and `ci.yml:475` still carries the comment saying so, but the job was never built. Nothing in `ci.yml` depends on `build-image-and-scan`, so a failing CVE scan blocks the PR only through its own job status, not by starving a downstream suite.
 
 All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
+
+### Store-frame equality in tests
+
+When a test checks persisted forecast value contents rather than API ordering, compare complete Polars frames after sorting by the full value domain key. Use exact equality with row, column and dtype checks enabled. Do not project, deduplicate, or add numeric tolerances unless the test is explicitly about such a transformation.
 
 ### Slow + live test tiers
 

@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -137,37 +138,53 @@ class TestNepalCaddyfile:
         assert "http://localhost:80/api/v1/health" in test  # type: ignore[operator]
 
 
-def _compose_config_json() -> dict[str, dict[str, object]]:
+def _compose_config_json(
+    *, project_root: Path | None = None
+) -> dict[str, dict[str, object]]:
     """The merged stack as Docker Compose itself renders it (the unit tests above
     parse the two files separately and so never exercise Compose's merge rules)."""
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("docker is not installed")
-    result = subprocess.run(
-        [
-            docker,
-            "compose",
-            "-f",
-            "docker-compose.yml",
-            "-f",
-            OVERLAY,
-            "config",
-            "--format",
-            "json",
-        ],
-        cwd=_root(),
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "HOME": str(Path.home()),
-            "VERSION": "0.0.0-test",
-            "SAPPHIRE_DOMAIN": "nepal-staging.hydrosolutions.ch",
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    root = project_root or _root()
+    with tempfile.TemporaryDirectory() as env_dir:
+        env_file = Path(env_dir) / "compose.env"
+        env_file.write_text(
+            "VERSION=0.1.0-test\n"
+            "SAPPHIRE_RELEASE_VERSION=0.1.0-test\n"
+            f"SAPPHIRE_SOURCE_REVISION={'a' * 40}\n"
+            "SAPPHIRE_DOMAIN=nepal-staging.hydrosolutions.ch\n"
+        )
+        result = subprocess.run(
+            [
+                docker,
+                "compose",
+                "--env-file",
+                str(env_file),
+                "-f",
+                "docker-compose.yml",
+                "-f",
+                OVERLAY,
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=root,
+            env={
+                "PATH": "/usr/bin:/bin:/usr/local/bin",
+                "HOME": str(Path.home()),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if result.returncode != 0:
-        pytest.skip(f"docker compose config unavailable: {result.stderr[:200]}")
+        message = result.stderr[:200]
+        if "compose" in message and (
+            "not a docker command" in message or "unknown command" in message
+        ):
+            pytest.skip(f"docker compose config unavailable: {message}")
+        pytest.fail(f"docker compose config failed: {message}")
     return json.loads(result.stdout)["services"]
 
 
@@ -179,6 +196,46 @@ def _mounts(service: dict[str, object]) -> list[tuple[str, str]]:
 
 
 class TestComposeRenderedMerge:
+    def test_render_uses_explicit_env_file_not_project_dotenv(
+        self, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "source"
+        project = tmp_path / "project"
+        source.mkdir()
+        project.mkdir()
+        for name in ("docker-compose.yml", OVERLAY):
+            shutil.copy2(_root() / name, source / name)
+        poison = "poison-secret-from-project-dotenv"
+        (source / ".env").write_text(
+            f"VERSION={poison}\n"
+            f"SAPPHIRE_RELEASE_VERSION={poison}\n"
+            f"SAPPHIRE_SOURCE_REVISION={'b' * 40}\n"
+            f"SAPPHIRE_DOMAIN={poison}\n"
+        )
+        (source / "secrets").mkdir()
+        (source / "secrets" / "token.txt").write_text(poison)
+        (source / "data").mkdir()
+        (source / "data" / "secret.txt").write_text(poison)
+        for name in ("docker-compose.yml", OVERLAY):
+            shutil.copy2(source / name, project / name)
+        assert not (project / ".env").exists()
+        assert not (project / "secrets").exists()
+        assert not (project / "data").exists()
+        (project / ".env").write_text(
+            f"VERSION={poison}\n"
+            f"SAPPHIRE_RELEASE_VERSION={poison}\n"
+            f"SAPPHIRE_SOURCE_REVISION={'b' * 40}\n"
+            f"SAPPHIRE_DOMAIN={poison}\n"
+        )
+
+        services = _compose_config_json(project_root=project)
+        rendered = json.dumps(services, sort_keys=True)
+
+        assert poison not in rendered
+        assert "0.1.0-test" in rendered
+        assert "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in rendered
+        assert "nepal-staging.hydrosolutions.ch" in rendered
+
     def test_overlay_lands_on_every_config_reader(self) -> None:
         services = _compose_config_json()
         for name in CONFIG_READING_SERVICES:

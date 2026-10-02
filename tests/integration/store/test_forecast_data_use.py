@@ -13,6 +13,7 @@ from uuid import uuid4
 import polars as pl
 import pytest
 import sqlalchemy as sa
+from polars.testing import assert_frame_equal
 
 from sapphire_flow.db.metadata import forecasts
 from sapphire_flow.exceptions import ForecastRetryConflictError, StoreError
@@ -58,6 +59,18 @@ def _stores(conn: sa.Connection) -> tuple[PgForecastStore, PgForecastStore]:
             data_use=ForecastDataUse.EXPIRED_RATING_TEST,
             transaction_factory=savepoint_factory(conn),
         ),
+    )
+
+
+def _assert_member_frame_exact_by_key(left: pl.DataFrame, right: pl.DataFrame) -> None:
+    key = ["valid_time", "member_id"]
+    assert_frame_equal(
+        left.sort(key),
+        right.sort(key),
+        check_row_order=True,
+        check_column_order=True,
+        check_dtypes=True,
+        check_exact=True,
     )
 
 
@@ -310,12 +323,20 @@ class TestStructuralForecastIsolation:
         assert [f.id for f in historical] == [ordinary.id]
         assert historical[0].data_use is ForecastDataUse.STANDARD
 
+    @pytest.mark.parametrize("reverse_input_rows", [False, True])
     def test_failed_replacement_keeps_lineage_values_and_evidence(
-        self, structural_connection: sa.Connection
+        self, structural_connection: sa.Connection, *, reverse_input_rows: bool
     ) -> None:
         from tests.integration.store.test_forecast_evidence_store import _evidence
 
         ordinary, first = _pair(structural_connection)
+        if reverse_input_rows:
+            first = replace(
+                first,
+                ensemble=replace(
+                    first.ensemble, values=first.ensemble.values.reverse()
+                ),
+            )
         store = _stores(structural_connection)[1]
         store.store_forecast(first)
         evidence = store.fetch_evidence(first.id)
@@ -332,7 +353,9 @@ class TestStructuralForecastIsolation:
         retained = store.fetch_forecast(first.id)
         assert retained.status is ForecastStatus.RAW
         assert retained.input_lineage == first.input_lineage
-        assert retained.ensemble.values.equals(first.ensemble.values)
+        _assert_member_frame_exact_by_key(
+            retained.ensemble.values, first.ensemble.values
+        )
         assert store.fetch_evidence(first.id) == evidence
         assert store.fetch_forecast(changed.id) is None
 

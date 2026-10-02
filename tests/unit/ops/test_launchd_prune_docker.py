@@ -342,6 +342,37 @@ class TestPruneDockerRollbackProtection:
             result.stdout + result.stderr
         )
 
+    def test_release_recipe_rollback_anchor_tags_are_protected(
+        self, tmp_path: Path
+    ) -> None:
+        runbook = (
+            Path(__file__).parent.parent.parent.parent
+            / "docs"
+            / "operations"
+            / "mac-mini-deploy-runbook.md"
+        ).read_text()
+        assert ":rollback-{variant}-pre-" in runbook
+        fx = self._base()
+        fx["images"].extend(
+            [
+                {
+                    "id": "sha256:" + "d4" * 32,
+                    "ref": "sapphire-flow:rollback-default-pre-1.2.3",
+                },
+                {
+                    "id": "sha256:" + "e5" * 32,
+                    "ref": "sapphire-flow-aquacast:rollback-aquacast-pre-1.2.3",
+                },
+            ]
+        )
+
+        result, removed = self._run(tmp_path, fx)
+
+        assert result.returncode == 0, result.stderr
+        assert "sapphire-flow:rollback-default-pre-1.2.3" not in removed
+        assert "sapphire-flow-aquacast:rollback-aquacast-pre-1.2.3" not in removed
+        assert "sapphire-flow:0.1.653" in removed
+
     def test_unreferenced_non_anchor_is_removed(self, tmp_path: Path) -> None:
         _, removed = self._run(tmp_path, self._base())
         assert removed == ["sapphire-flow:0.1.653"], f"removed={removed}"

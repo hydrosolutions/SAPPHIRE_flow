@@ -48,6 +48,8 @@ def _rendered_compose(*filenames: str) -> dict[str, object]:
     # `VERSION` is the only hard-required (`${VERSION:?...}`) interpolation
     # in these files — any value renders the same service graph.
     env.setdefault("VERSION", "0.0.0-test")
+    env.setdefault("SAPPHIRE_RELEASE_VERSION", "0.0.0-test")
+    env.setdefault("SAPPHIRE_SOURCE_REVISION", "a" * 40)
     result = subprocess.run(  # noqa: S603 — fixed argv, no shell
         args, cwd=root, env=env, capture_output=True, text=True, timeout=30
     )

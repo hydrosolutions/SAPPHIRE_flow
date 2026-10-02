@@ -15,8 +15,8 @@
 #
 # All ruff hooks are CHECK-ONLY (no auto-fix). See D8 in
 # docs/plans/archive/070-precommit-and-gate-parity.md for the rationale
-# (auto-fix conflicts with the mandatory bump-my-version commit sequence
-# documented in AGENTS.md §Version Bumping).
+# (auto-fix can desynchronize already staged content from the final commit;
+# see AGENTS.md §Release Version Identity).
 #
 # default_install_hook_types: a bare `pre-commit install` (no --hook-type
 # flags) now registers pre-commit + pre-push + post-commit, so a NEW clone

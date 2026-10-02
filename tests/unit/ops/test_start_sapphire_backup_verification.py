@@ -29,7 +29,9 @@ running. `TestMarkerWriteIsBestEffort` locks that.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -58,6 +60,17 @@ def _write_fake_docker(bin_dir: Path, *, compose_log: Path) -> None:
     fake = bin_dir / "docker"
     fake.write_text(stub)
     fake.chmod(0o755)
+
+
+def _write_release_identity_env(
+    repo_root: Path, *, secret: str = "secret value"
+) -> None:
+    (repo_root / ".env").write_text(
+        "VERSION=1.2.3\n"
+        "SAPPHIRE_RELEASE_VERSION=1.2.3\n"
+        "SAPPHIRE_SOURCE_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        f"DB_PASSWORD={secret}\n"
+    )
 
 
 def _write_fake_stat_mount(
@@ -99,10 +112,15 @@ def _run_start_sapphire(
     repo_root: Path,
     backup_dir: Path,
     bin_dir: Path,
+    sapphire_python: str | None = None,
+    path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    tools_dir = repo_root / "tools"
+    if not tools_dir.exists():
+        shutil.copytree(Path(__file__).parents[3] / "tools", tools_dir)
     env = {
         **os.environ,
-        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        "PATH": path or f"{bin_dir}:{os.environ.get('PATH', '')}",
         # Plan 199 T2: start-sapphire.sh now resolves its docker binary via
         # the shared docker-endpoint.sh contract (DOCKER_CMD, if set, wins
         # over DOCKER_BIN) — same test-injection seam already used by
@@ -111,6 +129,10 @@ def _run_start_sapphire(
         "SAPPHIRE_REPO_ROOT": str(repo_root),
         "SAPPHIRE_BACKUP_DIR": str(backup_dir),
     }
+    if sapphire_python is None:
+        env["SAPPHIRE_PYTHON"] = sys.executable
+    elif sapphire_python:
+        env["SAPPHIRE_PYTHON"] = sapphire_python
     return subprocess.run(
         ["bash", str(_SCRIPT)],
         capture_output=True,
@@ -121,6 +143,110 @@ def _run_start_sapphire(
 
 
 class TestStartSapphireBackupVerification:
+    def test_missing_default_python_fails_before_compose(self, tmp_path: Path) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        _write_release_identity_env(repo_root)
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        compose_log = tmp_path / "compose.log"
+        _write_fake_docker(bin_dir, compose_log=compose_log)
+        _write_fake_stat_mount(
+            bin_dir,
+            backup_path=str(backup_dir),
+            data_path=str(repo_root),
+            backup_dev="99",
+            data_dev="1",
+            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
+        )
+
+        result = _run_start_sapphire(
+            tmp_path,
+            repo_root=repo_root,
+            backup_dir=backup_dir,
+            bin_dir=bin_dir,
+            sapphire_python="",
+            path=f"{bin_dir}:/usr/bin:/bin",
+        )
+
+        assert result.returncode != 0
+        assert "SAPPHIRE_PYTHON is not executable" in result.stderr
+        assert not compose_log.exists()
+
+    def test_relative_python_override_fails_before_compose(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        _write_release_identity_env(repo_root)
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        compose_log = tmp_path / "compose.log"
+        _write_fake_docker(bin_dir, compose_log=compose_log)
+        _write_fake_stat_mount(
+            bin_dir,
+            backup_path=str(backup_dir),
+            data_path=str(repo_root),
+            backup_dev="99",
+            data_dev="1",
+            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
+        )
+
+        result = _run_start_sapphire(
+            tmp_path,
+            repo_root=repo_root,
+            backup_dir=backup_dir,
+            bin_dir=bin_dir,
+            sapphire_python="python3",
+        )
+
+        assert result.returncode != 0
+        assert "SAPPHIRE_PYTHON must be an absolute path" in result.stderr
+        assert not compose_log.exists()
+
+    def test_old_python_override_fails_before_compose(self, tmp_path: Path) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        _write_release_identity_env(repo_root)
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        compose_log = tmp_path / "compose.log"
+        old_python = bin_dir / "old-python"
+        old_python.write_text(
+            "#!/bin/bash\n"
+            "cat >/dev/null\n"
+            "echo 'SAPPHIRE_PYTHON must be Python >=3.12; got 3.9' >&2\n"
+            "exit 1\n"
+        )
+        old_python.chmod(0o755)
+        _write_fake_docker(bin_dir, compose_log=compose_log)
+        _write_fake_stat_mount(
+            bin_dir,
+            backup_path=str(backup_dir),
+            data_path=str(repo_root),
+            backup_dev="99",
+            data_dev="1",
+            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
+        )
+
+        result = _run_start_sapphire(
+            tmp_path,
+            repo_root=repo_root,
+            backup_dir=backup_dir,
+            bin_dir=bin_dir,
+            sapphire_python=str(old_python),
+        )
+
+        assert result.returncode != 0
+        assert "Python >=3.12" in result.stderr
+        assert not compose_log.exists()
+
     def test_unverified_backup_writes_marker_and_still_starts_stack(
         self, tmp_path: Path
     ) -> None:
@@ -128,6 +254,7 @@ class TestStartSapphireBackupVerification:
         the compose stack still comes up (D3: never fail closed here)."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
+        _write_release_identity_env(repo_root)
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
@@ -175,6 +302,7 @@ class TestStartSapphireBackupVerification:
         """
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
+        _write_release_identity_env(repo_root)
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
@@ -212,6 +340,7 @@ class TestStartSapphireBackupVerification:
     ) -> None:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
+        _write_release_identity_env(repo_root)
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
@@ -239,3 +368,37 @@ class TestStartSapphireBackupVerification:
         assert "backup volume not verified" not in result.stderr
         assert compose_log.exists()
         assert "up -d" in compose_log.read_text()
+
+    def test_missing_identity_fails_before_compose_without_printing_secret(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".env").write_text("DB_PASSWORD=super-secret\n")
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        compose_log = tmp_path / "compose.log"
+
+        _write_fake_docker(bin_dir, compose_log=compose_log)
+        _write_fake_stat_mount(
+            bin_dir,
+            backup_path=str(backup_dir),
+            data_path=str(repo_root),
+            backup_dev="99",
+            data_dev="1",
+            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
+        )
+
+        result = _run_start_sapphire(
+            tmp_path,
+            repo_root=repo_root,
+            backup_dir=backup_dir,
+            bin_dir=bin_dir,
+        )
+
+        assert result.returncode != 0
+        assert "missing required release identity" in result.stderr
+        assert "super-secret" not in result.stderr
+        assert not compose_log.exists()

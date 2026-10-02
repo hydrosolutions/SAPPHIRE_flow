@@ -31,7 +31,9 @@ PRECEDENCE reach the actual invocation.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -145,11 +147,24 @@ def _write_fake_docker_logging_invocation(path: Path, *, marker: str) -> None:
 def _start_sapphire_env(tmp_path: Path) -> dict[str, str]:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(exist_ok=True)
+    tools_dir = repo_root / "tools"
+    if not tools_dir.exists():
+        shutil.copytree(Path(__file__).parents[3] / "tools", tools_dir)
+    (repo_root / ".env").write_text(
+        "VERSION=0.1.0\n"
+        "SAPPHIRE_RELEASE_VERSION=0.1.0\n"
+        "SAPPHIRE_SOURCE_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+    )
     backup_dir = tmp_path / "backup"
     backup_dir.mkdir(exist_ok=True)
     return {
         "SAPPHIRE_REPO_ROOT": str(repo_root),
         "SAPPHIRE_BACKUP_DIR": str(backup_dir),
+        # start-sapphire.sh now deliberately refuses PATH-selected Python.
+        # These disposable endpoint-contract fixtures are not provisioning tests, so
+        # give them the current supported interpreter and keep the startup guard
+        # covered in test_start_sapphire_backup_verification.py.
+        "SAPPHIRE_PYTHON": sys.executable,
     }
 
 

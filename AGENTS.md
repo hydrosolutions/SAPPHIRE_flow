@@ -174,13 +174,10 @@ manually across all files (useful after a rebase or when bisecting):
 uv run pre-commit run --all-files
 ```
 
-**Why hooks are check-only (no auto-fix)**: the mandatory
-`bump-my-version bump patch` workflow (see §Version Bumping) must
-stage the version files at commit time. An auto-fixing hook would
-mutate already-staged files between staging and commit, breaking
-that sequence. The ruff hooks therefore run with `--check` only —
-developers run `uv run ruff format` and `uv run ruff check --fix`
-manually BEFORE staging.
+**Why hooks are check-only (no auto-fix)**: auto-fixing hooks can mutate
+already-staged files between staging and commit. The ruff hooks therefore run
+with `--check` only — developers run `uv run ruff format` and
+`uv run ruff check --fix` manually BEFORE staging.
 
 **Exception — basic hygiene hooks** (`trailing-whitespace`,
 `end-of-file-fixer`): these upstream hooks have no `--check`-only
@@ -267,27 +264,27 @@ value: str | None = None
   - Format: `uv run ruff format`
   - Lint + fix: `uv run ruff check --fix`
 
-### Version Bumping (mandatory)
+### Release Version Identity (mandatory)
 
-Every code commit includes a patch version bump. Never create a tag on a feature branch.
-On pushes to `main`, `.github/workflows/tag-main.yml` creates the version tag when absent.
-The one exception is plan-doc-only commits made directly to `main`; those do
-not bump because the version tracks code releases and bumping plan commits can
-collide with in-flight code PRs. Code changes always go through a PR
-(hold-at-PR) and always bump.
+Code commits do not run `bump-my-version` and do not edit release-version metadata.
+The package version is derived from Git release identity at build time.
+Routine PRs therefore avoid lock conflicts caused only by version-file churn.
 
-Before committing code, follow this exact sequence:
+The human owner publishes release identity after merge from a clean reviewed `main`.
+Agents never create release tags, never publish release state, and never merge PRs.
+A feature branch may use `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g<full-sha>` for editable installs or no-tag CI builds.
+Use the exact checked-out full SHA.
+Verify `git rev-parse HEAD` matches that SHA before setting the override.
 
-1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
-2. Stage version files alongside code changes
-3. Commit with a conventional commit message
+Release publication uses `tools/release_identity.py publish` only when the owner explicitly invokes it after merge.
+Artifact proof uses `tools/release_identity.py build-receipt` after the remote release tag and release-state have been verified.
+Both commands fail closed on missing or inconsistent remote release identity.
 
 **Rules:**
-- **Patch bumps**: Automatic with every commit. Agents MUST do this.
-- **Minor/major bumps**: Only when the user explicitly requests. Use `uv run bump-my-version bump minor` or `major`.
-- **Never let bump-my-version create its own commit** — config has `commit = false`. Fold version changes into the real commit.
-- **Prefer a separate clone over a shared worktree for long-running parallel work.** Worktrees share `.git`, so
-  tags, refs and `core.bare` state are common to all of them; a clone gives an independent namespace.
+- **Code commits**: Do not bump a literal project version.
+- **Feature branches**: Never create local or remote release tags in the application worktree.
+- **Release identity**: Owner-only after merge; no agent publishes tags or release-state.
+- **Long-running parallel work**: Prefer a separate clone over a shared worktree. Worktrees share `.git`, so tags, refs, and `core.bare` state are common to all of them.
 
 ---
 

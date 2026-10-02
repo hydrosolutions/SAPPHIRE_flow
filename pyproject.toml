@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.1067"
+dynamic = ["version"]
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -61,13 +61,17 @@ dependencies = [
 check = "sapphire_flow.cli.check:main"
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"
+requires = [
+    "setuptools==84.0.0",
+    "setuptools-scm==10.3.4",
+    "packaging==26.3",
+    "vcs-versioning==2.5.0",
+]
+build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
     "asyncpg",
-    "bump-my-version>=1.2.7",
     "cdsapi>=0.7.7",
     "kaleido>=1.2.0",
     "nbformat>=5.10.4",
@@ -97,6 +101,12 @@ required-version = "==0.11.7"
 # `aquacast.operational.*` only, which does not import rich — verified.
 # REMOVE this the moment aquacast relaxes the floor.
 override-dependencies = ["rich>=14,<15"]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { git = { commit = true, tags = true } },
+    { env = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW" },
+]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -111,7 +121,7 @@ aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "5460
 [tool.ruff]
 target-version = "py311"
 line-length = 88
-exclude = ["notebooks"]
+exclude = ["notebooks", "src/sapphire_flow/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
@@ -141,29 +151,25 @@ markers = [
 ]
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
-[tool.bumpversion]
-current_version = "0.1.1067"
-commit = false
-tag = false
-allow_dirty = true
-# pre_commit_hooks runs after the bumped files are written and before
-# bump-my-version's (disabled) commit step. With commit = false, this is
-# effectively a "post-bump" hook: re-resolve the lockfile so the
-# sapphire-flow self-entry in uv.lock matches the new pyproject.toml
-# version. Prevents the recurring "uv.lock stamped at version N-1 while
-# pyproject is at N" drift that produced v0.1.425 and v0.1.428 alignment
-# commits.
-pre_commit_hooks = ["uv lock"]
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
 
-[[tool.bumpversion.files]]
-filename = "pyproject.toml"
-search = 'version = "{current_version}"'
-replace = 'version = "{new_version}"'
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[[tool.bumpversion.files]]
-filename = "src/sapphire_flow/__init__.py"
-search = '__version__ = "{current_version}"'
-replace = '__version__ = "{new_version}"'
+[tool.setuptools.package-data]
+sapphire_flow = [
+    "py.typed",
+    "data/icon_ch2_eps_grid.npz",
+    "api/templates/**/*.html",
+    "models/aquacast/configs/*.yaml",
+]
+
+[tool.setuptools_scm]
+tag_regex = '^v(?P<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))$'
+git_describe_command = 'git describe --dirty --tags --long --abbrev=40 --match v[0-9]*.[0-9]*.[0-9]* --exclude *-*'
+version_file = "src/sapphire_flow/_version.py"
 
 [project.optional-dependencies]
 # Plan 159 D17: the aquacast shim lives in this repo, but its dependency
