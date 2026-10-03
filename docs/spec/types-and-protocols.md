@@ -5475,3 +5475,19 @@ error, distinct from `SkillGenerationIncompleteError(StoreError)` for persisted
 generation-count mismatch. Codec errors are bounded 192-character structural
 paths without arbitrary key/value/identifier content; no codec payload logging.
 Native serialization/DB errors retain their existing behavior.
+
+### Clean stored-hindcast skill acceptance contract
+
+The bounded six-case gate calls the actual SINGLE/POOLED/BMA task functions with
+real worker factory stores, a fixed clock, and synthetic stored hindcasts. Its
+16-issue fixture has 32 headers, 64 members and 64 ordinary quarter-hour rows.
+The expected outputs are 98 SINGLE/POOLED or 104 BMA scores and 24 diagrams.
+Each strategy has 10 numeric NaN score values; these are FLOAT values, not JSON
+nulls. Undefined diagram rates remain NaN in the domain and become JSON null only
+at the recognized persistence boundary. No expected values call scoring helpers.
+
+BMA deterministic metrics use its median, not its mean. First-fold score bounds
+and floor-averaged sample sizes are checked as current behavior, not endorsed
+scientific metadata; diagram counts/bounds cover the union. Phase zero, hourly
+calendar buckets, fallback mean targets and repeated-member seed independence
+are fixture limits. Clean cases do not establish mixed-data isolation or retries.

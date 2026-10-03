@@ -1021,3 +1021,18 @@ diagrams can show headings/blank plot areas. OFF mixed leftovers and ON orphan
 semantics remain; no live/history assessment or durable AUTOCOMMIT proof.
 Broader skill-consumer isolation, components/onboarding/history/calibration,
 T1c/T3 and delivery/activation remain held pending their own releases/evidence.
+
+### Bounded clean skill acceptance checkpoint
+
+After the merged diagram-persistence prerequisite, a six-case clean acceptance
+gate covers actual SINGLE/POOLED/BMA task functions with generation writes OFF/ON
+and synthetic stored hindcasts. It checks 98/98/104 scalar scores, 24 diagrams,
+real worker persistence/readback and scoped fixture lifecycle without model runs.
+The independent scalar contract includes ten numeric NaN scores per strategy;
+these are distinct from supported diagram-rate JSON nulls.
+
+This first slice stops after the six clean outcomes and cleanup. Protected input
+intrusions, ordinary perturbations, retries and negative cases remain held for
+separate review/release. BMA metadata/scientific limits and durable partial-write
+questions remain unchanged. Effort 354 stays open; this is not whole T1d, T1c, T3,
+delivery or activation evidence.

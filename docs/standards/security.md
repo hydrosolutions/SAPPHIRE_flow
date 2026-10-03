@@ -1732,3 +1732,17 @@ They do not prove skills/POOLED/BMA, component derivation, onboarding callbacks/
 calibration/baselines, actual model training, artifact discovery/promotion, scheduled
 flows, real weather, state, freshness or forecast/combined alerts. T1c/T3 activation and
 all remaining consumer/coverage holds stay in force; no full T1d closure is claimed.
+
+### Clean skill acceptance before isolation
+
+The six-case clean gate in `tests/integration/services/test_skill_data_use_isolation.py`
+checks SINGLE, POOLED and BMA tasks with synthetic stored hindcasts and generation
+writes OFF/ON. Owner setup and worker consumption use one rollback transaction;
+the worker uses real factory stores and cannot SELECT protected provisional rows.
+The gate checks complete independent scalar/diagram values and public readback,
+including numeric NaN scores in FLOAT columns and supported JSONB rate nulls.
+It uses the merged migration-scoped database fixture, not a session-wide URL override.
+
+This is clean acceptance only. There are no protected intrusions, perturbations,
+retry or negative-matrix cases here. It does not prove provisional isolation,
+scientific skill, durable AUTOCOMMIT effects, delivery or activation.
