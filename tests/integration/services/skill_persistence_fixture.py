@@ -171,6 +171,12 @@ def seed_task(conn: sa.Connection, stores: dict[str, object]) -> None:
     observations.store_observations(rows)
 
 
+def migrate_skill_database(url: str) -> None:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("DATABASE_URL", url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+
 @pytest.fixture(scope="session")
 def skill_persistence_engine(
     tmp_path_factory: pytest.TempPathFactory,
@@ -188,7 +194,6 @@ def skill_persistence_engine(
     ids: list[str] = []
     evidence_errors: list[Exception] = []
     original: BaseException | None = None
-    prior_url = os.environ.get("DATABASE_URL")
     try:
         pg = start_owned(
             owned,
@@ -204,10 +209,9 @@ def skill_persistence_engine(
         ids.append(cid)
         record_resources(resource, ids, "created", evidence_errors)
         url = pg.get_connection_url().replace("+psycopg2", "+psycopg")
-        os.environ["DATABASE_URL"] = url
         engine = sa.create_engine(url)
         engines.append(engine)
-        command.upgrade(Config("alembic.ini"), "head")
+        migrate_skill_database(url)
         # Infrastructure provisioning only; skill tests never use AUTOCOMMIT.
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(sa.text("CREATE DATABASE prefect"))
@@ -223,10 +227,6 @@ def skill_persistence_engine(
         original = exc
         raise
     finally:
-        if prior_url is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = prior_url
         cleanup_owned(owned, engines, ids, resource, original, evidence_errors)
 
 

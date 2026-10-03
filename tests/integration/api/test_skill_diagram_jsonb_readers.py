@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import html
+import inspect
 import json
+import os
 import re
+from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
+import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
@@ -23,14 +27,53 @@ from tests.integration.store.test_skill_diagram_jsonb import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
+
     import httpx
-    import pytest
 
     from tests.integration.services.skill_persistence_fixture import (
         SkillPersistenceCase,
     )
 
 pytest_plugins = ("tests.integration.services.skill_persistence_fixture",)
+
+
+class TestSkillPersistenceFixtureEnvironment:
+    @pytest.mark.parametrize("prior_state", ["present", "absent"])
+    def test_real_fixture_preserves_setup_and_later_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        prior_state: Literal["present", "absent"],
+    ) -> None:
+        from tests.integration.services.skill_persistence_fixture import (
+            skill_persistence_engine,
+        )
+
+        if prior_state == "present":
+            monkeypatch.setenv(
+                "DATABASE_URL", "postgresql+psycopg://unused.invalid/prior"
+            )
+        else:
+            monkeypatch.delenv("DATABASE_URL", raising=False)
+        expected = os.environ.get("DATABASE_URL")
+        monkeypatch.setenv("SKILL_PERSISTENCE_EVIDENCE_DIR", str(tmp_path))
+        # Exercise a fresh real lifecycle, independent of pytest's session cache.
+        factory = cast(
+            "Callable[[pytest.TempPathFactory], Iterator[sa.Engine]]",
+            inspect.unwrap(skill_persistence_engine),
+        )
+        later = "postgresql+psycopg://unused.invalid/later"
+        with contextmanager(factory)(tmp_path_factory) as engine:
+            preserved = os.environ.get("DATABASE_URL") == expected
+            assert preserved
+            with engine.connect() as connection:
+                assert connection.scalar(sa.text("SELECT 1")) == 1
+            monkeypatch.setenv("DATABASE_URL", later)
+        preserved_later = os.environ.get("DATABASE_URL") == later
+        assert preserved_later
 
 
 class TestSkillDiagramJsonbReaders:
@@ -97,6 +140,10 @@ class TestSkillDiagramJsonbReaders:
             app.dependency_overrides[get_connection] = lambda: case.connection
             app.dependency_overrides[require_admin] = lambda: principal
             monkeypatch.setattr(tables, "_reflected", None)
+            monkeypatch.setenv(
+                "DATABASE_URL",
+                case.connection.engine.url.render_as_string(hide_password=False),
+            )
             with TestClient(app) as client:
                 web = cast("httpx.Client", client)
                 model = web.get(f"/models/{MID}/")

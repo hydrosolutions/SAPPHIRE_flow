@@ -570,3 +570,12 @@ generation counts; this note does not claim the legacy exception list is complet
 The codec emits no logs; its bounded path-only message may propagate to the
 onboarding FAILED_SKILL result. Native opaque/driver failures are unchanged.
 No caller retry/catch policy or existing publish_generation ValueError changes.
+
+### Integration fixture environment isolation
+
+A database fixture must restore temporary `DATABASE_URL` changes before yielding,
+including when migration setup fails. Keep the engine URL explicit. Do not leave
+an environment override active for the whole session or restore a stale value at
+session teardown. API tests that need an owned database URL at startup must use a
+function-scoped override. Check both isolated execution and ordered cross-module
+execution: a CLI can open the wrong database even when its seed fixture is correct.
