@@ -5441,8 +5441,8 @@ The [bounded hindcast input canaries](../standards/security.md#hindcast-input-is
 exercise ordinary `ObservationStore` reads through the real FI boundary for station/group
 hindcast services. No Protocol or model requirement changes are introduced. Same-worker
 savepoint hindcast writes are an explicit test composition, not proof of the default
-independent writer. Skills/combined evaluation, components, onboarding/calibration and
-T1c/T3 consumption/activation remain held.
+independent writer. The later paired skill evidence is scoped below; components,
+onboarding/calibration and T1c/T3 consumption/activation remain held.
 
 #### SkillDiagram JSONB undefined-value contract
 
@@ -5478,16 +5478,50 @@ Native serialization/DB errors retain their existing behavior.
 
 ### Clean stored-hindcast skill acceptance contract
 
-The bounded six-case gate calls the actual SINGLE/POOLED/BMA task functions with
-real worker factory stores, a fixed clock, and synthetic stored hindcasts. Its
-16-issue fixture has 32 headers, 64 members and 64 ordinary quarter-hour rows.
-The expected outputs are 98 SINGLE/POOLED or 104 BMA scores and 24 diagrams.
-Each strategy has 10 numeric NaN score values; these are FLOAT values, not JSON
-nulls. Undefined diagram rates remain NaN in the domain and become JSON null only
-at the recognized persistence boundary. No expected values call scoring helpers.
+The earlier PR380 checkpoint passed six clean SINGLE/POOLED/BMA task cases with
+real worker factory stores, a fixed clock and synthetic stored hindcasts. Its
+16-issue fixture had 32 headers, 64 members and 64 ordinary quarter-hour rows.
+It checked 98 SINGLE/POOLED or 104 BMA scores and 24 diagrams per call, including
+ten numeric FLOAT NaN scores. Undefined diagram rates stayed NaN in the domain
+and became JSON null only at the recognized persistence boundary. Expected
+values did not call production scoring helpers. That checkpoint alone did not
+establish mixed-data isolation; the later paired evidence follows.
 
-BMA deterministic metrics use its median, not its mean. First-fold score bounds
-and floor-averaged sample sizes are checked as current behavior, not endorsed
-scientific metadata; diagram counts/bounds cover the union. Phase zero, hourly
-calendar buckets, fallback mean targets and repeated-member seed independence
-are fixture limits. Clean cases do not establish mixed-data isolation or retries.
+### Paired stored-hindcast skill isolation contract
+
+The P2a and P2b gates passed the bounded cases described in the
+[canonical security scope](../standards/security.md#stored-hindcast-skill-isolation-canaries).
+P2a used the full independent clean scalar and diagram oracles. P2b independently
+checked CRPS, MAE and PBIAS in every stratum, complete diagram payloads and sample
+metadata. All other perturbed scalar values received exact paired/readback checks,
+not independent scientific-value certification. SINGLE CRPS and POOLED PBIAS and
+BMA CRPS discriminated the named ordinary changes; POOLED CRPS and MAE stayed
+invariant as expected.
+
+BMA deterministic metrics used its median, not its mean. Perturbed BMA weight
+selection depended on a constant injected clock: training CRPS timestamps tied,
+and the first all-season/all-regime row supplied the selected weight. The
+all-strata-first ordering was therefore part of this fixture's oracle, not proof
+of general tied-score selection. Rounded member allocations were 83/17 for clean
+training and 75/25 for the changed training half. Repeated within-model members
+bounded salted-seed effects only for this fixture.
+
+First-evaluation-fold score bounds and floor-averaged sample sizes were checked
+as current behavior, not endorsed scientific metadata; diagram counts and bounds
+covered the union. Phase zero, hourly calendar buckets and fallback mean targets
+remained fixture limits. The same outer transaction and scenario savepoints kept
+ledger created_at equal to the actual database transaction timestamp; task clock
+fields stayed fixed. Same-source finite values were compared exactly, with
+explicit numeric NaN handling and JSON null mapping only at supported undefined
+rate positions. Cross-scenario comparisons omitted only minted output primary
+UUIDs, never generation or ordinary-input identities.
+
+Run the clean, paired-isolation and sensitivity classes together:
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py -o addopts= -vv
+```
+
+The module contains 24 cases. Same-ID replay/latest-publication behavior, P3
+negative cases, durable atomicity, historical remediation and activation remain
+outside this evidence; no general scientific or whole-T1d certification follows.
