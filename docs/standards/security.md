@@ -1474,7 +1474,8 @@ The operator tooling boundary is documented below. `scripts/restore-rehearsal.sh
 retains its narrower checks; expanded mixed-content inspection belongs to the
 [separate local canaries](#mixed-backup-restore-canaries).
 Beyond the [bounded input canaries](#ordinary-input-isolation-canaries),
-hindcast/skills/components/onboarding/calibration, state/health and T1c/T3 consumption
+beyond the [bounded hindcast canaries](#hindcast-input-isolation-canaries),
+skills/components/onboarding/calibration, state/health and T1c/T3 consumption
 remain held. See the [separate mixed restore canaries](#mixed-backup-restore-canaries)
 for bounded local preservation/publication-health proof, not deployment readiness.
 
@@ -1581,8 +1582,9 @@ filter or provisional-reader injection contract. Synthetic owner permission exis
 only in disposable rollback transactions; runtime protected reads remain denied.
 No TEST forecast writer, publication guard or role grant is bypassed.
 
-This bounded slice does **not** close hindcast, skills, components, onboarding or
-calibration canaries. The [mixed backup/restore canaries](#mixed-backup-restore-canaries)
+This bounded slice does **not** close evaluation or onboarding. Separate
+[hindcast canaries](#hindcast-input-isolation-canaries) cover their named input boundary;
+skills, components, onboarding and calibration remain held. The [mixed backup/restore canaries](#mixed-backup-restore-canaries)
 separately cover local preservation and narrow-principal publication-health proof. T1c consumption linkage/activation and T3 complete-lookback
 lineage, state, freshness and forecast/combined-alert isolation remain held. Observation
 alert evidence is not forecast-alert evidence or authority for operational use.
@@ -1652,8 +1654,81 @@ inspection belongs to these tests; the unchanged restore-rehearsal CLI still ver
 its existing representative evidence chain and pending-publication guarantees. Health
 image-archive descriptors are synthetic: this is not actual image archival, off-box
 replication, retention, real-data recovery or deployment-readiness evidence. Remaining
-hindcast/skills/components/onboarding/calibration, T1c and T3 state/freshness/forecast-alert/
-actual-consumption holds remain. These are baseline-green regression canaries for
+skills/components/onboarding/calibration, T1c and T3 state/freshness/forecast-alert/
+actual-consumption holds remain; [hindcast canaries](#hindcast-input-isolation-canaries)
+cover only their named ordinary-input boundary. These are baseline-green regression canaries for
 existing behavior, not runtime fixes or manufactured failing-source evidence. Permission
 refusals and expected-manifest negatives prove only their named boundaries. No activation
 or overall T1d closure is authorized.
+
+
+### Hindcast input isolation canaries
+
+`tests/integration/services/test_hindcast_data_use_isolation.py` exercises station and
+group hindcast services with real factory observation/station/basin/group readers under
+`sapphire_worker`. The real `PgHindcastStore` uses its public transaction factory to
+write through savepoints on that **same worker-role connection**. Each write asserts
+`current_user`. The default independent committed writer transaction and production
+factory writer composition are **not** exercised; an owner engine must not silently
+stand in for that role across a new transaction.
+
+The existing deterministic ReferenceFI model is called through the real FI adapter.
+Only its public `predict` call is recorded; model behavior and requirements are unchanged.
+The fixture covers four hourly issues, three lookback buckets and three horizon steps,
+one station or two group members. Expected FI target/forcing frames, units, grids and
+keys are asserted independently. STATION uses FI's fixed `station` key; GROUP uses the
+actual station-code resolver. Nonempty offline forcing satisfies the reference model's
+`precipitation_forecast` declaration, using the existing mean fallback for that synthetic
+parameter name. This is not a real-provider, meteorological aggregation or forcing-store
+validation. No static input is declared; the basin store is passed but not read.
+
+Dense 15-minute ordinary discharge includes valid historical rating-derived Q before
+curve expiry and manual history in later buckets. Typed measured-level/feed/reference
+and provisional content, links and fingerprints are checked as owner. Same-time, older
+and newer extreme provisional Q falls inside consumed lookback buckets at every issue.
+For each issue, a protected point at issue minus 7m30s is strictly newer than the latest
+ACTUAL stored ordinary row in that consumed window and remains before the issue.
+The converter accepts those timestamps; typed content and valid curve chronology remain
+checked, alongside the older and same-time controls.
+The worker's protected provisional SELECT remains denied. Provisional additions leave
+exact FI inputs and stored hindcast semantics unchanged; a legitimate ordinary change
+alters the expected target bucket by the expected amount and leaves other buckets and
+members unchanged. Reference predictions ignore Q numerically: equal outputs alone are
+not the sensitivity evidence. Fresh output UUIDs alone are excluded from cross-scenario
+comparison; run, artifact, QC, time/grid, values and multiplicity remain compared.
+
+Provisional-only station history produces explicit insufficient-data outcomes with no
+FI call or stored result. A group retains its ordinary healthy member while reporting
+the provisional-only member's missing input. This is the existing hindcast contract,
+not proof of operational T3 group fan-out. All data is synthetic and rolled back;
+ordinary typed QC state is not a Stage1 QC execution claim. Only the fixture's newly
+owned disposable container is cleaned up, using the reviewed strict cleanup helpers.
+No TEST forecast/publication guard or grant is bypassed.
+
+These canaries exposed a real clean-baseline group temporal defect: legacy stacking
+moved the first aligned future bucket into past forcing. The group-only repair now
+preserves the assembler's partitions. The eight-case public-FI matrix in
+`tests/unit/services/test_hindcast_group_partitions.py` covers hourly/daily cadences,
+aligned/off-boundary issues and H1/H3: four aligned cases failed before the repair,
+while four off-boundary controls passed. Both forcing partitions and target history
+are compared against independent values and grids. The matrix uses the existing mean
+fallback for forcing, not the declared-aggregation path or a new scientific policy.
+H1 previously failed before public
+`predict`; the contract-consistent test recorder returns typed input failure for short
+inputs that reach it. Recorder-only mixed result tests do not certify adapter/service
+handling of omitted members or add an adapter row-count gate.
+
+This preserves the CURRENT shipped Plan239 left-label convention, not Plan267 or held
+phase-policy work. The helper itself is label-agnostic. Public same-worker hindcast-store
+writes also accept an aligned first valid time equal to issue time. This synthetic test
+output convention is separate from the unchanged ReferenceFI model's output convention.
+The corrected group inputs can change predictions; material historical output/score
+impact has not been measured. Short input does not imply short output. No historical
+rows or scores are recomputed, deleted, superseded or backfilled here. Owner assessment
+and a separate decision are required before relying on potentially affected historical
+results; this does not authorize host queries or remediation.
+
+They do not prove skills/POOLED/BMA, component derivation, onboarding callbacks/history,
+calibration/baselines, actual model training, artifact discovery/promotion, scheduled
+flows, real weather, state, freshness or forecast/combined alerts. T1c/T3 activation and
+all remaining consumer/coverage holds stay in force; no full T1d closure is claimed.

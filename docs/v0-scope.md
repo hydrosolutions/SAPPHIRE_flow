@@ -234,7 +234,7 @@ The v0a/v0b distinction for NWP is collapsed by Plan 021. Remaining v0a/v0b refe
 
 **Full design**: 4-slot data contract (past_targets, past_dynamic, future_dynamic, static) with ModelDataRequirements declaring per-slot feature needs. GroupModelInputs uses stacked DataFrames for batch ML inference.
 
-**v0**: Implemented (plan 008). `GroupModelInputs` and `stack_model_inputs()` provide the stacked DataFrame container with `for_station()` slicing. `predict_batch()` accepts `GroupModelInputs` in the hindcast path and the operational Flow 1 GROUP path. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
+**v0**: Implemented (plan 008). `GroupModelInputs` provides the stacked DataFrame container with `for_station()` slicing. Group hindcast stacks already separated `StationModelInputs` partitions directly; the legacy `stack_model_inputs()` helper retains its separate instant-split contract. `predict_batch()` accepts `GroupModelInputs` in the hindcast path and the operational Flow 1 GROUP path. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
 
 **A14. ForecastInterface adapter**
 

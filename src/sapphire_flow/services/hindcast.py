@@ -32,16 +32,23 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     AggregationMethod,
     EnsembleRepresentation,
+    ForcingRoute,
     ForcingType,
     QcStatus,
     StaticNaming,
 )
 from sapphire_flow.types.forecast import HindcastForecast
-from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    ArtifactId,
+    HindcastForecastId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
 from sapphire_flow.types.model import (
+    GroupModelInputs,
     StationInputData,
     StationModelInputs,
-    stack_model_inputs,
 )
 from sapphire_flow.types.training import HindcastStepResult
 
@@ -62,7 +69,7 @@ if TYPE_CHECKING:
         StationStore,
     )
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.model import ModelArtifact, ModelInputs
+    from sapphire_flow.types.model import ModelArtifact
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import (
         StationConfig,
@@ -371,29 +378,75 @@ def _load_static_attributes(
 
 
 # ---------------------------------------------------------------------------
-# Legacy stacking helper — converts StationModelInputs back to ModelInputs
-# format for stack_model_inputs(). Removed once group hindcast is refactored.
+# Preserve assembled hindcast partitions without the legacy instant-time split.
 # ---------------------------------------------------------------------------
 
 
-def _to_legacy_model_inputs(inputs: StationModelInputs) -> ModelInputs:
-    """Temporary shim: pack StationModelInputs into legacy ModelInputs for stacking."""
-    from sapphire_flow.types.model import ModelInputs
+def _stack_hindcast_inputs(
+    group_id: StationGroupId, inputs: dict[StationId, StationModelInputs]
+) -> GroupModelInputs:
+    if not inputs:
+        raise ValueError("Cannot stack empty inputs dict")
+    first = next(iter(inputs.values()))
+    for sid, inp in inputs.items():
+        if sid != inp.station_id:
+            raise ValueError(f"station_id mismatch: key {sid}, input {inp.station_id}")
+        if inp.forcing_route is not ForcingRoute.LEGACY_SUPERSET:
+            raise ValueError(
+                f"Unsupported forcing_route for station {sid}: {inp.forcing_route}"
+            )
+        if inp.issue_time != first.issue_time:
+            raise ValueError(
+                f"Inconsistent issue_time: station {sid} has {inp.issue_time}, "
+                f"expected {first.issue_time}"
+            )
+        if inp.forecast_horizon_steps != first.forecast_horizon_steps:
+            raise ValueError(
+                f"Inconsistent forecast_horizon_steps: station {sid} has "
+                f"{inp.forecast_horizon_steps}, expected {first.forecast_horizon_steps}"
+            )
+        if inp.time_step != first.time_step:
+            raise ValueError(
+                f"Inconsistent time_step: station {sid} has {inp.time_step}, "
+                f"expected {first.time_step}"
+            )
 
-    # Reconstruct flat forcing DataFrame from past + future dynamic.
-    past = inputs.data.past_dynamic
-    future = inputs.data.future_dynamic
-    forcing = past if future.is_empty() else pl.concat([past, future]).sort("timestamp")
+    def stack(frames: list[tuple[StationId, pl.DataFrame]]) -> pl.DataFrame:
+        return pl.concat(
+            [
+                frame.with_columns(
+                    pl.Series("station_id", [str(sid)] * frame.height, dtype=pl.String)
+                ).select("station_id", pl.exclude("station_id"))
+                for sid, frame in frames
+            ]
+        )
 
-    return ModelInputs(
-        station_id=inputs.station_id,
-        forcing=forcing,
-        observations=inputs.data.past_targets,
-        static_attributes=inputs.data.static,
-        issue_time=inputs.issue_time,
-        forecast_horizon_steps=inputs.forecast_horizon_steps,
-        time_step=inputs.time_step,
-        warm_up_steps=None,
+    static = [
+        (sid, inp.data.static)
+        for sid, inp in inputs.items()
+        if inp.data.static is not None
+    ]
+    return GroupModelInputs(
+        group_id=group_id,
+        station_ids=tuple(inputs),
+        past_targets=stack(
+            [(sid, inp.data.past_targets) for sid, inp in inputs.items()]
+        ),
+        past_dynamic=stack(
+            [(sid, inp.data.past_dynamic) for sid, inp in inputs.items()]
+        ),
+        future_dynamic=stack(
+            [(sid, inp.data.future_dynamic) for sid, inp in inputs.items()]
+        ),
+        static=stack(static) if static else None,
+        issue_time=first.issue_time,
+        forecast_horizon_steps=first.forecast_horizon_steps,
+        time_step=first.time_step,
+        source_evidence=tuple(
+            (sid, inp.source_evidence)
+            for sid, inp in inputs.items()
+            if inp.source_evidence is not None
+        ),
     )
 
 
@@ -761,18 +814,8 @@ def run_group_hindcast(
         if not inputs_batch:
             continue
 
-        # Convert StationModelInputs → legacy ModelInputs for GroupModelInputs stacking.
-        # TODO: refactor stack_model_inputs to accept StationModelInputs directly.
-        legacy_batch = {
-            sid: _to_legacy_model_inputs(inp) for sid, inp in inputs_batch.items()
-        }
-
         t0 = time.perf_counter()
-        group_inputs = stack_model_inputs(
-            group_id=group.id,
-            inputs=legacy_batch,
-            issue_time=issue_time,
-        )
+        group_inputs = _stack_hindcast_inputs(group.id, inputs_batch)
         t1 = time.perf_counter()
         log.info(
             "group_inputs.stacking_completed",
