@@ -526,7 +526,8 @@ wrong-class results. This preserves authorization ordering, safe error envelopes
 STANDARD pagination/history and passive assignment-only bundle use. Human review/publication/latest/history now enforce the bounded purpose/result
 boundaries below. Named operator readers follow the tooling checkpoint below.
 Beyond the [bounded input canaries](../standards/security.md#ordinary-input-isolation-canaries),
-hindcast/skills/components/onboarding/calibration and state/health readers,
+beyond the [bounded hindcast canaries](../standards/security.md#hindcast-input-isolation-canaries),
+skills/components/onboarding/calibration and state/health readers,
 and T1c source/tenant consumption linkage remain explicit holds.
 [Mixed restore canaries](../standards/security.md#mixed-backup-restore-canaries) cover only
 local preservation/publication-health proof. No activation, deployment or full T1d closure is claimed.
@@ -972,7 +973,9 @@ API/worker fetch/batch/latest, plus worker-only station/group training target as
 and observation-alert decisions.
 See the [canonical scope and remaining holds](../standards/security.md#ordinary-input-isolation-canaries).
 This is regression evidence for existing separation, not a runtime behavior change.
-Hindcast/skills/components/onboarding/calibration remain deferred alongside T1c/T3.
+The later [bounded hindcast canaries](../standards/security.md#hindcast-input-isolation-canaries)
+cover only station/group ordinary-input consumption. Skills/components/onboarding/calibration
+remain deferred alongside T1c/T3.
 Local mixed backup/restore/publication-health proof is scoped by the later checkpoint. This does not complete T1d or authorize activation.
 
 ### Bounded mixed backup/restore checkpoint
@@ -983,3 +986,22 @@ guards, worker attestations and the narrow publication-health principal. See the
 [canonical scope and limitations](../standards/security.md#mixed-backup-restore-canaries).
 This is local test evidence, not off-box/image-archive/retention or development-deployment
 recovery proof. Other input/evaluation consumers, T1c/T3 and activation remain held.
+
+
+### Bounded hindcast input canary checkpoint
+
+Real factory ordinary observation readers now feed station/group hindcast services under
+the worker role with unchanged ReferenceFI requirements and adapter behavior. Exact
+public FI inputs, nonempty stored results and ordinary perturbations discriminate against
+same-time/newer/older provisional extremes inside consumed windows. The real hindcast
+writer uses an explicit same-connection savepoint factory, not its default independently
+committed transaction. See the [canonical scope and remaining holds](../standards/security.md#hindcast-input-isolation-canaries).
+Skills/POOLED/BMA, components, onboarding/calibration, T1c and T3 remain deferred.
+This slice exposed a genuine group temporal RED, not a baseline-green-only canary:
+aligned group stacking lost one already assembled future bucket. The narrow hindcast-only
+repair preserves split partitions; the hourly/daily, aligned/off-boundary H1/H3 matrix
+and integration controls now pass. Legacy helper, FI adapter/model requirements and
+scientific aggregation remain unchanged. Historical output/score impact is unmeasured;
+no recomputation or stored-data remediation is included. Owner assessment is required
+before relying on affected historical results. This does not complete T1d or authorize
+activation.

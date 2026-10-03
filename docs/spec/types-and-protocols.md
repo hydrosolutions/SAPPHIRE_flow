@@ -1759,10 +1759,15 @@ class GroupModelInputs:
 (Utf8) prepended as the first column. Column order: `station_id`, `timestamp`, then parameter
 columns with companion provenance columns. For `static`: `station_id`, then attribute columns
 (no timestamp). `parameter_columns(df)` excludes both `timestamp` and `station_id`.
-**P9 target state**: `stack_model_inputs()` (in `types/model.py`) currently constructs
-`GroupModelInputs` from `dict[StationId, ModelInputs]` — the old pre-P9 input type.
-In P9 this function will be removed or replaced: `GroupModelInputs` will be assembled
-directly from `dict[StationId, StationModelInputs]` (the renamed input container).
+**P9 group hindcast boundary**: group hindcast assembles `GroupModelInputs` directly
+from `dict[StationId, StationModelInputs]`. Its local stack preserves already separated
+past/future frames, member order, common issue/horizon/step metadata and non-None
+`source_evidence` keyed by each member. Mapping keys must match input station IDs;
+unsupported forcing routes are refused (hindcast currently uses `LEGACY_SUPERSET`).
+Optional static frames retain their schema; `for_station()` still maps an empty static
+slice to `None`. The legacy `stack_model_inputs()` in `types/model.py` remains unchanged:
+it splits flat legacy forcing at `<= issue` / `> issue`. It has no production caller
+after this hindcast repair; removal is not part of this change.
 
 ### StationTrainingData / GroupTrainingData
 
@@ -5423,3 +5428,11 @@ backup/restore proof has [bounded local canaries](../standards/security.md#mixed
 T3 state/health/alert/actual-consumption work and activation remain held.
 Named tooling projections follow the [operator contract](../standards/security.md#operator-forecast-tooling-isolation).
 Full backups must continue to preserve both forecast classes and protected lineage.
+
+
+The [bounded hindcast input canaries](../standards/security.md#hindcast-input-isolation-canaries)
+exercise ordinary `ObservationStore` reads through the real FI boundary for station/group
+hindcast services. No Protocol or model requirement changes are introduced. Same-worker
+savepoint hindcast writes are an explicit test composition, not proof of the default
+independent writer. Skills/combined evaluation, components, onboarding/calibration and
+T1c/T3 consumption/activation remain held.

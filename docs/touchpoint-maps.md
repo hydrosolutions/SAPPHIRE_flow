@@ -1116,7 +1116,7 @@ Use this map when a task touches the **offline model lifecycle** — training-da
 - train/serialize service: `train_station_model` / `train_group_model`
 - artifact store + promotion: `store_and_promote_artifact` (retrain), store-as-TRAINING then `promote_artifact` on passed gate (onboarding) — write semantics in the Persistence map
 - `register_models` / `build_registry_entry` → `register_model` (model-class catalog row, distinct from artifacts)
-- hindcast services (`run_station_hindcast` / `run_group_hindcast`) and the legacy `_to_legacy_model_inputs` GROUP shim
+- hindcast services (`run_station_hindcast` / `run_group_hindcast`) and their local typed GROUP partition-preserving stack (no legacy flatten/re-split shim)
 - skill service: `compute_skill_for_station` (strata by lead-time / season / flow-regime; `SkillScore` + `SkillDiagram`), combined/BMA skill in `combined_skill`
 - skill gate: `evaluate_skill_gate` / `_evaluate_skill_gate_task` — an **automated threshold** compare against `config.skill_gate_thresholds` (no human step); onboarding-only
 
@@ -1759,7 +1759,8 @@ No grant, backup, state or activation change is implied.
 Follow the [bounded ordinary-input canary contract](standards/security.md#ordinary-input-isolation-canaries).
 The actual factory/store, station/group target assembly and observation-alert paths
 have mixed-storage controls. Preserve legitimate manual/rating history and the
-protected provisional boundary. Hindcast/skills/components/onboarding/calibration,
+protected provisional boundary. The [bounded hindcast canaries](standards/security.md#hindcast-input-isolation-canaries)
+separately exercise station/group ordinary-input consumption; skills/components/onboarding/calibration,
 T1c/T3 remain held. Separate [mixed restore canaries](standards/security.md#mixed-backup-restore-canaries)
 cover local preservation/publication-health proof, not off-box recovery.
 
@@ -1770,3 +1771,16 @@ Full dumps retain both classes and protected lineage; ordinary readers exclude T
 Rebootstrap roles after no-ACL restore before asserting runtime denial. Publication
 health uses its dedicated narrow principal and guarded references, never a broad
 forecast join or backup credentials. Local synthetic proof is not deployment recovery.
+
+
+Hindcast input-isolation regression gate:
+`tests/integration/services/test_hindcast_data_use_isolation.py` plus its scoped fixture.
+Keep real factory ordinary observation reads and same-connection worker savepoint writes;
+do not replace observation readers or infer input sensitivity from reference model outputs.
+See the [canonical scope](standards/security.md#hindcast-input-isolation-canaries).
+
+Group hindcast partition regression: run `tests/unit/services/test_hindcast_group_partitions.py`
+with the hindcast, statics, ensemble, legacy type and FI adapter input/predict/NaN/output
+suites. Preserve both split frames, metadata/evidence identity, optional statics and
+healthy-member assembly behavior. The synthetic left-label matrix is convention-bound;
+do not change scientific labels or historical scores as part of stacking maintenance.
