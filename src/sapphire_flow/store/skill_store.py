@@ -9,6 +9,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import skill_diagrams, skill_generations, skill_scores
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store.skill_diagram_codec import (
+    decode_skill_diagram_data,
+    encode_skill_diagram_data,
+)
 from sapphire_flow.types.enums import (
     FlowRegime,
     ForcingType,
@@ -537,7 +541,7 @@ def _diagram_to_row(d: SkillDiagram) -> dict:  # type: ignore[type-arg]
         "flow_regime_config_id": d.flow_regime_config_id,
         "diagram_type": d.diagram_type,
         "threshold_level": d.threshold_level,
-        "data": d.data,
+        "data": encode_skill_diagram_data(d.diagram_type, d.data),
         "eval_period_start": d.eval_period_start,
         "eval_period_end": d.eval_period_end,
         "created_at": d.created_at,
@@ -605,7 +609,7 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         flow_regime_config_id=row["flow_regime_config_id"],
         diagram_type=row["diagram_type"],
         threshold_level=row["threshold_level"],
-        data=dict(row["data"]),
+        data=decode_skill_diagram_data(row["diagram_type"], dict(row["data"])),
         eval_period_start=utc_from_row(row["eval_period_start"]),
         eval_period_end=utc_from_row(row["eval_period_end"]),
         created_at=utc_from_row(row["created_at"]),
