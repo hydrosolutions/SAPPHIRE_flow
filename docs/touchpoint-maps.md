@@ -1784,3 +1784,22 @@ with the hindcast, statics, ensemble, legacy type and FI adapter input/predict/N
 suites. Preserve both split frames, metadata/evidence identity, optional statics and
 healthy-member assembly behavior. The synthetic left-label matrix is convention-bound;
 do not change scientific labels or historical scores as part of stacking maintenance.
+
+### Skill diagram JSON boundary coupling
+
+Changes to reliability/ROC producer or merge output keys/container shapes must
+review store/skill_diagram_codec.py and run actual producer AND merge outputs
+through its tests and real worker JSONB tests. Exact whole-shape recognition
+protects legacy null semantics; it is not input QC. WMO does not prescribe null.
+Fingerprinting remains on computed pre-store values, never JSON-null wire data.
+
+Bypasses: models.model_detail reflects rows -> models/detail.html tojson ->
+Plotly traces/layout or x/y. Canonical diagrams now persist but their headings
+can have empty 300px plot regions; rendering support is not added. Generic admin
+table detail/rows use 120-character JSON previews, not full-payload proof; admin
+can preview unpublished orphans. Full JSON proof uses raw DB/model script.
+
+Plan 235 D3 publish-last remains unchanged and ON orphan rows are intentional.
+OFF defaults to no publication gate and first-write-wins, which can mix earlier
+scores/new diagrams after changed-input reruns. Same-ID ON replay is not a fresh
+flow invocation; no automatic self-healing or durable atomicity claim.

@@ -283,6 +283,8 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `ArtifactIntegrityError` | SHA-256 hash mismatch on fetched artifact bytes | Do not deserialize; task failure |
 | `ExtractionError` | Preprocessing/extraction failure (GridExtractor) | Log, skip station or fail cycle depending on scope |
 | `StoreError` | Store data retrieval failure (archive not found, corrupt data) | Log, raise to caller |
+| `SkillDiagramEncodingError` | Unsupported nonfinite diagram value in a plain tree; direct `SapphireError` subclass | Propagate bounded path-only error; onboarding records `FAILED_SKILL` |
+| `SkillGenerationIncompleteError` | Persisted generation counts are incomplete; `StoreError` subclass | Propagate; do not publish an incomplete generation |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 | `BasinPackageRejectedError` | Basin/static package (Plan 120) fails a whole-package acceptance rule (contract §9 first list) — unsupported `contract_version`, missing mandatory file, checksum mismatch, schema-nonconformance, or a cross-file `gauge_id` mismatch | Reject entire package before any write; caller (importer) surfaces the reason. Distinct from a per-basin `onboarding` hold, which does not raise |
 
@@ -557,3 +559,23 @@ Apply this checklist whenever adding or modifying a database table:
 
 - **Foreign stations cannot have model assignments.** `model_assignments` must only reference stations with `ownership='own'`. Foreign stations are display-only and never run through local models. Enforced at application layer; DB trigger deferred to v1.
 - **`resolve_data_dir` performs idempotent, best-effort eager `mkdir` of its data subdirs and must tolerate a read-only root** (swallow `EROFS`, re-raise every other error) — it never assumes `/data` is writable. Code that writes must target an explicitly writable mounted volume or `tmpfs`, never rely on the data root being writable. See `docs/standards/security.md:292` (`read_only: true` container posture) and Plan 133.
+
+### Skill diagram representation errors
+
+`SkillDiagramEncodingError` directly extends `SapphireError`: it rejects an
+unsupported nonfinite value in a plain diagram tree before the diagram INSERT.
+It is not a storage-count failure. The existing
+`SkillGenerationIncompleteError(StoreError)` denotes incomplete persisted
+generation counts; this note does not claim the legacy exception list is complete.
+The codec emits no logs; its bounded path-only message may propagate to the
+onboarding FAILED_SKILL result. Native opaque/driver failures are unchanged.
+No caller retry/catch policy or existing publish_generation ValueError changes.
+
+### Integration fixture environment isolation
+
+A database fixture must restore temporary `DATABASE_URL` changes before yielding,
+including when migration setup fails. Keep the engine URL explicit. Do not leave
+an environment override active for the whole session or restore a stale value at
+session teardown. API tests that need an owned database URL at startup must use a
+function-scoped override. Check both isolated execution and ordered cross-module
+execution: a CLI can open the wrong database even when its seed fixture is correct.

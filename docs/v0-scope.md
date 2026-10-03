@@ -632,3 +632,14 @@ GET    /api/v1/health/detail               # ✓ Plan 100 — recent pipeline_he
 # DELETE /api/v1/access-tokens/{id}       (no auth)
 # POST   /api/v1/access-tokens/{id}/regenerate (no auth)
 ```
+
+### Bounded skill-diagram persistence prerequisite
+
+The Effort354 T1d skill-consumer canary requires legitimate undefined diagram
+rates to cross JSONB. A narrow store codec represents proven zero-support rates
+as null and restores domain NaN; formulas, IDs, transactions and publication
+stay unchanged. This is not historical skill research, delivery, operational
+generation activation, or complete ordinary/provisional isolation evidence.
+The model-detail page can expose headings/empty chart areas for canonical
+diagrams; this patch does not add their chart renderer. Durable AUTOCOMMIT
+consequences and deployed mode remain unmeasured.

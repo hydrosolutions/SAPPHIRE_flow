@@ -1250,3 +1250,13 @@ STILL-ACTIVE artifact's generation for the same model.
 
 Column details, CHECK constraints, indexes, and retention policies
 are defined in `architecture-context.md`.
+
+### Skill diagram JSONB undefined ordinates
+
+No DDL changes: skill_diagrams.data stores valid JSON null for supported
+zero-support reliability/ROC ordinates; bins, counts and denominators remain.
+The public store restores domain NaN under the full shape predicate documented
+in types-and-protocols. Raw DB/HTML readers see null, never invented zero.
+Unsupported plain-tree nonfinite values fail; opaque native inputs keep driver
+behavior. JSONB key/numeric normalization is not a bitwise Python roundtrip.
+No historical rows are rewritten or assessed by this boundary repair.

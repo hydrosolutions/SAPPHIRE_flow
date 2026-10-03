@@ -1005,3 +1005,19 @@ scientific aggregation remain unchanged. Historical output/score impact is unmea
 no recomputation or stored-data remediation is included. Owner assessment is required
 before relying on affected historical results. This does not complete T1d or authorize
 activation.
+
+#### T1d prerequisite: skill diagram JSONB boundary
+
+Owner approved the bounded schema-aware null representation, retained Plan 235
+publish-last design, and Effort354 prerequisite placement. Real worker public
+regressions reproduced JSONB NaN rejection for reliability, zero-denominator
+ROC, actual merge outputs and SINGLE OFF/ON; finite controls passed. The repair
+is limited to the diagram representation boundary, with no scientific/FI,
+SQL/schema/grant, fingerprint, transaction or HTML-rendering changes.
+
+Null normalization includes matching legacy/native nulls; external None
+fingerprints need not survive normalized readback. Newly visible canonical
+diagrams can show headings/blank plot areas. OFF mixed leftovers and ON orphan
+semantics remain; no live/history assessment or durable AUTOCOMMIT proof.
+Broader skill-consumer isolation, components/onboarding/history/calibration,
+T1c/T3 and delivery/activation remain held pending their own releases/evidence.

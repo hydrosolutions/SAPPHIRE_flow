@@ -3147,6 +3147,13 @@ Behavioral conventions (apply to all stores unless noted):
 class SapphireError(Exception):
     """Base for all SAPPHIRE Flow domain errors."""
 
+class SkillDiagramEncodingError(SapphireError):
+    """Unsupported nonfinite diagram value before its INSERT.
+    Propagate bounded path-only error; onboarding records FAILED_SKILL."""
+
+class SkillGenerationIncompleteError(StoreError):
+    """Persisted skill-generation counts are incomplete; do not publish."""
+
 class InsufficientDataError(SapphireError):
     """Not enough input data to run a model or service function.
     Flow-level handling: try fallback model."""
@@ -5436,3 +5443,35 @@ hindcast services. No Protocol or model requirement changes are introduced. Same
 savepoint hindcast writes are an explicit test composition, not proof of the default
 independent writer. Skills/combined evaluation, components, onboarding/calibration and
 T1c/T3 consumption/activation remain held.
+
+#### SkillDiagram JSONB undefined-value contract
+
+The store encodes an undefined computed rate as JSON null only in a complete
+recognized reliability or ROC shape with zero supporting cases. Domain reads
+restore NaN at those positions, including legacy/native nulls. Null elsewhere
+and missing keys retain their meaning. This is semantic normalization, not an
+arbitrary IEEE754 roundtrip; external None at zero support can change its raw
+fingerprint after readback. Computed generation identity is unchanged.
+
+Recognition uses exact builtin dict/string keys, no extras, and exact builtin
+list/tuple sequences of equal nonzero length. Reliability requires bins,
+forecast_freq, sample_counts, observed_freq. ROC requires thresholds, hit_rate,
+false_alarm_rate, n_events, n_non_events; both denominators are scalar. Grids
+are finite numeric values; support is finite nonnegative integral numeric
+(excluding bool, including 0.0). Rates are finite numbers, None or NaN, not bool.
+Only observed_freq at sample_counts == 0, hit_rate at n_events == 0, and false_alarm_rate
+at n_non_events == 0 normalize. There is no new range/QC validation for finite rows.
+
+Unrecognized plain finite/null shapes pass unchanged. Unsupported NaN or any
+infinite VALUE in a plain tree raises SkillDiagramEncodingError. Entire payloads
+containing container subclasses, unsupported objects/keys or cycles instead
+delegate unchanged to the native driver. Native key serialization remains
+unchanged, including nonfinite float keys. Lazy normalization never mutates
+inputs; unchanged branches may alias. The store retains its top-level dict copy.
+JSONB can turn an opaque input into a plain recognized readback.
+
+`SkillDiagramEncodingError(SapphireError)` is a pre-statement representation
+error, distinct from `SkillGenerationIncompleteError(StoreError)` for persisted
+generation-count mismatch. Codec errors are bounded 192-character structural
+paths without arbitrary key/value/identifier content; no codec payload logging.
+Native serialization/DB errors retain their existing behavior.

@@ -13,6 +13,10 @@ class SapphireError(Exception):
     """Base for all SAPPHIRE Flow domain errors."""
 
 
+class SkillDiagramEncodingError(SapphireError):
+    """A diagram contains an unsupported nonfinite value."""
+
+
 class InsufficientDataError(SapphireError):
     """Not enough input data to run a model or service function."""
 
