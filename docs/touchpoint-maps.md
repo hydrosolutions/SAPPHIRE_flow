@@ -1803,3 +1803,17 @@ Plan 235 D3 publish-last remains unchanged and ON orphan rows are intentional.
 OFF defaults to no publication gate and first-write-wins, which can mix earlier
 scores/new diagrams after changed-input reruns. Same-ID ON replay is not a fresh
 flow invocation; no automatic self-healing or durable atomicity claim.
+
+### Clean skill task acceptance gate
+
+`tests/integration/services/test_skill_data_use_isolation.py::TestCleanSkillBaseline`
+contains six clean task cases (SINGLE/POOLED/BMA × generation OFF/ON). Its helper
+reuses `skill_persistence_engine` unchanged and seeds through same-connection
+savepoints. Preserve independent scalar/diagram oracles, numeric NaN versus JSON
+null, full metadata/UUID readback, worker-role checks and exact owned cleanup.
+Do not copy the older hindcast fixture's yield-spanning database URL override.
+
+The clean checkpoint is not the protected/mixed/perturbed isolation matrix. Later
+cases, complete patch reviews and root-controlled regression gates remain separate.
+No codec, scientific algorithm, publication policy or operational setting changes
+belong to this test-only boundary.
