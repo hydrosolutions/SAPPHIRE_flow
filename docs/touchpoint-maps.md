@@ -1760,8 +1760,8 @@ Follow the [bounded ordinary-input canary contract](standards/security.md#ordina
 The actual factory/store, station/group target assembly and observation-alert paths
 have mixed-storage controls. Preserve legitimate manual/rating history and the
 protected provisional boundary. The [bounded hindcast canaries](standards/security.md#hindcast-input-isolation-canaries)
-separately exercise station/group ordinary-input consumption; skills/components/onboarding/calibration,
-T1c/T3 remain held. Separate [mixed restore canaries](standards/security.md#mixed-backup-restore-canaries)
+separately exercise station/group ordinary-input consumption. The later bounded
+skill checks are routed below; components/onboarding/calibration and T1c/T3 remain held. Separate [mixed restore canaries](standards/security.md#mixed-backup-restore-canaries)
 cover local preservation/publication-health proof, not off-box recovery.
 
 ### Mixed backup and publication-health isolation
@@ -1806,14 +1806,30 @@ flow invocation; no automatic self-healing or durable atomicity claim.
 
 ### Clean skill task acceptance gate
 
+The earlier PR380 checkpoint used
 `tests/integration/services/test_skill_data_use_isolation.py::TestCleanSkillBaseline`
-contains six clean task cases (SINGLE/POOLED/BMA × generation OFF/ON). Its helper
-reuses `skill_persistence_engine` unchanged and seeds through same-connection
-savepoints. Preserve independent scalar/diagram oracles, numeric NaN versus JSON
-null, full metadata/UUID readback, worker-role checks and exact owned cleanup.
-Do not copy the older hindcast fixture's yield-spanning database URL override.
+for six clean task cases. Preserve its complete independent oracles and strict
+NaN/null, metadata and same-source readback checks. It preceded the paired and
+sensitivity evidence below; it was not itself a mixed-input isolation proof.
 
-The clean checkpoint is not the protected/mixed/perturbed isolation matrix. Later
-cases, complete patch reviews and root-controlled regression gates remain separate.
-No codec, scientific algorithm, publication policy or operational setting changes
-belong to this test-only boundary.
+### Stored-hindcast skill isolation regression
+
+Run the complete 24-case module:
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py -o addopts= -vv
+```
+
+Its classes are `TestCleanSkillBaseline` (6), `TestProtectedSkillIsolation` (6)
+and `TestProtectedSkillSensitivity` (12). Follow the
+[canonical measured scope and holds](standards/security.md#stored-hindcast-skill-isolation-canaries)
+and [oracle/metadata contract](spec/types-and-protocols.md#paired-stored-hindcast-skill-isolation-contract).
+Preserve all-field ordinary manifests, frozen protected lineage, every-bucket
+chronology in both halves, real worker factory stores and rollback savepoints.
+Keep measured-level parameter exclusion distinct from protected-relation ACLs.
+
+Reuse `skill_persistence_engine` unchanged. Keep the ordered scoped API → skill
+API → module → Caravan regression and passive database-URL equality checks;
+do not copy the older hindcast fixture's yield-spanning URL override. Clean up
+only owned disposable resources. No codec, scientific algorithm, publication
+policy or operational-setting change belongs to this test-only boundary.

@@ -1735,14 +1735,37 @@ all remaining consumer/coverage holds stay in force; no full T1d closure is clai
 
 ### Clean skill acceptance before isolation
 
-The six-case clean gate in `tests/integration/services/test_skill_data_use_isolation.py`
-checks SINGLE, POOLED and BMA tasks with synthetic stored hindcasts and generation
-writes OFF/ON. Owner setup and worker consumption use one rollback transaction;
-the worker uses real factory stores and cannot SELECT protected provisional rows.
-The gate checks complete independent scalar/diagram values and public readback,
-including numeric NaN scores in FLOAT columns and supported JSONB rate nulls.
-It uses the merged migration-scoped database fixture, not a session-wide URL override.
+The earlier PR380 checkpoint passed six clean SINGLE/POOLED/BMA task cases with
+synthetic stored hindcasts and generation writes OFF/ON. It established real
+worker persistence/readback of complete scalar/diagram outputs, including FLOAT
+NaNs and supported JSONB rate nulls. It did not include protected intrusions or
+ordinary-input perturbations. The later measured scope is recorded below.
 
-This is clean acceptance only. There are no protected intrusions, perturbations,
-retry or negative-matrix cases here. It does not prove provisional isolation,
-scientific skill, durable AUTOCOMMIT effects, delivery or activation.
+### Stored-hindcast skill isolation canaries
+
+P2a passed six clean/mixed pairs (twelve task calls). P2b passed twelve first-half
+or second-half sensitivity cases (thirty-six task calls). Each sensitivity case
+used an independent clean baseline and two separately rolled-back perturbed
+scenarios. These were real factory-store worker calls, not model executions.
+
+Owner setup checked all 13 fields of 64 ordinary discharge records and the full
+lineage, QC, tenant, content and fingerprints of 48 protected conversions. Every
+consumed bucket in both chronological halves contained same-time, older and
+strictly newer provisional extremes, checked against ACTUAL stored ordinary
+rows. Measured water-level parents remained worker-readable but were excluded
+by the discharge parameter; SELECT denial applied separately to the protected
+provisional relation. The scoped database fixture did not leak its URL.
+
+One named ordinary raw quarter increased by 24 in each sensitivity scenario.
+Forecasts and protected lineage stayed fixed. The expected discriminating score
+and ON generation changed at the same invocation and clock. Protected additions
+left complete paired outputs and generation references unchanged. Only newly
+minted output primary UUIDs were excluded across scenarios; ordinary provenance
+and same-source readback remained exact.
+
+See the [oracle and metadata contract](../spec/types-and-protocols.md#paired-stored-hindcast-skill-isolation-contract)
+and [runnable regression route](../touchpoint-maps.md#stored-hindcast-skill-isolation-regression).
+This proves only the named rollback-local cases. Same-ID replay, latest-publication
+workflows, P3 negatives, durable AUTOCOMMIT atomicity, historical impact, scientific
+calibration and activation remain unproved. It does not close whole T1d, T1c/T3
+or Effort 354, or authorize deployment or historical remediation.

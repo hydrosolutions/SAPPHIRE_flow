@@ -5,7 +5,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from fractions import Fraction
 from itertools import product
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import pytest
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         CleanCase,
         DiagramKind,
         GenerationMode,
+        Perturbation,
         RegimeKey,
         Strategy,
     )
@@ -183,6 +184,198 @@ def assert_diagrams(
         )
 
 
+def assert_clean_task_roundtrip(
+    clean_skill_case: CleanCase,
+    strategy: Strategy,
+    mode: GenerationMode,
+    record_property: Callable[[str, object], None],
+    perturbation: Perturbation | None = None,
+) -> dict[str, object]:
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        INVOCATIONS,
+        MID,
+        MID_B,
+        MODEL_IDS,
+        RUN,
+        RUN_B,
+        SID,
+        C,
+        assert_same_source,
+        assert_value,
+        deployment,
+        expected_payload,
+        null_count,
+        perturbed_payload,
+        regime_key,
+        wire_from_domain,
+    )
+
+    case = clean_skill_case
+    conn = case.connection
+    record_property("owner_role", case.owner_role)
+    before = conn.scalar(sa.text("SELECT current_user"))
+    assert before == "sapphire_worker"
+    record_property("worker_before", before)
+    database_transaction_time = conn.scalar(sa.select(sa.func.transaction_timestamp()))
+    config = deployment(mode)
+    if strategy == "SINGLE":
+        scores, diagrams = compute_skills_task.fn(
+            station_id=SID,
+            model_id=MID,
+            artifact_id=AID,
+            parameter="discharge",
+            hindcast_run_id=RUN,
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: C,
+            generation_id=INVOCATIONS[strategy],
+        )
+    else:
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=SID,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy[strategy],
+            hindcast_run_ids={MID: RUN, MID_B: RUN_B},
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: C,
+            generation_id=INVOCATIONS[strategy],
+        )
+    generations = {row.generation_id for row in [*scores, *diagrams]}
+    assert len(generations) == 1
+    generation = next(iter(generations))
+    if mode == "ON":
+        assert isinstance(generation, UUID) and generation.version == 5
+        assert generation != INVOCATIONS[strategy]
+    else:
+        assert generation is None
+    if perturbation is None:
+        assert_scores(scores, strategy, generation)
+        assert_diagrams(diagrams, strategy, generation)
+    else:
+        assert_perturbed_scores(scores, strategy, generation, perturbation)
+        assert_perturbed_diagrams(diagrams, strategy, generation, perturbation)
+    persisted_scores = case.skill_store.fetch_latest_scores(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    persisted_diagrams = case.skill_store.fetch_latest_diagrams(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    if perturbation is None:
+        assert_scores(persisted_scores, strategy, generation)
+        assert_diagrams(persisted_diagrams, strategy, generation)
+    else:
+        assert_perturbed_scores(persisted_scores, strategy, generation, perturbation)
+        assert_perturbed_diagrams(
+            persisted_diagrams, strategy, generation, perturbation
+        )
+    # Preserve full records: UUIDs, metadata and nonfinite positions.
+    assert_same_source(
+        {s.id: asdict(s) for s in persisted_scores},
+        {s.id: asdict(s) for s in scores},
+    )
+    assert_same_source(
+        {d.id: asdict(d) for d in persisted_diagrams},
+        {d.id: asdict(d) for d in diagrams},
+    )
+    raw_scores = conn.execute(
+        sa.select(db.skill_scores.c.id, db.skill_scores.c.score)
+    ).all()
+    assert len(raw_scores) == len(scores)
+    assert {row.id for row in raw_scores} == {row.id for row in scores}
+    returned_scores = {row.id: row.score for row in scores}
+    for raw in raw_scores:
+        assert_same_source(raw.score, returned_scores[raw.id])
+    assert sum(math.isnan(raw.score) for raw in raw_scores) == 10
+    raw_diagrams = conn.execute(
+        sa.select(db.skill_diagrams.c.id, db.skill_diagrams.c.data)
+    ).all()
+    assert len(raw_diagrams) == 24
+    returned_diagrams = {d.id: d for d in diagrams}
+    assert {r.id for r in raw_diagrams} == returned_diagrams.keys()
+    undefined_counts = {"reliability": 0, "roc": 0, "rank_histogram": 0}
+    for raw in raw_diagrams:
+        import json
+
+        diagram = returned_diagrams[raw.id]
+        expected = (
+            expected_payload(
+                strategy, regime_key(diagram.flow_regime), diagram.diagram_type, "json"
+            )
+            if perturbation is None
+            else perturbed_payload(
+                strategy,
+                regime_key(diagram.flow_regime),
+                diagram.diagram_type,
+                perturbation,
+                "json",
+            )
+        )
+        assert_value(raw.data, expected)
+        assert_same_source(
+            raw.data, wire_from_domain(asdict(diagram)["data"], expected)
+        )
+        json.dumps(raw.data, allow_nan=False)
+        undefined_counts[diagram.diagram_type] += null_count(raw.data)
+    assert undefined_counts == {
+        "rank_histogram": 0,
+        "reliability": (68 if strategy == "SINGLE" else 66)
+        if perturbation is None
+        else {"SINGLE": 66, "POOLED": 64, "BMA": 60}[strategy],
+        "roc": 404,
+    }
+    ledger = conn.execute(sa.select(db.skill_generations)).mappings().all()
+    if mode == "ON":
+        assert len(ledger) == 1
+        assert dict(ledger[0]) == {
+            "id": generation,
+            "station_id": SID,
+            "model_id": MODEL_IDS[strategy],
+            "model_artifact_id": AID if strategy == "SINGLE" else None,
+            "parameter": "discharge",
+            "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
+            "forcing_type": ForcingType.REANALYSIS.value,
+            "computation_version": 2,
+            "published_at": C,
+            "created_at": database_transaction_time,
+            "score_count": len(scores),
+            "diagram_count": 24,
+        }
+    else:
+        assert not ledger
+    after = conn.scalar(sa.text("SELECT current_user"))
+    assert after == "sapphire_worker"
+    record_property("worker_after", after)
+    record_property("scores", len(scores))
+    record_property("diagrams", len(diagrams))
+    record_property("scalar_nan_count", 10)
+    record_property("generation_mode", mode)
+    return {
+        "scores": {
+            (row.season, row.flow_regime, row.metric): {
+                key: value for key, value in asdict(row).items() if key != "id"
+            }
+            for row in scores
+        },
+        "diagrams": {
+            (row.season, row.flow_regime, row.diagram_type, row.threshold_level): {
+                key: value for key, value in asdict(row).items() if key != "id"
+            }
+            for row in diagrams
+        },
+        "ledger": [dict(row) for row in ledger],
+    }
+
+
 class TestCleanSkillBaseline:
     @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
     @pytest.mark.parametrize("mode", ["OFF", "ON"])
@@ -193,153 +386,241 @@ class TestCleanSkillBaseline:
         mode: GenerationMode,
         record_property: Callable[[str, object], None],
     ) -> None:
+        assert_clean_task_roundtrip(clean_skill_case, strategy, mode, record_property)
+
+
+class TestProtectedSkillIsolation:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_clean_matches_protected(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
         from tests.integration.services.skill_isolation_fixture import (
-            AID,
-            INVOCATIONS,
-            MID,
-            MID_B,
-            MODEL_IDS,
-            RUN,
-            RUN_B,
-            SID,
-            C,
+            PROTECTED_CONTENT_HASHES,
             assert_same_source,
-            assert_value,
-            deployment,
-            expected_payload,
-            null_count,
-            regime_key,
-            wire_from_domain,
+            protected_scenario,
         )
 
-        case = clean_skill_case
-        conn = case.connection
-        record_property("owner_role", case.owner_role)
-        before = conn.scalar(sa.text("SELECT current_user"))
-        assert before == "sapphire_worker"
-        record_property("worker_before", before)
-        database_transaction_time = conn.scalar(
-            sa.select(sa.func.transaction_timestamp())
-        )
-        config = deployment(mode)
-        if strategy == "SINGLE":
-            scores, diagrams = compute_skills_task.fn(
-                station_id=SID,
-                model_id=MID,
-                artifact_id=AID,
-                parameter="discharge",
-                hindcast_run_id=RUN,
-                hindcast_store=case.hindcast_store,
-                obs_store=case.obs_store,
-                skill_store=case.skill_store,
-                station_store=case.station_store,
-                flow_regime_store=case.flow_regime_store,
-                deployment_config=config,
-                clock=lambda: C,
-                generation_id=INVOCATIONS[strategy],
-            )
-        else:
-            scores, diagrams = compute_combined_skills_task.fn(
-                station_id=SID,
-                parameter="discharge",
-                strategy=ModelCombinationStrategy[strategy],
-                hindcast_run_ids={MID: RUN, MID_B: RUN_B},
-                hindcast_store=case.hindcast_store,
-                obs_store=case.obs_store,
-                skill_store=case.skill_store,
-                station_store=case.station_store,
-                flow_regime_store=case.flow_regime_store,
-                deployment_config=config,
-                clock=lambda: C,
-                generation_id=INVOCATIONS[strategy],
-            )
-        generations = {row.generation_id for row in [*scores, *diagrams]}
-        assert len(generations) == 1
-        generation = next(iter(generations))
-        if mode == "ON":
-            assert isinstance(generation, UUID) and generation.version == 5
-            assert generation != INVOCATIONS[strategy]
-        else:
-            assert generation is None
-        assert_scores(scores, strategy, generation)
-        assert_diagrams(diagrams, strategy, generation)
-        persisted_scores = case.skill_store.fetch_latest_scores(
-            SID, MODEL_IDS[strategy], parameter="discharge"
-        )
-        persisted_diagrams = case.skill_store.fetch_latest_diagrams(
-            SID, MODEL_IDS[strategy], parameter="discharge"
-        )
-        assert_scores(persisted_scores, strategy, generation)
-        assert_diagrams(persisted_diagrams, strategy, generation)
-        # Preserve full records: UUIDs, metadata and nonfinite positions.
-        assert_same_source(
-            {s.id: asdict(s) for s in persisted_scores},
-            {s.id: asdict(s) for s in scores},
-        )
-        assert_same_source(
-            {d.id: asdict(d) for d in persisted_diagrams},
-            {d.id: asdict(d) for d in diagrams},
-        )
-        raw_scores = conn.execute(
-            sa.select(db.skill_scores.c.id, db.skill_scores.c.score)
-        ).all()
-        assert len(raw_scores) == len(scores)
-        assert {row.id for row in raw_scores} == {row.id for row in scores}
-        returned_scores = {row.id: row.score for row in scores}
-        for raw in raw_scores:
-            assert_same_source(raw.score, returned_scores[raw.id])
-        assert sum(math.isnan(raw.score) for raw in raw_scores) == 10
-        raw_diagrams = conn.execute(
-            sa.select(db.skill_diagrams.c.id, db.skill_diagrams.c.data)
-        ).all()
-        assert len(raw_diagrams) == 24
-        returned_diagrams = {d.id: d for d in diagrams}
-        assert {r.id for r in raw_diagrams} == returned_diagrams.keys()
-        undefined_counts = {"reliability": 0, "roc": 0, "rank_histogram": 0}
-        for raw in raw_diagrams:
-            import json
+        outcomes: list[dict[str, object]] = []
+        ordinary_snapshots: list[dict[UUID, dict[str, object]]] = []
+        for presence in ("absent", "present"):
+            with protected_scenario(protected_pair_connection, presence) as (
+                case,
+                ordinary,
+            ):
 
-            diagram = returned_diagrams[raw.id]
-            expected = expected_payload(
-                strategy,
-                regime_key(diagram.flow_regime),
-                diagram.diagram_type,
-                "json",
+                def record_scenario(
+                    name: str, value: object, label: str = presence
+                ) -> None:
+                    record_property(f"{label}.{name}", value)
+
+                outcomes.append(
+                    assert_clean_task_roundtrip(case, strategy, mode, record_scenario)
+                )
+                ordinary_snapshots.append({row.id: asdict(row) for row in ordinary})
+        assert_same_source(ordinary_snapshots[0], ordinary_snapshots[1])
+        assert_same_source(outcomes[0], outcomes[1])
+        record_property("task_calls", 2)
+        record_property("ordinary_rows", 64)
+        record_property("ordinary_fields_per_row", 13)
+        record_property("paired_full_ordinary_equality", True)
+        record_property("paired_full_output_equality_except_primary_uuid", True)
+        record_property(
+            "protected_lineage_fingerprints", list(PROTECTED_CONTENT_HASHES)
+        )
+        record_property("protected_rows", 48)
+        record_property("chronological_halves", 2)
+        record_property("buckets_with_all_three_intrusions", 16)
+        record_property("worker_readable_measured_levels", 48)
+        record_property("worker_protected_select_denied", True)
+
+
+def assert_perturbed_scores(
+    scores: list[SkillScore],
+    strategy: Strategy,
+    generation: UUID | None,
+    perturbation: Perturbation,
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        METRICS,
+        PERTURBED_SCALARS,
+        REGIMES,
+        SCALAR_VALUES,
+        perturbed_indices,
+        regime_key,
+    )
+
+    expected: dict[tuple[str | None, RegimeKey, str], str | None] = {
+        (season, regime, metric): value
+        for season, regime in product((None, "winter"), REGIMES)
+        for metric, value in zip(
+            METRICS[: len(SCALAR_VALUES[strategy][regime])],
+            SCALAR_VALUES[strategy][regime],
+            strict=True,
+        )
+    }
+    keyed = {
+        (row.season, regime_key(row.flow_regime), row.metric): row for row in scores
+    }
+    assert len(scores) == len(keyed) == (104 if strategy == "BMA" else 98)
+    assert keyed.keys() == expected.keys()
+    assert len({row.id for row in scores}) == len(scores)
+    for key, clean_value in expected.items():
+        row = keyed[key]
+        assert_metadata(row, strategy, generation)
+        selected = perturbed_indices(key[1], perturbation)
+        fold_sizes = [sum(i // 8 == half for i in selected) for half in (0, 1)]
+        assert row.sample_size == (
+            sum(fold_sizes) // 2 if strategy == "BMA" else len(selected)
+        )
+        selected_scalars = PERTURBED_SCALARS[perturbation][strategy][key[1]]
+        if row.metric in selected_scalars:
+            assert_scalar(row.score, selected_scalars[row.metric], strategy, row.metric)
+        elif clean_value is None:
+            assert math.isnan(row.score)
+        else:
+            # Unselected values get exact pair/readback checks, not numeric oracles.
+            assert math.isfinite(row.score)
+    assert sum(math.isnan(row.score) for row in scores) == 10
+
+
+def assert_perturbed_diagrams(
+    diagrams: list[SkillDiagram],
+    strategy: Strategy,
+    generation: UUID | None,
+    perturbation: Perturbation,
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        KINDS,
+        REGIMES,
+        assert_value,
+        perturbed_payload,
+        regime_key,
+    )
+
+    expected_keys: set[tuple[str | None, RegimeKey, DiagramKind, str | None]] = {
+        (season, regime, kind, None if kind == "rank_histogram" else "2")
+        for season, regime, kind in product((None, "winter"), REGIMES, KINDS)
+    }
+    keyed = {
+        (
+            row.season,
+            regime_key(row.flow_regime),
+            row.diagram_type,
+            row.threshold_level,
+        ): row
+        for row in diagrams
+    }
+    assert len(diagrams) == len(keyed) == 24
+    assert keyed.keys() == expected_keys
+    assert len({row.id for row in diagrams}) == 24
+    for key in expected_keys:
+        row = keyed[key]
+        assert_metadata(row, strategy, generation)
+        assert_value(
+            asdict(row)["data"],
+            perturbed_payload(strategy, key[1], key[2], perturbation, "domain"),
+        )
+
+
+class TestProtectedSkillSensitivity:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    @pytest.mark.parametrize("perturbation", ["P_FIRST", "P_SECOND"])
+    def test_both_fold_controls(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        perturbation: Perturbation,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            PROTECTED_CONTENT_HASHES,
+            assert_same_source,
+            protected_scenario,
+        )
+
+        def record_baseline(name: str, value: object) -> None:
+            record_property(f"baseline.{name}", value)
+
+        with protected_scenario(protected_pair_connection, "absent") as (
+            case,
+            ordinary,
+        ):
+            baseline = assert_clean_task_roundtrip(
+                case, strategy, mode, record_baseline
             )
-            assert_value(raw.data, expected)
-            assert_same_source(
-                raw.data, wire_from_domain(asdict(diagram)["data"], expected)
-            )
-            json.dumps(raw.data, allow_nan=False)
-            undefined_counts[diagram.diagram_type] += null_count(raw.data)
-        assert undefined_counts == {
-            "rank_histogram": 0,
-            "reliability": 68 if strategy == "SINGLE" else 66,
-            "roc": 404,
-        }
-        ledger = conn.execute(sa.select(db.skill_generations)).mappings().all()
-        if mode == "ON":
-            assert len(ledger) == 1
-            assert dict(ledger[0]) == {
-                "id": generation,
-                "station_id": SID,
-                "model_id": MODEL_IDS[strategy],
-                "model_artifact_id": AID if strategy == "SINGLE" else None,
-                "parameter": "discharge",
-                "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
-                "forcing_type": ForcingType.REANALYSIS.value,
-                "computation_version": 2,
-                "published_at": C,
-                "created_at": database_transaction_time,
-                "score_count": len(scores),
-                "diagram_count": 24,
+            baseline_inputs = {row.id: asdict(row) for row in ordinary}
+        outcomes: list[dict[str, object]] = []
+        snapshots: list[dict[UUID, dict[str, object]]] = []
+        for presence in ("absent", "present"):
+            with protected_scenario(
+                protected_pair_connection, presence, perturbation
+            ) as (case, ordinary):
+
+                def record_scenario(
+                    name: str, value: object, label: str = presence
+                ) -> None:
+                    record_property(f"{label}.{name}", value)
+
+                outcomes.append(
+                    assert_clean_task_roundtrip(
+                        case, strategy, mode, record_scenario, perturbation
+                    )
+                )
+                snapshots.append({row.id: asdict(row) for row in ordinary})
+        assert_same_source(snapshots[0], snapshots[1])
+        assert_same_source(outcomes[0], outcomes[1])
+        differences = {
+            key: {
+                field
+                for field, value in row.items()
+                if snapshots[0][key][field] != value
             }
+            for key, row in baseline_inputs.items()
+        }
+        assert sum(bool(fields) for fields in differences.values()) == 1
+        assert {tuple(sorted(fields)) for fields in differences.values() if fields} == {
+            ("value",)
+        }
+        metric = "pbias" if strategy == "POOLED" else "crps"
+        baseline_scores = cast(
+            "dict[tuple[object, ...], dict[str, object]]", baseline["scores"]
+        )
+        changed_scores = cast(
+            "dict[tuple[object, ...], dict[str, object]]", outcomes[0]["scores"]
+        )
+        assert (
+            baseline_scores[(None, None, metric)]["score"]
+            != changed_scores[(None, None, metric)]["score"]
+        )
+        baseline_ledger = cast("list[dict[str, object]]", baseline["ledger"])
+        changed_ledger = cast("list[dict[str, object]]", outcomes[0]["ledger"])
+        if mode == "ON":
+            assert baseline_ledger[0]["id"] != changed_ledger[0]["id"]
         else:
-            assert not ledger
-        after = conn.scalar(sa.text("SELECT current_user"))
-        assert after == "sapphire_worker"
-        record_property("worker_after", after)
-        record_property("scores", len(scores))
-        record_property("diagrams", len(diagrams))
-        record_property("scalar_nan_count", 10)
-        record_property("generation_mode", mode)
+            assert baseline_ledger == changed_ledger == []
+        record_property("task_calls", 3)
+        record_property("perturbation", perturbation)
+        record_property("discriminating_metric", metric)
+        record_property("ordinary_changed_rows", 1)
+        record_property("ordinary_changed_fields", "value only; +24 raw quarter")
+        record_property("ordinary_rows", 64)
+        record_property("ordinary_fields_per_row", 13)
+        record_property("paired_full_ordinary_equality", True)
+        record_property("paired_full_output_equality_except_primary_uuid", True)
+        record_property(
+            "protected_lineage_fingerprints", list(PROTECTED_CONTENT_HASHES)
+        )
+        record_property("protected_rows", 48)
+        record_property("buckets_with_all_three_intrusions", 16)
+        record_property("chronological_halves", 2)
+        record_property("worker_readable_measured_levels", 48)
+        record_property("worker_protected_select_denied", True)
+        record_property("independent_perturbed_scalar_metrics", "crps,mae,pbias")
+        record_property("same_invocation_and_clock", True)
