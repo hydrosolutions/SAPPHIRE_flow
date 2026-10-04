@@ -1765,7 +1765,16 @@ and same-source readback remained exact.
 
 See the [oracle and metadata contract](../spec/types-and-protocols.md#paired-stored-hindcast-skill-isolation-contract)
 and [runnable regression route](../touchpoint-maps.md#stored-hindcast-skill-isolation-regression).
-This proves only the named rollback-local cases. Same-ID replay, latest-publication
-workflows, P3 negatives, durable AUTOCOMMIT atomicity, historical impact, scientific
-calibration and activation remain unproved. It does not close whole T1d, T1c/T3
+This proves only the named rollback-local paired/sensitivity cases. The subsequent
+sequential replay evidence is below. P3 negatives, durable AUTOCOMMIT atomicity,
+historical impact, scientific calibration and activation remain unproved. It does not close whole T1d, T1c/T3
 or Effort 354, or authorize deployment or historical remediation.
+
+### Sequential skill replay acceptance status
+
+The six-case replay gate passed all thirty calls, including identical-ID replay,
+new-invocation selection, old-ID non-promotion and changed-content publication. Its
+[contract](../spec/types-and-protocols.md#sequential-skill-replay-acceptance-contract)
+and [route](../touchpoint-maps.md#sequential-skill-replay-regression) preserve real
+worker stores, protected-present lineage and the same rollback connection. No new
+privilege, durable recovery claim, P3 evidence or activation authority follows.

@@ -10,6 +10,7 @@ from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event as sa_event
 
 from sapphire_flow.db import metadata as db
 from sapphire_flow.flows.compute_skills import (
@@ -71,7 +72,11 @@ def assert_scalar(
 
 
 def assert_metadata(
-    row: SkillScore | SkillDiagram, strategy: Strategy, generation: UUID | None
+    row: SkillScore | SkillDiagram,
+    strategy: Strategy,
+    generation: UUID | None,
+    *,
+    clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
         AID,
@@ -94,7 +99,7 @@ def assert_metadata(
         "flow_regime_config_id": REGIME,
         "eval_period_start": T,
         "eval_period_end": T + timedelta(hours=30),
-        "created_at": C,
+        "created_at": C + timedelta(seconds=clock_offset_seconds),
         "time_step_seconds": 3600,
         "phase_offset_seconds": 0,
         "generation_id": generation,
@@ -103,7 +108,7 @@ def assert_metadata(
     if isinstance(row, SkillScore):
         common.update(
             forcing_type=ForcingType.REANALYSIS,
-            computed_at=C,
+            computed_at=C + timedelta(seconds=clock_offset_seconds),
             freshness=SkillFreshness.CURRENT,
         )
         if strategy == "BMA":
@@ -116,7 +121,11 @@ def assert_metadata(
 
 
 def assert_scores(
-    scores: list[SkillScore], strategy: Strategy, generation: UUID | None
+    scores: list[SkillScore],
+    strategy: Strategy,
+    generation: UUID | None,
+    *,
+    clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
         METRICS,
@@ -142,7 +151,9 @@ def assert_scores(
     assert len({s.id for s in scores}) == len(scores)
     for key, reference in expected.items():
         row = keyed[key]
-        assert_metadata(row, strategy, generation)
+        assert_metadata(
+            row, strategy, generation, clock_offset_seconds=clock_offset_seconds
+        )
         population = len(indices(key[1]))
         assert row.sample_size == (population // 2 if strategy == "BMA" else population)
         assert_scalar(row.score, reference, strategy, row.metric)
@@ -150,7 +161,11 @@ def assert_scores(
 
 
 def assert_diagrams(
-    diagrams: list[SkillDiagram], strategy: Strategy, generation: UUID | None
+    diagrams: list[SkillDiagram],
+    strategy: Strategy,
+    generation: UUID | None,
+    *,
+    clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
         KINDS,
@@ -178,7 +193,9 @@ def assert_diagrams(
     assert actual.keys() == expected_keys
     for key in expected_keys:
         row = actual[key]
-        assert_metadata(row, strategy, generation)
+        assert_metadata(
+            row, strategy, generation, clock_offset_seconds=clock_offset_seconds
+        )
         assert_value(
             asdict(row)["data"], expected_payload(strategy, key[1], key[2], "domain")
         )
@@ -444,6 +461,8 @@ def assert_perturbed_scores(
     strategy: Strategy,
     generation: UUID | None,
     perturbation: Perturbation,
+    *,
+    clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
         METRICS,
@@ -471,7 +490,9 @@ def assert_perturbed_scores(
     assert len({row.id for row in scores}) == len(scores)
     for key, clean_value in expected.items():
         row = keyed[key]
-        assert_metadata(row, strategy, generation)
+        assert_metadata(
+            row, strategy, generation, clock_offset_seconds=clock_offset_seconds
+        )
         selected = perturbed_indices(key[1], perturbation)
         fold_sizes = [sum(i // 8 == half for i in selected) for half in (0, 1)]
         assert row.sample_size == (
@@ -493,6 +514,8 @@ def assert_perturbed_diagrams(
     strategy: Strategy,
     generation: UUID | None,
     perturbation: Perturbation,
+    *,
+    clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
         KINDS,
@@ -520,7 +543,9 @@ def assert_perturbed_diagrams(
     assert len({row.id for row in diagrams}) == 24
     for key in expected_keys:
         row = keyed[key]
-        assert_metadata(row, strategy, generation)
+        assert_metadata(
+            row, strategy, generation, clock_offset_seconds=clock_offset_seconds
+        )
         assert_value(
             asdict(row)["data"],
             perturbed_payload(strategy, key[1], key[2], perturbation, "domain"),
@@ -624,3 +649,438 @@ class TestProtectedSkillSensitivity:
         record_property("worker_protected_select_denied", True)
         record_property("independent_perturbed_scalar_metrics", "crps,mae,pbias")
         record_property("same_invocation_and_clock", True)
+
+
+def invoke_replay_task(
+    case: CleanCase,
+    strategy: Strategy,
+    mode: GenerationMode,
+    step: int,
+    invocation: UUID,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    from sapphire_flow.types.datetime import ensure_utc
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        MID,
+        MID_B,
+        RUN,
+        RUN_B,
+        SID,
+        C,
+        deployment,
+    )
+
+    config = deployment(mode)
+    now = ensure_utc(C + timedelta(seconds=step))
+    if strategy == "SINGLE":
+        scores, diagrams = compute_skills_task.fn(
+            station_id=SID,
+            model_id=MID,
+            artifact_id=AID,
+            parameter="discharge",
+            hindcast_run_id=RUN,
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: now,
+            generation_id=invocation,
+        )
+    else:
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=SID,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy[strategy],
+            hindcast_run_ids={MID: RUN, MID_B: RUN_B},
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: now,
+            generation_id=invocation,
+        )
+    return scores, diagrams
+
+
+def replay_semantic_content(
+    scores: list[SkillScore], diagrams: list[SkillDiagram]
+) -> dict[str, object]:
+    transient = {"id", "generation_id", "computed_at", "created_at"}
+    return {
+        "scores": {
+            (row.season, row.flow_regime, row.metric): {
+                key: value for key, value in asdict(row).items() if key not in transient
+            }
+            for row in scores
+        },
+        "diagrams": {
+            (row.season, row.flow_regime, row.diagram_type, row.threshold_level): {
+                key: value for key, value in asdict(row).items() if key not in transient
+            }
+            for row in diagrams
+        },
+    }
+
+
+def replay_sql_fields(row: SkillScore | SkillDiagram) -> dict[str, object]:
+    from sapphire_flow.types.enums import FlowRegime
+
+    regimes: dict[FlowRegime | None, str | None] = {
+        None: None,
+        FlowRegime.LOW: "low",
+        FlowRegime.HIGH: "high",
+        FlowRegime.FLOOD: "flood",
+    }
+    assert row.skill_source is SkillSource.HINDCAST_REANALYSIS
+    fields: dict[str, object] = asdict(row)
+    fields["skill_source"] = "hindcast_reanalysis"
+    fields["flow_regime"] = regimes[row.flow_regime]
+    if isinstance(row, SkillScore):
+        assert row.forcing_type is ForcingType.REANALYSIS
+        assert row.freshness is SkillFreshness.CURRENT
+        fields["forcing_type"] = "reanalysis"
+        fields["freshness"] = "current"
+    return fields
+
+
+class TestSkillReplayPublication:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_replay_selects_published_rows(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        import json
+
+        from tests.integration.services.skill_isolation_fixture import (
+            AID,
+            INVOCATIONS,
+            MODEL_IDS,
+            SID,
+            C,
+            ReplayObserver,
+            assert_ordinary_manifest,
+            assert_same_source,
+            assert_value,
+            correct_replay_observation,
+            expected_payload,
+            fixture_json,
+            null_count,
+            perturbed_payload,
+            regime_key,
+            replay_scenario,
+            replay_snapshot,
+            wire_from_domain,
+        )
+
+        count = 104 if strategy == "BMA" else 98
+        invocation = INVOCATIONS[strategy]
+        other = UUID(int={"SINGLE": 85001, "POOLED": 85002, "BMA": 85003}[strategy])
+        with replay_scenario(protected_pair_connection) as case:
+            conn = case.connection
+            transaction_time = conn.scalar(sa.select(sa.func.transaction_timestamp()))
+            observer = ReplayObserver(case, strategy, record_property)
+            raw: dict[str, dict[UUID, dict[str, object]]] = {
+                name: {}
+                for name in ("skill_scores", "skill_diagrams", "skill_generations")
+            }
+            outputs: dict[int, tuple[list[SkillScore], list[SkillDiagram]]] = {}
+            generations: dict[int, UUID | None] = {}
+            all_returned_ids: set[UUID] = set()
+            with observer.observe():
+                for step in range(5):
+                    previous = replay_snapshot(case, strategy)
+                    first_event = len(observer.events)
+                    if step == 4:
+                        correct_replay_observation(case)
+                        assert len(observer.events) == first_event
+                        assert_same_source(
+                            replay_snapshot(case, strategy).rows, previous.rows
+                        )
+                    ordinary = assert_ordinary_manifest(
+                        case.obs_store, "P_FIRST" if step == 4 else None
+                    )
+                    record_property(
+                        f"step{step}.ordinary",
+                        json.dumps(
+                            fixture_json([asdict(row) for row in ordinary]),
+                            sort_keys=True,
+                        ),
+                    )
+                    record_property(f"step{step}.task_call_started", True)
+                    scores, diagrams = invoke_replay_task(
+                        case, strategy, mode, step, other if step == 2 else invocation
+                    )
+                    assert (
+                        conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+                    )
+                    record_property(f"step{step}.task_call_returned", True)
+                    assert observer.pending is None
+                    outputs[step] = (scores, diagrams)
+                    candidates = {row.generation_id for row in [*scores, *diagrams]}
+                    assert len(candidates) == 1
+                    generation = candidates.pop()
+                    generations[step] = generation
+                    if mode == "ON":
+                        assert isinstance(generation, UUID) and generation.version == 5
+                        if step in (1, 3):
+                            assert generation == generations[0]
+                        elif step:
+                            assert (
+                                generation not in {generations[0], generations.get(2)}
+                                if step == 4
+                                else generation != generations[0]
+                            )
+                    else:
+                        assert generation is None
+                    fresh_ids = {row.id for row in [*scores, *diagrams]}
+                    assert len(fresh_ids) == count + 24
+                    assert not fresh_ids & all_returned_ids
+                    all_returned_ids |= fresh_ids
+                    if step < 4:
+                        assert_scores(
+                            scores, strategy, generation, clock_offset_seconds=step
+                        )
+                        assert_diagrams(
+                            diagrams, strategy, generation, clock_offset_seconds=step
+                        )
+                        assert_same_source(
+                            replay_semantic_content(scores, diagrams),
+                            replay_semantic_content(*outputs[0]),
+                        )
+                    else:
+                        assert_perturbed_scores(
+                            scores,
+                            strategy,
+                            generation,
+                            "P_FIRST",
+                            clock_offset_seconds=step,
+                        )
+                        assert_perturbed_diagrams(
+                            diagrams,
+                            strategy,
+                            generation,
+                            "P_FIRST",
+                            clock_offset_seconds=step,
+                        )
+                        metric = "pbias" if strategy == "POOLED" else "crps"
+                        old_score = next(
+                            row.score
+                            for row in outputs[0][0]
+                            if row.season is None
+                            and row.flow_regime is None
+                            and row.metric == metric
+                        )
+                        new_score = next(
+                            row.score
+                            for row in scores
+                            if row.season is None
+                            and row.flow_regime is None
+                            and row.metric == metric
+                        )
+                        assert old_score != new_score
+                    submitted_scores = {
+                        row.id: replay_sql_fields(row) for row in scores
+                    }
+                    submitted_diagrams: dict[UUID, dict[str, object]] = {}
+                    nulls = {"reliability": 0, "roc": 0, "rank_histogram": 0}
+                    for diagram in diagrams:
+                        expected = (
+                            expected_payload(
+                                strategy,
+                                regime_key(diagram.flow_regime),
+                                diagram.diagram_type,
+                                "json",
+                            )
+                            if step < 4
+                            else perturbed_payload(
+                                strategy,
+                                regime_key(diagram.flow_regime),
+                                diagram.diagram_type,
+                                "P_FIRST",
+                                "json",
+                            )
+                        )
+                        wire = wire_from_domain(asdict(diagram)["data"], expected)
+                        assert_value(wire, expected)
+                        json.dumps(wire, allow_nan=False)
+                        submitted_diagrams[diagram.id] = dict(
+                            replay_sql_fields(diagram), data=wire
+                        )
+                        nulls[diagram.diagram_type] += null_count(wire)
+                    assert nulls == {
+                        "rank_histogram": 0,
+                        "roc": 404,
+                        "reliability": (68 if strategy == "SINGLE" else 66)
+                        if step < 4
+                        else {"SINGLE": 66, "POOLED": 64, "BMA": 60}[strategy],
+                    }
+                    new_rows = step == 0 or mode == "ON" and step in (2, 4)
+                    publication: dict[str, object] = {
+                        "id": generation,
+                        "station_id": SID,
+                        "model_id": MODEL_IDS[strategy],
+                        "model_artifact_id": AID if strategy == "SINGLE" else None,
+                        "parameter": "discharge",
+                        "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
+                        "forcing_type": ForcingType.REANALYSIS.value,
+                        "computation_version": 2,
+                        "published_at": C + timedelta(seconds=step),
+                        "score_count": count,
+                        "diagram_count": 24,
+                    }
+                    events = observer.events[first_event:]
+                    expected_tables = ["skill_scores", "skill_diagrams"] + (
+                        ["skill_generations"] if mode == "ON" else []
+                    )
+                    assert [event.table for event in events] == expected_tables
+                    submissions = {
+                        "skill_scores": submitted_scores,
+                        "skill_diagrams": submitted_diagrams,
+                    }
+                    if mode == "ON":
+                        assert isinstance(generation, UUID)
+                        submissions["skill_generations"] = {generation: publication}
+                    origin = (
+                        (0 if step < 2 else 2 if step < 4 else 4) if mode == "ON" else 0
+                    )
+                    public_scores = {row.id: asdict(row) for row in outputs[origin][0]}
+                    public_diagrams = {
+                        row.id: asdict(row) for row in outputs[origin][1]
+                    }
+                    for event in events:
+                        assert_same_source(event.before.rows, raw)
+                        assert_same_source(event.submitted, submissions[event.table])
+                        inserted: set[UUID] = (
+                            set(submissions[event.table]) if new_rows else set()
+                        )
+                        assert event.inserted_ids() == inserted
+                        if new_rows:
+                            additions = submissions[event.table]
+                            if event.table == "skill_generations":
+                                additions = {
+                                    key: dict(row, created_at=transaction_time)
+                                    for key, row in additions.items()
+                                }
+                            raw[event.table].update(additions)
+                        assert_same_source(event.after.rows, raw)
+                        if mode == "ON":
+                            assert_same_source(event.before.scores, previous.scores)
+                            assert_same_source(event.before.diagrams, previous.diagrams)
+                            # Already-published replays never disappear or re-promote.
+                            if event.table == "skill_generations":
+                                assert_same_source(event.after.scores, public_scores)
+                                assert_same_source(
+                                    event.after.diagrams, public_diagrams
+                                )
+                                candidate_scores = {
+                                    key
+                                    for key, row in raw["skill_scores"].items()
+                                    if row["generation_id"] == generation
+                                }
+                                candidate_diagrams = {
+                                    key
+                                    for key, row in raw["skill_diagrams"].items()
+                                    if row["generation_id"] == generation
+                                }
+                                assert (
+                                    len(candidate_scores) == count
+                                    and len(candidate_diagrams) == 24
+                                )
+                                assert candidate_scores == {
+                                    row.id
+                                    for row in outputs[step if new_rows else 0][0]
+                                }
+                                assert candidate_diagrams == {
+                                    row.id
+                                    for row in outputs[step if new_rows else 0][1]
+                                }
+                            else:
+                                assert_same_source(event.before.scores, previous.scores)
+                                assert_same_source(
+                                    event.before.diagrams, previous.diagrams
+                                )
+                                assert_same_source(event.after.scores, previous.scores)
+                                assert_same_source(
+                                    event.after.diagrams, previous.diagrams
+                                )
+                                if new_rows:
+                                    assert (
+                                        generation
+                                        not in event.after.rows["skill_generations"]
+                                    )
+                        record_property(
+                            f"step{step}.{event.table}.submitted", len(event.submitted)
+                        )
+                        record_property(
+                            f"step{step}.{event.table}.inserted",
+                            len(event.inserted_ids()),
+                        )
+                        record_property(
+                            f"step{step}.{event.table}.submitted_ids",
+                            sorted(map(str, event.submitted)),
+                        )
+                        record_property(
+                            f"step{step}.{event.table}.inserted_ids",
+                            sorted(map(str, event.inserted_ids())),
+                        )
+                    final = replay_snapshot(case, strategy)
+                    assert_same_source(final.rows, raw)
+                    assert_same_source(final.scores, public_scores)
+                    assert_same_source(final.diagrams, public_diagrams)
+                    multiplier = [1, 1, 2, 2, 3][step] if mode == "ON" else 1
+                    assert {name: len(rows) for name, rows in raw.items()} == {
+                        "skill_scores": count * multiplier,
+                        "skill_diagrams": 24 * multiplier,
+                        "skill_generations": multiplier if mode == "ON" else 0,
+                    }
+                    candidate_totals = {
+                        name: sum(
+                            row["generation_id"] == generation
+                            for row in raw[name].values()
+                        )
+                        for name in ("skill_scores", "skill_diagrams")
+                    }
+                    assert candidate_totals == {
+                        "skill_scores": count,
+                        "skill_diagrams": 24,
+                    }
+                    record_property(f"step{step}.candidate_totals", candidate_totals)
+                    record_property(
+                        f"step{step}.scope_totals",
+                        {name: len(rows) for name, rows in raw.items()},
+                    )
+                    record_property(f"step{step}.returned_generation", str(generation))
+                    record_property(f"step{step}.selected_origin", origin)
+                    record_property(
+                        f"step{step}.returned_clock",
+                        (C + timedelta(seconds=step)).isoformat(),
+                    )
+                    record_property(
+                        f"step{step}.ledger",
+                        json.dumps(
+                            fixture_json(list(raw["skill_generations"].values())),
+                            sort_keys=True,
+                        ),
+                    )
+                    record_property(
+                        f"step{step}.reconciliation_source_contract_not_call_measurement",
+                        "ON total-generation reconciliation"
+                        if mode == "ON"
+                        else "OFF not applicable",
+                    )
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+            record_property("task_calls", 5)
+            record_property("observed_skill_insert_statements", len(observer.events))
+            record_property("ordinary_changed_rows", 1)
+            record_property(
+                "ordinary_changed_id", "6b9bb2f6-535a-4e07-b6df-fce8112d9d11"
+            )

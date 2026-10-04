@@ -5522,6 +5522,44 @@ Run the clean, paired-isolation and sensitivity classes together:
 uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py -o addopts= -vv
 ```
 
-The module contains 24 cases. Same-ID replay/latest-publication behavior, P3
-negative cases, durable atomicity, historical remediation and activation remain
-outside this evidence; no general scientific or whole-T1d certification follows.
+The original isolation selection contains 24 cases. Its paired/sensitivity
+evidence did not cover sequential replay; the subsequent bounded gate is below.
+P3 negatives, durable atomicity, historical remediation and activation remain
+unproved; no general scientific or whole-T1d certification follows.
+
+### Sequential skill replay acceptance contract
+
+The six `TestSkillReplayPublication` cases passed SINGLE/POOLED/BMA × OFF/ON
+sequences: thirty completed task calls. Each retained one rollback-local history
+through five calls at C..C+4 seconds: original V, identical V replay, new invocation
+W, old V replay, then V with reviewed P_FIRST (05:15, 15→39). The last call reused
+V but changed computed content; it was not an identical-content replay.
+
+ON returned generation identities are G0/G0/G1/G0/G2; selected stored origins
+are R0/R0/R2/R2/R4. Replays keep first-write UUIDs, clocks and publication times,
+not the fresh objects returned by recomputation. The old G0 replay did not
+re-promote over G1. OFF returned fresh computations at C+k with fresh row IDs,
+but stored/public rows kept R0 IDs, C clocks and CLEAN values even when R4 returned
+P_FIRST values. This describes
+existing first-write-wins behavior, not a new policy or endorsement.
+
+Every call submits N scores and 24 diagrams (N=98/98/104). ON new generations
+insert N/24; identical replays insert zero yet reconcile total N/24. OFF inserts
+only on its first call and does not invoke generation reconciliation. Candidate
+totals, full-scope totals and ledger counts are distinct assertions. Reconciliation
+applicability is a source contract, not an instrumented call-count measurement.
+
+Passive paired connection observers compare before/after ID sets without touching
+caller RETURNING results or relying on cursor.rowcount. Full raw records, public
+records, submitted rows and ledger fields retain strict same-source comparison.
+Submitted rows are observed through store-level SQL `compiled_parameters`, before
+DBAPI/driver bind processing and JSONB/UUID adaptation; this is not wire-level
+observation. Separate post-write SELECTs check persisted raw records.
+R4 inherits the [paired sensitivity oracle limits](#paired-stored-hindcast-skill-isolation-contract):
+independent CRPS/MAE/PBIAS and full diagrams, with other perturbed scalars covered
+only by strict paired/readback comparison. BMA retains the fixed per-call clock,
+all-strata-first tie selection and first-evaluation-fold score bounds described there.
+The exact ordinary correction is owner-only; all skill writes/readers use the real
+worker stores on that connection. Listener removal is unconditional and checked.
+These boundaries observe statement order and same-connection visibility only, not
+crash recovery, AUTOCOMMIT durability, arbitrary concurrency or all API consumers.

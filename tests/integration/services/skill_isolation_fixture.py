@@ -10,12 +10,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 from fractions import Fraction
 from itertools import product
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import UUID
 
 import polars as pl
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event as sa_event
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
@@ -70,7 +71,7 @@ from tests.integration.services.skill_persistence_fixture import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
     from sapphire_flow.store.observation_store import PgObservationStore
@@ -1389,3 +1390,254 @@ def perturbed_payload(
             for j in range(101)
         ],
     }
+
+
+ReplayRows = dict[UUID, dict[str, object]]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReplaySnapshot:
+    rows: dict[str, ReplayRows]
+    scores: ReplayRows
+    diagrams: ReplayRows
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReplayWrite:
+    table: str
+    submitted: ReplayRows
+    before: ReplaySnapshot
+    after: ReplaySnapshot
+
+    def inserted_ids(self) -> set[UUID]:
+        before = set(self.before.rows[self.table])
+        after = set(self.after.rows[self.table])
+        assert not before - after
+        return after - before
+
+
+def replay_snapshot(case: CleanCase, strategy: Strategy) -> ReplaySnapshot:
+    conn = case.connection
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    rows: dict[str, ReplayRows] = {}
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        scope = (
+            table.c.station_id == SID,
+            table.c.model_id == MODEL_IDS[strategy],
+            table.c.model_artifact_id.is_(None)
+            if strategy != "SINGLE"
+            else table.c.model_artifact_id == AID,
+            table.c.parameter == "discharge",
+            sa.select(db.stations.c.id)
+            .where(
+                db.stations.c.id == table.c.station_id,
+                db.stations.c.tenant_id == DEFAULT_TENANT_ID,
+            )
+            .exists(),
+        )
+        result = conn.execute(sa.select(table).where(*scope)).mappings().all()
+        rows[table.name] = {cast("UUID", row["id"]): dict(row) for row in result}
+    scores = case.skill_store.fetch_latest_scores(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    diagrams = case.skill_store.fetch_latest_diagrams(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    return ReplaySnapshot(
+        rows=rows,
+        scores={row.id: dataclasses.asdict(row) for row in scores},
+        diagrams={row.id: dataclasses.asdict(row) for row in diagrams},
+    )
+
+
+class ReplayParameterContext(Protocol):
+    compiled_parameters: list[dict[str, object]]
+
+
+class ReplayObserver:
+    def __init__(
+        self,
+        case: CleanCase,
+        strategy: Strategy,
+        record: Callable[[str, object], None],
+    ) -> None:
+        self.case = case
+        self.record = record
+        self.strategy: Strategy = strategy
+        self.events: list[ReplayWrite] = []
+        self.pending: tuple[object, str, ReplayRows, ReplaySnapshot] | None = None
+        self.busy = False
+
+    def before(
+        self,
+        conn: sa.Connection,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: sa.engine.ExecutionContext,
+        executemany: bool,
+    ) -> None:
+        from copy import deepcopy
+
+        from sqlalchemy.sql.dml import Insert
+
+        if self.busy or context.compiled is None:
+            return
+        clause = context.compiled.statement
+        if not isinstance(clause, Insert):
+            return
+        table = cast("sa.Table", clause.table)
+        if table.name not in {"skill_scores", "skill_diagrams", "skill_generations"}:
+            return
+        assert conn is self.case.connection
+        assert not executemany and self.pending is None
+        self.busy = True
+        try:
+            parameter_sets = cast("ReplayParameterContext", context).compiled_parameters
+            assert len(parameter_sets) == 1, "Unexpected skill INSERT parameter sets"
+            bound = deepcopy(dict(parameter_sets[0]))
+            if "id" in bound:
+                payloads = [bound]
+            else:
+                id_keys = [key for key in bound if key.startswith("id_m")]
+                assert id_keys, "Unexpected skill INSERT identity parameters"
+                assert set(id_keys) == {f"id_m{i}" for i in range(len(id_keys))}
+                payloads = [
+                    {
+                        key[: -len(f"_m{i}")]: value
+                        for key, value in bound.items()
+                        if key.endswith(f"_m{i}")
+                    }
+                    for i in range(len(id_keys))
+                ]
+                assert sum(map(len, payloads)) == len(bound)
+            submitted: ReplayRows = {}
+            for payload in payloads:
+                row_id = payload["id"]
+                assert isinstance(row_id, UUID) and row_id not in submitted
+                submitted[row_id] = payload
+            self.pending = (
+                context,
+                table.name,
+                submitted,
+                replay_snapshot(self.case, self.strategy),
+            )
+        finally:
+            self.busy = False
+
+    def after(
+        self,
+        conn: sa.Connection,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: sa.engine.ExecutionContext,
+        executemany: bool,
+    ) -> None:
+        if self.busy or self.pending is None or self.pending[0] is not context:
+            return
+        assert conn is self.case.connection
+        self.busy = True
+        try:
+            _, table, submitted, before = self.pending
+            self.events.append(
+                ReplayWrite(
+                    table=table,
+                    submitted=submitted,
+                    before=before,
+                    after=replay_snapshot(self.case, self.strategy),
+                )
+            )
+            self.pending = None
+        finally:
+            self.busy = False
+
+    @contextmanager
+    def observe(self) -> Iterator[None]:
+        conn = self.case.connection
+        before, after = self.before, self.after
+        sa_event.listen(conn, "before_cursor_execute", before)
+        try:
+            sa_event.listen(conn, "after_cursor_execute", after)
+            try:
+                yield
+            finally:
+                sa_event.remove(conn, "after_cursor_execute", after)
+        finally:
+            sa_event.remove(conn, "before_cursor_execute", before)
+            assert not sa_event.contains(conn, "before_cursor_execute", before)
+            assert not sa_event.contains(conn, "after_cursor_execute", after)
+            self.pending = None
+            self.busy = False
+            self.record("listeners_removed", True)
+
+
+@contextmanager
+def replay_scenario(conn: sa.Connection) -> Iterator[CleanCase]:
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
+        assert_same_source(
+            {row.id: dataclasses.asdict(row) for row in levels},
+            {
+                row.id: dataclasses.asdict(row)
+                for row in map(protected_measurement, range(48))
+            },
+        )
+        assert assert_ordinary_manifest(case.obs_store) == ordinary
+        yield case
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        assert_ordinary_manifest(case.obs_store, "P_FIRST")
+    finally:
+        scenario.rollback()
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+
+
+def correct_replay_observation(case: CleanCase) -> None:
+    conn = case.connection
+    before = {
+        row.id: dataclasses.asdict(row)
+        for row in assert_ordinary_manifest(case.obs_store)
+    }
+    target = ObservationId(UUID("6b9bb2f6-535a-4e07-b6df-fce8112d9d11"))
+    assert before[target]["value"] == 15.0
+    assert before[target]["timestamp"] == T + timedelta(hours=5, minutes=15)
+    conn.execute(sa.text("SET LOCAL ROLE test"))
+    try:
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        conn.execute(
+            sa.update(db.observations)
+            .where(db.observations.c.id == target)
+            .values(value=39.0)
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store, "P_FIRST")
+        after = {row.id: dataclasses.asdict(row) for row in ordinary}
+        expected = {key: dict(row) for key, row in before.items()}
+        expected[target]["value"] = 39.0
+        assert_same_source(after, expected)
+        assert_protected_buckets(conn, ordinary)
+    finally:
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    assert_ordinary_manifest(case.obs_store, "P_FIRST")
