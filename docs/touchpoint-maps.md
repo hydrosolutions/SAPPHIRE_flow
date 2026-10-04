@@ -1846,4 +1846,32 @@ uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation
 Preserve the [replay contract](spec/types-and-protocols.md#sequential-skill-replay-acceptance-contract).
 Do not consume caller RETURNING results in the observer, infer insertions from
 submitted rows, or confuse source-level reconciliation applicability with measured
-calls. Preserve all original 24 cases; the expanded module contains 30 cases.
+calls. The replay checkpoint preserved the original 24 cases and expanded the
+module to 30; the protected-only slice below adds six more.
+
+### Protected-only skill-input regression
+
+The focused P3a gate passed six pairs/twelve calls:
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestProtectedOnlySkillInput -o addopts= -vv
+```
+
+Preserve all prior 30 cases and 84 task calls. The new six-case class adds twelve
+calls, making the module 36 cases/96 calls. Keep the unchanged positive helpers,
+independent scalar/full-diagram oracles and strict same-source comparator.
+Follow the [contract](spec/types-and-protocols.md#protected-only-skill-input-acceptance-contract)
+and [security scope](standards/security.md#protected-only-skill-input-acceptance-status).
+
+Do not weaken `protected_scenario` to accept missing Q: the negative uses its own
+context. Owner login/role, exact ordinary IDs, disjoint measured IDs and all three
+composite-FK zero-reference checks precede DELETE and worker handoff. Protected
+proof is owner-only; worker inventories/ACL denial are separate. The fixture
+caller, never the observer, consumes the DELETE RETURNING IDs. Preserve positive
+INSERT nonvacuity, negative zero writes/results/readers, finally-based listener
+removal, savepoint rollback and exact-owned-resource cleanup.
+
+The ordered API/skill/module/Caravan group and related regressions overlap this
+module; their counts are not additive. Distinguish expected structlog empty-input
+events from pytest warnings. No other P3 case, runtime/science/FI behavior,
+production setting, history remediation or activation is covered by this route.

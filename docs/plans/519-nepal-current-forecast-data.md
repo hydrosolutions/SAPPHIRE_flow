@@ -1063,3 +1063,26 @@ This closes only the named sequential task/store gate. Passive statement-order
 visibility is not crash or durable AUTOCOMMIT recovery evidence; reconciliation
 applicability is source-derived, not an instrumented invocation count. P3 negatives,
 durable partial-write recovery, history, activation and whole-effort closure remain held.
+
+### Bounded protected-only skill-input acceptance checkpoint
+
+P3a passed six SINGLE/POOLED/BMA × OFF/ON pairs (twelve task calls). Each full
+positive control was rolled back before an independently seeded negative with
+no ordinary discharge and intact measured-level/provisional lineage. Owner-only
+pre-handoff proof covered the exact64-row manifest/deletion, disjoint48 parent
+IDs, zero composite-FK references and preserved protected content. Real worker
+stores/readers saw zero Q but retained water levels and requested hindcasts.
+All negative outputs, skill INSERT events and persisted/public scopes were empty;
+positive INSERT controls, listener cleanup and exact-owned-resource absence passed.
+
+See the [contract](../spec/types-and-protocols.md#protected-only-skill-input-acceptance-contract)
+and [route](../touchpoint-maps.md#protected-only-skill-input-regression).
+No model/FI call ran; stored hindcasts retained RAW QC. The pre-test assertion
+alignment for reconstructed ensemble `model_id=None` was not a runtime fix.
+The prior clean/paired/replay scientific and publication limits remain.
+
+This is only protected-only/absent-Q acceptance. QC-excluded/None/join/clock cases,
+missing CV half and prior-publication visibility, absent requested run, and the
+trailing-bucket control remain held. No universal minimum sample rule, durable
+history/atomicity proof, historical remediation or activation follows. P3, whole
+T1d, T1c/T3 and Effort354 remain open.

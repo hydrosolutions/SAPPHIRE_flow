@@ -1778,3 +1778,33 @@ new-invocation selection, old-ID non-promotion and changed-content publication. 
 and [route](../touchpoint-maps.md#sequential-skill-replay-regression) preserve real
 worker stores, protected-present lineage and the same rollback connection. No new
 privilege, durable recovery claim, P3 evidence or activation authority follows.
+
+### Protected-only skill-input acceptance status
+
+The bounded P3a gate passed six pairs/twelve task calls across SINGLE/POOLED/BMA
+and generation OFF/ON. Each unchanged positive was rolled back before its
+protected-only negative. See the [contract](../spec/types-and-protocols.md#protected-only-skill-input-acceptance-contract)
+and [regression route](../touchpoint-maps.md#protected-only-skill-input-regression).
+
+Owner `session_user` and `current_user` were both `test` before the exact64-row
+ordinary-discharge fixture deletion. This matters because migration0067 checks
+`session_user`, not a role switch. The 64 Q IDs were disjoint from 48 measured
+parents and had no referencing rows in the three observation-FK relations.
+Protected conversion/feed/proof/permission/curve content was checked as owner
+before handoff only. Worker parameter-scoped inventories independently retained
+48 water levels and all requested hindcasts while exposing zero ordinary Q.
+The denial probe targeted `provisional_discharges`; it does not claim that every
+permission-table SELECT is denied. No privileged read was used during computation.
+
+Real factory stores and both public readers ran as worker on the same rollback
+connection. All negative results, skill INSERT events and persisted/public scopes
+were empty. Positive INSERT controls and listener removal passed. Expected
+empty-input structlog diagnostics are distinct from pytest warnings; the focused
+gate reported no pytest warnings or skips. Only newly owned disposable resources
+were cleaned, with independent exact-ID absence evidence outside Git.
+
+QC-excluded/None/join/time cases, missing CV half/prior selection, absent requested
+run and incomplete trailing buckets remain held. RAW hindcasts are not new QC
+certification; FI/models were not invoked. There is no new minimum-N rule,
+scientific endorsement, durable-history proof, historical remediation, deployment
+or activation authority. P3, T1d, T1c/T3 and Effort354 remain incomplete.
