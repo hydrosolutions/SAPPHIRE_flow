@@ -1084,3 +1084,100 @@ class TestSkillReplayPublication:
             record_property(
                 "ordinary_changed_id", "6b9bb2f6-535a-4e07-b6df-fce8112d9d11"
             )
+
+
+class TestProtectedOnlySkillInput:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_protected_only_has_no_skill_output(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            INVOCATIONS,
+            ReplayObserver,
+            assert_stored_skill_hindcasts,
+            fixture_json,
+            protected_only_scenario,
+            protected_scenario,
+            replay_snapshot,
+        )
+
+        def positive_record(name: str, value: object) -> None:
+            record_property(f"positive.{name}", value)
+
+        def negative_record(name: str, value: object) -> None:
+            record_property(f"negative.{name}", value)
+
+        conn = protected_pair_connection
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        with protected_scenario(conn, "present") as (case, _ordinary):
+            assert_stored_skill_hindcasts(case)
+            observer = ReplayObserver(case, strategy, positive_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                positive_record("listeners_attached", True)
+                positive_record("call_started", True)
+                assert_clean_task_roundtrip(case, strategy, mode, positive_record)
+                positive_record("call_returned", True)
+            expected = {
+                "skill_scores": 104 if strategy == "BMA" else 98,
+                "skill_diagrams": 24,
+            }
+            if mode == "ON":
+                expected["skill_generations"] = 1
+            assert [event.table for event in observer.events] == list(expected)
+            assert {
+                event.table: len(event.submitted) for event in observer.events
+            } == expected
+            assert {
+                event.table: len(event.inserted_ids()) for event in observer.events
+            } == expected
+            positive_record("submitted", fixture_json(expected))
+            positive_record("inserted", fixture_json(expected))
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        positive_record("scenario_rolled_back", True)
+        with protected_only_scenario(conn, negative_record) as case:
+            before = replay_snapshot(case, strategy)
+            assert before.rows == {
+                "skill_scores": {},
+                "skill_diagrams": {},
+                "skill_generations": {},
+            }
+            assert before.scores == before.diagrams == {}
+            observer = ReplayObserver(case, strategy, negative_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                negative_record("listeners_attached", True)
+                negative_record("call_started", True)
+                scores, diagrams = invoke_replay_task(
+                    case, strategy, mode, 0, INVOCATIONS[strategy]
+                )
+                negative_record("call_returned", True)
+            assert scores == [] and diagrams == []
+            assert observer.events == []
+            after = replay_snapshot(case, strategy)
+            assert after.rows == before.rows
+            assert after.scores == after.diagrams == {}
+            zeros = {"skill_scores": 0, "skill_diagrams": 0, "skill_generations": 0}
+            negative_record("returned", fixture_json({"scores": 0, "diagrams": 0}))
+            negative_record("insert_events", 0)
+            negative_record("submitted", fixture_json(zeros))
+            negative_record("inserted", fixture_json(zeros))
+            negative_record(
+                "scope_rows",
+                fixture_json({name: len(rows) for name, rows in after.rows.items()}),
+            )
+            negative_record(
+                "public_rows",
+                fixture_json(
+                    {"scores": len(after.scores), "diagrams": len(after.diagrams)}
+                ),
+            )
+        record_property("task_calls", 2)

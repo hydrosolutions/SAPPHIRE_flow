@@ -1641,3 +1641,237 @@ def correct_replay_observation(case: CleanCase) -> None:
         conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
     assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
     assert_ordinary_manifest(case.obs_store, "P_FIRST")
+
+
+def assert_stored_skill_hindcasts(case: CleanCase) -> None:
+    conn = case.connection
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    for model_index, (model, artifact, run, offset) in enumerate(
+        ((MID, AID, RUN, 1), (MID_B, AID_B, RUN_B, 5))
+    ):
+        actual = case.hindcast_store.fetch_hindcasts(
+            SID,
+            model,
+            T,
+            C,
+            forcing_type=ForcingType.REANALYSIS,
+            hindcast_run_id=run,
+            parameter="discharge",
+        )
+        keyed = {row.id: row for row in actual}
+        expected_ids = {UUID(int=67000 + 2 * i + model_index) for i in range(16)}
+        assert len(actual) == 16 and keyed.keys() == expected_ids
+        for i, q in enumerate(Q):
+            row = keyed[HindcastForecastId(UUID(int=67000 + 2 * i + model_index))]
+            issue = T + timedelta(hours=2 * i)
+            assert (
+                row.station_id,
+                row.model_id,
+                row.model_artifact_id,
+                row.hindcast_run_id,
+                row.hindcast_step,
+                row.created_at,
+                row.forcing_type,
+                row.representation,
+                row.qc_status,
+                row.qc_flags,
+            ) == (
+                SID,
+                model,
+                artifact,
+                run,
+                issue,
+                C,
+                ForcingType.REANALYSIS,
+                EnsembleRepresentation.MEMBERS,
+                QcStatus.RAW,
+                (),
+            )
+            ensemble = row.ensemble
+            assert (
+                ensemble.station_id,
+                ensemble.model_id,
+                ensemble.issued_at,
+                ensemble.parameter,
+                ensemble.units,
+                ensemble.time_step,
+                ensemble.representation,
+            ) == (
+                SID,
+                None,
+                issue,
+                "discharge",
+                "m³/s",
+                timedelta(hours=1),
+                EnsembleRepresentation.MEMBERS,
+            )
+            assert ensemble.values.sort("member_id").to_dicts() == [
+                {
+                    "valid_time": issue + timedelta(hours=1),
+                    "member_id": member,
+                    "value": float(q + offset),
+                }
+                for member in (0, 1)
+            ]
+    assert (
+        conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_forecasts)) == 32
+    )
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_values)) == 64
+
+
+def assert_protected_only_inputs(case: CleanCase) -> None:
+    conn = case.connection
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    assert case.obs_store.fetch_observations(SID, "discharge", T, C) == []
+    assert (
+        case.obs_store.fetch_observations(
+            SID, "discharge", T, C, qc_status=QcStatus.QC_PASSED
+        )
+        == []
+    )
+    assert (
+        conn.scalar(
+            sa.select(sa.func.count())
+            .select_from(db.observations)
+            .where(
+                db.observations.c.station_id == SID,
+                db.observations.c.parameter == "discharge",
+            )
+        )
+        == 0
+    )
+    levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
+    assert_same_source(
+        {row.id: dataclasses.asdict(row) for row in levels},
+        {
+            row.id: dataclasses.asdict(row)
+            for row in map(protected_measurement, range(48))
+        },
+    )
+    assert len(levels) == 48
+    assert_stored_skill_hindcasts(case)
+
+
+@contextmanager
+def protected_only_scenario(
+    conn: sa.Connection,
+    record: Callable[[str, object], None],
+) -> Iterator[CleanCase]:
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    record("owner_session_user", "test")
+    record("owner_current_user", "test")
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        ordinary_ids = {row.id for row in ordinary_manifest()}
+        level_ids = {ObservationId(UUID(int=76000 + i)) for i in range(48)}
+        assert len(ordinary_ids) == 64 and len(level_ids) == 48
+        assert ordinary_ids.isdisjoint(level_ids)
+        record(
+            "ordinary_manifest",
+            fixture_json([dataclasses.asdict(row) for row in ordinary]),
+        )
+        record("ordinary_level_ids_disjoint", True)
+        references: dict[str, int] = {}
+        for table in (
+            db.observation_versions,
+            db.measurement_feed_evidence,
+            db.provisional_discharges,
+        ):
+            count = conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(
+                    table.c.observation_id.in_(ordinary_ids),
+                    table.c.station_id == SID,
+                )
+            )
+            assert count == 0
+            references[table.name] = count
+        record("ordinary_references", fixture_json(references))
+        protected_tables = (
+            db.provisional_discharge_permissions,
+            db.measurement_feed_evidence,
+            db.rating_reference_proofs,
+            db.provisional_discharges,
+            db.rating_curves,
+        )
+        protected_before = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        removed = (
+            conn.execute(
+                sa.delete(db.observations)
+                .where(
+                    db.observations.c.id.in_(ordinary_ids),
+                    db.observations.c.station_id == SID,
+                    db.observations.c.parameter == "discharge",
+                )
+                .returning(db.observations.c.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(removed) == 64 and set(removed) == ordinary_ids
+        record("deleted_ordinary_ids", fixture_json(sorted(map(str, removed))))
+        protected_after = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert_same_source(protected_before, protected_after)
+        assert len(protected_after["provisional_discharges"]) == 48
+        assert len(protected_after["measurement_feed_evidence"]) == 48
+        record("owner_protected_content", fixture_json(protected_after))
+        record("protected_proof_before_worker", True)
+        assert case.obs_store.fetch_observations(SID, "discharge", T, C) == []
+        assert (
+            case.obs_store.fetch_observations(
+                SID, "discharge", T, C, qc_status=QcStatus.QC_PASSED
+            )
+            == []
+        )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        record("provisional_select_denied", True)
+        assert_protected_only_inputs(case)
+        record("worker_before", "sapphire_worker")
+        record("worker_discharge_rows", 0)
+        record("worker_water_level_rows", 48)
+        record("worker_hindcast_headers", 32)
+        record("worker_hindcast_members", 64)
+        yield case
+        assert_protected_only_inputs(case)
+        record("worker_after", "sapphire_worker")
+    finally:
+        scenario.rollback()
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+        record("scenario_rolled_back", True)

@@ -5563,3 +5563,38 @@ The exact ordinary correction is owner-only; all skill writes/readers use the re
 worker stores on that connection. Listener removal is unconditional and checked.
 These boundaries observe statement order and same-connection visibility only, not
 crash recovery, AUTOCOMMIT durability, arbitrary concurrency or all API consumers.
+
+### Protected-only skill-input acceptance contract
+
+`TestProtectedOnlySkillInput` passed six SINGLE/POOLED/BMA × OFF/ON pairs:
+twelve task calls. Each positive used the unchanged full clean scalar/diagram
+and strict readback oracles with protected lineage present. Its savepoint was
+rolled back before the separately seeded negative; prior-publication retention
+is not exercised by this pair.
+
+The negative kept 32 stored hindcast headers, 64 members, 48 measured water levels
+and all 48 protected conversions, but no ordinary discharge rows. Owner setup
+checked the full 64-row/13-field ordinary manifest, disjoint measured-level IDs,
+and zero `(observation_id, station_id)` references to those ordinary rows in
+`observation_versions`, `measurement_feed_evidence` and `provisional_discharges`.
+Only the fixture caller consumed `DELETE ... RETURNING observations.id`, proving
+the exact frozen 64-ID set. Full protected content remained unchanged before
+worker handoff; no trigger or FK was disabled.
+
+All negative calls returned empty scores/diagrams and submitted no skill INSERTs.
+Score, diagram and publication scope stayed empty, as did both public readers.
+The positive's real INSERTs established observer nonvacuity. All twelve listener
+pairs were detached and all scenarios rolled back. These are same-connection,
+rollback-local checks, not durable recovery or retained-history evidence.
+
+Stored hindcasts retain RAW QC. The enclosing hindcast carries the requested
+model ID; its reconstructed ensemble has `model_id=None` under the existing
+store contract. The new assertion was aligned to that contract before testing;
+no runtime repair occurred. No model/FI call runs here, so this does not exercise
+FI `ModelFailure` or certify model inputs. Existing aggregation, BMA/tie/fold
+metadata, publish-last and OFF first-write-wins limits remain unchanged.
+
+Absent ordinary Q is not QC-excluded Q, None-valued Q, a missing join, an
+incomplete bucket, a missing CV half or an absent requested run. Those negative
+cases and the trailing-bucket control remain held. SINGLE/POOLED have no new
+universal minimum sample count. This slice does not complete P3 or whole T1d.
