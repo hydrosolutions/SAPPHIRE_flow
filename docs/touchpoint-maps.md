@@ -1814,7 +1814,8 @@ sensitivity evidence below; it was not itself a mixed-input isolation proof.
 
 ### Stored-hindcast skill isolation regression
 
-Run the complete 24-case module:
+Run the isolation module (the original three classes contain 24 cases; the
+additional replay class is described below):
 
 ```sh
 uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py -o addopts= -vv
@@ -1833,3 +1834,16 @@ API → module → Caravan regression and passive database-URL equality checks;
 do not copy the older hindcast fixture's yield-spanning URL override. Clean up
 only owned disposable resources. No codec, scientific algorithm, publication
 policy or operational-setting change belongs to this test-only boundary.
+
+### Sequential skill replay regression
+
+The six replay cases passed all thirty task calls:
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestSkillReplayPublication -o addopts= -vv
+```
+
+Preserve the [replay contract](spec/types-and-protocols.md#sequential-skill-replay-acceptance-contract).
+Do not consume caller RETURNING results in the observer, infer insertions from
+submitted rows, or confuse source-level reconciliation applicability with measured
+calls. Preserve all original 24 cases; the expanded module contains 30 cases.

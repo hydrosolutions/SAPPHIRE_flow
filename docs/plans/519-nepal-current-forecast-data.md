@@ -1051,3 +1051,15 @@ latest-publication workflow tests. P3 negatives, durable partial-write/atomicity
 questions, historical impact and activation remain held. BMA scientific/metadata
 limits remain. Effort 354 stays open; this is not whole T1d, T1c/T3 or delivery
 completion.
+
+### Bounded sequential skill replay acceptance checkpoint
+
+Six five-call rollback-local sequences passed (thirty completed task calls).
+Identical-ID replay preserved first rows/clocks; old replay did not re-promote over
+a newer invocation. Same-V changed content published a different generation; OFF
+kept first-written stored rows despite changed returned calculations. See the [contract](../spec/types-and-protocols.md#sequential-skill-replay-acceptance-contract)
+and [focused route](../touchpoint-maps.md#sequential-skill-replay-regression).
+This closes only the named sequential task/store gate. Passive statement-order
+visibility is not crash or durable AUTOCOMMIT recovery evidence; reconciliation
+applicability is source-derived, not an instrumented invocation count. P3 negatives,
+durable partial-write recovery, history, activation and whole-effort closure remain held.
