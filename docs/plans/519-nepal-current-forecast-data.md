@@ -974,8 +974,9 @@ and observation-alert decisions.
 See the [canonical scope and remaining holds](../standards/security.md#ordinary-input-isolation-canaries).
 This is regression evidence for existing separation, not a runtime behavior change.
 The later [bounded hindcast canaries](../standards/security.md#hindcast-input-isolation-canaries)
-cover only station/group ordinary-input consumption. Skills/components/onboarding/calibration
-remain deferred alongside T1c/T3.
+covered station/group ordinary-input consumption. Skills were still deferred at
+that checkpoint; the later bounded skill evidence is recorded below. Components,
+onboarding/calibration and T1c/T3 remain deferred.
 Local mixed backup/restore/publication-health proof is scoped by the later checkpoint. This does not complete T1d or authorize activation.
 
 ### Bounded mixed backup/restore checkpoint
@@ -996,7 +997,8 @@ public FI inputs, nonempty stored results and ordinary perturbations discriminat
 same-time/newer/older provisional extremes inside consumed windows. The real hindcast
 writer uses an explicit same-connection savepoint factory, not its default independently
 committed transaction. See the [canonical scope and remaining holds](../standards/security.md#hindcast-input-isolation-canaries).
-Skills/POOLED/BMA, components, onboarding/calibration, T1c and T3 remain deferred.
+Skills/POOLED/BMA were deferred at that checkpoint; their later bounded evidence
+is recorded below. Components, onboarding/calibration, T1c and T3 remain deferred.
 This slice exposed a genuine group temporal RED, not a baseline-green-only canary:
 aligned group stacking lost one already assembled future bucket. The narrow hindcast-only
 repair preserves split partitions; the hourly/daily, aligned/off-boundary H1/H3 matrix
@@ -1019,20 +1021,33 @@ Null normalization includes matching legacy/native nulls; external None
 fingerprints need not survive normalized readback. Newly visible canonical
 diagrams can show headings/blank plot areas. OFF mixed leftovers and ON orphan
 semantics remain; no live/history assessment or durable AUTOCOMMIT proof.
-Broader skill-consumer isolation, components/onboarding/history/calibration,
-T1c/T3 and delivery/activation remain held pending their own releases/evidence.
+Broader skill-consumer isolation was held at this prerequisite checkpoint; the
+later bounded evidence is recorded below. Remaining skill holds and components/
+onboarding/history/calibration, T1c/T3 and delivery/activation remain open.
 
 ### Bounded clean skill acceptance checkpoint
 
-After the merged diagram-persistence prerequisite, a six-case clean acceptance
-gate covers actual SINGLE/POOLED/BMA task functions with generation writes OFF/ON
-and synthetic stored hindcasts. It checks 98/98/104 scalar scores, 24 diagrams,
-real worker persistence/readback and scoped fixture lifecycle without model runs.
-The independent scalar contract includes ten numeric NaN scores per strategy;
-these are distinct from supported diagram-rate JSON nulls.
+The earlier PR380 checkpoint passed six clean SINGLE/POOLED/BMA task cases with
+generation writes OFF/ON after the diagram-persistence prerequisite. It checked
+complete independent scalar/diagram outputs and real worker readback without
+model runs. Protected input and sensitivity cases were still held at that
+checkpoint; the subsequent measured P2a/P2b scope follows.
 
-This first slice stops after the six clean outcomes and cleanup. Protected input
-intrusions, ordinary perturbations, retries and negative cases remain held for
-separate review/release. BMA metadata/scientific limits and durable partial-write
-questions remain unchanged. Effort 354 stays open; this is not whole T1d, T1c, T3,
-delivery or activation evidence.
+### Bounded paired skill isolation and sensitivity checkpoint
+
+P2a passed six clean/mixed pairs (twelve task calls). P2b passed twelve independent
+first-half/second-half controls (thirty-six task calls), each with a clean baseline
+and paired perturbed scenarios. Named ordinary changes altered the expected
+score and ON generation at fixed invocation/clock; protected additions left
+complete paired outputs unchanged. Full ordinary/protected provenance, worker
+roles and consumed-bucket chronology were checked.
+
+See the [canonical scope and remaining holds](../standards/security.md#stored-hindcast-skill-isolation-canaries),
+[oracle limits](../spec/types-and-protocols.md#paired-stored-hindcast-skill-isolation-contract)
+and [test route](../touchpoint-maps.md#stored-hindcast-skill-isolation-regression).
+Only CRPS/MAE/PBIAS had independent perturbed scalar-value oracles; every scalar
+still received exact paired/readback checks. These were not same-ID replay or
+latest-publication workflow tests. P3 negatives, durable partial-write/atomicity
+questions, historical impact and activation remain held. BMA scientific/metadata
+limits remain. Effort 354 stays open; this is not whole T1d, T1c/T3 or delivery
+completion.
