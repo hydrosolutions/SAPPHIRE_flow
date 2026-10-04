@@ -5644,3 +5644,50 @@ publish-last/OFF behavior are unchanged. Remaining missing-half/run/trailing,
 QC/None/join cases, fullP3/T1d/effort closure, durable history, deployment and
 activation remain held. The trailing15/16 SINGLE case needs a separate oracle:
 its HIGH-stratum peak row changes the expected score count98→100, not just N.
+
+### BMA missing-half retention acceptance
+
+The bounded missing-half gate passed four cases and eight task calls: missing
+first/second ordinary CV half × OFF/ON. Each case first ran the full BMA positive
+against independent oracles, captured its actual persisted/public rows, and rolled
+back. A separate owner-seeded candidate fixture restored those exact prior rows
+before worker handoff. This is fixture rehydration, not a live workflow, committed
+history, crash recovery or AUTOCOMMIT proof.
+
+The candidate retained 32 ordinary Q observations, with all 13 fields checked
+before and after as worker. Owner-only deletion proved the exact other 32 IDs and
+preserved all 48 protected conversions. Both real hindcast fetch paths verified
+all 32 headers and 64 members using the new complete A/B run map before and after
+the call. Empty output therefore was not an empty or wrong-run fetch artifact.
+
+BMA returned no new scores/diagrams and issued no skill INSERT/publication.
+Both public readers retained the actual prior 104 scores and 24 diagrams,
+including every UUID, generation reference, scalar NaN, raw JSONB null, timestamp
+and metadata field. ON retained its one prior ledger; OFF retained legacy rows
+with NULL generation and no ledger. Unscoped table counts and strict NaN-aware
+full-row identity passed at capture, rehydration and after the candidate.
+
+Column names came from the live public-schema catalog on the same owned connection
+as owner before handoff. Catalog names matched metadata and every raw mapping;
+all columns were explicitly restored, including ledger created_at. This checks
+column-name coverage, not full schema types/defaults/nullability. The shared outer
+transaction makes ledger created_at a weak discriminator; exact IDs, content and
+generation references carry the retention proof. All eight listener pairs were
+removed and the owned container was independently verified absent.
+
+Both CV folds are empty for different reasons: missing training targets yield no
+weights; the opposite fold has training targets but no evaluation targets. The
+5/6 and 1/6 weights are source-derived reasoning, not measured weight evidence.
+All 16 common steps remain: neither the fewer-than-two guard nor a one-surviving-
+fold completeness guard is certified. SINGLE/POOLED surviving-half positives are
+separately held: they can produce 104 scores, and OFF can mix old first-write-wins
+rows with new peak keys. No universal minimum N or all-strategy refusal follows.
+
+Broad fetches, future preloaded rows and full hindcast evaluation bounds are not
+historical as-of evidence. RAW hindcasts, no model/FI execution, Plan234 DRAFT
+limits, and the open owner policy question about one-sample CURRENT publication
+remain unchanged. Missing requested B/decoys, trailing 100-score SINGLE, added
+QC/None/join cases, other P3, whole T1d/T1c/T3/Effort354, history and activation
+remain held. The expanded module has 46 cases/118 calls; regression groups overlap
+and are not additive coverage. Earlier first-bucket evidence failures remain
+separate from the passing repair; this slice's import-order static stop is retained.

@@ -1899,3 +1899,23 @@ separate runs. Ambient database checks target the common db_engine, not the
 separate skill container. Clean only owned resources and verify exact-ID absence.
 No POOLED AT/BMA usable-boundary/density/as-of/fullP3 or scientific-policy approval
 follows; the trailing100-score case and other holds require separate review.
+
+### BMA missing-half retention regression
+
+Focused gate (four cases/eight calls):
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestMissingHalfSkillRetention -o addopts= -vv
+```
+
+Preserve the prior 42 cases/110 calls, strict comparators and independent oracles.
+The expanded module has 46 cases/118 calls; regression groups overlap.
+Check actual full prior capture/rehydration, live catalog names, both new-run
+fetch paths, retained 32×13-field manifests, empty candidate versus nonempty public
+prior, passive observers and exact owned cleanup. Do not weaken NaN/null identity.
+
+See the [canonical contract](spec/types-and-protocols.md#bma-missing-half-retention-acceptance),
+[security boundary](standards/security.md#bma-missing-half-retention-boundary) and
+[checkpoint/holds](plans/519-nepal-current-forecast-data.md#bma-missing-half-retention-checkpoint).
+This gate does not certify durable history, one-surviving-fold handling or
+SINGLE/POOLED half-result persistence.

@@ -1107,3 +1107,16 @@ and future evaluation bounds remain an open owner scientific-policy question,
 not endorsed output. No model/FI execution or Plan234 repair occurred.
 Missing-half/requested-run/trailing and QC/None/join cases, fullP3/T1d/T1c/T3,
 Effort354, durable history and activation remain open.
+
+### BMA missing-half retention checkpoint
+
+Four BMA cases/eight calls passed: missing first/second ordinary half × OFF/ON.
+Actual prior fixture rows remained visible (104 scores/24 diagrams; ON one ledger,
+OFF none) after the candidate returned empty. This is bounded fixture retention,
+not live workflow, durable history or whole category-3 completion.
+
+The [canonical contract](../spec/types-and-protocols.md#bma-missing-half-retention-acceptance)
+records limits and evidence. Follow the [test route](../touchpoint-maps.md#bma-missing-half-retention-regression).
+SINGLE/POOLED 104-score half positives and mixed OFF persistence stay separate.
+Missing requested B/decoys, trailing SINGLE, added QC/None/join cases, remaining
+P3/T1d/T1c/T3/Effort354, scientific-policy approval and activation remain held.
