@@ -5598,3 +5598,49 @@ Absent ordinary Q is not QC-excluded Q, None-valued Q, a missing join, an
 incomplete bucket, a missing CV half or an absent requested run. Those negative
 cases and the trailing-bucket control remain held. SINGLE/POOLED have no new
 universal minimum sample count. This slice does not complete P3 or whole T1d.
+
+### First completed skill bucket acceptance
+
+Six cases passed fourteen task calls: SINGLE/POOLED/BMA × OFF/ON each used an
+unchanged full-C positive and a separately rolled-back BEFORE scenario; SINGLE
+alone added an AT positive. With T=2026-01-10T00:00Z, E=T+2h, BEFORE=E-1microsecond
+and AT=E, all64 ordinary Q rows and48 protected conversions remained unchanged.
+Only elapsed bucket ends count. This does not test raw-observation density.
+
+BEFORE returned no scores/diagrams, skill INSERTs or publications for all three
+strategies; both public readers stayed empty. BMA still had16 common hindcast
+steps: unusable elapsed training targets/folds, not its fewer-than-two-step guard,
+explain this result. It does not establish BMA's first usable boundary. POOLED AT
+was not run. Only SINGLE brackets E with this exact before/at comparison.
+
+At E, SINGLE produced48 scores and12 full diagrams across all/winter × all/LOW,
+each sample_size1. There were24 numericNaN scores and36 reliability/404 ROC raw
+JSONB nulls, with public numericNaN rates. Full independent numerical/metadata
+oracles and strict returned/raw/public readback passed. ON published one48/12
+ledger; OFF had no ledger. Observer insertion counts, generation distinction from
+the full-C control, post-input checks and all14 listener removals passed.
+
+The tasks still fetch1970–2100 hindcasts and the full observation bounds through
+T+32h regardless of the injected clock. Input created_at=C and later observation/
+lineage timestamps remain unchanged. Output clocks are E but evaluation bounds
+remain the full fetched hindcast issue range T..T+30h. This is a synthetic cutoff
+contract test, not historical as-of availability or ingestion-causality proof.
+One-sample CURRENT publication with future evaluation bounds is an **open owner
+scientific-policy question**, not approved scientific or operational use.
+
+The new evidence-only property encoding tags documented numericNaNs and lists
+exact paths. It preserves None/finite fields and rejects unsupported nonfinite
+positions. Its deterministic path order is repr-sorted, not numeric index order.
+This transformation affects only record_property copies after the assertions;
+source numericNaNs, supported rawJSONB nulls, strict comparators and fixture_json's
+allow_nan=False behavior are unchanged. Identity is semanticNaN, not IEEE NaN
+payload/sign-bit preservation. The earlier two failed SINGLE cases stopped at
+property serialization; they are retained separately, not retroactively passed.
+
+Owner protected-content proof remains pre-handoff; worker parameter inventories
+and protected provisional-table SELECT denial remain distinct. Stored hindcasts
+stayRAW; no model/FI call runs. Plan234 aggregation limitations, BMA/metadata and
+publish-last/OFF behavior are unchanged. Remaining missing-half/run/trailing,
+QC/None/join cases, fullP3/T1d/effort closure, durable history, deployment and
+activation remain held. The trailing15/16 SINGLE case needs a separate oracle:
+its HIGH-stratum peak row changes the expected score count98→100, not just N.

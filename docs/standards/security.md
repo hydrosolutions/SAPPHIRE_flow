@@ -1808,3 +1808,23 @@ run and incomplete trailing buckets remain held. RAW hindcasts are not new QC
 certification; FI/models were not invoked. There is no new minimum-N rule,
 scientific endorsement, durable-history proof, historical remediation, deployment
 or activation authority. P3, T1d, T1c/T3 and Effort354 remain incomplete.
+
+### First-bucket skill boundary status
+
+The bounded first-bucket gate passed six cases/fourteen calls. See the
+[contract](../spec/types-and-protocols.md#first-completed-skill-bucket-acceptance)
+and [route](../touchpoint-maps.md#first-bucket-skill-regression).
+Owner setup preserved full64Q/48protected lineage; worker real stores and readers
+ran on independently rolled-back scenarios with14 observer removals. BEFORE
+returned/wrote/published nothing in allthree strategies. Only SINGLE brackets E
+with an AT positive; POOLED AT was not run and BMA's16-step empty-fold result is
+not its fewer-than-two guard or a measured first usable BMA boundary.
+
+Completed means time elapsed, not density. Future rows and created_at=C were
+preloaded; E outputs retained full T..T+30h evaluation bounds. This is not
+historical as-of evidence. One-sample CURRENT/full future bounds remain an open
+owner scientific-policy question, not approval or activation authority. Evidence
+NaN tags affect property copies only; source/raw/public assertions are unchanged.
+No owner protected read is claimed after worker handoff, and no general permission-
+table denial is inferred. RAW hindcasts/FI-not-executed and Plan234 limits remain.
+Other P3 cases, wholeT1d/T1c/T3/Effort354, durable history and activation remain held.

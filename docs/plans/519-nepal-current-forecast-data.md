@@ -1086,3 +1086,24 @@ missing CV half and prior-publication visibility, absent requested run, and the
 trailing-bucket control remain held. No universal minimum sample rule, durable
 history/atomicity proof, historical remediation or activation follows. P3, whole
 T1d, T1c/T3 and Effort354 remain open.
+
+### Bounded first completed skill bucket checkpoint
+
+The first-bucket gate passed six cases/fourteen calls. Allthree strategies used a
+full-C positive then BEFORE(E-1microsecond); SINGLE alone added AT(E=T+2h).
+BEFORE stayed empty with full64Q/48protected inputs; BMA retained16 common steps
+and lacked usable elapsed folds, not fewer-than-two steps. POOLED AT was not run.
+SINGLE AT independently verified48 scores/12diagrams/sample1/24scalarNaNs and
+36+404 rawJSONB nulls, real publication/readback and later observer/input checks.
+All14 listener pairs were removed and owned-resource absence verified.
+
+See the [contract](../spec/types-and-protocols.md#first-completed-skill-bucket-acceptance)
+and [route](../touchpoint-maps.md#first-bucket-skill-regression). Evidence-only
+NaN-tag serialization repaired two failed evidence emissions without changing
+scorer/codec/strict assertions; failed and passing runs remain distinct.
+This tests elapsed time, not density. Future prefetch/input created_at=C and
+full-hindcast evaluation bounds are not historical as-of proof. One-sample CURRENT
+and future evaluation bounds remain an open owner scientific-policy question,
+not endorsed output. No model/FI execution or Plan234 repair occurred.
+Missing-half/requested-run/trailing and QC/None/join cases, fullP3/T1d/T1c/T3,
+Effort354, durable history and activation remain open.

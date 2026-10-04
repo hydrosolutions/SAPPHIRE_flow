@@ -1875,3 +1875,90 @@ def protected_only_scenario(
         assert conn.scalar(sa.text("SELECT session_user")) == "test"
         assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
         record("scenario_rolled_back", True)
+
+
+FIRST_BUCKET_END = ensure_utc(T + timedelta(hours=2))
+FIRST_BUCKET_BEFORE = ensure_utc(FIRST_BUCKET_END - timedelta(microseconds=1))
+FIRST_BUCKET_METRICS: dict[str, str | None] = {
+    "crps": "1",
+    "nse": None,
+    "kge": None,
+    "pbias": "10",
+    "mae": "1",
+    "sharpness_p10_p90": "0",
+    "sharpness_p25_p75": "0",
+    "ensemble_range": "0",
+    "bss_danger_2": None,
+    "pod_danger_2": None,
+    "far_danger_2": None,
+    "csi_danger_2": None,
+}
+FIRST_BUCKET_DIAGRAMS_JSON = (
+    '{"rank_histogram":{"ranks":[0,1,2],"counts":[1,0,0]},"reliability":{"bin'
+    's":[0.05,0.15,0.25,0.35,0.45,0.55,0.65,0.75,0.85,0.95],"observed_freq":['
+    '0.0,null,null,null,null,null,null,null,null,null],"forecast_freq":[0.05,'
+    '0.15,0.25,0.35,0.45,0.55,0.65,0.75,0.85,0.95],"sample_counts":[1,0,0,0,0'
+    ',0,0,0,0,0]},"roc":{"false_alarm_rate":[1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,'
+    "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"
+    "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"
+    "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"
+    "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"
+    "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"
+    '0.0,0.0,0.0],"hit_rate":[null,null,null,null,null,null,null,null,null,nu'
+    "ll,null,null,null,null,null,null,null,null,null,null,null,null,null,null"
+    ",null,null,null,null,null,null,null,null,null,null,null,null,null,null,n"
+    "ull,null,null,null,null,null,null,null,null,null,null,null,null,null,nul"
+    "l,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"
+    "null,null,null,null,null,null,null,null,null,null,null,null,null,null,nu"
+    "ll,null,null,null,null,null,null,null,null,null,null,null,null,null,null"
+    ',null,null,null,null,null],"thresholds":[0.0,0.01,0.02,0.03,0.04,0.05,0.'
+    "06,0.07,0.08,0.09,0.1,0.11,0.12,0.13,0.14,0.15,0.16,0.17,0.18,0.19,0.2,0"
+    ".21,0.22,0.23,0.24,0.25,0.26,0.27,0.28,0.29,0.3,0.31,0.32,0.33,0.34,0.35"
+    ",0.36,0.37,0.38,0.39,0.4,0.41,0.42,0.43,0.44,0.45,0.46,0.47,0.48,0.49,0."
+    "5,0.51,0.52,0.53,0.54,0.55,0.56,0.57,0.58,0.59,0.6,0.61,0.62,0.63,0.64,0"
+    ".65,0.66,0.67,0.68,0.69,0.7,0.71,0.72,0.73,0.74,0.75,0.76,0.77,0.78,0.79"
+    ",0.8,0.81,0.82,0.83,0.84,0.85,0.86,0.87,0.88,0.89,0.9,0.91,0.92,0.93,0.9"
+    '4,0.95,0.96,0.97,0.98,0.99,1.0],"n_events":0,"n_non_events":1}}'
+)
+
+
+def first_bucket_payload(
+    kind: DiagramKind,
+    representation: Literal["domain", "json"],
+) -> dict[str, object]:
+    payload = cast("dict[str, object]", json.loads(FIRST_BUCKET_DIAGRAMS_JSON)[kind])
+    if representation == "domain":
+        for key in ("observed_freq", "hit_rate", "false_alarm_rate"):
+            if key in payload:
+                payload[key] = [
+                    float("nan") if value is None else value
+                    for value in cast("list[object]", payload[key])
+                ]
+    return payload
+
+
+def assert_first_bucket_inputs(case: CleanCase) -> None:
+    assert case.connection.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    ordinary = assert_ordinary_manifest(case.obs_store)
+    fetched = case.obs_store.fetch_observations(
+        SID,
+        "discharge",
+        ensure_utc(T + timedelta(hours=1)),
+        ensure_utc(T + timedelta(hours=32)),
+        qc_status=QcStatus.QC_PASSED,
+    )
+    assert len(fetched) == 64
+    assert_same_source(
+        {row.id: dataclasses.asdict(row) for row in fetched},
+        {row.id: dataclasses.asdict(row) for row in ordinary},
+    )
+    levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
+    assert len(levels) == 48
+    assert_same_source(
+        {row.id: dataclasses.asdict(row) for row in levels},
+        {
+            row.id: dataclasses.asdict(row)
+            for row in map(protected_measurement, range(48))
+        },
+    )
+    assert_stored_skill_hindcasts(case)
