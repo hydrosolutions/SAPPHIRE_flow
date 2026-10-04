@@ -1875,3 +1875,27 @@ The ordered API/skill/module/Caravan group and related regressions overlap this
 module; their counts are not additive. Distinguish expected structlog empty-input
 events from pytest warnings. No other P3 case, runtime/science/FI behavior,
 production setting, history remediation or activation is covered by this route.
+
+### First-bucket skill regression
+
+The focused `TestFirstCompletedSkillBucket` gate passed six cases/fourteen calls:
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestFirstCompletedSkillBucket -o addopts= -vv
+```
+
+Preserve all previous36 cases/96 calls. The expanded module has42 cases/110 calls;
+ordered API/skill/module/Caravan and related groups overlap, not additive coverage.
+Keep unchanged full-C positive helpers, all64Q/48protected inputs, microsecond
+BEFORE precision, SINGLE-only AT oracle, strict NaN/null/readback comparisons,
+real worker stores, passive observer nonvacuity and finally-based removal.
+Follow the [measured contract](spec/types-and-protocols.md#first-completed-skill-bucket-acceptance).
+
+Keep evidence-only typedNaN tags/path manifests separate from asserted outputs;
+never weaken fixture_json, replace domainNaN withNone, or infer wire semantics
+from compiled parameters. Expected empty-input structlog events are distinct from
+pytest warnings. Preserve the original2FAIL4PASS evidence and later6PASS gate as
+separate runs. Ambient database checks target the common db_engine, not the
+separate skill container. Clean only owned resources and verify exact-ID absence.
+No POOLED AT/BMA usable-boundary/density/as-of/fullP3 or scientific-policy approval
+follows; the trailing100-score case and other holds require separate review.

@@ -26,8 +26,9 @@ from sapphire_flow.types.enums import (
 from sapphire_flow.types.skill import SkillDiagram, SkillScore
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
+    from sapphire_flow.types.datetime import UtcDatetime
     from tests.integration.services.skill_isolation_fixture import (
         CleanCase,
         DiagramKind,
@@ -1181,3 +1182,387 @@ class TestProtectedOnlySkillInput:
                 ),
             )
         record_property("task_calls", 2)
+
+
+def invoke_first_bucket_task(
+    case: CleanCase,
+    strategy: Strategy,
+    mode: GenerationMode,
+    now: UtcDatetime,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        INVOCATIONS,
+        MID,
+        MID_B,
+        RUN,
+        RUN_B,
+        SID,
+        deployment,
+    )
+
+    if strategy == "SINGLE":
+        return compute_skills_task.fn(
+            station_id=SID,
+            model_id=MID,
+            artifact_id=AID,
+            parameter="discharge",
+            hindcast_run_id=RUN,
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=deployment(mode),
+            clock=lambda: now,
+            generation_id=INVOCATIONS[strategy],
+        )
+    return compute_combined_skills_task.fn(
+        station_id=SID,
+        parameter="discharge",
+        strategy=ModelCombinationStrategy[strategy],
+        hindcast_run_ids={MID: RUN, MID_B: RUN_B},
+        hindcast_store=case.hindcast_store,
+        obs_store=case.obs_store,
+        skill_store=case.skill_store,
+        station_store=case.station_store,
+        flow_regime_store=case.flow_regime_store,
+        deployment_config=deployment(mode),
+        clock=lambda: now,
+        generation_id=INVOCATIONS[strategy],
+    )
+
+
+def first_bucket_evidence(
+    rows: Sequence[SkillScore | SkillDiagram],
+) -> dict[str, object]:
+    allowed: set[tuple[int | str, ...]] = set()
+    for index, row in enumerate(rows):
+        if isinstance(row, SkillScore):
+            if row.metric in {
+                "nse",
+                "kge",
+                "bss_danger_2",
+                "pod_danger_2",
+                "far_danger_2",
+                "csi_danger_2",
+            }:
+                allowed.add((index, "score"))
+        elif row.diagram_type == "reliability":
+            allowed.update(
+                (index, "data", "observed_freq", slot) for slot in range(1, 10)
+            )
+        elif row.diagram_type == "roc":
+            allowed.update((index, "data", "hit_rate", slot) for slot in range(101))
+    visited: set[tuple[int | str, ...]] = set()
+
+    def project(value: object, path: tuple[int | str, ...]) -> object:
+        if path in allowed:
+            assert isinstance(value, float) and math.isnan(value)
+            visited.add(path)
+            return {"$nonfinite": "float_nan"}
+        if isinstance(value, float):
+            assert math.isfinite(value), "Unexpected nonfinite evidence value"
+        if isinstance(value, dict):
+            mapping = cast("dict[str, object]", value)
+            assert all(isinstance(key, str) for key in mapping)
+            return {key: project(item, (*path, key)) for key, item in mapping.items()}
+        if isinstance(value, list):
+            return [
+                project(item, (*path, index))
+                for index, item in enumerate(cast("list[object]", value))
+            ]
+        return value
+
+    records = project([asdict(row) for row in rows], ())
+    assert visited == allowed
+    return {
+        "encoding": "first-bucket-nan-tags-v1",
+        "records": records,
+        "nonfinite": [
+            {"path": list(path), "type": "float_nan"}
+            for path in sorted(visited, key=repr)
+        ],
+    }
+
+
+def assert_first_bucket_roundtrip(
+    case: CleanCase,
+    scores: list[SkillScore],
+    diagrams: list[SkillDiagram],
+    mode: GenerationMode,
+    record: Callable[[str, object], None],
+) -> UUID | None:
+    from sapphire_flow.types.enums import FlowRegime
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        FIRST_BUCKET_END,
+        FIRST_BUCKET_METRICS,
+        INVOCATIONS,
+        KINDS,
+        MID,
+        SID,
+        assert_same_source,
+        assert_value,
+        first_bucket_payload,
+        fixture_json,
+        null_count,
+        wire_from_domain,
+    )
+
+    assert len(scores) == 48 and len(diagrams) == 12
+    generations = {row.generation_id for row in [*scores, *diagrams]}
+    assert len(generations) == 1
+    generation = next(iter(generations))
+    if mode == "ON":
+        assert isinstance(generation, UUID) and generation.version == 5
+        assert generation != INVOCATIONS["SINGLE"]
+    else:
+        assert generation is None
+    expected_keys = {
+        (season, regime, metric)
+        for season, regime, metric in product(
+            (None, "winter"),
+            (None, FlowRegime.LOW),
+            FIRST_BUCKET_METRICS,
+        )
+    }
+    keyed_scores = {(row.season, row.flow_regime, row.metric): row for row in scores}
+    assert keyed_scores.keys() == expected_keys
+    assert len({row.id for row in scores}) == 48
+    for row in scores:
+        assert_metadata(row, "SINGLE", generation, clock_offset_seconds=-136800)
+        assert row.sample_size == 1
+        assert_scalar(row.score, FIRST_BUCKET_METRICS[row.metric], "SINGLE", row.metric)
+    assert sum(math.isnan(row.score) for row in scores) == 24
+    expected_diagrams = {
+        (season, regime, kind, None if kind == "rank_histogram" else "2")
+        for season, regime, kind in product(
+            (None, "winter"), (None, FlowRegime.LOW), KINDS
+        )
+    }
+    keyed_diagrams = {
+        (row.season, row.flow_regime, row.diagram_type, row.threshold_level): row
+        for row in diagrams
+    }
+    assert keyed_diagrams.keys() == expected_diagrams
+    assert len({row.id for row in diagrams}) == 12
+    for row in diagrams:
+        assert_metadata(row, "SINGLE", generation, clock_offset_seconds=-136800)
+        assert_value(
+            asdict(row)["data"], first_bucket_payload(row.diagram_type, "domain")
+        )
+    persisted_scores = case.skill_store.fetch_latest_scores(
+        SID, MID, parameter="discharge"
+    )
+    persisted_diagrams = case.skill_store.fetch_latest_diagrams(
+        SID, MID, parameter="discharge"
+    )
+    assert_same_source(
+        {row.id: asdict(row) for row in persisted_scores},
+        {row.id: asdict(row) for row in scores},
+    )
+    assert_same_source(
+        {row.id: asdict(row) for row in persisted_diagrams},
+        {row.id: asdict(row) for row in diagrams},
+    )
+    raw_scores = case.connection.execute(
+        sa.select(db.skill_scores.c.id, db.skill_scores.c.score)
+    ).all()
+    scores_by_id = {row.id: row for row in scores}
+    assert (
+        len(raw_scores) == 48 and {row.id for row in raw_scores} == scores_by_id.keys()
+    )
+    for row in raw_scores:
+        assert_same_source(row.score, scores_by_id[row.id].score)
+    assert sum(math.isnan(row.score) for row in raw_scores) == 24
+    raw_diagrams = case.connection.execute(
+        sa.select(db.skill_diagrams.c.id, db.skill_diagrams.c.data)
+    ).all()
+    diagrams_by_id = {row.id: row for row in diagrams}
+    assert (
+        len(raw_diagrams) == 12
+        and {row.id for row in raw_diagrams} == diagrams_by_id.keys()
+    )
+    undefined = {"rank_histogram": 0, "reliability": 0, "roc": 0}
+    for raw in raw_diagrams:
+        row = diagrams_by_id[raw.id]
+        expected = first_bucket_payload(row.diagram_type, "json")
+        assert_value(raw.data, expected)
+        assert_same_source(raw.data, wire_from_domain(asdict(row)["data"], expected))
+        undefined[row.diagram_type] += null_count(raw.data)
+    assert undefined == {"rank_histogram": 0, "reliability": 36, "roc": 404}
+    ledger = [
+        dict(row)
+        for row in case.connection.execute(sa.select(db.skill_generations)).mappings()
+    ]
+    if mode == "ON":
+        assert ledger == [
+            {
+                "id": generation,
+                "station_id": SID,
+                "model_id": MID,
+                "model_artifact_id": AID,
+                "parameter": "discharge",
+                "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
+                "forcing_type": ForcingType.REANALYSIS.value,
+                "computation_version": 2,
+                "published_at": FIRST_BUCKET_END,
+                "created_at": case.connection.scalar(
+                    sa.select(sa.func.transaction_timestamp())
+                ),
+                "score_count": 48,
+                "diagram_count": 12,
+            }
+        ]
+    else:
+        assert ledger == []
+    record("scores", 48)
+    record("diagrams", 12)
+    record("scalar_nan_count", 24)
+    record("diagram_nulls", fixture_json(undefined))
+    record(
+        "score_sample_sizes", fixture_json(sorted({row.sample_size for row in scores}))
+    )
+    record("generation", str(generation) if generation is not None else "NULL")
+    record("ledger", fixture_json(ledger))
+    record("scores_full", fixture_json(first_bucket_evidence(scores)))
+    record("diagrams_full", fixture_json(first_bucket_evidence(diagrams)))
+    return generation
+
+
+class TestFirstCompletedSkillBucket:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_first_completed_bucket_boundary(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            FIRST_BUCKET_BEFORE,
+            FIRST_BUCKET_END,
+            MODEL_IDS,
+            SID,
+            C,
+            ReplayObserver,
+            assert_first_bucket_inputs,
+            fixture_json,
+            protected_scenario,
+            replay_snapshot,
+        )
+
+        scenarios = [("full", C), ("before", FIRST_BUCKET_BEFORE)]
+        if strategy == "SINGLE":
+            scenarios.append(("at", FIRST_BUCKET_END))
+        full_generation: UUID | None = None
+        conn = protected_pair_connection
+        for label, now in scenarios:
+
+            def record(name: str, value: object, prefix: str = label) -> None:
+                record_property(f"{prefix}.{name}", value)
+
+            assert conn.scalar(sa.text("SELECT session_user")) == "test"
+            assert conn.scalar(sa.text("SELECT current_user")) == "test"
+            record("owner_session_user", "test")
+            record("owner_current_user", "test")
+            with protected_scenario(conn, "present") as (case, ordinary):
+                assert_first_bucket_inputs(case)
+                record(
+                    "ordinary_manifest", fixture_json([asdict(row) for row in ordinary])
+                )
+                record("worker_before", "sapphire_worker")
+                record("ordinary_rows", 64)
+                record("water_level_rows", 48)
+                record("hindcast_headers", 32)
+                record("hindcast_members", 64)
+                record("clock", now.isoformat())
+                before = replay_snapshot(case, strategy)
+                assert before.rows == {
+                    "skill_scores": {},
+                    "skill_diagrams": {},
+                    "skill_generations": {},
+                }
+                assert before.scores == before.diagrams == {}
+                task_result: tuple[list[SkillScore], list[SkillDiagram]] | None = None
+                observer = ReplayObserver(case, strategy, record)
+                with observer.observe():
+                    assert sa_event.contains(
+                        conn, "before_cursor_execute", observer.before
+                    )
+                    assert sa_event.contains(
+                        conn, "after_cursor_execute", observer.after
+                    )
+                    record("listeners_attached", True)
+                    record("call_started", True)
+                    if label == "full":
+                        assert_clean_task_roundtrip(case, strategy, mode, record)
+                        full_generation = case.skill_store.fetch_latest_scores(
+                            SID,
+                            MODEL_IDS[strategy],
+                            parameter="discharge",
+                        )[0].generation_id
+                    else:
+                        task_result = invoke_first_bucket_task(
+                            case, strategy, mode, now
+                        )
+                    record("call_returned", True)
+                if label == "before":
+                    assert task_result == ([], [])
+                    expected: dict[str, int] = {}
+                elif label == "at":
+                    assert task_result is not None
+                    generation = assert_first_bucket_roundtrip(
+                        case, task_result[0], task_result[1], mode, record
+                    )
+                    if mode == "ON":
+                        assert generation != full_generation
+                    expected = {"skill_scores": 48, "skill_diagrams": 12}
+                else:
+                    expected = {
+                        "skill_scores": 104 if strategy == "BMA" else 98,
+                        "skill_diagrams": 24,
+                    }
+                if label != "before" and mode == "ON":
+                    expected["skill_generations"] = 1
+                assert [event.table for event in observer.events] == list(expected)
+                assert {
+                    event.table: len(event.submitted) for event in observer.events
+                } == expected
+                assert {
+                    event.table: len(event.inserted_ids()) for event in observer.events
+                } == expected
+                after = replay_snapshot(case, strategy)
+                counts = {table: len(rows) for table, rows in after.rows.items()}
+                assert counts == {
+                    table: expected.get(table, 0) for table in before.rows
+                }
+                if label == "before":
+                    assert after.scores == after.diagrams == {}
+                    record("returned", fixture_json({"scores": 0, "diagrams": 0}))
+                record(
+                    "submitted",
+                    fixture_json(
+                        {table: expected.get(table, 0) for table in before.rows}
+                    ),
+                )
+                record(
+                    "inserted",
+                    fixture_json(
+                        {table: expected.get(table, 0) for table in before.rows}
+                    ),
+                )
+                record("scope_rows", fixture_json(counts))
+                record(
+                    "public_rows",
+                    fixture_json(
+                        {"scores": len(after.scores), "diagrams": len(after.diagrams)}
+                    ),
+                )
+                assert_first_bucket_inputs(case)
+                record("worker_after", "sapphire_worker")
+            assert conn.scalar(sa.text("SELECT current_user")) == "test"
+            record("scenario_rolled_back", True)
+        record_property("task_calls", len(scenarios))
