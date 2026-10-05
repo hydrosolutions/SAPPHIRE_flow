@@ -37,6 +37,7 @@ from tests.fakes.fake_stores import FakeRejectedForecastStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from datetime import tzinfo
 
 _NOW = ensure_utc(datetime(2026, 9, 28, 12, tzinfo=UTC))
 _DEFAULT_MODEL_ID = ModelId("test-model")
@@ -346,6 +347,24 @@ def _clear_overrides() -> Iterator[None]:
 
 
 class TestGetRejectedForecasts:
+    @pytest.fixture(autouse=True)
+    def _fixed_route_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sapphire_flow.api.routes import api_rejected_forecasts
+
+        class FixedRouteDatetime(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> datetime:
+                instant = _NOW + timedelta(hours=1)
+                if tz is None:
+                    return instant.replace(tzinfo=None)
+                return instant.astimezone(tz)
+
+            @classmethod
+            def fromisoformat(cls, date_string: str) -> datetime:
+                return datetime.fromisoformat(date_string)
+
+        monkeypatch.setattr(api_rejected_forecasts, "datetime", FixedRouteDatetime)
+
     def test_reviewer_in_scope_sees_values_and_flags_not_withheld(
         self, client: TestClient, rejected_fake_stores: dict
     ) -> None:
@@ -450,19 +469,13 @@ class TestGetRejectedForecasts:
         station = make_station_config(code="RF-4")
         rejected_fake_stores["station_store"].store_station(station)
         store = rejected_fake_stores["rejected_forecast_store"]
-        # The default-window sub-case below has no `start`/`end`, so the
-        # route compares against the REAL clock (`datetime.now(UTC)`, not
-        # injectable here — matches the rest of this API surface, e.g. the
-        # skill route). A row at the fixed `_NOW` would fall out of "the
-        # last 7 days" once real time passed it — review finding,
-        # 2026-09-28 — so this one row is seeded relative to the real clock
-        # instead; every other sub-case below compares fixed `_NOW`-relative
-        # windows against fixed `_NOW`-relative data and is unaffected.
+        # The route clock is fixed one hour after this row. Explicit end=_NOW
+        # therefore checks the exclusive endpoint against a row exactly on it.
         _seed_rejected_entry(
             store,
             station_id=station.id,
             model_id=ModelId("model-a"),
-            issued_at=ensure_utc(datetime.now(UTC)) - timedelta(hours=1),
+            issued_at=_NOW,
         )
         _seed_rejected_entry(
             store,
@@ -506,6 +519,44 @@ class TestGetRejectedForecasts:
             },
         )
         assert resp.json()["total"] == 0
+
+    def test_default_window_includes_start_and_excludes_end(
+        self, client: TestClient, rejected_fake_stores: dict
+    ) -> None:
+        from sapphire_flow.api import app
+
+        station = make_station_config(code="RF-BOUNDARY")
+        rejected_fake_stores["station_store"].store_station(station)
+        now = _NOW + timedelta(hours=1)
+        start = now - timedelta(days=7)
+        for issued_at in (
+            start,
+            start - timedelta(microseconds=1),
+            now - timedelta(microseconds=1),
+            now,
+        ):
+            _seed_rejected_entry(
+                rejected_fake_stores["rejected_forecast_store"],
+                station_id=station.id,
+                issued_at=issued_at,
+            )
+        admin = Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        _override_principal(app, admin)
+
+        response = client.get(f"/api/v1/stations/{station.id}/rejected-forecasts")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 2
+        assert len(body["items"]) == 2
+        assert [datetime.fromisoformat(row["issued_at"]) for row in body["items"]] == [
+            now - timedelta(microseconds=1),
+            start,
+        ]
 
     def test_gate_forced_on_withholds_values_for_reviewer_not_admin(
         self,
@@ -576,7 +627,10 @@ class TestGetRejectedForecasts:
         )
         _override_principal(app, admin)
         resp = client.get(f"/api/v1/stations/{station.id}/rejected-forecasts")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 2
         items = resp.json()["items"]
+        assert len(items) == 2
         issued_ats = [item["issued_at"] for item in items]
         assert issued_ats == sorted(issued_ats, reverse=True)
 
