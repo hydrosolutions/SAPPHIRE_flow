@@ -1860,3 +1860,250 @@ class TestAbsentRequestedRunSkillRetention:
                 ),
             )
         record_property("task_calls", 2)
+
+
+def assert_trailing_scores(scores: list[SkillScore], generation: UUID | None) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        TRAILING_SAMPLES,
+        TRAILING_SCALARS,
+        regime_key,
+    )
+
+    expected: dict[tuple[str | None, RegimeKey, str], str | None] = {
+        (season, regime, metric): value
+        for season in (None, "winter")
+        for regime, metrics in TRAILING_SCALARS.items()
+        for metric, value in metrics.items()
+    }
+    keyed = {(s.season, regime_key(s.flow_regime), s.metric): s for s in scores}
+    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 100
+    assert keyed.keys() == expected.keys()
+    for key, value in expected.items():
+        row = keyed[key]
+        assert_metadata(row, "SINGLE", generation, clock_offset_seconds=-29700)
+        assert row.sample_size == TRAILING_SAMPLES[key[1]]
+        assert_scalar(row.score, value, "SINGLE", row.metric)
+    assert sum(math.isnan(row.score) for row in scores) == 10
+
+
+def assert_trailing_diagrams(
+    diagrams: list[SkillDiagram], generation: UUID | None
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        KINDS,
+        REGIMES,
+        assert_value,
+        regime_key,
+        trailing_payload,
+    )
+
+    expected: set[tuple[str | None, RegimeKey, DiagramKind, str | None]] = {
+        (season, regime, kind, None if kind == "rank_histogram" else "2")
+        for season, regime, kind in product((None, "winter"), REGIMES, KINDS)
+    }
+    keyed = {
+        (d.season, regime_key(d.flow_regime), d.diagram_type, d.threshold_level): d
+        for d in diagrams
+    }
+    assert len(diagrams) == len(keyed) == len({d.id for d in diagrams}) == 24
+    assert keyed.keys() == expected
+    for key in expected:
+        row = keyed[key]
+        assert_metadata(row, "SINGLE", generation, clock_offset_seconds=-29700)
+        assert_value(asdict(row)["data"], trailing_payload(key[1], key[2], "domain"))
+
+
+def assert_trailing_task_roundtrip(
+    case: CleanCase,
+    mode: GenerationMode,
+    catalog: dict[str, set[str]],
+    record: Callable[[str, object], None],
+) -> None:
+    from enum import Enum
+
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        MID,
+        RUN,
+        SID,
+        TRAILING_CLOCK,
+        TRAILING_INVOCATION,
+        assert_same_source,
+        assert_value,
+        deployment,
+        fixture_json,
+        null_count,
+        regime_key,
+        trailing_payload,
+        wire_from_domain,
+    )
+
+    conn = case.connection
+    transaction_time = conn.scalar(sa.select(sa.func.transaction_timestamp()))
+    scores, diagrams = compute_skills_task.fn(
+        station_id=SID,
+        model_id=MID,
+        artifact_id=AID,
+        parameter="discharge",
+        hindcast_run_id=RUN,
+        hindcast_store=case.hindcast_store,
+        obs_store=case.obs_store,
+        skill_store=case.skill_store,
+        station_store=case.station_store,
+        flow_regime_store=case.flow_regime_store,
+        deployment_config=deployment(mode),
+        clock=lambda: TRAILING_CLOCK,
+        generation_id=TRAILING_INVOCATION,
+    )
+    generations = {row.generation_id for row in [*scores, *diagrams]}
+    assert len(generations) == 1
+    generation = next(iter(generations))
+    if mode == "ON":
+        assert isinstance(generation, UUID) and generation.version == 5
+        assert generation != TRAILING_INVOCATION
+    else:
+        assert generation is None
+    assert_trailing_scores(scores, generation)
+    assert_trailing_diagrams(diagrams, generation)
+    stored_scores = case.skill_store.fetch_latest_scores(
+        SID, MID, parameter="discharge"
+    )
+    stored_diagrams = case.skill_store.fetch_latest_diagrams(
+        SID, MID, parameter="discharge"
+    )
+    assert_trailing_scores(stored_scores, generation)
+    assert_trailing_diagrams(stored_diagrams, generation)
+    assert_same_source(
+        {r.id: asdict(r) for r in stored_scores}, {r.id: asdict(r) for r in scores}
+    )
+    assert_same_source(
+        {r.id: asdict(r) for r in stored_diagrams}, {r.id: asdict(r) for r in diagrams}
+    )
+    raw_scores = {
+        r["id"]: dict(r) for r in conn.execute(sa.select(db.skill_scores)).mappings()
+    }
+    raw_diagrams = {
+        r["id"]: dict(r) for r in conn.execute(sa.select(db.skill_diagrams)).mappings()
+    }
+    assert len(raw_scores) == 100 and len(raw_diagrams) == 24
+    assert raw_scores.keys() == {r.id for r in scores}
+    assert raw_diagrams.keys() == {r.id for r in diagrams}
+    for row in scores:
+        expected = {
+            k: v.value if isinstance(v, Enum) else v for k, v in asdict(row).items()
+        }
+        assert set(raw_scores[row.id]) == catalog["skill_scores"] == set(expected)
+        assert_same_source(raw_scores[row.id], expected)
+    undefined = {"rank_histogram": 0, "reliability": 0, "roc": 0}
+    for row in diagrams:
+        expected = {
+            k: v.value if isinstance(v, Enum) else v for k, v in asdict(row).items()
+        }
+        payload = trailing_payload(
+            regime_key(row.flow_regime), row.diagram_type, "json"
+        )
+        assert_value(raw_diagrams[row.id]["data"], payload)
+        expected["data"] = wire_from_domain(asdict(row)["data"], payload)
+        assert set(raw_diagrams[row.id]) == catalog["skill_diagrams"] == set(expected)
+        assert_same_source(raw_diagrams[row.id], expected)
+        undefined[row.diagram_type] += null_count(raw_diagrams[row.id]["data"])
+    assert undefined == {"rank_histogram": 0, "reliability": 68, "roc": 404}
+    ledger = [dict(r) for r in conn.execute(sa.select(db.skill_generations)).mappings()]
+    assert set(db.skill_generations.columns.keys()) == catalog["skill_generations"]
+    if mode == "ON":
+        assert len(ledger) == 1 and set(ledger[0]) == catalog["skill_generations"]
+        assert ledger[0] == {
+            "id": generation,
+            "station_id": SID,
+            "model_id": MID,
+            "model_artifact_id": AID,
+            "parameter": "discharge",
+            "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
+            "forcing_type": ForcingType.REANALYSIS.value,
+            "computation_version": 2,
+            "published_at": TRAILING_CLOCK,
+            "created_at": transaction_time,
+            "score_count": 100,
+            "diagram_count": 24,
+        }
+    else:
+        assert ledger == []
+    record("scores", 100)
+    record("diagrams", 24)
+    record("scalar_nan_count", 10)
+    record("raw_null_counts", fixture_json(undefined))
+    record("ledger", fixture_json(ledger))
+    record("full_raw_public_identity", True)
+    record("live_catalog_all_columns", True)
+    record("generation_references_exact", True)
+    record("score_ids", fixture_json(sorted(map(str, raw_scores))))
+    record("diagram_ids", fixture_json(sorted(map(str, raw_diagrams))))
+
+
+class TestTrailingBucketSkillIsolation:
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_excludes_only_unfinished_last_bucket(
+        self,
+        protected_pair_connection: sa.Connection,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            ReplayObserver,
+            assert_same_source,
+            fixture_json,
+            trailing_bucket_scenario,
+        )
+
+        conn = protected_pair_connection
+
+        def full_record(name: str, value: object) -> None:
+            record_property(f"full.{name}", value)
+
+        with trailing_bucket_scenario(conn, full_record) as (
+            case,
+            fixed_full,
+            _catalog,
+        ):
+            observer = ReplayObserver(case, "SINGLE", full_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                full_record("listeners_attached", True)
+                full_record("call_started", True)
+                assert_clean_task_roundtrip(case, "SINGLE", mode, full_record)
+                full_record("call_returned", True)
+            expected = {"skill_scores": 98, "skill_diagrams": 24}
+            if mode == "ON":
+                expected["skill_generations"] = 1
+            assert [e.table for e in observer.events] == list(expected)
+            assert {e.table: len(e.submitted) for e in observer.events} == expected
+            assert {e.table: len(e.inserted_ids()) for e in observer.events} == expected
+            full_record("inserted_counts", fixture_json(expected))
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+
+        def candidate_record(name: str, value: object) -> None:
+            record_property(f"candidate.{name}", value)
+
+        with trailing_bucket_scenario(conn, candidate_record) as (case, fixed, catalog):
+            assert_same_source(fixed, fixed_full)
+            candidate_record("cross_scenario_fixed_input_lineage_identity", True)
+            observer = ReplayObserver(case, "SINGLE", candidate_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                candidate_record("listeners_attached", True)
+                candidate_record("call_started", True)
+                assert_trailing_task_roundtrip(case, mode, catalog, candidate_record)
+                candidate_record("call_returned", True)
+            expected = {"skill_scores": 100, "skill_diagrams": 24}
+            if mode == "ON":
+                expected["skill_generations"] = 1
+            assert [e.table for e in observer.events] == list(expected)
+            assert {e.table: len(e.submitted) for e in observer.events} == expected
+            assert {e.table: len(e.inserted_ids()) for e in observer.events} == expected
+            candidate_record("inserted_counts", fixture_json(expected))
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+        record_property("task_calls", 2)

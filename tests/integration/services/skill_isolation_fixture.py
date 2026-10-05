@@ -2664,3 +2664,190 @@ def absent_run_scenario(
         assert conn.scalar(sa.text("SELECT session_user")) == "test"
         assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
         record("scenario_rolled_back", True)
+
+
+TRAILING_CLOCK = ensure_utc(T + timedelta(hours=31, minutes=45))
+TRAILING_INVOCATION = UUID("71ad70f3-d4b8-4c37-8b50-e3462353ce01")
+TRAILING_SAMPLES: dict[RegimeKey, int] = {"ALL": 15, "LOW": 6, "HIGH": 5, "FLOOD": 4}
+TRAILING_SCALARS: dict[RegimeKey, dict[str, str | None]] = {
+    "ALL": {
+        "crps": "1",
+        "nse": "519/544",
+        "kge": "79/84",
+        "pbias": "125/21",
+        "mae": "1",
+        "sharpness_p10_p90": "0",
+        "sharpness_p25_p75": "0",
+        "ensemble_range": "0",
+        "bss_danger_2": "1",
+        "pod_danger_2": "1",
+        "far_danger_2": "0",
+        "csi_danger_2": "1",
+        "peak_timing_error": "0",
+    },
+    "LOW": {
+        "crps": "1",
+        "nse": "5/8",
+        "kge": "11/12",
+        "pbias": "25/3",
+        "mae": "1",
+        "sharpness_p10_p90": "0",
+        "sharpness_p25_p75": "0",
+        "ensemble_range": "0",
+        "bss_danger_2": None,
+        "pod_danger_2": None,
+        "far_danger_2": None,
+        "csi_danger_2": None,
+    },
+    "HIGH": {
+        "crps": "1",
+        "nse": "31/56",
+        "kge": "83/88",
+        "pbias": "125/22",
+        "mae": "1",
+        "sharpness_p10_p90": "0",
+        "sharpness_p25_p75": "0",
+        "ensemble_range": "0",
+        "bss_danger_2": "1",
+        "pod_danger_2": "1",
+        "far_danger_2": "0",
+        "csi_danger_2": "1",
+        "peak_timing_error": "0",
+    },
+    "FLOOD": {
+        "crps": "1",
+        "nse": "0",
+        "kge": "22/23",
+        "pbias": "100/23",
+        "mae": "1",
+        "sharpness_p10_p90": "0",
+        "sharpness_p25_p75": "0",
+        "ensemble_range": "0",
+        "bss_danger_2": None,
+        "pod_danger_2": "1",
+        "far_danger_2": "0",
+        "csi_danger_2": "1",
+    },
+}
+
+
+def trailing_payload(
+    regime: RegimeKey, kind: DiagramKind, layer: Literal["domain", "json"]
+) -> dict[str, object]:
+    n, events = {"ALL": (15, 5), "LOW": (6, 0), "HIGH": (5, 1), "FLOOD": (4, 4)}[regime]
+    non_events = n - events
+    undefined = float("nan") if layer == "domain" else None
+    if kind == "rank_histogram":
+        return {"ranks": [0, 1, 2], "counts": [n, 0, 0]}
+    if kind == "reliability":
+        centers = [float(Fraction(2 * b + 1, 20)) for b in range(10)]
+        return {
+            "bins": centers,
+            "forecast_freq": centers,
+            "sample_counts": [non_events] + [0] * 8 + [events],
+            "observed_freq": [0.0 if non_events else undefined]
+            + [undefined] * 8
+            + [1.0 if events else undefined],
+        }
+    assert kind == "roc"
+    return {
+        "thresholds": [float(Fraction(j, 100)) for j in range(101)],
+        "n_events": events,
+        "n_non_events": non_events,
+        "hit_rate": [1.0 if events else undefined] * 101,
+        "false_alarm_rate": [1.0] + [0.0] * 100 if non_events else [undefined] * 101,
+    }
+
+
+@contextmanager
+def trailing_bucket_scenario(
+    conn: sa.Connection, record: Callable[[str, object], None]
+) -> Iterator[tuple[CleanCase, dict[str, object], dict[str, set[str]]]]:
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    catalog = skill_catalog_columns(conn)
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        assert conn.scalar(sa.select(sa.func.count()).select_from(table)) == 0
+    record("catalog_columns", fixture_json({k: sorted(v) for k, v in catalog.items()}))
+    record("fresh_skill_tables", True)
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        protected = {
+            table.name: [dict(row) for row in conn.execute(sa.select(table)).mappings()]
+            for table in (
+                db.provisional_discharge_permissions,
+                db.measurement_feed_evidence,
+                db.rating_reference_proofs,
+                db.provisional_discharges,
+                db.rating_curves,
+            )
+        }
+        assert len(protected["provisional_discharges"]) == 48
+        assert len(protected["measurement_feed_evidence"]) == 48
+        record("owner_protected_content", fixture_json(protected))
+        record("protected_proof_before_worker", True)
+        # Cross-scenario comparison excludes unverified generated IDs/default clocks.
+        fixed_columns = {
+            "tenant_id",
+            "station_id",
+            "observation_id",
+            "feed_evidence_id",
+            "reference_proof_id",
+            "rating_curve_id",
+            "fingerprint",
+            "content",
+            "state",
+            "permission_reference",
+            "inventory_digest",
+        }
+        fixed: dict[str, object] = {
+            table: sorted(
+                fixture_json({k: v for k, v in row.items() if k in fixed_columns})
+                for row in rows
+            )
+            for table, rows in protected.items()
+        }
+        fixed["ordinary"] = {row.id: dataclasses.asdict(row) for row in ordinary}
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        record("provisional_select_denied", True)
+        assert_first_bucket_inputs(case)
+        record("fixed_inputs_before", True)
+        record("worker_before", "sapphire_worker")
+        record("ordinary_rows_fields", fixture_json([64, 13]))
+        record("level_headers_members", fixture_json([48, 32, 64]))
+        yield case, fixed, catalog
+        assert_first_bucket_inputs(case)
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        record("fixed_inputs_after", True)
+        record("worker_after", "sapphire_worker")
+    finally:
+        scenario.rollback()
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        for table in (
+            db.observations,
+            db.skill_scores,
+            db.skill_diagrams,
+            db.skill_generations,
+        ):
+            assert conn.scalar(sa.select(sa.func.count()).select_from(table)) == 0
+        record("scenario_rolled_back", True)

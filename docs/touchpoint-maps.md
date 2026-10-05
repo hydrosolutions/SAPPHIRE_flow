@@ -1900,6 +1900,10 @@ separate skill container. Clean only owned resources and verify exact-ID absence
 No POOLED AT/BMA usable-boundary/density/as-of/fullP3 or scientific-policy approval
 follows; the trailing100-score case and other holds require separate review.
 
+Earlier held-case lists are historical checkpoints. The later absent-requested-run
+and trailing-bucket sections below supersede those two named holds only; they do
+not close whole P3 or the other remaining work.
+
 ### BMA missing-half retention regression
 
 Focused gate (four cases/eight calls):
@@ -1938,3 +1942,22 @@ See the [canonical contract](spec/types-and-protocols.md#absent-requested-run-re
 [checkpoint/holds](plans/519-nepal-current-forecast-data.md#absent-requested-run-retention-checkpoint).
 Regression groups overlap. Ordered ambient checks target common db_engine, not
 only the isolated skill container. This route is not whole-consumer closure.
+
+### Trailing-bucket SINGLE regression
+
+Focused gate (two cases/four calls):
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestTrailingBucketSkillIsolation -o addopts= -vv
+```
+
+Preserve old50 cases/126 calls, helpers and independent oracles. Check complete
+100-row/24-payload oracle identity, fresh scenario separation, fixed inputs,
+full raw/public metadata, catalog/ledger and passive cleanup. Do not substitute
+same-scenario OFF/ON replay or a new exact-last-end claim.
+
+See the [canonical contract](spec/types-and-protocols.md#trailing-bucket-single-acceptance),
+[security boundary](standards/security.md#trailing-bucket-single-boundary) and
+[checkpoint/holds](plans/519-nepal-current-forecast-data.md#trailing-bucket-single-checkpoint).
+Regression counts overlap. Ordered ambient checks target common db_engine;
+independent exact-ID cleanup remains required. No whole-consumer closure follows.

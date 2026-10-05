@@ -5645,6 +5645,10 @@ QC/None/join cases, fullP3/T1d/effort closure, durable history, deployment and
 activation remain held. The trailing15/16 SINGLE case needs a separate oracle:
 its HIGH-stratum peak row changes the expected score count98→100, not just N.
 
+Earlier held-case lists are historical checkpoints. The later absent-requested-run
+and trailing-bucket sections below supersede those two named holds only; they do
+not close whole P3 or the other remaining work.
+
 ### BMA missing-half retention acceptance
 
 The bounded missing-half gate passed four cases and eight task calls: missing
@@ -5746,3 +5750,51 @@ bounded requested-run slice does not close full P3/T1d/T1c/T3/Effort354. SINGLE/
 join/common-step/one-surviving-fold evidence, other ordinary consumers and durable
 history remain separate holds. Plan234 and one-sample/future-bound scientific-policy
 limits, deployment readiness and activation authority remain unchanged.
+
+### Trailing-bucket SINGLE acceptance
+
+Two OFF/ON cases passed four task calls in separate fresh rollback scenarios:
+full SINGLE at C=T+40h produced98 scores/24diagrams; trailing L=T+31h45m produced
+100/24. Both started with empty skill tables and identical fixed input/lineage.
+No prior scores were transplanted. This is not sequential OFF98-old-plus2-new
+persistence or ON clock-order replay evidence.
+
+All64 ordinary observations retained all13 fields, alongside48 measured levels
+and32 A/B hindcast headers/64members. The SINGLE fetch still included16 A headers.
+At L the last bucket already contained its four observations17/19/21/23 (mean20),
+but its endT+32h had not elapsed. The trailing result matched15 targets, with
+ALL/LOW/HIGH/FLOOD sample sizes15/6/5/4. Completion uses bucket-end<=clock in source;
+existing first-bucket AT evidence covers inclusivity. No new exact-last-end case
+ran here. This tests elapsed time, not observation density, missing data or QC loss.
+
+The full independent oracle checks all100 scalar rows and all24 complete diagram
+payloads. In-repository constants/builders matched the frozen independently derived
+oracle value for value. HIGH p90 fell from20 to19.2, adding two zero peak-timing
+rows (all-season/winter);100 is not merely98 with different sample counts. Scalar
+NaNs remained10. Raw supported reliability/ROC null counts were68/404, with numeric
+NaN distinct from None. Existing mathematical tolerances and strict same-source
+comparators were unchanged; safe evidence properties did not serialize raw NaNs.
+
+Returned, raw and both public reader outputs matched complete metadata, IDs and
+content. Fresh ON published one UUIDv5 generation at L with100/24 counts; OFF kept
+NULL generation references and no ledger. Live same-connection catalog column
+names matched every raw mapping, not schema types/default/nullability. Database
+transaction time, not L, supplies ledger created_at; it is weak ordering evidence.
+All score/diagram computed/created clocks were checked against L as applicable.
+Evaluation bounds remained T..T+30h from all16 hindcast issues, not just15 targets.
+
+Owner full protected-content/lineage proof occurred before worker handoff. Only
+fixed input/lineage/fingerprint fields were compared across scenarios, without
+assuming equality of generated IDs or default clocks. Worker checks preserved
+input manifests and proved provisional_discharges SELECT denial specifically,
+not a general protected-table ACL audit. Four passive listener removals, four
+scenario rollbacks and independent owned-container exact-ID absence passed.
+
+Raw observations were prefetched throughT+32h and inputcreated_at remainedC.
+This is not historical-as-of proof or endorsement of CURRENT freshness/future
+evaluation bounds; the scientific-policy question remains open. Mean aggregation
+and Plan234 limitations are unchanged. Stored hindcasts stayRAW; no model/FI ran.
+The trailing and earlier absent-requested-run slices do not close wholeP3/T1d:
+SINGLE/POOLED104-score surviving-half/mixedOFF, added QC/None/join/common-step/
+one-surviving-fold evidence, other ordinary consumers, durable history and the
+remaining deployment/activation gates stay separate holds.

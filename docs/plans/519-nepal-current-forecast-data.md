@@ -1108,6 +1108,10 @@ not endorsed output. No model/FI execution or Plan234 repair occurred.
 Missing-half/requested-run/trailing and QC/None/join cases, fullP3/T1d/T1c/T3,
 Effort354, durable history and activation remain open.
 
+Earlier held-case lists are historical checkpoints. The later absent-requested-run
+and trailing-bucket sections below supersede those two named holds only; they do
+not close whole P3 or the other remaining work.
+
 ### BMA missing-half retention checkpoint
 
 Four BMA cases/eight calls passed: missing first/second ordinary half × OFF/ON.
@@ -1134,3 +1138,17 @@ SINGLE/POOLED104-score half positives/mixed OFF and trailing100-score SINGLE rem
 separate. Added QC/None/join/common-step/one-surviving-fold evidence, other ordinary
 consumers, wholeP3/T1d/T1c/T3/Effort354, durable history, scientific-policy decisions,
 deployment readiness and activation remain held. No new SINGLE case ran here.
+
+### Trailing-bucket SINGLE checkpoint
+
+Two OFF/ON cases/four calls passed: fresh fullC98/24 versus fresh trailingL100/24.
+All inputs remained present;15 targets matched the independent full oracle, with
+HIGH p9019.2 adding two peak rows. Earlier absent-requested-run/decoy acceptance
+is also complete as a bounded slice, not wholeP3 completion.
+
+See the [canonical contract](../spec/types-and-protocols.md#trailing-bucket-single-acceptance)
+and [focused test route](../touchpoint-maps.md#trailing-bucket-single-regression).
+SINGLE/POOLED104-score surviving-half/mixedOFF, added QC/None/join/common-step/
+one-surviving-fold evidence, other ordinary-consumer closure, wholeP3/T1d/T1c/T3/
+Effort354, durable history, scientific-policy decisions and deployment/activation
+remain held. No sequential persistence, historical-as-of or model/FI proof is added.
