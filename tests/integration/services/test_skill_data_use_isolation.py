@@ -5,7 +5,7 @@ from dataclasses import asdict
 from datetime import timedelta
 from fractions import Fraction
 from itertools import product
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 import pytest
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
         MissingHalf,
         Perturbation,
         RegimeKey,
+        ReplayObserver,
+        ReplaySnapshot,
         Strategy,
     )
 
@@ -2106,4 +2108,508 @@ class TestTrailingBucketSkillIsolation:
             candidate_record("inserted_counts", fixture_json(expected))
             assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
             assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+        record_property("task_calls", 2)
+
+
+def assert_surviving_scores(
+    scores: list[SkillScore],
+    strategy: Strategy,
+    generation: UUID | None,
+    layer: Literal["candidate", "mixed"],
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        regime_key,
+        surviving_score_oracle,
+    )
+
+    expected = surviving_score_oracle(strategy, layer)
+    keyed = {(s.season, regime_key(s.flow_regime), s.metric): s for s in scores}
+    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 104
+    assert keyed.keys() == expected.keys()
+    for key, (value, samples, offset, _) in expected.items():
+        row = keyed[key]
+        assert_metadata(row, strategy, generation, clock_offset_seconds=offset)
+        assert row.sample_size == samples
+        assert_scalar(row.score, value, strategy, row.metric)
+    assert sum(math.isnan(row.score) for row in scores) == 10
+
+
+def assert_surviving_diagrams(
+    diagrams: list[SkillDiagram], strategy: Strategy, generation: UUID | None
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        KINDS,
+        REGIMES,
+        assert_value,
+        regime_key,
+        surviving_payload,
+    )
+
+    expected: set[tuple[str | None, RegimeKey, DiagramKind, str | None]] = {
+        (season, regime, kind, None if kind == "rank_histogram" else "2")
+        for season, regime, kind in product((None, "winter"), REGIMES, KINDS)
+    }
+    keyed = {
+        (d.season, regime_key(d.flow_regime), d.diagram_type, d.threshold_level): d
+        for d in diagrams
+    }
+    assert len(diagrams) == len(keyed) == len({d.id for d in diagrams}) == 24
+    assert keyed.keys() == expected
+    for key in expected:
+        row = keyed[key]
+        assert_metadata(row, strategy, generation, clock_offset_seconds=1)
+        assert_value(
+            asdict(row)["data"], surviving_payload(strategy, key[1], key[2], "domain")
+        )
+
+
+def assert_surviving_persistence(
+    case: CleanCase,
+    strategy: Strategy,
+    mode: GenerationMode,
+    invocation: UUID,
+    scores: list[SkillScore],
+    diagrams: list[SkillDiagram],
+    prior: ReplaySnapshot,
+    observer: ReplayObserver,
+    catalog: dict[str, set[str]],
+    record: Callable[[str, object], None],
+) -> None:
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        MODEL_IDS,
+        SID,
+        C,
+        ReplaySnapshot,
+        assert_same_source,
+        assert_value,
+        expected_payload,
+        fixture_json,
+        null_count,
+        regime_key,
+        replay_snapshot,
+        surviving_payload,
+        surviving_score_oracle,
+        wire_from_domain,
+    )
+
+    conn = case.connection
+    generations = {row.generation_id for row in [*scores, *diagrams]}
+    assert len(generations) == 1
+    generation = next(iter(generations))
+    if mode == "ON":
+        assert isinstance(generation, UUID) and generation.version == 5
+        assert generation != invocation
+        assert generation not in prior.rows["skill_generations"]
+    else:
+        assert generation is None
+    assert_surviving_scores(scores, strategy, generation, "candidate")
+    assert_surviving_diagrams(diagrams, strategy, generation)
+    candidate_scores = {row.id: asdict(row) for row in scores}
+    candidate_diagrams = {row.id: asdict(row) for row in diagrams}
+    assert len(set(candidate_scores) | set(candidate_diagrams)) == 128
+    assert set(candidate_scores).isdisjoint(prior.scores)
+    assert set(candidate_diagrams).isdisjoint(prior.diagrams)
+    origins = surviving_score_oracle(strategy, "mixed")
+    new_peak_ids = {
+        row.id
+        for row in scores
+        if origins[(row.season, regime_key(row.flow_regime), row.metric)][3]
+        == "candidate"
+    }
+    assert len(new_peak_ids) == 6
+    persisted_scores = {
+        row.id: replay_sql_fields(row)
+        for row in scores
+        if mode == "ON" or row.id in new_peak_ids
+    }
+    persisted_diagrams: dict[UUID, dict[str, object]] = {}
+    for row in diagrams:
+        fields = replay_sql_fields(row)
+        payload = surviving_payload(
+            strategy, regime_key(row.flow_regime), row.diagram_type, "json"
+        )
+        fields["data"] = wire_from_domain(asdict(row)["data"], payload)
+        if mode == "ON":
+            persisted_diagrams[row.id] = fields
+    raw_scores = {**prior.rows["skill_scores"], **persisted_scores}
+    raw_diagrams = {**prior.rows["skill_diagrams"], **persisted_diagrams}
+    ledger = dict(prior.rows["skill_generations"])
+    if generation is not None:
+        ledger[generation] = {
+            "id": generation,
+            "station_id": SID,
+            "model_id": MODEL_IDS[strategy],
+            "model_artifact_id": AID if strategy == "SINGLE" else None,
+            "parameter": "discharge",
+            "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
+            "forcing_type": ForcingType.REANALYSIS.value,
+            "computation_version": 2,
+            "published_at": C + timedelta(seconds=1),
+            "created_at": conn.scalar(sa.select(sa.func.transaction_timestamp())),
+            "score_count": 104,
+            "diagram_count": 24,
+        }
+    public_scores = (
+        candidate_scores
+        if mode == "ON"
+        else {**prior.scores, **{i: candidate_scores[i] for i in new_peak_ids}}
+    )
+    public_diagrams = candidate_diagrams if mode == "ON" else prior.diagrams
+    expected = ReplaySnapshot(
+        rows={
+            "skill_scores": raw_scores,
+            "skill_diagrams": raw_diagrams,
+            "skill_generations": ledger,
+        },
+        scores=public_scores,
+        diagrams=public_diagrams,
+    )
+    actual = replay_snapshot(case, strategy)
+    assert_same_source(asdict(actual), asdict(expected))
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        rows = actual.rows[table.name]
+        assert set(table.columns.keys()) == catalog[table.name]
+        assert conn.scalar(sa.select(sa.func.count()).select_from(table)) == len(rows)
+        for fields in rows.values():
+            assert set(fields) == catalog[table.name]
+        assert_same_source(
+            {i: rows[i] for i in prior.rows[table.name]}, prior.rows[table.name]
+        )
+    stored_scores = case.skill_store.fetch_latest_scores(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    stored_diagrams = case.skill_store.fetch_latest_diagrams(
+        SID, MODEL_IDS[strategy], parameter="discharge"
+    )
+    assert_surviving_scores(
+        stored_scores, strategy, generation, "candidate" if mode == "ON" else "mixed"
+    )
+    if mode == "ON":
+        assert_surviving_diagrams(stored_diagrams, strategy, generation)
+        assert set(prior.scores).isdisjoint(actual.scores)
+        assert set(prior.diagrams).isdisjoint(actual.diagrams)
+        assert len(raw_scores) == 202 and len(raw_diagrams) == 48 and len(ledger) == 2
+        for gid, counts in [
+            (next(iter(prior.rows["skill_generations"])), (98, 24)),
+            (generation, (104, 24)),
+        ]:
+            assert (
+                tuple(
+                    sum(r["generation_id"] == gid for r in rows.values())
+                    for rows in (raw_scores, raw_diagrams)
+                )
+                == counts
+            )
+    else:
+        assert_diagrams(stored_diagrams, strategy, None)
+        assert len(raw_scores) == 104 and len(raw_diagrams) == 24 and ledger == {}
+        assert set(candidate_scores) & set(raw_scores) == new_peak_ids
+        assert set(candidate_diagrams).isdisjoint(raw_diagrams)
+    undefined = {"rank_histogram": 0, "reliability": 0, "roc": 0}
+    for row in stored_diagrams:
+        payload = (
+            surviving_payload(
+                strategy, regime_key(row.flow_regime), row.diagram_type, "json"
+            )
+            if mode == "ON"
+            else expected_payload(
+                strategy, regime_key(row.flow_regime), row.diagram_type, "json"
+            )
+        )
+        assert_value(raw_diagrams[row.id]["data"], payload)
+    for fields in raw_diagrams.values():
+        kind = fields["diagram_type"]
+        assert isinstance(kind, str)
+        undefined[kind] += null_count(fields["data"])
+    multiplier = 2 if mode == "ON" else 1
+    assert undefined == {
+        "rank_histogram": 0,
+        "reliability": (68 if strategy == "SINGLE" else 66) * multiplier,
+        "roc": 404 * multiplier,
+    }
+    assert (
+        sum(
+            isinstance(r["score"], float) and math.isnan(r["score"])
+            for r in raw_scores.values()
+        )
+        == 10 * multiplier
+    )
+    after_scores = ReplaySnapshot(
+        rows={**prior.rows, "skill_scores": raw_scores},
+        scores=public_scores if mode == "OFF" else prior.scores,
+        diagrams=prior.diagrams,
+    )
+    after_diagrams = ReplaySnapshot(
+        rows={**after_scores.rows, "skill_diagrams": raw_diagrams},
+        scores=after_scores.scores,
+        diagrams=prior.diagrams,
+    )
+    stages = [after_scores, after_diagrams] + ([expected] if mode == "ON" else [])
+    expected_tables = ["skill_scores", "skill_diagrams"] + (
+        ["skill_generations"] if mode == "ON" else []
+    )
+    assert [event.table for event in observer.events] == expected_tables
+    previous = prior
+    for event, stage in zip(observer.events, stages, strict=True):
+        assert_same_source(asdict(event.before), asdict(previous))
+        assert_same_source(asdict(event.after), asdict(stage))
+        assert event.inserted_ids() == set(stage.rows[event.table]) - set(
+            previous.rows[event.table]
+        )
+        previous = stage
+    assert_same_source(
+        observer.events[0].submitted, {row.id: replay_sql_fields(row) for row in scores}
+    )
+    assert_same_source(
+        observer.events[1].submitted,
+        {
+            row.id: {
+                **replay_sql_fields(row),
+                "data": wire_from_domain(
+                    asdict(row)["data"],
+                    surviving_payload(
+                        strategy, regime_key(row.flow_regime), row.diagram_type, "json"
+                    ),
+                ),
+            }
+            for row in diagrams
+        },
+    )
+    if generation is not None:
+        assert_same_source(
+            observer.events[2].submitted,
+            {
+                generation: {
+                    k: v for k, v in ledger[generation].items() if k != "created_at"
+                }
+            },
+        )
+    record("returned", fixture_json({"scores": 104, "diagrams": 24}))
+    record(
+        "raw_counts",
+        fixture_json({name: len(rows) for name, rows in actual.rows.items()}),
+    )
+    record(
+        "public_counts",
+        fixture_json({"scores": len(actual.scores), "diagrams": len(actual.diagrams)}),
+    )
+    record(
+        "inserted_counts",
+        fixture_json(
+            {event.table: len(event.inserted_ids()) for event in observer.events}
+        ),
+    )
+    record("new_peak_ids", fixture_json(sorted(map(str, new_peak_ids))))
+    record(
+        "prior_ids",
+        fixture_json(
+            {name: sorted(map(str, rows)) for name, rows in prior.rows.items()}
+        ),
+    )
+    record(
+        "returned_ids",
+        fixture_json(
+            {
+                "scores": sorted(map(str, candidate_scores)),
+                "diagrams": sorted(map(str, candidate_diagrams)),
+            }
+        ),
+    )
+    record(
+        "public_ids",
+        fixture_json(
+            {
+                "scores": sorted(map(str, actual.scores)),
+                "diagrams": sorted(map(str, actual.diagrams)),
+            }
+        ),
+    )
+    record("ledger", fixture_json(list(ledger.values())))
+    record("raw_null_counts", fixture_json(undefined))
+    record("full_candidate_independent_oracle", True)
+    record("independent_mixed_origin_value_sample_clock_oracle", True)
+    record("prior_all_columns_unchanged", True)
+    record("generation_references_exact", True)
+    record("live_catalog_all_columns", True)
+    record("passive_intermediate_visibility", True)
+
+
+def invoke_surviving_task(
+    case: CleanCase,
+    strategy: Strategy,
+    mode: GenerationMode,
+    invocation: UUID,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    from sapphire_flow.types.datetime import ensure_utc
+    from tests.integration.services.skill_isolation_fixture import (
+        AID,
+        MID,
+        MISSING_HALF_RUNS,
+        SID,
+        C,
+        deployment,
+    )
+
+    assert strategy in ("SINGLE", "POOLED")
+    config = deployment(mode)
+    now = ensure_utc(C + timedelta(seconds=1))
+    if strategy == "SINGLE":
+        scores, diagrams = compute_skills_task.fn(
+            station_id=SID,
+            model_id=MID,
+            artifact_id=AID,
+            parameter="discharge",
+            hindcast_run_id=MISSING_HALF_RUNS[MID],
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: now,
+            generation_id=invocation,
+        )
+    else:
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=SID,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy[strategy],
+            hindcast_run_ids=MISSING_HALF_RUNS,
+            hindcast_store=case.hindcast_store,
+            obs_store=case.obs_store,
+            skill_store=case.skill_store,
+            station_store=case.station_store,
+            flow_regime_store=case.flow_regime_store,
+            deployment_config=config,
+            clock=lambda: now,
+            generation_id=invocation,
+        )
+    return scores, diagrams
+
+
+class TestSurvivingHalfSkillPersistence:
+    @pytest.mark.parametrize("strategy", ["SINGLE", "POOLED"])
+    @pytest.mark.parametrize("half", ["FIRST", "SECOND"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_surviving_half_scores_and_preserves_first_writes(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        half: MissingHalf,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            MISSING_HALF_RUNS,
+            SURVIVING_INVOCATIONS,
+            ReplayObserver,
+            assert_absent_run_snapshot,
+            assert_first_bucket_inputs,
+            assert_missing_half_inputs,
+            assert_same_source,
+            fixture_json,
+            protected_scenario,
+            replay_snapshot,
+            skill_catalog_columns,
+            surviving_half_scenario,
+        )
+
+        expected_scores = 98
+        conn = protected_pair_connection
+        catalog = skill_catalog_columns(conn)
+        record_property(
+            "catalog_columns",
+            fixture_json({name: sorted(columns) for name, columns in catalog.items()}),
+        )
+
+        def full_record(name: str, value: object) -> None:
+            record_property(f"full.{name}", value)
+
+        with protected_scenario(conn, "present") as (case, ordinary):
+            assert_first_bucket_inputs(case)
+            full_record(
+                "ordinary_manifest", fixture_json([asdict(row) for row in ordinary])
+            )
+            observer = ReplayObserver(case, strategy, full_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                full_record("listeners_attached", True)
+                full_record("call_started", True)
+                assert_clean_task_roundtrip(case, strategy, mode, full_record)
+                full_record("call_returned", True)
+            expected = {"skill_scores": expected_scores, "skill_diagrams": 24}
+            if mode == "ON":
+                expected["skill_generations"] = 1
+            assert [event.table for event in observer.events] == list(expected)
+            assert {
+                event.table: len(event.submitted) for event in observer.events
+            } == expected
+            assert {
+                event.table: len(event.inserted_ids()) for event in observer.events
+            } == expected
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+            prior = replay_snapshot(case, strategy)
+            assert_absent_run_snapshot(case, prior, catalog, mode, expected_scores)
+            assert_first_bucket_inputs(case)
+            full_record(
+                "scope_counts",
+                fixture_json({name: len(rows) for name, rows in prior.rows.items()}),
+            )
+            full_record(
+                "prior_ids",
+                fixture_json(
+                    {name: sorted(map(str, rows)) for name, rows in prior.rows.items()}
+                ),
+            )
+            full_record(
+                "ledger", fixture_json(list(prior.rows["skill_generations"].values()))
+            )
+            full_record("live_catalog_key_check", True)
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        full_record("scenario_rolled_back", True)
+
+        def candidate_record(name: str, value: object) -> None:
+            record_property(f"candidate.{name}", value)
+
+        with surviving_half_scenario(
+            conn, candidate_record, half, strategy, mode, prior, catalog
+        ) as case:
+            before = replay_snapshot(case, strategy)
+            assert_absent_run_snapshot(case, before, catalog, mode, 98)
+            assert_same_source(asdict(before), asdict(prior))
+            assert_missing_half_inputs(case, half)
+            candidate_record("new_run_inventory_before", True)
+            candidate_record("ordinary_half_manifest_before", True)
+            candidate_record("requested_runs", fixture_json(MISSING_HALF_RUNS))
+            invocation = SURVIVING_INVOCATIONS[(strategy, half)]
+            observer = ReplayObserver(case, strategy, candidate_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                candidate_record("listeners_attached", True)
+                candidate_record("call_started", True)
+                scores, diagrams = invoke_surviving_task(
+                    case, strategy, mode, invocation
+                )
+                candidate_record("call_returned", True)
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+            assert_surviving_persistence(
+                case,
+                strategy,
+                mode,
+                invocation,
+                scores,
+                diagrams,
+                prior,
+                observer,
+                catalog,
+                candidate_record,
+            )
+            assert_missing_half_inputs(case, half)
+            candidate_record("new_run_inventory_after", True)
+            candidate_record("ordinary_half_manifest_after", True)
         record_property("task_calls", 2)

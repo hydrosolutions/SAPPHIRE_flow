@@ -5753,6 +5753,9 @@ limits, deployment readiness and activation authority remain unchanged.
 
 ### Trailing-bucket SINGLE acceptance
 
+Historical checkpoint: its surviving-half/mixed-OFF hold is resolved only by the
+named surviving-half checkpoint below. Other listed holds remain open.
+
 Two OFF/ON cases passed four task calls in separate fresh rollback scenarios:
 full SINGLE at C=T+40h produced98 scores/24diagrams; trailing L=T+31h45m produced
 100/24. Both started with empty skill tables and identical fixed input/lineage.
@@ -5798,3 +5801,86 @@ The trailing and earlier absent-requested-run slices do not close wholeP3/T1d:
 SINGLE/POOLED104-score surviving-half/mixedOFF, added QC/None/join/common-step/
 one-surviving-fold evidence, other ordinary consumers, durable history and the
 remaining deployment/activation gates stay separate holds.
+
+### Surviving-half SINGLE/POOLED acceptance
+
+Eight cases passed sixteen task calls: SINGLE/POOLED × delete FIRST/SECOND ×
+generations OFF/ON. Each case first checked full C=T+40h output against the
+independent 98-score/24-diagram oracle, captured actual raw/public/ledger rows,
+and rolled back. A separate owner-seeded rollback scenario removed exactly 32
+ordinary discharge observations and restored every captured prior column before
+worker handoff. Candidate C+1s
+returned 104 scores and 24 diagrams: 128 rows, not a replacement promise.
+
+FIRST deletes issue indices0..7 and retains8..15; SECOND does the reverse.
+All32 retained observations matched their fixed IDs and all13 fields. Owner proof
+before worker handoff established disjoint ordinary/protected IDs, no references
+from the three checked lineage tables, and unchanged full protected-table content.
+All48 measured levels and protected conversions remained. Complete new A/B run
+inventories retained32 headers/64members; both real hindcast fetch paths matched
+independent typed inventories before and after the candidate. SINGLE requested A;
+POOLED requested both models. Stored hindcasts remained RAW. Worker checks proved
+provisional_discharges SELECT denial specifically, not a general protected ACL audit.
+
+Both halves have the same eight target values. Fixed observation IDs/timestamps,
+not output values or a fingerprint, identify the retained half. ALL/LOW/HIGH/FLOOD
+sample sizes are8/3/3/2. Within-stratum p90 values are22.6/13.6/19.6/23.8. Each
+stratum now has an observed peak, with zero nearest-index timing error under the
+existing positive-offset semantics. LOW/HIGH/FLOOD each add a peak row for all-season
+and winter: six new natural keys beyond the full control's98. This characterizes
+existing peak logic, not a scientific endorsement.
+
+In-repository independent scalar constants and full rank/reliability/ROC builders
+matched the frozen arithmetic oracle for every candidate, full control and mixed
+OFF result. The candidate oracle checks all104 scores and all24 complete payloads,
+including rank bins, ten reliability bins, all101 ROC thresholds and denominators.
+Each candidate has10 scalar NaNs, reliability supported-null counts68 SINGLE or66
+POOLED, and404 ROC nulls. Existing mathematical1e-12 tolerances apply only to the
+independent numerical oracle; strict same-source identity keeps numeric NaN distinct
+from None. No scorer under test supplied expected scientific values.
+
+OFF is first-write retention, not full replacement or empty persistence. The task
+attempts104 score/24 diagram inserts, but exact before/after ID sets prove only six
+new peak-score inserts and zero diagram inserts. Raw and public state contains
+98 old scores plus those six new peaks, all24 old diagrams, and no ledger. The
+independent natural-key origin oracle checks every value, sample size and clock:
+old keys retain actual prior UUIDs, full sample sizes and C timestamps; new peaks
+use returned candidate UUIDs, samples3/3/2 and C+1s. The ALL peak remains old with
+sample16. Candidate98 common-score UUIDs and all24 candidate-diagram UUIDs do not
+persist. All prior raw columns remain unchanged; old diagrams keep full-population
+counts16/6/6/4. Returned candidate rows still receive the complete half oracle.
+
+ON inserts104/24 under a new UUIDv5 generation distinct from both the invocation
+UUID and prior generation. Both generations have computation_version2; explicit
+publication C+1s supersedes C without relying on UUID tie ordering. Raw state is
+202 scores/48 diagrams/two ledger rows. Both public readers select exactly the new
+104/24; all prior98/24 and their ledger remain unchanged in raw storage but are
+hidden from those readers. Per-generation counts are98/24 and104/24. Combined raw
+NaN/null counts double; current public counts do not. No stale marking is inferred.
+
+Passive same-connection snapshots show OFF mixed scores immediately after score
+insertion, with old diagrams throughout. ON public state remains exactly prior
+after score and diagram insertion, changing only after the new ledger insertion.
+Observers neither consume RETURNING nor use rowcount as insert proof, mutate
+parameters/results, switch roles/connections, or escape the rollback transaction.
+Compiled diagram parameters already contain supported Python None values at the
+store's codec boundary. Their expected data uses the existing closed-domain
+NaN-to-null mapping and independent payload shape; this is not driver-wire proof
+or a general serializer. Every other submitted field remains an exact comparison.
+
+Same-connection live catalog column names match every raw mapping and metadata
+column set, including empty OFF ledger structure. These are not schema type,
+default or nullability proofs. Ledger created_at uses the shared outer transaction
+clock and is weak ordering evidence; explicit publication timestamps and full
+row identities carry the visibility proof. Sixteen listener removals, sixteen
+scenario rollbacks and independent owned-container exact-ID absence passed.
+
+Evaluation bounds remain T..T+30h from all16 hindcast issues, even with eight
+matched targets. Observations were prefetched through T+32h and input created_at
+remains C. This is neither historical-as-of nor durable prior-history, crash,
+AUTOCOMMIT or concurrency evidence. CURRENT freshness and evaluation-bound policy,
+mean aggregation and Plan234 limitations remain open. No model or FI ran.
+This completes only the named surviving-half/mixed-OFF companion. QC/None/join,
+fewer-than-two-common-step and one-surviving-fold obligations still need explicit
+existing-evidence dispositions; broader ordinary-consumer closure, wholeP3/T1d,
+readiness and authorized live acceptance remain separate holds.

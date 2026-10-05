@@ -1945,6 +1945,9 @@ only the isolated skill container. This route is not whole-consumer closure.
 
 ### Trailing-bucket SINGLE regression
 
+Historical checkpoint: its surviving-half/mixed-OFF hold is resolved only by the
+named surviving-half checkpoint below. Other listed holds remain open.
+
 Focused gate (two cases/four calls):
 
 ```sh
@@ -1961,3 +1964,22 @@ See the [canonical contract](spec/types-and-protocols.md#trailing-bucket-single-
 [checkpoint/holds](plans/519-nepal-current-forecast-data.md#trailing-bucket-single-checkpoint).
 Regression counts overlap. Ordered ambient checks target common db_engine;
 independent exact-ID cleanup remains required. No whole-consumer closure follows.
+
+### Surviving-half persistence regression
+
+Focused gate (eight cases/sixteen calls):
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestSurvivingHalfSkillPersistence -o addopts= -vv
+```
+
+Preserve old52 cases/130 calls and their helpers/comparators/numerics. Verify the
+complete candidate and mixed-origin oracles, actual-prior all-column retention,
+fixed half/new-run inventories, passive visibility and owned cleanup. Do not
+replace the OFF mixed-state check with candidate equality or an empty result.
+
+See the [canonical contract](spec/types-and-protocols.md#surviving-half-singlepooled-acceptance),
+[security boundary](standards/security.md#surviving-half-persistence-boundary) and
+[checkpoint/holds](plans/519-nepal-current-forecast-data.md#surviving-half-persistence-checkpoint).
+Regression counts overlap. Ordered ambient checks target common db_engine;
+catalog names are not full schema proof. No whole-consumer closure follows.
