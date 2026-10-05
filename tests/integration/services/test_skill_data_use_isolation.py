@@ -1713,3 +1713,150 @@ class TestMissingHalfSkillRetention:
                 ),
             )
         record_property("task_calls", 2)
+
+
+class TestAbsentRequestedRunSkillRetention:
+    @pytest.mark.parametrize("strategy", ["POOLED", "BMA"])
+    @pytest.mark.parametrize("mode", ["OFF", "ON"])
+    def test_absent_requested_run_preserves_actual_prior(
+        self,
+        protected_pair_connection: sa.Connection,
+        strategy: Strategy,
+        mode: GenerationMode,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        from tests.integration.services.skill_isolation_fixture import (
+            ABSENT_RUN_INVOCATIONS,
+            ABSENT_RUN_RUNS,
+            SID,
+            C,
+            ReplayObserver,
+            absent_run_scenario,
+            assert_absent_run_inputs,
+            assert_absent_run_snapshot,
+            assert_first_bucket_inputs,
+            assert_same_source,
+            deployment,
+            fixture_json,
+            protected_scenario,
+            replay_snapshot,
+            skill_catalog_columns,
+        )
+
+        expected_scores = 98 if strategy == "POOLED" else 104
+        conn = protected_pair_connection
+        catalog = skill_catalog_columns(conn)
+        record_property(
+            "catalog_columns",
+            fixture_json({name: sorted(columns) for name, columns in catalog.items()}),
+        )
+
+        def full_record(name: str, value: object) -> None:
+            record_property(f"full.{name}", value)
+
+        with protected_scenario(conn, "present") as (case, ordinary):
+            assert_first_bucket_inputs(case)
+            full_record(
+                "ordinary_manifest", fixture_json([asdict(row) for row in ordinary])
+            )
+            observer = ReplayObserver(case, strategy, full_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                full_record("listeners_attached", True)
+                full_record("call_started", True)
+                assert_clean_task_roundtrip(case, strategy, mode, full_record)
+                full_record("call_returned", True)
+            expected = {"skill_scores": expected_scores, "skill_diagrams": 24}
+            if mode == "ON":
+                expected["skill_generations"] = 1
+            assert [event.table for event in observer.events] == list(expected)
+            assert {
+                event.table: len(event.submitted) for event in observer.events
+            } == expected
+            assert {
+                event.table: len(event.inserted_ids()) for event in observer.events
+            } == expected
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+            prior = replay_snapshot(case, strategy)
+            assert_absent_run_snapshot(case, prior, catalog, mode, expected_scores)
+            assert_first_bucket_inputs(case)
+            full_record(
+                "scope_counts",
+                fixture_json({name: len(rows) for name, rows in prior.rows.items()}),
+            )
+            full_record(
+                "prior_ids",
+                fixture_json(
+                    {name: sorted(map(str, rows)) for name, rows in prior.rows.items()}
+                ),
+            )
+            full_record(
+                "ledger", fixture_json(list(prior.rows["skill_generations"].values()))
+            )
+            full_record("live_catalog_key_check", True)
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        full_record("scenario_rolled_back", True)
+
+        def candidate_record(name: str, value: object) -> None:
+            record_property(f"candidate.{name}", value)
+
+        with absent_run_scenario(
+            conn, candidate_record, strategy, mode, prior, catalog, expected_scores
+        ) as case:
+            before = replay_snapshot(case, strategy)
+            assert_absent_run_snapshot(case, before, catalog, mode, expected_scores)
+            assert_same_source(asdict(before), asdict(prior))
+            assert_absent_run_inputs(case)
+            candidate_record("new_run_inventory_before", True)
+            candidate_record("ordinary_full_manifest_before", True)
+            candidate_record("requested_runs", fixture_json(ABSENT_RUN_RUNS))
+            observer = ReplayObserver(case, strategy, candidate_record)
+            with observer.observe():
+                assert sa_event.contains(conn, "before_cursor_execute", observer.before)
+                assert sa_event.contains(conn, "after_cursor_execute", observer.after)
+                candidate_record("listeners_attached", True)
+                candidate_record("call_started", True)
+                result = compute_combined_skills_task.fn(
+                    station_id=SID,
+                    parameter="discharge",
+                    strategy=ModelCombinationStrategy[strategy],
+                    hindcast_run_ids=ABSENT_RUN_RUNS,
+                    hindcast_store=case.hindcast_store,
+                    obs_store=case.obs_store,
+                    skill_store=case.skill_store,
+                    station_store=case.station_store,
+                    flow_regime_store=case.flow_regime_store,
+                    deployment_config=deployment(mode),
+                    clock=lambda: C + timedelta(seconds=1),
+                    generation_id=ABSENT_RUN_INVOCATIONS[strategy],
+                )
+                candidate_record("call_returned", True)
+            assert result == ([], [])
+            assert observer.events == []
+            assert not sa_event.contains(conn, "before_cursor_execute", observer.before)
+            assert not sa_event.contains(conn, "after_cursor_execute", observer.after)
+            after = replay_snapshot(case, strategy)
+            assert_absent_run_snapshot(case, after, catalog, mode, expected_scores)
+            assert_same_source(asdict(after), asdict(before))
+            assert_same_source(asdict(after), asdict(prior))
+            assert_absent_run_inputs(case)
+            candidate_record("new_run_inventory_after", True)
+            candidate_record("ordinary_full_manifest_after", True)
+            candidate_record("raw_public_ledger_full_identity", True)
+            candidate_record("generation_references_exact", True)
+            candidate_record("live_catalog_key_check", True)
+            candidate_record("returned", fixture_json({"scores": 0, "diagrams": 0}))
+            candidate_record("new_skill_inserts", 0)
+            candidate_record(
+                "retained_scope_counts",
+                fixture_json({name: len(rows) for name, rows in after.rows.items()}),
+            )
+            candidate_record(
+                "retained_public_counts",
+                fixture_json(
+                    {"scores": len(after.scores), "diagrams": len(after.diagrams)}
+                ),
+            )
+        record_property("task_calls", 2)

@@ -1919,3 +1919,22 @@ See the [canonical contract](spec/types-and-protocols.md#bma-missing-half-retent
 [checkpoint/holds](plans/519-nepal-current-forecast-data.md#bma-missing-half-retention-checkpoint).
 This gate does not certify durable history, one-surviving-fold handling or
 SINGLE/POOLED half-result persistence.
+
+### Absent requested-run retention regression
+
+Focused gate (four cases/eight calls):
+
+```sh
+uv run --no-sync pytest tests/integration/services/test_skill_data_use_isolation.py::TestAbsentRequestedRunSkillRetention -o addopts= -vv
+```
+
+Preserve the prior 46 cases/118 calls and independent oracles. Check seven fixed
+before/after fetch inventories, both retrievable decoys, nonempty prior retention,
+complete live-catalog raw keys, protected/ordinary manifests and passive cleanup.
+Use narrow 98/104-score and 48/96-hindcast assertions, not weakened old helpers.
+
+See the [canonical contract](spec/types-and-protocols.md#absent-requested-run-retention-acceptance),
+[security boundary](standards/security.md#absent-requested-run-retention-boundary) and
+[checkpoint/holds](plans/519-nepal-current-forecast-data.md#absent-requested-run-retention-checkpoint).
+Regression groups overlap. Ordered ambient checks target common db_engine, not
+only the isolated skill container. This route is not whole-consumer closure.
