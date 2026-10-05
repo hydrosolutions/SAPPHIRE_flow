@@ -2303,3 +2303,364 @@ def missing_half_scenario(
         assert conn.scalar(sa.text("SELECT session_user")) == "test"
         assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
         record("scenario_rolled_back", True)
+
+
+ABSENT_RUN_RUNS = {
+    MID: RUN,
+    MID_B: UUID("e021c391-51cd-416c-af95-e0da562aac01"),
+}
+ABSENT_RUN_INVOCATIONS = {
+    "POOLED": UUID("e021c391-51cd-416c-af95-e0da562aac02"),
+    "BMA": UUID("e021c391-51cd-416c-af95-e0da562aac03"),
+}
+
+
+def seed_absent_run_decoys(conn: sa.Connection) -> None:
+    writer = PgHindcastStore(conn, transaction_factory=lambda: seed_transaction(conn))
+    for i in range(16):
+        issue = ensure_utc(T + timedelta(hours=2 * i))
+        valid = ensure_utc(issue + timedelta(hours=1))
+        ensemble = ForecastEnsemble.from_members(
+            station_id=SID,
+            issued_at=issue,
+            parameter="water_level",
+            units="m",
+            time_step=timedelta(hours=1),
+            values=pl.DataFrame(
+                {
+                    "valid_time": [valid, valid],
+                    "member_id": [0, 1],
+                    "value": [2.0, 2.0],
+                }
+            ),
+            model_id=MID_B,
+        )
+        assert ensemble.member_count == 2 and ensemble.forecast_horizon_steps == 1
+        writer.store_hindcast(
+            HindcastForecast(
+                id=HindcastForecastId(UUID(int=98000 + i)),
+                station_id=SID,
+                model_id=MID_B,
+                model_artifact_id=AID_B,
+                hindcast_step=issue,
+                forcing_type=ForcingType.REANALYSIS,
+                representation=EnsembleRepresentation.MEMBERS,
+                hindcast_run_id=ABSENT_RUN_RUNS[MID_B],
+                ensemble=ensemble,
+                created_at=C,
+                qc_status=QcStatus.RAW,
+                qc_flags=(),
+            )
+        )
+
+
+def assert_absent_run_rows(
+    rows: list[HindcastForecast], population: Literal["A", "B", "WATER_B"]
+) -> list[str]:
+    model, artifact, run, parameter, units, start, stride = {
+        "A": (MID, AID, RUN, "discharge", "m³/s", 67000, 2),
+        "B": (MID_B, AID_B, RUN_B, "discharge", "m³/s", 67001, 2),
+        "WATER_B": (MID_B, AID_B, ABSENT_RUN_RUNS[MID_B], "water_level", "m", 98000, 1),
+    }[population]
+    expected_ids = {UUID(int=start + stride * i) for i in range(16)}
+    assert len(rows) == 16 and {row.id for row in rows} == expected_ids
+    for row in rows:
+        i = (row.id.int - start) // stride
+        issue = T + timedelta(hours=2 * i)
+        assert (
+            row.station_id,
+            row.model_id,
+            row.model_artifact_id,
+            row.hindcast_run_id,
+            row.hindcast_step,
+            row.created_at,
+            row.forcing_type,
+            row.representation,
+            row.qc_status,
+            row.qc_flags,
+        ) == (
+            SID,
+            model,
+            artifact,
+            run,
+            issue,
+            C,
+            ForcingType.REANALYSIS,
+            EnsembleRepresentation.MEMBERS,
+            QcStatus.RAW,
+            (),
+        )
+        ensemble = row.ensemble
+        assert (
+            ensemble.station_id,
+            ensemble.model_id,
+            ensemble.issued_at,
+            ensemble.parameter,
+            ensemble.units,
+            ensemble.time_step,
+            ensemble.representation,
+            ensemble.forecast_horizon_steps,
+            ensemble.member_count,
+        ) == (
+            SID,
+            None,
+            issue,
+            parameter,
+            units,
+            timedelta(hours=1),
+            EnsembleRepresentation.MEMBERS,
+            1,
+            2,
+        )
+        value = (
+            2.0
+            if population == "WATER_B"
+            else float(Q[i] + (1 if population == "A" else 5))
+        )
+        assert ensemble.values.sort("member_id").to_dicts() == [
+            {
+                "valid_time": issue + timedelta(hours=1),
+                "member_id": member,
+                "value": value,
+            }
+            for member in (0, 1)
+        ]
+    return sorted(map(str, expected_ids))
+
+
+def assert_absent_run_inputs(case: CleanCase) -> dict[str, object]:
+    conn = case.connection
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    ordinary = assert_ordinary_manifest(case.obs_store)
+    assert len(ordinary) == 64
+    assert all(len(dataclasses.asdict(row)) == 13 for row in ordinary)
+    levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
+    assert len(levels) == 48
+    assert_same_source(
+        {row.id: dataclasses.asdict(row) for row in levels},
+        {
+            row.id: dataclasses.asdict(row)
+            for row in map(protected_measurement, range(48))
+        },
+    )
+    start = ensure_utc(datetime(1970, 1, 1, tzinfo=T.tzinfo))
+    end = ensure_utc(datetime(2100, 1, 1, tzinfo=T.tzinfo))
+    store = case.hindcast_store
+    inventories: dict[str, object] = {}
+    inventories["per_model_A_requested_discharge"] = assert_absent_run_rows(
+        store.fetch_hindcasts(
+            SID,
+            MID,
+            start,
+            end,
+            forcing_type=ForcingType.REANALYSIS,
+            hindcast_run_id=RUN,
+            parameter="discharge",
+        ),
+        "A",
+    )
+    absent = store.fetch_hindcasts(
+        SID,
+        MID_B,
+        start,
+        end,
+        forcing_type=ForcingType.REANALYSIS,
+        hindcast_run_id=ABSENT_RUN_RUNS[MID_B],
+        parameter="discharge",
+    )
+    assert absent == []
+    inventories["per_model_B_requested_discharge"] = []
+    selected = store.fetch_hindcasts_by_station(
+        SID, "discharge", start, end, hindcast_run_ids=ABSENT_RUN_RUNS
+    )
+    assert set(selected) == {MID}
+    inventories["by_station_requested_discharge"] = {
+        str(MID): assert_absent_run_rows(selected[MID], "A")
+    }
+    inventories["per_model_B_wrong_run_discharge"] = assert_absent_run_rows(
+        store.fetch_hindcasts(
+            SID,
+            MID_B,
+            start,
+            end,
+            forcing_type=ForcingType.REANALYSIS,
+            hindcast_run_id=RUN_B,
+            parameter="discharge",
+        ),
+        "B",
+    )
+    inventories["per_model_B_requested_water_level"] = assert_absent_run_rows(
+        store.fetch_hindcasts(
+            SID,
+            MID_B,
+            start,
+            end,
+            forcing_type=ForcingType.REANALYSIS,
+            hindcast_run_id=ABSENT_RUN_RUNS[MID_B],
+            parameter="water_level",
+        ),
+        "WATER_B",
+    )
+    old = store.fetch_hindcasts_by_station(
+        SID, "discharge", start, end, hindcast_run_ids={MID: RUN, MID_B: RUN_B}
+    )
+    assert set(old) == {MID, MID_B}
+    inventories["by_station_old_map_discharge"] = {
+        str(MID): assert_absent_run_rows(old[MID], "A"),
+        str(MID_B): assert_absent_run_rows(old[MID_B], "B"),
+    }
+    water = store.fetch_hindcasts_by_station(
+        SID, "water_level", start, end, hindcast_run_ids=ABSENT_RUN_RUNS
+    )
+    assert set(water) == {MID_B}
+    inventories["by_station_requested_water_level"] = {
+        str(MID_B): assert_absent_run_rows(water[MID_B], "WATER_B")
+    }
+    assert (
+        conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_forecasts)) == 48
+    )
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_values)) == 96
+    return inventories
+
+
+def assert_absent_run_snapshot(
+    case: CleanCase,
+    snapshot: ReplaySnapshot,
+    catalog: dict[str, set[str]],
+    mode: GenerationMode,
+    expected_scores: int,
+) -> None:
+    assert expected_scores in (98, 104)
+    expected = {
+        "skill_scores": expected_scores,
+        "skill_diagrams": 24,
+        "skill_generations": int(mode == "ON"),
+    }
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        assert set(table.columns.keys()) == catalog[table.name]
+        assert (
+            case.connection.scalar(sa.select(sa.func.count()).select_from(table))
+            == expected[table.name]
+        )
+        assert len(snapshot.rows[table.name]) == expected[table.name]
+        for row in snapshot.rows[table.name].values():
+            assert set(row) == catalog[table.name]
+    assert len(snapshot.scores) == expected_scores and len(snapshot.diagrams) == 24
+    generation = (
+        next(iter(snapshot.rows["skill_generations"])) if mode == "ON" else None
+    )
+    assert mode == "OFF" or isinstance(generation, UUID) and generation.version == 5
+    for rows in (
+        snapshot.rows["skill_scores"],
+        snapshot.rows["skill_diagrams"],
+        snapshot.scores,
+        snapshot.diagrams,
+    ):
+        assert {row["generation_id"] for row in rows.values()} == {generation}
+
+
+@contextmanager
+def absent_run_scenario(
+    conn: sa.Connection,
+    record: Callable[[str, object], None],
+    strategy: Strategy,
+    mode: GenerationMode,
+    prior: ReplaySnapshot,
+    catalog: dict[str, set[str]],
+    expected_scores: int,
+) -> Iterator[CleanCase]:
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    record("owner_session_user", "test")
+    record("owner_current_user", "test")
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        record(
+            "ordinary_manifest",
+            fixture_json([dataclasses.asdict(row) for row in ordinary]),
+        )
+        protected_tables = (
+            db.provisional_discharge_permissions,
+            db.measurement_feed_evidence,
+            db.rating_reference_proofs,
+            db.provisional_discharges,
+            db.rating_curves,
+        )
+        protected_before = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        seed_absent_run_decoys(conn)
+        protected_after = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert_same_source(protected_before, protected_after)
+        assert len(protected_after["provisional_discharges"]) == 48
+        assert len(protected_after["measurement_feed_evidence"]) == 48
+        assert_same_source(
+            [
+                dataclasses.asdict(row)
+                for row in assert_ordinary_manifest(case.obs_store)
+            ],
+            [dataclasses.asdict(row) for row in ordinary],
+        )
+        record("owner_protected_content", fixture_json(protected_after))
+        record("protected_proof_before_worker", True)
+        for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+            assert set(table.columns.keys()) == catalog[table.name]
+            for row in prior.rows[table.name].values():
+                assert set(row) == catalog[table.name]
+                conn.execute(sa.insert(table).values(**row))
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        record("provisional_select_denied", True)
+        record(
+            "fixed_fetch_inventories_before",
+            fixture_json(assert_absent_run_inputs(case)),
+        )
+        record("worker_before", "sapphire_worker")
+        record("worker_discharge_rows", 64)
+        record("worker_water_level_rows", 48)
+        record("worker_hindcast_headers", 48)
+        record("worker_hindcast_members", 96)
+        restored = replay_snapshot(case, strategy)
+        assert_absent_run_snapshot(case, restored, catalog, mode, expected_scores)
+        assert_same_source(dataclasses.asdict(restored), dataclasses.asdict(prior))
+        record("rehydration_full_identity", True)
+        yield case
+        record(
+            "fixed_fetch_inventories_after",
+            fixture_json(assert_absent_run_inputs(case)),
+        )
+        record("worker_after", "sapphire_worker")
+    finally:
+        scenario.rollback()
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+        record("scenario_rolled_back", True)

@@ -1841,3 +1841,14 @@ This is not full-schema validation, live workflow or durable-history proof.
 See the [canonical contract](../spec/types-and-protocols.md#bma-missing-half-retention-acceptance)
 and [test route](../touchpoint-maps.md#bma-missing-half-retention-regression).
 Other P3 cases, scientific-policy approval and activation remain held.
+
+### Absent requested-run retention boundary
+
+Four combined-strategy cases/eight calls retained actual prior fixture results
+under the worker after owner rehydration and decoy setup. Owner protected-content
+proof precedes handoff; worker denial is specifically provisional_discharges SELECT,
+not a general protected-table ACL audit. No model/FI or durable-history proof follows.
+
+See the [canonical contract](../spec/types-and-protocols.md#absent-requested-run-retention-acceptance)
+and [focused test route](../touchpoint-maps.md#absent-requested-run-retention-regression).
+Other consumer, scientific-policy, deployment-readiness and activation holds remain.

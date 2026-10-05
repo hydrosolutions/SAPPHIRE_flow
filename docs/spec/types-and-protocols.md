@@ -5691,3 +5691,58 @@ QC/None/join cases, other P3, whole T1d/T1c/T3/Effort354, history and activation
 remain held. The expanded module has 46 cases/118 calls; regression groups overlap
 and are not additive coverage. Earlier first-bucket evidence failures remain
 separate from the passing repair; this slice's import-order static stop is retained.
+
+### Absent requested-run retention acceptance
+
+Four POOLED/BMA × OFF/ON cases passed eight task calls. Each case first ran the
+full positive against the existing independent scalar and complete-diagram
+oracles. It captured actual raw/public/ledger rows, rolled back, then restored
+all their columns as owner in a separate fixture on the same rollback connection.
+Public readers retained 98 scores/24 diagrams for POOLED or 104/24 for BMA after
+the candidate returned empty without skill INSERTs or publication. ON retained
+the captured generation and one ledger; OFF retained NULL references and no ledger.
+This is fixture rehydration, not committed history, crash/AUTOCOMMIT proof or a
+live workflow. Same-transaction ledger created_at is weak evidence; exact IDs and
+strict NaN-aware full-row identity establish retention. Numeric NaN remains distinct
+from raw supported JSONB null. Live public-schema column names matched metadata
+and every raw mapping at capture, rehydration and after the task. This checks names,
+not full schema types, defaults or nullability.
+
+All 64 ordinary Q observations kept their full 13-field manifests. The candidate
+had 48 hindcast headers/96 members: original A discharge at its requested run,
+original B discharge at the wrong run, and B water_level at the requested B run.
+Each population had 16 headers/32 members. Thus the missing pair is B discharge
+at its requested run, not an absent B model or an absent run UUID for every parameter.
+Both decoys were complete and retrievable, not orphan headers. Typed member
+ensembles had REANALYSIS forcing, MEMBERS representation, one horizon step and
+two members. Reconstructed ensemble.model_id was None while the enclosing header
+retained its model identity. These are synthetic store-selection fixtures, not
+model execution, FI validation or scientific validation of water-level hindcasts.
+
+Seven fixed fetch inventories passed before and after the candidate: per-model
+requested A discharge, absent requested B discharge, by-station requested discharge,
+wrong-run B discharge, requested-run B water_level, old-map by-station discharge,
+and requested-map by-station water_level. Each nonempty result matched fixed IDs,
+all header/ensemble metadata and every member/time/value. The actual task's
+1970–2100 discharge query with both requested models selected exactly A's 16
+headers; B's key was absent. The task returned empty for both combined strategies.
+Its return before observation fetching, cohort construction and CV/scoring is a
+source-derived control-flow conclusion, not separately instrumented timing evidence.
+SINGLE was not newly tested: source selection requests A alone and does not imply
+a blanket refusal when B is missing. Existing SINGLE clean/replay evidence remains.
+
+Owner snapshots proved all 48 protected conversions and their lineage unchanged
+across decoy insertion before worker handoff. Worker checks preserved ordinary and
+measured-level manifests and verified provisional_discharges SELECT denial only;
+no general protected-table ACL proof is inferred. Passive observers did not consume
+RETURNING, mutate parameters/results, use rowcount as insertion proof or change
+roles/connections. Positive INSERT IDs were nonvacuous; candidate INSERT events
+were empty. Eight listener removals and eight scenario rollbacks passed, and the
+owned container's exact-ID absence was independently verified.
+
+Prior 46 cases/118 calls and helper/comparator contracts were unchanged. This
+bounded requested-run slice does not close full P3/T1d/T1c/T3/Effort354. SINGLE/POOLED
+104-score surviving-half/mixed-OFF, trailing 100-score SINGLE, additional QC/None/
+join/common-step/one-surviving-fold evidence, other ordinary consumers and durable
+history remain separate holds. Plan234 and one-sample/future-bound scientific-policy
+limits, deployment readiness and activation authority remain unchanged.

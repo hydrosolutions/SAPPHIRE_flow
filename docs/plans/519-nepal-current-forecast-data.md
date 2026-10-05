@@ -1120,3 +1120,17 @@ records limits and evidence. Follow the [test route](../touchpoint-maps.md#bma-m
 SINGLE/POOLED 104-score half positives and mixed OFF persistence stay separate.
 Missing requested B/decoys, trailing SINGLE, added QC/None/join cases, remaining
 P3/T1d/T1c/T3/Effort354, scientific-policy approval and activation remain held.
+
+### Absent requested-run retention checkpoint
+
+Four POOLED/BMA × OFF/ON cases/eight calls passed. Both B decoys were retrievable,
+but requested discharge selected only A. Empty candidates retained actual prior
+fixture rows: POOLED98/24 or BMA104/24. This addresses the bounded original P3
+requested-run category, not a blanket strategy refusal or model/FI validation.
+
+See the [canonical contract](../spec/types-and-protocols.md#absent-requested-run-retention-acceptance)
+and [focused test route](../touchpoint-maps.md#absent-requested-run-retention-regression).
+SINGLE/POOLED104-score half positives/mixed OFF and trailing100-score SINGLE remain
+separate. Added QC/None/join/common-step/one-surviving-fold evidence, other ordinary
+consumers, wholeP3/T1d/T1c/T3/Effort354, durable history, scientific-policy decisions,
+deployment readiness and activation remain held. No new SINGLE case ran here.
