@@ -1141,6 +1141,9 @@ deployment readiness and activation remain held. No new SINGLE case ran here.
 
 ### Trailing-bucket SINGLE checkpoint
 
+Historical checkpoint: its surviving-half/mixed-OFF hold is resolved only by the
+named surviving-half checkpoint below. Other listed holds remain open.
+
 Two OFF/ON cases/four calls passed: fresh fullC98/24 versus fresh trailingL100/24.
 All inputs remained present;15 targets matched the independent full oracle, with
 HIGH p9019.2 adding two peak rows. Earlier absent-requested-run/decoy acceptance
@@ -1152,3 +1155,20 @@ SINGLE/POOLED104-score surviving-half/mixedOFF, added QC/None/join/common-step/
 one-surviving-fold evidence, other ordinary-consumer closure, wholeP3/T1d/T1c/T3/
 Effort354, durable history, scientific-policy decisions and deployment/activation
 remain held. No sequential persistence, historical-as-of or model/FI proof is added.
+
+### Surviving-half persistence checkpoint
+
+Eight SINGLE/POOLED × deleted FIRST/SECOND × OFF/ON cases passed sixteen calls.
+The named surviving-half/mixed-OFF companion now has complete independent scoring
+and persistence oracles. Earlier BMA missing-half, absent requested B/decoys and
+trailing-bucket acceptances remain separate bounded checkpoints.
+
+See the [canonical contract](../spec/types-and-protocols.md#surviving-half-singlepooled-acceptance)
+and [focused test route](../touchpoint-maps.md#surviving-half-persistence-regression).
+QC/None/join/common-step/one-surviving-fold coverage still needs explicit disposition
+against existing evidence. Broader ordinary-consumer closure remains the next
+critical path, not wholeP3/T1d/T1c/T3/Effort354 readiness. Durable history,
+scientific-policy, Plan234 and deployment/activation holds remain. Conditional
+Infomaniak staging authority requires readiness; the absent Cloudflare R2 backup
+bucket is deferred, not this slice's implementation blocker. Backup/restore/rollback
+and restricted-transfer prerequisites remain; no host/cloud mutation follows.

@@ -2851,3 +2851,391 @@ def trailing_bucket_scenario(
         ):
             assert conn.scalar(sa.select(sa.func.count()).select_from(table)) == 0
         record("scenario_rolled_back", True)
+
+
+SURVIVING_SCALARS: dict[Strategy, dict[RegimeKey, dict[str, str | None]]] = {
+    "SINGLE": {
+        "ALL": {
+            "crps": "1",
+            "nse": "20/21",
+            "kge": "16/17",
+            "pbias": "100/17",
+            "mae": "1",
+            "sharpness_p10_p90": "0",
+            "sharpness_p25_p75": "0",
+            "ensemble_range": "0",
+            "bss_danger_2": "1",
+            "pod_danger_2": "1",
+            "far_danger_2": "0",
+            "csi_danger_2": "1",
+            "peak_timing_error": "0",
+        },
+        "LOW": {
+            "crps": "1",
+            "nse": "5/8",
+            "kge": "11/12",
+            "pbias": "25/3",
+            "mae": "1",
+            "sharpness_p10_p90": "0",
+            "sharpness_p25_p75": "0",
+            "ensemble_range": "0",
+            "bss_danger_2": None,
+            "pod_danger_2": None,
+            "far_danger_2": None,
+            "csi_danger_2": None,
+            "peak_timing_error": "0",
+        },
+        "HIGH": {
+            "crps": "1",
+            "nse": "5/8",
+            "kge": "17/18",
+            "pbias": "50/9",
+            "mae": "1",
+            "sharpness_p10_p90": "0",
+            "sharpness_p25_p75": "0",
+            "ensemble_range": "0",
+            "bss_danger_2": "1",
+            "pod_danger_2": "1",
+            "far_danger_2": "0",
+            "csi_danger_2": "1",
+            "peak_timing_error": "0",
+        },
+        "FLOOD": {
+            "crps": "1",
+            "nse": "0",
+            "kge": "22/23",
+            "pbias": "100/23",
+            "mae": "1",
+            "sharpness_p10_p90": "0",
+            "sharpness_p25_p75": "0",
+            "ensemble_range": "0",
+            "bss_danger_2": None,
+            "pod_danger_2": "1",
+            "far_danger_2": "0",
+            "csi_danger_2": "1",
+            "peak_timing_error": "0",
+        },
+    },
+    "POOLED": {
+        "ALL": {
+            "crps": "2",
+            "nse": "4/7",
+            "kge": "14/17",
+            "pbias": "300/17",
+            "mae": "3",
+            "sharpness_p10_p90": "4",
+            "sharpness_p25_p75": "4",
+            "ensemble_range": "4",
+            "bss_danger_2": "11/15",
+            "pod_danger_2": "1",
+            "far_danger_2": "2/5",
+            "csi_danger_2": "3/5",
+            "peak_timing_error": "0",
+        },
+        "LOW": {
+            "crps": "2",
+            "nse": "-19/8",
+            "kge": "3/4",
+            "pbias": "25",
+            "mae": "3",
+            "sharpness_p10_p90": "4",
+            "sharpness_p25_p75": "4",
+            "ensemble_range": "4",
+            "bss_danger_2": None,
+            "pod_danger_2": None,
+            "far_danger_2": None,
+            "csi_danger_2": None,
+            "peak_timing_error": "0",
+        },
+        "HIGH": {
+            "crps": "2",
+            "nse": "-19/8",
+            "kge": "5/6",
+            "pbias": "50/3",
+            "mae": "3",
+            "sharpness_p10_p90": "4",
+            "sharpness_p25_p75": "4",
+            "ensemble_range": "4",
+            "bss_danger_2": "1/4",
+            "pod_danger_2": "1",
+            "far_danger_2": "2/3",
+            "csi_danger_2": "1/3",
+            "peak_timing_error": "0",
+        },
+        "FLOOD": {
+            "crps": "2",
+            "nse": "-8",
+            "kge": "20/23",
+            "pbias": "300/23",
+            "mae": "3",
+            "sharpness_p10_p90": "4",
+            "sharpness_p25_p75": "4",
+            "ensemble_range": "4",
+            "bss_danger_2": None,
+            "pod_danger_2": "1",
+            "far_danger_2": "0",
+            "csi_danger_2": "1",
+            "peak_timing_error": "0",
+        },
+    },
+}
+SURVIVING_SAMPLES: dict[RegimeKey, int] = {"ALL": 8, "LOW": 3, "HIGH": 3, "FLOOD": 2}
+SURVIVING_INVOCATIONS: dict[tuple[Strategy, MissingHalf], UUID] = {
+    ("SINGLE", "FIRST"): UUID("943a5dc2-9b9f-4cd7-9845-2df1ea6e7701"),
+    ("SINGLE", "SECOND"): UUID("943a5dc2-9b9f-4cd7-9845-2df1ea6e7702"),
+    ("POOLED", "FIRST"): UUID("943a5dc2-9b9f-4cd7-9845-2df1ea6e7703"),
+    ("POOLED", "SECOND"): UUID("943a5dc2-9b9f-4cd7-9845-2df1ea6e7704"),
+}
+
+
+def surviving_payload(
+    strategy: Strategy,
+    regime: RegimeKey,
+    kind: DiagramKind,
+    layer: Literal["domain", "json"],
+) -> dict[str, object]:
+    assert strategy in ("SINGLE", "POOLED")
+    selected = [i for i in indices(regime) if i < 8]
+    if kind == "rank_histogram":
+        members = {"SINGLE": 2, "POOLED": 4}[strategy]
+        return {
+            "ranks": list(range(members + 1)),
+            "counts": [len(selected)] + [0] * members,
+        }
+    # Fixed half-population probabilities, independent of task output.
+    half = {
+        "SINGLE": (0, 0, 0, 0, 100, 100, 0, 100),
+        "POOLED": (0, 0, 50, 50, 100, 100, 0, 100),
+    }[strategy]
+    probabilities = half * 2
+    undefined = float("nan") if layer == "domain" else None
+    if kind == "reliability":
+        groups = [
+            [i for i in selected if min(9, probabilities[i] // 10) == b]
+            for b in range(10)
+        ]
+        centers = [float(Fraction(2 * b + 1, 20)) for b in range(10)]
+        return {
+            "bins": centers,
+            "forecast_freq": centers,
+            "sample_counts": [len(group) for group in groups],
+            "observed_freq": [
+                sum(Q[i] > 19 for i in group) / len(group) if group else undefined
+                for group in groups
+            ],
+        }
+    assert kind == "roc"
+    events = sum(Q[i] > 19 for i in selected)
+    non_events = len(selected) - events
+    return {
+        "thresholds": [float(Fraction(j, 100)) for j in range(101)],
+        "n_events": events,
+        "n_non_events": non_events,
+        "hit_rate": [
+            sum(probabilities[i] >= j and Q[i] > 19 for i in selected) / events
+            if events
+            else undefined
+            for j in range(101)
+        ],
+        "false_alarm_rate": [
+            sum(probabilities[i] >= j and Q[i] <= 19 for i in selected) / non_events
+            if non_events
+            else undefined
+            for j in range(101)
+        ],
+    }
+
+
+def surviving_score_oracle(
+    strategy: Strategy, layer: Literal["candidate", "mixed"]
+) -> dict[
+    tuple[str | None, RegimeKey, str],
+    tuple[str | None, int, int, Literal["prior", "candidate"]],
+]:
+    assert strategy in ("SINGLE", "POOLED")
+    expected: dict[
+        tuple[str | None, RegimeKey, str],
+        tuple[str | None, int, int, Literal["prior", "candidate"]],
+    ] = {}
+    for season, regime in product((None, "winter"), REGIMES):
+        for metric, value in SURVIVING_SCALARS[strategy][regime].items():
+            origin: Literal["prior", "candidate"] = (
+                "candidate"
+                if layer == "candidate"
+                or metric == "peak_timing_error"
+                and regime != "ALL"
+                else "prior"
+            )
+            if origin == "prior":
+                value = SCALAR_VALUES[strategy][regime][METRICS.index(metric)]
+            expected[(season, regime, metric)] = (
+                value,
+                SURVIVING_SAMPLES[regime] * (2 if origin == "prior" else 1),
+                0 if origin == "prior" else 1,
+                origin,
+            )
+    return expected
+
+
+@contextmanager
+def surviving_half_scenario(
+    conn: sa.Connection,
+    record: Callable[[str, object], None],
+    half: MissingHalf,
+    strategy: Strategy,
+    mode: GenerationMode,
+    prior: ReplaySnapshot,
+    catalog: dict[str, set[str]],
+) -> Iterator[CleanCase]:
+    assert strategy in ("SINGLE", "POOLED")
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    record("owner_session_user", "test")
+    record("owner_current_user", "test")
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        retained = missing_half_retained(half)
+        ordinary_ids = {row.id for row in ordinary_manifest()} - {
+            row.id for row in retained
+        }
+        level_ids = {ObservationId(UUID(int=76000 + i)) for i in range(48)}
+        assert len(ordinary_ids) == 32 and len(level_ids) == 48
+        assert ordinary_ids.isdisjoint(level_ids)
+        record(
+            "ordinary_manifest",
+            fixture_json([dataclasses.asdict(row) for row in ordinary]),
+        )
+        record("ordinary_level_ids_disjoint", True)
+        references: dict[str, int] = {}
+        for table in (
+            db.observation_versions,
+            db.measurement_feed_evidence,
+            db.provisional_discharges,
+        ):
+            count = conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(
+                    table.c.observation_id.in_(ordinary_ids),
+                    table.c.station_id == SID,
+                )
+            )
+            assert count == 0
+            references[table.name] = count
+        record("ordinary_references", fixture_json(references))
+        protected_tables = (
+            db.provisional_discharge_permissions,
+            db.measurement_feed_evidence,
+            db.rating_reference_proofs,
+            db.provisional_discharges,
+            db.rating_curves,
+        )
+        protected_before = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        removed = (
+            conn.execute(
+                sa.delete(db.observations)
+                .where(
+                    db.observations.c.id.in_(ordinary_ids),
+                    db.observations.c.station_id == SID,
+                    db.observations.c.parameter == "discharge",
+                )
+                .returning(db.observations.c.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(removed) == 32 and set(removed) == ordinary_ids
+        record("deleted_ordinary_ids", fixture_json(sorted(map(str, removed))))
+        protected_after = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert_same_source(protected_before, protected_after)
+        assert len(protected_after["provisional_discharges"]) == 48
+        assert len(protected_after["measurement_feed_evidence"]) == 48
+        record("owner_protected_content", fixture_json(protected_after))
+        record("protected_proof_before_worker", True)
+        actual_retained = case.obs_store.fetch_observations(SID, "discharge", T, C)
+        assert len(actual_retained) == 32
+        assert_same_source(
+            {row.id: dataclasses.asdict(row) for row in actual_retained},
+            {row.id: dataclasses.asdict(row) for row in retained},
+        )
+        record(
+            "retained_manifest",
+            fixture_json([dataclasses.asdict(row) for row in retained]),
+        )
+        for model_index, model in enumerate((MID, MID_B)):
+            changed = (
+                conn.execute(
+                    sa.update(db.hindcast_forecasts)
+                    .where(
+                        db.hindcast_forecasts.c.station_id == SID,
+                        db.hindcast_forecasts.c.model_id == model,
+                    )
+                    .values(hindcast_run_id=MISSING_HALF_RUNS[model])
+                    .returning(db.hindcast_forecasts.c.id)
+                )
+                .scalars()
+                .all()
+            )
+            assert len(changed) == 16
+            assert set(changed) == {
+                UUID(int=67000 + 2 * i + model_index) for i in range(16)
+            }
+        for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+            assert set(table.columns.keys()) == catalog[table.name]
+            for row in prior.rows[table.name].values():
+                assert set(row) == catalog[table.name]
+                conn.execute(sa.insert(table).values(**row))
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        record("provisional_select_denied", True)
+        assert_missing_half_inputs(case, half)
+        record("worker_before", "sapphire_worker")
+        record("worker_discharge_rows", 32)
+        record("worker_water_level_rows", 48)
+        record("worker_hindcast_headers", 32)
+        record("worker_hindcast_members", 64)
+        restored = replay_snapshot(case, strategy)
+        assert_absent_run_snapshot(case, restored, catalog, mode, 98)
+        assert_same_source(dataclasses.asdict(restored), dataclasses.asdict(prior))
+        record("rehydration_full_identity", True)
+        yield case
+        assert_missing_half_inputs(case, half)
+        record("worker_after", "sapphire_worker")
+    finally:
+        scenario.rollback()
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+        record("scenario_rolled_back", True)

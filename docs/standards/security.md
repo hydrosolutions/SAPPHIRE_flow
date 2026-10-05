@@ -1859,6 +1859,9 @@ Other consumer, scientific-policy, deployment-readiness and activation holds rem
 
 ### Trailing-bucket SINGLE boundary
 
+Historical checkpoint: its surviving-half/mixed-OFF hold is resolved only by the
+named surviving-half checkpoint below. Other listed holds remain open.
+
 Two cases/four calls verified fresh full and trailing SINGLE outputs under the
 worker. Owner protected proof preceded handoff; cross-scenario identity covered
 fixed input/lineage, not assumed default clocks. Worker denial was specifically
@@ -1867,3 +1870,14 @@ provisional_discharges SELECT. No historical-as-of, model/FI or live authority f
 See the [canonical contract](../spec/types-and-protocols.md#trailing-bucket-single-acceptance)
 and [focused test route](../touchpoint-maps.md#trailing-bucket-single-regression).
 Remaining consumer, scientific-policy, readiness and activation holds are unchanged.
+
+### Surviving-half persistence boundary
+
+Eight cases/sixteen calls checked the SINGLE/POOLED surviving-half companion under
+the worker, with owner protected proof before handoff. The denial claim is only
+provisional_discharges SELECT. Mixed OFF persistence is not replacement; passive
+same-connection visibility is not durable/concurrent or historical-as-of proof.
+
+See the [canonical contract](../spec/types-and-protocols.md#surviving-half-singlepooled-acceptance)
+and [focused test route](../touchpoint-maps.md#surviving-half-persistence-regression).
+No model/FI, broader consumer closure, host/cloud action or activation authority follows.
