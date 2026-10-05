@@ -1962,3 +1962,344 @@ def assert_first_bucket_inputs(case: CleanCase) -> None:
         },
     )
     assert_stored_skill_hindcasts(case)
+
+
+MissingHalf = Literal["FIRST", "SECOND"]
+MISSING_HALF_RUNS = {
+    MID: UUID("66f79cda-1e73-4a21-9b79-dc30d7868901"),
+    MID_B: UUID("66f79cda-1e73-4a21-9b79-dc30d7868902"),
+}
+MISSING_HALF_INVOCATIONS = {
+    "FIRST": UUID("66f79cda-1e73-4a21-9b79-dc30d7868903"),
+    "SECOND": UUID("66f79cda-1e73-4a21-9b79-dc30d7868904"),
+}
+
+
+def missing_half_retained(half: MissingHalf) -> list[Observation]:
+    rows = ordinary_manifest()
+    return rows[32:] if half == "FIRST" else rows[:32]
+
+
+def skill_catalog_columns(conn: sa.Connection) -> dict[str, set[str]]:
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    columns: dict[str, set[str]] = {}
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        columns[table.name] = set(
+            conn.execute(
+                sa.text(
+                    "SELECT a.attname FROM pg_catalog.pg_attribute a "
+                    "JOIN pg_catalog.pg_class c ON c.oid=a.attrelid "
+                    "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE n.nspname='public' AND c.relname=:table_name "
+                    "AND a.attnum>0 AND NOT a.attisdropped"
+                ),
+                {"table_name": table.name},
+            ).scalars()
+        )
+        assert columns[table.name] == set(table.columns.keys())
+    return columns
+
+
+def assert_missing_half_snapshot(
+    case: CleanCase,
+    snapshot: ReplaySnapshot,
+    catalog: dict[str, set[str]],
+    mode: GenerationMode,
+) -> None:
+    expected = {
+        "skill_scores": 104,
+        "skill_diagrams": 24,
+        "skill_generations": int(mode == "ON"),
+    }
+    for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+        assert set(table.columns.keys()) == catalog[table.name]
+        assert (
+            case.connection.scalar(sa.select(sa.func.count()).select_from(table))
+            == expected[table.name]
+        )
+        assert len(snapshot.rows[table.name]) == expected[table.name]
+        for row in snapshot.rows[table.name].values():
+            assert set(row) == catalog[table.name]
+    assert len(snapshot.scores) == 104 and len(snapshot.diagrams) == 24
+    generation = (
+        next(iter(snapshot.rows["skill_generations"])) if mode == "ON" else None
+    )
+    assert mode == "OFF" or isinstance(generation, UUID) and generation.version == 5
+    for rows in (
+        snapshot.rows["skill_scores"],
+        snapshot.rows["skill_diagrams"],
+        snapshot.scores,
+        snapshot.diagrams,
+    ):
+        assert {row["generation_id"] for row in rows.values()} == {generation}
+
+
+def assert_missing_half_inputs(case: CleanCase, half: MissingHalf) -> None:
+    assert case.connection.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    expected = {row.id: dataclasses.asdict(row) for row in missing_half_retained(half)}
+    assert len(expected) == 32 and all(len(row) == 13 for row in expected.values())
+    for qc in (None, QcStatus.QC_PASSED):
+        actual = case.obs_store.fetch_observations(SID, "discharge", T, C, qc_status=qc)
+        assert len(actual) == 32
+        assert_same_source(
+            {row.id: dataclasses.asdict(row) for row in actual}, expected
+        )
+    levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
+    assert len(levels) == 48
+    assert_same_source(
+        {row.id: dataclasses.asdict(row) for row in levels},
+        {
+            row.id: dataclasses.asdict(row)
+            for row in map(protected_measurement, range(48))
+        },
+    )
+    assert_missing_half_hindcasts(case)
+
+
+def assert_missing_half_hindcasts(case: CleanCase) -> None:
+    conn = case.connection
+    assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+    station_rows = case.hindcast_store.fetch_hindcasts_by_station(
+        SID, "discharge", T, C, hindcast_run_ids=MISSING_HALF_RUNS
+    )
+    assert set(station_rows) == {MID, MID_B}
+    for model_index, (model, artifact, run, offset) in enumerate(
+        (
+            (MID, AID, MISSING_HALF_RUNS[MID], 1),
+            (MID_B, AID_B, MISSING_HALF_RUNS[MID_B], 5),
+        )
+    ):
+        actual = case.hindcast_store.fetch_hindcasts(
+            SID,
+            model,
+            T,
+            C,
+            forcing_type=ForcingType.REANALYSIS,
+            hindcast_run_id=run,
+            parameter="discharge",
+        )
+        keyed = {row.id: row for row in actual}
+        expected_ids = {UUID(int=67000 + 2 * i + model_index) for i in range(16)}
+        assert len(actual) == 16 and keyed.keys() == expected_ids
+        assert len(station_rows[model]) == 16
+        assert {row.id for row in station_rows[model]} == expected_ids
+        for row in [*actual, *station_rows[model]]:
+            i = (row.id.int - 67000 - model_index) // 2
+            q = Q[i]
+            issue = T + timedelta(hours=2 * i)
+            assert (
+                row.station_id,
+                row.model_id,
+                row.model_artifact_id,
+                row.hindcast_run_id,
+                row.hindcast_step,
+                row.created_at,
+                row.forcing_type,
+                row.representation,
+                row.qc_status,
+                row.qc_flags,
+            ) == (
+                SID,
+                model,
+                artifact,
+                run,
+                issue,
+                C,
+                ForcingType.REANALYSIS,
+                EnsembleRepresentation.MEMBERS,
+                QcStatus.RAW,
+                (),
+            )
+            ensemble = row.ensemble
+            assert (
+                ensemble.station_id,
+                ensemble.model_id,
+                ensemble.issued_at,
+                ensemble.parameter,
+                ensemble.units,
+                ensemble.time_step,
+                ensemble.representation,
+            ) == (
+                SID,
+                None,
+                issue,
+                "discharge",
+                "m³/s",
+                timedelta(hours=1),
+                EnsembleRepresentation.MEMBERS,
+            )
+            assert ensemble.values.sort("member_id").to_dicts() == [
+                {
+                    "valid_time": issue + timedelta(hours=1),
+                    "member_id": member,
+                    "value": float(q + offset),
+                }
+                for member in (0, 1)
+            ]
+    assert (
+        conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_forecasts)) == 32
+    )
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.hindcast_values)) == 64
+
+
+@contextmanager
+def missing_half_scenario(
+    conn: sa.Connection,
+    record: Callable[[str, object], None],
+    half: MissingHalf,
+    mode: GenerationMode,
+    prior: ReplaySnapshot,
+    catalog: dict[str, set[str]],
+) -> Iterator[CleanCase]:
+    assert conn.scalar(sa.text("SELECT session_user")) == "test"
+    assert conn.scalar(sa.text("SELECT current_user")) == "test"
+    record("owner_session_user", "test")
+    record("owner_current_user", "test")
+    assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+    scenario = conn.begin_nested()
+    try:
+        seed_protected_lineage(conn, "present")
+        stores = make_pg_stores(conn)
+        case = CleanCase(
+            connection=conn,
+            skill_store=cast("PgSkillStore", stores["skill_store"]),
+            hindcast_store=cast("PgHindcastStore", stores["hindcast_store"]),
+            obs_store=cast("PgObservationStore", stores["obs_store"]),
+            station_store=cast("PgStationStore", stores["station_store"]),
+            flow_regime_store=cast(
+                "PgFlowRegimeConfigStore", stores["flow_regime_store"]
+            ),
+            owner_role="test",
+        )
+        ordinary = assert_ordinary_manifest(case.obs_store)
+        assert_protected_buckets(conn, ordinary)
+        retained = missing_half_retained(half)
+        ordinary_ids = {row.id for row in ordinary_manifest()} - {
+            row.id for row in retained
+        }
+        level_ids = {ObservationId(UUID(int=76000 + i)) for i in range(48)}
+        assert len(ordinary_ids) == 32 and len(level_ids) == 48
+        assert ordinary_ids.isdisjoint(level_ids)
+        record(
+            "ordinary_manifest",
+            fixture_json([dataclasses.asdict(row) for row in ordinary]),
+        )
+        record("ordinary_level_ids_disjoint", True)
+        references: dict[str, int] = {}
+        for table in (
+            db.observation_versions,
+            db.measurement_feed_evidence,
+            db.provisional_discharges,
+        ):
+            count = conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(
+                    table.c.observation_id.in_(ordinary_ids),
+                    table.c.station_id == SID,
+                )
+            )
+            assert count == 0
+            references[table.name] = count
+        record("ordinary_references", fixture_json(references))
+        protected_tables = (
+            db.provisional_discharge_permissions,
+            db.measurement_feed_evidence,
+            db.rating_reference_proofs,
+            db.provisional_discharges,
+            db.rating_curves,
+        )
+        protected_before = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        removed = (
+            conn.execute(
+                sa.delete(db.observations)
+                .where(
+                    db.observations.c.id.in_(ordinary_ids),
+                    db.observations.c.station_id == SID,
+                    db.observations.c.parameter == "discharge",
+                )
+                .returning(db.observations.c.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(removed) == 32 and set(removed) == ordinary_ids
+        record("deleted_ordinary_ids", fixture_json(sorted(map(str, removed))))
+        protected_after = {
+            table.name: sorted(
+                fixture_json(dict(row))
+                for row in conn.execute(sa.select(table)).mappings()
+            )
+            for table in protected_tables
+        }
+        assert_same_source(protected_before, protected_after)
+        assert len(protected_after["provisional_discharges"]) == 48
+        assert len(protected_after["measurement_feed_evidence"]) == 48
+        record("owner_protected_content", fixture_json(protected_after))
+        record("protected_proof_before_worker", True)
+        actual_retained = case.obs_store.fetch_observations(SID, "discharge", T, C)
+        assert len(actual_retained) == 32
+        assert_same_source(
+            {row.id: dataclasses.asdict(row) for row in actual_retained},
+            {row.id: dataclasses.asdict(row) for row in retained},
+        )
+        record(
+            "retained_manifest",
+            fixture_json([dataclasses.asdict(row) for row in retained]),
+        )
+        for model_index, model in enumerate((MID, MID_B)):
+            changed = (
+                conn.execute(
+                    sa.update(db.hindcast_forecasts)
+                    .where(
+                        db.hindcast_forecasts.c.station_id == SID,
+                        db.hindcast_forecasts.c.model_id == model,
+                    )
+                    .values(hindcast_run_id=MISSING_HALF_RUNS[model])
+                    .returning(db.hindcast_forecasts.c.id)
+                )
+                .scalars()
+                .all()
+            )
+            assert len(changed) == 16
+            assert set(changed) == {
+                UUID(int=67000 + 2 * i + model_index) for i in range(16)
+            }
+        for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
+            assert set(table.columns.keys()) == catalog[table.name]
+            for row in prior.rows[table.name].values():
+                assert set(row) == catalog[table.name]
+                conn.execute(sa.insert(table).values(**row))
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
+        with pytest.raises(DBAPIError, match="permission denied"), conn.begin_nested():
+            conn.execute(sa.select(db.provisional_discharges))
+        record("provisional_select_denied", True)
+        assert_missing_half_inputs(case, half)
+        record("worker_before", "sapphire_worker")
+        record("worker_discharge_rows", 32)
+        record("worker_water_level_rows", 48)
+        record("worker_hindcast_headers", 32)
+        record("worker_hindcast_members", 64)
+        restored = replay_snapshot(case, "BMA")
+        assert_missing_half_snapshot(case, restored, catalog, mode)
+        assert_same_source(dataclasses.asdict(restored), dataclasses.asdict(prior))
+        record("rehydration_full_identity", True)
+        yield case
+        assert_missing_half_inputs(case, half)
+        record("worker_after", "sapphire_worker")
+    finally:
+        scenario.rollback()
+        assert conn.scalar(sa.text("SELECT current_user")) == "test"
+        assert conn.scalar(sa.text("SELECT session_user")) == "test"
+        assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
+        record("scenario_rolled_back", True)

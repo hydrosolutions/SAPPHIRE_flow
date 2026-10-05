@@ -1828,3 +1828,16 @@ NaN tags affect property copies only; source/raw/public assertions are unchanged
 No owner protected read is claimed after worker handoff, and no general permission-
 table denial is inferred. RAW hindcasts/FI-not-executed and Plan234 limits remain.
 Other P3 cases, wholeT1d/T1c/T3/Effort354, durable history and activation remain held.
+
+### BMA missing-half retention boundary
+
+Four cases/eight calls verified worker retention of prior 104 scores/24 diagrams
+(ON: one ledger; OFF: none) after owner-only fixture rehydration and deletion of
+exactly 32 ordinary Q rows. Protected snapshots precede worker handoff; worker
+protected-table denial, both new-run input paths and full retained manifests pass.
+Live catalog column-name checks use the same connection, not a separate engine.
+This is not full-schema validation, live workflow or durable-history proof.
+
+See the [canonical contract](../spec/types-and-protocols.md#bma-missing-half-retention-acceptance)
+and [test route](../touchpoint-maps.md#bma-missing-half-retention-regression).
+Other P3 cases, scientific-policy approval and activation remain held.
