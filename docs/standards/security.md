@@ -1829,6 +1829,10 @@ No owner protected read is claimed after worker handoff, and no general permissi
 table denial is inferred. RAW hindcasts/FI-not-executed and Plan234 limits remain.
 Other P3 cases, wholeT1d/T1c/T3/Effort354, durable history and activation remain held.
 
+Earlier held-case lists are historical checkpoints. The later absent-requested-run
+and trailing-bucket sections below supersede those two named holds only; they do
+not close whole P3 or the other remaining work.
+
 ### BMA missing-half retention boundary
 
 Four cases/eight calls verified worker retention of prior 104 scores/24 diagrams
@@ -1852,3 +1856,14 @@ not a general protected-table ACL audit. No model/FI or durable-history proof fo
 See the [canonical contract](../spec/types-and-protocols.md#absent-requested-run-retention-acceptance)
 and [focused test route](../touchpoint-maps.md#absent-requested-run-retention-regression).
 Other consumer, scientific-policy, deployment-readiness and activation holds remain.
+
+### Trailing-bucket SINGLE boundary
+
+Two cases/four calls verified fresh full and trailing SINGLE outputs under the
+worker. Owner protected proof preceded handoff; cross-scenario identity covered
+fixed input/lineage, not assumed default clocks. Worker denial was specifically
+provisional_discharges SELECT. No historical-as-of, model/FI or live authority follows.
+
+See the [canonical contract](../spec/types-and-protocols.md#trailing-bucket-single-acceptance)
+and [focused test route](../touchpoint-maps.md#trailing-bucket-single-regression).
+Remaining consumer, scientific-policy, readiness and activation holds are unchanged.
