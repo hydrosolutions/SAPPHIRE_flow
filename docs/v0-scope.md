@@ -268,7 +268,8 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 | Inferred thresholds | Flood frequency analysis service |
 | Dead letter queue | `dead_letter_queue` table (no partitioning = no DLQ needed) |
 | Foreign forecast tables (v1) | `foreign_forecasts`, `foreign_forecast_values` — types/protocols defined, DB tables deferred |
-| Virtual station formulas (v1) | `calculated_station_formulas` table, DB triggers for component-must-be-gauged invariant (plan 015) |
+
+Calculated-station formulas and their component eligibility triggers are implemented under Plan 015; they are not deferred schemas.
 
 **Rationale**: Empty "for later" tables add migration maintenance burden and clutter the schema.
 
@@ -504,7 +505,7 @@ provided.
 Implement the **full** type system and Protocol definitions from `types-and-protocols.md`. Types are cheap, catch bugs early, and define the contract for all downstream implementation. This includes:
 
 - All ID NewTypes, UtcDatetime, GeoCoord
-- All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar); within non-deferred enums, `ObservationSource.COMPONENT_DERIVED` is deferred to v1
+- All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar), including implemented `ObservationSource.COMPONENT_DERIVED` calculated-station derivation (Plan 015).
 - All entity dataclasses (frozen)
 - All store Protocols (minus RatingCurveStore, ForecastAdjustmentStore)
 - All adapter Protocols (minus NotificationAdapter). v0b adds `ForecastInterfaceAdapter` for FI-wrapped ML models.

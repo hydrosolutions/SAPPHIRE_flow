@@ -59,6 +59,13 @@ from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastM
 from tests.integration.db.test_role_bootstrap import (
     role_harness as role_harness,
 )
+from tests.integration.services.component_isolation_fixture import (
+    ComponentScenario,
+    run_component_case,
+)
+from tests.integration.services.skill_persistence_fixture import (
+    skill_persistence_engine as skill_persistence_engine,
+)
 from tests.integration.store.test_provisional_discharge_store import (
     permit_fixture,
     seed_reference,
@@ -66,13 +73,14 @@ from tests.integration.store.test_provisional_discharge_store import (
 from tests.unit.services.test_provisional_discharge import NOW, inputs
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     import polars as pl
 
     from sapphire_flow.store.alert_store import PgAlertStore
     from sapphire_flow.store.basin_store import PgBasinStore
+    from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.station_store import PgStationStore
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -90,6 +98,7 @@ class Stores:
     station: PgStationStore
     basin: PgBasinStore
     alert: PgAlertStore
+    formula: PgFormulaStore
 
 
 def factory(conn: sa.Connection) -> Stores:
@@ -99,6 +108,7 @@ def factory(conn: sa.Connection) -> Stores:
         station=cast("PgStationStore", stores["station_store"]),
         basin=cast("PgBasinStore", stores["basin_store"]),
         alert=cast("PgAlertStore", stores["alert_store"]),
+        formula=cast("PgFormulaStore", stores["formula_store"]),
     )
 
 
@@ -523,3 +533,64 @@ class TestOrdinaryObservationAlerts:
         stores.alert.upsert_alert(alert)
         check_alerts(stores, case)
         assert stores.alert.fetch_alert(alert.id) == alert
+
+
+class TestComponentBootstrapIsolation:
+    def test_clean_and_protected_history_have_identical_bootstrap(
+        self,
+        skill_persistence_engine: sa.Engine,
+        record_property: Callable[[str, object], None],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        clean = run_component_case(
+            skill_persistence_engine,
+            factory,
+            ComponentScenario.CLEAN,
+            record_property,
+            evidence_dir=tmp_path,
+        )
+        mixed = run_component_case(
+            skill_persistence_engine,
+            factory,
+            ComponentScenario.MIXED,
+            record_property,
+            evidence_dir=tmp_path,
+        )
+        assert clean is not None
+        assert mixed == clean
+
+    def test_ordinary_controls_change_values_chronology_and_missingness(
+        self,
+        skill_persistence_engine: sa.Engine,
+        record_property: Callable[[str, object], None],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        changed = run_component_case(
+            skill_persistence_engine,
+            factory,
+            ComponentScenario.CHANGED,
+            record_property,
+            evidence_dir=tmp_path,
+        )
+        assert changed is not None
+
+    def test_protected_only_history_refuses_before_any_write(
+        self,
+        skill_persistence_engine: sa.Engine,
+        record_property: Callable[[str, object], None],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        refused = run_component_case(
+            skill_persistence_engine,
+            factory,
+            ComponentScenario.PROTECTED_ONLY,
+            record_property,
+            evidence_dir=tmp_path,
+        )
+        assert refused is None

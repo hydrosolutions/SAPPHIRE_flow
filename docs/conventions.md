@@ -480,7 +480,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `pipeline_health.check_type` / `PipelineCheckType` (TEXT, not check-constrained — `types/enums.py::PipelineCheckType` is authoritative) | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test`, `forecast_station_dark`, `alert_suppressed_fallback`, `priority_migration_audit`, `climatology_threshold_review`, `bafu_forecast_freshness`, `weather_history_ingest`, `bafu_observation_freshness` *(Plan 136)* | — | v0+v1 |
 | `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` | **v1** |
 | `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — | **v1** |
-| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import`, `component_derived` *(v1 only)* | — | v0+v1 |
+| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import`, `component_derived` | — | v0+v1 |
 | `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `password_changed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — | **v1** |
 | `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — | **v1** |
 | `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — | **v1** |
@@ -495,7 +495,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `model_assignments.status` / `ModelAssignmentStatus` | `active`, `inactive` | `inactive` | v0+v1 |
 | `OnboardingOutcome` (in-memory only) | `promoted`, `gate_rejected`, `skipped_compat`, `skipped_no_data`, `skipped_insufficient_eval`, `failed_smoke_test`, `failed_training`, `failed_hindcast`, `failed_skill`, `failed_assignment` | all terminal | v0+v1 |
 | Forecast QC rule IDs (string, not enum) | `negative_value`, `range_check`, `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`, `quantile_crossing` | — | v0+v1 |
-| Observation QC rule IDs (string, not enum) | `upstream_propagated` *(calculated-station derivation — inherits worst component QC status, Plan 015 §D6)* | — | **v1** |
+| Observation QC rule IDs (string, not enum) | `upstream_propagated` *(implemented calculated-station derivation — inherits worst usable component QC status, Plan 015 §D6)* | — | v0+v1 |
 
 ---
 

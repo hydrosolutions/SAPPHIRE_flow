@@ -1881,3 +1881,17 @@ same-connection visibility is not durable/concurrent or historical-as-of proof.
 See the [canonical contract](../spec/types-and-protocols.md#surviving-half-singlepooled-acceptance)
 and [focused test route](../touchpoint-maps.md#surviving-half-persistence-regression).
 No model/FI, broader consumer closure, host/cloud action or activation authority follows.
+
+
+### Direct component-bootstrap boundary
+
+The [canonical component acceptance](../spec/types-and-protocols.md#direct-component-bootstrap-ordinary-input-acceptance)
+requires owner-only protected setup before a worker-role direct bootstrap call on
+one READ COMMITTED rollback connection. No grants, triggers or production writers
+change. Protected-only refusal must precede every application write attempt;
+clean/mixed and ordinary sensitivity use exact per-layer records. The bounded
+3-test/4-call local acceptance and exact owned-container cleanup passed, with
+3 disclosed JUnit compatibility warnings. This is not proof of deployed login/access,
+durable crash safety, recurring-ingest isolation, complete T1d or Nepal activation
+readiness. The eight related Prefect-dependent unit cases remain mandatory in CI;
+no local server authority or coverage waiver was granted.
