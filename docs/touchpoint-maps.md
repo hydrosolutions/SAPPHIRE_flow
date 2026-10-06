@@ -1983,3 +1983,25 @@ See the [canonical contract](spec/types-and-protocols.md#surviving-half-singlepo
 [checkpoint/holds](plans/519-nepal-current-forecast-data.md#surviving-half-persistence-checkpoint).
 Regression counts overlap. Ordered ambient checks target common db_engine;
 catalog names are not full schema proof. No whole-consumer closure follows.
+
+
+### Direct component-bootstrap regression
+
+Route: `tests/integration/services/test_forecast_data_use_isolation.py::TestComponentBootstrapIsolation`
+(three non-slow cases/four calls), with `component_isolation_fixture.py` and the
+unchanged owned `skill_persistence_engine`. The class-only gate avoids mixing the
+legacy module role fixture with the session-owned engine. Existing six module cases
+and nine formula-store cases remain regression obligations in final full-suite CI.
+
+Check owner-before-worker setup, READ COMMITTED, relation-specific SELECT denial,
+full protected/input inventories, generated-ID bijection, submitted/raw/public
+flag-layer distinction, zero attempted writes on refusal and per-call cleanup.
+Record session resource cleanup separately. See the
+[canonical contract](spec/types-and-protocols.md#direct-component-bootstrap-ordinary-input-acceptance).
+Separately released build/provenance, class collection, bounded 3-test/4-call
+runtime and partition collection passed. See the canonical contract for the
+3 disclosed warnings, source-ratchet limit and failed local unit gate (116 passed,
+8 Prefect initialization failures). The eight unchanged flow cases and full suite
+must pass in final CI; counts are nonadditive and model discovery is not coverage.
+Recurring ingest, full onboarding, durable history and all broader readiness holds
+remain. Commit, push and deployment still need their own authority.

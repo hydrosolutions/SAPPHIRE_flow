@@ -25,7 +25,7 @@ AlertId = NewType("AlertId", UUID)
 RatingCurveId = NewType("RatingCurveId", UUID)
 ObservationId = NewType("ObservationId", UUID)
 ObservationVersionId = NewType("ObservationVersionId", UUID)  # v1 — Plan 035 Task 3
-FormulaId = NewType("FormulaId", UUID)  # v1 — Plan 015 calculated-station formula row
+FormulaId = NewType("FormulaId", UUID)  # implemented Plan 015 calculated-station formula row
 ForecastAdjustmentId = NewType("ForecastAdjustmentId", UUID)
 UserId = NewType("UserId", UUID)
 AccessTokenId = NewType("AccessTokenId", UUID)
@@ -322,7 +322,7 @@ class GaugingStatus(Enum):
 class ObservationSource(Enum):
     MEASURED = "measured"                          # direct sensor reading
     RATING_CURVE_DERIVED = "rating_curve_derived"  # derived via rating curve conversion (Flow 2 step 2.5)
-    COMPONENT_DERIVED = "component_derived"         # derived from calculated-station formulas (v1 — plan 015)
+    COMPONENT_DERIVED = "component_derived"         # implemented calculated-station formulas (Plan 015)
     MANUAL_IMPORT = "manual_import"                # CSV upload (Flow 12 Branch B, Flow 5 step 5.4)
 
 class AuditActorType(Enum):
@@ -1263,7 +1263,7 @@ Module: `services/rating_conversion.py`
 ### ComponentWeight
 
 ```python
-# v1 — Plan 015: one (component station, weight) row of a calculated station's formula.
+# Implemented Plan 015: one (component station, weight) row of a calculated station's formula.
 # Q_virtual = Σ(wᵢ · Qᵢ) over the component rows for a (calculated_station, parameter)
 # and validity window. Weights are signed physical scaling factors (negative allowed for
 # difference formulas) and need not sum to 1.
@@ -3961,7 +3961,7 @@ class ObservationVersionStore(Protocol):  # v1 — Plan 035 Task 3
 #### FormulaStore
 
 ```python
-class FormulaStore(Protocol):  # v1 — Plan 015: calculated-station weighted-sum formulas
+class FormulaStore(Protocol):  # implemented Plan 015 calculated-station weighted-sum formulas
     def store_formula(self, rows: Sequence[ComponentWeight]) -> None: ...
         # Insert the component-weight rows of one formula version. All rows share the same
         # calculated_station_id + parameter + effective_from.
@@ -5884,3 +5884,57 @@ This completes only the named surviving-half/mixed-OFF companion. QC/None/join,
 fewer-than-two-common-step and one-surviving-fold obligations still need explicit
 existing-evidence dispositions; broader ordinary-consumer closure, wholeP3/T1d,
 readiness and authorized live acceptance remain separate holds.
+
+
+### Direct component-bootstrap ordinary-input acceptance
+
+`TestComponentBootstrapIsolation` in
+`tests/integration/services/test_forecast_data_use_isolation.py` defines three
+cases/four direct `onboard_calculated_station` calls. Bounded local acceptance
+passed: 3 tests, 4 calls (3 returned, 1 expected refusal), with per-call listener,
+role and rollback checks and independently verified exact container absence.
+The 3 `record_property`/xunit2 warnings are disclosed and accepted for this run;
+XML properties and independent JSON evidence were retained, not schema compliance
+claimed. This is not whole-T1d completion.
+
+Offline isolated build/provenance and class collection passed. Ruff and both changed
+Python paths are type-clean; core types also have zero errors. The source ratchet
+passed with 348 diagnostics against a 400 baseline, not a clean source type check.
+Partition collection passed (1689 selected nodes, 120 non-live files); these counts
+are nonadditive and discovery omissions, including CMAL, are not model coverage.
+The related six-module local unit run remains FAILED: 116 passed and 8 Prefect
+initialization failures under the strict no-server rule. Those eight unchanged
+flow tests did not reach their body assertions and must pass in the normal full
+CI `unit (adapters-flows)` shard at final code before merge. Full-suite CI remains mandatory;
+no local harness expansion, coverage waiver or CI-equivalence claim follows.
+
+The real factory observation, station and formula stores share one owner-created
+READ COMMITTED rollback transaction per call. Owner setup seeds operational gauged
+A/B, weights 1/2 and 1/4, six ordinary Q rows and fixed expired curves/reference
+proofs. The mixed case adds six protected level/feed/provisional records, each
+Q=10000. Worker SET LOCAL ROLE has relation-specific protected SELECT denial;
+it is not a separate worker-login/authentication proof.
+
+Independent frozen literals require ordinary outputs 4/PASSED, 6/SUSPECT and
+None/MISSING, with formula start T and exact upstream flag order/provenance. The
+MISSING row has public/domain flags `[]`, but submitted/raw flags `None`; unrelated
+nulls and nonempty flags are compared exactly, without generic normalization.
+A separate ordinary-input control retains A4→12 and adds A/B at T−30m plus missing
+B at T+2h: outputs 2/8/6/8 and formula start T−30m. This is sensitivity evidence,
+not independently a leak detector. Protected-only history must raise
+`ConfigurationError` containing `no component observations found`, before any
+application write attempt.
+
+Each call checks complete input/protected inventories, submitted row multisets,
+raw/public station/formula/observation records, and unchanged state, alerts,
+forecasts, skills, baselines/regimes, artifacts and assignments. Only generated
+station/formula/observation UUID4s receive a natural-key bijection. Geometry and
+unordered station parameter sets have explicit field-specific checks. Passive
+compiled-parameter capture does not consume results or prove driver-wire bytes;
+SQL batching/counts are diagnostic, not a statement-shape contract.
+
+The existing owned session engine lifecycle is reused unchanged. Per-call listener,
+role and rollback cleanup is distinct from session container cleanup. This direct
+bootstrap slice excludes recurring ingest, full onboarding/calibration, model/FI
+execution, durable/AUTOCOMMIT/crash/concurrency proof, live station configuration,
+source/tenant linkage, T1d/P3/Effort354 closure and activation authority.

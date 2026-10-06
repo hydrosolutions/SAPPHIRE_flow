@@ -1172,3 +1172,26 @@ scientific-policy, Plan234 and deployment/activation holds remain. Conditional
 Infomaniak staging authority requires readiness; the absent Cloudflare R2 backup
 bucket is deferred, not this slice's implementation blocker. Backup/restore/rollback
 and restricted-transfer prerequisites remain; no host/cloud mutation follows.
+
+
+#### Direct component-bootstrap bounded acceptance (full CI pending)
+
+Three non-slow cases/four direct calls now define the bounded ordinary-input
+bootstrap contract: clean/mixed equality against independent literals, a separate
+ordinary chronology/value/missingness control, and protected-only refusal before
+writes. See the [canonical contract](../spec/types-and-protocols.md#direct-component-bootstrap-ordinary-input-acceptance)
+and [focused route](../touchpoint-maps.md#direct-component-bootstrap-regression).
+
+Bounded local acceptance passed: 3 tests/4 calls, 3 disclosed JUnit compatibility
+warnings and verified exact owned-container cleanup. Build/provenance, collection,
+changed-path/core types, the source ratchet and partition collection also passed;
+source diagnostics remain. The related local unit gate FAILED with 116 passes and
+8 Prefect initialization failures: those eight unchanged cases remain mandatory
+in the normal final CI `unit (adapters-flows)` shard, with full-suite CI still required before
+merge. No server/harness expansion or coverage waiver is authorized.
+
+This does not close recurring component ingest,
+full onboarding/calibration, source/tenant consumption linkage, durable history,
+P3/T1d/T1c/T3/Effort354 or live Nepal acceptance. Model/FI/QC, T2/T4/T5, backend
+access, security/backup/staging and activation holds remain. Build, tests, commit,
+push and deployment authority are separate from this implementation checkpoint.
