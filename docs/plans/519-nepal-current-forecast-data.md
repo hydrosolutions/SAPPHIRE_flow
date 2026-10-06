@@ -1195,3 +1195,22 @@ full onboarding/calibration, source/tenant consumption linkage, durable history,
 P3/T1d/T1c/T3/Effort354 or live Nepal acceptance. Model/FI/QC, T2/T4/T5, backend
 access, security/backup/staging and activation holds remain. Build, tests, commit,
 push and deployment authority are separate from this implementation checkpoint.
+
+#### Bounded Nepal qualification input isolation (candidate runtime passed)
+
+The focused uncommitted candidate passed three tests in 11.06s with no warnings or
+skips: four public calls, 23 real assembler returns and 24 station UPDATE attempts.
+The first fresh setup envelope restored the child environment; later acquisitions
+were cached. Owned cleanup and independent exact-ID absence passed. Runtime source
+attribution, preserved failures, old-wheel limits and remaining gates are in the
+[canonical contract](../spec/types-and-protocols.md#bounded-nepal-qualification-input-isolation)
+and [focused route](../touchpoint-maps.md#bounded-nepal-qualification-regression).
+This is bounded L22 numeric/target noninterference, not complete reader/access
+closure. Actual qualification principal/login, transitive read/lock/UPDATE grants
+and durable CLI commit/reconnect remain essential T0/O15 prerequisites. UTC versus
+Kathmandu phase, QC-negative policy, tenant denial/audit and wider canaries are
+not covered. L21 recurring ingest, L13 full onboarding, L24 routed delivery and
+T1c/T3/T2/T4/T5 safety/delivery duties remain open. R2 is deferred and 120
+authenticated GET/min is unresolved. October 7 remains at risk; no deployment or
+owner-data/access approval follows from this test slice. Prior local 116 PASS +
+8 Prefect failures and separately root-verified eight CI passes remain distinct.
