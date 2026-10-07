@@ -5938,3 +5938,141 @@ role and rollback cleanup is distinct from session container cleanup. This direc
 bootstrap slice excludes recurring ingest, full onboarding/calibration, model/FI
 execution, durable/AUTOCOMMIT/crash/concurrency proof, live station configuration,
 source/tenant linkage, T1d/P3/Effort354 closure and activation authority.
+
+### Bounded Nepal qualification input isolation
+
+`TestNepalReadinessInputIsolation` in
+`tests/integration/services/test_nepal_readiness_input_isolation.py` defines three
+non-slow cases and four calls to public `qualify_discharge_targets`. Its helper,
+`nepal_readiness_isolation_fixture.py`, embeds independently reviewed literal
+inputs and expected results. Implementation alone is not runtime acceptance.
+
+The October 6 focused run passed all three tests in **11.06s**, with no failures,
+errors, skips or observed warnings: four public starts/returns, 23 real assembler
+returns/frame bundles and 24 station UPDATE attempts. This evidence belongs to
+uncommitted runtime candidate
+`7db0fffa0abc0c6255dd3babdd7667eec335567920f45f3e7e81bf78b6721687`
+at base `58f56d56eddfde4f79afdb95de466ff4f8dc6e20`, not a future committed build.
+The node-keyed native setup trace and observer receipts establish equal child
+environment before/after the first fresh successful **setup envelope**; the two
+later acquisitions were cached and make no migration claim. They do not measure
+exact migration instructions or intermediate states. The owned record reached
+`cleanup-verified`, and independent exact-ID inspection confirmed absence of
+`bc05c364d7d0f2194eec5ee22d2e0867dbf677c7e7489b85e212645fc5c05fa8`.
+Source and existing build outputs were unchanged by execution. The earlier wheel
+remains old-candidate, unchanged-package provenance only. Failed native and
+postprocessing receipts remain preserved beside the corrected evidence; nothing
+was rerun to replace them. Final review, remaining gates, committed-HEAD isolated
+build/slow evidence and normal CI are still separate prerequisites. This result
+is not live Nepal, production-role, protected-access or durability acceptance.
+
+The fixture uses six synthetic CHWRR gauges, synthetic basin attributes and real
+stores, ordinary delivery/QC readers, reanalysis reader and training assembler.
+It does not import a basin package. Each call uses a fresh local SAP3 requirements
+carrier: daily step, lookback two, horizon one, discharge target, past precipitation
+and temperature, and minimum two complete samples. The shared fake declaration
+stays unchanged. No model training, prediction, artifact method or FI validation
+is exercised. Required FI compliance remains unchanged for real models/adapters.
+
+The window is January 10–20, 2026, exclusive at the end. Each gauge has ten
+UTC-midnight ordinary discharge values 20–29 and ten rows of forcing (both
+parameters 10). The protected canary adds ten measured-level parents and expired
+curve-derived protected values 10000 at gauge 447, with frozen provenance bytes
+and fingerprints. Clean and mixed calls each expect six READY reports and eight
+complete samples per gauge. Deleting only eight identified ordinary discharge
+rows leaves gauge 447 HELD with two usable observations and zero samples. Deleting
+all ten leaves it HELD with no current delivery history and no assembler call;
+the other five remain READY. Protected parents and provenance remain intact.
+Each call is checked against literal reports, complete frame schemas/values and
+targets before clean/mixed equality. There are 23 real assembler returns in total.
+
+Each owner-run disposable TEST transaction starts with a fresh seed, uses
+READ COMMITTED and CHWRR-only application authority, then rolls back. Passive
+compiled **pre-bind** observation permits exactly six station UPDATE attempts per
+call (24 total), including HELD stations. Only targets and `updated_at` may change;
+all 57 other metadata tables remain exact row-content multisets. Each snapshot
+keeps full row JSON plus lossless EWKB hex for every geometry column, associated
+with that same row; rounded GeoJSON alone is not a geometry equality oracle.
+A fresh connection must recover the preseed 58-table snapshot. Generated setup
+IDs/times are captured and preserved, not replaced by the injected qualification
+clock. This is content comparison, not physical database-page byte identity;
+SQL NULL versus JSON null is not distinguished where the representation collapses
+them. Attempt counts are not affected-row or driver-wire evidence; raw and typed
+after-images are checked.
+
+Evidence conversion, listener/binding checks, rollback, fresh-connection checks
+and case-local environment checks must not skip later cleanup after an earlier
+failure. Primary errors retain secondary cleanup/evidence errors. Unsupported
+values such as bytes remain errors, not normalized passing evidence. An explicitly
+empty `NEPAL_READINESS_EVIDENCE_DIR` is rejected; an absent variable uses only the
+per-test temporary directory, never a current-directory fallback. Tests check
+successful local call counts (two, one, one) without a class-wide teardown count
+or session-wide policing of other tests' environment. Full-class runtime receipts
+must still establish all four calls and the aggregate return/write counts.
+
+A function-scoped `qualification_engine` fixture observes the setup envelope
+through one public `request.getfixturevalue("skill_persistence_engine")` call,
+without a static engine dependency or changing the owned fixture. Acquisition
+now follows function autouse fixtures; it does not reproduce the original setup
+ordering. Whole child-process environment snapshots bracket acquisition in memory,
+not teardown. The observer compares all names/values and separately checks
+`DATABASE_URL` presence/equality. It writes only name differences and boolean
+observations, node identity and error class names, never environment values or
+hashes of values. Unexpected differences fail without normalization. Setup
+exceptions, including skip/interrupt, propagate; independent observation/receipt
+failures attach class-only notes, and evidence errors after success fail the test.
+
+Each node gets an exclusive, fully serialized `engine-setup.json` below
+`tmp_path_factory.mktemp("engine-setup-observation")`; retain this external
+basetemp evidence separately from the four unchanged call receipts. The observer
+does not use or set `SAPPHIRE_DATA_DIR`; each test still sets it first in its body.
+Read-only owned-record existence observations are corroboration, not proof of
+fresh setup; an unset/empty configured owned path remains unknown, not cwd.
+Fresh attribution requires a separately released native `--setup-show` trace
+and successful acquisition in the focused fresh process. A SETUP line is emitted
+after an attempt, including failed attempts; it is not a before-start event.
+Cached observations remain valid in broad CI but cannot establish migration.
+Failure or ambiguous attribution cannot establish it either. Only the joined
+fresh-success evidence supports setup-envelope restoration with the pinned
+migration control flow, not an exact migration-boundary or intermediate-state
+measurement. The focused evidence above meets this bounded envelope requirement;
+it does not extend it to other sessions or migration failure paths.
+
+Only station `measured_parameters` and `forecast_targets` have field-specific
+unordered membership checks. Compiled and raw decoded values are None/list;
+typed values are None/frozenset. HELD requires None, not raw `[]`; READY requires
+exactly discharge. The real typed reader intentionally collapses raw None/empty
+to None. Decoded None does not distinguish SQL NULL from JSON null. No generic
+JSON normalization or lossless empty-set storage claim follows.
+
+This is bounded **numeric and qualification-target noninterference**, not complete
+L22 access isolation. In particular:
+
+- Owner test composition proves neither protected SELECT denial nor the absence
+  of a protected SELECT with no checked effect. It does not authorize routine
+  owner jobs. Actual production principal/login, all transitive reads/locks and
+  six UPDATE grants, plus CLI commit/rollback and durable reconnect, remain
+  essential Plan 519 T0/O15 prerequisites. SET LOCAL ROLE is not authentication;
+  rollback is not durable/AUTOCOMMIT or concurrent-safety evidence.
+- UTC-midnight fixtures use the aligned fast path. They do not establish modern
+  Kathmandu local-midnight (18:15Z), daily bucket phase, interval labels or Nepal
+  training-window/sample acceptance. Those source-specific scientific duties
+  remain open. Eight synthetic windows are arithmetic, not scientific suitability.
+- All retained ordinary rows pass QC version 1.2. Deletion controls do not test
+  failed, suspect or unchecked QC policy. All tenants are authorized positives;
+  unchanged audit storage is not exercised denial/audit-event coverage.
+- Only gauge 447 has protected inputs, at the same dates and after one expired
+  curve. There is no newest-only, alternate-source, additional-curve,
+  cross-station or cross-tenant canary matrix. Identical numeric series across
+  stations cannot expose an ID-preserving station mix-up; strict IDs are still
+  checked in assembler calls and reports.
+- Recurring component ingest (L21), full onboarding/calibration (L13), routed
+  delivery CLI (L24), T1c/T3 safety, authorized T2 inputs, T4 hosting/HTTPS/access/
+  Cloudflare/map/backup duties and T5 two cycles/browser/last-good remain essential.
+  R2 remains deferred; 120 authenticated GET/min remains unresolved. This slice
+  does not establish whole Nepal delivery or release compatibility/activation.
+
+The unchanged owned-container fixture supplies lifecycle evidence separately.
+Normal CI selection must collect these three cases once in integration(rest),
+without slow/deployment marks or skip/xfail. Native execution and independently
+verified cleanup, full-suite evidence, and deployment authority remain separate.

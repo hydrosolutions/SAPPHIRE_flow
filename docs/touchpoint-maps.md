@@ -2005,3 +2005,21 @@ runtime and partition collection passed. See the canonical contract for the
 must pass in final CI; counts are nonadditive and model discovery is not coverage.
 Recurring ingest, full onboarding, durable history and all broader readiness holds
 remain. Commit, push and deployment still need their own authority.
+
+### Bounded Nepal qualification regression
+
+Route: `tests/integration/services/test_nepal_readiness_input_isolation.py` →
+`TestNepalReadinessInputIsolation`, with
+`tests/integration/services/nepal_readiness_isolation_fixture.py`.
+The [canonical contract](spec/types-and-protocols.md#bounded-nepal-qualification-input-isolation)
+defines three non-slow cases/four public qualification calls. Preserve the real
+assembler pass-through, independent literals, owned `skill_persistence_engine`
+lifecycle and per-call rollback. Retain the separate engine-acquisition observer
+receipts and join them with an explicitly released native setup trace before any
+fresh setup-envelope restoration claim; cached acquisition is not migration.
+The focused candidate passed three tests: four calls, 23 assembler returns and
+24 UPDATE attempts;
+the canonical checkpoint records its exact runtime source and cleanup attribution.
+Final review, committed-build/slow and normal CI gates remain separate.
+Do not substitute the ambient integration DB fixture, add role grants or infer
+runtime/production acceptance from implementation.

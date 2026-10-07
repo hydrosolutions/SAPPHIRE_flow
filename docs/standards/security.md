@@ -1895,3 +1895,14 @@ clean/mixed and ordinary sensitivity use exact per-layer records. The bounded
 durable crash safety, recurring-ingest isolation, complete T1d or Nepal activation
 readiness. The eight related Prefect-dependent unit cases remain mandatory in CI;
 no local server authority or coverage waiver was granted.
+
+### Bounded Nepal qualification test boundary
+
+The [canonical qualification contract](../spec/types-and-protocols.md#bounded-nepal-qualification-input-isolation)
+uses an owner connection only in disposable, rolled-back TEST infrastructure.
+It does not authorize owner credentials for routine qualification jobs or prove
+protected SELECT denial. Production principal/login, full transitive read/lock/
+UPDATE authority and durable CLI commit/reconnect remain essential Plan 519 T0/O15
+holds. The focused candidate's three passing tests, setup-envelope observation and
+independently verified owned cleanup do not discharge these production duties.
+No grants, roles, activation policy or protected-writer boundaries change.
