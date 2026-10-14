@@ -2,17 +2,31 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-if TYPE_CHECKING:
-    from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
-
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
+
+if TYPE_CHECKING:
+    from tests.integration.db.test_role_bootstrap import (
+        _RoleBootstrapHarness,  # pyright: ignore[reportPrivateUsage]
+    )
 
 from tests.integration.db.test_migration_provisional_discharge import (
     TABLES as PROVISIONAL_TABLES,
 )
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
 
+NEPAL21_TABLES = (
+    "restricted_delivery_releases",
+    "restricted_delivery_release_witnesses",
+    "restricted_delivery_generations",
+    "dhm_delivery_origins",
+    "dhm_origin_sets",
+    "dhm_origin_set_members",
+    "dhm_rating_declarations",
+    "dhm_delivery_observation_attributions",
+    "expired_rating_test_permissions",
+)
 TABLES = (*PROVISIONAL_TABLES, "forecast_input_stations")
 
 
@@ -61,7 +75,150 @@ class TestProvisionalDischargeRoleBoundary:
         finally:
             engine.dispose()
 
-    def test_rebootstrap_revokes_stale_column_grants(self, role_harness) -> None:
+    def test_dhm21_writer_role_is_dormant_and_release_immutable_scoped(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            assert conn.scalar(
+                sa.text(
+                    "SELECT NOT rolcanlogin FROM pg_catalog.pg_roles "
+                    "WHERE rolname='sapphire_dhm21_delivery_writer'"
+                )
+            )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_dhm21_delivery_writer', "
+                    "'public.restricted_delivery_generations', 'INSERT')"
+                )
+            )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_dhm21_delivery_writer', "
+                    "'public.restricted_delivery_generations', 'UPDATE')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_dhm21_delivery_writer', "
+                    "'public.restricted_delivery_releases', 'UPDATE')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_dhm21_delivery_writer', "
+                    "'public.expired_rating_test_permissions', 'INSERT')"
+                )
+            )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_function_privilege "
+                    "('sapphire_dhm21_delivery_writer', "
+                    "'public.sf_lock_dhm21_delivery_write(uuid,uuid)', 'EXECUTE')"
+                )
+            )
+
+    def test_static_importer_role_is_dormant_and_static_scoped(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            assert conn.scalar(
+                sa.text(
+                    "SELECT NOT rolcanlogin FROM pg_catalog.pg_roles "
+                    "WHERE rolname='sapphire_static_importer'"
+                )
+            )
+            for table in NEPAL21_TABLES:
+                assert not conn.scalar(
+                    sa.text(
+                        "SELECT has_table_privilege "
+                        "('sapphire_static_importer', :table, 'SELECT')"
+                    ),
+                    {"table": f"public.{table}"},
+                )
+                assert not conn.scalar(
+                    sa.text(
+                        "SELECT has_table_privilege "
+                        "('sapphire_static_importer', :table, 'INSERT')"
+                    ),
+                    {"table": f"public.{table}"},
+                )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_static_importer', "
+                    "'public.basin_static_packages', 'INSERT')"
+                )
+            )
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_function_privilege "
+                    "('sapphire_static_importer', "
+                    "'public.sf_lock_nepal_static_guard(uuid)', 'EXECUTE')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege "
+                    "('sapphire_static_importer', 'public.observations', 'INSERT')"
+                )
+            )
+
+    def test_rebootstrap_revokes_stale_nepal21_role_grants(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "GRANT UPDATE ON restricted_delivery_releases "
+                    "TO sapphire_dhm21_delivery_writer"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    "GRANT INSERT ON expired_rating_test_permissions "
+                    "TO sapphire_dhm21_delivery_writer"
+                )
+            )
+            conn.execute(
+                sa.text("GRANT INSERT ON observations TO sapphire_static_importer")
+            )
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege("
+                    "'sapphire_dhm21_delivery_writer', "
+                    "'public.restricted_delivery_releases', 'UPDATE')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege("
+                    "'sapphire_dhm21_delivery_writer', "
+                    "'public.expired_rating_test_permissions', 'INSERT')"
+                )
+            )
+            assert not conn.scalar(
+                sa.text(
+                    "SELECT has_table_privilege("
+                    "'sapphire_static_importer', 'public.observations', 'INSERT')"
+                )
+            )
+
+    def test_rebootstrap_revokes_stale_column_grants(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
         role_harness.run_bootstrap("api-fixture", "worker-fixture")
         with role_harness.owner_engine.begin() as conn:
             conn.execute(
@@ -123,7 +280,7 @@ class TestProvisionalDischargeRoleBoundary:
             try:
                 with engine.connect() as conn:
                     assert conn.scalar(sa.text("SELECT session_user")) == role
-                    with pytest.raises(sa.exc.DBAPIError, match="permission denied"):
+                    with pytest.raises(DBAPIError, match="permission denied"):
                         conn.scalar(
                             sa.text(
                                 "SELECT content FROM "
@@ -204,7 +361,12 @@ class TestProvisionalDischargeRoleBoundary:
                     .mappings()
                     .all()
                 )
-                table_grant_exclusions = {*TABLES, "forecasts", "rejected_forecasts"}
+                table_grant_exclusions = {
+                    *TABLES,
+                    *NEPAL21_TABLES,
+                    "forecasts",
+                    "rejected_forecasts",
+                }
                 assert all(
                     row["current"]
                     == (row["prior"] and row["relname"] not in table_grant_exclusions)
@@ -266,9 +428,7 @@ class TestProvisionalDischargeRoleBoundary:
         try:
             with engine.connect() as conn:
                 assert conn.scalar(sa.text("SELECT session_user")) == role
-                with pytest.raises(
-                    sa.exc.DBAPIError, match="immutable except owner disable"
-                ):
+                with pytest.raises(DBAPIError, match="immutable except owner disable"):
                     conn.execute(
                         sa.text(
                             "UPDATE public.provisional_discharge_permissions SET "

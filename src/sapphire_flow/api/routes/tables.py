@@ -24,6 +24,15 @@ _PROTECTED_INPUT_TABLES = frozenset(
         "provisional_discharges",
         "provisional_discharge_permissions",
         "forecast_input_stations",
+        "restricted_delivery_releases",
+        "restricted_delivery_release_witnesses",
+        "restricted_delivery_generations",
+        "dhm_delivery_origins",
+        "dhm_origin_sets",
+        "dhm_origin_set_members",
+        "dhm_rating_declarations",
+        "dhm_delivery_observation_attributions",
+        "expired_rating_test_permissions",
     }
 )
 SAPPHIRE_TABLES: frozenset[str] = (

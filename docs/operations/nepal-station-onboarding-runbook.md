@@ -42,6 +42,17 @@ parameterless `onboard-stations` deployment: its defaults select CAMELS-CH
 stations. Do not mark DHM stations operational or create forecast targets as
 a shortcut around the readiness gates.
 
+
+## Nepal21 restricted delivery authority (Plan 520)
+
+Plan 520 adds the database authority layer for the future 21-station DHM historical delivery. This implementation is synthetic-test only. It does not release real DHM imports, staging writes, live conversion, forecasts, alerts, model assignment, or Gateway forcing activation.
+
+Operational use still requires the held owner gates: corrected static package pin, owner release row, exact manifest/catalog witness bytes, optional canonicalization-policy witness bytes, preimage destination, credentials, and explicit release approval. The generic table browser must not expose the protected release, witness, generation, origin, declaration, attribution, or expired-rating permission tables.
+
+The protected expiry workflow is conversion-only. It may append test provisional discharge evidence only when the selected Nepal21 generation is QC-complete and both the existing provisional permission and the expired-rating test permission are enabled. It must not publish forecast output or operational alerts.
+
+Synthetic implementation tests cover the static-only transaction seam, including persisted basin/static rows, unrelated old-six station metadata preservation, no station-weather activation writes, and ERA5/IFS active-consumer resolver-change refusal. They also cover the release-bound preimage/write/delete/readback path, protected accepted-history reader, and SQL-side expired-conversion refusal. These tests are not a release to run real DHM files or staging writes.
+
 ## 1. Confirm station identity and coordinates
 
 Before delineating any basin, prepare one reviewed station inventory. Keep the

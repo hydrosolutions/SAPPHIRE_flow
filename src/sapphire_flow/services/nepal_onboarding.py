@@ -233,6 +233,18 @@ def import_nepal_package(
 
 
 class DeliveryObservationReader(PgObservationStore):
+    def _filter_delivery_observations(
+        self, rows: list[Observation]
+    ) -> list[Observation]:
+        return [
+            r
+            for r in rows
+            if r.delivery_id == DELIVERY_ID
+            and r.source is ObservationSource.MANUAL_IMPORT
+            and r.parameter == "discharge"
+            and r.qc_rule_version == obs_qc_rule_version("discharge", None)
+        ]
+
     def fetch_observations(
         self,
         station_id: StationId,
@@ -245,14 +257,20 @@ class DeliveryObservationReader(PgObservationStore):
         rows = super().fetch_observations(
             station_id, parameter, start, end, qc_status=qc_status, source=source
         )
-        return [
-            r
-            for r in rows
-            if r.delivery_id == DELIVERY_ID
-            and r.source is ObservationSource.MANUAL_IMPORT
-            and r.parameter == "discharge"
-            and r.qc_rule_version == obs_qc_rule_version("discharge", None)
-        ]
+        return self._filter_delivery_observations(rows)
+
+    def fetch_accepted_historical_observations(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
+        source: ObservationSource | None = None,
+    ) -> list[Observation]:
+        return self.fetch_observations(
+            station_id, parameter, start, end, qc_status=qc_status, source=source
+        )
 
 
 class GatewayHistoryReader(StoreBackedReanalysisSource):

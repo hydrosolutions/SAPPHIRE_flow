@@ -1086,7 +1086,15 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
             "SELECT string_agg(proname, ', ' ORDER BY proname) FROM pg_proc "
             f"WHERE {self._NON_SYSTEM} AND prosecdef"
         )
-        assert names == "lock_publication_candidate, lock_publication_grants"
+        assert names == (
+            "lock_publication_candidate, lock_publication_grants, "
+            "sf_active_accepted_delivery, sf_assert_restricted_publication_catalog, "
+            "sf_lock_dhm21_conversion_append, "
+            "sf_lock_dhm21_delivery_write, "
+            "sf_lock_dhm21_permission_change, sf_lock_nepal_static_guard, "
+            "sf_lock_provisional_permission_disable, sf_mark_restricted_release_used, "
+            "sf_restricted_delivery_row_guard, sf_restricted_generation_publish_guard"
+        )
 
 
 class TestCopyIsGuarded:

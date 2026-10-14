@@ -146,7 +146,7 @@ def fetch_observation_window(
     `timestamp` ascending (D12)."""
     from sapphire_flow.types.enums import ObservationSource, QcStatus
 
-    observations = stores.observation_store.fetch_observations(
+    observations = stores.observation_store.fetch_accepted_historical_observations(
         station_id,
         _DISCHARGE_PARAMETER,
         window_start,

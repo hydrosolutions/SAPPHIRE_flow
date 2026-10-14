@@ -355,6 +355,23 @@ class FakeObservationStore:
             and (source is None or o.source == source)
         ]
 
+    def fetch_accepted_historical_observations(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
+        source: ObservationSource | None = None,
+    ) -> list[Observation]:
+        return [
+            observation
+            for observation in self.fetch_observations(
+                station_id, parameter, start, end, qc_status=qc_status, source=source
+            )
+            if observation.delivery_id is None
+        ]
+
     def fetch_latest_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:

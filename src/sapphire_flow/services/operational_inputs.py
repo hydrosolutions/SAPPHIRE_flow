@@ -407,7 +407,9 @@ def _pivot_nwp_records(
 
     if ensemble_mode is EnsembleMode.ENSEMBLE and members:
         # Ensemble: columns are param_member (e.g. precipitation_0, precipitation_1)
-        pivot: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_times}
+        pivot: dict[UtcDatetime, dict[str, object]] = {
+            ts: {"timestamp": ts} for ts in all_times
+        }
         for r in records:
             if r.parameter not in feature_cols:
                 continue
@@ -422,7 +424,9 @@ def _pivot_nwp_records(
     else:
         # SINGLE (control-only, bare columns) or a deterministic batch (no
         # real member present): columns are bare param names.
-        pivot2: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_times}
+        pivot2: dict[UtcDatetime, dict[str, object]] = {
+            ts: {"timestamp": ts} for ts in all_times
+        }
         for r in records:
             if r.parameter not in feature_cols:
                 continue
@@ -436,7 +440,9 @@ def observations_to_wide_dataframe(
     if not observations:
         return pl.DataFrame()
     all_timestamps = sorted({o.timestamp for o in observations})
-    pivot: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_timestamps}
+    pivot: dict[UtcDatetime, dict[str, object]] = {
+        ts: {"timestamp": ts} for ts in all_timestamps
+    }
     for o in observations:
         if o.parameter in parameters:
             pivot[o.timestamp][o.parameter] = o.value
@@ -449,19 +455,18 @@ def raw_forcing_to_dataframe(
     parameters: list[str],
 ) -> pl.DataFrame | None:
     rows = [
-        {"timestamp": r.valid_time, r.parameter: r.value}
+        (r.valid_time, r.parameter, r.value)
         for r in raw_records
         if r.station_id == station_id and r.parameter in parameters
     ]
     if not rows:
         return None
-    all_timestamps = sorted({r["timestamp"] for r in rows})
-    pivot: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_timestamps}
-    for row in rows:
-        ts = row["timestamp"]
-        for key, val in row.items():
-            if key != "timestamp":
-                pivot[ts][key] = val
+    all_timestamps = sorted({valid_time for valid_time, _, _ in rows})
+    pivot: dict[UtcDatetime, dict[str, object]] = {
+        ts: {"timestamp": ts} for ts in all_timestamps
+    }
+    for valid_time, parameter, value in rows:
+        pivot[valid_time][parameter] = value
     return pl.DataFrame(list(pivot.values()))
 
 
@@ -719,7 +724,7 @@ def fill_past_forcing_tail(
             if value is None or bucket <= last_measured[param]:
                 continue
             grid = _complete_bucket_grid(bucket, time_step, native_step)
-            if grid is None or covered[(param, bucket)] != grid:
+            if grid is None or frozenset(covered[(param, bucket)]) != grid:
                 continue
             # No precedence check is needed: `last_measured[param]` is this
             # series' last NON-NULL bucket, so every bucket past it is null or
@@ -900,7 +905,7 @@ def assemble_station_operational_inputs(
     target_parameters = list(reqs.target_parameters)
     all_observations: list[Observation] = []
     for parameter in target_parameters:
-        obs = obs_store.fetch_observations(
+        obs = obs_store.fetch_accepted_historical_observations(
             station_id=station_id,
             parameter=parameter,
             start=past_targets_start,
@@ -955,7 +960,7 @@ def assemble_station_operational_inputs(
     if past_targets_end < issue_time:
         for parameter in target_parameters:
             freshness_observations.extend(
-                obs_store.fetch_observations(
+                obs_store.fetch_accepted_historical_observations(
                     station_id=station_id,
                     parameter=parameter,
                     start=past_targets_end,

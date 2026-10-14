@@ -118,7 +118,7 @@ def _issue_times(
     period_end: UtcDatetime,
     time_step: timedelta,
 ) -> list[UtcDatetime]:
-    times = []
+    times: list[UtcDatetime] = []
     t = period_start
     while t < period_end:
         times.append(t)
@@ -127,29 +127,28 @@ def _issue_times(
 
 
 def _raw_forcing_to_dataframe(
-    raw_records: list,
+    raw_records: list[RawHistoricalForcing],
     station_id: StationId,
     parameters: list[str],
 ) -> pl.DataFrame | None:
     rows = [
-        {"timestamp": r.valid_time, r.parameter: r.value}
+        (r.valid_time, r.parameter, r.value)
         for r in raw_records
         if r.station_id == station_id and r.parameter in parameters
     ]
     if not rows:
         return None
-    all_timestamps = sorted({r["timestamp"] for r in rows})
-    pivot: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_timestamps}
-    for row in rows:
-        ts = row["timestamp"]
-        for key, val in row.items():
-            if key != "timestamp":
-                pivot[ts][key] = val
+    all_timestamps = sorted({valid_time for valid_time, _, _ in rows})
+    pivot: dict[UtcDatetime, dict[str, object]] = {
+        ts: {"timestamp": ts} for ts in all_timestamps
+    }
+    for valid_time, parameter, value in rows:
+        pivot[valid_time][parameter] = value
     return pl.DataFrame(list(pivot.values()))
 
 
 def _observations_to_dataframe(
-    observations: list, parameter: str = "discharge"
+    observations: list[Observation], parameter: str = "discharge"
 ) -> pl.DataFrame:
     rows = [{"timestamp": o.timestamp, parameter: o.value} for o in observations]
     return pl.DataFrame(rows)
@@ -518,7 +517,7 @@ def run_station_hindcast(
         )
     else:
         all_forcing = []
-    all_observations = obs_store.fetch_observations(
+    all_observations = obs_store.fetch_accepted_historical_observations(
         station_id=station_id,
         parameter=parameter,
         start=full_start,
@@ -733,7 +732,7 @@ def run_group_hindcast(
     # Per-station calls for observations (different parameters per station).
     all_obs_map: dict[StationId, list[Observation]] = {}
     for sid in fetchable_sids:
-        all_obs_map[sid] = obs_store.fetch_observations(
+        all_obs_map[sid] = obs_store.fetch_accepted_historical_observations(
             station_id=sid,
             parameter=parameter_map.get(sid, "discharge"),
             start=full_start,

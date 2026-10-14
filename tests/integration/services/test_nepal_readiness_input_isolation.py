@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import pytest
 import sqlalchemy as sa
 
+from tests.integration.services import nepal_readiness_isolation_fixture as fixture
 from tests.integration.services.nepal_readiness_isolation_fixture import (
     QualificationScenario,
     run_qualification_case,
@@ -176,6 +177,28 @@ class TestNepalReadinessInputIsolation:
         assert len(qualification_models) == 2
         assert qualification_models[0] is not qualification_models[1]
         assert mixed == clean
+
+    def test_protected_oracle_fails_when_converter_result_changes(
+        self,
+        qualification_engine: sa.Engine,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+        original = fixture.convert_provisional_discharge
+
+        def wrong_convert(*args: object, **kwargs: object) -> object:
+            result = original(*args, **kwargs)
+            return fixture.replace(result, discharge=result.discharge + 1.0)
+
+        monkeypatch.setattr(fixture, "convert_provisional_discharge", wrong_convert)
+        with pytest.raises((AssertionError, ValueError)):
+            run_qualification_case(
+                qualification_engine,
+                QualificationScenario.MIXED,
+                [],
+                evidence_dir=tmp_path,
+            )
 
     def test_short_ordinary_history_is_not_repaired_by_protected_history(
         self,

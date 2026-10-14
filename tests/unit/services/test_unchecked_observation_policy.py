@@ -575,7 +575,10 @@ def _observation_read_inventory() -> dict[str, tuple[str, ...]]:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not isinstance(func, ast.Attribute) or func.attr != "fetch_observations":
+            if not isinstance(func, ast.Attribute) or func.attr not in {
+                "fetch_observations",
+                "fetch_accepted_historical_observations",
+            }:
                 continue
             if len(node.args) + len(node.keywords) < 3:
                 continue
@@ -608,7 +611,7 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
         "QcStatus.QC_PASSED",
     ),
     # Plan 143's delivery reader forwards training_data's QC_PASSED filter.
-    "src/sapphire_flow/services/nepal_onboarding.py": ("qc_status",),
+    "src/sapphire_flow/services/nepal_onboarding.py": ("qc_status", "qc_status"),
     "src/sapphire_flow/services/observation_alert_checker.py": ("QcStatus.QC_PASSED",),
     "src/sapphire_flow/services/onboarding.py": (
         "QcStatus.QC_PASSED",

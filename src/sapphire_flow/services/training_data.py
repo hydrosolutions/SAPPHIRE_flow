@@ -30,12 +30,14 @@ if TYPE_CHECKING:
         StationStore,
     )
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
         GroupTrainingData,
         ModelDataRequirements,
         StationTrainingData,
     )
+    from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationGroup
 
 log = structlog.get_logger()
@@ -391,28 +393,29 @@ def _timedelta_to_polars(td: timedelta) -> str:
 
 
 def _raw_forcing_to_dataframe(
-    raw_records: list,
+    raw_records: list[RawHistoricalForcing],
     station_id: StationId,
     parameters: list[str],
 ) -> pl.DataFrame | None:
     rows = [
-        {"timestamp": r.valid_time, r.parameter: r.value}
+        (r.valid_time, r.parameter, r.value)
         for r in raw_records
         if r.station_id == station_id and r.parameter in parameters
     ]
     if not rows:
         return None
-    all_timestamps = sorted({r["timestamp"] for r in rows})
-    pivot: dict[str, dict] = {ts: {"timestamp": ts} for ts in all_timestamps}
-    for row in rows:
-        ts = row["timestamp"]
-        for key, val in row.items():
-            if key != "timestamp":
-                pivot[ts][key] = val
+    all_timestamps = sorted({valid_time for valid_time, _, _ in rows})
+    pivot: dict[UtcDatetime, dict[str, object]] = {
+        ts: {"timestamp": ts} for ts in all_timestamps
+    }
+    for valid_time, parameter, value in rows:
+        pivot[valid_time][parameter] = value
     return pl.DataFrame(list(pivot.values()))
 
 
-def _observations_to_dataframe(observations: list, parameter: str) -> pl.DataFrame:
+def _observations_to_dataframe(
+    observations: list[Observation], parameter: str
+) -> pl.DataFrame:
     rows = [{"timestamp": o.timestamp, parameter: o.value} for o in observations]
     return pl.DataFrame(rows)
 
@@ -437,7 +440,7 @@ def assemble_station_training_data(
 
     targets = station.forecast_targets
     parameter = next(iter(targets), "discharge") if targets else "discharge"
-    observations = obs_store.fetch_observations(
+    observations = obs_store.fetch_accepted_historical_observations(
         station_id=station_id,
         parameter=parameter,
         start=period_start,

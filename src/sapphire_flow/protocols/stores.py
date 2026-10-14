@@ -167,6 +167,17 @@ class ObservationStore(Protocol):
     ) -> list[Observation]:
         raise NotImplementedError
 
+    def fetch_accepted_historical_observations(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
+        source: ObservationSource | None = None,
+    ) -> list[Observation]:
+        raise NotImplementedError
+
     def fetch_latest_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:

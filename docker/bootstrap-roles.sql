@@ -321,9 +321,14 @@ REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_api, sapphire_worker;
 DO $$
 DECLARE t text; r text; cols text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
+    FOREACH t IN ARRAY ARRAY['restricted_delivery_releases', 'restricted_delivery_release_witnesses',
+                            'restricted_delivery_generations', 'dhm_delivery_origins',
+                            'dhm_origin_sets', 'dhm_origin_set_members',
+                            'dhm_rating_declarations', 'dhm_delivery_observation_attributions',
+                            'expired_rating_test_permissions', 'provisional_discharge_permissions', 'measurement_feed_evidence',
                             'rating_reference_proofs', 'provisional_discharges',
                             'forecast_input_stations'] LOOP
+        CONTINUE WHEN to_regclass('public.' || t) IS NULL;
         SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
         WHERE attrelid = to_regclass('public.' || t) AND attnum > 0 AND NOT attisdropped;
         FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
@@ -331,8 +336,10 @@ BEGIN
             IF r = 'PUBLIC' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
                 EXECUTE format('REVOKE ALL ON public.%I FROM %s', t,
                                CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
-                EXECUTE format('REVOKE SELECT (%s), INSERT (%s), UPDATE (%s), REFERENCES (%s) ON public.%I FROM %s',
-                               cols, cols, cols, cols, t, CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+                IF cols IS NOT NULL THEN
+                    EXECUTE format('REVOKE SELECT (%s), INSERT (%s), UPDATE (%s), REFERENCES (%s) ON public.%I FROM %s',
+                                   cols, cols, cols, cols, t, CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+                END IF;
             END IF;
         END LOOP;
     END LOOP;
@@ -448,8 +455,25 @@ BEGIN
           AND n.oid <> pg_my_temp_schema()
           AND NOT pg_is_other_temp_schema(n.oid)
           AND f.oid NOT IN (
-              'public.lock_publication_grants(uuid,uuid,uuid)'::regprocedure,
-              'public.lock_publication_candidate(uuid)'::regprocedure)
+              SELECT allowed.oid
+              FROM unnest(ARRAY[
+                  'public.lock_publication_grants(uuid,uuid,uuid)',
+                  'public.lock_publication_candidate(uuid)',
+                  'public.sf_lock_dhm21_delivery_write(uuid,uuid)',
+                  'public.sf_lock_dhm21_conversion_append(uuid,uuid)',
+                  'public.sf_lock_dhm21_permission_change(uuid,uuid)',
+                  'public.sf_lock_provisional_permission_disable(uuid)',
+                  'public.sf_lock_nepal_static_guard(uuid)',
+                  'public.sf_restricted_delivery_row_guard()',
+                  'public.sf_restricted_generation_publish_guard()',
+                  'public.sf_mark_restricted_release_used(uuid)',
+                  'public.sf_active_accepted_delivery(uuid,text)',
+                  'public.sf_assert_restricted_publication_catalog(uuid)'
+              ]) AS allowed_signature(signature)
+              CROSS JOIN LATERAL (
+                  SELECT to_regprocedure(allowed_signature.signature)::oid AS oid
+              ) AS allowed
+              WHERE allowed.oid IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM pg_depend extension_dependency
               WHERE extension_dependency.classid = 'pg_proc'::regclass
                 AND extension_dependency.objid = f.oid
@@ -495,7 +519,11 @@ JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND c.relname NOT IN ('provisional_discharge_permissions', 'measurement_feed_evidence',
                        'rating_reference_proofs', 'provisional_discharges',
-                       'forecast_input_stations', 'forecasts', 'rejected_forecasts')
+                       'forecast_input_stations', 'restricted_delivery_releases',
+                       'restricted_delivery_release_witnesses', 'restricted_delivery_generations',
+                       'dhm_delivery_origins', 'dhm_origin_sets', 'dhm_origin_set_members',
+                       'dhm_rating_declarations', 'dhm_delivery_observation_attributions',
+                       'expired_rating_test_permissions', 'forecasts', 'rejected_forecasts')
 ORDER BY c.relname
 \gexec
 
@@ -876,6 +904,119 @@ END $$;
 -- sapphire_backup must not read the separate Prefect database either --
 -- same cross-database boundary as sapphire_api/sapphire_worker above.
 REVOKE CONNECT ON DATABASE prefect FROM sapphire_backup;
+
+
+
+-- ── sapphire_dhm21_delivery_writer: dormant Plan 520 protected writer ───────
+SELECT 'CREATE ROLE sapphire_dhm21_delivery_writer NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_dhm21_delivery_writer'
+)
+\gexec
+ALTER ROLE sapphire_dhm21_delivery_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+ALTER ROLE sapphire_dhm21_delivery_writer RESET ALL;
+SELECT format('REVOKE %I FROM sapphire_dhm21_delivery_writer', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_dhm21_delivery_writer'
+\gexec
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_dhm21_delivery_writer;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_dhm21_delivery_writer;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_dhm21_delivery_writer;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_dhm21_delivery_writer;
+GRANT CONNECT ON DATABASE sapphire TO sapphire_dhm21_delivery_writer;
+GRANT USAGE ON SCHEMA public TO sapphire_dhm21_delivery_writer;
+GRANT SELECT ON public.tenants TO sapphire_dhm21_delivery_writer;
+DO $$
+DECLARE rel text; fn text;
+BEGIN
+    FOREACH rel IN ARRAY ARRAY['tenants', 'stations', 'restricted_delivery_releases',
+                              'restricted_delivery_generations', 'restricted_delivery_release_witnesses',
+                              'dhm_delivery_origins', 'dhm_origin_sets', 'dhm_origin_set_members',
+                              'dhm_rating_declarations', 'dhm_delivery_observation_attributions',
+                              'observations', 'rating_curves'] LOOP
+        IF to_regclass('public.' || rel) IS NOT NULL THEN
+            EXECUTE format('GRANT SELECT ON public.%I TO sapphire_dhm21_delivery_writer', rel);
+        END IF;
+    END LOOP;
+    FOREACH rel IN ARRAY ARRAY['restricted_delivery_generations', 'dhm_delivery_origins',
+                              'dhm_origin_sets', 'dhm_origin_set_members', 'dhm_rating_declarations',
+                              'dhm_delivery_observation_attributions'] LOOP
+        IF to_regclass('public.' || rel) IS NOT NULL THEN
+            EXECUTE format('GRANT INSERT ON public.%I TO sapphire_dhm21_delivery_writer', rel);
+        END IF;
+    END LOOP;
+    FOREACH rel IN ARRAY ARRAY['observations', 'rating_curves'] LOOP
+        IF to_regclass('public.' || rel) IS NOT NULL THEN
+            EXECUTE format('GRANT INSERT, UPDATE, DELETE ON public.%I TO sapphire_dhm21_delivery_writer', rel);
+        END IF;
+    END LOOP;
+    IF to_regclass('public.restricted_delivery_generations') IS NOT NULL THEN
+        EXECUTE 'GRANT UPDATE ON public.restricted_delivery_generations TO sapphire_dhm21_delivery_writer';
+    END IF;
+    FOREACH fn IN ARRAY ARRAY['public.sf_lock_dhm21_delivery_write(uuid,uuid)',
+                             'public.sf_lock_dhm21_conversion_append(uuid,uuid)',
+                             'public.sf_lock_dhm21_permission_change(uuid,uuid)',
+                             'public.sf_lock_provisional_permission_disable(uuid)',
+                             'public.sf_lock_nepal_static_guard(uuid)',
+                             'public.sf_active_accepted_delivery(uuid,text)',
+                             'public.sf_assert_restricted_publication_catalog(uuid)'] LOOP
+        IF to_regprocedure(fn) IS NOT NULL THEN
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO sapphire_dhm21_delivery_writer', fn);
+        END IF;
+    END LOOP;
+END $$;
+
+-- ── sapphire_static_importer: dormant Plan 520 Nepal21 static-only writer ───
+SELECT 'CREATE ROLE sapphire_static_importer NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_static_importer'
+)
+\gexec
+ALTER ROLE sapphire_static_importer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+ALTER ROLE sapphire_static_importer RESET ALL;
+SELECT format('REVOKE %I FROM sapphire_static_importer', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_static_importer'
+\gexec
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_static_importer;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_static_importer;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_static_importer;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_static_importer;
+GRANT CONNECT ON DATABASE sapphire TO sapphire_static_importer;
+GRANT USAGE ON SCHEMA public TO sapphire_static_importer;
+DO $$
+DECLARE rel text; fn text;
+BEGIN
+    FOREACH rel IN ARRAY ARRAY['tenants', 'stations', 'basins', 'basin_versions', 'basin_static_packages',
+                              'recap_gateway_polygon_bindings', 'station_weather_sources',
+                              'station_groups', 'station_group_members', 'group_model_assignments',
+                              'model_artifacts', 'model_artifact_basin_versions'] LOOP
+        IF to_regclass('public.' || rel) IS NOT NULL THEN
+            EXECUTE format('GRANT SELECT ON public.%I TO sapphire_static_importer', rel);
+        END IF;
+    END LOOP;
+    FOREACH rel IN ARRAY ARRAY['basin_static_packages', 'basins', 'basin_versions', 'recap_gateway_polygon_bindings'] LOOP
+        IF to_regclass('public.' || rel) IS NOT NULL THEN
+            EXECUTE format('GRANT INSERT, UPDATE ON public.%I TO sapphire_static_importer', rel);
+        END IF;
+    END LOOP;
+    IF to_regclass('public.stations') IS NOT NULL THEN
+        EXECUTE 'GRANT UPDATE (basin_id) ON public.stations TO sapphire_static_importer';
+    END IF;
+    FOREACH fn IN ARRAY ARRAY['public.sf_lock_nepal_static_guard(uuid)'] LOOP
+        IF to_regprocedure(fn) IS NOT NULL THEN
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO sapphire_static_importer', fn);
+        END IF;
+    END LOOP;
+END $$;
 
 -- ── sapphire_operator: OWN CONVERGENCE BLOCK (Plan 510) ────────────────────
 -- The database-limited identity for the DHM delivery import commands. Three

@@ -9,7 +9,14 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from sapphire_flow.db.metadata import observations as observations_table
+from sapphire_flow.db.metadata import (
+    observations as observations_table,
+)
+from sapphire_flow.db.metadata import (
+    restricted_delivery_generations,
+    restricted_delivery_releases,
+    stations,
+)
 from sapphire_flow.exceptions import DeliveryCollisionError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import QcFlag
@@ -31,6 +38,69 @@ _OBSERVATION_NATURAL_KEY_COLUMNS = (
     observations_table.c.parameter,
     observations_table.c.source,
 )
+
+
+def _active_generation_exists_for_policy(
+    *,
+    delivery_id: sa.ColumnElement[str],
+    policy_sha256: str,
+) -> sa.ColumnElement[bool]:
+    return sa.exists(
+        sa.select(sa.literal(1))
+        .select_from(
+            restricted_delivery_generations.join(
+                stations,
+                stations.c.tenant_id == restricted_delivery_generations.c.tenant_id,
+            )
+        )
+        .where(stations.c.id == observations_table.c.station_id)
+        .where(restricted_delivery_generations.c.delivery_id == delivery_id)
+        .where(restricted_delivery_generations.c.state == "active_qc_complete")
+        .where(restricted_delivery_generations.c.qc_policy_sha256 == policy_sha256)
+    )
+
+
+def _predecessor_replaced_for_policy(policy_sha256: str) -> sa.ColumnElement[bool]:
+    return sa.exists(
+        sa.select(sa.literal(1))
+        .select_from(
+            restricted_delivery_generations.join(
+                restricted_delivery_releases,
+                restricted_delivery_releases.c.id
+                == restricted_delivery_generations.c.release_id,
+            ).join(
+                stations,
+                stations.c.tenant_id == restricted_delivery_generations.c.tenant_id,
+            )
+        )
+        .where(stations.c.id == observations_table.c.station_id)
+        .where(
+            restricted_delivery_releases.c.expected_predecessor_delivery_id
+            == observations_table.c.delivery_id
+        )
+        .where(restricted_delivery_generations.c.state == "active_qc_complete")
+        .where(restricted_delivery_generations.c.qc_policy_sha256 == policy_sha256)
+    )
+
+
+def _accepted_generation_with_expected_policy_predicate(
+    policy_sha256: str,
+) -> sa.ColumnElement[bool]:
+    delivery_id = observations_table.c.delivery_id
+    return sa.case(
+        (
+            delivery_id == "dhm-barkhk-2026-09-08",
+            sa.not_(_predecessor_replaced_for_policy(policy_sha256)),
+        ),
+        (
+            delivery_id.like("dhm-nepal21-%"),
+            _active_generation_exists_for_policy(
+                delivery_id=delivery_id,
+                policy_sha256=policy_sha256,
+            ),
+        ),
+        else_=True,
+    )
 
 
 def _qc_status_values(
@@ -315,6 +385,50 @@ class PgObservationStore:
             # `{QC_PASSED, QC_UNCHECKED}` — which Plan 272 D5's consumer policy
             # requires and the scalar form could not express. An EMPTY
             # collection accepts nothing, which is what it says.
+            stmt = stmt.where(
+                observations_table.c.qc_status.in_(_qc_status_values(qc_status))
+            )
+        if source is not None:
+            stmt = stmt.where(observations_table.c.source == source.value)
+        rows = self._conn.execute(stmt).mappings().all()
+        return [_row_to_domain(row) for row in rows]
+
+    def fetch_accepted_historical_observations(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        qc_status: QcStatus | Collection[QcStatus] | None = None,
+        source: ObservationSource | None = None,
+        expected_qc_policy_sha256: str | None = None,
+    ) -> list[Observation]:
+        from sapphire_flow.services.nepal21_delivery_authority import (
+            active_accepted_generation_predicate,
+        )
+
+        accepted_predicate = (
+            active_accepted_generation_predicate(observations_table)
+            if expected_qc_policy_sha256 is None
+            else _accepted_generation_with_expected_policy_predicate(
+                expected_qc_policy_sha256
+            )
+        )
+        stmt = (
+            sa.select(observations_table)
+            .where(observations_table.c.station_id == station_id)
+            .where(observations_table.c.parameter == parameter)
+            .where(observations_table.c.timestamp >= start)
+            .where(observations_table.c.timestamp < end)
+            .where(
+                sa.or_(
+                    observations_table.c.delivery_id.is_(None),
+                    accepted_predicate,
+                )
+            )
+            .order_by(observations_table.c.timestamp)
+        )
+        if qc_status is not None:
             stmt = stmt.where(
                 observations_table.c.qc_status.in_(_qc_status_values(qc_status))
             )

@@ -567,14 +567,16 @@ class TestGroupMemberInputIsolationInCycle:
 
             monkeypatch.setattr(stores.nwp_store, "fetch_weather_forecasts", fetch)
         elif shortfall == "assembly":
-            original_obs = stores.obs_store.fetch_observations
+            original_obs = stores.obs_store.fetch_accepted_historical_observations
 
             def fetch_obs(**kwargs: Any) -> Any:
                 if kwargs["station_id"] == sid_b:
                     raise InsufficientDataError("fixture input unavailable")
                 return original_obs(**kwargs)
 
-            monkeypatch.setattr(stores.obs_store, "fetch_observations", fetch_obs)
+            monkeypatch.setattr(
+                stores.obs_store, "fetch_accepted_historical_observations", fetch_obs
+            )
         else:
             original_sources = stores.station_store.fetch_weather_sources
 
@@ -600,14 +602,16 @@ class TestGroupMemberInputIsolationInCycle:
         from sapphire_flow.exceptions import StoreError
 
         stores, _, sid_b = _seed_group_of_two()
-        original = stores.obs_store.fetch_observations
+        original = stores.obs_store.fetch_accepted_historical_observations
 
         def fail_member(**kwargs: Any) -> Any:
             if kwargs["station_id"] == sid_b:
                 raise DisconnectionError("fixture database connection lost")
             return original(**kwargs)
 
-        monkeypatch.setattr(stores.obs_store, "fetch_observations", fail_member)
+        monkeypatch.setattr(
+            stores.obs_store, "fetch_accepted_historical_observations", fail_member
+        )
         with pytest.raises(StoreError, match="Connection-fatal"):
             _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
 
@@ -629,7 +633,7 @@ class TestGroupMemberInputIsolationInCycle:
         from sqlalchemy.exc import IntegrityError
 
         stores, _, sid_b = _seed_group_of_two()
-        original = stores.obs_store.fetch_observations
+        original = stores.obs_store.fetch_accepted_historical_observations
 
         def fail_member(**kwargs: Any) -> Any:
             if kwargs["station_id"] == sid_b:
@@ -638,7 +642,9 @@ class TestGroupMemberInputIsolationInCycle:
                 )
             return original(**kwargs)
 
-        monkeypatch.setattr(stores.obs_store, "fetch_observations", fail_member)
+        monkeypatch.setattr(
+            stores.obs_store, "fetch_accepted_historical_observations", fail_member
+        )
         events = _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
         assert any(
             row["event"] == "forecast_cycle.group_input_assembly_failed"
@@ -655,13 +661,15 @@ class TestGroupMemberInputIsolationInCycle:
         self, monkeypatch: pytest.MonkeyPatch, requires_target: bool
     ) -> None:
         stores, sid_a, sid_b = _seed_group_of_two()
-        original = stores.obs_store.fetch_observations
+        original = stores.obs_store.fetch_accepted_historical_observations
 
         def no_sibling_observations(**kwargs: Any) -> Any:
             return [] if kwargs["station_id"] == sid_b else original(**kwargs)
 
         monkeypatch.setattr(
-            stores.obs_store, "fetch_observations", no_sibling_observations
+            stores.obs_store,
+            "fetch_accepted_historical_observations",
+            no_sibling_observations,
         )
         raw = SyntheticGroupFIModel()
         spec = raw.input_requirement.dynamic[_STEP].data[

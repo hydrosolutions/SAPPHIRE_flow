@@ -263,7 +263,7 @@ class TestListObservations:
     ) -> None:
         station = make_station_config(rng=random.Random(1))
         fake_stores["station_store"].store_station(station)
-        restricted = replace(
+        old_restricted = replace(
             make_observation(
                 station_id=station.id,
                 parameter="discharge",
@@ -272,13 +272,33 @@ class TestListObservations:
             ),
             delivery_id=DELIVERY_ID,
         )
+        new_restricted = replace(
+            make_observation(
+                station_id=station.id,
+                parameter="discharge",
+                timestamp=ensure_utc(datetime(2025, 1, 1, 6, 30, tzinfo=UTC)),
+                rng=random.Random(20),
+            ),
+            delivery_id="dhm-nepal21-0123456789abcdef",
+        )
+        unknown_restricted = replace(
+            make_observation(
+                station_id=station.id,
+                parameter="discharge",
+                timestamp=ensure_utc(datetime(2025, 1, 1, 6, 45, tzinfo=UTC)),
+                rng=random.Random(21),
+            ),
+            delivery_id="restricted-future-delivery",
+        )
         ordinary = make_observation(
             station_id=station.id,
             parameter="discharge",
             timestamp=ensure_utc(datetime(2025, 1, 1, 7, tzinfo=UTC)),
             rng=random.Random(3),
         )
-        fake_stores["obs_store"].store_observations([restricted, ordinary])
+        fake_stores["obs_store"].store_observations(
+            [old_restricted, new_restricted, unknown_restricted, ordinary]
+        )
         url = f"/api/v1/stations/{station.id}/observations"
         params = {
             "parameter": "discharge",
@@ -300,7 +320,9 @@ class TestListObservations:
         admin = client.get(url, params=params)
         assert admin.status_code == 200
         assert {row["id"] for row in admin.json()} == {
-            str(restricted.id),
+            str(old_restricted.id),
+            str(new_restricted.id),
+            str(unknown_restricted.id),
             str(ordinary.id),
         }
 

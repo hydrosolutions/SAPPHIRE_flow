@@ -43,7 +43,6 @@ from sapphire_flow.api.security import (
     require_principal,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.enums import QcStatus, StationKind, StationStatus
 from sapphire_flow.types.ids import ModelId, StationId
 
@@ -170,6 +169,10 @@ def _parse_enum(value: str, enum_cls: type[Enum], field_name: str) -> Any:
         ) from exc
 
 
+def _is_restricted_delivery_id(delivery_id: str | None) -> bool:
+    return delivery_id is not None
+
+
 @router.get("/stations")
 def list_stations(
     kind: str | None = Query(None),
@@ -280,7 +283,9 @@ def list_observations(
         sid, parameter, start_dt, end_dt, qc_status=qc
     )
     if not principal.is_admin:
-        observations = [o for o in observations if o.delivery_id != DELIVERY_ID]
+        observations = [
+            o for o in observations if not _is_restricted_delivery_id(o.delivery_id)
+        ]
     return [_to_observation_response(o) for o in observations]
 
 

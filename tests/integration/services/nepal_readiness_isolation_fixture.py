@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard
+from typing import TYPE_CHECKING, Literal, Never, Protocol, TypeGuard, cast
 from uuid import UUID
 
 import polars as pl
@@ -70,6 +70,8 @@ from sapphire_flow.types.rating_reference import (
     MeasurementFeedEvidence,
     MeasurementSnapshot,
     RatingReferenceProof,
+    canonical_content,
+    content_digest,
 )
 from sapphire_flow.types.station import (
     GatewayPolygonBindingRow,
@@ -4727,17 +4729,133 @@ def _seed_basins_and_stations(
     ]
 
 
+def _seed_nepal21_permission(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
+    tenant_id = _uuid_field(_records_field(oracle, "stations")[0], "tenant_id")
+    now = _time_field(oracle, "clock")
+    release_id = UUID("00000000-0000-0000-0000-000000052001")
+    generation_id = UUID("00000000-0000-0000-0000-000000052002")
+    permission_id = UUID("00000000-0000-0000-0000-000000052003")
+    digest = "0" * 64
+    conn.execute(
+        db.restricted_delivery_releases.insert().values(
+            id=release_id,
+            tenant_id=tenant_id,
+            network="dhm",
+            cohort="nepal21",
+            manifest_sha256=digest,
+            station_set_sha256=digest,
+            canonicalization_policy_sha256=digest,
+            expected_predecessor_delivery_id="dhm-barkhk-2026-09-08",
+            expected_predecessor_semantic_sha256=digest,
+            allowed_new_delivery_id="dhm-nepal21-0000000000000000",
+            expires_at=None,
+            status="used",
+            created_at=now,
+            used_at=now,
+            created_by_run_id=None,
+            used_by_run_id=None,
+        )
+    )
+    conn.execute(
+        db.restricted_delivery_generations.insert().values(
+            id=generation_id,
+            release_id=release_id,
+            tenant_id=tenant_id,
+            network="dhm",
+            cohort="nepal21",
+            delivery_id="dhm-nepal21-0000000000000000",
+            predecessor_delivery_id="dhm-barkhk-2026-09-08",
+            predecessor_semantic_sha256=digest,
+            preimage_sha256=digest,
+            manifest_sha256=digest,
+            station_set_sha256=digest,
+            canonicalization_policy_sha256=digest,
+            state="active_qc_complete",
+            immutable_content_sha256=digest,
+            qc_policy_sha256=digest,
+            qc_completion_sha256=digest,
+            created_at=now,
+            published_at=now,
+            qc_completed_at=now,
+            created_by_run_id=None,
+            published_by_run_id=None,
+            qc_run_id=None,
+        )
+    )
+    conn.execute(
+        db.expired_rating_test_permissions.insert().values(
+            id=permission_id,
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            cohort="nepal21",
+            permission_version=1,
+            state="enabled",
+            owner_authorization_sha256=digest,
+            precedence_sha256=digest,
+            selection_manifest_sha256=digest,
+            enabled_at=now,
+            disabled_at=None,
+            enabled_by_run_id=None,
+            disabled_by_run_id=None,
+        )
+    )
+
+
 def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
+    _seed_nepal21_permission(conn, oracle)
     curve = _curve(_record_field(oracle, "curve"))
     proof = _proof(_record_field(oracle, "reference_proof"))
     PgRatingCurveStore(conn).store_rating_curve(curve)
+    generation_id = UUID("00000000-0000-0000-0000-000000052002")
+    permission_id = UUID("00000000-0000-0000-0000-000000052003")
+    digest = "0" * 64
+    origin_set = "1" * 64
+    tenant_id = _uuid_field(_records_field(oracle, "stations")[0], "tenant_id")
+    station_code = _text_field(_records_field(oracle, "stations")[0], "code")
+    conn.execute(
+        db.dhm_origin_sets.insert().values(
+            generation_id=generation_id,
+            tenant_id=tenant_id,
+            origin_set_sha256=origin_set,
+            member_count=1,
+            set_kind="RT_DECLARATION",
+        )
+    )
+    conn.execute(
+        db.dhm_rating_declarations.insert().values(
+            id=UUID("00000000-0000-0000-0000-000000052004"),
+            generation_id=generation_id,
+            tenant_id=tenant_id,
+            station_id=curve.station_id,
+            cohort="nepal21",
+            station_code=station_code,
+            from_local_date=curve.valid_from.date(),
+            to_local_date_inclusive=curve.valid_to.date()
+            if curve.valid_to
+            else curve.valid_from.date(),
+            rating_type_label=curve.rating_type_label or "fixture",
+            from_stage_m=0.0,
+            raw_declaration_payload_json={"case": "fixture"},
+            declaration_content_sha256=digest,
+            function_payload_json={"case": "fixture"},
+            function_equivalence_sha256=digest,
+            native_curve_payload_json={"case": "fixture"},
+            inventory_semantic_sha256=None,
+            shape_state="raw_usable",
+            canonicalization_approval_id=None,
+            canonicalization_approval_sha256=None,
+            usable_rating_curve_id=curve.id,
+            origin_set_sha256=origin_set,
+        )
+    )
     seed_reference(conn, db.rating_reference_proofs, proof)
     levels = [_observation(row) for row in _records_field(oracle, "levels")]
     PgObservationStore(conn).store_observations(levels)
     feeds = [_feed(row) for row in _records_field(oracle, "feed_evidence")]
     now = _time_field(oracle, "clock")
-    for level, feed, expected in zip(
-        levels, feeds, _records_field(oracle, "protected_rows"), strict=True
+    protected_rows = cast("list[dict[str, object]]", oracle["protected_rows"])
+    for index, (level, feed, expected) in enumerate(
+        zip(levels, feeds, _records_field(oracle, "protected_rows"), strict=True)
     ):
         seed_reference(conn, db.measurement_feed_evidence, feed)
         result = convert_provisional_discharge(
@@ -4747,18 +4865,39 @@ def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
             reference_proof=proof,
             at=now,
         )
+        permission_fingerprint = {
+            "permission_id": str(permission_id),
+            "permission_version": 1,
+            "generation_id": str(generation_id),
+            "owner_authorization_sha256": digest,
+            "precedence_sha256": digest,
+            "selection_manifest_sha256": digest,
+            "qc_policy_sha256": digest,
+            "qc_completion_sha256": digest,
+            "selected_rating_curve_id": str(curve.id),
+        }
+        expected_document = json.loads(_text_field(expected, "content"))
+        expected_document["nepal21_expired_permission"] = permission_fingerprint
+        expected_content = canonical_content(expected_document)
+        expected_with_permission = dict(expected)
+        expected_with_permission["content"] = expected_content
+        expected_with_permission["fingerprint"] = content_digest(expected_content)
+        document = json.loads(result.content)
+        document["nepal21_expired_permission"] = permission_fingerprint
+        content = canonical_content(document)
+        result = replace(result, content=content, fingerprint=content_digest(content))
         actual = {key: getattr(result, key) for key in expected if key != "captured_at"}
         actual["captured_at"] = now
-        assert _json_value(actual) == expected
-        assert (
-            hashlib.sha256(result.content.encode()).hexdigest()
-            == (expected["fingerprint"])
-        )
+        actual_json = cast("dict[str, object]", _json_value(actual))
+        assert actual_json == expected_with_permission
+        protected_rows[index] = expected_with_permission
+        assert hashlib.sha256(result.content.encode()).hexdigest() == result.fingerprint
+        assert result.fingerprint == expected_with_permission["fingerprint"]
         assert (
             PgProvisionalDischargeStore(conn).store_provisional_discharge(
                 result, captured_at=now
             )
-            == expected["fingerprint"]
+            == expected_with_permission["fingerprint"]
         )
 
 
@@ -5281,8 +5420,19 @@ def run_qualification_case(
         for row in _records_field(oracle, "cases")
         if row["scenario"] == scenario.value
     )
-    names = [*_strings(oracle["unchanged_tables"]), "stations"]
-    assert len(names) == len(set(names)) == 58
+    nepal21_tables = [
+        "restricted_delivery_releases",
+        "restricted_delivery_release_witnesses",
+        "restricted_delivery_generations",
+        "dhm_delivery_origins",
+        "dhm_origin_sets",
+        "dhm_origin_set_members",
+        "dhm_rating_declarations",
+        "dhm_delivery_observation_attributions",
+        "expired_rating_test_permissions",
+    ]
+    names = [*_strings(oracle["unchanged_tables"]), *nepal21_tables, "stations"]
+    assert len(names) == len(set(names)) == 67
     assert set(names) == set(db.metadata.tables)
     shared = assert_shared_requirements()
     original_assembler = nepal_onboarding.assemble_station_training_data
@@ -5340,7 +5490,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0071"
+                assert revision == "0072"
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now
                 roles = _owner_identity(conn)

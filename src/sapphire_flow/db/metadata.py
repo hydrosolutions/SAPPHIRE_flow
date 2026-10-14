@@ -2796,3 +2796,180 @@ sa.Index(
 sa.Index("ix_provisional_discharge_curve", provisional_discharges.c.rating_curve_id)
 sa.Index("ix_provisional_discharge_feed", provisional_discharges.c.feed_evidence_id)
 sa.Index("ix_provisional_discharge_proof", provisional_discharges.c.reference_proof_id)
+
+
+# ──────────────────────────────────────────────
+# NEPAL21 RESTRICTED DELIVERY AUTHORITY (Plan 520)
+# ──────────────────────────────────────────────
+
+restricted_delivery_releases = sa.Table(
+    "restricted_delivery_releases",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("manifest_sha256", sa.Text, nullable=False),
+    sa.Column("station_set_sha256", sa.Text, nullable=False),
+    sa.Column("canonicalization_policy_sha256", sa.Text, nullable=True),
+    sa.Column("expected_predecessor_delivery_id", sa.Text, nullable=False),
+    sa.Column("expected_predecessor_semantic_sha256", sa.Text, nullable=False),
+    sa.Column("allowed_new_delivery_id", sa.Text, nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by_run_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("used_by_run_id", UUID(as_uuid=True), nullable=True),
+)
+
+restricted_delivery_release_witnesses = sa.Table(
+    "restricted_delivery_release_witnesses",
+    metadata,
+    sa.Column(
+        "release_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("restricted_delivery_releases.id"),
+        primary_key=True,
+    ),
+    sa.Column("witness_kind", sa.Text, primary_key=True),
+    sa.Column("content_sha256", sa.Text, nullable=False),
+    sa.Column("content_bytes", BYTEA, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+restricted_delivery_generations = sa.Table(
+    "restricted_delivery_generations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "release_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("restricted_delivery_releases.id"),
+        nullable=False,
+    ),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("delivery_id", sa.Text, nullable=False),
+    sa.Column("predecessor_delivery_id", sa.Text, nullable=False),
+    sa.Column("predecessor_semantic_sha256", sa.Text, nullable=False),
+    sa.Column("preimage_sha256", sa.Text, nullable=True),
+    sa.Column("manifest_sha256", sa.Text, nullable=False),
+    sa.Column("station_set_sha256", sa.Text, nullable=False),
+    sa.Column("canonicalization_policy_sha256", sa.Text, nullable=True),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("immutable_content_sha256", sa.Text, nullable=True),
+    sa.Column("qc_policy_sha256", sa.Text, nullable=True),
+    sa.Column("qc_completion_sha256", sa.Text, nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("qc_completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by_run_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("published_by_run_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("qc_run_id", UUID(as_uuid=True), nullable=True),
+)
+
+dhm_delivery_origins = sa.Table(
+    "dhm_delivery_origins",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("origin_kind", sa.Text, nullable=False),
+    sa.Column("source_root_label", sa.Text, nullable=False),
+    sa.Column("relative_path", sa.Text, nullable=False),
+    sa.Column("file_sha256", sa.Text, nullable=False),
+    sa.Column("parser_version", sa.Text, nullable=False),
+    sa.Column("row_or_block_ordinal", sa.Integer, nullable=True),
+    sa.Column("origin_payload_sha256", sa.Text, nullable=False),
+)
+
+dhm_origin_sets = sa.Table(
+    "dhm_origin_sets",
+    metadata,
+    sa.Column("generation_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("origin_set_sha256", sa.Text, primary_key=True),
+    sa.Column("member_count", sa.Integer, nullable=False),
+    sa.Column("set_kind", sa.Text, nullable=False),
+)
+
+dhm_origin_set_members = sa.Table(
+    "dhm_origin_set_members",
+    metadata,
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("origin_set_sha256", sa.Text, nullable=False),
+    sa.Column("origin_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("origin_kind", sa.Text, nullable=False),
+    sa.Column("member_ordinal", sa.Integer, nullable=False),
+)
+
+dhm_rating_declarations = sa.Table(
+    "dhm_rating_declarations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("station_code", sa.Text, nullable=False),
+    sa.Column("from_local_date", sa.Date, nullable=False),
+    sa.Column("to_local_date_inclusive", sa.Date, nullable=False),
+    sa.Column("rating_type_label", sa.Text, nullable=False),
+    sa.Column("from_stage_m", sa.Float, nullable=False),
+    sa.Column("raw_declaration_payload_json", JSONB, nullable=False),
+    sa.Column("declaration_content_sha256", sa.Text, nullable=False),
+    sa.Column("function_payload_json", JSONB, nullable=True),
+    sa.Column("function_equivalence_sha256", sa.Text, nullable=True),
+    sa.Column("native_curve_payload_json", JSONB, nullable=True),
+    sa.Column("inventory_semantic_sha256", sa.Text, nullable=True),
+    sa.Column("shape_state", sa.Text, nullable=False),
+    sa.Column("canonicalization_approval_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("canonicalization_approval_sha256", sa.Text, nullable=True),
+    sa.Column("usable_rating_curve_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("origin_set_sha256", sa.Text, nullable=False),
+)
+
+dhm_delivery_observation_attributions = sa.Table(
+    "dhm_delivery_observation_attributions",
+    metadata,
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("station_code", sa.Text, nullable=False),
+    sa.Column("origin_set_sha256", sa.Text, nullable=False),
+    sa.Column("rating_declaration_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("attribution_state", sa.Text, nullable=False),
+    sa.Column("local_date", sa.Date, nullable=False),
+    sa.Column("reported_q", sa.Float, nullable=False),
+)
+
+expired_rating_test_permissions = sa.Table(
+    "expired_rating_test_permissions",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("cohort", sa.Text, nullable=False),
+    sa.Column("permission_version", sa.Integer, nullable=False),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("owner_authorization_sha256", sa.Text, nullable=False),
+    sa.Column("precedence_sha256", sa.Text, nullable=False),
+    sa.Column("selection_manifest_sha256", sa.Text, nullable=False),
+    sa.Column("enabled_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("disabled_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("enabled_by_run_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("disabled_by_run_id", UUID(as_uuid=True), nullable=True),
+)
