@@ -854,6 +854,7 @@ BEGIN
         public.dhm_delivery_origins, public.dhm_origin_sets, public.dhm_origin_set_members,
         public.dhm_rating_declarations, public.dhm_delivery_observation_attributions,
         public.rating_curves, public.observations IN SHARE ROW EXCLUSIVE MODE;
+    PERFORM set_config('sapphire.dhm21_delivery_write_lock', p_tenant_id::text || ':' || p_release_id::text, true);
 END $$;
 
 CREATE OR REPLACE FUNCTION public.sf_lock_dhm21_conversion_append(p_tenant_id uuid, p_generation_id uuid) RETURNS void
@@ -978,6 +979,12 @@ CREATE TRIGGER trg_restricted_generation_publish_guard BEFORE UPDATE ON public.r
 CREATE OR REPLACE FUNCTION public.sf_restricted_generation_insert_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF NEW.cohort = 'nepal21'
+       AND session_user = 'sapphire_dhm21_delivery_writer'
+       AND current_setting('sapphire.dhm21_delivery_write_lock', true)
+           IS DISTINCT FROM NEW.tenant_id::text || ':' || NEW.release_id::text THEN
+        RAISE EXCEPTION 'restricted Nepal21 generation insert requires delivery write lock';
+    END IF;
     IF NEW.cohort = 'nepal21'
        AND NEW.state <> 'building'
        AND session_user = 'sapphire_dhm21_delivery_writer' THEN

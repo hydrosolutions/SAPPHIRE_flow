@@ -515,8 +515,26 @@ class TestNepal21AuthorityMigration:
         with engine.begin() as conn:
             tenant_id = _tenant(conn)
             station_id = _station(conn, tenant_id)
+            non_old6_station_id = uuid.uuid4()
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO stations (
+                        id, code, name, location, station_kind, timezone,
+                        measured_parameters, station_status, network, ownership,
+                        gauging_status, tenant_id
+                    ) VALUES (
+                        :id, '225', 'Non old6 station', ST_GeomFromText('POINT(85 27)', 4326),
+                        'river', 'Asia/Kathmandu', ARRAY['discharge'], 'onboarding',
+                        'dhm', 'foreign', 'gauged', :tenant_id
+                    )
+                    """
+                ),
+                {"id": non_old6_station_id, "tenant_id": tenant_id},
+            )
             old_curve_id = uuid.uuid4()
             old_obs_id = uuid.uuid4()
+            non_old6_old_obs_id = uuid.uuid4()
             conn.execute(
                 sa.text(
                     """
@@ -557,6 +575,26 @@ class TestNepal21AuthorityMigration:
                     "station_id": station_id,
                     "timestamp": datetime(1990, 1, 2, tzinfo=UTC),
                     "curve_id": old_curve_id,
+                    "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+                },
+            )
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO observations (
+                        id, station_id, timestamp, parameter, value, source,
+                        delivery_id, qc_status, qc_flags, qc_rule_version, created_at
+                    ) VALUES (
+                        :id, :station_id, :timestamp, 'discharge', 9.0,
+                        'manual_import', 'dhm-barkhk-2026-09-08',
+                        'raw', '[]'::jsonb, NULL, :created_at
+                    )
+                    """
+                ),
+                {
+                    "id": non_old6_old_obs_id,
+                    "station_id": non_old6_station_id,
+                    "timestamp": datetime(1990, 1, 2, tzinfo=UTC),
                     "created_at": datetime(2026, 1, 1, tzinfo=UTC),
                 },
             )
@@ -746,7 +784,12 @@ class TestNepal21AuthorityMigration:
             assert (
                 conn.scalar(
                     sa.text(
-                        "SELECT count(*) FROM observations WHERE delivery_id='dhm-barkhk-2026-09-08'"
+                        """
+                        SELECT count(*) FROM observations o
+                        JOIN stations s ON s.id = o.station_id
+                        WHERE o.delivery_id='dhm-barkhk-2026-09-08'
+                          AND s.code = '447'
+                        """
                     )
                 )
                 == 1
@@ -779,10 +822,22 @@ class TestNepal21AuthorityMigration:
             assert (
                 conn.scalar(
                     sa.text(
-                        "SELECT count(*) FROM observations WHERE delivery_id='dhm-barkhk-2026-09-08'"
+                        """
+                        SELECT count(*) FROM observations o
+                        JOIN stations s ON s.id = o.station_id
+                        WHERE o.delivery_id='dhm-barkhk-2026-09-08'
+                          AND s.code = '447'
+                        """
                     )
                 )
                 == 0
+            )
+            assert (
+                conn.scalar(
+                    sa.text("SELECT count(*) FROM observations WHERE id = :id"),
+                    {"id": non_old6_old_obs_id},
+                )
+                == 1
             )
             assert (
                 conn.scalar(
@@ -2672,6 +2727,307 @@ class TestNepal21AuthorityMigration:
                 == protected.fingerprint
             )
 
+    def test_expired_conversion_refuses_equal_start_non_equivalent_all_paths(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        engine, _ = migration_engine
+        command.upgrade(Config("alembic.ini"), "0072")
+        with engine.begin() as conn:
+            tenant_id = _tenant(conn)
+            args = seed(conn, tenant_id=TenantId(tenant_id))
+            observation, curve, _, _ = args
+            conn.execute(
+                sa.text(
+                    "UPDATE stations SET code = '447', network = 'dhm' WHERE id = :id"
+                ),
+                {"id": observation.station_id},
+            )
+            curve_valid_to = curve.valid_to
+            assert curve_valid_to is not None
+            valid_from_local = (
+                curve.valid_from + timedelta(hours=5, minutes=45)
+            ).date()
+            valid_to_local = (curve_valid_to + timedelta(hours=5, minutes=45)).date()
+            base_points_native = cast(
+                "list[dict[str, float]]", cast("Any", curve).points
+            )
+            base_points = [
+                {"stage_m": point["water_level"], "discharge_m3s": point["discharge"]}
+                for point in base_points_native
+            ]
+            other_curve_id = uuid.uuid4()
+            other_points_native = [
+                {"water_level": 0.0, "discharge": 10.0},
+                {"water_level": 1.0, "discharge": 20.0},
+            ]
+            other_points = [
+                {"stage_m": point["water_level"], "discharge_m3s": point["discharge"]}
+                for point in other_points_native
+            ]
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO rating_curves (
+                        id, station_id, version, valid_from, valid_to, points,
+                        interpolation, delivery_id, rating_type_label, created_at
+                    ) VALUES (
+                        :id, :station_id, 99, :valid_from, :valid_to,
+                        CAST(:points AS jsonb), 'linear', :delivery_id, '1', :created_at
+                    )
+                    """
+                ),
+                {
+                    "id": other_curve_id,
+                    "station_id": observation.station_id,
+                    "valid_from": curve.valid_from,
+                    "valid_to": curve_valid_to,
+                    "points": json.dumps(other_points_native),
+                    "delivery_id": "native-equal-start-other",
+                    "created_at": datetime(2026, 10, 12, tzinfo=UTC),
+                },
+            )
+            base_raw = _raw_rating_payload(
+                "447",
+                from_date=valid_from_local.isoformat(),
+                to_date=valid_to_local.isoformat(),
+                points=base_points,
+            )
+            other_raw = _raw_rating_payload(
+                "447",
+                from_date=valid_from_local.isoformat(),
+                to_date=valid_to_local.isoformat(),
+                points=other_points,
+            )
+            base_declaration = _decl(
+                "447",
+                sha256_hex_bytes(canonical_json_bytes(base_raw)),
+                base_raw,
+                from_date=valid_from_local.isoformat(),
+                shape="raw_usable",
+            )
+            other_declaration = _decl(
+                "447",
+                sha256_hex_bytes(canonical_json_bytes(other_raw)),
+                other_raw,
+                from_date=valid_from_local.isoformat(),
+                shape="raw_usable",
+            )
+            release_id, digest, delivery_id = _insert_policy_release(
+                conn, tenant_id, [base_declaration, other_declaration]
+            )
+            generation_id = _insert_building_generation(
+                conn,
+                tenant_id=tenant_id,
+                release_id=release_id,
+                manifest_sha=digest,
+                delivery_id=delivery_id,
+            )
+            origin_set = _insert_origin_set(
+                conn,
+                generation_id=generation_id,
+                tenant_id=tenant_id,
+                set_kind="RT_DECLARATION",
+                payload_sha="8" * 64,
+            )
+            declaration_rows = [
+                (base_declaration, base_raw, base_points_native, base_points, curve.id),
+                (
+                    other_declaration,
+                    other_raw,
+                    other_points_native,
+                    other_points,
+                    other_curve_id,
+                ),
+            ]
+            for (
+                declaration,
+                raw_payload,
+                _native_points,
+                effective_points,
+                curve_id,
+            ) in declaration_rows:
+                effective_payload = _effective_payload("447", points=effective_points)
+                conn.execute(
+                    sa.text(
+                        """
+                        INSERT INTO dhm_rating_declarations (
+                            id, generation_id, tenant_id, station_id, cohort, station_code,
+                            from_local_date, to_local_date_inclusive, rating_type_label,
+                            from_stage_m, raw_declaration_payload_json,
+                            declaration_content_sha256, function_payload_json,
+                            function_equivalence_sha256, native_curve_payload_json,
+                            shape_state, usable_rating_curve_id, origin_set_sha256
+                        ) VALUES (
+                            :id, :generation_id, :tenant_id, :station_id,
+                            'nepal21', '447', :from_local_date, :to_local_date,
+                            '1', 0.0, CAST(:raw AS jsonb), :decl_sha,
+                            CAST(:function AS jsonb), :function_sha,
+                            (SELECT jsonb_build_object(
+                                'points', points,
+                                'interpolation', interpolation,
+                                'rating_type_label', rating_type_label,
+                                'valid_from', valid_from,
+                                'valid_to', valid_to
+                             ) FROM rating_curves WHERE id = :curve_id),
+                            'raw_usable', :curve_id, :origin_set
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "generation_id": generation_id,
+                        "tenant_id": tenant_id,
+                        "station_id": observation.station_id,
+                        "from_local_date": valid_from_local,
+                        "to_local_date": valid_to_local,
+                        "raw": json.dumps(raw_payload),
+                        "decl_sha": declaration["declaration_content_sha256"],
+                        "function": json.dumps(effective_payload),
+                        "function_sha": sha256_hex_bytes(
+                            canonical_json_bytes(effective_payload)
+                        ),
+                        "curve_id": curve_id,
+                        "origin_set": origin_set,
+                    },
+                )
+            delivery_observation_id = uuid.uuid4()
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO observations (
+                        id, station_id, timestamp, parameter, value, source,
+                        delivery_id, qc_status, qc_flags, qc_rule_version, created_at
+                    ) VALUES (
+                        :id, :station_id, :timestamp, 'discharge', 1.0,
+                        'manual_import', :delivery_id, 'raw', '[]'::jsonb, NULL,
+                        :created_at
+                    )
+                    """
+                ),
+                {
+                    "id": delivery_observation_id,
+                    "station_id": observation.station_id,
+                    "timestamp": curve.valid_from,
+                    "delivery_id": delivery_id,
+                    "created_at": datetime(2026, 10, 12, tzinfo=UTC),
+                },
+            )
+            dfl_origin_set = _insert_origin_set(
+                conn,
+                generation_id=generation_id,
+                tenant_id=tenant_id,
+                set_kind="DFL_RECORD",
+                payload_sha="6" * 64,
+            )
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO dhm_delivery_observation_attributions (
+                        generation_id, tenant_id, observation_id, station_id, cohort,
+                        station_code, origin_set_sha256, rating_declaration_id,
+                        rating_curve_id, attribution_state, local_date, reported_q
+                    ) VALUES (
+                        :generation_id, :tenant_id, :observation_id, :station_id,
+                        'nepal21', '447', :origin_set, NULL, NULL,
+                        'held_equal_start_tie', :local_date, 1.0
+                    )
+                    """
+                ),
+                {
+                    "generation_id": generation_id,
+                    "tenant_id": tenant_id,
+                    "observation_id": delivery_observation_id,
+                    "station_id": observation.station_id,
+                    "origin_set": dfl_origin_set,
+                    "local_date": valid_from_local,
+                },
+            )
+            _publish_direct_sql(conn, generation_id)
+            conn.execute(
+                sa.text(
+                    """
+                    UPDATE observations
+                    SET qc_status = 'qc_passed', qc_rule_version = 'policy'
+                    WHERE id = :id
+                    """
+                ),
+                {"id": delivery_observation_id},
+            )
+            qc_policy_sha = _insert_qc_policy_witness(conn, release_id)
+            conn.execute(
+                sa.text(
+                    """
+                    UPDATE restricted_delivery_generations
+                    SET state = 'active_qc_complete', qc_policy_sha256 = :qc_policy,
+                        qc_completion_sha256 = :qc_completion, qc_completed_at = :qc_completed_at
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": generation_id,
+                    "qc_policy": qc_policy_sha,
+                    "qc_completion": "6" * 64,
+                    "qc_completed_at": datetime(2026, 10, 12, tzinfo=UTC),
+                },
+            )
+            permission_id = uuid.uuid4()
+            conn.execute(
+                sa.text(
+                    """
+                    INSERT INTO expired_rating_test_permissions (
+                        id, tenant_id, generation_id, cohort, permission_version,
+                        state, owner_authorization_sha256, precedence_sha256,
+                        selection_manifest_sha256, enabled_at
+                    ) VALUES (
+                        :id, :tenant_id, :generation_id, 'nepal21', 1, 'enabled',
+                        :owner_hash, :precedence_hash, :selection_hash, :enabled_at
+                    )
+                    """
+                ),
+                {
+                    "id": permission_id,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "owner_hash": "a" * 64,
+                    "precedence_hash": "b" * 64,
+                    "selection_hash": "c" * 64,
+                    "enabled_at": datetime(2026, 10, 12, tzinfo=UTC),
+                },
+            )
+            permit_fixture(conn, TenantId(tenant_id))
+            base = convert(*args)
+            document = json.loads(base.content)
+            document["nepal21_expired_permission"] = {
+                "permission_id": str(permission_id),
+                "permission_version": 1,
+                "generation_id": str(generation_id),
+                "owner_authorization_sha256": "a" * 64,
+                "precedence_sha256": "b" * 64,
+                "selection_manifest_sha256": "c" * 64,
+                "qc_policy_sha256": qc_policy_sha,
+                "qc_completion_sha256": "6" * 64,
+                "selected_rating_curve_id": str(curve.id),
+            }
+            content_with_permission = canonical_content(document)
+            protected = dataclasses.replace(
+                base,
+                content=content_with_permission,
+                fingerprint=content_digest(content_with_permission),
+            )
+            message = "equal-start non-equivalent declarations"
+            with pytest.raises(ValueError, match=message):
+                PgProvisionalDischargeStore(conn).store_provisional_discharge(
+                    protected, captured_at=NOW
+                )
+            with pytest.raises(DBAPIError, match=message), conn.begin_nested():
+                conn.execute(
+                    sa.insert(provisional_discharges).values(
+                        **raw_values(protected), captured_at=NOW
+                    )
+                )
+            with pytest.raises(Exception, match=message), conn.begin_nested():
+                _copy_provisional_discharge_row(conn, protected)
+
     def test_direct_restricted_delivery_sql_is_refused_for_runtime_roles(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
@@ -2957,7 +3313,7 @@ class TestNepal21AuthorityMigration:
                 )
             nested.rollback()
 
-    def test_actual_writer_cannot_insert_active_generation_directly(
+    def test_actual_writer_cannot_insert_generation_without_lock_or_active_directly(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         engine, _ = migration_engine
@@ -2973,6 +3329,40 @@ class TestNepal21AuthorityMigration:
                 sa.text("SET SESSION AUTHORIZATION sapphire_dhm21_delivery_writer")
             )
             conn.execute(sa.text("BEGIN"))
+            with pytest.raises(DBAPIError, match="requires delivery write lock"):
+                conn.execute(
+                    sa.text(
+                        """
+                        INSERT INTO restricted_delivery_generations (
+                            id, release_id, tenant_id, network, cohort, delivery_id,
+                            predecessor_delivery_id, predecessor_semantic_sha256,
+                            preimage_sha256, manifest_sha256, station_set_sha256,
+                            state, created_at
+                        ) VALUES (
+                            :id, :release_id, :tenant_id, 'dhm', 'nepal21', :delivery_id,
+                            'dhm-barkhk-2026-09-08', :predecessor, :preimage,
+                            :manifest, :station_set, 'building', :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "release_id": release_id,
+                        "tenant_id": tenant_id,
+                        "delivery_id": delivery_id,
+                        "predecessor": "2" * 64,
+                        "preimage": "3" * 64,
+                        "manifest": digest,
+                        "station_set": "1" * 64,
+                        "created_at": datetime(2026, 10, 12, tzinfo=UTC),
+                    },
+                )
+            conn.execute(sa.text("ROLLBACK"))
+            conn.execute(sa.text("BEGIN"))
+            conn.execute(
+                sa.text("SELECT sf_lock_dhm21_delivery_write(:tenant_id, :release_id)"),
+                {"tenant_id": tenant_id, "release_id": release_id},
+            )
             with pytest.raises(
                 DBAPIError, match="generation insert must start building"
             ):
@@ -3008,11 +3398,15 @@ class TestNepal21AuthorityMigration:
                 )
             conn.execute(sa.text("ROLLBACK"))
             conn.execute(sa.text("BEGIN"))
+            conn.execute(
+                sa.text("SELECT sf_lock_dhm21_delivery_write(:tenant_id, :release_id)"),
+                {"tenant_id": tenant_id, "release_id": release_id},
+            )
             with pytest.raises(
                 Exception, match="generation insert must start building"
             ):
-                driver_connection = cast("object", conn.connection.driver_connection)
-                cursor = cast("Any", driver_connection.cursor())  # type: ignore[attr-defined]
+                driver_connection = cast("Any", conn.connection.driver_connection)
+                cursor = driver_connection.cursor()
                 with cursor.copy(
                     "COPY public.restricted_delivery_generations ("
                     "id, release_id, tenant_id, network, cohort, delivery_id, "
@@ -3751,6 +4145,10 @@ def _run_publication_as_writer(
         )
         conn.execute(sa.text("BEGIN"))
         try:
+            conn.execute(
+                sa.text("SELECT sf_lock_dhm21_delivery_write(:tenant_id, :release_id)"),
+                {"tenant_id": tenant_id, "release_id": release_id},
+            )
             generation_id = _insert_building_generation(
                 conn,
                 tenant_id=tenant_id,
@@ -6088,6 +6486,12 @@ class TestNepal21WitnessCatalogPublicationActualSessionUser:
             )
             conn.execute(sa.text("BEGIN"))
             try:
+                conn.execute(
+                    sa.text(
+                        "SELECT sf_lock_dhm21_delivery_write(:tenant_id, :release_id)"
+                    ),
+                    {"tenant_id": tenant_id, "release_id": release_id},
+                )
                 generation_id = _insert_building_generation(
                     conn,
                     tenant_id=tenant_id,

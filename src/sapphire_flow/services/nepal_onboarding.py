@@ -267,7 +267,9 @@ class DeliveryObservationReader(PgObservationStore):
         end: UtcDatetime,
         qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
+        expected_qc_policy_sha256: str | None = None,
     ) -> list[Observation]:
+        del expected_qc_policy_sha256
         return self.fetch_observations(
             station_id, parameter, start, end, qc_status=qc_status, source=source
         )
