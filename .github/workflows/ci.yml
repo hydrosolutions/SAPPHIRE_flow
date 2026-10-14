@@ -37,7 +37,7 @@ jobs:
         # version" step below needs `git merge-base` against the PR base sha.
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -160,7 +160,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -557,7 +557,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -639,7 +639,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -708,7 +708,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
