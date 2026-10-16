@@ -1717,3 +1717,23 @@ Rebootstrap must preserve denial even with stale PUBLIC column grants and a fail
 later preflight. Backup-role SELECT remains unchanged. The generic database browser
 excludes the join from inventory, detail and rows. No TEST writer or runtime grant is
 enabled by this migration; normal owner SQL/COPY still hits the deployed refusal.
+
+
+### Bounded private-function ACL recovery
+
+Use the same trusted owner for no-owner/no-ACL restore and role bootstrap, after the
+matching checkout has migrated to head. Bootstrap now separately commits PUBLIC-only
+and named-managed revocations for thirteen migration-private definers before its
+unchanged protected-lineage preflight. See security.md § Private definer ACL restoration
+for the exact boundary, excluded PUBLIC definers/INVOKER digests, intended grants and
+fail-closed ownership/custom/SET/INHERIT/ADMIN authority checks. No automatic ownership
+repair or CASCADE is permitted.
+
+A failed later stage does not undo completed restrictive statements. Approved function
+execution may remain unavailable until the failure is resolved and bootstrap succeeds.
+A named-role dependent-grant failure cannot roll back the separate PUBLIC revoke, but
+custom-grantor entries may remain and must refuse rather than being reported repaired.
+Unsafe membership/ADMIN or SUPERUSER drift in later-converged roles can intentionally
+refuse before their ordinary late cleanup. Keep services stopped, inspect actual state
+and use approved owner maintenance; do not add grants or bypass the preflight. This
+local change is not production deployment-policy acceptance or exhaustive recovery proof.

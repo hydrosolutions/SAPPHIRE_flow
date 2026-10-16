@@ -363,6 +363,154 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Restore may discard function ACLs. These are the thirteen migration-private
+-- definers only; the three public definers and invoker digests are not normalized.
+-- Session-local data disappears when this bootstrap psql connection closes.
+CREATE TEMP TABLE sf_bootstrap_private_function_acl (
+    signature text PRIMARY KEY,
+    allowed_roles text[] NOT NULL,
+    function_oid oid UNIQUE
+);
+INSERT INTO pg_temp.sf_bootstrap_private_function_acl (signature, allowed_roles) VALUES
+    ('public.lock_publication_candidate(pg_catalog.uuid)', ARRAY['sapphire_api']::text[]),
+    ('public.lock_publication_grants(pg_catalog.uuid, pg_catalog.uuid, pg_catalog.uuid)', ARRAY['sapphire_api']::text[]),
+    ('public.sf_assert_nepal21_candidate_lineage(pg_catalog.uuid)', ARRAY[]::text[]),
+    ('public.sf_lock_dhm21_conversion_append(pg_catalog.uuid, pg_catalog.uuid)', ARRAY['sapphire_dhm21_delivery_writer']::text[]),
+    ('public.sf_lock_dhm21_delivery_write(pg_catalog.uuid, pg_catalog.uuid)', ARRAY['sapphire_dhm21_delivery_writer']::text[]),
+    ('public.sf_lock_dhm21_permission_change(pg_catalog.uuid, pg_catalog.uuid)', ARRAY['sapphire_dhm21_delivery_writer']::text[]),
+    ('public.sf_lock_nepal_static_guard(pg_catalog.uuid)', ARRAY['sapphire_dhm21_delivery_writer','sapphire_static_importer']::text[]),
+    ('public.sf_lock_provisional_permission_disable(pg_catalog.uuid)', ARRAY['sapphire_dhm21_delivery_writer']::text[]),
+    ('public.sf_mark_restricted_release_used(pg_catalog.uuid)', ARRAY[]::text[]),
+    ('public.sf_nepal21_candidate_commit_guard()', ARRAY[]::text[]),
+    ('public.sf_nepal21_candidate_dependency_guard()', ARRAY[]::text[]),
+    ('public.sf_register_nepal21_candidate(pg_catalog.uuid, pg_catalog.uuid, pg_catalog.text, pg_catalog.float8, pg_catalog.float8, pg_catalog.text, pg_catalog.timestamptz)', ARRAY['sapphire_static_importer']::text[]),
+    ('public.sf_restricted_delivery_row_guard()', ARRAY[]::text[]);
+CREATE TEMP TABLE sf_bootstrap_managed_function_roles (role_name text PRIMARY KEY);
+INSERT INTO pg_temp.sf_bootstrap_managed_function_roles VALUES
+    ('sapphire_api'),
+    ('sapphire_worker'),
+    ('sapphire_publication_health'),
+    ('sapphire_backup'),
+    ('sapphire_operator'),
+    ('sapphire_dhm21_delivery_writer'),
+    ('sapphire_static_importer');
+
+-- A: reject identity/owner drift before mutating any of these function ACLs.
+DO $$
+DECLARE fn record; owner_id oid := current_user::regrole;
+BEGIN
+    IF current_user <> session_user OR EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_managed_function_roles
+        WHERE role_name = current_user
+    ) THEN
+        RAISE EXCEPTION 'private function ACL identity/owner: trusted owner connection required';
+    END IF;
+    FOR fn IN SELECT * FROM pg_temp.sf_bootstrap_private_function_acl LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.oid = to_regprocedure(fn.signature)
+              AND n.nspname = 'public' AND p.prokind = 'f' AND p.prosecdef
+              AND p.proowner = owner_id
+        ) THEN
+            RAISE EXCEPTION 'private function ACL identity/owner: %', fn.signature;
+        END IF;
+    END LOOP;
+    UPDATE pg_temp.sf_bootstrap_private_function_acl
+    SET function_oid = to_regprocedure(signature)::oid;
+END $$;
+
+-- B1 commits independently: a later dependent managed grant cannot restore PUBLIC.
+DO $$
+DECLARE fn record;
+BEGIN
+    FOR fn IN SELECT signature FROM pg_temp.sf_bootstrap_private_function_acl LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC RESTRICT', fn.signature);
+    END LOOP;
+END $$;
+
+-- B2 is a separate transaction. Never cascade into a custom grant chain.
+DO $$
+DECLARE target record;
+BEGIN
+    FOR target IN
+        SELECT f.signature, r.rolname
+        FROM pg_temp.sf_bootstrap_private_function_acl f
+        CROSS JOIN pg_temp.sf_bootstrap_managed_function_roles m
+        JOIN pg_roles r ON r.rolname = m.role_name
+    LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM %I RESTRICT',
+            target.signature, target.rolname);
+    END LOOP;
+EXCEPTION WHEN dependent_privilege_descriptors_still_exist THEN
+    RAISE EXCEPTION USING ERRCODE = SQLSTATE,
+        MESSAGE = 'private function ACL managed revoke dependency: ' || SQLERRM;
+END $$;
+
+-- Acting roles are session-self plus PostgreSQL's transitive SET closure.
+-- USAGE below adds inheritance *after* SET, not merely inheritance from session-self.
+CREATE TEMP VIEW sf_bootstrap_private_function_actors AS
+SELECT principal.oid AS principal_oid, principal.rolname AS principal_name,
+       acting.oid AS acting_oid
+FROM pg_temp.sf_bootstrap_managed_function_roles m
+JOIN pg_roles principal ON principal.rolname = m.role_name
+CROSS JOIN pg_roles acting
+WHERE principal.oid = acting.oid OR pg_has_role(principal.oid, acting.oid, 'SET');
+
+-- Potential actors add ADMIN-enabled membership changes without performing them.
+-- UNION deduplicates (principal, acting role, used ADMIN), so cycles terminate.
+-- Only seven principals are roots; endpoints remain the thirteen grants/owner.
+CREATE TEMP VIEW sf_bootstrap_private_potential_actors AS
+WITH RECURSIVE reachable(principal_oid, principal_name, acting_oid, used_admin) AS (
+    SELECT r.oid, r.rolname, r.oid, false
+    FROM pg_temp.sf_bootstrap_managed_function_roles m
+    JOIN pg_roles r ON r.rolname = m.role_name
+    UNION
+    SELECT x.principal_oid, x.principal_name, target.oid,
+           x.used_admin OR edge.is_admin
+    FROM reachable x CROSS JOIN pg_roles target
+    CROSS JOIN (VALUES (false), (true)) AS edge(is_admin)
+    WHERE (NOT edge.is_admin AND pg_has_role(x.acting_oid, target.oid, 'SET'))
+       OR (edge.is_admin AND target.oid <> x.acting_oid
+           AND pg_has_role(x.acting_oid, target.oid, 'MEMBER WITH ADMIN OPTION'))
+)
+SELECT * FROM reachable;
+
+-- C: raw custom/PUBLIC authority first; current and future routes second.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_function_acl f
+        JOIN pg_proc p ON p.oid = f.function_oid
+        CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+        WHERE a.grantee <> p.proowner OR a.grantor <> p.proowner
+    ) THEN
+        RAISE EXCEPTION 'private function ACL custom authority: residual grantee/grantor/grant option';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_potential_actors x
+        JOIN pg_roles r ON r.oid = x.acting_oid
+        WHERE pg_has_role(x.acting_oid, current_user::regrole, 'USAGE') OR r.rolsuper
+    ) THEN
+        RAISE EXCEPTION 'private function ACL forbidden route: managed owner or administrative route';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_function_actors x
+        CROSS JOIN pg_temp.sf_bootstrap_private_function_acl f
+        WHERE has_function_privilege(x.acting_oid, f.function_oid, 'EXECUTE')
+    ) THEN
+        RAISE EXCEPTION 'private function ACL forbidden route: residual effective execution';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_potential_actors x
+        CROSS JOIN pg_temp.sf_bootstrap_private_function_acl f
+        JOIN pg_roles grantee ON grantee.rolname = ANY(f.allowed_roles)
+        WHERE pg_has_role(x.acting_oid, grantee.oid, 'USAGE')
+          AND (x.used_admin OR NOT (x.principal_name = ANY(f.allowed_roles)))
+    ) THEN
+        RAISE EXCEPTION 'private function ACL forbidden route: intended grant reachable through membership or ADMIN OPTION';
+    END IF;
+END $$;
+
 -- Refuse catalog-visible indirect exposure; never mutate unrelated custom objects.
 DO $$
 DECLARE checked_role record;
@@ -957,7 +1105,9 @@ BEGIN
     IF to_regclass('public.restricted_delivery_generations') IS NOT NULL THEN
         EXECUTE 'GRANT UPDATE ON public.restricted_delivery_generations TO sapphire_dhm21_delivery_writer';
     END IF;
-    FOREACH fn IN ARRAY ARRAY['public.sf_lock_dhm21_delivery_write(uuid,uuid)',
+    FOREACH fn IN ARRAY ARRAY['public.sf_dhm21_content_digest(uuid)',
+                             'public.sf_dhm21_qc_completion_digest(uuid,text,timestamptz,uuid)',
+                             'public.sf_lock_dhm21_delivery_write(uuid,uuid)',
                              'public.sf_lock_dhm21_conversion_append(uuid,uuid)',
                              'public.sf_lock_dhm21_permission_change(uuid,uuid)',
                              'public.sf_lock_provisional_permission_disable(uuid)',
@@ -998,7 +1148,7 @@ BEGIN
     FOREACH rel IN ARRAY ARRAY['tenants', 'stations', 'basins', 'basin_versions', 'basin_static_packages',
                               'recap_gateway_polygon_bindings', 'station_weather_sources',
                               'station_groups', 'station_group_members', 'group_model_assignments',
-                              'model_artifacts', 'model_artifact_basin_versions'] LOOP
+                              'model_assignments', 'model_artifacts', 'model_artifact_basin_versions'] LOOP
         IF to_regclass('public.' || rel) IS NOT NULL THEN
             EXECUTE format('GRANT SELECT ON public.%I TO sapphire_static_importer', rel);
         END IF;
@@ -1011,7 +1161,8 @@ BEGIN
     IF to_regclass('public.stations') IS NOT NULL THEN
         EXECUTE 'GRANT UPDATE (basin_id) ON public.stations TO sapphire_static_importer';
     END IF;
-    FOREACH fn IN ARRAY ARRAY['public.sf_lock_nepal_static_guard(uuid)'] LOOP
+    FOREACH fn IN ARRAY ARRAY['public.sf_lock_nepal_static_guard(uuid)',
+        'public.sf_register_nepal21_candidate(uuid,uuid,text,double precision,double precision,text,timestamptz)'] LOOP
         IF to_regprocedure(fn) IS NOT NULL THEN
             EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO sapphire_static_importer', fn);
         END IF;
@@ -1168,3 +1319,57 @@ JOIN pg_catalog.pg_proc p
 -- Minimal invoker guard reads only; no activation or protected-content grants.
 GRANT SELECT (tenant_id, state) ON provisional_discharge_permissions
     TO sapphire_api, sapphire_worker;
+
+-- E: assert the exact final private-function matrix after normal role/grant stages.
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM pg_temp.sf_bootstrap_managed_function_roles m
+        JOIN pg_roles r ON r.rolname = m.role_name) <> 7
+       OR (SELECT count(*) FROM pg_temp.sf_bootstrap_private_function_acl f
+           JOIN pg_proc p ON p.oid = to_regprocedure(f.signature)
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE p.oid = f.function_oid AND p.proowner = current_user::regrole
+             AND p.prosecdef AND p.prokind = 'f' AND n.nspname = 'public') <> 13 THEN
+        RAISE EXCEPTION 'private function ACL final matrix: missing role or changed identity/owner';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_function_acl f
+        JOIN pg_proc p ON p.oid = f.function_oid
+        CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+        LEFT JOIN pg_roles grantee ON grantee.oid = a.grantee
+        WHERE a.grantor <> p.proowner OR a.privilege_type <> 'EXECUTE'
+           OR (a.grantee <> p.proowner AND
+               (a.grantee = 0 OR NOT COALESCE(grantee.rolname = ANY(f.allowed_roles), false)
+                OR a.is_grantable))
+    ) OR EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_function_acl f
+        CROSS JOIN pg_temp.sf_bootstrap_managed_function_roles m
+        JOIN pg_roles r ON r.rolname = m.role_name
+        WHERE has_function_privilege(r.oid, f.function_oid, 'EXECUTE')
+              IS DISTINCT FROM (m.role_name = ANY(f.allowed_roles))
+           OR EXISTS (
+                SELECT 1 FROM pg_temp.sf_bootstrap_private_function_actors x
+                WHERE x.principal_oid = r.oid
+                  AND has_function_privilege(x.acting_oid, f.function_oid, 'EXECUTE')
+                  AND NOT (m.role_name = ANY(f.allowed_roles))
+           )
+    ) THEN
+        RAISE EXCEPTION 'private function ACL final matrix: unexpected ACL or execution';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_potential_actors x
+        JOIN pg_roles r ON r.oid = x.acting_oid
+        WHERE pg_has_role(x.acting_oid, current_user::regrole, 'USAGE') OR r.rolsuper
+    ) THEN
+        RAISE EXCEPTION 'private function ACL final matrix: managed owner or administrative route';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_temp.sf_bootstrap_private_potential_actors x
+        CROSS JOIN pg_temp.sf_bootstrap_private_function_acl f
+        JOIN pg_roles grantee ON grantee.rolname = ANY(f.allowed_roles)
+        WHERE pg_has_role(x.acting_oid, grantee.oid, 'USAGE')
+          AND (x.used_admin OR NOT (x.principal_name = ANY(f.allowed_roles)))
+    ) THEN
+        RAISE EXCEPTION 'private function ACL final matrix: intended grant reachable through membership or ADMIN OPTION';
+    END IF;
+END $$;

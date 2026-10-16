@@ -254,32 +254,105 @@ def run_nepal_static_import_transaction(
     expected_hru: str,
     clock: Callable[[], UtcDatetime] | None = None,
 ) -> BasinPackageImportReport:
+    from uuid import uuid5
+
     import sqlalchemy as sa
 
-    from sapphire_flow.services.basin_importer import import_loaded_basin_package
+    from sapphire_flow.services.basin_importer import (
+        build_assigned_model_features_resolver,
+        import_loaded_basin_package,
+    )
     from sapphire_flow.services.basin_package_loader import load_basin_package
+    from sapphire_flow.services.model_registry import discover_models
+    from sapphire_flow.services.nepal21_delivery_authority import (
+        NEPAL21_STATION_CODES,
+        OLD6_STATION_CODES,
+    )
     from sapphire_flow.store._helpers import require_real_transaction
+    from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
     from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.domain import GeoCoord
 
     require_real_transaction(conn, caller="run_nepal_static_import_transaction")
     _validate_nepal21_static_only_args(package_dir, expected_package_id, expected_hru)
+    loaded = load_basin_package(package_dir)
+    if (
+        len(loaded.basins) != len(NEPAL21_STATION_CODES)
+        or {basin.station_code for basin in loaded.basins} != set(NEPAL21_STATION_CODES)
+        or any(
+            basin.network != "dhm" or basin.gateway_hru_name != expected_hru
+            for basin in loaded.basins
+        )
+    ):
+        raise ValueError(
+            "Nepal21 static package must contain exactly the "
+            "approved 21 station codes and pinned HRU"
+        )
     conn.execute(sa.text(_nepal21_static_guard_sql()), {"tenant_id": tenant_id})
     with conn.begin_nested():
         before = _fetch_nepal_static_resolver_snapshots(conn)
-        loaded = load_basin_package(package_dir)
         station_store = PgStationStore(conn)
 
         def resolve_station(code: str, network: str) -> StationId | None:
             station = station_store.fetch_station_by_code(code, network)
-            return station.id if station is not None else None
+            if station is None:
+                return None
+            if station.tenant_id != tenant_id:
+                raise ValueError("Nepal21 static station belongs to a different tenant")
+            return station.id
+
+        resolved = {
+            code: resolve_station(code, "dhm") for code in NEPAL21_STATION_CODES
+        }
+        if any(resolved[code] is None for code in OLD6_STATION_CODES):
+            raise ValueError(
+                "Nepal21 registration requires all old6 in the target tenant"
+            )
+        import_clock = clock or (lambda: ensure_utc(datetime.now(UTC)))
+        for basin in loaded.basins:
+            if resolved[basin.station_code] is not None:
+                continue
+            location = GeoCoord(lon=basin.outlet_lon, lat=basin.outlet_lat)
+            conn.execute(
+                sa.text(
+                    "SELECT public.sf_register_nepal21_candidate("
+                    ":id, :tenant, :code, :lon, :lat, :package, :created)"
+                ),
+                {
+                    "id": uuid5(
+                        tenant_id, f"dhm-test-package-candidate:{basin.station_code}"
+                    ),
+                    "tenant": tenant_id,
+                    "code": basin.station_code,
+                    "lon": location.lon,
+                    "lat": location.lat,
+                    "package": expected_package_id,
+                    "created": import_clock(),
+                },
+            )
 
         report = import_loaded_basin_package(
             conn,
             loaded,
             resolve_station=resolve_station,
-            clock=clock or (lambda: ensure_utc(datetime.now(UTC))),
+            assigned_model_features=build_assigned_model_features_resolver(
+                station_store,
+                PgStationGroupStore(conn),
+                resolve_station,
+                discover_models(),
+            ),
+            clock=import_clock,
         )
+        if (
+            report.outcome == "rejected"
+            or report.onboarding_held
+            or len(report.accepted) != 21
+        ):
+            raise ValueError(
+                "Nepal21 static import requires all 21 registered "
+                "stations without onboarding holds"
+            )
         after = _fetch_nepal_static_resolver_snapshots(conn)
         _raise_if_nepal_static_resolver_changed(before=before, after=after)
     log.info(

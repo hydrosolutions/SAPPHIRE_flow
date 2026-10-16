@@ -6,8 +6,8 @@ import math
 import os
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
@@ -194,6 +194,20 @@ class ExpectedQcPolicyPin:
     overrides: list[StationQcOverride]
     baselines: list[ClimBaseline]
 
+    @property
+    def content_bytes(self) -> bytes:
+        return canonical_json_bytes(
+            _semantic_value(
+                {
+                    "codec": "dhm21-qc-policy-v1",
+                    "rule_set": asdict(self.rule_set),
+                    "station_networks": self.station_networks,
+                    "overrides": [asdict(item) for item in self.overrides],
+                    "baselines": [asdict(item) for item in self.baselines],
+                }
+            )
+        )
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RestrictedReplacementPayload:
@@ -277,9 +291,7 @@ def origin_identity_set_sha256(
     return sha256_hex_bytes((set_kind + "|" + "|".join(parts)).encode("utf-8"))
 
 
-def _rating_raw_payload(
-    station_code: str, block: RatingTableBlock
-) -> dict[str, object]:
+def rating_raw_payload(station_code: str, block: RatingTableBlock) -> dict[str, object]:
     return {
         "codec": CANONICAL_JSON_VERSION,
         "station_code": station_code,
@@ -299,7 +311,7 @@ def _rating_raw_payload(
 
 def declaration_digest(station_code: str, block: RatingTableBlock) -> str:
     return sha256_hex_bytes(
-        canonical_json_bytes(_rating_raw_payload(station_code, block))
+        canonical_json_bytes(rating_raw_payload(station_code, block))
     )
 
 
@@ -357,13 +369,18 @@ def function_payload(
         "discharge_unit": "m3/s",
         "reference": "delivered_stage",
         "points": [
-            {"stage_m": stage, "discharge_m3s": by_stage[stage]}
+            {
+                "stage_m": _finite_number(stage, "stage_m"),
+                "discharge_m3s": _finite_number(by_stage[stage], "discharge_m3s"),
+            }
             for stage in sorted(by_stage)
         ],
     }
 
 
 def _semantic_value(value: object) -> object:
+    if isinstance(value, timedelta):
+        return value.total_seconds()
     if isinstance(value, date | datetime):
         return value.isoformat()
     if isinstance(value, UUID):
@@ -708,6 +725,7 @@ def populate_restricted_generation_payload(
     tenant_id: TenantId,
     payload: RestrictedReplacementPayload,
 ) -> str:
+    require_real_transaction(conn, caller="populate_restricted_generation_payload")
     preimage_sha256 = write_predecessor_preimage(
         conn,
         tenant_id=tenant_id,
@@ -805,7 +823,37 @@ def _return_if_existing_generation_replay_matches(
         raise ValueError(
             f"existing restricted generation replay mismatch: {mismatches}"
         )
+    conn.execute(
+        sa.text("SELECT public.sf_lock_dhm21_delivery_write(:tenant, :release)"),
+        {"tenant": build.tenant_id, "release": build.release_id},
+    )
+    existing = (
+        conn.execute(
+            sa.select(restricted_delivery_generations).where(
+                restricted_delivery_generations.c.id == build.id
+            )
+        )
+        .mappings()
+        .one()
+    )
     validate_generation_manifest_catalog(conn, build.id)
+    if (
+        readback_generation_content_digest(conn, build.id)
+        != existing["immutable_content_sha256"]
+    ):
+        raise ValueError("existing generation immutable content readback mismatch")
+    if (
+        existing["state"] == RestrictedDeliveryState.ACTIVE_QC_COMPLETE.value
+        and readback_qc_completion_digest(
+            conn,
+            generation_id=build.id,
+            policy_sha256=existing["qc_policy_sha256"],
+            completed_at=existing["qc_completed_at"],
+            run_id=existing["qc_run_id"],
+        )
+        != existing["qc_completion_sha256"]
+    ):
+        raise ValueError("existing generation QC completion readback mismatch")
     if payload is not None:
         _assert_replay_rows_match(
             conn,
@@ -973,6 +1021,16 @@ def run_dhm21_delivery_replacement_dry_run(
         raise
 
 
+def readback_generation_content_digest(conn: sa.Connection, generation_id: UUID) -> str:
+    digest = conn.execute(
+        sa.text("SELECT public.sf_dhm21_content_digest(:generation)"),
+        {"generation": generation_id},
+    ).scalar_one()
+    if not isinstance(digest, str):
+        raise ValueError("content readback requires a persisted generation")
+    return digest
+
+
 def publish_generation(
     conn: sa.Connection,
     *,
@@ -981,6 +1039,7 @@ def publish_generation(
     published_at: UtcDatetime,
     run_id: UUID | None = None,
 ) -> None:
+    require_real_transaction(conn, caller="publish_generation")
     _require_sha256(immutable_content_sha256, "immutable content hash")
     row = (
         conn.execute(
@@ -1078,26 +1137,29 @@ def _observation_from_row(row: sa.engine.row.RowMapping) -> Observation:
     )
 
 
-def _qc_completion_digest(
+def readback_qc_completion_digest(
+    conn: sa.Connection,
     *,
     generation_id: UUID,
     policy_sha256: str,
     completed_at: UtcDatetime,
-    run_id: UUID | None,
-    rows: list[dict[str, object]],
+    run_id: UUID | None = None,
 ) -> str:
-    return sha256_hex_bytes(
-        canonical_json_bytes(
-            {
-                "codec": "dhm21-qc-completion-v1",
-                "generation_id": str(generation_id),
-                "policy_sha256": policy_sha256,
-                "completed_at": completed_at.isoformat(),
-                "run_id": str(run_id) if run_id is not None else None,
-                "rows": rows,
-            }
-        )
-    )
+    digest = conn.execute(
+        sa.text(
+            "SELECT public.sf_dhm21_qc_completion_digest("
+            ":generation, :policy, :completed, :run)"
+        ),
+        {
+            "generation": generation_id,
+            "policy": policy_sha256,
+            "completed": completed_at,
+            "run": run_id,
+        },
+    ).scalar_one()
+    if not isinstance(digest, str):
+        raise ValueError("QC completion readback requires a persisted generation")
+    return digest
 
 
 def run_dhm21_qc_transaction(
@@ -1111,6 +1173,8 @@ def run_dhm21_qc_transaction(
 ) -> str:
     require_real_transaction(conn, caller="run_dhm21_qc_transaction")
     _require_sha256(expected_policy.policy_sha256, "QC policy hash")
+    if sha256_hex_bytes(expected_policy.content_bytes) != expected_policy.policy_sha256:
+        raise ValueError("QC policy bundle hash mismatch")
     generation = (
         conn.execute(
             sa.select(restricted_delivery_generations).where(
@@ -1169,7 +1233,6 @@ def run_dhm21_qc_transaction(
     missing = [obs.id for obs in observations if obs.id not in result.judged]
     if missing:
         raise ValueError(f"QC policy did not evaluate every attributed row: {missing}")
-    evidence_rows: list[dict[str, object]] = []
     for obs in observations:
         flags = result.flags.get(obs.id, [])
         status = aggregate_qc_status(flags)
@@ -1183,25 +1246,12 @@ def run_dhm21_qc_transaction(
                 qc_rule_version=expected_policy.policy_sha256,
             )
         )
-        evidence_rows.append(
-            {
-                "observation_id": str(obs.id),
-                "station_id": str(obs.station_id),
-                "timestamp": obs.timestamp.isoformat(),
-                "parameter": obs.parameter,
-                "source": obs.source.value,
-                "value": obs.value,
-                "status": status.value,
-                "flags": serialized_flags,
-                "qc_rule_version": expected_policy.policy_sha256,
-            }
-        )
-    completion_sha256 = _qc_completion_digest(
+    completion_sha256 = readback_qc_completion_digest(
+        conn,
         generation_id=generation_id,
         policy_sha256=expected_policy.policy_sha256,
         completed_at=completed_at,
         run_id=run_id,
-        rows=evidence_rows,
     )
     complete_generation_qc(
         conn,
@@ -1285,6 +1335,7 @@ def enable_expired_rating_test_permission(
     enabled_at: UtcDatetime,
     run_id: UUID | None = None,
 ) -> UUID:
+    require_real_transaction(conn, caller="enable_expired_rating_test_permission")
     for label, digest in (
         ("owner authorization", owner_authorization_sha256),
         ("precedence", precedence_sha256),
@@ -1334,6 +1385,7 @@ def disable_expired_rating_test_permission(
     disabled_at: UtcDatetime,
     run_id: UUID | None = None,
 ) -> None:
+    require_real_transaction(conn, caller="disable_expired_rating_test_permission")
     row = (
         conn.execute(
             sa.select(expired_rating_test_permissions).where(

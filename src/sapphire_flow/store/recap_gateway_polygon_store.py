@@ -76,7 +76,7 @@ class RecapGatewayPolygonStore:
                     index_elements=[recap_gateway_polygon_bindings.c.station_id],
                     index_where=(
                         recap_gateway_polygon_bindings.c.spatial_type
-                        == SpatialRepresentation.BASIN_AVERAGE.value
+                        == sa.literal_column("'basin_average'")
                     ),
                     set_={
                         "basin_id": binding.basin_id,

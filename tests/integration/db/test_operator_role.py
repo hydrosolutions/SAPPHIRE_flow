@@ -1060,40 +1060,112 @@ class TestTenantLockIsSharedByEveryRole:
 
 
 class TestNoUnexpectedFunctionWritesTheGuardedTables:
-    """A static scan of function source text across every non-system schema. It
-    is NOT a dynamic-SQL detector: a function that builds its statement with
-    EXECUTE from strings is invisible to it."""
+    """Static source scan, not a detector for statements built with dynamic SQL."""
 
     _NON_SYSTEM = (
         "pronamespace NOT IN ('pg_catalog'::regnamespace, "
         "'information_schema'::regnamespace) "
         "AND pronamespace::regnamespace::text NOT LIKE 'pg_toast%'"
     )
+    _REGISTRAR = (
+        "public.sf_register_nepal21_candidate(uuid,uuid,text,double precision,"
+        "double precision,text,timestamp with time zone)"
+    )
+    _PRIVATE_CANDIDATE_FUNCTIONS = (
+        _REGISTRAR,
+        "public.sf_assert_nepal21_candidate_lineage(uuid)",
+        "public.sf_nepal21_candidate_commit_guard()",
+        "public.sf_nepal21_candidate_dependency_guard()",
+    )
+    _REVIEWED_DEFINERS = (
+        "public.lock_publication_candidate(uuid)",
+        "public.lock_publication_grants(uuid,uuid,uuid)",
+        "public.sf_active_accepted_delivery(uuid,text)",
+        "public.sf_assert_restricted_publication_catalog(uuid)",
+        "public.sf_lock_dhm21_conversion_append(uuid,uuid)",
+        "public.sf_lock_dhm21_delivery_write(uuid,uuid)",
+        "public.sf_lock_dhm21_permission_change(uuid,uuid)",
+        "public.sf_lock_nepal_static_guard(uuid)",
+        "public.sf_lock_provisional_permission_disable(uuid)",
+        "public.sf_mark_restricted_release_used(uuid)",
+        "public.sf_restricted_delivery_row_guard()",
+        "public.sf_restricted_generation_publish_guard()",
+        *_PRIVATE_CANDIDATE_FUNCTIONS,
+    )
 
-    def test_no_function_writes_the_guarded_tables(self, db: OperatorDb) -> None:
+    def test_only_approved_registrar_writes_the_guarded_tables(
+        self, db: OperatorDb
+    ) -> None:
+        registrar = db.scalar(
+            "SELECT to_regprocedure(:identity)::oid", identity=self._REGISTRAR
+        )
+        assert isinstance(registrar, int)
         writers = db.scalar(
-            "SELECT string_agg(proname, ', ') FROM pg_proc "
+            "SELECT array_agg(oid ORDER BY oid) FROM pg_proc "
             f"WHERE {self._NON_SYSTEM} "
             "AND prosrc ~* '(insert into|update|delete from|truncate)\\s+"
             "(only\\s+)?([a-z_]+\\.)?(observations|rating_curves|stations)\\y'"
         )
-        assert writers is None
+        assert writers == [registrar]
 
-    def test_the_security_definer_functions_are_the_known_publication_locks(
+    @pytest.mark.parametrize("identity", _PRIVATE_CANDIDATE_FUNCTIONS)
+    def test_operator_has_no_effective_candidate_function_execute(
+        self, db: OperatorDb, identity: str
+    ) -> None:
+        assert (
+            db.scalar(
+                "SELECT has_function_privilege("
+                ":role,to_regprocedure(:identity),'EXECUTE')",
+                role=OPERATOR,
+                identity=identity,
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("identity", _PRIVATE_CANDIDATE_FUNCTIONS)
+    def test_public_has_no_candidate_function_execute(
+        self, db: OperatorDb, identity: str
+    ) -> None:
+        assert (
+            db.scalar(
+                "SELECT EXISTS (SELECT 1 FROM "
+                "aclexplode(COALESCE(proacl,acldefault('f',proowner))) acl "
+                "WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE') "
+                "FROM pg_proc WHERE oid=to_regprocedure(:identity)",
+                identity=identity,
+            )
+            is False
+        )
+
+    def test_operator_registrar_call_is_permission_denied(self, db: OperatorDb) -> None:
+        result = db.attempt(
+            [
+                "SELECT public.sf_register_nepal21_candidate("
+                "NULL::uuid,NULL::uuid,NULL::text,NULL::double precision,"
+                "NULL::double precision,NULL::text,NULL::timestamptz)"
+            ]
+        )
+        assert result.permission_denied
+        assert (
+            "permission denied for function sf_register_nepal21_candidate"
+            in result.message
+        )
+
+    def test_security_definers_have_only_reviewed_schema_qualified_signatures(
         self, db: OperatorDb
     ) -> None:
-        names = db.scalar(
-            "SELECT string_agg(proname, ', ' ORDER BY proname) FROM pg_proc "
-            f"WHERE {self._NON_SYSTEM} AND prosecdef"
-        )
-        assert names == (
-            "lock_publication_candidate, lock_publication_grants, "
-            "sf_active_accepted_delivery, sf_assert_restricted_publication_catalog, "
-            "sf_lock_dhm21_conversion_append, "
-            "sf_lock_dhm21_delivery_write, "
-            "sf_lock_dhm21_permission_change, sf_lock_nepal_static_guard, "
-            "sf_lock_provisional_permission_disable, sf_mark_restricted_release_used, "
-            "sf_restricted_delivery_row_guard, sf_restricted_generation_publish_guard"
+        assert (
+            db.scalar(
+                "WITH actual AS (SELECT oid FROM pg_proc "
+                f"WHERE {self._NON_SYSTEM} AND prosecdef), "
+                "expected AS (SELECT to_regprocedure(identity)::oid AS oid "
+                "FROM unnest(CAST(:identities AS text[])) known(identity)), "
+                "delta AS ((SELECT oid FROM actual EXCEPT SELECT oid FROM expected) "
+                "UNION ALL (SELECT oid FROM expected EXCEPT SELECT oid FROM actual)) "
+                "SELECT count(*) FROM delta",
+                identities=list(self._REVIEWED_DEFINERS),
+            )
+            == 0
         )
 
 

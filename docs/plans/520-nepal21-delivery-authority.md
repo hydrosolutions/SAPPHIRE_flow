@@ -13,6 +13,44 @@ provisional_plan_number: 520
 
 ## Status
 
+Held/invalid RT payloads use SQL NULL for absent effective/native JSON. SQLAlchemy bindings explicitly preserve that distinction from JSON null; no schema or candidate-station fields change. Actual-source invalid-curve persistence is tested.
+
+F06/F07 correction in progress: source manifests now carry a mandatory versioned, owner-authorized parsed-record roster binding physical source path/hash/parser/ordinal, station and payload digest. SQL compares the complete persisted occurrence multiset and actual RT/DFL record payloads at publication, resolves current tenant-bound DHM station identity, and requires exact21 RT and DFL file/record rosters; source-free or partial legacy test manifests are not a compatibility path. This authenticates approved parser output, not independent SQL parsing or scientific QC execution. Focused validation and legacy-fixture migration remain outstanding.
+
+F11 follow-up synthetic races exercise the actual owner permission-disable service against a delivery-writer conversion lock in both directions. They assert exact permission-row preservation after a timed-out disable and after rollback, then successful disable commit. This remains permission-mutation/lock evidence, not proof of a complete conversion INSERT/COPY race.
+
+Actual-bootstrap F04 tests reproduced unrelated native-table DML, late raw append and created_at mutation by the delivery writer. Writer DML now requires the exact tenant/roster/release BUILDING window (including scoped old6 deletion), or new-generation pending-QC updates with all non-QC fields sealed. Actual pre-held locks are checked without waiting by early native-table triggers. Selected native curves are immutable by catalog membership regardless of delivery tag; old6 resurrection/mutation is refused after a selected generation exists. Ordinary unrelated principals keep their existing behavior.
+
+A real-bootstrap forged-payload test reproduced an unchecked held_native_mismatch label despite available native coverage. Historical attribution now distinguishes invalid latest effective functions from missing native realization, and counts only covered native curves; arbitrary held labels cannot bypass selection. The failed-attempt preimage remains preserved separately from the successful transaction artifact.
+
+Hash-only GHT source provenance is never decoded or used as gauge proof. The real-bootstrap pipeline reproduced contradictory origin checks that rejected non-synthetic GHT roots; the redundant contradictory check is removed, while the required DFL/RT row-or-block ordinal and hash-only NULL-ordinal rule remain enforced.
+
+The full21 parsed-source pipeline exposed an overstrict historical selector: equivalent same-start native declarations were refused. Selection now permits a covered native declaration when actual validated effective payloads agree. SQL/Python expiry ties also compare effective payloads directly, not caller-supplied equivalence labels; a copied-hash regression reproduced changed publication semantics despite unchanged effective functions before this change. That run failed at publication; it did not demonstrate successful unsafe conversion. Invalid and non-equivalent latest declarations remain held.
+
+A typed source-catalog boundary parses pinned RT/DFL bytes for the exact21 roster. It retains every physical occurrence when semantic declarations or identical daily records repeat, refuses conflicting daily values, and derives the manifest from canonical parser output. Duplicate-point declarations remain held without owner approval. Signed-zero RT points exposed inconsistent raw/effective digest normalization; both projections now use canonical zero. A typed payload assembler is being validated for the no-canonicalization-policy path, using injected UUIDs, production RatingConverter validation, complete origins and latest-before-shape attribution. Pinned approval parsing and hash-only GHT provenance are now under focused validation; SQL source-file authority and full qualification remain open; this is not complete builder acceptance.
+
+Real-bootstrap races exposed missing READ COMMITTED checks in static, expiry-permission and legacy-permission helpers, and missing static-tenant validation before relation waits. The SQL helpers now refuse these preconditions before taking locks. Preserved REDs distinguish the earlier 74-pass migration snapshot from this later hardening.
+
+A separate concurrency fixture executes the real bootstrap wrapper, then uses actual writer session identity for guarded publication and real synthetic two-row QC. Holder/contender tests cover conversion/conversion and both conversion/static directions with a shorter caller lock timeout and retry after release. These tests are lock evidence only, not all21/source-authority qualification.
+
+Immutable generation content now has a database readback digest over generation identity/preimage pins and all persisted native curves, observations (excluding QC), declarations, attributions and full origin membership. Publication recomputes it independently, rather than accepting arbitrary labels. A same-statement preimage retarget bypass was reproduced and fixed: generation identity is frozen from INSERT, including during publication; published timestamps/run identity are sealed afterward. Replay takes the ordered prelock and rechecks content and completed-QC digests before comparing payload rows. SQL JSONB/UTC encoding is versioned; full typed source-builder and complete source authority remain separate open obligations.
+
+QC completion v2 uses database readback JSONB encoding in UTC, binding sorted row identities/values/status/flags/policy and generation/policy/completion-time/run identity. The runner reads this digest after QC writes; the transition independently recomputes it. Arbitrary digest labels are refused, and qc_run_id is sealed with other completion fields. This does not independently prove scientific execution of each rule; that obligation remains open.
+
+Parser-derived native interval regression exposed and corrected the publication guard: an RT inclusive end maps to the next Kathmandu civil day exclusive, and both bounds must match exact instants, not only local dates. The actual-writer test uses real RT/DFL parser output and the production historical native builder, including the 1986 offset transition; it does not establish full21 builder/digest completion.
+
+The expiry regression now uses a measurement and verified reference dated before curve expiry. A capture timestamp just before expiry is refused by Python, INSERT and COPY even though the database clock is later than expiry; this isolates capture-time expiry from future-evidence refusals.
+
+F11 local hardening: protected provisional-store writes and expiry-permission enable/disable reject driver-level and execution-option AUTOCOMMIT before SQL, via the existing shared real-transaction guard. The static prelock now includes group assignments/membership and model artifact lineage. The Nepal21 INSERT/COPY trigger now checks granted tenant/legacy advisory locks and required relation OIDs before any legacy wait; the later trigger no longer acquires the ordered locks after legacy locks. Helpers refuse a second tenant key in the transaction and cap lock waits at five seconds, preserving shorter caller limits. Full lock-order and race verification remains pending; writer generation INSERT also verifies granted advisory/relation locks and no longer trusts a caller-set marker.
+
+The static-only route now requires the exact 21-station package roster and pinned HRU, rejects foreign-tenant resolution and partial/onboarding-held imports, and passes the production station/group assignment feature resolver to acceptance. Full21 synthetic packages exercise the guarded static role without weather activation. Their repeated Gateway upserts exposed a prepared-statement partial-index inference failure; the fixed basin-average conflict predicate is now a SQL literal so generic plans retain the correct index. New15 registration remains a separate unfinished local obligation; pre-existing station registration is currently required.
+
+QC runner policy pins now hash the complete canonical rule set (including thresholds, versions, cadence and network), station-network map, overrides and climatic baselines. SQL QC completion also requires every delivered row to carry the same release-bound policy hash, a mapped station network, and flag rule identities and versions from the complete policy witness. Empty flags remain valid for evaluated, passing QC (the checker emits only failures). This does not yet independently re-evaluate every scientific QC rule in SQL. The runner recomputes this hash before any writes, so mutable nested inputs or stale caller pins cannot silently change evaluated rules. Real all21 rules still require owner approval; synthetic policies do not supply those pins.
+
+The protected SQL/COPY and Python conversion paths now recheck and row-lock the current station tenant, DHM network and exact Nepal21 roster, and bind declarations to that station code and active generation. A synthetic station-code drift regression exposed the missing check before this correction.
+
+Recovery validation now covers the guarded equal-start selector with both a second usable declaration and a decreasing-invalid declaration. Invalid declarations remain in precedence selection; they must not permit fallback to the valid declaration. This is synthetic coverage, not real-data authorization.
+
 The orchestrator sets this plan **READY for code and synthetic tests only** after independent Claude, current-base implementation, and science reviews of revision 18. Real package/history import, real QC, live conversion, remote DB/SSH operations, deployment, credentials, and activation are not released. Independent patch review and owner approval remain required.
 
 Owner policy is unchanged:
@@ -587,3 +625,260 @@ Validation before merge:
 - Live endpoint identity, station id, stage unit and vertical datum/reference proof.
 - DB waiver enabled and protected input permission.
 - Gateway forcing, model assignment, training changes, forecast targets, TEST forecast output, publication, alerts, deployment and post-commit restore remain out of scope.
+
+### Owner-authorized TEST candidate registration (2026-10-15)
+
+The pinned Nepal21 static transaction now registers missing new15 stations using
+existing `onboarding` status and explicitly labelled TEST package-outlet candidate
+coordinates. It requires all old6 already in the target tenant, preserves existing
+station fields (except the existing basin link update), and is idempotent. The
+static importer gets only the bounded registrar function, not station INSERT or
+activation grants. An INSERT/UPDATE-aware deferred check requires matching fingerprinted package/
+basin/binding lineage before commit, including after initial checks are drained. New rows have no forecast targets, measured-parameter
+claims, datum, water-level unit, altitude, WIGOS ID, weather bindings or assignments;
+`ungauged` marks the unverified candidate configuration, not a claim about the DHM
+station's actual instrumentation. This does not approve live feed or gauge datum
+provenance, nor operational activation. Owner approval supersedes the earlier
+registrar and postreplacement-readiness authoring holds.
+
+### Readiness reader closure
+
+Qualification and model input reads use the existing accepted-generation boundary
+after replacement. The reader forwards caller-supplied policy pins. The qualification
+entrypoint does not expose a pin argument and uses the current accepted generation.
+The old delivery retains
+its legacy QC-version requirement while available. Untagged, unrelated deliveries,
+measured levels and protected provisional outputs cannot supply readiness targets.
+This is a reader correction, not permission to activate forecasts or ingest live data.
+
+### Postreplacement readiness fixture (v2)
+
+The current readiness fixture executes parsed full21 source replacement, publication
+and real Stage-1 QC. All60 predecessor rows are removed with their preimage retained.
+Short/protected-only controls omit input records before publication; no accepted
+rows are deleted to manufacture a test. The six stations retain the frozen daily
+discharge values and UTC-resampled scientific frame/report expectations. Declared
+DFL local dates map to18:15 UTC in those same bins. Other stations have two1991
+records (2 and3) outside the qualification window so real daily-cadence QC evaluates
+every row. A declared range0..1000 passes these histories with empty success flags;
+new policy metadata replaces the obsolete legacy QC version.
+
+The protected curve still declares stage1→4 and stage2→10000; the expected
+protected discharge10000 is literal, never copied from conversion output. Native
+curve/proof provenance reflects the parsed delivery and Kathmandu interval. Real
+permission/append paths bind the accepted QC generation. Both pre-existing tables
+and all nine authority tables are unchanged by qualification. V1 frozen artifacts
+remain historical evidence; they are not the current fixture's lifecycle contract.
+
+### Scoped review corrections and evidence limits
+
+Readiness lifecycle tests run real services under the table-owner test role; they
+are not least-privilege ACL proof. Actual shipped-bootstrap writer/static/converter
+coverage is separate (`test_nepal21_source_pipeline.py`, `test_nepal21_concurrency.py`,
+`test_nepal21_candidate_registration.py`). No hand-copied grant is claimed as
+bootstrap evidence. The runtime scientific oracle is the frozen v1 literal frames
+and values plus declared input changes; the separately extracted scientific JSON
+is review evidence only.
+
+Before native curve provenance is rebound into the protected oracle, explicit
+literals check both RT points, linear interpolation, and UTC bounds
+2025-01-09T18:15Z through2026-01-08T18:15Z. Mutating the unused stage1 endpoint or
+earlier expiry must fail that specific assertion. A self-consistent conversion
+value/content mutation must fail the independent numerical oracle, not an unrelated
+constructor error. Ready station450 also receives the two1991 records; the same
+literal in-window frames/reports must remain unchanged. The held reason
+`no_current_qc_passed_delivery_history` means no usable history inside the window.
+
+Direct reader tests isolate missing/unrelated tags, nonmanual source, non-discharge
+parameter, stale legacy QC, and wrong policy against valid controls. The lifecycle
+fixture verifies published-but-pending rows are physically present yet unreadable,
+then the same declared values become readable only after actual QC.
+
+F15 now tests real publication refusal for a tenant that cannot own all21 globally
+unique DHM codes, with a valid full source witness and exact missing-occurrence
+refusal. It verifies unchanged legacy visibility; it does not claim successful
+foreign-generation reader isolation.
+
+The candidate lineage check also runs for updates to the existing basin, package
+and recap-binding predicate columns. It selects only affected candidate stations
+from both old and new references, then evaluates their current final rows. A
+transaction may temporarily detach and restore a dependency or perform a valid
+coordinated rebind. Old6 metadata is not subject to candidate rules. The static
+principal has no DELETE grant on these three tables; no privileges were broadened.
+Actual-principal tests cover seven dependency mutations both after drained checks
+and in later transactions, plus restored final states and valid rebindings.
+
+The shared check locks the affected candidate row before reading dependency
+state; multi-candidate basin/package checks visit station IDs in order. This
+serializes rechecks for the same candidate. Successor1 did not include dedicated concurrent dependency tests. The later
+successor review section records the bounded two-session regressions.
+
+### Successor review: direct worker and concurrent dependency paths
+
+Actual shipped-role regressions exposed worker marker removal, READ COMMITTED
+station/binding movement into an invisibly referenced basin, and REPEATABLE READ
+dual-binding write skew. A separate mixed service/direct-static case invalidated a
+committed package used only by old6 while new candidates were uncommitted. Normal
+service/service static prelocks block that competing static path; direct permitted
+DML still needs the invariant.
+
+A candidate's prior marker cannot be removed from its final persisted identity.
+Temporary labels restored before deferred checking remain allowed; this is not a
+promotion or activation path. Candidate checks require READ COMMITTED, use
+FOR NO KEY UPDATE NOWAIT on the candidate, and FOR SHARE NOWAIT only on the
+matched basin/package/binding proof. Late check acquisitions fail rather than wait
+or invert the entrypoint prelock order. Ordered visits apply within each trigger,
+not globally across deferred events. Ordinary DML still follows PostgreSQL locking
+and configured timeouts. No privileges or scientific date conventions changed.
+
+Revision0072 was not deployed by this orchestrator session: host work was
+tooling/preparation/preflight against application baseline259f16, without Plan520.
+The unmerged local patch does not establish every external database's revision;
+no new remote check was made.
+
+A previously marked station event now also refuses a missing final row at its
+captured identity. This closes rename/detach/primary-key churn without adding
+a station promotion registry. Dependency UPDATE isolation admission occurs before
+any candidate lookup, since a REPEATABLE READ snapshot can hide newly committed
+candidates entirely. It applies only to the existing trigger columns; unrelated
+column updates are unchanged. Exact P0001 refusals are checked for isolation.
+Lock-conflict outcomes may be timeout or NOWAIT; only the dependency-first test's
+specific row-lock error is claimed as direct NOWAIT evidence.
+
+The unconditional isolation admission is at the three dependency-trigger entries
+for their listed UPDATE columns. Non-predicate column updates remain outside these
+triggers; READ COMMITTED legacy/old6 writes remain allowed. This closes stale
+snapshots that cannot see any candidate and therefore would skip per-candidate
+admission. Previously marked events refuse both unmarked and missing final rows.
+
+### Main migration fixture port (separate from scoped acceptance)
+
+The first two ported fixtures prepare pinned full21 parsed RT/DFL sources, native
+payloads and QC policy witnesses before writes. The actual-session writer lifecycle
+fixture retains its copied-grant scope; shipped-bootstrap proof remains separate.
+For an empty generation, the full21 DFL witness now fails the exact earlier
+`persisted source occurrences differ from authorized parsed records` check. The
+fixture asserts zero persisted observations. This supersedes its obsolete later
+message expectation without bypassing or relaxing either production guard. The
+h130 fixture failure is preserved; remaining main fixtures are not yet ported.
+
+Further main-fixture ports preserve dry-run/preimage byte equality and no-overwrite,
+old6 deletion versus non-old6 legacy retention, exact replay-field refusals, real
+predecessor drift, and QC policy/flag/completion guards. The zero-observation port
+is owner-session SQL guard-refusal evidence (its legacy helper can SET ROLE to a
+superuser fixture role), not actual-bootstrap ACL proof. Port checks remain bounded
+and separate from final repository acceptance.
+
+The main protected-conversion fixture now declares full21 parsed sources before
+writes and runs publication plus Stage1 QC. Independent literals check the selected
+curve's points, UTC bounds, interpolation, label and discharge before proof binding.
+Its existing Python/SQL/COPY permission, capture-time and catalog refusal matrix
+remains owner-service evidence, not shipped-bootstrap ACL evidence.
+
+Equal-start conversion cases retain the copied-grant actual-session writer path,
+real parsed full21 histories/QC, usable-versus-invalid ties and copied equivalence
+labels. The base declaration binds a source-matching preexisting untagged native
+curve, preserving the separate selected-legacy-curve immutability refusal.
+
+Published-generation update-matrix tests now reach pending QC through the full21
+source path. Hash mutations always change one character, avoiding accidental no-op
+mutations when a real digest happens to start with the former fixed replacement.
+
+The owner-approved omission/raw-substitution fixture correction asserts the exact
+earlier source-occurrence mismatch, because source records join through declaration
+payloads before the later manifest-set check. Old failing-message evidence remains
+local. Publication remains BUILDING/unpublished and the transaction rolls back. A
+separate digest-only substitution keeps raw/source records unchanged and explicitly
+reaches the later manifest declaration-set mismatch guard. No guard was removed.
+
+The direct-SQL catalog negatives insert prepared payload rows through the real SQL
+constraints after the normal locked BUILDING-header service path. This isolates
+database publication checks from the service's earlier manifest-catalog rejection;
+no trigger, constraint, source witness or transaction precondition is disabled.
+
+Origin-membership mismatch now changes one prepared origin-set identity consistently
+across its references, preserving source records so the exact digest/membership
+check is reached. The direct-SQL complete-catalog control publishes all42 prepared
+DFL observations. Both retain owner-session fixture scope.
+
+The structural publication fixture retains separate RT/DFL origins and the real
+session writer identity (copied grants). Full21 prepared sources now exercise its
+immutable-content and parent-identity refusals. Literal UTC bounds independently
+cover both the ordinary Kathmandu offset and the 1986 midnight transition.
+
+The canonicalized positive control now prepares full21 source files plus an explicit
+synthetic owner approval. It checks literal duplicate raw points, deduplicated
+effective/native points, UTC bounds and selected DFL attribution before direct SQL
+publication. This remains synthetic owner-session guard evidence.
+
+Shape/policy/native negatives preserve full parsed source records while deliberately
+forging only the derived metadata under test. Fixture catalog overrides are prepared
+before release insertion; they never read persisted output as owner authority. The
+SQL checks must reject duplicate points falsely labelled raw-usable, missing policy,
+wrong approval hash and changed native payload with their original exact errors.
+
+Postpublication child INSERT/COPY negatives now start from a full21 published
+catalog. Exact BUILDING-only errors are retained for all COPY child tables; nested
+rollback preserves the published state and all63 original RT/DFL occurrences.
+
+Historical-selector fixtures now use two physical RT files and full21 source
+coverage. Held tie/invalid-latest positives preserve null selection pointers. The
+old-curve fallback negative changes all three selection pointers consistently and
+retains the exact historical-selector refusal, not an unrelated pointer failure.
+
+Owner-approved source-identity dispositions distinguish guard order: path, file
+hash, parser version, block ordinal and source-root changes hit the exact earlier
+source-occurrence mismatch against unchanged witnesses. Origin UUID changes (with
+consistent member FK) and member-order swaps still hit the late origin-set digest
+guard. Renamed tests claim only the boundary reached and retain rollback checks.
+The valid multi-member control parses duplicate physical RT/DFL files:42 semantic
+DFL observations retain66 distinct RT/DFL source occurrences. No hashes are invented.
+
+Remaining actual-session catalog ports commit owner-prepared full21 witnesses,
+then use real READ COMMITTED transactions with both session_user/current_user
+asserted as the writer. Copied grants remain explicit; no shipped-bootstrap claim.
+Negative publication checks prove BUILDING/unpublished state, generation rollback
+and an unused authorized release. The three-pointer case changes only attribution
+to a second same-station native curve, retaining its original exact guard.
+
+Main-fixture type checks also cover the new scaffolding. Generic SQL/JSON payload
+reads use narrow typed casts, source collections carry explicit types, and two
+unused legacy fixture builders were removed after checking repository references.
+
+The broader configured-suite diagnostic found a stale operator function-inventory
+assertion, not an operator-execution bypass. The test now recognizes only the exact
+reviewed registrar identity, retains the all-schema guarded-writer scan, checks
+effective operator/PUBLIC access and an actual operator call, and pins the closed
+reviewed definer signatures. No function or grant changes are included. Earlier
+interrupted-suite setup errors remain unresolved, not diagnosed by this correction.
+
+Fixture-port evidence wording clarification: literal curve-field checks precede
+proof rebinding; the independent discharge15 assertion follows it. Physical-source
+tampering proves the earlier source guard; UUID/order/set-digest cases retain the
+later identity-digest evidence. The frozen accepted packets are unchanged.
+
+The real no-owner/no-ACL restore exposed a bootstrap convergence gap: four candidate
+definers triggered the unchanged unknown-definer refusal, while nine older allowlisted
+private definers also lost PUBLIC revocations. Root released the reviewed exact13
+local repair with an ADMIN-option/raw-PUBLIC amendment. Separate committed PUBLIC and
+managed revokes precede raw-ACL/current/future-route checks and existing grants; final
+ACL assertions retain the literal authority matrix. The shared lineage test now restores
+head after its temporary downgrade rather than adding older-schema product compatibility.
+Three existing PUBLIC definers and two INVOKER digests remain explicitly outside repair.
+Local implementation remains subject to native gates and independent code review; h157's three
+unattributed setup markers are not diagnosed by this later concrete restore failure.
+
+The later D5 policy inventory diagnosis distinguishes the accepted-history readiness
+QC-count query from training inputs: diagnostic counts retain unchecked statuses,
+while usable history and the separate training read require QC_PASSED. The exact
+inventory includes that evidence-only site. A mixed two-passed/eight-unchecked
+regression keeps usable history nonempty but requires insufficient training samples,
+HELD status and clearing a previously enabled target; five checked controls remain
+ready. This test/doc correction does not change production selection or the scanner.
+The preceding configured run stopped at this stale inventory (8293 passed, one failed).
+Its generated version dirty-date changed during that run; native packaging is a
+plausible producer, not a proven writer. The other 1025 inputs had equal recorded
+pre/post hashes; this does not establish continuous byte identity. D5 is a newly
+captured current-worktree policy snapshot, not a member of the historical packet.
+The failed run and later policy-review provenance remain preserved; final broad/slow
+gates are pending.

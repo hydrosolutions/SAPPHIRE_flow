@@ -610,8 +610,14 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
         "QcStatus.QC_PASSED",
         "QcStatus.QC_PASSED",
     ),
-    # Plan 143's delivery reader forwards training_data's QC_PASSED filter.
-    "src/sapphire_flow/services/nepal_onboarding.py": ("qc_status", "qc_status"),
+    # Delivery-reader calls forward training_data's QC_PASSED filter. The
+    # accepted-history readiness read counts all QC statuses as evidence;
+    # usable history and the separate training read still require QC_PASSED.
+    "src/sapphire_flow/services/nepal_onboarding.py": (
+        "<unfiltered>",
+        "qc_status",
+        "qc_status",
+    ),
     "src/sapphire_flow/services/observation_alert_checker.py": ("QcStatus.QC_PASSED",),
     "src/sapphire_flow/services/onboarding.py": (
         "QcStatus.QC_PASSED",

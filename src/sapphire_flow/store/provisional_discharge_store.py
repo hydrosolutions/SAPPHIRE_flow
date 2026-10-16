@@ -14,9 +14,12 @@ from sapphire_flow.db.metadata import (
     provisional_discharges,
     rating_curves,
     restricted_delivery_generations,
+    stations,
     tenants,
 )
+from sapphire_flow.services.nepal21_delivery_authority import NEPAL21_STATION_CODES
 from sapphire_flow.services.provisional_discharge import convert_provisional_discharge
+from sapphire_flow.store._helpers import require_real_transaction
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.rating_reference_store import PgRatingReferenceStore
@@ -65,6 +68,7 @@ class PgProvisionalDischargeStore:
     def store_provisional_discharge(
         self, discharge: ProvisionalDischarge, *, captured_at: UtcDatetime
     ) -> str:
+        require_real_transaction(self._conn, caller="store_provisional_discharge")
         isolation = self._conn.execute(
             sa.text("SELECT current_setting('transaction_isolation')")
         ).scalar_one()
@@ -178,16 +182,31 @@ class PgProvisionalDischargeStore:
         permission: sa.engine.row.RowMapping,
         captured_at: UtcDatetime,
     ) -> None:
+        station_code = self._conn.scalar(
+            sa.select(stations.c.code)
+            .where(
+                stations.c.id == discharge.station_id,
+                stations.c.tenant_id == discharge.tenant_id,
+                stations.c.network == "dhm",
+                stations.c.code.in_(NEPAL21_STATION_CODES),
+            )
+            .with_for_update(read=True)
+        )
+        if station_code is None:
+            raise ValueError("expired conversion station outside Nepal21 roster")
         declarations = (
             self._conn.execute(
                 sa.select(
                     dhm_rating_declarations.c.from_local_date,
-                    dhm_rating_declarations.c.function_equivalence_sha256,
+                    dhm_rating_declarations.c.function_payload_json,
                     dhm_rating_declarations.c.usable_rating_curve_id,
                 ).where(
                     dhm_rating_declarations.c.generation_id
                     == permission["generation_id"],
                     dhm_rating_declarations.c.station_id == discharge.station_id,
+                    dhm_rating_declarations.c.tenant_id == discharge.tenant_id,
+                    dhm_rating_declarations.c.cohort == "nepal21",
+                    dhm_rating_declarations.c.station_code == station_code,
                 )
             )
             .mappings()
@@ -197,8 +216,8 @@ class PgProvisionalDischargeStore:
             raise ValueError("Nepal21 expired conversion declaration is absent")
         latest_start = max(row["from_local_date"] for row in declarations)
         latest = [row for row in declarations if row["from_local_date"] == latest_start]
-        equivalence_hashes = {row["function_equivalence_sha256"] for row in latest}
-        if len(equivalence_hashes) > 1:
+        effective_payload = latest[0]["function_payload_json"]
+        if any(row["function_payload_json"] != effective_payload for row in latest):
             raise ValueError(
                 "Nepal21 expired conversion has equal-start non-equivalent declarations"
             )

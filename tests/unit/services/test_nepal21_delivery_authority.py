@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -9,6 +10,7 @@ from sapphire_flow.adapters.dhm_files import RatingPoint, RatingTableBlock
 from sapphire_flow.services.nepal21_delivery_authority import (
     MAX_WITNESS_BYTES,
     NEPAL21_STATION_CODES,
+    ExpectedQcPolicyPin,
     WitnessBytes,
     canonical_json_bytes,
     classify_rating_block,
@@ -20,6 +22,13 @@ from sapphire_flow.services.nepal21_delivery_authority import (
     validate_witness_bytes,
     verify_manifest_catalog,
 )
+from sapphire_flow.types.domain import (
+    ClimBaseline,
+    QcRuleParams,
+    QcRuleSet,
+    StationQcOverride,
+)
+from sapphire_flow.types.ids import StationId
 
 
 def _block(points: tuple[RatingPoint, ...]) -> RatingTableBlock:
@@ -274,3 +283,116 @@ def test_canonical_json_is_stable_and_utf8_hashable() -> None:
     assert sha256_hex_bytes(canonical_json_bytes({"b": 1, "a": [2]})) == (
         "63c9663de90ee828bbda6cd9acf02d0c653986c1ec25aa239920641edc9a1de5"
     )
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "threshold",
+        "rule_version",
+        "rule_set_version",
+        "cadence",
+        "network",
+        "station_network",
+        "override",
+        "baseline",
+    ],
+)
+def test_qc_policy_bytes_bind_complete_input_bundle(changed_field: str) -> None:
+    station_id = StationId(UUID("00000000-0000-0000-0000-000000000001"))
+    rule = QcRuleParams(
+        rule_id="range_check",
+        rule_version="synthetic-v1",
+        parameter="discharge",
+        time_step=timedelta(days=1),
+        thresholds={"value_min": 0.0, "value_max": 10.0},
+        network="dhm",
+    )
+    pin = ExpectedQcPolicyPin(
+        policy_sha256="0" * 64,
+        rule_set=QcRuleSet(version="synthetic-v1", rules=(rule,)),
+        station_networks={station_id: "dhm"},
+        overrides=[],
+        baselines=[],
+    )
+    original = pin.content_bytes
+    match changed_field:
+        case "threshold":
+            rule.thresholds["value_max"] = 100.0
+            changed = pin
+        case "rule_version":
+            changed = replace(
+                pin,
+                rule_set=replace(
+                    pin.rule_set, rules=(replace(rule, rule_version="v2"),)
+                ),
+            )
+        case "rule_set_version":
+            changed = replace(pin, rule_set=replace(pin.rule_set, version="v2"))
+        case "cadence":
+            changed = replace(
+                pin,
+                rule_set=replace(
+                    pin.rule_set, rules=(replace(rule, time_step=timedelta(hours=1)),)
+                ),
+            )
+        case "network":
+            changed = replace(
+                pin,
+                rule_set=replace(pin.rule_set, rules=(replace(rule, network=None),)),
+            )
+        case "station_network":
+            changed = replace(pin, station_networks={station_id: "other"})
+        case "override":
+            changed = replace(
+                pin,
+                overrides=[
+                    StationQcOverride(
+                        station_id=station_id,
+                        rule_id="range_check",
+                        parameter="discharge",
+                        time_step=timedelta(days=1),
+                        thresholds={"value_max": 20.0},
+                    )
+                ],
+            )
+        case "baseline":
+            changed = replace(
+                pin,
+                baselines=[
+                    ClimBaseline(
+                        station_id=station_id,
+                        parameter="discharge",
+                        day_of_year=1,
+                        rolling_mean=5.0,
+                        rolling_std=2.0,
+                        sample_count=10,
+                    )
+                ],
+            )
+        case _:
+            raise AssertionError("unknown mutation")
+    assert sha256_hex_bytes(changed.content_bytes) != sha256_hex_bytes(original)
+
+
+def test_qc_policy_bytes_refuse_nonfinite_thresholds() -> None:
+    pin = ExpectedQcPolicyPin(
+        policy_sha256="0" * 64,
+        rule_set=QcRuleSet(
+            version="synthetic",
+            rules=(
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="v1",
+                    parameter="discharge",
+                    time_step=timedelta(days=1),
+                    thresholds={"value_max": float("nan")},
+                ),
+            ),
+        ),
+        station_networks={},
+        overrides=[],
+        baselines=[],
+    )
+    with pytest.raises(ValueError, match="must be finite"):
+        _ = pin.content_bytes

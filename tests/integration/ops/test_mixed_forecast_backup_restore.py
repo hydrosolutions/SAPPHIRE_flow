@@ -582,3 +582,155 @@ def test_cleanup_record_failures_do_not_mask_readiness_or_skip_owned_handles(
     assert "record disk unavailable" in " ".join(caught.value.__notes__)
     if stop_mode == "fail-first":
         assert "first cleanup stop failed" in " ".join(caught.value.__notes__)
+
+
+def test_real_restored_unknown_definer_refuses_after_committed_private_revokes(
+    restored: Restored,
+    tmp_path: Path,
+) -> None:
+    from testcontainers.postgres import PostgresContainer
+
+    from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
+    from tests.integration.ops.mixed_restore_fixture import PRIVATE_DEFINER_EXECUTORS
+
+    owned: list[PostgresContainer] = []
+    engines: list[sa.Engine] = []
+    owned_ids: list[str] = []
+    cleanup_errors: list[Exception] = []
+    resource_path = tmp_path / "unknown-definer-owned.json"
+    try:
+        target = start_owned(
+            owned,
+            PostgresContainer(
+                image="postgis/postgis:16-3.4",
+                username="test",
+                password="test",
+                dbname="sapphire",
+            ),
+        )
+        target_id = target.get_wrapped_container().id
+        assert target_id is not None
+        owned_ids.append(target_id)
+        record_resources(resource_path, owned_ids, "started", cleanup_errors)
+        # Recreate only this freshly returned, recorded target; PostGIS preloads tiger.
+        for argv in (
+            ["dropdb", "-U", "test", "sapphire"],
+            ["createdb", "-U", "test", "--template=template0", "sapphire"],
+        ):
+            subprocess.run(
+                ["docker", "exec", target_id, *argv],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        with restored.dump_path.open("rb") as source_bytes:
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    target_id,
+                    "pg_restore",
+                    "--single-transaction",
+                    "--exit-on-error",
+                    "--no-owner",
+                    "--no-acl",
+                    "-U",
+                    "test",
+                    "-d",
+                    "sapphire",
+                ],
+                stdin=source_bytes,
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+        engine = sa.create_engine(
+            target.get_connection_url().replace("+psycopg2", "+psycopg")
+        )
+        engines.append(engine)
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(sa.text("CREATE DATABASE prefect"))
+            conn.execute(
+                sa.text(
+                    "CREATE FUNCTION public.private_acl_unknown() RETURNS integer "
+                    "LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
+                )
+            )
+            unknown_before = conn.execute(
+                sa.text(
+                    "SELECT pg_get_functiondef(oid),proacl::text FROM pg_proc "
+                    "WHERE oid='public.private_acl_unknown()'::regprocedure"
+                )
+            ).one()
+            for signature in PRIVATE_DEFINER_EXECUTORS:
+                assert (
+                    conn.execute(
+                        sa.text(
+                            "SELECT proacl IS NULL FROM pg_proc WHERE "
+                            "oid=to_regprocedure(:fn)"
+                        ),
+                        {"fn": signature},
+                    ).scalar_one()
+                    is True
+                )
+        harness = _RoleBootstrapHarness(target, engine)
+        result = harness.run_bootstrap("api-mixed", "worker-mixed", "backup-mixed")
+        assert result.returncode != 0
+        assert "protected forecast lineage: unknown definer authority" in result.stderr
+        with engine.connect() as conn:
+            assert_manifest(manifest(conn), restored.expected)
+            assert (
+                conn.execute(
+                    sa.text(
+                        "SELECT pg_get_functiondef(oid),proacl::text FROM pg_proc "
+                        "WHERE oid='public.private_acl_unknown()'::regprocedure"
+                    )
+                ).one()
+                == unknown_before
+            )
+            present = set(
+                conn.execute(
+                    sa.text(
+                        "SELECT rolname FROM pg_roles WHERE rolname IN "
+                        "('sapphire_api','sapphire_worker',"
+                        "'sapphire_backup',"
+                        "'sapphire_publication_health')"
+                    )
+                ).scalars()
+            )
+            assert present == {
+                "sapphire_api",
+                "sapphire_worker",
+                "sapphire_backup",
+                "sapphire_publication_health",
+            }
+            for signature in PRIVATE_DEFINER_EXECUTORS:
+                assert (
+                    conn.execute(
+                        sa.text(
+                            "SELECT NOT EXISTS (SELECT 1 FROM "
+                            "aclexplode(COALESCE(proacl,acldefault('f',"
+                            "proowner))) a "
+                            "WHERE a.grantee=0) FROM pg_proc WHERE "
+                            "oid=to_regprocedure(:fn)"
+                        ),
+                        {"fn": signature},
+                    ).scalar_one()
+                    is True
+                )
+                for role in present:
+                    assert (
+                        conn.scalar(
+                            sa.text(
+                                "SELECT has_function_privilege(:role,"
+                                "to_regprocedure(:fn),'EXECUTE')"
+                            ),
+                            {"role": role, "fn": signature},
+                        )
+                        is False
+                    )
+    finally:
+        cleanup_owned(
+            owned, engines, owned_ids, resource_path, sys.exc_info()[1], cleanup_errors
+        )

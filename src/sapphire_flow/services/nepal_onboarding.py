@@ -239,10 +239,15 @@ class DeliveryObservationReader(PgObservationStore):
         return [
             r
             for r in rows
-            if r.delivery_id == DELIVERY_ID
+            if (
+                (
+                    r.delivery_id == DELIVERY_ID
+                    and r.qc_rule_version == obs_qc_rule_version("discharge", None)
+                )
+                or (r.delivery_id or "").startswith("dhm-nepal21-")
+            )
             and r.source is ObservationSource.MANUAL_IMPORT
             and r.parameter == "discharge"
-            and r.qc_rule_version == obs_qc_rule_version("discharge", None)
         ]
 
     def fetch_observations(
@@ -254,10 +259,9 @@ class DeliveryObservationReader(PgObservationStore):
         qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
-        rows = super().fetch_observations(
+        return self.fetch_accepted_historical_observations(
             station_id, parameter, start, end, qc_status=qc_status, source=source
         )
-        return self._filter_delivery_observations(rows)
 
     def fetch_accepted_historical_observations(
         self,
@@ -269,10 +273,16 @@ class DeliveryObservationReader(PgObservationStore):
         source: ObservationSource | None = None,
         expected_qc_policy_sha256: str | None = None,
     ) -> list[Observation]:
-        del expected_qc_policy_sha256
-        return self.fetch_observations(
-            station_id, parameter, start, end, qc_status=qc_status, source=source
+        rows = super().fetch_accepted_historical_observations(
+            station_id,
+            parameter,
+            start,
+            end,
+            qc_status=qc_status,
+            source=source,
+            expected_qc_policy_sha256=expected_qc_policy_sha256,
         )
+        return self._filter_delivery_observations(rows)
 
 
 class GatewayHistoryReader(StoreBackedReanalysisSource):
@@ -352,15 +362,26 @@ def qualify_discharge_targets(
         for station in stations:
             rows = [
                 r
-                for r in cohort
-                if r.station_id == station.id
-                and window.start <= r.timestamp < window.end
+                for r in PgObservationStore(
+                    conn
+                ).fetch_accepted_historical_observations(
+                    station.id,
+                    "discharge",
+                    window.start,
+                    window.end,
+                    source=ObservationSource.MANUAL_IMPORT,
+                )
+                if r.delivery_id == DELIVERY_ID
+                or (r.delivery_id or "").startswith("dhm-nepal21-")
             ]
             usable = [
                 r
                 for r in rows
                 if r.qc_status is QcStatus.QC_PASSED
-                and r.qc_rule_version == obs_qc_rule_version("discharge", None)
+                and (
+                    r.delivery_id != DELIVERY_ID
+                    or r.qc_rule_version == obs_qc_rule_version("discharge", None)
+                )
             ]
             reasons: list[str] = []
             if binding_issue := history_binding_issue(conn, station):

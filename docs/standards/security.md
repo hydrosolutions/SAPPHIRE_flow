@@ -1192,8 +1192,15 @@ delivery later is a deliberate migration that extends the allow-list.
 **Bypasses and the preconditions they rest on** (none is granted): `DISABLE TRIGGER` needs table ownership;
 `session_replication_role` needs superuser or an explicit `GRANT SET`; `TRUNCATE` needs the grant (and is
 guarded); `SET ROLE` needs a role membership (the bootstrap revokes every membership and resets role-level
-settings on every run). No function in `public` that writes the three tables is `SECURITY DEFINER`
-(asserted by a test).
+settings on every run). The guarded-table writer inventory permits exactly the reviewed
+`public.sf_register_nepal21_candidate(uuid,uuid,text,double precision,double precision,text,timestamp with time zone)`
+identity from `0072`. It inserts TEST package candidates for the static importer; it grants the
+operator no new authority. Tests keep the all-non-system-schema source scan and reject every other
+writer, including other schemas or overloads. They check effective `sapphire_operator` EXECUTE,
+PUBLIC ACLs (including default ACLs), and an actual operator call refusal. The registrar and its
+three private candidate lineage/trigger helpers have neither operator nor PUBLIC EXECUTE.
+The separate SECURITY DEFINER inventory is a closed set of schema-qualified signatures, not a
+name-prefix allow-list. The source-text scan does not detect statements assembled with dynamic SQL.
 
 **The bootstrap converges to the safe state.** It grants the operator table privileges only while every
 guard trigger exists and is enabled (`pg_trigger.tgenabled` `'O'` or `'A'`; `DISABLE TRIGGER` leaves the row
@@ -1906,3 +1913,60 @@ UPDATE authority and durable CLI commit/reconnect remain essential Plan 519 T0/O
 holds. The focused candidate's three passing tests, setup-envelope observation and
 independently verified owned cleanup do not discharge these production duties.
 No grants, roles, activation policy or protected-writer boundaries change.
+
+
+### Private definer ACL restoration (Plan 520)
+
+Restore and bootstrap must use the same trusted database-owner connection. After a
+`--no-owner --no-acl` restore, bootstrap re-establishes the migration-declared ACLs
+of exactly thirteen private SECURITY DEFINER functions: the two publication locks,
+five Nepal21 lock helpers, candidate registrar, release-used marker, restricted row
+guard and three candidate lineage/trigger helpers. API receives only its two locks;
+the delivery writer receives its five locks; the static importer receives its static
+lock and registrar. Within these thirteen, PUBLIC, worker, operator, backup and
+publication-health receive no execution. Other functions are not covered by this claim.
+
+The three already PUBLIC-executable definers `sf_active_accepted_delivery(uuid,text)`,
+`sf_assert_restricted_publication_catalog(uuid)` and
+`sf_restricted_generation_publish_guard()` are outside this repair. The two INVOKER
+digests `sf_dhm21_content_digest(uuid)` and
+`sf_dhm21_qc_completion_digest(uuid,text,timestamptz,uuid)` also remain outside it;
+no-ACL restore does not retain their migration PUBLIC revocations. This is not an
+exhaustive function-ACL or recovery-security qualification.
+
+The existing operator safe-state remains first. Exact function identities, SECURITY
+DEFINER status and trusted ownership are checked after early managed-role/object
+normalization. All thirteen functions are required at the matching migration head;
+there is no product exception for a test fixture left at an older revision. A future
+head retaining the same contracts is not rejected merely by its revision label.
+Wrong owners or missing identities refuse; bootstrap never transfers ownership.
+
+PUBLIC revocation commits separately before named-managed revocations. A dependent
+managed grant can refuse without rolling back the earlier PUBLIC revocation; no
+CASCADE or custom-grant cleanup is used. These revokes remove the trusted owner's
+grants only: a third-party PUBLIC grant is not silently repaired. Raw residual PUBLIC,
+custom grantee/grantor and grant-option authority refuse before route checks. The
+existing unknown-definer preflight and positive grant stages remain unchanged.
+
+Before any positive function grant, all seven managed principals are checked for
+current and future authority. SET-role closure followed by inheritance, ADMIN OPTION
+and reachable trusted-owner authority are included. An unsafe later-converged role
+can now refuse before its usual late cleanup. This deliberate conservative availability
+change requires approved owner maintenance; it is not a promise to repair every drift.
+No broad membership cleanup is moved earlier. A final assertion checks the exact
+private-function ACL/effective/reachable matrix after normal grants.
+
+Keep API/workers stopped throughout recovery. An identity-check failure or a failure
+inside a revoke transaction does not prove completed ACL repair. After committed
+revokes, a later refusal can leave legitimate API/delivery/static execution unavailable
+until a successful rerun. Failure after some normal grants leaves only those already
+committed; it is not a complete role configuration. Check the reported failure and
+actual post-state. No claim covers concurrent privileged-admin changes or live-session
+revocation. This local implementation does not authorize production policy/deployment.
+
+The bounded future-authority check also follows ADMIN-enabled custom bridges across
+multiple hops before checking inherited execution at the thirteen intended grantees
+or trusted owner. Its finite state records managed principal, potential acting role
+and whether administration was used; cycles are deduplicated. An unrelated bridge
+with no protected endpoint is not itself refused. This models potential membership
+changes without performing them and remains limited to the seven managed principals.

@@ -113,8 +113,7 @@ CREATE TABLE public.dhm_delivery_origins (
     FOREIGN KEY (generation_id, tenant_id, cohort)
         REFERENCES public.restricted_delivery_generations(id, tenant_id, cohort) ON DELETE RESTRICT,
     UNIQUE (id, generation_id, tenant_id, origin_kind),
-    CHECK ((origin_kind IN ('DFL','RT')) = (row_or_block_ordinal IS NOT NULL)),
-    CHECK (origin_kind <> 'GHT_HASH_ONLY' OR source_root_label = 'synthetic_test' OR row_or_block_ordinal IS NOT NULL)
+    CHECK ((origin_kind IN ('DFL','RT')) = (row_or_block_ordinal IS NOT NULL))
 );
 
 CREATE TABLE public.dhm_origin_sets (
@@ -456,6 +455,117 @@ BEGIN
     IF manifest->'station_codes' IS DISTINCT FROM expected_station_codes THEN
         RAISE EXCEPTION 'manifest station scope must equal Nepal21 roster';
     END IF;
+    IF manifest->>'codec' IS DISTINCT FROM 'dhm21-source-catalog-v1'
+       OR jsonb_typeof(manifest->'source_files') IS DISTINCT FROM 'array'
+       OR jsonb_typeof(manifest->'source_records') IS DISTINCT FROM 'array' THEN
+        RAISE EXCEPTION 'source file and parsed-record witnesses are required';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM (VALUES ('RT'), ('DFL')) kinds(kind)
+        WHERE (
+            SELECT jsonb_agg(code ORDER BY code) FROM (
+                SELECT DISTINCT f->>'station_code' AS code
+                FROM jsonb_array_elements(manifest->'source_files') f
+                WHERE f->>'kind' = kinds.kind
+            ) codes
+        ) IS DISTINCT FROM expected_station_codes
+        OR (
+            SELECT jsonb_agg(code ORDER BY code) FROM (
+                SELECT DISTINCT r->>'station_code' AS code
+                FROM jsonb_array_elements(manifest->'source_records') r
+                WHERE r->>'origin_kind' = kinds.kind
+            ) codes
+        ) IS DISTINCT FROM expected_station_codes
+    ) THEN
+        RAISE EXCEPTION 'source RT and DFL file/record rosters must each equal Nepal21';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM jsonb_array_elements(manifest->'source_files') f
+        GROUP BY f->>'source_root_label', f->>'relative_path'
+        HAVING count(*) <> 1
+    ) OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(manifest->'source_records') r
+        GROUP BY r->>'source_root_label', r->>'relative_path', r->'row_or_block_ordinal'
+        HAVING count(*) <> 1
+    ) THEN
+        RAISE EXCEPTION 'source physical identities must be unique';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM jsonb_array_elements(manifest->'source_records') r
+        WHERE NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(manifest->'source_files') f
+            WHERE f->>'kind' = r->>'origin_kind'
+              AND f->>'source_root_label' = r->>'source_root_label'
+              AND f->>'relative_path' = r->>'relative_path'
+              AND f->>'file_sha256' = r->>'file_sha256'
+              AND f->>'station_code' = r->>'station_code'
+        )
+    ) THEN
+        RAISE EXCEPTION 'source record does not bind an authorized source file';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM public.dhm_delivery_origins o
+        LEFT JOIN public.dhm_origin_set_members sm
+          ON sm.origin_id = o.id AND sm.generation_id = o.generation_id
+         AND sm.tenant_id = o.tenant_id
+        WHERE o.generation_id = p_generation_id
+        GROUP BY o.id HAVING count(sm.origin_id) <> 1
+    ) THEN
+        RAISE EXCEPTION 'source occurrence must have exactly one semantic membership';
+    END IF;
+    IF EXISTS (
+        WITH expected AS (
+            SELECT item AS record
+            FROM jsonb_array_elements(manifest->'source_records') item
+        ), actual AS (
+            SELECT jsonb_build_object(
+                'origin_kind', o.origin_kind,
+                'source_root_label', o.source_root_label,
+                'relative_path', o.relative_path,
+                'file_sha256', o.file_sha256,
+                'parser_version', o.parser_version,
+                'row_or_block_ordinal', o.row_or_block_ordinal,
+                'origin_payload_sha256', o.origin_payload_sha256,
+                'record_payload', CASE
+                    WHEN o.origin_kind = 'RT' THEN d.raw_declaration_payload_json
+                    WHEN o.origin_kind = 'DFL' THEN jsonb_build_object(
+                        'station_code', a.station_code,
+                        'local_date', a.local_date::text,
+                        'reported_q', a.reported_q)
+                    ELSE NULL END,
+                'station_code', coalesce(ds.code, ats.code,
+                    CASE WHEN o.origin_kind = 'GHT_HASH_ONLY' THEN f.item->>'station_code' END)
+            ) AS record
+            FROM public.dhm_delivery_origins o
+            JOIN public.dhm_origin_set_members sm
+              ON sm.origin_id = o.id AND sm.generation_id = o.generation_id
+             AND sm.tenant_id = o.tenant_id
+            LEFT JOIN public.dhm_rating_declarations d
+              ON d.generation_id = sm.generation_id AND d.tenant_id = sm.tenant_id
+             AND d.origin_set_sha256 = sm.origin_set_sha256 AND o.origin_kind = 'RT'
+            LEFT JOIN public.dhm_delivery_observation_attributions a
+              ON a.generation_id = sm.generation_id AND a.tenant_id = sm.tenant_id
+             AND a.origin_set_sha256 = sm.origin_set_sha256 AND o.origin_kind = 'DFL'
+            LEFT JOIN public.stations ds ON ds.id = d.station_id
+              AND ds.tenant_id = d.tenant_id AND ds.network = 'dhm'
+            LEFT JOIN public.stations ats ON ats.id = a.station_id
+              AND ats.tenant_id = a.tenant_id AND ats.network = 'dhm'
+            LEFT JOIN LATERAL (
+                SELECT item FROM jsonb_array_elements(manifest->'source_files') item
+                WHERE item->>'kind' = o.origin_kind
+                  AND item->>'source_root_label' = o.source_root_label
+                  AND item->>'relative_path' = o.relative_path
+                  AND item->>'file_sha256' = o.file_sha256
+            ) f ON true
+            WHERE o.generation_id = p_generation_id
+        ), delta AS (
+            (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+            UNION ALL
+            (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+        ) SELECT 1 FROM delta
+    ) THEN
+        RAISE EXCEPTION 'persisted source occurrences differ from authorized parsed records';
+    END IF;
     IF jsonb_typeof(manifest->'rating_declarations') IS DISTINCT FROM 'array' THEN
         RAISE EXCEPTION 'manifest rating declarations must be explicit';
     END IF;
@@ -632,8 +742,8 @@ BEGIN
             OR d.native_curve_payload_json->>'rating_type_label' IS DISTINCT FROM c.rating_type_label
             OR (d.native_curve_payload_json->>'valid_from')::timestamptz IS DISTINCT FROM c.valid_from
             OR (d.native_curve_payload_json->>'valid_to')::timestamptz IS DISTINCT FROM c.valid_to
-            OR d.from_local_date IS DISTINCT FROM (c.valid_from AT TIME ZONE 'Asia/Kathmandu')::date
-            OR d.to_local_date_inclusive IS DISTINCT FROM (c.valid_to AT TIME ZONE 'Asia/Kathmandu')::date
+            OR c.valid_from IS DISTINCT FROM (d.from_local_date::timestamp AT TIME ZONE 'Asia/Kathmandu')
+            OR c.valid_to IS DISTINCT FROM ((d.to_local_date_inclusive + 1)::timestamp AT TIME ZONE 'Asia/Kathmandu')
             OR d.function_payload_json->'points' IS DISTINCT FROM (
                 SELECT jsonb_agg(
                     jsonb_build_object(
@@ -685,7 +795,7 @@ BEGIN
         ), counts AS (
             SELECT
                 e.*,
-                (SELECT count(DISTINCT coalesce(d.function_equivalence_sha256, '<NULL>'))
+                (SELECT count(DISTINCT coalesce(d.function_payload_json, 'null'::jsonb))
                  FROM public.dhm_rating_declarations d
                  WHERE d.generation_id = e.generation_id
                    AND d.tenant_id = e.tenant_id
@@ -697,7 +807,16 @@ BEGIN
                    AND d.tenant_id = e.tenant_id
                    AND d.station_id = e.station_id
                    AND d.from_local_date = e.latest_start
-                   AND d.usable_rating_curve_id IS NOT NULL) AS latest_usable_count
+                   AND d.to_local_date_inclusive >= e.local_date
+                   AND d.usable_rating_curve_id IS NOT NULL) AS latest_usable_count,
+                (SELECT count(*)
+                 FROM public.dhm_rating_declarations d
+                 WHERE d.generation_id = e.generation_id
+                   AND d.tenant_id = e.tenant_id
+                   AND d.station_id = e.station_id
+                   AND d.from_local_date = e.latest_start
+                   AND d.to_local_date_inclusive >= e.local_date
+                   AND d.function_payload_json IS NOT NULL) AS latest_effective_count
             FROM evaluated e
         )
         SELECT 1
@@ -712,16 +831,21 @@ BEGIN
                   AND d.tenant_id = a.tenant_id
                   AND d.station_id = a.station_id
                   AND d.from_local_date = a.latest_start
+                  AND d.to_local_date_inclusive >= a.local_date
                   AND d.usable_rating_curve_id = a.rating_curve_id
                   AND a.latest_equivalence_count = 1
-                  AND a.latest_usable_count = 1
+                  AND a.latest_usable_count >= 1
             )
         ) OR (
             a.attribution_state = 'held_equal_start_tie'
             AND (a.latest_start IS NULL OR a.latest_equivalence_count <= 1)
         ) OR (
             a.attribution_state = 'held_invalid_latest'
-            AND (a.latest_start IS NULL OR a.latest_equivalence_count > 1 OR a.latest_usable_count <> 0)
+            AND (a.latest_start IS NULL OR a.latest_equivalence_count > 1 OR a.latest_effective_count <> 0)
+        ) OR (
+            a.attribution_state = 'held_native_mismatch'
+            AND (a.latest_start IS NULL OR a.latest_equivalence_count > 1
+                 OR a.latest_effective_count = 0 OR a.latest_usable_count <> 0)
         ) OR (
             a.attribution_state = 'held_missing_curve'
             AND a.latest_start IS NOT NULL
@@ -841,11 +965,21 @@ END $$;
 CREATE OR REPLACE FUNCTION public.sf_lock_dhm21_delivery_write(p_tenant_id uuid, p_release_id uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('lock_timeout')::interval = interval '0'
+       OR current_setting('lock_timeout')::interval > interval '5 seconds' THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+    END IF;
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION 'protected DHM21 writes require READ COMMITTED';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM public.restricted_delivery_releases WHERE id = p_release_id AND tenant_id = p_tenant_id AND cohort = 'nepal21') THEN
         RAISE EXCEPTION 'restricted delivery release is absent or foreign';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+          AND classid = 1397115979::oid AND objsubid = 2
+          AND objid <> (('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid) THEN
+        RAISE EXCEPTION 'protected operation requires one tenant per transaction';
     END IF;
     PERFORM pg_advisory_xact_lock(1397115979, ('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::int);
     PERFORM pg_advisory_xact_lock(hashtextextended('provisional-discharge:' || p_tenant_id::text, 0));
@@ -854,17 +988,26 @@ BEGIN
         public.dhm_delivery_origins, public.dhm_origin_sets, public.dhm_origin_set_members,
         public.dhm_rating_declarations, public.dhm_delivery_observation_attributions,
         public.rating_curves, public.observations IN SHARE ROW EXCLUSIVE MODE;
-    PERFORM set_config('sapphire.dhm21_delivery_write_lock', p_tenant_id::text || ':' || p_release_id::text, true);
 END $$;
 
 CREATE OR REPLACE FUNCTION public.sf_lock_dhm21_conversion_append(p_tenant_id uuid, p_generation_id uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('lock_timeout')::interval = interval '0'
+       OR current_setting('lock_timeout')::interval > interval '5 seconds' THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+    END IF;
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION 'protected DHM21 conversion writes require READ COMMITTED';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM public.restricted_delivery_generations WHERE id = p_generation_id AND tenant_id = p_tenant_id AND cohort = 'nepal21') THEN
         RAISE EXCEPTION 'restricted delivery generation is absent or foreign';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+          AND classid = 1397115979::oid AND objsubid = 2
+          AND objid <> (('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid) THEN
+        RAISE EXCEPTION 'protected operation requires one tenant per transaction';
     END IF;
     PERFORM pg_advisory_xact_lock(1397115979, ('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::int);
     PERFORM pg_advisory_xact_lock(hashtextextended('provisional-discharge:' || p_tenant_id::text, 0));
@@ -878,8 +1021,21 @@ END $$;
 CREATE OR REPLACE FUNCTION public.sf_lock_dhm21_permission_change(p_tenant_id uuid, p_generation_id uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected writes require READ COMMITTED';
+    END IF;
+    IF current_setting('lock_timeout')::interval = interval '0'
+       OR current_setting('lock_timeout')::interval > interval '5 seconds' THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM public.restricted_delivery_generations WHERE id = p_generation_id AND tenant_id = p_tenant_id AND cohort = 'nepal21') THEN
         RAISE EXCEPTION 'restricted delivery generation is absent or foreign';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+          AND classid = 1397115979::oid AND objsubid = 2
+          AND objid <> (('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid) THEN
+        RAISE EXCEPTION 'protected operation requires one tenant per transaction';
     END IF;
     PERFORM pg_advisory_xact_lock(1397115979, ('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::int);
     PERFORM pg_advisory_xact_lock(hashtextextended('provisional-discharge:' || p_tenant_id::text, 0));
@@ -892,6 +1048,19 @@ END $$;
 CREATE OR REPLACE FUNCTION public.sf_lock_provisional_permission_disable(p_tenant_id uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected writes require READ COMMITTED';
+    END IF;
+    IF current_setting('lock_timeout')::interval = interval '0'
+       OR current_setting('lock_timeout')::interval > interval '5 seconds' THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+          AND classid = 1397115979::oid AND objsubid = 2
+          AND objid <> (('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid) THEN
+        RAISE EXCEPTION 'protected operation requires one tenant per transaction';
+    END IF;
     PERFORM pg_advisory_xact_lock(1397115979, ('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::int);
     PERFORM pg_advisory_xact_lock(hashtextextended('provisional-discharge:' || p_tenant_id::text, 0));
     LOCK TABLE public.provisional_discharge_permissions IN SHARE ROW EXCLUSIVE MODE;
@@ -900,10 +1069,218 @@ END $$;
 CREATE OR REPLACE FUNCTION public.sf_lock_nepal_static_guard(p_tenant_id uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected writes require READ COMMITTED';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.tenants WHERE id = p_tenant_id) THEN
+        RAISE EXCEPTION 'static tenant is absent';
+    END IF;
+    IF current_setting('lock_timeout')::interval = interval '0'
+       OR current_setting('lock_timeout')::interval > interval '5 seconds' THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+          AND classid = 1397115979::oid AND objsubid = 2
+          AND objid <> (('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid) THEN
+        RAISE EXCEPTION 'protected operation requires one tenant per transaction';
+    END IF;
     PERFORM pg_advisory_xact_lock(1397115979, ('x' || substr(replace(p_tenant_id::text, '-', ''), 1, 8))::bit(32)::int);
     LOCK TABLE public.stations, public.basins, public.basin_versions, public.station_weather_sources,
-        public.model_assignments, public.recap_gateway_polygon_bindings IN SHARE ROW EXCLUSIVE MODE;
+        public.model_assignments, public.station_groups, public.station_group_members,
+        public.group_model_assignments, public.model_artifacts, public.model_artifact_basin_versions,
+        public.recap_gateway_polygon_bindings IN SHARE ROW EXCLUSIVE MODE;
 END $$;
+
+CREATE OR REPLACE FUNCTION public.sf_register_nepal21_candidate(
+    p_id uuid, p_tenant_id uuid, p_code text, p_lon double precision,
+    p_lat double precision, p_package_id text, p_created_at timestamptz
+) RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE existing public.stations;
+BEGIN
+    IF p_id IS NULL OR p_created_at IS NULL OR p_package_id IS NULL
+       OR length(p_package_id) = 0 OR p_code IS NULL
+       OR NOT p_code = ANY(ARRAY['225','280','350','404.7','439.7','440','445',
+           '550.05','602','602.5','610','620','650','652','695'])
+       OR p_lon IS NULL OR p_lat IS NULL
+       OR NOT p_lon BETWEEN -180 AND 180 OR NOT p_lat BETWEEN -90 AND 90 THEN
+        RAISE EXCEPTION 'candidate registration requires valid new15 package coordinates';
+    END IF;
+    PERFORM public.sf_lock_nepal_static_guard(p_tenant_id);
+    IF (SELECT count(*) FROM public.stations WHERE tenant_id = p_tenant_id
+        AND network = 'dhm' AND code = ANY(ARRAY['447','450','604.5','647','670','684'])) <> 6 THEN
+        RAISE EXCEPTION 'candidate registration requires all old6 in the target tenant';
+    END IF;
+    SELECT * INTO existing FROM public.stations WHERE network = 'dhm' AND code = p_code;
+    IF FOUND THEN
+        IF existing.tenant_id <> p_tenant_id THEN
+            RAISE EXCEPTION 'candidate station belongs to a different tenant';
+        END IF;
+        RETURN existing.id;
+    END IF;
+    INSERT INTO public.stations (id, tenant_id, code, name, location,
+        station_kind, timezone, measured_parameters, station_status,
+        network, ownership, gauging_status, created_at, updated_at)
+    VALUES (p_id, p_tenant_id, p_code,
+        format('DHM %s [TEST package outlet candidate: %s]', p_code, p_package_id),
+        public.ST_SetSRID(public.ST_MakePoint(p_lon, p_lat), 4326),
+        'river', 'Asia/Kathmandu', ARRAY[]::text[], 'onboarding', 'dhm',
+        'foreign', 'ungauged', p_created_at, p_created_at);
+    RETURN p_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.sf_assert_nepal21_candidate_lineage(p_station_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE candidate public.stations%ROWTYPE;
+BEGIN
+    SELECT * INTO candidate FROM public.stations
+        WHERE id = p_station_id
+            AND name LIKE 'DHM % [TEST package outlet candidate: %]'
+        FOR NO KEY UPDATE NOWAIT;
+    IF NOT FOUND OR candidate.name NOT LIKE 'DHM % [TEST package outlet candidate: %]' THEN
+        RETURN;
+    END IF;
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected candidate writes require READ COMMITTED';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM public.basins b
+        JOIN public.basin_static_packages p ON p.package_id = b.package_id
+        JOIN public.recap_gateway_polygon_bindings r ON r.station_id = candidate.id
+            AND r.basin_id = b.id AND r.package_id = p.package_id
+        WHERE b.id = candidate.basin_id AND b.network = 'dhm'
+            AND p.fingerprint IS NOT NULL AND p.checksums ? 'basins.gpkg'
+            AND candidate.name = format('DHM %s [TEST package outlet candidate: %s]',
+                candidate.code, p.package_id)
+        FOR SHARE OF b, p, r NOWAIT
+    ) THEN
+        RAISE EXCEPTION 'candidate registration requires matching fingerprinted package lineage';
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.sf_nepal21_candidate_commit_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF OLD.name LIKE 'DHM % [TEST package outlet candidate: %]' AND NOT EXISTS (
+            SELECT 1 FROM public.stations s WHERE s.id = NEW.id
+                AND s.name LIKE 'DHM % [TEST package outlet candidate: %]'
+        ) THEN
+            RAISE EXCEPTION 'candidate marker cannot be removed';
+        END IF;
+    END IF;
+    PERFORM public.sf_assert_nepal21_candidate_lineage(NEW.id);
+    RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER trg_nepal21_candidate_commit_guard
+AFTER INSERT OR UPDATE ON public.stations DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION public.sf_nepal21_candidate_commit_guard();
+
+CREATE OR REPLACE FUNCTION public.sf_nepal21_candidate_dependency_guard() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE candidate_id uuid;
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'protected candidate writes require READ COMMITTED';
+    END IF;
+    IF TG_TABLE_NAME = 'recap_gateway_polygon_bindings' THEN
+        PERFORM public.sf_assert_nepal21_candidate_lineage(OLD.station_id);
+        IF NEW.station_id IS DISTINCT FROM OLD.station_id THEN
+            PERFORM public.sf_assert_nepal21_candidate_lineage(NEW.station_id);
+        END IF;
+    ELSIF TG_TABLE_NAME = 'basins' THEN
+        FOR candidate_id IN
+            SELECT s.id FROM public.stations s
+            WHERE s.basin_id IN (OLD.id, NEW.id)
+                AND s.name LIKE 'DHM % [TEST package outlet candidate: %]'
+            ORDER BY s.id
+        LOOP
+            PERFORM public.sf_assert_nepal21_candidate_lineage(candidate_id);
+        END LOOP;
+    ELSIF TG_TABLE_NAME = 'basin_static_packages' THEN
+        FOR candidate_id IN
+            SELECT s.id FROM public.stations s
+            JOIN public.basins b ON b.id = s.basin_id
+            WHERE b.package_id IN (OLD.package_id, NEW.package_id)
+                AND s.name LIKE 'DHM % [TEST package outlet candidate: %]'
+            ORDER BY s.id
+        LOOP
+            PERFORM public.sf_assert_nepal21_candidate_lineage(candidate_id);
+        END LOOP;
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER trg_nepal21_candidate_basin_guard
+AFTER UPDATE OF id, package_id, network ON public.basins
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION public.sf_nepal21_candidate_dependency_guard();
+CREATE CONSTRAINT TRIGGER trg_nepal21_candidate_package_guard
+AFTER UPDATE OF package_id, fingerprint, checksums ON public.basin_static_packages
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION public.sf_nepal21_candidate_dependency_guard();
+CREATE CONSTRAINT TRIGGER trg_nepal21_candidate_binding_guard
+AFTER UPDATE OF station_id, basin_id, package_id ON public.recap_gateway_polygon_bindings
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION public.sf_nepal21_candidate_dependency_guard();
+REVOKE EXECUTE ON FUNCTION public.sf_register_nepal21_candidate(
+    uuid, uuid, text, double precision, double precision, text, timestamptz),
+    public.sf_nepal21_candidate_commit_guard(),
+    public.sf_nepal21_candidate_dependency_guard(),
+    public.sf_assert_nepal21_candidate_lineage(uuid) FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION public.sf_dhm21_content_digest(p_generation_id uuid) RETURNS text
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = pg_catalog, public, pg_temp SET timezone = 'UTC' AS $$
+    SELECT encode(sha256(convert_to(jsonb_build_object(
+        'codec', 'dhm21-persisted-content-v1',
+        'generation', to_jsonb(g) - ARRAY['state','immutable_content_sha256',
+            'qc_policy_sha256','qc_completion_sha256','published_at','qc_completed_at',
+            'published_by_run_id','qc_run_id'],
+        'observations', COALESCE((SELECT jsonb_agg(to_jsonb(o) - ARRAY['qc_status','qc_flags','qc_rule_version'] ORDER BY o.id)
+            FROM public.observations o WHERE o.delivery_id = g.delivery_id), '[]'::jsonb),
+        'native_curves', COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id)
+            FROM public.rating_curves c WHERE c.delivery_id = g.delivery_id), '[]'::jsonb),
+        'origins', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)
+            FROM public.dhm_delivery_origins r WHERE r.generation_id = g.id), '[]'::jsonb),
+        'origin_sets', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.origin_set_sha256)
+            FROM public.dhm_origin_sets r WHERE r.generation_id = g.id), '[]'::jsonb),
+        'origin_members', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.origin_set_sha256, r.member_ordinal)
+            FROM public.dhm_origin_set_members r WHERE r.generation_id = g.id), '[]'::jsonb),
+        'declarations', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)
+            FROM public.dhm_rating_declarations r WHERE r.generation_id = g.id), '[]'::jsonb),
+        'attributions', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.observation_id)
+            FROM public.dhm_delivery_observation_attributions r WHERE r.generation_id = g.id), '[]'::jsonb)
+    )::text, 'UTF8')), 'hex')
+    FROM public.restricted_delivery_generations g WHERE g.id = p_generation_id
+$$;
+
+CREATE OR REPLACE FUNCTION public.sf_dhm21_qc_completion_digest(
+    p_generation_id uuid, p_policy_sha256 text, p_completed_at timestamptz, p_run_id uuid
+) RETURNS text
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = pg_catalog, public, pg_temp SET timezone = 'UTC' AS $$
+    SELECT encode(sha256(convert_to(jsonb_build_object(
+        'codec', 'dhm21-qc-completion-v2',
+        'generation_id', g.id, 'policy_sha256', p_policy_sha256,
+        'completed_at', p_completed_at, 'run_id', p_run_id,
+        'rows', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                'observation_id', o.id, 'station_id', o.station_id,
+                'timestamp', o.timestamp, 'parameter', o.parameter,
+                'source', o.source, 'value', o.value, 'status', o.qc_status,
+                'flags', o.qc_flags, 'qc_rule_version', o.qc_rule_version
+            ) ORDER BY o.station_id, o.timestamp, o.id)
+            FROM public.observations o
+            JOIN public.dhm_delivery_observation_attributions a ON a.observation_id = o.id
+            WHERE a.generation_id = g.id AND a.tenant_id = g.tenant_id
+              AND o.delivery_id = g.delivery_id
+        ), '[]'::jsonb)
+    )::text, 'UTF8')), 'hex')
+    FROM public.restricted_delivery_generations g WHERE g.id = p_generation_id
+$$;
 
 CREATE OR REPLACE FUNCTION public.sf_restricted_generation_publish_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -911,13 +1288,16 @@ BEGIN
     IF TG_OP <> 'UPDATE' THEN
         RETURN NEW;
     END IF;
-    IF OLD.state <> 'building' AND (
+    IF (
+        NEW.id IS DISTINCT FROM OLD.id OR
+        NEW.created_at IS DISTINCT FROM OLD.created_at OR
+        NEW.created_by_run_id IS DISTINCT FROM OLD.created_by_run_id OR
+        NEW.predecessor_delivery_id IS DISTINCT FROM OLD.predecessor_delivery_id OR
         NEW.delivery_id IS DISTINCT FROM OLD.delivery_id OR
         NEW.manifest_sha256 IS DISTINCT FROM OLD.manifest_sha256 OR
         NEW.station_set_sha256 IS DISTINCT FROM OLD.station_set_sha256 OR
         NEW.predecessor_semantic_sha256 IS DISTINCT FROM OLD.predecessor_semantic_sha256 OR
         NEW.preimage_sha256 IS DISTINCT FROM OLD.preimage_sha256 OR
-        NEW.immutable_content_sha256 IS DISTINCT FROM OLD.immutable_content_sha256 OR
         NEW.release_id IS DISTINCT FROM OLD.release_id OR
         NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR
         NEW.network IS DISTINCT FROM OLD.network OR
@@ -926,11 +1306,19 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'published restricted generation identity is immutable';
     END IF;
+    IF OLD.state <> 'building' AND (
+        NEW.immutable_content_sha256 IS DISTINCT FROM OLD.immutable_content_sha256 OR
+        NEW.published_at IS DISTINCT FROM OLD.published_at OR
+        NEW.published_by_run_id IS DISTINCT FROM OLD.published_by_run_id
+    ) THEN
+        RAISE EXCEPTION 'published restricted generation identity is immutable';
+    END IF;
     IF NOT (OLD.state = 'active_pending_qc' AND NEW.state = 'active_qc_complete')
        AND (
         NEW.qc_policy_sha256 IS DISTINCT FROM OLD.qc_policy_sha256 OR
         NEW.qc_completion_sha256 IS DISTINCT FROM OLD.qc_completion_sha256 OR
-        NEW.qc_completed_at IS DISTINCT FROM OLD.qc_completed_at
+        NEW.qc_completed_at IS DISTINCT FROM OLD.qc_completed_at OR
+        NEW.qc_run_id IS DISTINCT FROM OLD.qc_run_id
     ) THEN
         RAISE EXCEPTION 'restricted generation QC fields are transition-only';
     END IF;
@@ -939,6 +1327,9 @@ BEGIN
             RAISE EXCEPTION 'publication requires immutable content digest and timestamp';
         END IF;
         PERFORM public.sf_assert_restricted_publication_catalog(NEW.id);
+        IF NEW.immutable_content_sha256 IS DISTINCT FROM public.sf_dhm21_content_digest(NEW.id) THEN
+            RAISE EXCEPTION 'immutable content digest does not match persisted readback';
+        END IF;
         PERFORM public.sf_mark_restricted_release_used(NEW.id);
     ELSIF OLD.state = 'active_pending_qc' AND NEW.state = 'active_qc_complete' THEN
         IF NEW.qc_policy_sha256 IS NULL OR NEW.qc_completion_sha256 IS NULL OR NEW.qc_completed_at IS NULL THEN
@@ -969,6 +1360,51 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'QC completion requires release-bound QC policy witness';
         END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.observations o
+            WHERE o.delivery_id = NEW.delivery_id
+              AND o.qc_rule_version IS DISTINCT FROM NEW.qc_policy_sha256
+        ) THEN
+            RAISE EXCEPTION 'QC row policy does not match release-bound policy';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.restricted_delivery_release_witnesses w
+            WHERE w.release_id = NEW.release_id AND w.witness_kind = 'qc_policy'
+              AND ((convert_from(w.content_bytes, 'UTF8')::jsonb)->>'codec'
+                   IS DISTINCT FROM 'dhm21-qc-policy-v1'
+                   OR jsonb_typeof((convert_from(w.content_bytes, 'UTF8')::jsonb)->'rule_set'->'rules') IS DISTINCT FROM 'array'
+                   OR jsonb_typeof((convert_from(w.content_bytes, 'UTF8')::jsonb)->'station_networks') IS DISTINCT FROM 'object')
+        ) THEN
+            RAISE EXCEPTION 'QC policy witness requires complete rule bundle';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.observations o
+            JOIN public.stations s ON s.id = o.station_id
+            CROSS JOIN LATERAL (
+                SELECT convert_from(w.content_bytes, 'UTF8')::jsonb AS policy
+                FROM public.restricted_delivery_release_witnesses w
+                WHERE w.release_id = NEW.release_id AND w.witness_kind = 'qc_policy'
+            ) p
+            WHERE o.delivery_id = NEW.delivery_id
+              AND (p.policy->'station_networks'->>s.id::text IS DISTINCT FROM s.network
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(o.qc_flags) flag
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(p.policy->'rule_set'->'rules') rule
+                        WHERE rule->>'rule_id' = flag->>'rule_id'
+                          AND rule->>'rule_version' = flag->>'rule_version'
+                          AND rule->>'parameter' = o.parameter
+                          AND (rule->>'network' IS NULL OR rule->>'network' = s.network)
+                    )
+                ))
+        ) THEN
+            RAISE EXCEPTION 'QC flags or station mapping do not match pinned rule bundle';
+        END IF;
+        IF NEW.qc_completion_sha256 IS DISTINCT FROM public.sf_dhm21_qc_completion_digest(
+            NEW.id, NEW.qc_policy_sha256, NEW.qc_completed_at, NEW.qc_run_id
+        ) THEN
+            RAISE EXCEPTION 'QC completion digest does not match persisted readback';
+        END IF;
     ELSIF NEW.state IS DISTINCT FROM OLD.state THEN
         RAISE EXCEPTION 'invalid restricted generation state transition';
     END IF;
@@ -979,11 +1415,37 @@ CREATE TRIGGER trg_restricted_generation_publish_guard BEFORE UPDATE ON public.r
 CREATE OR REPLACE FUNCTION public.sf_restricted_generation_insert_guard() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-    IF NEW.cohort = 'nepal21'
-       AND session_user = 'sapphire_dhm21_delivery_writer'
-       AND current_setting('sapphire.dhm21_delivery_write_lock', true)
-           IS DISTINCT FROM NEW.tenant_id::text || ':' || NEW.release_id::text THEN
-        RAISE EXCEPTION 'restricted Nepal21 generation insert requires delivery write lock';
+    IF NEW.cohort = 'nepal21' AND session_user = 'sapphire_dhm21_delivery_writer' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 2 AND classid = 1397115979::oid
+              AND objid = (('x' || substr(replace(NEW.tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 1
+              AND classid = ((hashtextextended('provisional-discharge:' || NEW.tenant_id::text, 0) >> 32) & 4294967295)::oid
+              AND objid = (hashtextextended('provisional-discharge:' || NEW.tenant_id::text, 0) & 4294967295)::oid
+        ) OR EXISTS (
+            SELECT 1 FROM unnest(ARRAY[
+                'public.restricted_delivery_releases'::regclass,
+                'public.restricted_delivery_generations'::regclass,
+                'public.provisional_discharge_permissions'::regclass,
+                'public.expired_rating_test_permissions'::regclass,
+                'public.dhm_delivery_origins'::regclass,
+                'public.dhm_origin_sets'::regclass, 'public.dhm_origin_set_members'::regclass,
+                'public.dhm_rating_declarations'::regclass,
+                'public.dhm_delivery_observation_attributions'::regclass,
+                'public.rating_curves'::regclass, 'public.observations'::regclass
+            ]) AS required(relation_id)
+            WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+                WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation' AND l.granted
+                  AND l.relation = required.relation_id
+                  AND l.mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'))
+        ) THEN
+            RAISE EXCEPTION 'restricted Nepal21 generation insert requires delivery write lock';
+        END IF;
     END IF;
     IF NEW.cohort = 'nepal21'
        AND NEW.state <> 'building'
@@ -1016,9 +1478,83 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp 
 DECLARE row_delivery text;
 DECLARE old_delivery text;
 DECLARE new_delivery text;
+DECLARE row_station uuid;
+DECLARE scope_tenant uuid;
 BEGIN
     old_delivery := CASE WHEN TG_OP IN ('UPDATE','DELETE') THEN OLD.delivery_id ELSE NULL END;
     new_delivery := CASE WHEN TG_OP IN ('INSERT','UPDATE') THEN NEW.delivery_id ELSE NULL END;
+    row_station := CASE WHEN TG_OP = 'DELETE' THEN OLD.station_id ELSE NEW.station_id END;
+    IF session_user = 'sapphire_dhm21_delivery_writer' THEN
+        SELECT s.tenant_id INTO scope_tenant
+        FROM public.stations s
+        JOIN public.restricted_delivery_generations g ON g.tenant_id = s.tenant_id
+        JOIN public.restricted_delivery_releases r ON r.id = g.release_id
+          AND r.tenant_id = g.tenant_id AND r.allowed_new_delivery_id = g.delivery_id
+          AND r.manifest_sha256 = g.manifest_sha256
+        WHERE s.id = row_station AND s.network = 'dhm'
+          AND s.code = ANY(ARRAY['225','280','350','404.7','439.7','440','445','447','450','550.05','602','602.5','604.5','610','620','647','650','652','670','684','695'])
+          AND g.cohort = 'nepal21' AND g.network = 'dhm'
+          AND (
+            (g.state = 'building' AND r.status = 'authorized'
+             AND (r.expires_at IS NULL OR r.expires_at > clock_timestamp())
+             AND ((TG_OP = 'INSERT' AND new_delivery = g.delivery_id)
+               OR (TG_OP = 'DELETE' AND (old_delivery = g.delivery_id
+                 OR (old_delivery = g.predecessor_delivery_id
+                     AND s.code = ANY(ARRAY['447','450','604.5','647','670','684']))))))
+            OR (TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'observations'
+                AND g.state = 'active_pending_qc' AND r.status = 'used'
+                AND old_delivery = g.delivery_id AND new_delivery = g.delivery_id)
+          );
+        IF scope_tenant IS NULL THEN
+            RAISE EXCEPTION 'native DML is outside release-bound writer scope'
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 2 AND classid = 1397115979::oid
+              AND objid = (('x' || substr(replace(scope_tenant::text, '-', ''), 1, 8))::bit(32)::bigint)::oid
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 1
+              AND classid = ((hashtextextended('provisional-discharge:' || scope_tenant::text, 0) >> 32) & 4294967295)::oid
+              AND objid = (hashtextextended('provisional-discharge:' || scope_tenant::text, 0) & 4294967295)::oid
+        ) OR EXISTS (
+            SELECT 1 FROM unnest(ARRAY[
+                'public.restricted_delivery_releases'::regclass,
+                'public.restricted_delivery_generations'::regclass,
+                'public.provisional_discharge_permissions'::regclass,
+                'public.expired_rating_test_permissions'::regclass,
+                'public.dhm_delivery_origins'::regclass,
+                'public.dhm_origin_sets'::regclass, 'public.dhm_origin_set_members'::regclass,
+                'public.dhm_rating_declarations'::regclass,
+                'public.dhm_delivery_observation_attributions'::regclass,
+                'public.rating_curves'::regclass, 'public.observations'::regclass
+            ]) AS required(relation_id)
+            WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+                WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation' AND l.granted
+                  AND l.relation = required.relation_id
+                  AND l.mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'))
+        ) THEN
+            RAISE EXCEPTION 'release-bound writer DML requires actual pre-held ordered locks';
+        END IF;
+    END IF;
+    IF old_delivery = 'dhm-barkhk-2026-09-08' OR new_delivery = 'dhm-barkhk-2026-09-08' THEN
+        IF EXISTS (
+            SELECT 1 FROM public.stations s
+            JOIN public.restricted_delivery_generations g ON g.tenant_id = s.tenant_id
+            WHERE s.id = row_station AND s.network = 'dhm'
+              AND s.code = ANY(ARRAY['447','450','604.5','647','670','684'])
+              AND g.cohort = 'nepal21' AND g.state IN ('active_pending_qc','active_qc_complete')
+        ) THEN
+            RAISE EXCEPTION 'selected Nepal21 generation forbids predecessor resurrection or mutation';
+        END IF;
+    END IF;
+    IF TG_TABLE_NAME = 'rating_curves' AND TG_OP IN ('UPDATE','DELETE')
+       AND EXISTS (SELECT 1 FROM public.dhm_rating_declarations d WHERE d.usable_rating_curve_id = OLD.id) THEN
+        RAISE EXCEPTION 'catalog-selected native rating curve is immutable';
+    END IF;
     IF old_delivery = 'dhm-barkhk-2026-09-08' OR old_delivery LIKE 'dhm-nepal21-%' THEN
         row_delivery := old_delivery;
     ELSE
@@ -1071,15 +1607,8 @@ BEGIN
         END IF;
         IF TG_OP = 'UPDATE' THEN
             IF TG_TABLE_NAME = 'observations' THEN
-                IF NEW.id IS DISTINCT FROM OLD.id
-                   OR NEW.station_id IS DISTINCT FROM OLD.station_id
-                   OR NEW.timestamp IS DISTINCT FROM OLD.timestamp
-                   OR NEW.parameter IS DISTINCT FROM OLD.parameter
-                   OR NEW.value IS DISTINCT FROM OLD.value
-                   OR NEW.source IS DISTINCT FROM OLD.source
-                   OR NEW.rating_curve_id IS DISTINCT FROM OLD.rating_curve_id
-                   OR NEW.rating_curve_correction_version IS DISTINCT FROM OLD.rating_curve_correction_version
-                   OR NEW.delivery_id IS DISTINCT FROM OLD.delivery_id THEN
+                IF (to_jsonb(NEW) - ARRAY['qc_status','qc_flags','qc_rule_version'])
+                   IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['qc_status','qc_flags','qc_rule_version']) THEN
                     RAISE EXCEPTION 'restricted observation update may change only QC columns'
                         USING ERRCODE = 'insufficient_privilege';
                 END IF;
@@ -1099,10 +1628,10 @@ BEGIN
     END IF;
     RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END $$;
-CREATE TRIGGER trg_observations_restricted_delivery_guard
+CREATE TRIGGER trg_a00_observations_restricted_delivery_guard
     BEFORE INSERT OR UPDATE OR DELETE ON public.observations
     FOR EACH ROW EXECUTE FUNCTION public.sf_restricted_delivery_row_guard();
-CREATE TRIGGER trg_rating_curves_restricted_delivery_guard
+CREATE TRIGGER trg_a00_rating_curves_restricted_delivery_guard
     BEFORE INSERT OR UPDATE OR DELETE ON public.rating_curves
     FOR EACH ROW EXECUTE FUNCTION public.sf_restricted_delivery_row_guard();
 
@@ -1172,6 +1701,43 @@ BEGIN
     d := NEW.content::jsonb;
     IF NEW.captured_at > clock_timestamp() THEN
         RAISE EXCEPTION 'provisional capture time is in the future';
+    END IF;
+    SELECT code INTO tenant_code FROM public.tenants WHERE id = NEW.tenant_id;
+    IF tenant_code = 'chwrr' THEN
+        IF NOT EXISTS (SELECT 1 FROM public.restricted_delivery_generations
+            WHERE tenant_id = NEW.tenant_id AND network = 'dhm' AND cohort = 'nepal21'
+              AND state = 'active_qc_complete') THEN
+            RAISE EXCEPTION 'Nepal21 expired conversion requires QC-complete generation';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 2 AND classid = 1397115979::oid
+              AND objid = (('x' || substr(replace(NEW.tenant_id::text, '-', ''), 1, 8))::bit(32)::bigint)::oid
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+              AND mode = 'ExclusiveLock' AND objsubid = 1
+              AND classid = ((hashtextextended('provisional-discharge:' || NEW.tenant_id::text, 0) >> 32) & 4294967295)::oid
+              AND objid = (hashtextextended('provisional-discharge:' || NEW.tenant_id::text, 0) & 4294967295)::oid
+        ) OR EXISTS (
+            SELECT 1 FROM unnest(ARRAY[
+                'public.restricted_delivery_generations'::regclass,
+                'public.provisional_discharge_permissions'::regclass,
+                'public.expired_rating_test_permissions'::regclass,
+                'public.dhm_delivery_origins'::regclass,
+                'public.dhm_origin_sets'::regclass, 'public.dhm_origin_set_members'::regclass,
+                'public.dhm_rating_declarations'::regclass,
+                'public.dhm_delivery_observation_attributions'::regclass,
+                'public.rating_curves'::regclass, 'public.observations'::regclass
+            ]) AS required(relation_id)
+            WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+                WHERE l.pid = pg_backend_pid() AND l.locktype = 'relation' AND l.granted
+                  AND l.relation = required.relation_id
+                  AND l.mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'))
+        ) THEN
+            RAISE EXCEPTION 'Nepal21 append requires actual pre-held ordered locks';
+        END IF;
     END IF;
     -- Serialize owner disable with append without granting UPDATE for row locks.
     PERFORM pg_advisory_xact_lock(hashtextextended(
@@ -1258,7 +1824,7 @@ BEGIN
     IF generation IS NULL THEN
         RAISE EXCEPTION 'Nepal21 expired conversion requires QC-complete generation';
     END IF;
-    PERFORM public.sf_lock_dhm21_conversion_append(NEW.tenant_id, generation);
+    -- The earlier provisional trigger verifies real prelocks without waiting.
     SELECT p.*, g.qc_policy_sha256, g.qc_completion_sha256
     INTO permission_row
     FROM public.expired_rating_test_permissions p
@@ -1270,19 +1836,31 @@ BEGIN
     IF permission_row.id IS NULL THEN
         RAISE EXCEPTION 'Nepal21 expired rating test permission is disabled';
     END IF;
+    PERFORM 1 FROM public.stations s
+    WHERE s.id = NEW.station_id AND s.tenant_id = NEW.tenant_id
+      AND s.network = 'dhm'
+      AND s.code IN ('225','280','350','404.7','439.7','440','445','447','450','550.05','602','602.5','604.5','610','620','647','650','652','670','684','695')
+    FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'expired conversion station outside Nepal21 roster';
+    END IF;
     SELECT max(d.from_local_date) INTO latest_start
     FROM public.dhm_rating_declarations d
     WHERE d.generation_id = generation
       AND d.tenant_id = NEW.tenant_id
-      AND d.station_id = NEW.station_id;
+      AND d.station_id = NEW.station_id
+      AND d.cohort = 'nepal21'
+      AND d.station_code = (SELECT code FROM public.stations WHERE id = NEW.station_id);
     IF latest_start IS NULL THEN
         RAISE EXCEPTION 'Nepal21 expired conversion declaration is absent';
     END IF;
-    SELECT count(DISTINCT coalesce(d.function_equivalence_sha256, '<NULL>')) INTO latest_equivalence_count
+    SELECT count(DISTINCT coalesce(d.function_payload_json, 'null'::jsonb)) INTO latest_equivalence_count
     FROM public.dhm_rating_declarations d
     WHERE d.generation_id = generation
       AND d.tenant_id = NEW.tenant_id
       AND d.station_id = NEW.station_id
+      AND d.cohort = 'nepal21'
+      AND d.station_code = (SELECT code FROM public.stations WHERE id = NEW.station_id)
       AND d.from_local_date = latest_start;
     IF latest_equivalence_count > 1 THEN
         RAISE EXCEPTION 'Nepal21 expired conversion has equal-start non-equivalent declarations';
@@ -1292,6 +1870,8 @@ BEGIN
     WHERE d.generation_id = generation
       AND d.tenant_id = NEW.tenant_id
       AND d.station_id = NEW.station_id
+      AND d.cohort = 'nepal21'
+      AND d.station_code = (SELECT code FROM public.stations WHERE id = NEW.station_id)
       AND d.from_local_date = latest_start
       AND d.usable_rating_curve_id = NEW.rating_curve_id;
     IF latest_usable_count <> 1 THEN
@@ -1310,6 +1890,8 @@ BEGIN
           WHERE d.generation_id = generation
             AND d.tenant_id = NEW.tenant_id
             AND d.station_id = NEW.station_id
+      AND d.cohort = 'nepal21'
+      AND d.station_code = (SELECT code FROM public.stations WHERE id = NEW.station_id)
             AND d.usable_rating_curve_id = candidate.id
       )
       AND NOT (candidate.valid_from IS NOT DISTINCT FROM selected.valid_from
@@ -1374,7 +1956,9 @@ REVOKE ALL ON public.restricted_delivery_releases, public.restricted_delivery_re
     public.restricted_delivery_generations, public.dhm_delivery_origins, public.dhm_origin_sets,
     public.dhm_origin_set_members, public.dhm_rating_declarations,
     public.dhm_delivery_observation_attributions, public.expired_rating_test_permissions FROM PUBLIC;
-REVOKE EXECUTE ON FUNCTION public.sf_lock_dhm21_delivery_write(uuid, uuid),
+REVOKE EXECUTE ON FUNCTION public.sf_dhm21_content_digest(uuid),
+    public.sf_dhm21_qc_completion_digest(uuid, text, timestamptz, uuid),
+    public.sf_lock_dhm21_delivery_write(uuid, uuid),
     public.sf_lock_dhm21_conversion_append(uuid, uuid), public.sf_lock_dhm21_permission_change(uuid, uuid),
     public.sf_lock_provisional_permission_disable(uuid), public.sf_lock_nepal_static_guard(uuid),
     public.sf_restricted_delivery_row_guard() FROM PUBLIC;
@@ -1383,8 +1967,8 @@ REVOKE EXECUTE ON FUNCTION public.sf_lock_dhm21_delivery_write(uuid, uuid),
 
 def downgrade() -> None:
     op.execute(r"""
-DROP TRIGGER IF EXISTS trg_observations_restricted_delivery_guard ON public.observations;
-DROP TRIGGER IF EXISTS trg_rating_curves_restricted_delivery_guard ON public.rating_curves;
+DROP TRIGGER IF EXISTS trg_a00_observations_restricted_delivery_guard ON public.observations;
+DROP TRIGGER IF EXISTS trg_a00_rating_curves_restricted_delivery_guard ON public.rating_curves;
 DROP TRIGGER IF EXISTS trg_restricted_release_update_guard ON public.restricted_delivery_releases;
 DROP TRIGGER IF EXISTS trg_restricted_release_truncate_guard ON public.restricted_delivery_releases;
 DROP TRIGGER IF EXISTS trg_restricted_generation_insert_guard ON public.restricted_delivery_generations;
@@ -1407,6 +1991,16 @@ DROP TABLE IF EXISTS public.dhm_delivery_origins;
 DROP TABLE IF EXISTS public.restricted_delivery_generations;
 DROP TABLE IF EXISTS public.restricted_delivery_release_witnesses;
 DROP TABLE IF EXISTS public.restricted_delivery_releases;
+DROP FUNCTION IF EXISTS public.sf_dhm21_content_digest(uuid);
+DROP FUNCTION IF EXISTS public.sf_dhm21_qc_completion_digest(uuid, text, timestamptz, uuid);
+DROP TRIGGER IF EXISTS trg_nepal21_candidate_commit_guard ON public.stations;
+DROP TRIGGER IF EXISTS trg_nepal21_candidate_basin_guard ON public.basins;
+DROP TRIGGER IF EXISTS trg_nepal21_candidate_package_guard ON public.basin_static_packages;
+DROP TRIGGER IF EXISTS trg_nepal21_candidate_binding_guard ON public.recap_gateway_polygon_bindings;
+DROP FUNCTION IF EXISTS public.sf_nepal21_candidate_commit_guard();
+DROP FUNCTION IF EXISTS public.sf_nepal21_candidate_dependency_guard();
+DROP FUNCTION IF EXISTS public.sf_assert_nepal21_candidate_lineage(uuid);
+DROP FUNCTION IF EXISTS public.sf_register_nepal21_candidate(uuid, uuid, text, double precision, double precision, text, timestamptz);
 DROP FUNCTION IF EXISTS public.sf_lock_nepal_static_guard(uuid);
 DROP FUNCTION IF EXISTS public.sf_lock_provisional_permission_disable(uuid);
 DROP FUNCTION IF EXISTS public.sf_lock_dhm21_permission_change(uuid, uuid);

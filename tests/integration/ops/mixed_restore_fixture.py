@@ -73,6 +73,128 @@ _GUARDS = {
 }
 
 
+# Literal migration/role contract, independent of the bootstrap implementation.
+PRIVATE_DEFINER_EXECUTORS: dict[str, tuple[str, ...]] = {
+    "public.lock_publication_candidate(uuid)": ("sapphire_api",),
+    "public.lock_publication_grants(uuid,uuid,uuid)": ("sapphire_api",),
+    "public.sf_lock_dhm21_delivery_write(uuid,uuid)": (
+        "sapphire_dhm21_delivery_writer",
+    ),
+    "public.sf_lock_dhm21_conversion_append(uuid,uuid)": (
+        "sapphire_dhm21_delivery_writer",
+    ),
+    "public.sf_lock_dhm21_permission_change(uuid,uuid)": (
+        "sapphire_dhm21_delivery_writer",
+    ),
+    "public.sf_lock_provisional_permission_disable(uuid)": (
+        "sapphire_dhm21_delivery_writer",
+    ),
+    "public.sf_lock_nepal_static_guard(uuid)": (
+        "sapphire_dhm21_delivery_writer",
+        "sapphire_static_importer",
+    ),
+    "public.sf_register_nepal21_candidate(uuid,uuid,text,double "
+    "precision,double precision,text,timestamp with time zone)": (
+        "sapphire_static_importer",
+    ),
+    "public.sf_mark_restricted_release_used(uuid)": (),
+    "public.sf_restricted_delivery_row_guard()": (),
+    "public.sf_assert_nepal21_candidate_lineage(uuid)": (),
+    "public.sf_nepal21_candidate_commit_guard()": (),
+    "public.sf_nepal21_candidate_dependency_guard()": (),
+}
+PRIVATE_FUNCTION_ROLES = (
+    "sapphire_api",
+    "sapphire_worker",
+    "sapphire_publication_health",
+    "sapphire_backup",
+    "sapphire_operator",
+    "sapphire_dhm21_delivery_writer",
+    "sapphire_static_importer",
+)
+
+
+def default_function_acl_state(conn: sa.Connection) -> str:
+    return conn.execute(
+        sa.text(
+            "SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY oid),'[]'::jsonb)::text "
+            "FROM pg_default_acl d"
+        )
+    ).scalar_one()
+
+
+def private_function_definitions(conn: sa.Connection) -> dict[str, str]:
+    return {
+        signature: conn.execute(
+            sa.text("SELECT pg_get_functiondef(to_regprocedure(:signature))"),
+            {"signature": signature},
+        ).scalar_one()
+        for signature in PRIVATE_DEFINER_EXECUTORS
+    }
+
+
+def assert_private_function_acls(conn: sa.Connection) -> dict[str, str]:
+    owner: str = conn.execute(sa.text("SELECT current_user")).scalar_one()
+    present = set(
+        conn.execute(
+            sa.text("SELECT rolname FROM pg_roles WHERE rolname=ANY(:roles)"),
+            {"roles": list(PRIVATE_FUNCTION_ROLES)},
+        ).scalars()
+    )
+    assert present == set(PRIVATE_FUNCTION_ROLES)
+    assert len(PRIVATE_DEFINER_EXECUTORS) == 13
+    state: dict[str, str] = {}
+    for signature, allowed in PRIVATE_DEFINER_EXECUTORS.items():
+        params = {"signature": signature}
+        info = conn.execute(
+            sa.text(
+                "SELECT p.prosecdef, pg_get_userbyid(p.proowner), n.nspname "
+                "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE p.oid=to_regprocedure(:signature)"
+            ),
+            params,
+        ).one()
+        assert tuple(info) == (True, owner, "public")
+        acl = conn.execute(
+            sa.text(
+                "SELECT CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE "
+                "pg_get_userbyid(a.grantee) END, "
+                "pg_get_userbyid(a.grantor), a.privilege_type, a.is_grantable "
+                "FROM pg_proc p CROSS JOIN LATERAL "
+                "aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a "
+                "WHERE p.oid=to_regprocedure(:signature) ORDER BY 1,2,3,4"
+            ),
+            params,
+        ).all()
+        assert [tuple(row) for row in acl] == sorted(
+            (role, owner, "EXECUTE", False) for role in (owner, *allowed)
+        )
+        state[signature] = conn.execute(
+            sa.text(
+                "SELECT proacl::text FROM pg_proc WHERE oid=to_regprocedure(:signature)"
+            ),
+            params,
+        ).scalar_one()
+        for role in PRIVATE_FUNCTION_ROLES:
+            assert conn.scalar(
+                sa.text(
+                    "SELECT has_function_privilege(:role,"
+                    "to_regprocedure(:signature),'EXECUTE')"
+                ),
+                {**params, "role": role},
+            ) is (role in allowed)
+            assert conn.scalar(
+                sa.text(
+                    "SELECT bool_or(has_function_privilege(r.oid,"
+                    "to_regprocedure(:signature),'EXECUTE')) "
+                    "FROM pg_roles r WHERE r.rolname=:role OR "
+                    "pg_has_role(:role,r.oid,'SET')"
+                ),
+                {**params, "role": role},
+            ) is (role in allowed)
+    return state
+
+
 def manifest(conn: sa.Connection) -> dict[str, list[str]]:
     return {
         table: sorted(
@@ -130,6 +252,7 @@ class Restored:
     marker: tuple[PublishedForecastProof, ...]
     dump_hash: str
     dump_size: int
+    dump_path: Path
     guards: dict[str, str]
 
 
@@ -280,6 +403,9 @@ def restored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Restored]:
         ) as conn:
             conn.execute(sa.text("CREATE DATABASE prefect"))
         source_harness = _RoleBootstrapHarness(source, source_engine)
+        with source_engine.connect() as conn:
+            source_defaults = default_function_acl_state(conn)
+            source_definitions = private_function_definitions(conn)
         assert (
             source_harness.run_bootstrap(
                 "api-mixed", "worker-mixed", "backup-mixed"
@@ -287,6 +413,9 @@ def restored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Restored]:
             == 0
         )
         with source_engine.begin() as conn:
+            assert_private_function_acls(conn)
+            assert private_function_definitions(conn) == source_definitions
+            assert default_function_acl_state(conn) == source_defaults
             publication, principal, publication_id, publication_station = _seed(conn)
             decision = _publish(publication, principal, publication_id)
             conn.execute(
@@ -477,11 +606,25 @@ def restored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Restored]:
         ) as conn:
             conn.execute(sa.text("CREATE DATABASE prefect"))
         target_harness = _RoleBootstrapHarness(target, target_engine)
+        with target_engine.connect() as conn:
+            restored_defaults = default_function_acl_state(conn)
+            assert private_function_definitions(conn) == source_definitions
         result = target_harness.run_bootstrap(
             "api-mixed", "worker-mixed", "backup-mixed"
         )
         assert result.returncode == 0, result.stderr
         with target_engine.connect() as conn:
+            first_acls = assert_private_function_acls(conn)
+            assert private_function_definitions(conn) == source_definitions
+            assert default_function_acl_state(conn) == restored_defaults
+        repeated = target_harness.run_bootstrap(
+            "api-mixed", "worker-mixed", "backup-mixed"
+        )
+        assert repeated.returncode == 0, repeated.stderr
+        with target_engine.connect() as conn:
+            assert assert_private_function_acls(conn) == first_acls
+            assert private_function_definitions(conn) == source_definitions
+            assert default_function_acl_state(conn) == restored_defaults
             assert_manifest(manifest(conn), expected)
             assert guard_definitions(conn) == guards
             assert_refusals(conn)
@@ -498,6 +641,7 @@ def restored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Restored]:
             ),
             dump_hash=hashlib.sha256(dump.read_bytes()).hexdigest(),
             dump_size=dump.stat().st_size,
+            dump_path=dump,
             guards=guards,
         )
     finally:

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import pytest
 import sqlalchemy as sa
 
+from sapphire_flow.services import nepal21_source_catalog
 from tests.integration.services import nepal_readiness_isolation_fixture as fixture
 from tests.integration.services.nepal_readiness_isolation_fixture import (
     QualificationScenario,
@@ -18,6 +21,7 @@ from tests.integration.services.skill_persistence_fixture import (
 )
 
 if TYPE_CHECKING:
+    from sapphire_flow.adapters.dhm_files import RatingTableFile
     from tests.fakes.fake_models import FakeStationForecastModel
 
 
@@ -189,10 +193,20 @@ class TestNepalReadinessInputIsolation:
 
         def wrong_convert(*args: object, **kwargs: object) -> object:
             result = original(*args, **kwargs)
-            return fixture.replace(result, discharge=result.discharge + 1.0)
+            document = json.loads(result.content)
+            document["discharge"] = result.discharge + 1.0
+            content = fixture.canonical_content(document)
+            return fixture.replace(
+                result,
+                discharge=result.discharge + 1.0,
+                content=content,
+                fingerprint=fixture.content_digest(content),
+            )
 
         monkeypatch.setattr(fixture, "convert_provisional_discharge", wrong_convert)
-        with pytest.raises((AssertionError, ValueError)):
+        with pytest.raises(
+            AssertionError, match="protected conversion differs from declared oracle"
+        ):
             run_qualification_case(
                 qualification_engine,
                 QualificationScenario.MIXED,
@@ -231,3 +245,40 @@ class TestNepalReadinessInputIsolation:
             evidence_dir=tmp_path,
         )
         assert len(qualification_models) == 1
+
+
+@pytest.mark.parametrize("mutation", ["unused_endpoint", "earlier_expiry"])
+def test_declared_rt_science_rejects_parser_drift_before_metadata_rebinding(
+    qualification_engine: sa.Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(tmp_path))
+    original = nepal21_source_catalog.parse_rating_tables
+
+    def drifting_parser(text: str) -> RatingTableFile:
+        parsed = original(text)
+        if parsed.station_code != "447":
+            return parsed
+        block = parsed.blocks[0]
+        if mutation == "unused_endpoint":
+            block = replace(
+                block,
+                points=(
+                    replace(block.points[0], discharge_m3s=5.0),
+                    *block.points[1:],
+                ),
+            )
+        else:
+            block = replace(block, to_date=block.to_date - timedelta(days=1))
+        return replace(parsed, blocks=(block,))
+
+    monkeypatch.setattr(nepal21_source_catalog, "parse_rating_tables", drifting_parser)
+    with pytest.raises(AssertionError, match="declared readiness RT scientific fields"):
+        run_qualification_case(
+            qualification_engine,
+            QualificationScenario.CLEAN,
+            [],
+            evidence_dir=tmp_path,
+        )

@@ -341,6 +341,63 @@ class TestNepalOnboarding:
         assert all(r.status is ReadinessStatus.HELD for r in reports)
         assert all(r.complete_samples == 0 for r in reports)
 
+    def test_unchecked_history_is_reported_but_cannot_keep_target_ready(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.db.metadata import observations
+
+        import_nepal_package(db_connection, package(), IDENTITY, clock=lambda: NOW)
+        seed_history(db_connection, cohort)
+        before = qualify_discharge_targets(
+            db_connection, IDENTITY, model(), WINDOW, now=NOW
+        )
+        assert len(before) == 6
+        assert all(
+            report.status is ReadinessStatus.READY
+            and report.usable_observations == 10
+            and report.complete_samples == 8
+            for report in before
+        )
+        store = PgStationStore(db_connection)
+        selected = cohort[0]
+        selected_before = store.fetch_station(selected.id)
+        assert selected_before is not None
+        assert selected_before.forecast_targets == frozenset({"discharge"})
+        db_connection.execute(
+            sa.update(observations)
+            .where(observations.c.station_id == selected.id)
+            .where(observations.c.timestamp >= START + timedelta(days=2))
+            .values(qc_status=QcStatus.QC_UNCHECKED.value)
+        )
+
+        reports = qualify_discharge_targets(
+            db_connection, IDENTITY, model(), WINDOW, now=NOW
+        )
+
+        affected = next(r for r in reports if r.station_id == selected.id)
+        assert affected.qc_counts == (("qc_passed", 2), ("qc_unchecked", 8))
+        assert affected.usable_observations == 2
+        assert affected.complete_samples == 0
+        assert "no_current_qc_passed_delivery_history" not in affected.reasons
+        assert "insufficient_complete_training_samples" in affected.reasons
+        assert affected.status is ReadinessStatus.HELD
+        selected_after = store.fetch_station(selected.id)
+        assert selected_after is not None
+        assert selected_after.forecast_targets is None
+        controls = [r for r in reports if r.station_id != selected.id]
+        assert len(controls) == 5
+        assert all(
+            report.status is ReadinessStatus.READY
+            and report.qc_counts == (("qc_passed", 10),)
+            and report.usable_observations == 10
+            and report.complete_samples == 8
+            for report in controls
+        )
+        for report in controls:
+            control_station = store.fetch_station(report.station_id)
+            assert control_station is not None
+            assert control_station.forecast_targets == frozenset({"discharge"})
+
     def test_target_failure_rolls_back_all_six(
         self,
         db_connection: sa.Connection,

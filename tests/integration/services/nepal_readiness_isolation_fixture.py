@@ -4729,125 +4729,42 @@ def _seed_basins_and_stations(
     ]
 
 
-def _seed_nepal21_permission(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
-    tenant_id = _uuid_field(_records_field(oracle, "stations")[0], "tenant_id")
-    now = _time_field(oracle, "clock")
-    release_id = UUID("00000000-0000-0000-0000-000000052001")
-    generation_id = UUID("00000000-0000-0000-0000-000000052002")
-    permission_id = UUID("00000000-0000-0000-0000-000000052003")
-    digest = "0" * 64
-    conn.execute(
-        db.restricted_delivery_releases.insert().values(
-            id=release_id,
-            tenant_id=tenant_id,
-            network="dhm",
-            cohort="nepal21",
-            manifest_sha256=digest,
-            station_set_sha256=digest,
-            canonicalization_policy_sha256=digest,
-            expected_predecessor_delivery_id="dhm-barkhk-2026-09-08",
-            expected_predecessor_semantic_sha256=digest,
-            allowed_new_delivery_id="dhm-nepal21-0000000000000000",
-            expires_at=None,
-            status="used",
-            created_at=now,
-            used_at=now,
-            created_by_run_id=None,
-            used_by_run_id=None,
-        )
-    )
-    conn.execute(
-        db.restricted_delivery_generations.insert().values(
-            id=generation_id,
-            release_id=release_id,
-            tenant_id=tenant_id,
-            network="dhm",
-            cohort="nepal21",
-            delivery_id="dhm-nepal21-0000000000000000",
-            predecessor_delivery_id="dhm-barkhk-2026-09-08",
-            predecessor_semantic_sha256=digest,
-            preimage_sha256=digest,
-            manifest_sha256=digest,
-            station_set_sha256=digest,
-            canonicalization_policy_sha256=digest,
-            state="active_qc_complete",
-            immutable_content_sha256=digest,
-            qc_policy_sha256=digest,
-            qc_completion_sha256=digest,
-            created_at=now,
-            published_at=now,
-            qc_completed_at=now,
-            created_by_run_id=None,
-            published_by_run_id=None,
-            qc_run_id=None,
-        )
-    )
-    conn.execute(
-        db.expired_rating_test_permissions.insert().values(
-            id=permission_id,
-            tenant_id=tenant_id,
-            generation_id=generation_id,
-            cohort="nepal21",
-            permission_version=1,
-            state="enabled",
-            owner_authorization_sha256=digest,
-            precedence_sha256=digest,
-            selection_manifest_sha256=digest,
-            enabled_at=now,
-            disabled_at=None,
-            enabled_by_run_id=None,
-            disabled_by_run_id=None,
-        )
+def _seed_nepal21_permission(conn: sa.Connection, oracle: dict[str, object]) -> None:
+    from sapphire_flow.services.nepal21_delivery_authority import (
+        enable_expired_rating_test_permission,
     )
 
+    tenant_id = TenantId(
+        _uuid_field(_records_field(oracle, "stations")[0], "tenant_id")
+    )
+    generation_id = _uuid_field(oracle, "nepal21_generation_id")
+    digest = hashlib.sha256(b"synthetic readiness owner authorization v2").hexdigest()
+    permission_id = enable_expired_rating_test_permission(
+        conn,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        owner_authorization_sha256=digest,
+        precedence_sha256=digest,
+        selection_manifest_sha256=digest,
+        enabled_at=_time_field(oracle, "clock"),
+    )
+    oracle["permission_fingerprint"] = {
+        "permission_id": str(permission_id),
+        "permission_version": 1,
+        "generation_id": str(generation_id),
+        "owner_authorization_sha256": digest,
+        "precedence_sha256": digest,
+        "selection_manifest_sha256": digest,
+        "qc_policy_sha256": oracle["nepal21_policy_sha256"],
+        "qc_completion_sha256": oracle["nepal21_completion_sha256"],
+        "selected_rating_curve_id": _record_field(oracle, "curve")["id"],
+    }
 
-def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
+
+def _seed_protected(conn: sa.Connection, oracle: dict[str, object]) -> None:
     _seed_nepal21_permission(conn, oracle)
     curve = _curve(_record_field(oracle, "curve"))
     proof = _proof(_record_field(oracle, "reference_proof"))
-    PgRatingCurveStore(conn).store_rating_curve(curve)
-    generation_id = UUID("00000000-0000-0000-0000-000000052002")
-    permission_id = UUID("00000000-0000-0000-0000-000000052003")
-    digest = "0" * 64
-    origin_set = "1" * 64
-    tenant_id = _uuid_field(_records_field(oracle, "stations")[0], "tenant_id")
-    station_code = _text_field(_records_field(oracle, "stations")[0], "code")
-    conn.execute(
-        db.dhm_origin_sets.insert().values(
-            generation_id=generation_id,
-            tenant_id=tenant_id,
-            origin_set_sha256=origin_set,
-            member_count=1,
-            set_kind="RT_DECLARATION",
-        )
-    )
-    conn.execute(
-        db.dhm_rating_declarations.insert().values(
-            id=UUID("00000000-0000-0000-0000-000000052004"),
-            generation_id=generation_id,
-            tenant_id=tenant_id,
-            station_id=curve.station_id,
-            cohort="nepal21",
-            station_code=station_code,
-            from_local_date=curve.valid_from.date(),
-            to_local_date_inclusive=curve.valid_to.date()
-            if curve.valid_to
-            else curve.valid_from.date(),
-            rating_type_label=curve.rating_type_label or "fixture",
-            from_stage_m=0.0,
-            raw_declaration_payload_json={"case": "fixture"},
-            declaration_content_sha256=digest,
-            function_payload_json={"case": "fixture"},
-            function_equivalence_sha256=digest,
-            native_curve_payload_json={"case": "fixture"},
-            inventory_semantic_sha256=None,
-            shape_state="raw_usable",
-            canonicalization_approval_id=None,
-            canonicalization_approval_sha256=None,
-            usable_rating_curve_id=curve.id,
-            origin_set_sha256=origin_set,
-        )
-    )
     seed_reference(conn, db.rating_reference_proofs, proof)
     levels = [_observation(row) for row in _records_field(oracle, "levels")]
     PgObservationStore(conn).store_observations(levels)
@@ -4865,21 +4782,14 @@ def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
             reference_proof=proof,
             at=now,
         )
-        permission_fingerprint = {
-            "permission_id": str(permission_id),
-            "permission_version": 1,
-            "generation_id": str(generation_id),
-            "owner_authorization_sha256": digest,
-            "precedence_sha256": digest,
-            "selection_manifest_sha256": digest,
-            "qc_policy_sha256": digest,
-            "qc_completion_sha256": digest,
-            "selected_rating_curve_id": str(curve.id),
-        }
+        permission_fingerprint = _record_field(oracle, "permission_fingerprint")
         expected_document = json.loads(_text_field(expected, "content"))
+        expected_document["curve"] = _json_value(asdict(curve))
+        expected_document["reference_proof"] = _json_value(asdict(proof))
         expected_document["nepal21_expired_permission"] = permission_fingerprint
         expected_content = canonical_content(expected_document)
         expected_with_permission = dict(expected)
+        expected_with_permission["rating_curve_id"] = str(curve.id)
         expected_with_permission["content"] = expected_content
         expected_with_permission["fingerprint"] = content_digest(expected_content)
         document = json.loads(result.content)
@@ -4889,7 +4799,9 @@ def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
         actual = {key: getattr(result, key) for key in expected if key != "captured_at"}
         actual["captured_at"] = now
         actual_json = cast("dict[str, object]", _json_value(actual))
-        assert actual_json == expected_with_permission
+        assert actual_json == expected_with_permission, (
+            "protected conversion differs from declared oracle"
+        )
         protected_rows[index] = expected_with_permission
         assert hashlib.sha256(result.content.encode()).hexdigest() == result.fingerprint
         assert result.fingerprint == expected_with_permission["fingerprint"]
@@ -4902,8 +4814,16 @@ def _seed_protected(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
 
 
 def _seed(
-    conn: sa.Connection, oracle: Mapping[str, object], scenario: QualificationScenario
+    conn: sa.Connection,
+    oracle: dict[str, object],
+    scenario: QualificationScenario,
+    *,
+    evidence_dir: Path,
 ) -> None:
+    from tests.integration.services.nepal_readiness_generation_fixture import (
+        seed_readiness_generation,
+    )
+
     for name in (
         "basins",
         "basin_versions",
@@ -4920,38 +4840,57 @@ def _seed(
     ):
         assert not _rows(conn, name), ("unexpected preexisting seed relation", name)
     _seed_basins_and_stations(conn, oracle)
-    PgObservationStore(conn).store_observations(
-        [_observation(row) for row in _records_field(oracle, "ordinary")]
+    case = next(
+        row
+        for row in _records_field(oracle, "cases")
+        if row["scenario"] == scenario.value
     )
+    omitted = frozenset(
+        ObservationId(UUID(value)) for value in _strings(case["delete_ordinary_ids"])
+    )
+    generation = seed_readiness_generation(
+        conn,
+        stations=[_station(row) for row in _records_field(oracle, "stations")],
+        predecessor=[_observation(row) for row in _records_field(oracle, "ordinary")],
+        omit_ids=omitted,
+        now=_time_field(oracle, "clock"),
+        evidence_dir=evidence_dir / scenario.value,
+    )
+    oracle["prepublication_omitted_ids"] = sorted(str(value) for value in omitted)
+    oracle["ordinary"] = [_json_value(asdict(row)) for row in generation.ordinary]
+    oracle["curve"] = _json_value(asdict(generation.curve))
+    oracle["nepal21_generation_id"] = str(generation.generation_id)
+    oracle["nepal21_delivery_id"] = generation.delivery_id
+    oracle["nepal21_policy_sha256"] = generation.policy.policy_sha256
+    oracle["nepal21_completion_sha256"] = generation.completion_sha256
+    proof = _record_field(oracle, "reference_proof")
+    proof["rating_curve_id"] = str(generation.curve.id)
+    proof["curve"] = {"content": canonical_content(oracle["curve"])}
+    oracle["reference_proof"] = proof
+    oracle["reference_content"] = canonical_content(proof)
+    oracle["reference_fingerprint"] = content_digest(
+        _text_field(oracle, "reference_content")
+    )
+    cases = _records_field(oracle, "cases")
+    for current in cases:
+        reports = _records_field(current, "reports")
+        for report in reports:
+            if report["qc_versions"]:
+                report["qc_versions"] = [generation.policy.policy_sha256]
+        current["reports"] = reports
+        if current["scenario"] == scenario.value:
+            current["delete_ordinary_ids"] = []
+            current["observation_count"] = len(generation.ordinary) + (
+                0
+                if scenario is QualificationScenario.CLEAN
+                else len(_records_field(oracle, "levels"))
+            )
+    oracle["cases"] = cases
     PgHistoricalForcingStore(conn).store_forcing(
         [_forcing(row) for row in _records_field(oracle, "forcing")]
     )
     if scenario is not QualificationScenario.CLEAN:
         _seed_protected(conn, oracle)
-
-
-def _delete_controls(conn: sa.Connection, case: Mapping[str, object]) -> None:
-    ids = [UUID(value) for value in _strings(case["delete_ordinary_ids"])]
-    if not ids:
-        return
-    assert len(ids) == len(set(ids))
-    parents = {
-        row["observation_id"] for row in _rows(conn, "measurement_feed_evidence")
-    } | {row["observation_id"] for row in _rows(conn, "provisional_discharges")}
-    assert not set(ids) & parents
-    before = _rows(conn, "observations")
-    deleted = [row for row in before if row["id"] in ids]
-    assert len(deleted) == len(ids)
-    assert all(
-        row["parameter"] == "discharge"
-        and row["source"] == "manual_import"
-        and row["rating_curve_id"] is None
-        for row in deleted
-    )
-    conn.execute(sa.delete(db.observations).where(db.observations.c.id.in_(ids)))
-    _same_rows(
-        _rows(conn, "observations"), [row for row in before if row["id"] not in ids]
-    )
 
 
 def _check_basin_seed(conn: sa.Connection, oracle: Mapping[str, object]) -> None:
@@ -5007,7 +4946,6 @@ def _check_protected(
         assert all(
             not _rows(conn, name)
             for name in (
-                "rating_curves",
                 "rating_reference_proofs",
                 "measurement_feed_evidence",
                 "provisional_discharges",
@@ -5118,8 +5056,8 @@ def _check_seed(
     assert len(rows) == case["observation_count"]
     _same_rows([_json_value(row) for row in rows], expected_obs)
     actual_delivery = PgObservationStore(conn).fetch_delivery_observations(
-        "dhm-barkhk-2026-09-08",
-        [_station(row).id for row in _records_field(oracle, "stations")],
+        _text_field(oracle, "nepal21_delivery_id"),
+        [StationId(_uuid_field(row, "station_id")) for row in ordinary],
     )
     _same_rows([_json_value(asdict(row)) for row in actual_delivery], ordinary)
     forcing = _rows(conn, "historical_forcing")
@@ -5498,12 +5436,27 @@ def run_qualification_case(
                 assert guards
                 baseline = _inventory(conn, names)
                 evidence["preseed_snapshot"] = baseline
-                _seed(conn, oracle, scenario)
-                _delete_controls(conn, case)
+                _seed(conn, oracle, scenario, evidence_dir=evidence_dir)
+                case = next(
+                    row
+                    for row in _records_field(oracle, "cases")
+                    if row["scenario"] == scenario.value
+                )
+                assert not case["delete_ordinary_ids"]
                 evidence["protected_digests"] = _check_seed(
                     conn, oracle, case, scenario
                 )
                 before = _inventory(conn, _strings(oracle["unchanged_tables"]))
+                authority_before = _inventory(conn, nepal21_tables)
+                evidence["fixture_version"] = "postreplacement-v2"
+                evidence["generation_id"] = oracle["nepal21_generation_id"]
+                evidence["accepted_delivery_id"] = oracle["nepal21_delivery_id"]
+                evidence["qc_policy_sha256"] = oracle["nepal21_policy_sha256"]
+                evidence["qc_completion_sha256"] = oracle["nepal21_completion_sha256"]
+                evidence["prepublication_omitted_ids"] = oracle[
+                    "prepublication_omitted_ids"
+                ]
+                evidence["authority_before_snapshot"] = authority_before
                 station_before = _rows(conn, "stations")
                 evidence["before_snapshot"] = before
                 evidence["station_rows_before"] = _inventory(conn, ["stations"])
@@ -5689,6 +5642,10 @@ def run_qualification_case(
                 evidence["after_snapshot"] = after
                 assert after == before
                 evidence["57_other_tables_unchanged"] = True
+                authority_after = _inventory(conn, nepal21_tables)
+                assert authority_after == authority_before
+                evidence["authority_after_snapshot"] = authority_after
+                evidence["authority_tables_unchanged"] = True
                 evidence["station_rows_after"] = _inventory(conn, ["stations"])
                 evidence["guards_after"] = _guards(conn)
                 assert evidence["guards_after"] == guards

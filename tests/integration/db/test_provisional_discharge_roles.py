@@ -122,6 +122,19 @@ class TestProvisionalDischargeRoleBoundary:
                     "'public.sf_lock_dhm21_delivery_write(uuid,uuid)', 'EXECUTE')"
                 )
             )
+            for signature in (
+                "public.sf_dhm21_content_digest(uuid)",
+                "public.sf_dhm21_qc_completion_digest(uuid,text,timestamptz,uuid)",
+            ):
+                assert conn.scalar(
+                    sa.text("SELECT has_function_privilege(:role,:fn,'EXECUTE')"),
+                    {"role": "sapphire_dhm21_delivery_writer", "fn": signature},
+                )
+                for role in ("sapphire_api", "sapphire_worker", "sapphire_operator"):
+                    assert not conn.scalar(
+                        sa.text("SELECT has_function_privilege(:role,:fn,'EXECUTE')"),
+                        {"role": role, "fn": signature},
+                    )
 
     def test_static_importer_role_is_dormant_and_static_scoped(
         self, role_harness: _RoleBootstrapHarness

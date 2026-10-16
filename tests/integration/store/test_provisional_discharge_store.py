@@ -26,6 +26,7 @@ from sapphire_flow.types.rating_reference import (
     RatingReferenceProof,
     canonical_content,
     content_digest,
+    curve_snapshot,
     measurement_snapshot,
 )
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
@@ -33,6 +34,7 @@ from tests.conftest import make_station_config
 from tests.unit.services.test_provisional_discharge import NOW, convert, inputs
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import TenantId
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
@@ -65,9 +67,13 @@ def seed(
     conn: sa.Connection,
     *,
     tenant_id: TenantId = DEFAULT_TENANT_ID,
+    measured_at: UtcDatetime = NOW,
+    curve_interval: tuple[UtcDatetime, UtcDatetime] | None = None,
 ) -> tuple[Observation, RatingCurve, MeasurementFeedEvidence, RatingReferenceProof]:
     obs, curve, feed, proof = inputs()
-    obs = replace(obs, id=uuid4())
+    if curve_interval is not None:
+        curve = replace(curve, valid_from=curve_interval[0], valid_to=curve_interval[1])
+    obs = replace(obs, id=uuid4(), timestamp=measured_at)
     station = make_station_config(
         station_id=obs.station_id, code=str(uuid4()), tenant_id=tenant_id
     )
@@ -76,8 +82,14 @@ def seed(
         tenant_id=station.tenant_id,
         observation_id=obs.id,
         measurement=measurement_snapshot(obs),
+        verified_at=measured_at,
     )
-    proof = replace(proof, tenant_id=station.tenant_id)
+    proof = replace(
+        proof,
+        tenant_id=station.tenant_id,
+        verified_at=measured_at,
+        curve=curve_snapshot(curve),
+    )
     PgStationStore(conn).store_station(station)
     PgRatingCurveStore(conn).store_rating_curve(curve)
     PgObservationStore(conn).store_observations([obs])
