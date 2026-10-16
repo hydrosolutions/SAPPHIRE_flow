@@ -266,9 +266,19 @@ value: str | None = None
 
 ### Release Version Identity (mandatory)
 
-Code commits do not run `bump-my-version` and do not edit release-version metadata.
-The package version is derived from Git release identity at build time.
-Routine PRs therefore avoid lock conflicts caused only by version-file churn.
+Every PR, including docs/tooling PRs, advances `RELEASE_TARGET` by one patch from its
+current base. Further commits in the same PR do not bump again. The target is release
+intent only. Package identity remains SCM-derived; do not edit literal package versions,
+`uv.lock` for version churn, or generated version metadata.
+
+With the normal project environment already installed, run:
+`.venv/bin/python -I tools/release_target.py bump --base-sha <full-base-sha>`.
+The wrapper validates the target and exact safe config before no-op or execution. It
+uses isolated `bump-my-version==1.6.0`; do not run an unguarded bump or hand-edit routine
+increments. It does not sync/build the project, commit, or tag. Stage `RELEASE_TARGET`
+with the PR changes. Resolve concurrent PR target conflicts against the current base.
+Minor/major target changes require a separate owner decision and explicit checker
+policy change; the current checker permits patch increments only.
 
 The human owner publishes release identity after merge from a clean reviewed `main`.
 Agents never create release tags, never publish release state, and never merge PRs.
@@ -277,11 +287,16 @@ Use the exact checked-out full SHA.
 Verify `git rev-parse HEAD` matches that SHA before setting the override.
 
 Release publication uses `tools/release_identity.py publish` only when the owner explicitly invokes it after merge.
-Artifact proof uses `tools/release_identity.py build-receipt` after the remote release tag and release-state have been verified.
-Both commands fail closed on missing or inconsistent remote release identity.
+NEW publication requires the requested version to equal the exact source commit's target.
+Historical validated publication acknowledgment and receipts remain valid.
+Artifact proof uses `tools/release_identity.py build-receipt` after remote release identity verification.
+
+**Owner premerge checklist (required, not a claim of GitHub enforcement):**
+1. Verify current remote base and PR head immediately before merging.
+2. Confirm successful CI tested that exact base/head merge pair.
+3. If the base moved, update the PR/target and rerun CI; never merge stale-green checks.
 
 **Rules:**
-- **Code commits**: Do not bump a literal project version.
 - **Feature branches**: Never create local or remote release tags in the application worktree.
 - **Release identity**: Owner-only after merge; no agent publishes tags or release-state.
 - **Long-running parallel work**: Prefer a separate clone over a shared worktree. Worktrees share `.git`, so tags, refs, and `core.bare` state are common to all of them.

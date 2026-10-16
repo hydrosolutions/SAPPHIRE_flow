@@ -1,0 +1,8 @@
+[tool.bumpversion]
+commit = false
+tag = false
+
+[[tool.bumpversion.files]]
+filename = "RELEASE_TARGET"
+search = "{current_version}\n"
+replace = "{new_version}\n"

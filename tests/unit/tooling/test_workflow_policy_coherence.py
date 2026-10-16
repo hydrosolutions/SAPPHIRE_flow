@@ -33,8 +33,20 @@ class TestTaggingPolicy:
     def test_release_identity_is_owner_published_after_merge(self) -> None:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
-        assert "Code commits do not run `bump-my-version`" in guidelines
-        assert "do not edit release-version metadata" in guidelines
+        assert (
+            "Every PR, including docs/tooling PRs, advances `RELEASE_TARGET` "
+            "by one patch from its current base."
+        ) in guidelines
+        assert "Further commits in the same PR do not bump again." in guidelines
+        assert "The target is release intent only." in guidelines
+        assert (
+            "Package identity remains SCM-derived; do not edit literal package "
+            "versions, `uv.lock` for version churn, or generated version metadata."
+        ) in guidelines
+        assert (
+            "Agents never create release tags, never publish release state, "
+            "and never merge PRs."
+        ) in guidelines
         assert "The human owner publishes release identity after merge" in guidelines
         assert "from a clean reviewed `main`" in guidelines
         assert ".github/workflows/tag-main.yml" not in guidelines

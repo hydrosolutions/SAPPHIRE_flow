@@ -61,6 +61,8 @@ def _make_repo(tmp_path: Path) -> tuple[Path, Path, str, str, Path]:
     ceiling = _git(work, "rev-parse", "HEAD")
     _git(work, "tag", "v0.1.0")
     (work / "README.md").write_text("two\n")
+    (work / "RELEASE_TARGET").write_text("0.1.1\n")
+    _git(work, "add", "RELEASE_TARGET")
     _git(work, "commit", "-am", "second")
     source = _git(work, "rev-parse", "HEAD")
     _git(work, "branch", "-M", "main")
@@ -175,6 +177,8 @@ class TestReleaseIdentityGit:
         _git(work, "commit", "-m", "legacy")
         _git(work, "tag", "v0.1.0")
         (work / "README.md").write_text("two\n")
+        (work / "RELEASE_TARGET").write_text("0.1.1\n")
+        _git(work, "add", "RELEASE_TARGET")
         _git(work, "commit", "-am", "stale-source")
         stale_source = _git(work, "rev-parse", "HEAD")
         (workflow / "tag-main.yml").unlink()
@@ -186,7 +190,9 @@ class TestReleaseIdentityGit:
         monkeypatch.chdir(work)
         _patch_local_publication(monkeypatch)
 
-        assert _publish("0.1.1", stale_source, bootstrap=True) == 2
+        assert _publish_raises("0.1.1", stale_source, bootstrap=True) == (
+            "retired tag-main.yml still exists in the requested source"
+        )
 
 
 def _install_origin_transport(monkeypatch: pytest.MonkeyPatch, bare: Path) -> None:
@@ -258,7 +264,8 @@ def _publish_raises(version: str, source: str, *, bootstrap: bool = False) -> st
     raise AssertionError("publish unexpectedly succeeded")
 
 
-def _commit_next(work: Path, text: str) -> str:
+def _commit_next(work: Path, text: str, target: str = "0.1.2") -> str:
+    (work / "RELEASE_TARGET").write_text(target + "\n")
     (work / "README.md").write_text(text)
     _git(work, "commit", "-am", text.strip())
     return _git(work, "rev-parse", "HEAD")
@@ -270,6 +277,7 @@ def _remote_tag_object(work: Path, tag: str) -> str:
 
 
 def _prepare_competing_publication(version: str, source: str) -> tuple[str, str, str]:
+    assert release_identity.read_release_target(source).tag == version
     main, state, tags = release_identity.fetch_remote_state()
     assert state is not None
     metadata = release_identity.validate_state(state, tags, main)
@@ -516,8 +524,10 @@ class TestReleaseIdentityNativeSafetyMatrix:
         assert _publish("0.1.1", source, bootstrap=True) == 0
         new_source = _commit_next(work, "three\n")
         release_identity.git(["push", "origin", "main"])
+        winner_source = _commit_next(work, "four\n", "0.1.3")
+        release_identity.git(["push", "origin", "main"])
         old_state, winner_token, winner_tag = _prepare_competing_publication(
-            "v0.1.3", new_source
+            "v0.1.3", winner_source
         )
         original_git = release_identity.git
         loser_push: list[str] | None = None
@@ -553,7 +563,7 @@ class TestReleaseIdentityNativeSafetyMatrix:
         main, state, tags = release_identity.fetch_remote_state()
         assert state == winner_token
         assert any(
-            tag.name == "v0.1.3" and tag.peeled_oid == new_source for tag in tags
+            tag.name == "v0.1.3" and tag.peeled_oid == winner_source for tag in tags
         )
         assert all(tag.name != "v0.1.2" for tag in tags)
         release_identity.validate_state(state, tags, main)
@@ -1038,3 +1048,97 @@ class TestReleaseIdentityNativeSafetyMatrix:
             )
 
         assert receipt.read_text() == "other writer\n"
+
+
+class TestReleaseTargetPublication:
+    def test_new_publication_without_source_target_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        _git(work, "rm", "RELEASE_TARGET")
+        _git(work, "commit", "-m", "source without target")
+        source = _git(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "main")
+        monkeypatch.chdir(work)
+        _patch_local_publication(monkeypatch)
+        before_refs = _git(work, "ls-remote", "origin")
+        before_objects = _git(work, "count-objects", "-v")
+        assert _publish_raises("0.1.1", source, bootstrap=True) == (
+            "release target is missing at source"
+        )
+        assert _git(work, "ls-remote", "origin") == before_refs
+        assert _git(work, "count-objects", "-v") == before_objects
+
+    def test_exact_source_not_working_target_controls_new_publication(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, source, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        _patch_local_publication(monkeypatch)
+        (work / "RELEASE_TARGET").write_text("0.1.2\n")
+        before = _git(work, "count-objects", "-v")
+        message = _publish_raises("0.1.2", source, bootstrap=True)
+        assert "does not match source release target" in message
+        assert _git(work, "count-objects", "-v") == before
+        assert _git(work, "ls-remote", "origin", "refs/heads/release-state") == ""
+
+    def test_historical_targetless_publication_acknowledges_without_remote_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, ceiling, _, _ = _make_repo(tmp_path)
+        _git(work, "rm", "RELEASE_TARGET")
+        _git(work, "commit", "-m", "historical targetless source")
+        source = _git(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "main")
+        monkeypatch.chdir(work)
+        _patch_local_publication(monkeypatch)
+        token = release_identity.create_token_commit(
+            source, "v0.1.1", "v0.1.0", ceiling
+        )
+        tag = release_identity.create_annotated_tag_object(
+            source=source, tag="v0.1.1", ceiling_tag="v0.1.0", ceiling_source=ceiling
+        )
+        _git(
+            work,
+            "push",
+            "--atomic",
+            "origin",
+            f"{token}:refs/heads/release-state",
+            f"{tag}:refs/tags/v0.1.1",
+        )
+        before = _git(work, "ls-remote", "origin")
+        assert _publish("0.1.1", source) == 0
+        assert _git(work, "ls-remote", "origin") == before
+
+    @pytest.mark.parametrize(
+        "raw", [b"0.1.1\r\n", b"0.1.1", b"0.1.1\n\n", b"\xef\xbb\xbf0.1.1\n"]
+    )
+    def test_malformed_source_target_refuses_before_objects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: bytes
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        (work / "RELEASE_TARGET").write_bytes(raw)
+        _git(work, "commit", "-am", "invalid target")
+        source = _git(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "main")
+        monkeypatch.chdir(work)
+        _patch_local_publication(monkeypatch)
+        before = _git(work, "count-objects", "-v")
+        assert "canonical ASCII" in _publish_raises("0.1.1", source, bootstrap=True)
+        assert _git(work, "count-objects", "-v") == before
+
+    def test_subdirectory_publication_uses_root_target_not_decoy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        nested = work / "nested"
+        nested.mkdir()
+        (nested / "RELEASE_TARGET").write_text("9.9.9\n")
+        _git(work, "add", "nested/RELEASE_TARGET")
+        _git(work, "commit", "-m", "decoy target")
+        source = _git(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "main")
+        monkeypatch.chdir(nested)
+        _patch_local_publication(monkeypatch)
+        assert _publish("0.1.1", source, bootstrap=True) == 0
+        assert "refs/tags/v0.1.1" in _git(work, "ls-remote", "origin")
