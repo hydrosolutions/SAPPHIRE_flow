@@ -292,3 +292,25 @@ def test_query_old_workflow_runs_rejects_truncated_pagination(
 
     with pytest.raises(release_identity.ReleaseIdentityError, match="incomplete"):
         release_identity.query_old_workflow_runs()
+
+
+class TestReleaseTargetBytes:
+    def test_canonical_bytes(self) -> None:
+        assert release_identity.parse_release_target(b"1.2.3\n").text == "1.2.3"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"1.2.3",
+            b"1.2.3\r\n",
+            b"1.2.3\n\n",
+            b"01.2.3\n",
+            b" 1.2.3\n",
+            b"v1.2.3\n",
+            b"1.2.3.dev1\n",
+            b"\xef\xbb\xbf1.2.3\n",
+        ],
+    )
+    def test_noncanonical_bytes_refuse(self, raw: bytes) -> None:
+        with pytest.raises(release_identity.ReleaseIdentityError, match="target"):
+            release_identity.parse_release_target(raw)

@@ -69,6 +69,13 @@ jobs:
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
+      - name: Check PR release target
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MERGE_SHA: ${{ github.sha }}
+        run: .venv/bin/python -I tools/release_target.py check --base-sha "$PR_BASE_SHA" --head-sha "$PR_HEAD_SHA" --merge-sha "$PR_MERGE_SHA"
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       # -x: follow `source` (Plan 199 T2 — docker-endpoint.sh is sourced by

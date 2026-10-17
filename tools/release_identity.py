@@ -235,6 +235,57 @@ def git(
     return proc.stdout.strip()
 
 
+def parse_release_target(raw: bytes) -> Version:
+    if (
+        re.fullmatch(rb"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\n", raw)
+        is None
+    ):
+        raise ReleaseIdentityError(
+            "release target must be canonical ASCII X.Y.Z and one LF"
+        )
+    return Version.parse(raw[:-1].decode("ascii"))
+
+
+def git_bytes(args: list[str], *, cwd: Path | None = None) -> bytes:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        env=_git_env(harden=True),
+        check=False,
+    )
+    if proc.returncode:
+        raise ReleaseIdentityError(
+            f"git {args[0]} failed ({proc.returncode}): "
+            f"{proc.stderr.decode(errors='replace').strip()}"
+        )
+    return proc.stdout
+
+
+def release_target_blob(source: str, *, cwd: Path | None = None) -> bytes | None:
+    require_full_sha(source)
+    if git_bytes(["cat-file", "-t", source], cwd=cwd) != b"commit\n":
+        raise ReleaseIdentityError("release target source must be a commit")
+    entry = git_bytes(
+        ["ls-tree", "--full-tree", "-z", source, "--", "RELEASE_TARGET"], cwd=cwd
+    )
+    if not entry:
+        return None
+    match = re.fullmatch(
+        rb"(100644|100755) blob ([0-9a-f]{40})\tRELEASE_TARGET\x00", entry
+    )
+    if match is None:
+        raise ReleaseIdentityError("release target must be a regular Git blob")
+    return git_bytes(["cat-file", "blob", match[2].decode("ascii")], cwd=cwd)
+
+
+def read_release_target(source: str, *, cwd: Path | None = None) -> Version:
+    raw = release_target_blob(source, cwd=cwd)
+    if raw is None:
+        raise ReleaseIdentityError("release target is missing at source")
+    return parse_release_target(raw)
+
+
 def require_full_sha(text: str) -> str:
     if text != text.lower() or re.fullmatch(r"[0-9a-f]{40}", text) is None:
         raise ReleaseIdentityError("source must be a full 40-character lowercase SHA")
@@ -773,6 +824,10 @@ def publish(args: argparse.Namespace) -> int:
         ceiling = next(tag for tag in tags if tag.name == metadata.ceiling_tag)
         expected_lease = state
 
+    if read_release_target(source) != version:
+        raise ReleaseIdentityError(
+            "requested version does not match source release target"
+        )
     token_oid = create_token_commit(
         source, version.tag, ceiling.name, ceiling.peeled_oid
     )

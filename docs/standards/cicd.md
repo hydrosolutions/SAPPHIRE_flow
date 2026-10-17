@@ -480,15 +480,38 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 
 ### Release identity tags and receipts
 
-Routine PRs do not claim or bump a release version.
-The package version is dynamic and comes from Git release identity at build time.
-The old automatic `tag-main.yml` publisher is retired.
+Each PR advances the sole `RELEASE_TARGET` patch once from its tested base, including
+docs/tooling PRs. This target is release intent, not package identity. Package versions
+remain dynamic and come from Git release identity at build time. The old automatic
+`tag-main.yml` publisher remains retired.
+
+Use an already installed project interpreter directly:
+`.venv/bin/python -I tools/release_target.py bump --base-sha <full-base-sha>`.
+There is no wrapper-triggered project sync/build. Strict raw target and exact single-file
+bump config checks precede both no-op and tool execution. The isolated pinned tool
+`bump-my-version==1.6.0` writes the patch; it never commits or tags. Already-next targets
+are no-ops; divergent targets refuse. Initial bootstrap is limited to the exact historical
+base/seed in Plan521. Recheck those facts before bootstrap publication/rebase.
+
+The PR lint check uses existing full-history checkout and requires HEAD=`github.sha`
+with exactly event base/head parents, then compares regular Git target blobs. Head and
+merge targets must agree and equal base patch+1 with unchanged major/minor.
+Before merging, the owner must verify current remote base/head and matching successful
+CI. If the base moved, update target and rerun CI against the new pair. This required
+owner checklist is not a claim of enabled GitHub strict protection. The owner must
+prevent parallel PRs from landing with the same unchanged target through stale-green
+checks. Minor/major changes require an explicit checker policy change and owner review,
+not merely a different bump command. The checker itself needs owner review; it is not
+tamperproof against changes to workflow or checker code.
 
 After a reviewed merge, the human owner publishes release identity from a clean
 reviewed `main` checkout with `tools/release_identity.py publish`.
 The helper verifies the canonical remote, fetched `main`, existing release tags,
 old-publisher quiescence, and `refs/heads/release-state` before it attempts one
-atomic tag/state push.
+atomic tag/state push. For NEW publication, the requested version must equal the
+raw target at the exact source commit before NEW token/tag construction. A validated
+historical same-pair acknowledgment remains valid without a target, as do old receipts;
+old token reconstruction during validation may write local deterministic Git objects.
 It is not a deployment command, not a deployment receipt, not a branch-protection
 replacement, and not a release ledger for external consumers. Bootstrap requires
 explicit complete paginated evidence that the retired old tag workflow has no

@@ -740,6 +740,27 @@ Image proof commands inspect a mutable local tag only to capture the immutable i
 
 Release identity trust model: release tags and the `release-state` ref are intentionally unsigned (`commit.gpgsign=false`, `tag.gpgSign=false`) so deterministic helper objects can be reproduced. Authenticity therefore rests on GitHub repository access control for pushing `refs/tags/v*`, `refs/heads/release-state`, and `main`; this document does not claim or verify any specific ref-protection rule. The helper's destination checks protect against local URL rewrite or credential-redirection mistakes before publication, but they are not a substitute for repository access control or owner review.
 
+
+The Plan521 bump wrapper runs with an existing Python interpreter and `-I`, using only
+stdlib code and this checkout's fixed tools directory. Its child environment retains
+only `PATH`, `HOME`, `TMPDIR`, `TEMP`, `TMP`, `SYSTEMROOT`, `WINDIR`, `LANG`, and `LC_ALL`,
+plus explicit Git no-user-config/no-replace/no-grafts/no-prompt settings. `HOME` supports
+normal tool/cache discovery; it is not `PYTHONHOME`, which is not forwarded. All other
+keys, including uppercase/lowercase BUMPVERSION, UV, CA-file and proxy overrides, are
+omitted. Native `--no-config --no-env-file --isolated`, explicit interpreter with no
+Python downloads, public PyPI and disabled keyring bound tool resolution. No project
+sync or dependency installation occurs inside the wrapper. The top-level developer
+tool is pinned to 1.6.0; its recorded transitive dependency set may resolve differently
+later. This bounded developer-tool risk is not a release-artifact reproducibility claim.
+
+Raw working target/config must be regular files. The exact config schema permits only
+the target rule and disabled commit/tag flags; no hooks, extra file rules or stored
+current version. Validation occurs before no-op or execution. Git target reads require
+regular blobs and exact canonical ASCII/LF bytes, without trimming or symlink following.
+This assumes an owner-reviewed checkout and trusted interpreter/PATH/HOME; it does not
+sandbox a malicious host or concurrent privileged writer. Owner base/CI freshness
+checks before merge remain mandatory; no server-enforced protection is asserted.
+
 ### Python dependency policy
 
 - `uv.lock` is committed. Resolver output is reproducible; `uv sync --frozen` is used in every CI workflow step that installs dependencies.
