@@ -515,7 +515,7 @@ jobs:
       - name: Upload this shard's JUnit durations
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         # Keep this diagnostic artifact bounded, but do not increase the unit
         # job timeout. The existing coverage upload was observed around 2s and
         # is bounded at 2 minutes below; this small XML upload gets 1 minute so
@@ -527,7 +527,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
       - name: Upload this shard's coverage data
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         # Observed around 2s. Bounded at 2 minutes so the added JUnit XML
         # upload above fits without raising the unit job timeout or changing
         # install/test step budgets.
@@ -588,7 +588,7 @@ jobs:
       - run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
       - name: Download every shard's coverage data
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         timeout-minutes: 3  # reads from the Actions artifact store
         with:
           pattern: unit-coverage-*
@@ -822,7 +822,7 @@ jobs:
       - name: Upload integration JUnit durations
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         # Small diagnostic XML upload. Keep it bounded without changing the
         # integration test command, install steps, or job timeout.
         timeout-minutes: 1
@@ -1122,7 +1122,7 @@ jobs:
             trivy-image.json
       - name: Upload Trivy SARIF artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
         with:
           name: trivy-image-sarif
@@ -1138,7 +1138,7 @@ jobs:
       # matters.
       - name: Upload Trivy SARIF to code scanning
         if: ${{ !cancelled() && steps.trivy-sarif.outcome == 'success' }}
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
         timeout-minutes: 3  # posts to the code-scanning API (~8s observed)
         with:
           sarif_file: trivy-image.sarif
@@ -1297,7 +1297,7 @@ jobs:
       - name: Upload SBOM artifact
         id: sbom-upload
         if: ${{ !cancelled() && steps.sbom-require.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         timeout-minutes: 3  # uploads to the Actions artifact store (~2s observed)
         with:
           name: sbom-cyclonedx
