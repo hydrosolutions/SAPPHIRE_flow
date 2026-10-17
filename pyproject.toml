@@ -65,7 +65,7 @@ requires = [
     "setuptools==84.0.0",
     "setuptools-scm==10.3.4",
     "packaging==26.3",
-    "vcs-versioning==2.5.0",
+    "vcs-versioning==2.6.0",
 ]
 build-backend = "setuptools.build_meta"
 
