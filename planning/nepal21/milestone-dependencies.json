@@ -1,0 +1,73 @@
+{
+  "scope": "Nepal21 Infomaniak test deployment",
+  "owner_checkpoint_required_after_each": true,
+  "milestones": [
+    {
+      "id": "M0",
+      "depends_on": [],
+      "status": "ACCEPTED",
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M1",
+      "depends_on": [
+        "M0"
+      ],
+      "status": "ACTIVE_ACCEPTANCE_PENDING",
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M2",
+      "depends_on": [
+        "M1"
+      ],
+      "status": "PLANNED",
+      "prerequisites": [
+        "Owner agrees station-specific provisional-input and conversion/reference admissibility before scientific activation"
+      ],
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M3",
+      "depends_on": [
+        "M2"
+      ],
+      "status": "PLANNED",
+      "prerequisites": [
+        "Owner agrees evaluation periods, legitimate observations/baselines and treatment of unknown training overlap"
+      ],
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M4",
+      "depends_on": [
+        "M3"
+      ],
+      "status": "PLANNED",
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M5",
+      "depends_on": [
+        "M4"
+      ],
+      "status": "PLANNED",
+      "completion_requires_owner_acceptance": true
+    },
+    {
+      "id": "M6",
+      "depends_on": [
+        "M4",
+        "M5"
+      ],
+      "status": "READINESS_INVESTIGATION_ONLY",
+      "completion_requires_owner_acceptance": true
+    }
+  ],
+  "parallel_work": {
+    "M6_readiness": "May proceed during M0-M5 without activation",
+    "M6_expansion": "Requires M4 owner acceptance, repeating M2/M3 prerequisites per new pair",
+    "M6_completion": "Requires M5 acceptance and expanded-cohort unattended evidence"
+  },
+  "authority": "Status labels do not approve unreviewed changes, merge PRs, or authorise production."
+}

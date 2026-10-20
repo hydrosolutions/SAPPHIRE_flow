@@ -1,292 +1,241 @@
-# Nepal6 current forecast data for the existing dashboard
+# Nepal21 forecasts on Infomaniak through the existing dashboard
 
 Program: https://github.com/hydrosolutions/SAPPHIRE_flow/issues/352
 Effort: https://github.com/hydrosolutions/SAPPHIRE_flow/issues/354
 
-## Outcome and ownership
+## Outcome and scope
 
-By 2026-10-07, make current SAPPHIRE forecasts for DHM stations **447, 450, 604.5,
-647, 670 and 684** available to the existing invited-access Nepal6 dashboard.
-Keep forecast production and data access running after that date until the owner
-explicitly retires the demonstration. This is a demonstration, not an operational
-warning service. Target all six stations; report actual coverage rather than
-claiming six-station success from a smaller working subset. The owner-approved
-expired-rating-curve test mode below permits explicitly invalid pathway tests;
-it does not establish scientifically valid or operationally usable forecasts.
+Assess all 21 delivered Nepal stations and deploy every forecast-capable
+station/model combination to the Infomaniak **test** system. Use the intended
+Prefect → services/adapters/stores → ForecastInterface (FI) → persisted forecasts
+→ normal authenticated API → existing SAPPHIRE-flow-map dashboard architecture.
+Do not turn the local presentation runner/provider into the permanent system.
 
-**SAPPHIRE_flow owns backend forecast readiness and data availability only.**
-SAPPHIRE-flow-map agents own all dashboard implementation, model selection,
-refresh behaviour and display. Coordinate the data contract and end-to-end
-acceptance with those agents. Do not implement dashboard changes in this Effort,
-rebuild its UI, or plan a replacement model selector. The owner confirms that the
-existing dashboard has a selector and fetches all available models.
+Keep all eligible available models visible per station. CMAL/Aquacast remains an
+explicit target; existing legitimate regression models can also qualify. A model
+or station failure must not prevent healthy combinations from completing or
+becoming readable. Report missing CMAL coverage rather than quietly substituting
+a regression-only outcome. Do not promise that all 21 will meet their inputs.
 
-The map repository is `~/Documents/GitHub/SAPPHIRE-flow-map`. Necessary backend
-work belongs here; necessary consumer changes belong to its agents. A consumer
-integration gap is a coordination dependency, not permission to take over the UI.
-Neither the Swiss Effort #353 nor CI-speed implementation is a prerequisite.
+Onboarding includes hindcasts and skill assessment, or a specific, recorded
+**not-assessable** outcome. Lack of established skill alone does not exclude an
+otherwise forecast-capable combination from testing. Missing mandatory FI inputs
+still blocks execution. Test enablement is not operational promotion: no alerts,
+warning-service claims or automatic scientific-validity upgrade.
 
-## Confirmed forecast and freshness requirements
+SAPPHIRE_flow owns backend readiness and delivery. The existing
+SAPPHIRE-flow-map project owns UI and consumer implementation. Coordinate necessary
+contract/binding work with that owner; no replacement dashboard, new selector or
+analysis-panel requirement. Swiss work remains independent. The shared contract
+issue #378 remains applicable, not a new dependency on completing Swiss delivery.
 
-- Make **all available forecast models** accessible for each Nepal station, not
-  one hard-coded product. The primary target is the already-onboarded `cmal_*`
-  machine-learning family. Reuse those models and artifacts; do not treat their
-  existence as proof of Nepal assignments, usable inputs or successful forecasts.
-- Existing simple regression models in this repository are acceptable for initial
-  delivery and can be exposed alongside CMAL. A regression-only initial result is
-  not rejected solely for lacking CMAL, but CMAL remains an explicit target and
-  any missing CMAL coverage must remain a reported gap, not a silent scope cut.
-- On a dashboard reload, the backend must make the latest eligible **stored**
-  forecasts available for each station/model. A newly persisted forecast must not
-  wait for a separate periodic publishing batch to become readable. Reading does
-  not trigger model training or forecast production.
-- This reload requirement is the owner's clarification of the Program's automatic
-  delivery wording: backend production continues automatically; live push or
-  browser auto-refresh while a page stays open is not an added acceptance gate.
-- Preserve each model's actual time resolution, valid times, horizon and issue time.
-  The earlier suggested daily/five-day product was not adopted. Different models
-  may complete at different times; a slow or failed model must not hold back others.
-- Preserve forecast identity and selection semantics, including version/supersession,
-  applicable publication policy and QC state. “Latest” does not authorize exposing
-  withheld or withdrawn results or presenting failed/rejected output as valid.
-  Retrieval must distinguish the latest stored result from a genuinely current one.
-  Explicitly invalid test forecasts use the separate access/selection path described
-  below; their inclusion must not weaken ordinary valid-result selection.
+## Status and historical continuity
 
-The exact routes and transport are engineering decisions grounded in the existing
-consumer. Agree and test a contract with the map agents for the six-station roster,
-model inventory and availability, forecast values and units, model/forecast
-identifiers, issue and valid times, available uncertainty representation, QC and
-freshness states, and safe station/model failure information. Supply existing
-station/basin metadata needed by that contract. Do not fabricate uncertainty,
-fill missing values with invented flows, or claim unmeasured skill.
+The owner accepted M0 baseline reconciliation and authorised M1 preparation.
+M1 is active but its runtime/recovery acceptance has not passed. Every milestone
+ends with owner review and re-estimation before the next milestone starts.
 
-## Owner-approved expired-rating-curve test mode
+This is the continuation of the same Nepal Effort, not a second vision. Its
+historical filename is retained for stable links. The October 7 demonstration
+scope/deadline and exclusion of hindcast/skill work are superseded by the owner's
+Nepal21 test-deployment scope. The earlier agreement remains available in
+[the prior vision](https://github.com/hydrosolutions/SAPPHIRE_flow/blob/7942349d49f5dd764b88cd7fd6ad038aa596e5b8/planning/visions/2026-10-01-nepal6-current-forecast-data-for-the-existing-dashboard.md)
+and Git history; it is not a competing active plan.
 
-On 2026-10-01 the owner selected BIPAD for operational observations and confirmed
-that no updated rating curves are available. To test the end-to-end pathway, the
-owner explicitly approved using the **newest available curve for the same gauge**
-and marking **every resulting forecast invalid, not for operational use**. This
-is a bounded scientific test exception, not a claim that an expired curve is valid.
-It amends the initial discharge-readiness assumption without changing backend-only
-ownership or granting new observation-publication permissions.
+The presentation finished with genuine local H10 model output for stations 450,
+604.5 and 684. That proves local execution and display, not operational validity,
+server integration, skill or delivery for all 21. Preserve the local dashboards,
+source snapshots, failed attempts and evidence. Do not rerun acquisitions/models
+merely to reconstruct an already documented result.
 
-Reuse the implemented DHM/BIPAD adapter (`adapters/dhm.py`, archived Plan 300) and
-existing onboarding/conversion machinery where suitable. The adapter supplies
-water level in metres, not discharge. Station-to-API bindings must be explicit and
-verified; do not infer authoritative gauge identity from a similar place name or
-use a nearby gauge's curve. BIPAD selection is explicit, not an automatic fallback
-from another host. Respect bounded requests, station-specific failures and the
-existing QC and activation prerequisites. Do not mark stations operational merely
-to bypass those prerequisites.
+The accepted M0 inspection found 21 onboarding stations, 18 with RAW measured
+water-level archives, 1,233,045 stored observations, and zero stored forecasts in
+the isolated archive database. It found no basin links, model assignments,
+historical forcing, hindcasts or skill results there, and no normal application
+stack running on the inspected Infomaniak daemon. These are dated baseline facts,
+not an assertion about the host at every future invocation. RAW water level is
+not qualified discharge or forecast readiness. Stations 280, 445 and 695 were
+held without admitted database observations. The other stations remain in the
+readiness account, not silently dropped.
 
-The approved exception has these mandatory boundaries:
+The initial server-path candidates are 450/604.5/684, subject to fresh input
+qualification. The other original-six stations 447/647/670 had recent discharge
+gaps under the demonstrated model's mandatory-input declaration. The other 15
+stations need individual identity/data/basin/static/forcing/model qualification.
+Local results or complete archives are not permission to bypass those checks.
 
-- Choose the newest curve belonging to the same confirmed gauge under the existing
-  version/chronology contract. Do not borrow a curve from another gauge, invent one,
-  or silently resolve conflicting versions. Preserve its original validity dates;
-  do not extend them, relabel the curve current or falsify input timestamps.
-- Establish compatibility between the live water-level reference and the curve's
-  reference before conversion. Unknown datum compatibility remains a hold even
-  in this test mode: report it per station and escalate to the owner for verified
-  reference information; never assume a datum to unblock the test. This approval
-  does not waive units, station identity, datum, curve-domain or other conversion
-  safety checks.
-- Record the original measured-level lineage and the exact curve identity/version
-  used for each derived discharge value. Keep measured levels, restricted historical
-  discharge and provisional derived inputs distinguishable. Do not overwrite the
-  original observations or relabel provisional discharge as directly measured.
-- Propagate the expired-curve test provenance and **invalid** status from derived
-  inputs through every downstream forecast that uses them, including group and
-  combined products where applicable. A fresh issue time, passing numerical QC,
-  aggregation or model combination must not erase that invalidity. Preserve the
-  full affected lookback lineage rather than inspecting only the latest reading.
-- Make invalid test forecasts available separately to authorized Nepal viewers,
-  with machine-readable invalid status and a safe reason identifying expired-rating
-  test use. Ordinary latest-valid selection, valid last-good results and alerts must
-  not consume or be replaced by these outputs. Keep invalid last-good results
-  explicitly invalid too. Do not expose raw restricted measurements, curve points,
-  coefficients or sensitive QC/diagnostic values through the test read path.
-- Exclude provisional derived discharge and invalid forecasts from training,
-  retraining, calibration, hindcast/skill evaluation and decisions that assert
-  operational validity. Reuse legitimate historical training data and compatible
-  existing artifacts. Do not pass fabricated discharge, bypass ForecastInterface,
-  or misrepresent a new invalidity flag as permission to violate a model's contract.
-- SAPPHIRE_flow implements and verifies backend lineage, invalidity propagation,
-  exclusion and authenticated data availability. SAPPHIRE-flow-map agents own
-  the visible invalid/not-for-use presentation and any consumer wiring; no UI code
-  belongs here. Coordinate explicit invalid-result display before invited-viewer
-  use, not merely an easily missed generic demo notice.
+## Model, data and scientific boundaries
 
-Current BIPAD availability and the historical curve store do not guarantee enough
-recent compatible discharge history for every model. Determine actual feed history,
-QC, temporal aggregation and model lookback coverage; report insufficient combinations
-as unavailable rather than filling missing data or weakening the model contract.
-CMAL remains the target and existing regressions remain acceptable for initial
-pathway delivery. Report **invalid test-pathway coverage separately from valid
-forecast coverage**. A successful invalid test demonstrates plumbing, not forecast
-validity or skill. Normal validity can only follow the ordinary data/model gates;
-there is no automatic validity upgrade from this exception.
+BIPAD remains the owner-selected live observation source, not an automatic fallback
+from another provider. Verify explicit per-station API/gauge bindings and actual
+product/history support; a similar place name is not identity proof. Its measured
+water levels require the qualified conversion/reference policy below before use
+as discharge. Reuse the existing DHM/BIPAD adapter rather than creating another
+observation runner. Extend the station scope without silently changing this source
+decision; report unsupported bindings as gaps.
 
-## Partial failures and ongoing operation
+Target genuine current weather-driven forecasting. Historical or climatological
+output alone cannot establish that delivery. Legitimate baseline/regression products
+may be available alongside it, but report remaining target-model/weather coverage
+separately rather than declaring completion from those substitutes.
 
-Keep healthy station/model combinations available when another combination fails.
-Maintain an explicit account of the expected six stations, available models,
-successful forecasts and missing combinations; missing inputs must not silently
-remove stations or whole groups from the reported coverage.
+- Follow FI exactly. Fix a noncompliant model, or co-design a genuine interface gap
+  upstream. Never invent discharge, silently fill mandatory inputs, weaken NaN
+  gates, or patch around FI in the orchestrator. Anticipated model failures return
+  the FI failure value; exception catching is not the intended failure protocol.
+- Preserve real deterministic means independently of quantiles/median, all native
+  quantiles, units, resolutions, horizons, issue/valid times, statuses and flags.
+  The demonstrated H10 product is evidence, not a universal horizon restriction.
+- Maintain provenance for raw measurements, QC, temporal aggregation, permitted
+  conversion, historical forcing, forecast source cycle, imputations and artifacts.
+  Source age and partial-day coverage must remain explicit. Do not conflate source
+  time, model execution time, persisted issue time and API-response generation time.
+- Reuse original station UUIDs and RAW custody when transferring the archive into
+  the intended database. Preserve originals; migration-number equality alone does
+  not prove schema, privilege or trigger compatibility.
+- Imported artifacts/checkpoints and source dependencies need accepted identities,
+  compatible runtimes and safe loading. Demonstrated local changes are not all on
+  main; integrate only necessary reviewed fixes, not wholesale snapshot copies.
+- Before M2 scientific activation, settle station-specific admissibility of
+  provisional observations and conversion/reference evidence. Before M3 evaluation,
+  settle evaluation periods, legitimate observations/baselines and treatment of
+  unknown training overlap. These are bounded scientific decisions, not reasons
+  to reopen the deployment architecture or silently waive requirements.
+- Hindcast/skill reports must distinguish actual evaluation from not-assessable
+  cases, with reasons, sample/forcing limits and training-overlap uncertainty.
+  Invalid demonstration outputs or provisional expired-curve discharge are not
+  legitimate training, calibration, hindcast or skill evidence. Skill results do
+  not grant new rights to publish restricted derived metrics.
 
-Retain last-good results on forecast-production or refresh failure and preserve
-original issue times and gaps. Provide enough backend information for the map
-agents to distinguish current, stale, unavailable and failed results. Do not make
-an old forecast look current by changing its timestamp or treating a successful
-HTTP response as fresh forecast production. Coordinate consumer-side last-good
-behaviour with the map agents; this repo does not implement it.
+### Retained expired-rating test boundary
 
-Use the existing operational monitoring and operator handoff for continued running,
-not a new unrelated observability platform. Delivery evidence must name remaining
-station/model failures and operational limits. There is no promised warning-service
-SLA, no public-access expansion, and no automatic stop on the demonstration date.
+The prior bounded same-gauge expired-rating exception remains a distinct invalid
+pathway-test class, not ordinary test eligibility or operational validity. Use the
+newest curve for the same verified gauge, preserve its original dates/version and
+measured-level lineage, and establish units, reference/datum and domain compatibility.
+Unknown reference compatibility remains held; do not borrow curves or silently
+assume zero offset. Do not generalise local presentation workarounds to server
+operation. Server use of the retained invalid class requires the M2 station-specific
+owner admissibility decision, same-gauge curve and verified reference compatibility.
+
+Every affected forecast and downstream combined/group product retains machine-readable
+invalidity and safe reasons across the full consumed lookback. Keep invalid test
+selection, retry/state and last-good handling separate from ordinary valid results.
+Such inputs/outputs cannot enter training, evaluation, alerts or replace valid
+latest/last-good output. Consumer display must make invalidity unmistakable before
+invited-viewer use; no restricted observations, curve coefficients or sensitive QC
+values may leak through those reasons. An unsupported persistence/selection boundary
+is a concrete implementation hold, not permission to flatten the classification.
+
+## Current, truthful data through the existing API
+
+A dashboard reload reads the latest eligible persisted result for each authorised
+station/model without a separate publishing-batch delay. Reads never trigger model
+training or prediction. Preserve version/supersession, publication policy, data-use
+classification and QC/lifecycle semantics; withheld/withdrawn results stay withheld.
+Backend scheduled production is required eventually; live push/browser auto-refresh
+while a page stays open is not an added acceptance gate.
+
+Trace displayed values to stored forecast/model/station identity and actual issue
+and valid times. Preserve healthy members independently. A failed cycle or refresh
+retains correctly labelled last-good data, or explicit unavailability if none exists.
+A fresh HTTP response or copied file does not make an old forecast current.
+
+Agree and test applicable identity, network, source-specific observation support and
+time semantics, forecast uncertainty, freshness, safe failures and optional existing
+metadata with the map owner. Missing optional thresholds/calibration metadata is
+explicitly absent/unknown/withheld, not fabricated and not automatically a blocker.
+No new UI features or analysis bindings are implied by onboarding evaluation.
+
+## Confirmed M1 delivery and recovery policy
+
+1. **No container registry.** Keep upstream repositories and installed dependency
+   code private. CI builds/verifies the two application variants and transfers the
+   exact accepted images directly over a private authenticated connection to
+   Infomaniak. The server verifies and loads them; it does not rebuild them.
+2. **Approval and activation are distinct.** The owner retains release publication
+   authority. Once a release is approved, its verified transfer is automatic;
+   activation requires an explicit deployment request. A merged PR alone is not
+   release publication or activation authority. No production deployment authority
+   is granted here.
+3. Preserve existing release receipts and immutable image identities. Do not put
+   private images, dependency evidence, station data, checkpoints or credentials in
+   public CI logs/artifacts. Credentials are scoped to trusted release jobs, never
+   untrusted PR code. Runtime secrets and model/data artifacts stay outside images.
+4. **No paid image hosting/cache expansion or automatic paid fallback.** Use existing
+   approved resources and standard free CI capacity. Measure build/export disk,
+   archive size and transfer cost/capacity rather than assuming they fit.
+5. Use the existing company Cloudflare account for **one verified private recovery
+   set**: database, current application images, required model artifacts and
+   protected configuration. Protect secrets/encryption keys through the existing
+   secret-management boundary so recovery does not depend solely on the lost host.
+6. Replace the old recovery set only after its successor is verified. Temporary
+   overlap is intentional; leave no older Cloudflare recovery sets after successful replacement.
+   Keep the previous application release locally on Infomaniak for quick rollback.
+   This rolling backup policy does not authorise deletion of protected scientific
+   evidence, original delivery archives or the existing isolated archive database.
+7. Use free Cloudflare storage allowance only. Measure existing account usage,
+   complete-set size and peak replacement overlap, including operation allowances.
+   If free capacity is insufficient or cannot be established safely, preserve the
+   usable backup and notify the owner. Do not incur automatic charges or delete the
+   only good copy first. No claim of a provider-enforced spending cap is made.
+8. Back up **daily and before deployments or database changes**. Initial testing
+   accepts up to **24 hours of newly collected data loss**, with a recovery target
+   of **four working hours**. No high availability or 24/7 response promise. Prove
+   recovery through restore exercises; a successful dump/upload is not enough.
+9. Preserve the isolated database and original dirty checkout. Verify backup,
+   schema/role/guard compatibility and an isolated restore before seeding the normal
+   test stack. Keep application/data migrations and rollback separate; reverting an
+   image cannot reverse database changes.
+10. Pause schedules only during commissioning. Inspect pending runs before workers
+    start, avoid unintended Swiss/default jobs, and configure real Nepal sources
+    before enabling forecast/ingestion schedules in the later unattended-operation milestone.
+   The reviewed daily backup schedule is the exception: M1 enables it after
+   recovery validation and the explicit activation request.
+    M1 runtime checks do not authorise model execution or station activation.
+
+The current runtime, free-runner capacity, Cloudflare allowance and full recovery
+set/restore time remain measurements to establish, not proven capabilities.
 
 ## Data protection and authority
 
-Invited access only. Keep Nepal and Swiss credentials and data separate, do not
-expose the office network, and keep backend credentials out of browser code,
-repositories, tickets and reports. Reuse the existing scoped reader/authentication
-contracts and verify that unauthorized and out-of-scope callers cannot read data.
+Keep invited access, regional isolation, scoped authentication and no office-network
+exposure. The [DHM hosting assumption](../../docs/decisions/2026-09-30-dhm-data-hosting-assumption.md)
+is owner authority, not DHM consent. Retain its objection/changed-conditions process
+and the distinction between protected preservation and operational replication.
+Cloudflare backup permission is the planned off-box replication governed by that
+record, not public release or download permission. For stations beyond the original
+six, confirm applicable source/delivery coverage under the hosting/display policy
+before using its permission reference; uncovered sources remain held, not silently
+authorised by roster expansion. Encrypt restricted recovery
+objects before upload. A DHM objection or changed conditions also stops new
+Cloudflare replication and invokes the same hosting-removal/change process. Protect delivery-tagged observations and recoverable values in diagnostics,
+thresholds and derived output. No bulk-download or derived-metric-publication expansion.
 
-The owner decision in
-`docs/decisions/2026-09-30-dhm-data-hosting-assumption.md` remains the authority for
-password-protected hosting and display. It is an **owner assumption, not DHM
-consent**. Preserve the restriction on delivery-tagged observations for consumer
-and reviewer access, including values recoverable through QC details or derived
-output. This vision grants no bulk-download, public-release or derived-metric
-publication permission. A DHM objection or changed conditions must be handled as
-that decision record requires; page text must not claim DHM endorsement.
+This document records confirmed outcomes; it does not approve an unreviewed patch.
+Follow independent Claude/Codex review, additional owner-commissioned review for
+high-risk changes, required tests and owner-controlled PR approval/merge. Do not
+silently expand production/scientific authority. No new platform, Kubernetes,
+custom supervisor or model framework is requested.
 
-Respect the recorded backup prerequisites before moving restricted data onto the
-cloud host: the backup follow-on must be planned first, with the distinction
-between operational backup replication and protected preservation retained.
-Coordinate Plans 208/340 where applicable; do not import their unrelated scope or
-pretend a local dump proves off-box recovery. Reuse the existing Nepal staging
-host, not a duplicate host. No new spending, production deployment, PR merge, or
-unbounded data transfer is authorized by this vision. Staging work follows the
-repository's existing orchestration and owner authority.
+## Milestones and success evidence
 
-One clear demonstration notice per site remains the agreed presentation policy;
-its implementation belongs to the map agents. Analysis panels, historical skill
-research, new dashboard features, new observation-publication permissions and
-operational alerting are outside this Effort.
+The [milestone map](../nepal21/milestones.md) is the single milestone-status record;
+its [dependency graph](../nepal21/milestone-dependencies.json) distinguishes active
+work, owner checkpoints and parallel readiness investigation. The
+[M1 plan](../nepal21/m1-direct-transfer-runtime.md) is the current implementation
+proposal. M0 accepted/M1 active is not a claim that M1 has passed or its plan is
+implementation-ready before review and owner merge.
 
-## Reuse and reconcile existing work
-
-Read current source and deployment evidence before deciding what remains. A plan's
-status or merged PR is not proof that its acceptance ran on the host.
-
-- **Plan 268 / PR #332:** restricted historical discharge import and QC exist.
-  Verify retained import/QC evidence and station rows before any repeat import;
-  do not rerun replacement merely to start this Effort.
-- **Plan 143 / PRs #344 and #347:** discharge-first station/basin/history readiness
-  exists. Inspect the actual six-station package, bindings and qualified history.
-  It deliberately did not prove model training, activation or live forecasts.
-- **CMAL integration:** inspect the current model registry, artifacts, station/group
-  assignments, static attributes and supported forcing. Plans 152, 155, 262, 261
-  and related model-onboarding work are evidence to reuse, not a new mandatory
-  whole-plan dependency tree. Respect ForecastInterface throughout; fix a model
-  that violates it or resolve a genuine contract gap upstream, never bypass it.
-- **Plan 511 / merged PR #351:** the Infomaniak staging-host deployment support is
-  merged. Verify the actual deployed release and services and coordinate its owner.
-  Do not replace the selected host with the map's older Hetzner proposal.
-- **Plans 401/402/404 / PRs #320/#328/#330:** scoped authentication and reader/QC
-  capabilities already exist. Reuse their contracts without making analysis views
-  a deadline blocker.
-- **DRAFT Plans 516 and 049:** useful contract/access investigations, not executable
-  instructions here. Plan 516's one-model-per-station selection, synthetic fallback,
-  analysis-first prerequisite and separate publishing assumptions do not satisfy
-  the confirmed all-model, current-on-reload outcome unchanged. Do not assume the
-  proposed region-bundle routes are the only valid transport.
-- The map's older deployment/export documents contain November deadlines and
-  synthetic/analysis scope. Preserve useful contract facts, but coordinate their
-  reconciliation with the map agents against this approved October outcome.
-
-### Bounded discovery evidence, 2026-10-01
-
-The local map checkout was on `feat/qc-chart-zoom`. `FlowMap.tsx` contains an
-“All models” selector and forecast loading; the local Nepal6 build alias points
-to `RegionDashboard.tsx`, which reads staged bundles. This discrepancy requires
-consumer-owner reconciliation, not a conclusion that a selector must be built or
-that local source proves the deployed view. Preserve the owner's instruction to
-reuse existing dashboard capabilities.
-
-Unauthenticated HEAD requests to
-`https://sapphire-flow-map-nepal6.hsol.workers.dev/` and
-`/data/nepal6/region.json` returned 401 with `Cache-Control: private, no-store`.
-These are narrow access checks, not an authenticated browser or full security audit.
-A GET to `https://nepal-staging.hydrosolutions.ch/api/v1/health` could not connect to
-port 443 from the discovery environment. Deployment and six-station forecasting
-therefore remain unverified, not proven absent. The checked-in Nepal cloud overlay
-disables weather forecasting pending its Nepal feed setup. Re-measure these facts
-before delivery; no live station/model inventory was obtained during discovery.
-
-Subsequent read-only implementation investigation on 2026-10-01 reached the existing
-shared Mac-mini staging stack, not the Infomaniak Nepal host, through API and SSH
-and verified forecast-worker package `0.1.1039`. These findings must be re-measured
-on the intended Nepal cloud host before claiming deployment there; moving restricted
-data still requires the recorded backup prerequisites. All six DHM stations
-exist under `chwrr` but remain onboarding, without basin bindings, forecast targets,
-active station/group model assignments or stored forecasts. QC-passed historical
-manual-import discharge ends in 2019 for five stations and 2023 for station 450.
-All six have historical rating curves, but none is valid on the inspection date;
-level units/reference metadata remain unset. Only aggregate coverage and validity
-metadata were queried, in read-only transactions; no restricted values were read.
-The public BIPAD metadata endpoint was reachable and supplied candidate entries for
-all six gauges; these are not yet confirmed station bindings or datum evidence.
-Existing adapter/config/ingest tests passed (63 tests). These checks establish reuse
-opportunities and remaining prerequisites, not operational activation or model readiness.
-
-## Evidence of delivery
-
-The implementing agent and map agents must jointly establish the evidence below.
-Keep valid forecast coverage and invalid test-pathway coverage separate throughout:
-zero valid current coverage must be reported as zero. The traceability, freshness,
-access, isolation and continuity checks apply to each delivered class, but invalid
-results can establish only the approved test-pathway behaviour, not valid forecast
-coverage. Item 6 adds the mandatory checks for that exception.
-
-1. A measured six-station by model account: current artifacts/assignments and inputs,
-   successfully stored forecasts, CMAL progress, regression output where used, and
-   explicit failures/exclusions. Use real current forecasts, never synthetic fixtures
-   as proof of delivery. Historical or climatological output alone cannot stand in
-   for the requested current weather-driven forecasting outcome.
-2. Authenticated backend reads expose all available eligible model results for the
-   authorized Nepal stations with traceable IDs, actual issue/valid times, units,
-   shape and status. Unauthorized and out-of-scope reads fail without leaking
-   restricted observations or sensitive diagnostic values.
-3. Across at least two production cycles, newly stored results become readable
-   without an independent publishing-batch delay. With the map agents, reload the
-   invited-viewer dashboard after a new result is stored and trace the displayed
-   result to the backend forecast/model identity and issue time. No manual data
-   export or redeployment is needed between these observations.
-4. A failed station/model does not block healthy results; a missed cycle or failed
-   refresh retains clearly marked last-good data or reports unavailability when
-   no prior result exists. Verify backend semantics here and browser behaviour
-   with the map agents.
-5. Automatic production remains configured beyond October 7, with an operator
-   handoff for access, monitoring, recovery and deliberate retirement under the
-   existing authority and data restrictions.
-6. For the expired-rating test path, verify exact same-gauge curve lineage,
-   unchanged validity dates, compatible level references and invalidity propagation
-   through the complete input lookback and downstream products. Prove invalid
-   outputs cannot replace valid latest/last-good selection, trigger alerts or enter
-   training/evaluation. With the map agents, verify separately selected invalid
-   results are unmistakably labelled invalid/not for operational use. Count this as
-   test-pathway evidence, never as valid forecast coverage or skill.
-
-Record concrete coverage and limitations in the delivery evidence. Backend contract
-completion and consumer/browser verification are distinct facts: a downstream
-integration gap does not authorize dashboard implementation here, but it does mean
-the end-to-end Effort is not yet verified delivered. Do not mark it delivered or
-landed from code merge, an HTTP health check or model onboarding alone.
-
-This document records the approved outcome, not an implementation plan or permission
-to execute DRAFT plans. Follow the repository's planning, independent review,
-readiness and owner-controlled merge requirements during implementation.
+Success requires a full 21-station/model readiness account; persisted legitimate
+onboarding/evaluation outcomes; source-bound FI forecasts using qualified current forcing stored through normal
+services; authorised API/browser evidence and rejection of unauthorised/out-of-scope
+reads without restricted-data/diagnostic leaks; separate Nepal/Swiss credentials
+and no backend credentials in browser code; independent failure and last-good
+behaviour; and repeated unattended cycles with a tested operator recovery path.
+Across at least two scheduled cycles, newly persisted results must be readable on
+dashboard reload without manual export/redeployment, traced with the map owner to
+forecast/model identity and issue time.
+Report valid coverage, skill-unestablished test coverage and invalid pathway tests
+separately. Do not mark the Effort delivered from a health check, model run, merge,
+local presentation or smaller working subset alone.
