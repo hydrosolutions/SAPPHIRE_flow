@@ -1309,12 +1309,11 @@ jobs:
         env:
           EXPECTED_VERSION: 0.dev0+g${{ github.sha }}
           EXPECTED_REVISION: ${{ github.sha }}
-        run: >-
-          python3 tools/image_identity_probe.py
-          --variant default
-          --image-tag sapphire-flow:ci-${{ github.sha }}
-          --expected-version "$EXPECTED_VERSION"
-          --expected-revision "$EXPECTED_REVISION"
+        run: |
+          python3 tools/image_identity_probe.py --variant default --image-tag sapphire-flow:ci-${{ github.sha }} --expected-version "$EXPECTED_VERSION" --expected-revision "$EXPECTED_REVISION"
+          docker run --rm --network none -e DB_PASSWORD=ci-smoke-only \
+            "sapphire-flow:ci-${{ github.sha }}" python -I -c \
+            "import sys, sapphire_flow, prefect; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest
@@ -1426,12 +1425,11 @@ jobs:
         env:
           EXPECTED_VERSION: 0.dev0+g${{ github.sha }}
           EXPECTED_REVISION: ${{ github.sha }}
-        run: >-
-          python3 tools/image_identity_probe.py
-          --variant aquacast
-          --image-tag sapphire-flow-aquacast:ci-proof-${{ github.sha }}
-          --expected-version "$EXPECTED_VERSION"
-          --expected-revision "$EXPECTED_REVISION"
+        run: |
+          python3 tools/image_identity_probe.py --variant aquacast --image-tag sapphire-flow-aquacast:ci-proof-${{ github.sha }} --expected-version "$EXPECTED_VERSION" --expected-revision "$EXPECTED_REVISION"
+          docker run --rm --network none -e DB_PASSWORD=ci-smoke-only \
+            "sapphire-flow-aquacast:ci-proof-${{ github.sha }}" python -I -c \
+            "import sys, sapphire_flow, prefect, aquacast, torch; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"
 
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).

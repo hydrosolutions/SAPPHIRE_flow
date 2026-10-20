@@ -129,6 +129,19 @@ RUN apt-get update \
 # Added 2026-04-23 after Sprint 1.3 forecast-cycle live run surfaced
 # "Cannot find the ecCodes library" from cfgrib.
 
+# Install dependencies in the builder, not in running containers. The base's
+# unused pip vendors vulnerable libraries; remove its code and bootstrapper too,
+# not just scanner metadata. Keep the application venv and builder unchanged.
+RUN rm -rf /usr/local/lib/python3.14/site-packages/pip \
+        /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.14/ensurepip \
+        /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.14 \
+    && /usr/local/bin/python -I -c "import importlib.util; from pathlib import Path; \
+        assert all(importlib.util.find_spec(name) is None for name in ('pip', 'ensurepip')); \
+        assert not list(Path('/usr/local/bin').glob('pip*')); \
+        assert not list(Path('/usr/local/lib/python3.14/site-packages').glob('pip*')); \
+        assert not Path('/usr/local/lib/python3.14/ensurepip').exists()"
+
 WORKDIR /app
 
 COPY docker/entrypoint.sh /entrypoint.sh

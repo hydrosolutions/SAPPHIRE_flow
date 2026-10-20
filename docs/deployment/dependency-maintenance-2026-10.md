@@ -28,6 +28,31 @@ plan/test-fixture version examples remain historical; active pin comments and
 standards are updated. No source dependency is made public, and local resolution
 excluded ambient personal credentials rather than acquiring new private access.
 
+## Runtime installer removal
+
+The first maintenance image scan found four HIGH findings in libraries vendored
+by the base image's global pip 26.2.1: msgpack 1.1.2, setuptools 70.3.0 and urllib3
+2.7.0. These are separate from the application lockfile. Pip 26.2.1 was still the
+latest upstream release when checked on 2026-10-20.
+
+Only the final runtime removes the complete global pip package, its metadata and
+launchers, and the ensurepip bootstrapper including bundled wheels. The builder
+and application venv remain unchanged. This is not metadata-only stripping or a
+scan exception. Deletion affects the merged runtime filesystem; the original
+public files remain in the base image layers.
+
+In-container `python -m pip`, `python -m ensurepip` and default pip-seeded
+`python -m venv` are intentionally unsupported. Install dependencies by rebuilding
+the image, not by modifying a running container. Bare venv creation would require
+`--without-pip`; runtime package-installing Prefect steps are not part of the
+shipped local-source deployments.
+
+The build asserts absence using the explicit global Python interpreter and checks
+both imports and installer paths. CI also exercises the real entrypoint and
+isolated application venv for both default and Aquacast images, in addition to
+the existing final-image identity/import proofs. A stock-base smoke alone is not
+application compatibility evidence.
+
 ## Acceptance
 
 Require the full CI suite on the final base/head pair, filesystem/default-image

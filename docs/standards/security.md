@@ -827,6 +827,12 @@ The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, 
 
 Dependabot's Docker-related ecosystems raise digest-update PRs under review.
 
+The final application image removes global pip and ensurepip completely, including
+vendor libraries, metadata, launchers and bootstrap wheels. The builder and
+application venv are unchanged. Runtime pip installation and default pip-seeded
+venv creation are unsupported; rebuild the image to change dependencies. See
+[October dependency maintenance](../deployment/dependency-maintenance-2026-10.md).
+
 ### CI action pinning
 
 Every `uses:` entry in `.github/workflows/*.yml` is pinned by commit SHA with the version tag preserved as a trailing comment:
