@@ -92,7 +92,11 @@ def test_build_inputs_are_python_312_and_docker_314_compatible() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text()
     dockerfile = (_REPO_ROOT / "Dockerfile").read_text()
     assert 'requires-python = ">=3.12"' in pyproject
-    assert "python:3.14.6-slim" in dockerfile
+    expected_base = (
+        "python:3.14.8-slim@sha256:"
+        "a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170"
+    )
+    assert dockerfile.count(f"FROM {expected_base}") == 2
 
 
 def test_native_uv_cache_key_changes_when_pretend_version_changes(
