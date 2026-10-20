@@ -113,8 +113,10 @@ The prior bounded same-gauge expired-rating exception remains a distinct invalid
 pathway-test class, not ordinary test eligibility or operational validity. Use the
 newest curve for the same verified gauge, preserve its original dates/version and
 measured-level lineage, and establish units, reference/datum and domain compatibility.
-Unknown reference compatibility remains held; do not borrow curves, silently assume
-zero offset, or generalise a local exception to server operation or other stations.
+Unknown reference compatibility remains held; do not borrow curves or silently
+assume zero offset. Do not generalise local presentation workarounds to server
+operation. Server use of the retained invalid class requires the M2 station-specific
+owner admissibility decision, same-gauge curve and verified reference compatibility.
 
 Every affected forecast and downstream combined/group product retains machine-readable
 invalidity and safe reasons across the full consumed lookback. Keep invalid test
@@ -202,7 +204,10 @@ exposure. The [DHM hosting assumption](../../docs/decisions/2026-09-30-dhm-data-
 is owner authority, not DHM consent. Retain its objection/changed-conditions process
 and the distinction between protected preservation and operational replication.
 Cloudflare backup permission is the planned off-box replication governed by that
-record, not public release or download permission. Encrypt restricted recovery
+record, not public release or download permission. For stations beyond the original
+six, confirm applicable source/delivery coverage under the hosting/display policy
+before using its permission reference; uncovered sources remain held, not silently
+authorised by roster expansion. Encrypt restricted recovery
 objects before upload. A DHM objection or changed conditions also stops new
 Cloudflare replication and invokes the same hosting-removal/change process. Protect delivery-tagged observations and recoverable values in diagnostics,
 thresholds and derived output. No bulk-download or derived-metric-publication expansion.
@@ -228,6 +233,9 @@ services; authorised API/browser evidence and rejection of unauthorised/out-of-s
 reads without restricted-data/diagnostic leaks; separate Nepal/Swiss credentials
 and no backend credentials in browser code; independent failure and last-good
 behaviour; and repeated unattended cycles with a tested operator recovery path.
+Across at least two scheduled cycles, newly persisted results must be readable on
+dashboard reload without manual export/redeployment, traced with the map owner to
+forecast/model identity and issue time.
 Report valid coverage, skill-unestablished test coverage and invalid pathway tests
 separately. Do not mark the Effort delivered from a health check, model run, merge,
 local presentation or smaller working subset alone.

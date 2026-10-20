@@ -103,6 +103,11 @@ for failure cases, not destructive experiments against the live archive.
    delete custody/evidence archives. Resolve restore-time access to secrets and
    encryption keys without storing plaintext secrets in public receipts or making
    recovery depend on the lost server alone. Encrypt restricted objects before upload.
+   Record the execution boundary and least-privilege credentials for encryption,
+   upload, integrity verification and replacement before implementation. Cloudflare
+   permissions must be limited to the private recovery location, not dashboard
+   publishing or unrelated buckets. Do not silently give the existing backup worker
+   extra image/artifact access or Docker privileges; changes require high-risk review.
    Cloudflare is the planned private off-box replica governed by the DHM hosting
    assumption: an objection/changed conditions stops new replication and invokes
    its hosting-removal/change process. Encryption does not waive those conditions.
@@ -166,12 +171,19 @@ Public reports contain sanitized outcomes, not protected backup contents.
    to omit non-applicable jobs on this host; it does not pause/delete pre-existing
    registrations or queued runs. Register intended commissioning deployments with
    workers held, pause their schedules through Prefect, and reconcile queued runs.
+   Verify held state across init re-registration and restart, not only first startup.
+   If registration reactivates a schedule, use a durable reviewed hold (including
+   omitting future re-registration where appropriate), keep workers held, and pause/
+   reconcile existing schedules and queued runs after every init. Skipping a name
+   alone never proves an already registered job is held.
    Cron overrides are the source-defined SCHEDULE_* variables, including
    SCHEDULE_BACKUP_DATABASE; cron changes alone are not a safe pause mechanism.
    Verify normal API/auth, expected
    pools and a controlled non-mutating application flow, not just container health.
 5. Separate the backup schedule from held forecast/ingestion work. Enable only the
-   reviewed daily backup schedule after recovery validation and explicit activation;
+   reviewed daily schedule that creates AND verifies the complete Cloudflare
+   recovery set after recovery validation and explicit activation. Enabling the
+   existing local-only backup-database dump is not sufficient;
    other Nepal schedules await their milestone. Do not leave backups disabled under
    a blanket commissioning pause, or enable every deployment just to start backup.
 6. Verify TLS/access before exposing a public edge. Restrict operational Prefect/DB
@@ -214,7 +226,8 @@ Keep full reports local, concise outcomes in PRs, and owner merge authority inta
   successor replacement; no predecessor exists for the first successful upload.
 - CI/deployment tests: protected release trigger, no PR credential access, private
   outputs, no implicit server rebuild/pull, paused unwanted schedules/queued work,
-  daily backup independently enabled and application API/worker smoke.
+  daily complete off-host backup independently enabled, held state across repeated
+  init/restarts and queued-run reconciliation, and application API/worker smoke.
 - Run native focused tests, lint/format/type checks on changed modules. Full suite
   after final code change before merge, locally or in CI; source-only checks cannot
   prove host/image compatibility. Restore/transfer tests need actual target evidence.
