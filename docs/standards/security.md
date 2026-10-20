@@ -635,7 +635,7 @@ The HTMX dashboard is same-origin — all `hx-post`/`hx-patch` requests go to th
 ## Container privilege model
 
 All service containers:
-- Use minimal base image (`python:3.11-slim`)
+- Use the Dockerfile's digest-pinned minimal base image (`python:3.14.8-slim`).
 - Create a named non-root user in the Dockerfile (`RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app`)
 - Use an entrypoint script that starts as root, fixes permissions on mounted volumes and secrets, then drops to the `app` user via `gosu` before executing the application (see "Entrypoint pattern" below)
 - Drop all capabilities (`cap_drop: [ALL]` in `docker-compose.yml`)
@@ -667,7 +667,7 @@ Containers start as root only during the entrypoint, then drop privileges before
 
 ```dockerfile
 # Dockerfile
-FROM python:3.11-slim
+FROM python:3.14.8-slim
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 COPY --chown=app:app . /app
@@ -788,8 +788,8 @@ Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache 
 
 Every externally-pulled image is pinned by **manifest-list digest** (not per-platform digest — the manifest-list resolves per-arch on pull, so the same pin works for both amd64 CI and arm64 Mac mini):
 
-- `Dockerfile` (builder + runtime stages): `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`
-- `docker-compose.yml`: `postgis/postgis:16-3.4@sha256:...`, `prefecthq/prefect:3-python3.11@sha256:...`, `caddy:2.9@sha256:...`
+- `Dockerfile` (builder + runtime stages): `python:3.14.8-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`
+- `docker-compose.yml`: digest-pinned PostGIS, Prefect server and Caddy (`2.11.7`); the Compose file is authoritative for their exact versions and digests.
 - `.github/workflows/ci.yml` integration-shard job `services.image`: `postgis/postgis:16-3.4@sha256:...` (must match the compose postgis digest to avoid silent integration/prod drift)
 - `scripts/restore-rehearsal.sh` (`RESTORE_IMAGE`, Plan 162 T5): `postgis/postgis:16-3.4@sha256:44126d872...` — same pin, same vendor as the bullet above (see caveat + owner decision below).
 
@@ -826,6 +826,12 @@ belt-and-braces alongside the already-vetted image pin, independent of the diges
 The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, and `init` services is **not** digest-pinned — it is built in this repo, not pulled.
 
 Dependabot's Docker-related ecosystems raise digest-update PRs under review.
+
+The final application image removes global pip and ensurepip completely, including
+vendor libraries, metadata, launchers and bootstrap wheels. The builder and
+application venv are unchanged. Runtime pip installation and default pip-seeded
+venv creation are unsupported; rebuild the image to change dependencies. See
+[October dependency maintenance](../deployment/dependency-maintenance-2026-10.md).
 
 ### CI action pinning
 

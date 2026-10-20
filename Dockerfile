@@ -1,6 +1,5 @@
-# python:3.12.13-slim (manifest-list digest pinned 2026-04-21; re-pinned 2026-06-02
-# to the debian 13.5 rebuild — clears CVE-2026-4878 libcap2 + prior OpenSSL/pip CVEs — per Plan 064 B1)
-FROM python:3.14.6-slim@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144 AS builder
+# Official Python 3.14.8 maintenance image; manifest-list pin verified 2026-10-20.
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS builder
 
 # ghcr.io/astral-sh/uv:0.11.7 (manifest-list digest pinned 2026-04-21 per Plan 064 B5)
 COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /usr/local/bin/uv
@@ -65,9 +64,8 @@ RUN test -n "$SAPPHIRE_RELEASE_VERSION" \
        fi
 
 
-# python:3.12.13-slim (manifest-list digest pinned 2026-04-21; re-pinned 2026-06-02
-# to the debian 13.5 rebuild — clears CVE-2026-4878 libcap2 + prior OpenSSL/pip CVEs — per Plan 064 B1)
-FROM python:3.14.6-slim@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
+# Official Python 3.14.8 maintenance image; manifest-list pin verified 2026-10-20.
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 ARG SAPPHIRE_RELEASE_VERSION
 ARG SAPPHIRE_SOURCE_REVISION
@@ -130,6 +128,19 @@ RUN apt-get update \
 # ctypes wrapper; the system shared library must be present at runtime.
 # Added 2026-04-23 after Sprint 1.3 forecast-cycle live run surfaced
 # "Cannot find the ecCodes library" from cfgrib.
+
+# Install dependencies in the builder, not in running containers. The base's
+# unused pip vendors vulnerable libraries; remove its code and bootstrapper too,
+# not just scanner metadata. Keep the application venv and builder unchanged.
+RUN rm -rf /usr/local/lib/python3.14/site-packages/pip \
+        /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.14/ensurepip \
+        /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.14 \
+    && /usr/local/bin/python -I -c "import importlib.util; from pathlib import Path; \
+        assert all(importlib.util.find_spec(name) is None for name in ('pip', 'ensurepip')); \
+        assert not list(Path('/usr/local/bin').glob('pip*')); \
+        assert not list(Path('/usr/local/lib/python3.14/site-packages').glob('pip*')); \
+        assert not Path('/usr/local/lib/python3.14/ensurepip').exists()"
 
 WORKDIR /app
 
