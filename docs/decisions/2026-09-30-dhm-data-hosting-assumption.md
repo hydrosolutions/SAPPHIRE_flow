@@ -45,3 +45,18 @@ described as consent in any document, the dashboard, or a message to DHM.
 
 Plan 268 (D5, D9), Plan 511 (D9), Plan 516 (D3 `permission_ref`), Plan 049 (T3), the map project's
 `docs/NEPAL_MVP_DEPLOYMENT_PLAN.md` § DHM letter.
+
+## Confirmed private recovery destination — 2026-10-20
+
+For the Nepal21 test deployment, the owner confirmed the existing company
+Cloudflare account for the planned off-box recovery copy. Keep one verified private
+recovery set, with restricted objects encrypted before upload and predecessor
+removal only after replacement verification. The complete delivery/recovery policy
+is in the [continuing Nepal vision](../../planning/visions/2026-10-01-nepal6-current-forecast-data-for-the-existing-dashboard.md).
+
+This is owner-authorised private recovery under the same assumption, not DHM
+consent or public-release permission. The objection/changed-conditions process
+above applies to Cloudflare copies too: stop new replication and handle existing
+copies under the required hosting-removal/change action. Encryption does not waive
+these conditions. Original protected preservation retains its separate custody;
+rolling recovery retention does not authorise deleting scientific evidence.
