@@ -32,8 +32,11 @@ issue #378 remains applicable, not a new dependency on completing Swiss delivery
 ## Status and historical continuity
 
 The owner accepted M0 baseline reconciliation and authorised M1 preparation.
-M1 is active but its runtime/recovery acceptance has not passed. Every milestone
-ends with owner review and re-estimation before the next milestone starts.
+M1 is active and unaccepted. On 2026-10-21 the owner deferred backup
+commissioning and recovery testing, including plaintext recovery tests. These are
+not accepted or complete and no longer gate M1, M2 or the forecast/dashboard
+critical path. Every milestone still ends with owner review and re-estimation.
+This scope update authorises planning changes only, not implementation or deployment.
 
 This is the continuation of the same Nepal Effort, not a second vision. Its
 historical filename is retained for stable links. The October 7 demonstration
@@ -147,55 +150,65 @@ metadata with the map owner. Missing optional thresholds/calibration metadata is
 explicitly absent/unknown/withheld, not fabricated and not automatically a blocker.
 No new UI features or analysis bindings are implied by onboarding evaluation.
 
-## Confirmed M1 delivery and recovery policy
+## Active M1 delivery policy — owner update 2026-10-21
 
 1. **No container registry.** Keep upstream repositories and installed dependency
-   code private. CI builds/verifies the two application variants and transfers the
-   exact accepted images directly over a private authenticated connection to
+   code private. CI builds and verifies both default and Aquacast linux/amd64
+   application variants, then transfers the exact tested images privately to
    Infomaniak. The server verifies and loads them; it does not rebuild them.
-2. **Approval and activation are distinct.** The owner retains release publication
-   authority. Once a release is approved, its verified transfer is automatic;
-   activation requires an explicit deployment request. A merged PR alone is not
-   release publication or activation authority. No production deployment authority
-   is granted here.
-3. Preserve existing release receipts and immutable image identities. Do not put
-   private images, dependency evidence, station data, checkpoints or credentials in
-   public CI logs/artifacts. Credentials are scoped to trusted release jobs, never
-   untrusted PR code. Runtime secrets and model/data artifacts stay outside images.
-4. **No paid image hosting/cache expansion or automatic paid fallback.** Use existing
-   approved resources and standard free CI capacity. Measure build/export disk,
-   archive size and transfer cost/capacity rather than assuming they fit.
-5. Use the existing company Cloudflare account for **one verified private recovery
-   set**: database, current application images, required model artifacts and
-   protected configuration. Protect secrets/encryption keys through the existing
-   secret-management boundary so recovery does not depend solely on the lost host.
-6. Replace the old recovery set only after its successor is verified. Temporary
-   overlap is intentional; leave no older Cloudflare recovery sets after successful replacement.
-   Keep the previous application release locally on Infomaniak for quick rollback.
-   This rolling backup policy does not authorise deletion of protected scientific
-   evidence, original delivery archives or the existing isolated archive database.
-7. Use free Cloudflare storage allowance only. Measure existing account usage,
-   complete-set size and peak replacement overlap, including operation allowances.
-   If free capacity is insufficient or cannot be established safely, preserve the
-   usable backup and notify the owner. Do not incur automatic charges or delete the
-   only good copy first. No claim of a provider-enforced spending cap is made.
-8. Back up **daily and before deployments or database changes**. Initial testing
-   accepts up to **24 hours of newly collected data loss**, with a recovery target
-   of **four working hours**. No high availability or 24/7 response promise. Prove
-   recovery through restore exercises; a successful dump/upload is not enough.
-9. Preserve the isolated database and original dirty checkout. Verify backup,
-   schema/role/guard compatibility and an isolated restore before seeding the normal
-   test stack. Keep application/data migrations and rollback separate; reverting an
-   image cannot reverse database changes.
-10. Pause schedules only during commissioning. Inspect pending runs before workers
-    start, avoid unintended Swiss/default jobs, and configure real Nepal sources
-    before enabling forecast/ingestion schedules in the later unattended-operation milestone.
-   The reviewed daily backup schedule is the exception: M1 enables it after
-   recovery validation and the explicit activation request.
-    M1 runtime checks do not authorise model execution or station activation.
+2. **Publication, transfer and activation are distinct.** The owner publishes
+   release identity. Verified transfer is automatic after that accepted release;
+   activation needs an explicit deployment request. A merge is neither publication
+   nor activation authority. No production authority is granted here.
+3. Preserve existing receipts and immutable image identities. Mandatory tests,
+   actual-image proofs and security scans remain. Keep private images, dependency
+   evidence, station data, checkpoints and credentials out of public CI outputs.
+   Externally enforced credential/ref/reviewer controls must admit only trusted
+   code; runtime secrets and model/data artifacts stay outside images.
+4. **No paid image hosting/cache expansion or automatic paid fallback.** Measure
+   cold build/export disk, time, archive size and the permitted private transfer
+   route on existing approved free resources. Unknown capacity is a delivery hold,
+   not permission to publish private artifacts or rebuild on the server.
+5. Preserve the isolated archive, original UUIDs and RAW provenance, original dirty
+   checkout, local dashboards and scientific evidence. Only separately authorised
+   additive work in a new isolated target is contemplated. Destructive or in-place
+   source changes remain held for separate protection and approval. Compare actual
+   schema/roles/guards and transferred content; migration labels alone are not proof.
+   Keep the previous application release locally when one exists. Image rollback
+   is not database recovery and cannot undo a migration.
+6. Keep schedules and pending/manual/retry queues held during commissioning,
+   including repeated init and restart. Avoid unintended Swiss/default work.
+   M1 does not enable backup schedules, ingestion, forecasts or training. Later
+   Nepal schedule activation still needs the appropriate milestone and explicit
+   request. Runtime checks do not authorise models or station activation.
 
-The current runtime, free-runner capacity, Cloudflare allowance and full recovery
-set/restore time remain measurements to establish, not proven capabilities.
+### Deferred recovery scope — not accepted or complete
+
+The owner's 2026-10-21 decision supersedes the earlier requirement to finish full
+recovery before runtime activation/seeding and the earlier M1 daily-backup
+exception. Cloudflare account access, allowance checks and a recovery machine are
+**not current blockers**. Backup commissioning, plaintext recovery tests and
+recovery acceptance are outside the active forecast/dashboard path, not hidden
+prerequisites for a later milestone.
+
+The prior 2026-10-20 policy remains the historical specification for deferred work:
+one encrypted private Cloudflare recovery set containing DB/current images/model
+artifacts/protected configuration; successor verification before predecessor
+deletion; measured free account storage/operation allowance and peak overlap;
+independent key/secret custody; complete daily and pre-deployment/pre-DB-change
+backups; a fresh verified off-host prechange point; and proved 24-hour loss and
+four-working-hour restoration targets. None of these is claimed implemented,
+verified or waived into a successful result. Reopening that work needs separate
+planning, review, protection/access decisions and explicit activation. No second
+automatic replica or paid fallback is authorised.
+
+Proceeding without those gates carries operational data-loss, reconstruction and
+downtime risk. Recovery may exceed the former targets or be impossible for lost
+state; a successful dump, local image rollback or healthy API is not verified DR.
+Preserve originals and record actual independent delivery/evidence custody without
+inventing copies or permission to delete them. The original dirty checkout is on
+the local Mac, not established as being on Infomaniak. This deferral does not relax
+protected-data access or preservation guards or permit destructive source changes.
 
 ## Data protection and authority
 
@@ -203,13 +216,20 @@ Keep invited access, regional isolation, scoped authentication and no office-net
 exposure. The [DHM hosting assumption](../../docs/decisions/2026-09-30-dhm-data-hosting-assumption.md)
 is owner authority, not DHM consent. Retain its objection/changed-conditions process
 and the distinction between protected preservation and operational replication.
-Cloudflare backup permission is the planned off-box replication governed by that
-record, not public release or download permission. For stations beyond the original
-six, confirm applicable source/delivery coverage under the hosting/display policy
-before using its permission reference; uncovered sources remain held, not silently
-authorised by roster expansion. Encrypt restricted recovery
-objects before upload. A DHM objection or changed conditions also stops new
-Cloudflare replication and invokes the same hosting-removal/change process. Protect delivery-tagged observations and recoverable values in diagnostics,
+On 2026-10-21 the owner confirmed that this assumption covers **all 21 delivered
+Nepal stations, including their historical water-level records**. The earlier
+six-station scope is superseded for this owner hosting/display decision, not for
+scientific qualification or station identity checks. It is not independent legal
+consent from DHM. Existing restrictions and the objection/changed-conditions
+process remain in force.
+
+The Cloudflare destination remains a deferred private-recovery choice, not public
+release/download permission or current backup activation. Restricted recovery
+objects would still require encryption before any future authorised upload. No
+plaintext recovery-test or decrypted-runtime-secret hosting authority is inferred
+for CI or another machine. A DHM objection or changed conditions also stops new
+Cloudflare replication and invokes the same hosting-removal/change process.
+Protect delivery-tagged observations and recoverable values in diagnostics,
 thresholds and derived output. No bulk-download or derived-metric-publication expansion.
 
 This document records confirmed outcomes; it does not approve an unreviewed patch.
@@ -232,7 +252,9 @@ onboarding/evaluation outcomes; source-bound FI forecasts using qualified curren
 services; authorised API/browser evidence and rejection of unauthorised/out-of-scope
 reads without restricted-data/diagnostic leaks; separate Nepal/Swiss credentials
 and no backend credentials in browser code; independent failure and last-good
-behaviour; and repeated unattended cycles with a tested operator recovery path.
+behaviour; and repeated unattended cycles with an operator handoff that states the known
+loss/reconstruction risks. Verified disaster recovery remains explicitly deferred,
+not a forecast/dashboard completion claim.
 Across at least two scheduled cycles, newly persisted results must be readable on
 dashboard reload without manual export/redeployment, traced with the map owner to
 forecast/model identity and issue time.
