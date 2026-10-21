@@ -1,241 +1,335 @@
-# M1 — direct-transfer release delivery and recoverable test runtime
+# M1 — direct-transfer release delivery and isolated test runtime
 
-status: DRAFT
+status: PROPOSAL — owner scope updated 2026-10-21; independent planning review complete; implementation approval pending
 
 Related Effort: https://github.com/hydrosolutions/SAPPHIRE_flow/issues/354
-
 Authority: [confirmed vision](../visions/2026-10-01-nepal6-current-forecast-data-for-the-existing-dashboard.md).
-Status/checkpoints: [milestone map](milestones.md). M1 preparation is authorised,
-but this implementation plan needs independent review and owner merge. No new
-application code or server change is made by publishing these documents.
+Status/checkpoints: [milestone map](milestones.md). M0 accepted; M1 active and
+unaccepted. This plan update grants no implementation or deployment authority.
 
-## Outcome and scope
+## Owner scope change and outcome
 
-Two accepted, tested application images run on Infomaniak through the intended
-Compose stack. The API and Prefect workers operate against the intended test DB.
-CI transfers accepted releases privately without a registry or server rebuild;
-activation requires an explicit request. One verified private Cloudflare recovery
-set and the previous local application release provide measured recovery/rollback.
-No station activation, scientific reclassification, model execution or unintended
-scheduled work belongs in M1. Preserve existing archive DB and local dashboards.
+On 2026-10-21 the owner **deferred backup commissioning and recovery testing**,
+including plaintext recovery tests. The owner also confirmed that the existing
+hosting assumption covers **all 21 delivered stations, including historical
+water-level records**. This is not DHM consent or scientific qualification; the
+[hosting decision](../../docs/decisions/2026-09-30-dhm-data-hosting-assumption.md)
+retains its restrictions and objection/changed-conditions process.
 
-The owner retains release publication and PR merge authority. Automatic transfer
-is downstream of that accepted-release event, not every merge or PR build. Keep
-model correctness/data-input changes in their appropriate onboarding work unless
-a concrete runtime compatibility prerequisite requires a separately reviewed fix.
-Do not import the whole demonstrated source snapshot into this runtime change.
+Active M1 delivers exact tested default and Aquacast linux/amd64 application images
+privately after owner release publication, then commissions the existing
+Compose/API/Prefect runtime only on a separate explicit deployment request. Keep
+the intended architecture, FI/services/stores/normal authenticated API and existing
+dashboard. No registry, paid fallback, server rebuild, model execution, station
+activation or scientific-input changes. Do not import the whole demonstration
+snapshot or replace the dashboard.
 
-## Baseline and source touchpoints
+Preserve the original isolated archive, UUIDs and RAW provenance, original dirty
+checkout on the local Mac, local dashboards and scientific evidence. Only
+separately authorised **additive work in new isolated target storage** is in scope.
+Do not overwrite an existing target to make setup succeed. Destructive/in-place
+source changes remain held for separate protection and approval. Existing
+protected-data, access and preservation/publication guards are not disabled.
 
-Read these before implementation; recheck current main and actual host state:
+There is **no verified disaster-recovery claim**. Without commissioned recovery,
+loss may require lengthy reconstruction or leave state unrecoverable. Image
+rollback, dump exit zero and container health are not database recovery proof.
+Record actual independent delivery/evidence custody and unknowns; do not invent
+copies, their locations or permission to delete them.
 
-- `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml`: two image variants,
-  optional Aquacast dependency, build secrets, tests/scans/SBOMs and public artifacts.
-  The inspected base is Python 3.14.6; the local model demonstration was Python 3.12.10.
-  Actual image imports/runtime need verification, not presumed compatibility.
-- `tools/release_identity.py`, `tools/image_identity_probe.py`,
-  `tools/compose_release_identity.py`, `tools/release_target.py`: owner-issued release
-  identity, local image receipts, source labels and exact Compose consumption.
-  Existing local image IDs are not registry digests. Extend these contracts rather
-  than introducing a second release authority or relying on mutable tags alone.
-- `docker-compose.yml`, `docker-compose.nepal-cloud.yml`,
-  `config/overlays/nepal-cloud.toml`, `docs/deployment/nepal-cloud-host.md`,
-  `docker/entrypoint.sh`, `docker/init-db.sh`, `docker/bootstrap-roles.sh` and SQL:
-  intended topology, persistent storage, role separation, migrations and init order.
-- `src/sapphire_flow/cli/register_deployments.py`: actual deployments, cron overrides,
-  skip controls and work pools. Init registers deployments; workers must not consume
-  queued default/Swiss work before commissioning checks.
-- `src/sapphire_flow/flows/backup.py`, `src/sapphire_flow/ops/protected_evidence_backup.py`,
-  `src/sapphire_flow/ops/evidence_backup_worker.py`, `src/sapphire_flow/ops/watchdog.py`;
-  `docs/decisions/2026-09-30-dhm-data-hosting-assumption.md`, `docs/standards/security.md`,
-  `docs/standards/cicd.md`, `docs/standards/orchestration.md` and the deployment
-  touchpoint map. Reconcile stale examples with source; do not invent new pools or
-  framework layers because a standards table describes future capabilities.
-- Existing protected-preservation and data-use guards: ordinary backup behaviour
-  may not preserve the protected archive. Explicitly reconcile permitted private
-  recovery with those guards; do not broaden ordinary worker/API access to copy it.
+## Deferred, not complete and not on the critical path
 
-M0 found only the isolated archive DB, with migration label 0071; both schema and
-role/trigger compatibility remain to be proven. Fresh pg_dump completed during
-preparation, but integrity/restore/off-box verification is outstanding. Equal
-migration labels and exit code zero are not recovery acceptance.
+The earlier full-recovery proposal required a complete verified off-host set before
+target changes, independent key/capsule custody, Cloudflare free-allowance/overlap
+checks, safe rotating-set replacement, complete daily/prechange backups, a fresh
+verified prechange point and timed 24-hour loss/four-working-hour restore proofs.
+Those **active M1/M2 gates are superseded** by the 2026-10-21 owner decision.
+Backup commissioning, plaintext/timed recovery tests and their RPO/RTO acceptance
+are deferred, not accepted or complete, and are not forecast/dashboard milestone
+prerequisites. Cloudflare access, allowance evidence and a recovery machine are
+not blockers now. M1 does not activate a backup schedule under an exception.
 
-## A. Release/export/transfer design and focused changes
+The historical one-private-encrypted-set/successor-before-predecessor policy stays
+recorded in the vision for separately reopened work. No extra replica, paid
+storage fallback or new plaintext/decrypted-secret hosting authority follows from
+this deferral. Existing local backup code/retention and protected evidence remain
+unchanged; do not delete or disable an existing backup as a side effect. Resuming
+recovery needs separate planning/review and explicit activation, not an automatic
+new dependency on M2 or a claim that recovery passed.
 
-1. Inspect existing CI/public logs/artifacts and private dependency acquisition.
-   Keep private code/images/dependency inventories out of public outputs; do not
-   widen credentials or use a personal login as a routine build/deploy mechanism.
-2. Use one explicitly authorised protected release job to build both linux/amd64
-   variants on standard free runners. Run relevant image/import/security checks
-   on the exact immutable IDs exported; no second build after successful proof.
-   Normal PR checks remain, but do not promote unrelated PR-built images.
-3. Export a compressed image archive with a manifest bound to accepted source,
-   release receipt, both local image IDs, source labels, archive size and SHA256.
-   Combining both variants may reduce duplicated layers; choose after measuring
-   peak build/export disk usage. Resume only identical accepted bytes; reject
-   conflicting attempts to overwrite a release mapping.
-4. Transfer privately with pinned host identity and scoped release-only credentials.
-   Prefer a restricted incoming-file account, without Docker/database privileges.
-   Keep activation separate. Write under temporary names, verify size/hash against
-   the authenticated receipt, and mark complete atomically. Incomplete/conflicting
-   transfers cannot be activated; a checksum alone is not source authentication.
-5. Keep archives and full private release evidence off public Actions artifacts and
-   releases. Audit metadata/log exposure as well as secret strings. No untrusted
-   PR receives source-dependency or transfer secrets.
-6. Measure free-runner capacity and network/host footprint. If it does not fit,
-   stop and return an existing-resource alternative; no paid runners, registry,
-   cache expansion, public upload or change to scientific dependencies as a bypass.
+## Source baseline and exact extension points
 
-Evidence: exact tested/exported IDs and manifest; private transfer receipt;
-interrupted/corrupt/conflicting replay rejection; safe identical retry; credential
-and public-output review; measured disk/archive/transfer usage. Use local/fake tests
-for failure cases, not destructive experiments against the live archive.
+Revalidate main before implementation and the host only with approved access.
+Source inspection at `c7ad8cd1e0a3b65821a261a001b8e167e69ca371` found:
 
-## B. Recovery integration
+- `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml`: two variants and
+  build-secret/private dependency paths. Current base is **Python 3.14.8-slim**,
+  not the earlier 3.14.6 proposal baseline; Caddy is 2.11.7. Actual amd64
+  imports/entrypoint/venv isolation and scans have CI evidence, not scientific
+  operation or combined cold-build/export capacity proof.
+- `tools/release_identity.py::build_receipt` builds both images itself. Extend its
+  builder/probe boundary; never rebuild after a separate proof to generate a
+  receipt. Retain owner-only `publish`, remote tag/state validation and legacy
+  receipt reading. `tools/release_target.py` retains the current per-PR policy.
+- `tools/image_identity_probe.py` probes captured immutable IDs but records Docker
+  `Id` as an opaque SHA256. `ops/protected_evidence_backup.py::verify_image_archive`
+  already supports direct config hashes and OCI descriptor-chain reachability.
+  Reuse this validator without changing protected-publication manifest semantics.
+  `tools/compose_release_identity.py` currently checks an environment identity
+  triple, not exact running image consumption.
+- `docker-compose.yml`, `docker-compose.nepal-cloud.yml`, Nepal config overlay,
+  `docker/entrypoint.sh`, `docker/init-db.sh`, `docker/bootstrap-roles.*` and
+  `docs/deployment/nepal-cloud-host.md`: actual topology, secrets, role/init order.
+  Normal init migrates before role bootstrap/registration; it must not operate on
+  the original archive. Both target migration chain and dated archive label end
+  at **0071**; no older schema or obligatory migration is established. Actual
+  schema/ACL/role/trigger equivalence still needs checking.
+- `src/sapphire_flow/cli/register_deployments.py`: real default/ingest/backup pools,
+  cron overrides and skip filtering. Skipping a name does not pause an old
+  deployment or its queued/manual/retry runs. Re-registration can affect schedules.
+- Existing local `flows/backup.py`, protected evidence backup and watchdog paths
+  are not complete off-host DR. They are not expanded or commissioned by active M1.
 
-1. Inspect existing Cloudflare account usage and permissions. Use a dedicated private
-   recovery location, not the dashboard's public asset path. R2 Standard is the
-   intended existing-service fit; validate account access and current free terms.
-2. One recovery set contains the DB, current application images, required model
-   artifacts, protected configuration and consistent manifests. During M1 some
-   model stores may legitimately be empty; inventory them explicitly. Preserve
-   delivered source datasets separately; one rolling backup is not permission to
-   delete custody/evidence archives. Resolve restore-time access to secrets and
-   encryption keys without storing plaintext secrets in public receipts or making
-   recovery depend on the lost server alone. Encrypt restricted objects before upload.
-   Record the execution boundary and least-privilege credentials for encryption,
-   upload, integrity verification and replacement before implementation. Cloudflare
-   permissions must be limited to the private recovery location, not dashboard
-   publishing or unrelated buckets. Do not silently give the existing backup worker
-   extra image/artifact access or Docker privileges; changes require high-risk review.
-   Cloudflare is the planned private off-box replica governed by the DHM hosting
-   assumption: an objection/changed conditions stops new replication and invokes
-   its hosting-removal/change process. Encryption does not waive those conditions.
-   Inventory existing off-host custody of original deliveries and archive evidence
-   separately; they are not implicitly covered by the rolling test-system set.
-   Report missing preservation evidence; do not invent a second automatic replica.
-3. Check available free storage/operation allowances, existing account consumption,
-   complete-set size and peak old/new overlap before upload. Include concurrent
-   usage/headroom; no assumption that a new bucket gets its own free quota or that
-   a billing alert enforces a hard spending cap. If safe free capacity cannot be
-   established, retain the good set and notify the owner without automatic spend.
-4. Create a consistent snapshot, upload a candidate set, verify complete manifests,
-   content integrity and restoreability, then switch the latest-set reference.
-   Delete older recovery objects only after successful verification. Failed or
-   interrupted replacements leave the last usable set intact. Clean failed partial
-   uploads safely without deleting the good set. No historical backup retention
-   after a successful replacement in Cloudflare; protected evidence has separate
-   custody rules. Existing local dump retention is separate (the inspected flow
-   defaults to seven artifacts and requires keep_count >= 2). Leave it unchanged
-   unless measured disk limits require a reviewed adjustment; do not set keep_count=1
-   to implement the off-host policy. Cleanup must preserve objects referenced by
-   the newly retained set if immutable objects are shared.
-5. Daily backup and pre-deployment/pre-database-change backup are the intended policy.
-   Record the fresh verified recovery point before mutating a deployment/database.
-   Do not start a destructive change when no verified recovery point exists.
-   Monitor the age of the latest verified off-host recovery point, not just local
-   dump mtime. Notify the operator through existing monitoring on failed/missed
-   backups or an approaching 24-hour age; report the target as missed if exceeded.
-   A daily cron declaration alone does not prove a 24-hour recovery point.
-6. Rehearse isolated restore, including runtime identity, roles/guards, station UUIDs,
-   RAW custody, artifacts/config and API/worker health. Target four working hours
-   with at most 24 hours of newly collected data loss during initial testing.
-   At least one timed rehearsal uses only the Cloudflare set and off-host secret
-   channel in a clean environment denied access to the original host local state.
-   Measure from operator acknowledgement during working hours to restored API/worker
-   readiness; record incident detection separately, without promising 24/7 response.
-   Record elapsed time, what was restored and any unmet target. Checksums/pg_dump
-   success alone are insufficient. Image rollback does not undo a migration.
+M0's 21 ONBOARDING stations, 18 RAW archives, 1,233,045 observations and absent
+normal stack/basin/model/forcing/hindcast/skill/forecast integration are dated
+facts, not a current-host assertion. A prior dump exit zero proves neither DR nor
+current content/identity. Any authorised additive transfer must validate its own
+source provenance/content and target isolation without claiming a recovery drill.
 
-Evidence: private account/capacity inventory, retained-set identity, replacement
-failure behaviour, isolated restoration and timed operator recovery instructions.
-Public reports contain sanitized outcomes, not protected backup contents.
+## Active feasibility checkpoint
 
-## C. Server commissioning and controlled activation
+**Read-only feasibility baseline — 2026-10-21:** main was unprotected and the
+repository ruleset inventory was empty. Basic required controls are available on
+the current repository tier but are not installed. The successful
+repository-effective organisation Actions-secret inventory returned zero; broader
+organisation-wide visibility is not a prerequisite or a reason to expand access.
+These are dated observations, not enduring guarantees: revalidate effective
+settings/secret scope before setup or credential admission. Exact A1 admission
+and combined cold-build/export capacity remain unresolved and unapproved.
 
-1. Preserve original archive DB and dirty checkout. Verify the existing fresh dump,
-   perform isolated restore, and compare schema/role/guard semantics before seeding
-   separate intended Compose-managed test storage. Preserve station UUIDs and RAW
-   provenance; do not reacquire or reimport 1.2 million observations unnecessarily.
-2. Validate effective Compose overlays, volumes, mounts, non-root service privileges,
-   runtime-only secrets, resource limits and access boundaries. The inspected Nepal
-   overlay disables weather forecasting; do not treat it as complete Nepal forcing.
-3. On explicit activation request, verify archive/receipt identity before load and
-   compare both loaded image IDs/labels with CI proof. Loading can overwrite tags:
-   detect conflicts and preserve rollback anchors first. Run existing Compose
-   preflight with no build or implicit pull for application images. Keep the previous
-   application release locally after a successful update.
-4. Start infrastructure/init with workers held. Inspect registered schedules and
-   queued runs before enabling workers; pause production/ingestion/training schedules
-   for commissioning and avoid Swiss/default work. Use SAPPHIRE_SKIP_DEPLOYMENTS
-   to omit non-applicable jobs on this host; it does not pause/delete pre-existing
-   registrations or queued runs. Register intended commissioning deployments with
-   workers held, pause their schedules through Prefect, and reconcile queued runs.
-   Verify held state across init re-registration and restart, not only first startup.
-   If registration reactivates a schedule, use a durable reviewed hold (including
-   omitting future re-registration where appropriate), keep workers held, and pause/
-   reconcile existing schedules and queued runs after every init. Skipping a name
-   alone never proves an already registered job is held.
-   Cron overrides are the source-defined SCHEDULE_* variables, including
-   SCHEDULE_BACKUP_DATABASE; cron changes alone are not a safe pause mechanism.
-   Verify normal API/auth, expected
-   pools and a controlled non-mutating application flow, not just container health.
-5. Separate the backup schedule from held forecast/ingestion work. Enable only the
-   reviewed daily schedule that creates AND verifies the complete Cloudflare
-   recovery set after recovery validation and explicit activation. Enabling the
-   existing local-only backup-database dump is not sufficient;
-   other Nepal schedules await their milestone. Do not leave backups disabled under
-   a blanket commissioning pause, or enable every deployment just to start backup.
-6. Verify TLS/access before exposing a public edge. Restrict operational Prefect/DB
-   access; no office-network exposure. No model/forecast/onboarding write is part of
-   these runtime checks. Stop for M1 owner review before M2 data work.
+Before full implementation investment, obtain a small owner-bounded packet with
+evidence date/custodian, available capability, unknowns and a reduced-scope
+estimate. Existing authorised evidence first; private settings/host reads or
+prototypes need their own scope. Required active inputs are:
 
-Evidence: exact running release identity, effective configuration (sanitized),
-API/auth checks, controlled flow/worker evidence, empty/held unintended queues,
-validated backup scheduling, original archive preservation and local rollback plan.
+- Provider-enforced release-tag/ref/reviewer controls and scoped build/delivery
+  credentials, including retirement of equivalent ungated repository/org secrets.
+  The dated baseline below must be revalidated before changes; YAML is not the
+  credential boundary.
+- Named existing free native-amd64 CI capacity, cold download/build/scan/export
+  disk/time limits, receiver/target capacity and tested Docker image-store modes.
+- An owner-approved SSH route from the selected runner, pinned host identity and
+  restricted receiver custody. No assumed broad ingress or tunnel/paid fallback.
+- Existing runtime/source access needed for preservation checks and additive target
+  setup, without modifying original roles/guards. All-21 hosting scope is already
+  owner-confirmed, not a question to reopen; identity/scientific admissibility is
+  still station-specific in later milestones.
+- Accepted release/config identity custody and actual original delivery/evidence
+  preservation account. CI uses synthetic fixtures and private dependency code,
+  never protected plaintext observations, runtime-secret capsules or raw protected
+  diagnostics. No recovery-host authorisation is inferred.
 
-## Work dependencies and reviews
+Cloudflare budgets, backup keys, complete-set capacity and drill machines are
+explicitly excluded from this active checkpoint. Missing active access/security/
+free delivery capacity is a named hold. No automatic at-risk offline spend or
+commitment to an old estimate is granted by this plan.
 
-A and B planning/offline tests can proceed independently. C.1 seeding a separate
-test database requires the verified original archive dump plus isolated restore,
-not a circular requirement for an already-seeded full runtime backup. Preserve the
-original DB unchanged and inspect every actual role/trigger/protected-data guard;
-do not clear guards/markers or invent a bypass to make backup succeed. Establish
-the first complete Cloudflare recovery set with tested candidate images before
-application activation and later destructive changes. Its isolated runtime restore
-does not enable forecasts. Final integrated recovery verifies the accepted C runtime.
-Thus seed proof and full-runtime recovery proof are distinct, ordered requirements.
+## A. Reviewed CI trust transition and exact private delivery
 
-Use one coherent implementation plan and narrowly necessary PRs, not serial
-cosmetic review loops. Independent Claude and Codex reviews are required; security,
-privileges, live DB/recovery and scheduling changes additionally need the applicable
-owner-commissioned high-risk review before execution. No model reviews its own work.
-Keep full reports local, concise outcomes in PRs, and owner merge authority intact.
+### A1/A2 — install trusted verification, then contract legacy PR credentials
 
-## Verification and acceptance
+Recommend the smaller expand/contract sequence: A1 installs trusted verification
+and private-output/cache hardening; A2 makes PR checks secret-free and migrates
+required-check settings. Initial owner trust is still required. Before choosing
+this route, verify that provider controls can bound the exact owner-reviewed
+repository/PR/base/head/merge/workflow/run tuple. If unavailable or declined,
+HOLD; a separately selected alternative must have named authorised free resources.
+Do not implement two bootstrap routes or switch automatically.
 
-- Unit/contract tests: manifest/receipt/source binding, immutable conflict handling,
-  transfer interruption/retry, pre-load tag conflicts, post-load identity mismatch,
-  rollback preservation, free-capacity refusal and replacement integrity.
-- Backup tests: inconsistent/incomplete sets refused, previous good set survives
-  upload/verification/delete failures, only verified successor can retire it,
-  role/data-use custody maintained and secrets recoverable only through authorised
-  channels. Each set must contain the artifacts referenced by its DB snapshot;
-  mismatched artifact/config snapshots cannot be called a complete recovery set.
-  Test missed-backup/stale-off-host notifications and the initial set as well as
-  successor replacement; no predecessor exists for the first successful upload.
-- CI/deployment tests: protected release trigger, no PR credential access, private
-  outputs, no implicit server rebuild/pull, paused unwanted schedules/queued work,
-  daily complete off-host backup independently enabled, held state across repeated
-  init/restarts and queued-run reconciliation, and application API/worker smoke.
-- Run native focused tests, lint/format/type checks on changed modules. Full suite
-  after final code change before merge, locally or in CI; source-only checks cannot
-  prove host/image compatibility. Restore/transfer tests need actual target evidence.
-- Final operator report: measured free-tier footprint and build capacity; exact
-  images; verified fresh dump/restore; one Cloudflare recovery set; prior local
-  release; API/worker/schedule evidence; limitations and next-milestone estimate.
+External controls must restrict canonical release-tag create/update/delete to
+owner-authorised actors; release environment to approved tags; steady-state
+verification environment to protected main and authorised reviewers. Inventory
+actual ref semantics, self-review/admin bypass authority and available features.
+Scope secrets there and retire equivalent ungated repository/org credentials
+**before** A1's private run. Workflow validators remain defence-in-depth and result
+binding, not authority over replaceable workflow code.
 
-A missing input, secret/access capability, safe capacity margin, compatible runtime,
-review or recovery proof is a concrete hold. Do not report M1 passed until all
-applicable evidence exists and the owner accepts it. Estimate 3–5 active working
-days, excluding owner review/merge and external access waits; refine from measurements.
+A1 has only scoped private-source build credentials, never delivery/R2/runtime or
+publication credentials. Owner approves its exact final candidate before any
+credential admission; changed base/head/workflow invalidates approval/proof.
+Preserve substantive current gates/check names but harden their outputs/caches.
+Run the full final suite, lint/format/typing and both actual amd64 image/import/
+resource/entrypoint/isolation/scan gates; no skipped/degraded private coverage.
+After owner merge, prove installed main verification on an approved current/no-op
+candidate before A2, then expire temporary A1 grants. Failure holds, not a broad
+secret reopening. Keep other credential-dependent PRs/Dependabot updates held
+through this bounded A1-to-A2 transition; owner must accept the temporary disruption.
+
+A2 uses the installed main verifier. Secret-free public static/target checks keep
+exact event merge-parent/release-target validation. Trusted verification records
+repository/PR/base/head/merge parents, trusted workflow commit and run/attempt;
+revalidate before credentials and success. Owner checks the fresh matching FULL
+private result before **every** merge. This is an owner-procedural gate, not a
+main-SHA workflow check impersonating provider-enforced private PR success. Make
+that responsibility explicit to the owner. Revalidate the dated absence of branch
+protection/rulesets and inventory any later required names before migration;
+preserve unaffected checks and all substantive full tests/image gates. Do not
+claim a currently enforced check was removed, use an admin merge bypass or
+green-by-skip. Record before/after settings and proof.
+
+Current CI publishes full SBOM/SARIF and dependency tables, enables dependency/
+scanner caches, and references private secrets without an in-file environment.
+These are source-visible exposure paths, not a claim of disclosure or fork-secret
+access. Keep mandatory proof/scans but retain raw reports, arbitrary labels,
+private source/dependency evidence and subprocess errors privately. Audit public
+logs/artifacts/annotations/summaries/JUnit/coverage/post-job and failure paths with
+synthetic canaries. If private diagnostic custody is unavailable, fail safely;
+never upload private evidence as fallback.
+
+No configured cache publication by candidate-executing jobs, including implicit
+post-job saves. Cold release build/scan/export consumes **no shared cross-run
+cache**, even for public tools/advisories. A YAML ban does not prove candidate code
+cannot publish cache; the release consumer must reject candidate-writable state.
+Fetch verified pinned tools and authenticated fresh advisories; retain gate failures.
+Trusted within-job common-layer reuse is allowed. Measure cold-run cost.
+
+### A3 — build once, export, receive without activation
+
+Extend existing identity tools and a narrow release-transfer tool; no new release
+authority or generic deployment framework. Owner publishes through the existing
+publisher only after route/settings/capacity prerequisites are verified. A merged
+PR alone triggers neither release delivery nor activation.
+
+A canonical owner-published tag starts credential-free remote tag/state/source/
+target validation, followed by one externally gated cold amd64 release runner.
+Build both variants once, capture exact IDs, run all actual-image and scan proofs
+on those IDs, then export exact tested bytes. Inject source credentials only for
+build and SSH only for final fixed transfer after fresh identity/gate validation.
+Premerge cannot reach delivery credentials. This is deliberate trust in reviewed
+release code, not process isolation from it. No cross-run public image artifact
+bridge, second build, contents-write or publication permission.
+
+Versioned envelope binds existing receipt hash/source/tree/tag/state, run/attempt,
+complete gate results, default/Aquacast identities, archive SHA256/length and
+same-source allowlisted runtime Compose/Caddy/bootstrap/config bundle digest.
+Preserve raw receipt IDs; add normalized config digest/platform, reported ID kind/
+store mode and verified OCI descriptor relationship using the existing validator.
+Never silently redefine an old ID. Refuse unsupported runner/host mappings. Full
+private dependency inventories/labels stay private; runtime secrets/data/models
+are excluded. Legacy receipt reading remains, but old receipt alone cannot
+satisfy new transfer proof.
+
+Start with a compressed archive of both exact IDs to share layers. Measure peak
+size/disk/time. If it cannot fit, HOLD for a bounded reviewed free-resource change
+such as streaming or sequential variant export, preserving exact bytes, complete
+envelope and local archive availability. No automatic paid/public cache, registry,
+rebuild or protected/rollback pruning.
+
+Use separate upload and committing OS principals. Upload is forced-command SSH,
+key-only, no shell/forwarding/PTY, writes only bounded incoming staging. Committer
+has no login/Docker/DB/runtime-secret/activation rights and owns accepted storage
+and append-only ledger. A root-owned fixed handoff may use one exact non-root sudo
+rule, never arbitrary commands/paths/environment or general root sudo. Server-owned
+key/account mapping and trusted invoking identity bind authenticated arrival;
+client-supplied identity or a checksum alone does not.
+
+Committer copies bounded regular files into its **own inodes**, rejects unsafe
+paths/links/conflicts, verifies envelope/hash/length/identity, fsyncs and atomically
+seals; only then appends/fsyncs ledger and acknowledges. Never rename incoming-owned
+bytes into trusted custody. Serialize per identity. Interrupted transfers cannot
+activate; identical retries are idempotent; changed bytes cannot replace an accepted
+mapping. Test crash before/after seal and ledger; no live adversarial testing.
+
+Owner retains a small accepted release/config identity record outside receiver/
+backup-writer control through existing evidence custody. This is metadata, not a
+new recovery replica. Activation checks sealed provenance and raw/config/platform
+relationships before load, preserves prior local release when present, rejects
+tag conflicts, and assigns only receipt-authorised tags after validation
+(save-by-ID may omit tags). Verify loaded AND running identities. Effective Compose
+uses no app build or implicit pull; upstream infrastructure remains pinned.
+
+## B. Additive target commissioning with durable holds
+
+This is not backup commissioning or a plaintext disaster-recovery rehearsal.
+Only after explicit deployment/target-operation authority:
+
+1. Identify original and new target resources separately; fail if paths/DB/volumes
+   alias protected originals or the target is not safely new. Leave the archive,
+   source roles/guards, dirty checkout and local evidence untouched. Any permitted
+   capture/transfer must retain exact byte/content identity and station UUID/RAW
+   provenance; validate the copied content and schema/ACL/role/guard semantics in
+   the additive target. Do not substitute a migration number or dump exit status.
+   No verified off-host set, 24-hour prechange snapshot gate or recovery drill is
+   required by this reduced-scope plan. That explicit deferral does not authorise
+   destructive/in-place source changes or a protected-guard bypass.
+2. Validate exact overlays, mounts, runtime-only secrets, least-privilege roles,
+   resource limits, intended tenant scope and no office-network exposure. The
+   Nepal overlay's disabled weather forecast adapter does not prove current Nepal
+   forcing; qualification stays in the later scientific milestones.
+3. Load only accepted exact images; run target-only setup/init with workers stopped.
+   Registration must durably hold schedules/pools and reconcile ALL existing,
+   skipped, unknown, queued/manual/retry work before worker admission. A typed
+   normal/held policy in protected host configuration fails closed when missing on
+   Nepal while preserving existing non-Nepal defaults. Use current registrar and
+   pools, not new supervision. Keep skip controls for inapplicable Swiss jobs, not
+   as a substitute for pausing old registrations. Unknown/in-flight work needs an
+   explicit disposition, not silent cancellation.
+4. Preserve held state across repeated init and restart. Backup, ingestion,
+   forecast, training and onboarding schedules are not enabled in M1. Do not alter
+   an already running unrelated service/backup under this plan. After reconciliation,
+   held workers may provide heartbeat/read-only runtime evidence without consuming
+   scientific work. Cron changes alone are not a hold; `SCHEDULE_*`/skip compatibility
+   remains tested. Do not introduce a recovery-only activation mode for deferred work.
+5. Prove normal API/auth/TLS, regional isolation and private DB/Prefect access before
+   exposing an edge. Use read-only application checks, never a model/onboarding
+   write as smoke test. Record exact identities, original preservation, target
+   validation, queue evidence, local rollback limitations and unverified DR risk.
+   Stop for M1 owner review before M2.
+
+## Verification, dependencies and acceptance
+
+Implement A1 -> installed-main proof -> A2 -> A3 -> B, with independent review,
+owner merges and exact final-code tests per outcome. Deployment follows owner
+publication/private acceptance and a separate activation request. No recovery
+work node is an active prerequisite. Naming expresses stable release/registration/
+runtime responsibilities, never ticket-shaped production APIs/modules.
+
+- CI/identity: exact tuple freshness, external secret/ref/reviewer settings and no
+  equivalent ungated secrets; mandatory full private coverage, both actual amd64
+  image probes/scans, cold-cache policy and public-output canaries on failure paths.
+- Transfer: immutable envelope/content/config binding, descriptor/store mapping,
+  unsafe/truncated/conflicting bytes, two-principal mutation/crash/idempotence,
+  tag assignment, loaded/running mismatch and preservation of prior local release.
+- Runtime: rendered base/Mac-mini/Nepal Compose compatibility, role/secret consumers,
+  source/target separation and copied UUID/RAW/content/guard checks; real ephemeral
+  Prefect re-registration/restart with skipped/old/manual/retry/unknown work held.
+  Local synthetic fixtures only in CI; no protected plaintext or runtime capsules.
+- Required integration jobs provision Docker/Prefect and fail if designated gates
+  are skipped/missing. Native focused tests, lint/format/changed-module typing and
+  full final suite remain mandatory before merge. Source inspection is not actual
+  image, privilege or host evidence; no live exploitation/vulnerability reproduction.
+- Update canonical security/cicd/orchestration/logging/deployment/touchpoint docs with
+  code changes. Preserve FI, scientific behavior, normal API/store/data-use contracts,
+  legacy receipt reading, existing local backup retention and non-Nepal behavior.
+  No repository-local agent workflow/skill copies or parallel release authority.
+
+M1 acceptance requires measured private delivery/runtime evidence and owner review,
+not full DR completion. Later FI/input admissibility, station onboarding/evaluation,
+normal forecast/dashboard integration and unattended activation gates are unchanged.
+Do not claim delivery of the Effort from M1 health, a merge or a working subset.
+
+## Estimates and remaining decisions
+
+The old 3–5-day estimate was already superseded by conditional 12–23 active days
+for the former full delivery/recovery scope. That latter range is historical, not
+a current reduced-scope promise. Deferral does not justify reverting to 3–5 days
+or a ten-day milestone promise. **Active reduced-scope re-estimation is pending**
+the bounded delivery/runtime feasibility packet and selected CI trust transition.
+Separate implementation, reviews/merges, access waits and later observation time.
+
+Owner decisions still needed before execution: bounded feasibility/investment,
+exact initial trusted CI admission and the manual private-result/transition-hold
+responsibility, permitted private transfer/access, and later release/deployment
+activation. Backup commissioning/recovery-host choices and all-21 source coverage
+are not questions to reopen now. The confirmed backup deferral records a scope
+choice and operational loss/reconstruction risk, not verified DR or code approval.

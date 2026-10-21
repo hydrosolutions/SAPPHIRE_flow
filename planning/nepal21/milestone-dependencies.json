@@ -14,7 +14,10 @@
         "M0"
       ],
       "status": "ACTIVE_ACCEPTANCE_PENDING",
-      "completion_requires_owner_acceptance": true
+      "completion_requires_owner_acceptance": true,
+      "active_scope": "Direct private exact-image delivery and additive isolated held runtime; original data/evidence preservation",
+      "estimate": "Reduced-scope re-estimate pending; the conditional 12–23 active-day estimate for the former full delivery/recovery scope is historical, not a current promise",
+      "backup_recovery_required_for_acceptance": false
     },
     {
       "id": "M2",
@@ -52,7 +55,8 @@
         "M4"
       ],
       "status": "PLANNED",
-      "completion_requires_owner_acceptance": true
+      "completion_requires_owner_acceptance": true,
+      "scheduled_activation_scope": "Intended Nepal ingestion/forecast schedules only; backup excluded unless separately reopened and approved"
     },
     {
       "id": "M6",
@@ -69,5 +73,29 @@
     "M6_expansion": "Requires M4 owner acceptance, repeating M2/M3 prerequisites per new pair",
     "M6_completion": "Requires M5 acceptance and expanded-cohort unattended evidence"
   },
-  "authority": "Status labels do not approve unreviewed changes, merge PRs, or authorise production."
+  "authority": "Status labels and this scope update do not approve implementation, merge PRs, publish releases or authorise deployment/scientific activation.",
+  "owner_scope_update": {
+    "date": "2026-10-21",
+    "backup_commissioning_and_recovery_testing": "DEFERRED_NOT_ACCEPTED_OR_COMPLETE",
+    "hosting_assumption": "Owner confirmed all 21 delivered stations including historical water-level records; not DHM consent",
+    "authority": "Planning update only; no implementation or deployment activation"
+  },
+  "deferred_work": [
+    {
+      "name": "Full backup commissioning and recovery testing",
+      "status": "DEFERRED_NOT_ACCEPTED_OR_COMPLETE",
+      "required_for_milestones": [],
+      "forecast_dashboard_critical_path": false,
+      "scope": [
+        "Cloudflare allowance and peak overlap measurements",
+        "One encrypted complete rotating off-host recovery set and verified replacement",
+        "Daily and pre-deployment/pre-database-change backup commissioning",
+        "Fresh verified off-host prechange recovery point",
+        "Plaintext recovery tests and timed 24-hour loss/four-working-hour restoration proofs"
+      ],
+      "resumption_requires": "Separate owner decision, review, access/protection scope and explicit activation; not an automatic milestone prerequisite",
+      "risk": "No verified DR; operational state loss, downtime and reconstruction or unrecoverable-data risk remain"
+    }
+  ],
+  "preservation_boundary": "Original archive/UUIDs/RAW, dirty checkout, local dashboards and scientific evidence remain untouched; only separately authorised additive isolated target work. Destructive/in-place source changes held for separate protection and approval."
 }
