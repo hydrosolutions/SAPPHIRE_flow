@@ -1523,6 +1523,61 @@ The named operator tooling projections follow the contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
 
+### Bounded build-report upload (not installed)
+
+`tools/receive_build_report.py` is a stdlib-only loose POSIX helper, not an
+application CLI or release receiver. It accepts only the fixed SSH command
+`upload-build-report`, no CLI options, and a root-selected inbox from the fixed
+`/etc/sapphire-flow/build-report-upload.json`. The opaque length-framed report
+has no filename, command, extraction or client-selected identity authority.
+
+A later installation requires a dedicated non-root report-only principal and key,
+root-controlled authorized keys, a root-owned reviewed script/interpreter invoked
+with isolated Python (`-I`), and SSH `restrict` or verified equivalents disabling
+port/agent/X11 forwarding, PTY and user RC. No shell/SFTP alternative, sudo,
+Docker/DB/runtime/release access or general deployment key is permitted. The
+helper does not install or prove those SSH restrictions. No such deployment is
+approved by the local implementation.
+
+The fixed config is at most 4 KiB, regular, single-link, root-owned and not
+writable by group/others. Its path and the configured inbox path must be canonical
+absolute paths, without empty, dot or parent components or symlinks. Opened ancestor
+directories must be root-owned and not group/world-writable; deployment must also
+exclude ACLs or other access grants that defeat those permissions. The inbox is
+owned by the configured non-root effective UID with mode 0700 under a stable
+root-owned parent. The helper locks the inbox directory itself nonblockingly;
+unsupported directory flock fails closed. The internal test-only trusted-owner
+argument is fixed to zero at the production entrypoint; it has no CLI/env override.
+
+One received report per inbox is allowed until operator clearance. Clean failures
+may retry; any pre-existing `report.bin` or stale `report.partial`, including
+symlinks, causes refusal without deletion. Exclusive no-follow creation, bounded
+streaming, read-only completion, file fsync and no-clobber hard-link publication
+precede directory fsync and success. Late failure can leave an uncertain final
+file, which must be reconciled rather than overwritten. Cleanup only concerns the
+current partial. HUP/INT/TERM use a one-shot interrupt; short signal-masked
+sections protect create/ownership and cleanup bookkeeping. Terminal CLI teardown
+blocks/ignores these signals to avoid exception leakage; in-process tests restore
+their original handlers and mask. Hard kill/cleanup failure can leave a bounded
+stale file and require operator clearance.
+
+The maximum configured report is 64 MiB and input deadline 120 seconds, both
+operator-lowerable. Memory uses fixed chunks, lock losers do not queue, and status
+output has a separate one-second best-effort bound. These are not a whole-host
+quota, connection-rate limit or hard kernel-I/O deadline. Later SSH process/session
+limits and an independent wall-clock supervisor are required. Same-UID hostile
+processes, administrator changes, malicious filesystems and writable/ACL-defeated
+trusted ancestors are outside the supported boundary. Read-only mode alone does
+not defeat a same-UID chmod or an already-open writer.
+
+`REPORT_RECEIVED` is local closed-file receipt, **not accepted evidence**. An
+independently authorised administrator must revoke/quiesce upload, copy completed
+regular bytes into administrator-owned new inodes outside uploader access, verify
+size/hash, and bind the report to independent approved run/candidate metadata.
+This separate handoff is not implemented here. The upload capability cannot reach
+accepted storage. No release ledger/authority, new service, backup prerequisite,
+protected data permission or CI credential admission is created.
+
 ### Operator forecast tooling isolation
 
 `scripts/forecast_feed_resilience.py` is the loose domain implementation;

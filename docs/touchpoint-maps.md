@@ -1745,6 +1745,20 @@ Verify dynamic SCM version generation, CI no-tag overrides, Docker labels, compo
 Do not reintroduce automatic tag publication in GitHub Actions.
 
 
+### Bounded private build-report receipt
+
+`tools/receive_build_report.py` changes require matching
+`tests/unit/tools/test_receive_build_report.py`,
+[security prerequisites](standards/security.md#bounded-build-report-upload-not-installed)
+and [CI receipt protocol](standards/cicd.md#private-build-report-receipt-local-helper-only).
+Keep fixed-command/config ownership, no-follow paths, private directory flock,
+length/EOF/deadline bounds, no-clobber publication and quiet fixed statuses together.
+Check real file/pipe/socket behavior plus deterministic error/cancellation cases;
+focused offline tests do not establish full-suite or Linux/SSH qualification.
+Local `REPORT_RECEIVED` is not independent accepted custody: administrator-owned
+new-inode handoff remains separate. No release ledger, workflow/credential setup,
+application-image packaging, deployment, backup or source-data change belongs here.
+
 ### Forecast operator tooling
 
 Follow the [operator tooling contract](standards/security.md#operator-forecast-tooling-isolation) for the loose domain script, legacy

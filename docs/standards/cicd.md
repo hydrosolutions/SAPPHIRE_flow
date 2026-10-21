@@ -717,6 +717,61 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 
 See the CI workflow tiers table below for the per-step breakdown of the five workflow files it covers — `ci.yml`, `dependency-safety.yml`, `integration-nightly.yml`, `live-lindas-weekly.yml` and `live-lindas-weekly-autoretry.yml` — with local equivalents and CI-only reasons. The retired `tag-main.yml` workflow is deliberately absent from that table; release identity is documented in § Release identity tags and receipts.
 
+## Private build-report receipt (local helper only)
+
+`tools/receive_build_report.py` is a proposed SSH fixed-command capability, not a
+workflow, installed channel or full private-CI acceptance gate. Its installation
+and ownership prerequisites are in [security.md](security.md#bounded-build-report-upload-not-installed).
+Do not give CI an existing deployment key or restore broad private-source secrets.
+
+The operator's fixed JSON config has exactly `inbox` (canonical absolute path),
+`upload_uid` (non-root integer), `max_bytes` (1..67108864) and `timeout_seconds`
+(1..120). Unknown/duplicate keys and booleans-as-integers fail. No config is loaded
+from client arguments or environment. The root-owned config must be readable by
+the report principal without granting write access. A later SSH setup must bind
+its one inbox to the approved candidate/run/attempt independently of report bytes.
+
+Protocol: eight-byte unsigned big-endian payload length, exactly that many opaque
+bytes, then EOF. Empty, oversized, truncated, trailing or stalled input fails.
+Header validation happens before partial-file creation. The absolute input deadline
+is not extended by incremental progress. Publication retains its pre-link deadline
+check; a completed directory fsync is not retroactively rejected just because time
+then advanced. No sender/client is added by this patch.
+
+| Best-effort fixed status | Exit | Meaning |
+|---|---:|---|
+| `REPORT_RECEIVED` | 0 | Local file closed, no-clobber published and fsynced. Not independently accepted custody. |
+| `REPORT_REJECTED` | 1 | Invalid input/config, deadline, I/O failure, interruption or existing/stale state. |
+| `REPORT_BUSY` | 2 | Another receiver holds the private inbox directory lock. |
+
+Status uses bounded direct descriptor writes, not buffered stdout; SSH stdin and
+stdout can share nonblocking state. Original descriptor blocking modes are
+restored best-effort after use, without a blocking status write. A disconnected/
+blocked client may receive no complete line. No raw exception, path, report byte, hash or dynamic log is exposed.
+File state is authoritative after lost acknowledgement. Existing/uncertain final
+files are never automatically replaced; failed cleanup may leave a stale partial.
+The operator must inspect and reconcile without treating a retry as accepted proof.
+
+Before use as build evidence, an administrator separately revokes/quiesces the
+upload principal, copies regular completed bytes into administrator-owned new
+inodes, verifies size/hash and attaches independent approved run metadata. The
+uploader gets no access to that accepted storage. Retention and bounded cleanup
+need an explicit operational policy; this helper never deletes accepted reports.
+No public artifact fallback or alternate release authority is introduced.
+
+Focused offline tests use real private temporary files/pipes/socketpairs and
+injected clocks, with global conftest excluded. Run them as a non-root account in a
+checkout whose ancestors are root/test-user-owned and not group/world-writable;
+fixtures set private modes explicitly and fail rather than skip if these prerequisites
+are absent. Hard-killed test processes may leave `.report-tests-*` synthetic scratch
+directories in the checkout, requiring explicit local cleanup. The isolated results
+are not a normal-conftest/full-suite pass, native Linux/SSH confinement proof,
+private-output qualification, or permission to
+trigger CI. Later host setup and a synthetic rehearsal still require the scoped
+credential/admission controls, independent recommendation and actual orchestrator
+provider approval. Owner merge, release publication and application activation
+remain separate. Backup/recovery stays deferred and originals remain untouched.
+
 ## CI workflow tiers
 
 This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
