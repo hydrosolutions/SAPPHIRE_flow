@@ -1,0 +1,44 @@
+# LOCAL DRAFT ONLY. Not a repository workflow or permission to trigger an event.
+# External admission record is UNBOUND: PR/ref, candidate tuple, run/attempt,
+# environment/reviewer settings and independent recommendation must be recorded.
+name: Synthetic CI admission
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: test-build-admission-rehearsal
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Check synthetic admission and event identity
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_SHA: ${{ github.sha }}
+          MARKER: ${{ secrets.ADMISSION_TEST_MARKER }}
+        run: |
+          set -Eeuo pipefail
+          trap 'printf "ADMISSION_REJECTED\n"' ERR
+          test "$EVENT" = pull_request
+          test "$REPOSITORY" = hydrosolutions/SAPPHIRE_flow
+          test "$HEAD_REPOSITORY" = "$REPOSITORY"
+          test "$(git rev-parse HEAD 2>/dev/null)" = "$EVENT_SHA"
+          parents="$(git show -s --format=%P HEAD 2>/dev/null)"
+          if test "$parents" != "$BASE_SHA $HEAD_SHA"; then
+            printf "ADMISSION_IDENTITY_MISMATCH\n"
+            exit 1
+          fi
+          test "$MARKER" = admission-synthetic-v1
+          printf "ADMISSION_OBSERVED\n"
