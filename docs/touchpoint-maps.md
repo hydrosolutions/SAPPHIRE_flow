@@ -2037,3 +2037,21 @@ the canonical checkpoint records its exact runtime source and cleanup attributio
 Final review, committed-build/slow and normal CI gates remain separate.
 Do not substitute the ambient integration DB fixture, add role grants or infer
 runtime/production acceptance from implementation.
+
+## A1 private verification changes touch
+
+- `.github/workflows/private-verification.yml`: existing same-repo PR bootstrap and
+  main push route; one environment-gated verifier, pinned public setup, no cache or
+  private artifact publication. Keep legacy `ci.yml` behavior untouched until A2.
+- `tools/private_verification.py`: exact source/attempt admission, private process
+  and workflow-file capture, full gate-set assertion, bounded private report and
+  strict fixed-command SSH acknowledgement. `receive_build_report.py` is unchanged.
+- `tools/private_verification_gates.sh`: all eight CI jobs mapped to retained logical
+  gates, existing shard selectors/coverage merge, wheel guard, image identity probes
+  and scan/SBOM policy. No missing-token degradation or skipped-green aggregate.
+- `tests/unit/tools/test_private_verification.py`: missing/stale binding, missing or
+  failed gates, failure canaries, report limits, transport acknowledgement and
+  workflow/mapping contract. Use synthetic inputs; no real private fetches.
+- `docs/standards/{security,cicd,logging}.md`: trust, private output, retained mapping
+  and unproven operational holds. No receiver-custody or live-provider claim from
+  these local tests; full final suite and actual image/channel verification remain.

@@ -1988,3 +1988,26 @@ UPDATE authority and durable CLI commit/reconnect remain essential Plan 519 T0/O
 holds. The focused candidate's three passing tests, setup-envelope observation and
 independently verified owned cleanup do not discharge these production duties.
 No grants, roles, activation policy or protected-writer boundaries change.
+
+### A1 private verification boundary (local implementation)
+
+The new `private-verification.yml` workflow gates its credential-consuming job with
+`private-verification`; legacy CI remains unchanged and must be contained before
+any bootstrap event. Required scopes, exact ref/reviewer settings, fresh attempt
+approval and narrow credential migration are operational holds, not YAML guarantees.
+See [the retained-gate/admission contract](cicd.md#a1-private-verification-implementation-not-operationally-qualified).
+
+`tools/private_verification.py` captures command stdout/stderr and substitutes private
+workflow-command files. It publishes no raw reports, SARIF, SBOM, JUnit, coverage,
+build record or cache. The same-user reviewed candidate is trusted: redirects and
+removed runtime tokens are not a sandbox, an egress firewall or proof against code
+that deliberately discovers another output channel. Fixed public status is separate
+from private diagnostics. Pinned tool bootstrap occurs before private fetches;
+post-job/private-output qualification still needs actual provider evidence.
+
+The SSH sender uses only a separately scoped report-upload key and pinned known
+hosts, with fixed command `upload-build-report`. No deployment key reuse, remote
+path/command selection, agent/proxy/PTY/forwarding, runtime credentials or publication
+rights are granted. The existing receiver stays unchanged. Its server confinement,
+per-attempt inbox binding, byte limits, retention and separate administrator-owned
+accepted custody remain mandatory; local synthetic transport tests do not prove them.

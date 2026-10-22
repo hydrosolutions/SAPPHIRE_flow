@@ -1,0 +1,85 @@
+name: Private verification
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-verification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    # T1 is local-only. Provider containment and exact admission are T2 holds.
+    # This condition binds the intended route; it is NOT a credential boundary.
+    if: >-
+      github.repository == 'hydrosolutions/SAPPHIRE_flow' &&
+      github.actor == github.triggering_actor &&
+      !endsWith(github.actor, '[bot]') &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: private-verification
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: checkout
+        timeout-minutes: 3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        id: uv
+        timeout-minutes: 3
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        id: buildx
+        timeout-minutes: 3
+        with:
+          name: private-verification
+          cache-binary: false
+          # No public post-job BuildKit diagnostic sink after private builds.
+          cleanup: false
+      - name: Prepare empty public tool-bootstrap directory
+        run: mkdir "$RUNNER_TEMP/private-trivy-bootstrap"
+      - name: Install the existing pinned Trivy action's tool
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        id: trivy
+        timeout-minutes: 5
+        with:
+          # Only an empty directory is scanned here, before any private fetch.
+          # The real fs/image checks run later under private descriptor capture.
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/private-trivy-bootstrap
+          format: json
+          output: ${{ runner.temp }}/private-trivy-bootstrap.json
+          scanners: vuln
+          exit-code: "1"
+          cache: "false"
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
+        id: syft
+        timeout-minutes: 3
+      - name: Run required gates and deliver private evidence
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
+          PRIVATE_VERIFICATION_ADMISSION: ${{ secrets.PRIVATE_VERIFICATION_ADMISSION }}
+          PRIVATE_REPORT_SSH_KEY: ${{ secrets.PRIVATE_REPORT_SSH_KEY }}
+          PRIVATE_REPORT_KNOWN_HOSTS: ${{ secrets.PRIVATE_REPORT_KNOWN_HOSTS }}
+          PRIVATE_REPORT_TARGET: ${{ secrets.PRIVATE_REPORT_TARGET }}
+          SYFT_BIN: ${{ steps.syft.outputs.cmd }}
+          PRIVATE_PREPARATION: >-
+            {"checkout":"${{ steps.checkout.outcome }}","uv":"${{ steps.uv.outcome }}",
+             "buildx":"${{ steps.buildx.outcome }}","trivy":"${{ steps.trivy.outcome }}",
+             "syft":"${{ steps.syft.outcome }}"}
+        run: python3 -I tools/private_verification.py
