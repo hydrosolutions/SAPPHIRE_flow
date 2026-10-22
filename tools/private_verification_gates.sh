@@ -132,19 +132,19 @@ image_component() {
 }
 
 build_image() {
-  local variant="$1" tag="sapphire-flow-private-$1:$GITHUB_SHA"
+  local variant="$1" tag="${RELEASE_IMAGE_TAG:-sapphire-flow-private-$1:$GITHUB_SHA}"
   local extra=()
   if [ "$variant" = aquacast ]; then
     extra=(--build-arg WITH_AQUACAST=1 --secret "id=aquacast_token,env=AQUACAST_TOKEN")
   fi
-  local context="$PRIVATE_WORK/image-context"
-  if [ ! -f "$PRIVATE_WORK/context-ready" ]; then
+  local context="${RELEASE_IMAGE_CONTEXT:-$PRIVATE_WORK/image-context}"
+  if [ -z "${RELEASE_IMAGE_CONTEXT:-}" ] && [ ! -f "$PRIVATE_WORK/context-ready" ]; then
     mkdir "$context"
     (umask 022; git archive "$GITHUB_SHA" | tar -xf - -C "$context")
     touch "$PRIVATE_WORK/context-ready"
   fi
   docker buildx build --builder private-verification --platform linux/amd64 \
-    --file "$context/Dockerfile" --tag "$tag" --load --pull \
+    --file "$context/Dockerfile" --tag "$tag" --load --pull --provenance=false --sbom=false \
     --build-arg "SAPPHIRE_RELEASE_VERSION=$EXPECTED_VERSION" \
     --build-arg "SAPPHIRE_SOURCE_REVISION=$EXPECTED_REVISION" \
     --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN "${extra[@]}" "$context"

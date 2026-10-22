@@ -2011,3 +2011,31 @@ path/command selection, agent/proxy/PTY/forwarding, runtime credentials or publi
 rights are granted. The existing receiver stays unchanged. Its server confinement,
 per-attempt inbox binding, byte limits, retention and separate administrator-owned
 accepted custody remain mandatory; local synthetic transport tests do not prove them.
+
+
+### Manual staging release: explicit administrator-key exception
+
+The 2026-10-22 owner direction replaces the above A1 bootstrap for the bounded
+staging delivery, without claiming its credential migration/confinement complete.
+Existing package secrets and their locations/consumers remain unchanged; no CI pause
+is inferred. Only the existing staging ADMIN SSH key may be copied into the protected
+`staging-release` environment. Its fixed final command does not limit administrator
+authority, and root-owned server custody is not independent of CI holding that key.
+The owner retains the digest-only accepted identity record outside server control.
+
+Trust includes all executed actions, dependencies/base images, Docker/build services
+and privileged hosted-runner processes, not merely our Python code. Late step-level
+SSH injection reduces exposure, not hostile-code access on the same runner. The
+protected environment gates the SSH copy only; it does not repair existing source-key
+or legacy output/cache exposure. No new restricted account/key or old migration/
+deletion packet follows. See [the exact route and live holds](../deployment/actions-staging-release.md).
+
+Full private reports stay private; only a validated fixed digest projection reaches
+the owner summary. Release binding is rechecked before either release or failed-run
+diagnostic SSH. Deliver-only is default; source failure cannot use SSH, failed gates
+cannot deliver images, and image load requires separately bound target approval.
+Runtime activation, protected-original access and release publication are not granted.
+
+The fixed root-only `load-accepted` operation reuses sealed bytes without another
+CI run/build/transfer. Its separate server approval binds the original accepted
+binding **and receipt hash**. It cannot rewrite accepted bytes or activate runtime.

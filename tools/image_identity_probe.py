@@ -164,6 +164,10 @@ def probe_run_args(
     return [
         "run",
         "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
         "-i",
         "--user",
         "app",

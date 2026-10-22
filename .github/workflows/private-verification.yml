@@ -1,31 +1,40 @@
-name: Private verification
+name: Private staging release
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      delivery_mode:
+        description: Deliver only, or load with a separately approved receiver binding
+        type: choice
+        options: [deliver-only, load-images]
+        default: deliver-only
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: private-verification-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: staging-release
+  cancel-in-progress: false
 
 jobs:
   verify:
-    # T1 is local-only. Provider containment and exact admission are T2 holds.
-    # This condition binds the intended route; it is NOT a credential boundary.
+    # The environment gates only the ADMIN SSH copy, not existing package keys.
     if: >-
       github.repository == 'hydrosolutions/SAPPHIRE_flow' &&
+      github.event_name == 'workflow_dispatch' &&
       github.actor == github.triggering_actor &&
       !endsWith(github.actor, '[bot]') &&
-      (github.event_name == 'push' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    environment: private-verification
+    environment: staging-release
+    env:
+      STAGING_RELEASE_ADMISSION: ${{ vars.STAGING_RELEASE_ADMISSION }}
+      STAGING_MAX_ARCHIVE_BYTES: ${{ vars.STAGING_MAX_ARCHIVE_BYTES }}
+      STAGING_MAX_EXPANDED_BYTES: ${{ vars.STAGING_MAX_EXPANDED_BYTES }}
+      STAGING_RESERVE_BYTES: ${{ vars.STAGING_RESERVE_BYTES }}
+      STAGING_TRANSFER_TIMEOUT: ${{ vars.STAGING_TRANSFER_TIMEOUT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         id: checkout
@@ -34,6 +43,8 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Normalize the public canonical release origin
+        run: git remote set-url origin https://github.com/hydrosolutions/SAPPHIRE_flow.git
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         id: uv
         timeout-minutes: 3
@@ -68,18 +79,26 @@ jobs:
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
         id: syft
         timeout-minutes: 3
-      - name: Run required gates and deliver private evidence
+      - name: Verify canonical release and export exact tested images
+        id: verification
         if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-          PRIVATE_VERIFICATION_ADMISSION: ${{ secrets.PRIVATE_VERIFICATION_ADMISSION }}
-          PRIVATE_REPORT_SSH_KEY: ${{ secrets.PRIVATE_REPORT_SSH_KEY }}
-          PRIVATE_REPORT_KNOWN_HOSTS: ${{ secrets.PRIVATE_REPORT_KNOWN_HOSTS }}
-          PRIVATE_REPORT_TARGET: ${{ secrets.PRIVATE_REPORT_TARGET }}
           SYFT_BIN: ${{ steps.syft.outputs.cmd }}
           PRIVATE_PREPARATION: >-
             {"checkout":"${{ steps.checkout.outcome }}","uv":"${{ steps.uv.outcome }}",
              "buildx":"${{ steps.buildx.outcome }}","trivy":"${{ steps.trivy.outcome }}",
              "syft":"${{ steps.syft.outcome }}"}
-        run: python3 -I tools/private_verification.py
+        run: python3 -I tools/staging_release.py verify
+      - name: Revalidate approved source and payload before SSH admission
+        id: transfer_admission
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python3 -I tools/staging_release.py preflight
+      - name: Privately deliver the approved release or failed-run diagnostics
+        if: ${{ always() && !cancelled() && steps.transfer_admission.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          STAGING_ADMIN_SSH_KEY: ${{ secrets.STAGING_ADMIN_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ vars.STAGING_KNOWN_HOSTS }}
+        run: python3 -I tools/staging_release.py transfer

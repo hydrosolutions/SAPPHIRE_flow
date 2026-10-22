@@ -333,3 +333,30 @@ responsibility, permitted private transfer/access, and later release/deployment
 activation. Backup commissioning/recovery-host choices and all-21 source coverage
 are not questions to reopen now. The confirmed backup deferral records a scope
 choice and operational loss/reconstruction risk, not verified DR or code approval.
+
+
+## 2026-10-22 bounded Actions-to-staging route exception
+
+The owner selected Actions builds and private delivery of the same tested images,
+with existing package keys/locations unchanged and no inferred pause of other builds.
+The owner explicitly permits the existing staging ADMIN SSH key to be copied only
+into the approval-protected staging release environment. This is not a restricted
+upload principal or custody inaccessible to CI. The earlier A1/A2 credential
+migration and A3 two-principal isolation criteria are NOT satisfied by this route.
+They are not prerequisites silently claimed complete. Historical requirements above
+remain evidence of the prior route, not instructions to migrate/delete keys.
+
+The bounded replacement is [Actions staging release delivery](../../docs/deployment/actions-staging-release.md):
+one manual canonical owner-published tag, all substantive gates, the existing release
+builder as sole producer, both actual amd64 proofs/scans, exact-ID private export,
+bounded no-clobber acceptance and a digest-only owner receipt retained outside server
+admin control. Deliver-only is the default; image load needs a separately bound
+receiver approval. Merge, release publication, receiver setup and runtime activation
+remain distinct owner-controlled/approved operations. This local implementation is
+not live qualification, accepted M1 or backup commissioning.
+
+The trust set includes all job-executed actions, dependencies and base images,
+Docker/build services and privileged hosted-runner processes. Late SSH injection
+is exposure reduction, not hostile-code isolation. Existing source-key consumers
+and their output/cache exposure remain unchanged. The owner-directed exception
+must not be reported as old isolation guarantees or independent server custody.

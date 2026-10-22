@@ -1922,3 +1922,35 @@ private evidence. Final full-suite validation after the last change remains requ
 before merge. Old receiver test/full-suite results apply only to unchanged receiver
 code, not this verifier patch. No A3 export, release publication, runtime activation,
 model run or backup commissioning is implemented here.
+
+
+## Manual canonical release → private staging delivery
+
+`private-verification.yml` now dispatches only the reviewed published canonical tag
+through `staging-release`; it is not an automatic PR/main private verifier. Legacy
+CI and its package secrets remain unchanged. The bounded owner-approved ADMIN-key
+exception replaces the earlier bootstrap route without satisfying old isolation
+criteria. All eight substantive gates/twelve outcomes remain; PR-only comparisons
+are explicitly mapped to canonical publisher/source/tag/state validation, not fake
+PR fields or green skips.
+
+`release_identity.build_receipt` with its release adapter produces both images once.
+Independent image component failures survive receipt failure. Export uses their
+captured IDs; descriptor/config validation preserves raw ID semantics. The final
+SSH step follows fresh admission and cannot rebuild, publish or activate runtime.
+Default success is sealed deliver-only acceptance; load needs a separate receiver
+approval. Native target probes, when authorised, run without protected mounts/network.
+
+The [runbook](../deployment/actions-staging-release.md) lists exact configuration,
+private/digest-only output boundaries, capacity accounting and per-run live holds.
+No local synthetic result is provider/cold-capacity/transport qualification. Old
+8df full-suite evidence applies only to old bytes; the new patch needs review and
+final full validation before owner publication.
+
+Shared-tool effects also apply outside this manual route: the owner `build-receipt`
+CLI now rejects any release-state change during a build instead of recording a
+refreshed state; its Git contexts restore 0755/0644 Git mode parity (which can change
+layer bytes from older owner builds); legacy CI identity probes now use `--pull never
+--network none`. Existing publisher/probe and backup compatibility tests remain in
+the final suite. The 30-minute transfer step now accounts for pre-SSH work, cleanup
+and strictly nested receiver/sender budgets; the 180-minute job is not extended.

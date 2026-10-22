@@ -650,3 +650,13 @@ and all workflow-command files are captured privately; exception text/tracebacks
 not public fallback diagnostics. The private report includes failed gate evidence.
 No change to application structlog conventions is implied. Synthetic canary tests
 cover capture and failure paths, not live provider/post-job visibility.
+
+
+### Manual staging release output
+
+The standalone release/receiver bootstraps emit only fixed phase failure/success
+status and an explicitly projected digest-only owner receipt. Full subprocess logs,
+SARIF, SBOM, test/coverage reports and exception details remain in private 0700
+work directories. Source/attempt validation failures cannot enter SSH diagnostics.
+Receipt fields are fixed typed identifiers/hashes/counts, never arbitrary labels,
+package inventories or server error text. See [the staging route](../deployment/actions-staging-release.md).

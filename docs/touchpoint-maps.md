@@ -2055,3 +2055,22 @@ runtime/production acceptance from implementation.
 - `docs/standards/{security,cicd,logging}.md`: trust, private output, retained mapping
   and unproven operational holds. No receiver-custody or live-provider claim from
   these local tests; full final suite and actual image/channel verification remain.
+
+
+## Manual canonical staging delivery
+
+- Route: `.github/workflows/private-verification.yml`, `tools/staging_release.py`,
+  `tools/staging_release_transfer.py`, existing release/image/report tools and
+  `src/sapphire_flow/ops/image_archive.py` (shared unchanged legacy archive checks).
+- Preserve: owner-only publisher; strict canonical origin/history/state; same-ID
+  single production/export; complete gate and private failure evidence; old receipt
+  compatibility; package-key placement/consumers; protected originals and runtime holds.
+- Verify: approved tag/state/source/workflow/attempt drift, explicit variants and
+  tag-to-ID checks, failed scans without receipt, bounded wire/EOF/digest/archive
+  rejection, no-clobber/idempotent seals, separate load approval, fixed late SSH and
+  allowlisted owner receipt. Use synthetic fixtures; no live keys/builds in tests.
+- Docs: [route/configuration](deployment/actions-staging-release.md), security/CI/
+  logging standards and `planning/nepal21/m1-direct-transfer-runtime.md` exception.
+- Local tests do not establish provider controls, private post-job behaviour,
+  cold capacity, target identity or independently accepted custody. Final patch
+  review/full tests and separate live approvals remain mandatory.

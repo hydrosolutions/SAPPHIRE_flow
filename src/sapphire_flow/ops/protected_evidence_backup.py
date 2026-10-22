@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import re
@@ -8,16 +7,18 @@ import stat
 import tarfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 from uuid import UUID  # noqa: TC003 — Pydantic resolves this at runtime
 
 from pydantic import BaseModel, Field, model_validator
 
+from sapphire_flow.ops.image_archive import verify_image_archive as verify_image_archive
 from sapphire_flow.types.forecast_preservation import BackupProof, BackupProofStatus
 from sapphire_flow.types.ids import ForecastId
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sapphire_flow.config.deployment import DeploymentConfig
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -224,156 +225,6 @@ def verify_image_directory(target: Path) -> Path:
     ):
         raise ValueError("protected image directory leaves the backup volume")
     return images
-
-
-def verify_image_archive(path: Path, image_digest: str) -> None:
-    if _IMAGE_DIGEST.fullmatch(image_digest) is None:
-        raise ValueError("invalid runtime image digest")
-    with tarfile.open(path, "r") as archive:
-        member_list = archive.getmembers()
-        members = {member.name: member for member in member_list}
-        if len(members) != len(member_list) or "manifest.json" not in members:
-            raise ValueError("runtime image archive has duplicate or missing members")
-        if any(
-            member.issym()
-            or member.islnk()
-            or member.name.startswith("/")
-            or ".." in Path(member.name).parts
-            for member in members.values()
-        ):
-            raise ValueError("runtime image archive contains an unsafe member")
-        manifest_stream = archive.extractfile("manifest.json")
-        if manifest_stream is None:
-            raise ValueError("runtime image archive manifest is unreadable")
-        raw_entries: object = json.loads(manifest_stream.read())
-        if not isinstance(raw_entries, list):
-            raise ValueError("runtime image archive manifest does not name config")
-        image_entries = cast("list[object]", raw_entries)
-        matching: list[tuple[dict[str, object], dict[str, object]]] = []
-        for raw_entry in image_entries:
-            if not isinstance(raw_entry, dict):
-                continue
-            entry = cast("dict[str, object]", raw_entry)
-            config_name = entry.get("Config")
-            if not isinstance(config_name, str) or config_name not in members:
-                continue
-            config_stream = archive.extractfile(config_name)
-            if config_stream is None:
-                continue
-            config_bytes = config_stream.read()
-            config_hash = hashlib.sha256(config_bytes).hexdigest()
-            if not (
-                config_hash == image_digest[7:]
-                or _oci_image_reaches_config(
-                    archive, members, image_digest, f"sha256:{config_hash}"
-                )
-            ):
-                continue
-            config_obj: object = json.loads(config_bytes)
-            if not isinstance(config_obj, dict):
-                raise ValueError("runtime image config is invalid")
-            matching.append((entry, cast("dict[str, object]", config_obj)))
-        if not matching:
-            raise ValueError("runtime image archive manifest does not name config")
-        for entry, config in matching:
-            layers = entry.get("Layers")
-            rootfs = config.get("rootfs")
-            if not isinstance(rootfs, dict):
-                raise ValueError("runtime image config has no rootfs")
-            diff_ids = cast("dict[str, object]", rootfs).get("diff_ids")
-            if not isinstance(layers, list) or not isinstance(diff_ids, list):
-                raise ValueError("runtime image layers are missing")
-            layer_list = cast("list[object]", layers)
-            diff_id_list = cast("list[object]", diff_ids)
-            if len(layer_list) != len(diff_id_list):
-                raise ValueError("runtime image layer count does not match config")
-            for layer, diff_id in zip(layer_list, diff_id_list, strict=True):
-                if not isinstance(layer, str) or layer not in members:
-                    raise ValueError("runtime image archive layer is missing")
-                if (
-                    not isinstance(diff_id, str)
-                    or _IMAGE_DIGEST.fullmatch(diff_id) is None
-                ):
-                    raise ValueError("runtime image layer digest is invalid")
-                layer_stream = archive.extractfile(layer)
-                if layer_stream is None:
-                    raise ValueError("runtime image archive layer is unreadable")
-                compressed_digest = hashlib.sha256()
-                while chunk := layer_stream.read(1024 * 1024):
-                    compressed_digest.update(chunk)
-                if layer.startswith("blobs/sha256/") and (
-                    compressed_digest.hexdigest() != layer.removeprefix("blobs/sha256/")
-                ):
-                    raise ValueError("runtime image compressed layer digest mismatch")
-                layer_stream = archive.extractfile(layer)
-                if layer_stream is None:
-                    raise ValueError("runtime image archive layer is unreadable")
-                prefix = layer_stream.read(2)
-                layer_stream.seek(0)
-                content = (
-                    gzip.GzipFile(fileobj=layer_stream)
-                    if prefix == b"\x1f\x8b"
-                    else layer_stream
-                )
-                actual = hashlib.sha256()
-                while chunk := content.read(1024 * 1024):
-                    actual.update(chunk)
-                if actual.hexdigest() != diff_id[7:]:
-                    raise ValueError("runtime image layer digest mismatch")
-
-
-def _oci_image_reaches_config(
-    archive: tarfile.TarFile,
-    members: dict[str, tarfile.TarInfo],
-    image_digest: str,
-    config_digest: str,
-) -> bool:
-    if "index.json" not in members:
-        return False
-    root = archive.extractfile("index.json")
-    if root is None:
-        return False
-    index: object = json.loads(root.read())
-    if not isinstance(index, dict):
-        return False
-    descriptors = cast("dict[str, object]", index).get("manifests")
-    if not isinstance(descriptors, list):
-        return False
-
-    def reaches(descriptor: object, target_seen: bool, visited: frozenset[str]) -> bool:
-        if not isinstance(descriptor, dict):
-            return False
-        digest = cast("dict[str, object]", descriptor).get("digest")
-        if not isinstance(digest, str) or _IMAGE_DIGEST.fullmatch(digest) is None:
-            return False
-        name = f"blobs/sha256/{digest[7:]}"
-        if name not in members or digest in visited:
-            return False
-        stream = archive.extractfile(name)
-        if stream is None:
-            return False
-        raw = stream.read()
-        if hashlib.sha256(raw).hexdigest() != digest[7:]:
-            raise ValueError("OCI image descriptor digest mismatch")
-        obj: object = json.loads(raw)
-        if not isinstance(obj, dict):
-            return False
-        metadata = cast("dict[str, object]", obj)
-        seen = target_seen or digest == image_digest
-        config = metadata.get("config")
-        if isinstance(config, dict):
-            cfg_digest = cast("dict[str, object]", config).get("digest")
-            if seen and cfg_digest == config_digest:
-                return True
-        children = metadata.get("manifests")
-        return isinstance(children, list) and any(
-            reaches(child, seen, visited | {digest})
-            for child in cast("list[object]", children)
-        )
-
-    return any(
-        reaches(item, False, frozenset()) for item in cast("list[object]", descriptors)
-    )
 
 
 def _regular_file(path: Path) -> bool:

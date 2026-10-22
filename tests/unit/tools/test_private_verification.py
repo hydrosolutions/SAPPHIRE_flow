@@ -290,7 +290,7 @@ class TestRetainedWorkflow:
             gate.name for gate in verifier.GATES
         }
 
-    def test_workflow_has_only_existing_pr_and_main_routes_and_gated_credentials(
+    def test_workflow_has_only_manual_release_route_and_gated_credentials(
         self,
     ) -> None:
         import yaml
@@ -299,10 +299,10 @@ class TestRetainedWorkflow:
             (ROOT / ".github/workflows/private-verification.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
-        assert set(workflow["on"]) == {"pull_request", "push"}
+        assert set(workflow["on"]) == {"workflow_dispatch"}
         assert workflow["permissions"] == {"contents": "read"}
         job = workflow["jobs"]["verify"]
-        assert job["environment"] == "private-verification"
+        assert job["environment"] == "staging-release"
         assert "env" not in workflow
         uses = [step["uses"] for step in job["steps"] if "uses" in step]
         assert all(
@@ -321,8 +321,11 @@ class TestRetainedWorkflow:
         assert trivy["with"]["cache"] == "false"
         assert "private-trivy-bootstrap" in trivy["with"]["scan-ref"]
         credential_steps = [step for step in job["steps"] if "secrets." in str(step)]
-        assert len(credential_steps) == 1
-        assert credential_steps[0]["run"] == "python3 -I tools/private_verification.py"
+        assert [step["run"] for step in credential_steps] == [
+            "python3 -I tools/staging_release.py verify",
+            "python3 -I tools/staging_release.py transfer",
+        ]
+        assert "STAGING_ADMIN_SSH_KEY" not in credential_steps[0]["env"]
 
     def test_gate_script_retains_image_identity_scan_and_suite_contracts(self) -> None:
         shell = (ROOT / "tools/private_verification_gates.sh").read_text()
@@ -669,6 +672,7 @@ class TestImageFailureEvidence:
         "failure",
         ["finding", "operational", "malformed", "sarif", "sbom", "proof", "none"],
     )
+    @pytest.mark.parametrize("source_kind", ["legacy", "release"])
     def test_image_components_retain_evidence_and_aggregate_failures(
         self,
         cli_fixture: tuple[Path, dict[str, str], Path],
@@ -676,6 +680,7 @@ class TestImageFailureEvidence:
         capfd: pytest.CaptureFixture[str],
         variant: str,
         failure: str,
+        source_kind: str,
     ) -> None:
         root, env, _ = cli_fixture
         binaries = tmp_path / "bin"
@@ -687,6 +692,8 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 evidence = pathlib.Path(os.environ['PRIVATE_EVIDENCE'])
 failure = os.environ['PRIVATE_SCAN_FAILURE']
+with (evidence / 'argv.jsonl').open('a') as stream:
+    stream.write(json.dumps([name, args]) + '\n')
 def mark(label):
     with (evidence / 'tool-calls').open('a') as stream:
         stream.write(label + '\n')
@@ -764,6 +771,29 @@ else:
                 "SYFT_BIN": str(binaries / "syft"),
             }
         )
+        context = work / "image-context"
+        if source_kind == "release":
+            import io
+            import subprocess
+            import tarfile
+
+            context = work / "approved-context"
+            context.mkdir()
+            archived = subprocess.check_output(
+                ["git", "archive", env["GITHUB_SHA"]], cwd=root
+            )
+            with tarfile.open(fileobj=io.BytesIO(archived)) as source:
+                source.extractall(context, filter="data")
+            env["RELEASE_IMAGE_CONTEXT"] = str(context)
+            env["RELEASE_IMAGE_TAG"] = (
+                "sapphire-flow"
+                + ("-aquacast" if variant == "aquacast" else "")
+                + ":1.2.3"
+            )
+            env["EXPECTED_VERSION"] = "1.2.3"
+            env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+            for name in ("PR_BASE_SHA", "PR_HEAD_SHA", "PR_MERGE_SHA"):
+                env.pop(name, None)
         gate = (
             "build-image-and-scan"
             if variant == "default"
@@ -806,8 +836,30 @@ else:
         scan_failed = failure in {"finding", "operational", "malformed", "sarif"}
         assert scan["outcome"] == ("failed" if scan_failed else "passed")
         assert (scan["exit_code"] != 0) == scan_failed
-        assert (work / "image-context/change").stat().st_mode & 0o777 == 0o644
-        assert (work / "image-context/mode-executable").stat().st_mode & 0o777 == 0o755
+        assert (context / "change").stat().st_mode & 0o777 == 0o644
+        assert (context / "mode-executable").stat().st_mode & 0o777 == 0o755
+        assert not (evidence / f"{variant}-build-result.json").exists()
+        assert not (evidence / f"{variant}-gate-result.json").exists()
+        if source_kind == "release":
+            calls = [
+                json.loads(line)
+                for line in (evidence / "argv.jsonl").read_text().splitlines()
+            ]
+            build = next(
+                args
+                for name, args in calls
+                if name == "docker" and args[:2] == ["buildx", "build"]
+            )
+            assert build[build.index("--tag") + 1] == env["RELEASE_IMAGE_TAG"]
+            assert build[-1] == str(context)
+            captured_id = (evidence / f"{variant}-image-id").read_text().strip()
+            for name, args in calls:
+                if name == "trivy" and args[0] == "image":
+                    assert args[-1] == captured_id
+                if name == "syft":
+                    assert args[1] == captured_id
+                if name == "python3":
+                    assert args[args.index("--image-tag") + 1] == captured_id
         assert work.stat().st_mode & 0o777 == 0o700
         assert (evidence / gate).stat().st_mode & 0o777 == 0o700
         if failure != "none":
@@ -872,3 +924,61 @@ class TestDiskSnapshots:
             "used": None,
             "free": None,
         }
+
+
+class TestDispatchShellIntegration:
+    def test_lint_dispatch_without_pr_variables_keeps_checkout_and_git_config_clean(
+        self, cli_fixture: tuple[Path, dict[str, str], Path], tmp_path: Path
+    ) -> None:
+        import subprocess
+
+        root, env, _ = cli_fixture
+        work = tmp_path / "dispatch-work"
+        evidence = work / "evidence"
+        evidence.mkdir(parents=True, mode=0o700)
+        binaries = tmp_path / "bin"
+        script = (
+            f"#!{sys.executable}\n"
+            + r"""
+import json, os, pathlib, sys
+args = sys.argv[1:]
+assert os.environ['GIT_CONFIG_GLOBAL'] == '/dev/null'
+assert os.environ['GIT_CONFIG_COUNT'] == '2'
+pr_names = ('PR_BASE_SHA', 'PR_HEAD_SHA', 'PR_MERGE_SHA')
+assert not any(name in os.environ for name in pr_names)
+record = pathlib.Path(os.environ['PRIVATE_EVIDENCE']) / 'lint-tools.jsonl'
+with record.open('a') as output:
+    output.write(json.dumps(args) + '\n')
+if 'pyright' in args:
+    print('{"generalDiagnostics": []}')
+"""
+        )
+        for name in ("uv", "shellcheck", "trivy"):
+            path = binaries / name
+            path.write_text(script)
+            path.chmod(0o700)
+        env.update(
+            PRIVATE_WORK=str(work),
+            PRIVATE_EVIDENCE=str(evidence),
+            GITHUB_EVENT_NAME="workflow_dispatch",
+        )
+        for name in ("PR_BASE_SHA", "PR_HEAD_SHA", "PR_MERGE_SHA"):
+            env.pop(name, None)
+        before = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=root
+        )
+        result = verifier.run_private(
+            ["bash", str(ROOT / "tools/private_verification_gates.sh"), "lint"],
+            cwd=root,
+            evidence=evidence / "lint",
+            env=env,
+            timeout_seconds=30,
+        )
+        assert result == verifier.Outcome.PASSED
+        calls = (evidence / "lint-tools.jsonl").read_text()
+        assert "release_target.py" not in calls
+        assert "check_map_contract_version.py" not in calls
+        assert before == subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=root
+        )
+        assert not (tmp_path / ".gitconfig").exists()
