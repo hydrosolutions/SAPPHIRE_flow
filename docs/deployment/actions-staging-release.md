@@ -214,3 +214,8 @@ already delivered bytes need no re-delivery; use receipt-bound `load-accepted` o
 if loading is separately approved. A mismatch, missing durable delivery ledger,
 partial upload or uncertain load state remains held for explicit reconciliation.
 No acknowledgement failure implies rollback, no images loaded, or runtime activation.
+
+The affected test selection includes the complete standalone
+`tests/unit/tools/test_image_identity_probe.py` suite. Its runtime-command contract
+asserts immutable image selection together with `--pull never --network none`,
+while retaining the non-root user, explicit Python entrypoint and stdin checks.
