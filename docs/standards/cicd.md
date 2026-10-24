@@ -1924,6 +1924,21 @@ code, not this verifier patch. No A3 export, release publication, runtime activa
 model run or backup commissioning is implemented here.
 
 
+### Test subprocess environment isolation
+
+Canonical-origin test fixtures clear inherited `GIT_CONFIG_PARAMETERS`,
+`GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` before constructing
+clean or test-owned negative cases. Production destination checks still reject
+rewrites; negative tests verify their own local configuration rather than relying
+on ambient authentication settings.
+
+The disposable native uv cache probe explicitly targets its own `.venv`. It excludes
+parent `VIRTUAL_ENV`, `UV_PROJECT` and `UV_WORKING_DIR` selectors. A guard immediately
+before both uv subprocess calls requires the target to stay inside the test directory
+and differ from the running interpreter and parent environment targets. Local pure
+boundary tests fake subprocesses; they do not qualify the native sync/build behavior.
+The corrected native probe remains in the unchanged CI suite.
+
 ## Manual canonical release → private staging delivery
 
 `private-verification.yml` now dispatches only the reviewed published canonical tag

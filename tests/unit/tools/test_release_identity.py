@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -111,6 +112,14 @@ def _isolated_git_env() -> dict[str, str]:
     return env
 
 
+def _isolate_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    isolated = _isolated_git_env()
+    for key in os.environ.keys() - isolated.keys():
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", isolated["GIT_CONFIG_NOSYSTEM"])
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", isolated["GIT_CONFIG_GLOBAL"])
+
+
 def _git(repo: Path, *args: str) -> None:
     import subprocess
 
@@ -126,15 +135,27 @@ def _git(repo: Path, *args: str) -> None:
         raise AssertionError(proc.stderr)
 
 
+@pytest.mark.parametrize("injection", ["parameters", "count"])
 def test_validate_destination_accepts_canonical_origin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    injection: Literal["parameters", "count"],
 ) -> None:
     _git(tmp_path, "init")
     _git(tmp_path, "remote", "add", "origin", release_identity.CANONICAL_HTTPS_URL)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    _isolate_git_config(monkeypatch)
+    key = "url.https://synthetic.example/.insteadOf"
+    if injection == "parameters":
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'{key}=https://github.com/'")
+    else:
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", key)
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/")
+    with pytest.raises(release_identity.ReleaseIdentityError, match="rewrites"):
+        release_identity.validate_destination()
 
+    _isolate_git_config(monkeypatch)
     release_identity.validate_destination()
 
 
@@ -174,6 +195,7 @@ def test_validate_destination_rejects_wrong_origin_or_pushurl(
 def test_validate_destination_rejects_push_default_and_rewrites(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _isolate_git_config(monkeypatch)
     _git(tmp_path, "init")
     _git(tmp_path, "remote", "add", "origin", release_identity.CANONICAL_HTTPS_URL)
     _git(tmp_path, "config", "remote.pushDefault", "origin")
@@ -188,6 +210,9 @@ def test_validate_destination_rejects_push_default_and_rewrites(
     _git(
         tmp_path, "config", "url.https://evil.example/.insteadOf", "https://github.com/"
     )
+    assert release_identity.git(["config", "--get-regexp", r"^url\."]) == (
+        "url.https://evil.example/.insteadof https://github.com/"
+    )
     with pytest.raises(release_identity.ReleaseIdentityError, match="insteadOf"):
         release_identity.validate_destination()
 
@@ -195,6 +220,7 @@ def test_validate_destination_rejects_push_default_and_rewrites(
 def test_validate_destination_rejects_push_rewrites(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _isolate_git_config(monkeypatch)
     _git(tmp_path, "init")
     _git(tmp_path, "remote", "add", "origin", release_identity.CANONICAL_HTTPS_URL)
     _git(
@@ -205,6 +231,9 @@ def test_validate_destination_rejects_push_rewrites(
     )
     monkeypatch.chdir(tmp_path)
 
+    assert release_identity.git(["config", "--get-regexp", r"^url\."]) == (
+        "url.https://evil.example/.pushinsteadof https://github.com/"
+    )
     with pytest.raises(release_identity.ReleaseIdentityError, match="pushInsteadOf"):
         release_identity.validate_destination()
 

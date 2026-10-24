@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -32,6 +33,14 @@ def _isolated_git_env() -> dict[str, str]:
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     return env
+
+
+def _isolate_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    isolated = _isolated_git_env()
+    for key in os.environ.keys() - isolated.keys():
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", isolated["GIT_CONFIG_NOSYSTEM"])
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", isolated["GIT_CONFIG_GLOBAL"])
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -220,10 +229,37 @@ def _make_canonical_publication_repo(
     bare, work, ceiling, source, _ = _make_repo(tmp_path)
     _git(work, "remote", "set-url", "origin", release_identity.CANONICAL_HTTPS_URL)
     monkeypatch.chdir(work)
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    _isolate_git_config(monkeypatch)
     _install_origin_transport(monkeypatch, bare)
     return bare, work, ceiling, source
+
+
+@pytest.mark.parametrize("injection", ["parameters", "count"])
+def test_canonical_fixture_clears_injected_git_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    injection: Literal["parameters", "count"],
+) -> None:
+    control = tmp_path / "control"
+    control.mkdir()
+    _, work, _, _, _ = _make_repo(control)
+    _git(work, "remote", "set-url", "origin", release_identity.CANONICAL_HTTPS_URL)
+    monkeypatch.chdir(work)
+    _isolate_git_config(monkeypatch)
+    key = "url.https://synthetic.example/.insteadOf"
+    if injection == "parameters":
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'{key}=https://github.com/'")
+    else:
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", key)
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/")
+    with pytest.raises(release_identity.ReleaseIdentityError, match="rewrites"):
+        release_identity.validate_destination()
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    _make_canonical_publication_repo(fixture, monkeypatch)
+    release_identity.validate_destination()
 
 
 def _install_fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -326,6 +362,9 @@ class TestReleaseIdentityNativeSafetyMatrix:
             "https://github.com/",
         )
 
+        assert release_identity.git(["config", "--get-regexp", r"^url\."]) == (
+            "url.https://evil.example/.pushinsteadof https://github.com/"
+        )
         message = _publish_raises("0.1.1", source, bootstrap=True)
 
         assert "pushInsteadOf" in message
