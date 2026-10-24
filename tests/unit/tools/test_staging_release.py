@@ -6,6 +6,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import yaml
@@ -317,6 +318,90 @@ class TestFailureHandoff:
         )
         with pytest.raises(transfer.TransferError, match="source changed"):
             collector.transfer_release(tmp_path, tmp_path, environment(tmp_path))
+
+
+class TestBootstrapCacheBoundary:
+    @pytest.mark.parametrize("cache_location", ["workspace", "configured"])
+    def test_real_source_guard_after_bootstrap_cleanup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cache_location: Literal["workspace", "configured"],
+    ) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/private-verification.yml").read_text()
+        )
+        bootstrap = next(
+            step
+            for step in workflow["jobs"]["verify"]["steps"]
+            if step.get("id") == "trivy"
+        )
+        inputs = bootstrap["with"]
+        assert inputs["cache"] == "false"
+        assert inputs["cache-dir"] == (
+            "${{ runner.temp }}/private-trivy-bootstrap-cache"
+        )
+        assert inputs["scan-ref"] == "${{ runner.temp }}/private-trivy-bootstrap"
+        workspace, runner = tmp_path / "workspace", tmp_path / "runner"
+        workspace.mkdir()
+        runner.mkdir()
+        cache = Path(inputs["cache-dir"].replace("${{ runner.temp }}", str(runner)))
+        target = Path(inputs["scan-ref"].replace("${{ runner.temp }}", str(runner)))
+        assert not cache.is_relative_to(workspace)
+        assert not cache.is_relative_to(target)
+        target.mkdir()
+        monkeypatch.chdir(workspace)
+        git = collector.release.git
+        git(["init", "--quiet"])
+        (workspace / ".gitignore").write_text((ROOT / ".gitignore").read_text())
+        git(["add", ".gitignore"])
+        git(
+            [
+                "-c",
+                "user.name=Bootstrap test",
+                "-c",
+                "user.email=bootstrap@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "Synthetic bootstrap source",
+            ]
+        )
+        source = git(["rev-parse", "HEAD"])
+        tree = collector.release.ensure_clean_context(source)
+        # Model the successful pinned installer's observed transient cleanup.
+        installer = workspace / "trivy"
+        installer.mkdir()
+        installer.rmdir()
+        env_file = workspace / "trivy_envs.txt"
+        env_file.write_text("synthetic bootstrap settings")
+        env_file.unlink()
+        if cache_location == "workspace":
+            cache = workspace / ".cache" / "trivy"
+        database = cache / "db" / "metadata.json"
+        database.parent.mkdir(parents=True)
+        database.write_text('{"synthetic": true}')
+        assert list(target.iterdir()) == []
+        if cache_location == "workspace":
+            with pytest.raises(
+                collector.release.ReleaseIdentityError,
+                match="tracked or untracked build-context changes",
+            ):
+                collector.release.ensure_clean_context(source)
+        else:
+            assert collector.release.ensure_clean_context(source) == tree
+
+    def test_private_gates_replace_bootstrap_cache(self, tmp_path: Path) -> None:
+        bootstrap_cache = tmp_path / "private-trivy-bootstrap-cache"
+        work = tmp_path / "staging-release-123-1"
+        env = {"TRIVY_CACHE_DIR": str(bootstrap_cache)}
+        child = collector.private_env(env, binding(), work)
+        assert child["TRIVY_CACHE_DIR"] == str(work / "trivy-cache")
+        assert child["TRIVY_CACHE_DIR"] != str(bootstrap_cache)
 
 
 class TestWorkflow:

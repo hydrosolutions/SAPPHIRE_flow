@@ -58,6 +58,13 @@ archive length and the two raw image IDs. No labels, inventories, full reports o
 arbitrary error strings are projected. Owner acceptance requires retaining this
 record outside staging-admin control and comparing the received artifact binding.
 
+The public Trivy bootstrap scans an empty directory under `RUNNER_TEMP`. Its
+`cache-dir` is a separate sibling, `private-trivy-bootstrap-cache`, outside both
+that target and the checkout. `cache: "false"` disables shared action caching,
+not local database writes. Keeping those writes outside checkout preserves the
+strict tracked/untracked source guard. Private gates still replace `TRIVY_CACHE_DIR`
+with the per-attempt `work/trivy-cache`; they do not reuse the bootstrap database.
+
 ## Retained gate mapping
 
 | Existing substantive check | Manual release route |
