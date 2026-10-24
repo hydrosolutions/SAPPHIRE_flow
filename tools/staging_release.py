@@ -14,12 +14,13 @@ import sys
 import tarfile
 import time
 import traceback
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
 _spec = importlib.util.spec_from_file_location(
     "staging_transfer", Path(__file__).with_name("staging_release_transfer.py")
@@ -48,6 +49,69 @@ SOURCE_FILES = (
 )
 
 
+class Phase(Enum):
+    UNKNOWN = "UNKNOWN"
+    VERIFY = "VERIFY"
+    PREFLIGHT = "PREFLIGHT"
+    TRANSFER = "TRANSFER"
+
+
+class Checkpoint(Enum):
+    WORK_SETUP = "WORK_SETUP"
+    ADMISSION_CHECK = "ADMISSION_CHECK"
+    LOCAL_SOURCE_CHECK = "LOCAL_SOURCE_CHECK"
+    REMOTE_RELEASE_SNAPSHOT = "REMOTE_RELEASE_SNAPSHOT"
+    REMOTE_RELEASE_CHECK = "REMOTE_RELEASE_CHECK"
+    PAYLOAD_PREPARATION = "PAYLOAD_PREPARATION"
+    PAYLOAD_CHECK = "PAYLOAD_CHECK"
+
+
+class MarkerOutcome(Enum):
+    ENTER = "ENTER"
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+MARKER_LINES = {
+    (phase, checkpoint, outcome): (
+        f"STAGING_RELEASE_CHECKPOINT {phase.value} {checkpoint.value} {outcome.value}\n"
+    ).encode("ascii")
+    for phase in Phase
+    for checkpoint in Checkpoint
+    for outcome in MarkerOutcome
+}
+
+
+@dataclass(kw_only=True, slots=True)
+class Progress:
+    phase: Phase
+    fd: int | None
+
+    def emit(self, checkpoint: Checkpoint, outcome: MarkerOutcome) -> None:
+        line = MARKER_LINES[self.phase, checkpoint, outcome]
+        if self.fd is not None:
+            with contextlib.suppress(OSError):
+                os.write(self.fd, line)
+
+    def disable(self) -> None:
+        self.fd = None
+
+
+@contextlib.contextmanager
+def checkpoint(progress: Progress | None, stage: Checkpoint) -> Iterator[None]:
+    if progress is not None:
+        progress.emit(stage, MarkerOutcome.ENTER)
+    try:
+        yield
+    except (Exception, KeyboardInterrupt):
+        if progress is not None:
+            progress.emit(stage, MarkerOutcome.FAIL)
+        raise
+    else:
+        if progress is not None:
+            progress.emit(stage, MarkerOutcome.PASS)
+
+
 def approved_binding(env: Mapping[str, str]) -> transfer.ReleaseBinding:
     return transfer.ReleaseBinding.parse(
         transfer.parse_json(env["STAGING_RELEASE_ADMISSION"].encode())
@@ -55,52 +119,60 @@ def approved_binding(env: Mapping[str, str]) -> transfer.ReleaseBinding:
 
 
 def require_local_release(
-    root: Path, env: Mapping[str, str]
+    root: Path, env: Mapping[str, str], *, progress: Progress | None = None
 ) -> transfer.ReleaseBinding:
-    binding = approved_binding(env)
-    event = transfer.parse_json(transfer.metadata_bytes(Path(env["GITHUB_EVENT_PATH"])))
-    expected = {
-        "GITHUB_REPOSITORY": binding.repository,
-        "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/tags/v" + binding.version,
-        "GITHUB_SHA": binding.source_sha,
-        "GITHUB_WORKFLOW_SHA": binding.workflow_sha,
-        "GITHUB_WORKFLOW_REF": binding.workflow_ref,
-        "GITHUB_RUN_ID": binding.run_id,
-        "GITHUB_RUN_ATTEMPT": binding.run_attempt,
-        "GITHUB_ACTOR": binding.actor,
-        "GITHUB_TRIGGERING_ACTOR": binding.actor,
-        "GITHUB_JOB": "verify",
-    }
-    if any(env.get(k) != v for k, v in expected.items()) or event.get("inputs") != {
-        "delivery_mode": binding.delivery_mode.value
-    }:
-        raise transfer.TransferError("event does not match approval")
-    release.validate_destination()
-    tree = release.ensure_clean_context(binding.source_sha)
-    if tree != binding.source_tree:
-        raise transfer.TransferError("approved source tree changed")
+    with checkpoint(progress, Checkpoint.ADMISSION_CHECK):
+        binding = approved_binding(env)
+        event = transfer.parse_json(
+            transfer.metadata_bytes(Path(env["GITHUB_EVENT_PATH"]))
+        )
+        expected = {
+            "GITHUB_REPOSITORY": binding.repository,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/tags/v" + binding.version,
+            "GITHUB_SHA": binding.source_sha,
+            "GITHUB_WORKFLOW_SHA": binding.workflow_sha,
+            "GITHUB_WORKFLOW_REF": binding.workflow_ref,
+            "GITHUB_RUN_ID": binding.run_id,
+            "GITHUB_RUN_ATTEMPT": binding.run_attempt,
+            "GITHUB_ACTOR": binding.actor,
+            "GITHUB_TRIGGERING_ACTOR": binding.actor,
+            "GITHUB_JOB": "verify",
+        }
+        if any(env.get(k) != v for k, v in expected.items()) or event.get("inputs") != {
+            "delivery_mode": binding.delivery_mode.value
+        }:
+            raise transfer.TransferError("event does not match approval")
+    with checkpoint(progress, Checkpoint.LOCAL_SOURCE_CHECK):
+        release.validate_destination()
+        tree = release.ensure_clean_context(binding.source_sha)
+        if tree != binding.source_tree:
+            raise transfer.TransferError("approved source tree changed")
     return binding
 
 
-def require_release(root: Path, env: Mapping[str, str]) -> transfer.ReleaseBinding:
-    binding = require_local_release(root, env)
-    main, state, tags = release.fetch_remote_state()
-    if state != binding.release_state:
-        raise transfer.TransferError("approved release-state changed")
-    release.validate_state(state, tags, main)
-    release.ensure_source_on_main(binding.source_sha, main)
-    tag = next((t for t in tags if t.name == "v" + binding.version), None)
-    if (
-        tag is None
-        or tag.metadata is None
-        or tag.object_oid != binding.tag_object
-        or tag.peeled_oid != binding.source_sha
-    ):
-        raise transfer.TransferError("approved release tag changed")
-    target = release.read_release_target(binding.source_sha)
-    if target.text != binding.version:
-        raise transfer.TransferError("canonical release target mismatch")
+def require_release(
+    root: Path, env: Mapping[str, str], *, progress: Progress | None = None
+) -> transfer.ReleaseBinding:
+    binding = require_local_release(root, env, progress=progress)
+    with checkpoint(progress, Checkpoint.REMOTE_RELEASE_SNAPSHOT):
+        main, state, tags = release.fetch_remote_state()
+    with checkpoint(progress, Checkpoint.REMOTE_RELEASE_CHECK):
+        if state != binding.release_state:
+            raise transfer.TransferError("approved release-state changed")
+        release.validate_state(state, tags, main)
+        release.ensure_source_on_main(binding.source_sha, main)
+        tag = next((t for t in tags if t.name == "v" + binding.version), None)
+        if (
+            tag is None
+            or tag.metadata is None
+            or tag.object_oid != binding.tag_object
+            or tag.peeled_oid != binding.source_sha
+        ):
+            raise transfer.TransferError("approved release tag changed")
+        target = release.read_release_target(binding.source_sha)
+        if target.text != binding.version:
+            raise transfer.TransferError("canonical release target mismatch")
     return binding
 
 
@@ -371,8 +443,17 @@ def export_release(
     return tuple(images), expanded_size, expanded_hash, unpacked_size
 
 
-def verify_release(root: Path, work: Path, env: Mapping[str, str]) -> None:
-    binding = require_release(root, env)
+def verify_release(
+    root: Path, work: Path, env: Mapping[str, str], *, progress: Progress | None = None
+) -> None:
+    binding = require_release(root, env, progress=progress)
+    with checkpoint(progress, Checkpoint.PAYLOAD_PREPARATION):
+        _prepare_payload(root, work, env, binding)
+
+
+def _prepare_payload(
+    root: Path, work: Path, env: Mapping[str, str], binding: transfer.ReleaseBinding
+) -> None:
     limits = {
         name: transfer.positive(
             int(env[name]),
@@ -526,33 +607,38 @@ def verify_release(root: Path, work: Path, env: Mapping[str, str]) -> None:
         raise transfer.TransferError("verification failed; private diagnostic ready")
 
 
-def preflight(root: Path, work: Path, env: Mapping[str, str]) -> transfer.Envelope:
-    binding = require_release(root, env)
-    recorded = transfer.parse_json(
-        transfer.metadata_bytes(work / "evidence/source-files.json")
-    )
-    if set(recorded) != set(SOURCE_FILES):
-        raise transfer.TransferError("source fingerprint set changed")
-    for name, expected_hash in recorded.items():
-        if (
-            not isinstance(name, str)
-            or name.startswith("/")
-            or ".." in Path(name).parts
-        ):
-            raise transfer.TransferError("invalid source fingerprint path")
-        if hashlib.sha256((root / name).read_bytes()).hexdigest() != transfer.digest(
-            expected_hash
-        ):
-            raise transfer.TransferError("executed source changed")
-    envelope = transfer.Envelope.parse(transfer.metadata_bytes(work / "envelope.json"))
-    if envelope.binding != binding:
-        raise transfer.TransferError("handoff binding mismatch")
-    for name, expected in envelope.files.items():
-        if transfer.FileDigest.of(work / "payload" / name) != expected:
-            raise transfer.TransferError("handoff payload changed")
-    if envelope.kind == transfer.PayloadKind.RELEASE:
-        transfer.verify_receipt(envelope, work / "payload" / "receipt.json")
-    return envelope
+def preflight(
+    root: Path, work: Path, env: Mapping[str, str], *, progress: Progress | None = None
+) -> transfer.Envelope:
+    binding = require_release(root, env, progress=progress)
+    with checkpoint(progress, Checkpoint.PAYLOAD_CHECK):
+        recorded = transfer.parse_json(
+            transfer.metadata_bytes(work / "evidence/source-files.json")
+        )
+        if set(recorded) != set(SOURCE_FILES):
+            raise transfer.TransferError("source fingerprint set changed")
+        for name, expected_hash in recorded.items():
+            if (
+                not isinstance(name, str)
+                or name.startswith("/")
+                or ".." in Path(name).parts
+            ):
+                raise transfer.TransferError("invalid source fingerprint path")
+            if hashlib.sha256(
+                (root / name).read_bytes()
+            ).hexdigest() != transfer.digest(expected_hash):
+                raise transfer.TransferError("executed source changed")
+        envelope = transfer.Envelope.parse(
+            transfer.metadata_bytes(work / "envelope.json")
+        )
+        if envelope.binding != binding:
+            raise transfer.TransferError("handoff binding mismatch")
+        for name, expected in envelope.files.items():
+            if transfer.FileDigest.of(work / "payload" / name) != expected:
+                raise transfer.TransferError("handoff payload changed")
+        if envelope.kind == transfer.PayloadKind.RELEASE:
+            transfer.verify_receipt(envelope, work / "payload" / "receipt.json")
+        return envelope
 
 
 def publish_owner_receipt(result: dict, env: Mapping[str, str]) -> None:
@@ -561,7 +647,9 @@ def publish_owner_receipt(result: dict, env: Mapping[str, str]) -> None:
         output.write("```json\n" + transfer.json_bytes(result).decode() + "```\n")
 
 
-def transfer_release(root: Path, work: Path, env: Mapping[str, str]) -> None:
+def transfer_release(
+    root: Path, work: Path, env: Mapping[str, str], *, progress: Progress | None = None
+) -> None:
     deadline = time.monotonic() + transfer.TRANSFER_WORK_SECONDS
 
     def expired(signum: int, frame: object) -> None:
@@ -570,7 +658,7 @@ def transfer_release(root: Path, work: Path, env: Mapping[str, str]) -> None:
     previous = signal.signal(signal.SIGALRM, expired)
     signal.alarm(transfer.TRANSFER_WORK_SECONDS)
     try:
-        envelope = preflight(root, work, env)
+        envelope = preflight(root, work, env, progress=progress)
         timeout = transfer.sender_timeout(int(env["STAGING_TRANSFER_TIMEOUT"]))
         result = transfer.send(
             envelope,
@@ -607,7 +695,19 @@ def main() -> int:
     saved_stdout, saved_stderr = os.dup(1), os.dup(2)
     status = 1
     captured = False
+    setup_complete = False
+    phase_kind = (
+        {
+            "verify": Phase.VERIFY,
+            "preflight": Phase.PREFLIGHT,
+            "transfer": Phase.TRANSFER,
+        }.get(sys.argv[1], Phase.UNKNOWN)
+        if len(sys.argv) == 2
+        else Phase.UNKNOWN
+    )
+    progress = Progress(phase=phase_kind, fd=saved_stdout)
     try:
+        progress.emit(Checkpoint.WORK_SETUP, MarkerOutcome.ENTER)
         if len(sys.argv) != 2 or sys.argv[1] not in ("verify", "preflight", "transfer"):
             raise transfer.TransferError("unsupported phase")
         phase = sys.argv[1]
@@ -639,16 +739,20 @@ def main() -> int:
             os.dup2(log.fileno(), 1)
             os.dup2(log.fileno(), 2)
             captured = True
+            setup_complete = True
+            progress.emit(Checkpoint.WORK_SETUP, MarkerOutcome.PASS)
             if phase == "verify":
-                verify_release(root, work, env)
+                verify_release(root, work, env, progress=progress)
             elif phase == "preflight":
-                envelope = preflight(root, work, env)
+                envelope = preflight(root, work, env, progress=progress)
                 if envelope.kind == transfer.PayloadKind.RELEASE:
                     publish_owner_receipt(envelope.owner_receipt("produced"), env)
             else:
-                transfer_release(root, work, env)
+                transfer_release(root, work, env, progress=progress)
         status = 0
     except (Exception, KeyboardInterrupt):
+        if not setup_complete:
+            progress.emit(Checkpoint.WORK_SETUP, MarkerOutcome.FAIL)
         if captured:
             traceback.print_exc()
         status = 1
@@ -658,6 +762,7 @@ def main() -> int:
             sys.stderr.flush()
         os.dup2(saved_stdout, 1)
         os.dup2(saved_stderr, 2)
+        progress.disable()
         os.close(saved_stdout)
         os.close(saved_stderr)
     with contextlib.suppress(OSError):

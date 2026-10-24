@@ -52,7 +52,7 @@ hash. Dispatch selection alone is not that approval. No mode starts Compose, ini
 migrations, workers, schedules, models or data operations. A load failure does not
 claim rollback; the sealed archive remains and runtime activation remains held.
 
-The only public result is fixed phase status and a typed digest-only JSON receipt:
+The public result is fixed phase/checkpoint status and a typed digest-only JSON receipt:
 source/tree/tag/state/run IDs, envelope/receipt/runtime-bundle/archive hashes,
 archive length and the two raw image IDs. No labels, inventories, full reports or
 arbitrary error strings are projected. Owner acceptance requires retaining this
@@ -64,6 +64,30 @@ that target and the checkout. `cache: "false"` disables shared action caching,
 not local database writes. Keeping those writes outside checkout preserves the
 strict tracked/untracked source guard. Private gates still replace `TRIVY_CACHE_DIR`
 with the per-attempt `work/trivy-cache`; they do not reuse the bootstrap database.
+
+### Coarse progress markers
+
+The controller emits `STAGING_RELEASE_CHECKPOINT <PHASE> <CHECKPOINT> <OUTCOME>`.
+Phases are `UNKNOWN`, `VERIFY`, `PREFLIGHT`, `TRANSFER`; outcomes are `ENTER`, `PASS`,
+`FAIL`. Checkpoints are `WORK_SETUP`, `ADMISSION_CHECK`, `LOCAL_SOURCE_CHECK`,
+`REMOTE_RELEASE_SNAPSHOT`, `REMOTE_RELEASE_CHECK`, `PAYLOAD_PREPARATION`,
+`PAYLOAD_CHECK`. Unsupported arguments use `UNKNOWN`, never their supplied text.
+The existing final `STAGING_RELEASE_PHASE_COMPLETE` / `STAGING_RELEASE_PHASE_FAILED`
+tokens and exit behavior remain unchanged.
+
+Markers contain no exception text, paths, commands, inventories or input-derived
+values. Work setup passes only after private descriptor capture is active and before
+phase dispatch. Payload preparation has one entry and one terminal marker; all its
+repeated validations are silent, so markers do not expose gate cadence or readiness
+branches. Aggregate phase timing remains observable. These fixed stdio protocol
+markers bypass private capture without making it public; they are not application
+logs. Marker write errors do not change operation results.
+
+Markers locate coarse checkpoints, not proof that gates, builds or transfer ran or
+that delivery succeeded. In particular, `PAYLOAD_CHECK PASS` followed by final
+`FAILED` can mean a later transfer/receipt failure; it does not prove server contact.
+Private phase traces from prior failed attempts are not recovered by this change.
+All source validation and SSH admission checks remain mandatory.
 
 ## Retained gate mapping
 

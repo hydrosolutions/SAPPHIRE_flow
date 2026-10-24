@@ -501,7 +501,9 @@ class TestSyntheticReleasePipeline:
         root.mkdir()
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.setattr(collector, "require_release", lambda *args: approved)
+        monkeypatch.setattr(
+            collector, "require_release", lambda *args, **kwargs: approved
+        )
         monkeypatch.setattr(collector, "require_local_release", lambda *args: approved)
         monkeypatch.setattr(collector.release, "validate_destination", lambda: None)
         monkeypatch.setattr(collector.release, "validate_state", lambda *args: None)
@@ -595,7 +597,16 @@ class TestSyntheticReleasePipeline:
             "STAGING_RESERVE_BYTES": "1",
             "STAGING_TRANSFER_TIMEOUT": "1500",
         }
-        collector.verify_release(ROOT, work, env)
+        markers = tmp_path / "markers"
+        with markers.open("wb") as stream:
+            progress = collector.Progress(
+                phase=collector.Phase.VERIFY, fd=stream.fileno()
+            )
+            collector.verify_release(ROOT, work, env, progress=progress)
+        assert markers.read_text().splitlines() == [
+            "STAGING_RELEASE_CHECKPOINT VERIFY PAYLOAD_PREPARATION ENTER",
+            "STAGING_RELEASE_CHECKPOINT VERIFY PAYLOAD_PREPARATION PASS",
+        ]
         envelope = transfer.Envelope.parse((work / "envelope.json").read_bytes())
         assert builds == ["default", "aquacast"]
         assert exports == [

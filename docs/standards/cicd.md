@@ -1943,6 +1943,11 @@ approval. Native target probes, when authorised, run without protected mounts/ne
 
 The [runbook](../deployment/actions-staging-release.md) lists exact configuration,
 private/digest-only output boundaries, capacity accounting and per-run live holds.
+Fixed controller checkpoints distinguish setup, admission, local source, remote
+snapshot/validation and payload boundaries without publishing private diagnostics.
+Payload preparation emits no per-gate or nested-validation cadence. Checkpoint PASS
+is not proof of builds, server contact or successful delivery; final status and the
+existing receipt/admission contracts remain authoritative.
 No local synthetic result is provider/cold-capacity/transport qualification. Old
 8df full-suite evidence applies only to old bytes; the new patch needs review and
 final full validation before owner publication.
