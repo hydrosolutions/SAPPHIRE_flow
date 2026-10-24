@@ -216,8 +216,12 @@ partial upload or uncertain load state remains held for explicit reconciliation.
 No acknowledgement failure implies rollback, no images loaded, or runtime activation.
 
 The frozen dependency graph has security floors of `certifi>=2026.10.19`
-(compromised trust-root remediation) and `pillow>=13.0.0` (image-codec security fixes).
-These are resolver constraints, not overrides: Pillow remains Aquacast-only.
+(compromised trust-root remediation), `pillow>=13.0.0` (image-codec security fixes),
+and `filelock>=4.2.1` (CVE-2026-112940; no fixed 3.x release).
+These are resolver constraints, not overrides: transitive dependency placement
+is unchanged, and Pillow remains Aquacast-only. The filelock update also requires
+`virtualenv==21.10.0` (allows filelock 4.x) and `python-discovery==1.6.0`
+(virtualenv's minimum); all other package records and private source pins are retained.
 Both resulting image variants still require fresh security/runtime proofs; prior
 image receipts do not qualify changed dependencies.
 
