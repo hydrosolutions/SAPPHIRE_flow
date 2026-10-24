@@ -6,9 +6,21 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Literal
+
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_UV_FIXTURE_ENV_BLOCKLIST = {"UV_FROZEN", "UV_LOCKED", "UV_NO_SYNC", "UV_OFFLINE"}
+_UV_FIXTURE_ENV_BLOCKLIST = {
+    "UV_FROZEN",
+    "UV_LOCKED",
+    "UV_NO_SYNC",
+    "UV_OFFLINE",
+    "UV_PROJECT_ENVIRONMENT",
+    "VIRTUAL_ENV",
+    "UV_PROJECT",
+    "UV_WORKING_DIR",
+}
 
 _RESOURCES = [
     "sapphire_flow/py.typed",
@@ -99,6 +111,65 @@ def test_build_inputs_are_python_312_and_docker_314_compatible() -> None:
     assert dockerfile.count(f"FROM {expected_base}") == 2
 
 
+def _run_probe_uv(
+    args: list[str], *, project: Path, tmp_path: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    target = Path(env["UV_PROJECT_ENVIRONMENT"]).resolve()
+    assert project.resolve().is_relative_to(tmp_path.resolve()), "probe project escaped"
+    assert target == (project / ".venv").resolve(), "unexpected probe environment"
+    assert target.is_relative_to(tmp_path.resolve()), "probe environment escaped"
+    assert target != Path(sys.prefix).resolve(), "probe targets running interpreter"
+    for key in ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"):
+        parent = os.environ.get(key)
+        assert not parent or target != Path(parent).resolve(), "probe targets parent"
+    assert not {"VIRTUAL_ENV", "UV_PROJECT", "UV_WORKING_DIR"}.intersection(env), (
+        "conflicting probe selector"
+    )
+    return subprocess.run(
+        ["uv", *args],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _installed_probe_versions(
+    version: str, *, project: Path, tmp_path: Path, cache_dir: Path
+) -> tuple[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _UV_FIXTURE_ENV_BLOCKLIST
+    }
+    env.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "UV_CACHE_DIR": str(cache_dir),
+            "UV_PROJECT_ENVIRONMENT": str((project / ".venv").resolve()),
+            "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CACHE_PROBE": version,
+        }
+    )
+    sync = _run_probe_uv(["sync"], project=project, tmp_path=tmp_path, env=env)
+    assert sync.returncode == 0, sync.stderr
+    proc = _run_probe_uv(
+        [
+            "run",
+            "python",
+            "-c",
+            "import cache_probe, importlib.metadata as md; "
+            "print(cache_probe.__version__); print(md.version('cache-probe'))",
+        ],
+        project=project,
+        tmp_path=tmp_path,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    runtime_version, metadata_version = proc.stdout.strip().splitlines()
+    return runtime_version, metadata_version
+
+
 def test_native_uv_cache_key_changes_when_pretend_version_changes(
     tmp_path: Path,
 ) -> None:
@@ -137,46 +208,109 @@ version_file = "src/cache_probe/_version.py"
     )
     cache_dir = tmp_path / "uv-cache"
 
-    def installed_versions(version: str) -> tuple[str, str]:
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in _UV_FIXTURE_ENV_BLOCKLIST
-        }
-        env.update(
-            {
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "UV_CACHE_DIR": str(cache_dir),
-                "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CACHE_PROBE": version,
-            }
-        )
-        sync = subprocess.run(
-            ["uv", "sync"],
-            cwd=project,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert sync.returncode == 0, sync.stderr
-        proc = subprocess.run(
-            [
-                "uv",
-                "run",
-                "python",
-                "-c",
-                "import cache_probe, importlib.metadata as md; "
-                "print(cache_probe.__version__); print(md.version('cache-probe'))",
-            ],
-            cwd=project,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        runtime_version, metadata_version = proc.stdout.strip().splitlines()
-        return runtime_version, metadata_version
+    assert _installed_probe_versions(
+        "1.2.3", project=project, tmp_path=tmp_path, cache_dir=cache_dir
+    ) == ("1.2.3", "1.2.3")
+    assert _installed_probe_versions(
+        "1.2.4", project=project, tmp_path=tmp_path, cache_dir=cache_dir
+    ) == ("1.2.4", "1.2.4")
 
-    assert installed_versions("1.2.3") == ("1.2.3", "1.2.3")
-    assert installed_versions("1.2.4") == ("1.2.4", "1.2.4")
+
+@pytest.mark.parametrize("version", ["1.2.3", "1.2.4"])
+def test_cache_probe_environment_is_disposable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: Literal["1.2.3", "1.2.4"]
+) -> None:
+    project = tmp_path / "probe"
+    project.mkdir()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    sentinel = parent / "sentinel"
+    sentinel.write_bytes(b"parent unchanged")
+    for key in (
+        "UV_PROJECT_ENVIRONMENT",
+        "VIRTUAL_ENV",
+        "UV_PROJECT",
+        "UV_WORKING_DIR",
+    ):
+        monkeypatch.setenv(key, str(parent))
+    monkeypatch.setenv("UV_PYTHON", "3.12")
+    original = dict(os.environ)
+    calls: list[list[str]] = []
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert env["UV_PROJECT_ENVIRONMENT"] == str((project / ".venv").resolve())
+        assert not {"VIRTUAL_ENV", "UV_PROJECT", "UV_WORKING_DIR"}.intersection(env)
+        assert env["UV_PYTHON"] == "3.12"
+        assert kwargs["cwd"] == project
+        calls.append(args)
+        output = "" if args[1] == "sync" else f"{version}\n{version}\n"
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _installed_probe_versions(
+        version, project=project, tmp_path=tmp_path, cache_dir=tmp_path / "cache"
+    ) == (version, version)
+    assert [args[:2] for args in calls] == [["uv", "sync"], ["uv", "run"]]
+    assert dict(os.environ) == original
+    assert sentinel.read_bytes() == b"parent unchanged"
+
+
+@pytest.mark.parametrize("command", ["sync", "run"])
+@pytest.mark.parametrize(
+    "conflict",
+    ["outside", "interpreter", "parent-active", "parent-project", "selector"],
+)
+def test_cache_probe_rejects_unsafe_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: Literal["sync", "run"],
+    conflict: Literal[
+        "outside", "interpreter", "parent-active", "parent-project", "selector"
+    ],
+) -> None:
+    project = tmp_path / "probe"
+    target = project / ".venv"
+    env = {"UV_PROJECT_ENVIRONMENT": str(target)}
+    if conflict == "outside":
+        env["UV_PROJECT_ENVIRONMENT"] = str(tmp_path.parent / "outside")
+    elif conflict == "interpreter":
+        monkeypatch.setattr(sys, "prefix", str(target))
+    elif conflict == "parent-active":
+        monkeypatch.setenv("VIRTUAL_ENV", str(target))
+    elif conflict == "parent-project":
+        monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(target))
+    else:
+        env["UV_PROJECT"] = str(tmp_path / "parent")
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("unsafe target must not reach subprocess")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    original = dict(os.environ)
+    with pytest.raises(AssertionError, match="probe"):
+        _run_probe_uv([command], project=project, tmp_path=tmp_path, env=env)
+    assert dict(os.environ) == original
+
+
+def test_cache_probe_rejects_unsafe_target_between_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "probe"
+    calls: list[list[str]] = []
+
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        assert args == ["uv", "sync"]
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        env["UV_PROJECT_ENVIRONMENT"] = str(tmp_path / "parent")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(AssertionError, match="unexpected probe environment"):
+        _installed_probe_versions(
+            "1.2.3", project=project, tmp_path=tmp_path, cache_dir=tmp_path / "cache"
+        )
+    assert calls == [["uv", "sync"]]
