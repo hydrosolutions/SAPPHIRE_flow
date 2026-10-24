@@ -1,0 +1,104 @@
+name: Private staging release
+
+on:
+  workflow_dispatch:
+    inputs:
+      delivery_mode:
+        description: Deliver only, or load with a separately approved receiver binding
+        type: choice
+        options: [deliver-only, load-images]
+        default: deliver-only
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # The environment gates only the ADMIN SSH copy, not existing package keys.
+    if: >-
+      github.repository == 'hydrosolutions/SAPPHIRE_flow' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.actor == github.triggering_actor &&
+      !endsWith(github.actor, '[bot]') &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: staging-release
+    env:
+      STAGING_RELEASE_ADMISSION: ${{ vars.STAGING_RELEASE_ADMISSION }}
+      STAGING_MAX_ARCHIVE_BYTES: ${{ vars.STAGING_MAX_ARCHIVE_BYTES }}
+      STAGING_MAX_EXPANDED_BYTES: ${{ vars.STAGING_MAX_EXPANDED_BYTES }}
+      STAGING_RESERVE_BYTES: ${{ vars.STAGING_RESERVE_BYTES }}
+      STAGING_TRANSFER_TIMEOUT: ${{ vars.STAGING_TRANSFER_TIMEOUT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        id: checkout
+        timeout-minutes: 3
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Normalize the public canonical release origin
+        run: git remote set-url origin https://github.com/hydrosolutions/SAPPHIRE_flow.git
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        id: uv
+        timeout-minutes: 3
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        id: buildx
+        timeout-minutes: 3
+        with:
+          name: private-verification
+          cache-binary: false
+          # No public post-job BuildKit diagnostic sink after private builds.
+          cleanup: false
+      - name: Prepare empty public tool-bootstrap directory
+        run: mkdir "$RUNNER_TEMP/private-trivy-bootstrap"
+      - name: Install the existing pinned Trivy action's tool
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        id: trivy
+        timeout-minutes: 5
+        with:
+          # Only an empty directory is scanned here, before any private fetch.
+          # The real fs/image checks run later under private descriptor capture.
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/private-trivy-bootstrap
+          format: json
+          output: ${{ runner.temp }}/private-trivy-bootstrap.json
+          scanners: vuln
+          exit-code: "1"
+          cache: "false"
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
+        id: syft
+        timeout-minutes: 3
+      - name: Verify canonical release and export exact tested images
+        id: verification
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
+          SYFT_BIN: ${{ steps.syft.outputs.cmd }}
+          PRIVATE_PREPARATION: >-
+            {"checkout":"${{ steps.checkout.outcome }}","uv":"${{ steps.uv.outcome }}",
+             "buildx":"${{ steps.buildx.outcome }}","trivy":"${{ steps.trivy.outcome }}",
+             "syft":"${{ steps.syft.outcome }}"}
+        run: python3 -I tools/staging_release.py verify
+      - name: Revalidate approved source and payload before SSH admission
+        id: transfer_admission
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python3 -I tools/staging_release.py preflight
+      - name: Privately deliver the approved release or failed-run diagnostics
+        if: ${{ always() && !cancelled() && steps.transfer_admission.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          STAGING_ADMIN_SSH_KEY: ${{ secrets.STAGING_ADMIN_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ vars.STAGING_KNOWN_HOSTS }}
+        run: python3 -I tools/staging_release.py transfer

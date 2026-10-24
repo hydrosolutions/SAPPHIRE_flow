@@ -81,9 +81,13 @@ def test_probe_uses_immutable_image_id_for_runtime_check() -> None:
         in run_args
     )
     assert "sapphire-flow:ci" not in run_args
-    assert run_args[:7] == [
+    assert run_args[:11] == [
         "run",
         "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
         "-i",
         "--user",
         "app",

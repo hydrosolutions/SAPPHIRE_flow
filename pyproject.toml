@@ -91,6 +91,9 @@ dev = [
 
 [tool.uv]
 required-version = "==0.11.7"
+# Security floors: certifi trust roots, Pillow codecs, and filelock (PR407).
+# Constraints preserve transitive dependency placement; filelock fixes CVE-2026-112940.
+constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4.2.1"]
 # Plan 159 T0e. aquacast floors `rich>=15.0.0`, prefect 3.6.23 caps `rich<15` —
 # unsatisfiable together, and the maintainer who could relax it is away. Overridden
 # rather than letting the resolver drag prefect forward (and fastapi with it, where

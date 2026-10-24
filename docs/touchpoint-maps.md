@@ -1745,6 +1745,20 @@ Verify dynamic SCM version generation, CI no-tag overrides, Docker labels, compo
 Do not reintroduce automatic tag publication in GitHub Actions.
 
 
+### Bounded private build-report receipt
+
+`tools/receive_build_report.py` changes require matching
+`tests/unit/tools/test_receive_build_report.py`,
+[security prerequisites](standards/security.md#bounded-build-report-upload-not-installed)
+and [CI receipt protocol](standards/cicd.md#private-build-report-receipt-local-helper-only).
+Keep fixed-command/config ownership, no-follow paths, private directory flock,
+length/EOF/deadline bounds, no-clobber publication and quiet fixed statuses together.
+Check real file/pipe/socket behavior plus deterministic error/cancellation cases;
+focused offline tests do not establish full-suite or Linux/SSH qualification.
+Local `REPORT_RECEIVED` is not independent accepted custody: administrator-owned
+new-inode handoff remains separate. No release ledger, workflow/credential setup,
+application-image packaging, deployment, backup or source-data change belongs here.
+
 ### Forecast operator tooling
 
 Follow the [operator tooling contract](standards/security.md#operator-forecast-tooling-isolation) for the loose domain script, legacy
@@ -2023,3 +2037,40 @@ the canonical checkpoint records its exact runtime source and cleanup attributio
 Final review, committed-build/slow and normal CI gates remain separate.
 Do not substitute the ambient integration DB fixture, add role grants or infer
 runtime/production acceptance from implementation.
+
+## A1 private verification changes touch
+
+- `.github/workflows/private-verification.yml`: existing same-repo PR bootstrap and
+  main push route; one environment-gated verifier, pinned public setup, no cache or
+  private artifact publication. Keep legacy `ci.yml` behavior untouched until A2.
+- `tools/private_verification.py`: exact source/attempt admission, private process
+  and workflow-file capture, full gate-set assertion, bounded private report and
+  strict fixed-command SSH acknowledgement. `receive_build_report.py` is unchanged.
+- `tools/private_verification_gates.sh`: all eight CI jobs mapped to retained logical
+  gates, existing shard selectors/coverage merge, wheel guard, image identity probes
+  and scan/SBOM policy. No missing-token degradation or skipped-green aggregate.
+- `tests/unit/tools/test_private_verification.py`: missing/stale binding, missing or
+  failed gates, failure canaries, report limits, transport acknowledgement and
+  workflow/mapping contract. Use synthetic inputs; no real private fetches.
+- `docs/standards/{security,cicd,logging}.md`: trust, private output, retained mapping
+  and unproven operational holds. No receiver-custody or live-provider claim from
+  these local tests; full final suite and actual image/channel verification remain.
+
+
+## Manual canonical staging delivery
+
+- Route: `.github/workflows/private-verification.yml`, `tools/staging_release.py`,
+  `tools/staging_release_transfer.py`, existing release/image/report tools and
+  `src/sapphire_flow/ops/image_archive.py` (shared unchanged legacy archive checks).
+- Preserve: owner-only publisher; strict canonical origin/history/state; same-ID
+  single production/export; complete gate and private failure evidence; old receipt
+  compatibility; package-key placement/consumers; protected originals and runtime holds.
+- Verify: approved tag/state/source/workflow/attempt drift, explicit variants and
+  tag-to-ID checks, failed scans without receipt, bounded wire/EOF/digest/archive
+  rejection, no-clobber/idempotent seals, separate load approval, fixed late SSH and
+  allowlisted owner receipt. Use synthetic fixtures; no live keys/builds in tests.
+- Docs: [route/configuration](deployment/actions-staging-release.md), security/CI/
+  logging standards and `planning/nepal21/m1-direct-transfer-runtime.md` exception.
+- Local tests do not establish provider controls, private post-job behaviour,
+  cold capacity, target identity or independently accepted custody. Final patch
+  review/full tests and separate live approvals remain mandatory.

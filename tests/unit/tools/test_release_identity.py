@@ -314,3 +314,74 @@ class TestReleaseTargetBytes:
     def test_noncanonical_bytes_refuse(self, raw: bytes) -> None:
         with pytest.raises(release_identity.ReleaseIdentityError, match="target"):
             release_identity.parse_release_target(raw)
+
+
+class TestApprovedReceiptBinding:
+    def test_state_change_during_build_cannot_write_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from argparse import Namespace
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        tag = SimpleNamespace(
+            name="v1.2.3", metadata=object(), peeled_oid="a" * 40, object_oid="b" * 40
+        )
+        states = iter([("a" * 40, "c" * 40, [tag]), ("a" * 40, "d" * 40, [tag])])
+        monkeypatch.setattr(
+            release_identity, "fetch_remote_state", lambda: next(states)
+        )
+        monkeypatch.setattr(release_identity, "validate_destination", lambda: None)
+        monkeypatch.setattr(release_identity, "validate_state", lambda *args: None)
+        monkeypatch.setattr(
+            release_identity, "ensure_clean_context", lambda source: "e" * 40
+        )
+        monkeypatch.setattr(
+            release_identity,
+            "create_git_tree_context",
+            lambda source: nullcontext(str(tmp_path)),
+        )
+
+        class Builder:
+            def build(self, context: Path, version: str, source: str) -> list:
+                return [
+                    SimpleNamespace(variant="default"),
+                    SimpleNamespace(variant="aquacast"),
+                ]
+
+        receipt = tmp_path / "receipt.json"
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="state changed"
+        ):
+            release_identity.build_receipt(
+                Namespace(version="1.2.3", source="a" * 40, receipt=str(receipt)),
+                docker_builder=Builder(),
+                approved_tag_object="b" * 40,
+                approved_release_state="c" * 40,
+            )
+        assert not receipt.exists()
+
+    def test_explicit_variant_for_immutable_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        def probe(image: str, version: str, source: str, *, variant: str) -> object:
+            assert variant == "aquacast"
+            return SimpleNamespace(
+                variant=variant,
+                mutable_tag=image,
+                image_id=image,
+                labels={},
+                runtime_import_version=version,
+            )
+
+        monkeypatch.setattr(
+            release_identity,
+            "_load_image_probe",
+            lambda: SimpleNamespace(probe_image=probe),
+        )
+        result = release_identity.inspect_image(
+            "sha256:" + "a" * 64, "1.2.3", "b" * 40, variant="aquacast"
+        )
+        assert result.variant == "aquacast"

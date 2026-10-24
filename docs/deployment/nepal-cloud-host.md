@@ -1,5 +1,10 @@
 # Nepal cloud host — first deployment (Plan 511 T2)
 
+> For active Nepal21 staging delivery, use the
+> [Actions-built exact-image route](actions-staging-release.md).
+> The host-build bootstrap below is historical provisioning guidance, not authority
+> to rebuild or start applications on the protected staging host.
+
 Host: `nepal-staging.hydrosolutions.ch` (Infomaniak Public Cloud, Ubuntu 24.04, Docker). This is a
 **staging** host; production stays with the owner. The full runbook (update, restart, rotate keys, take
 offline) is Plan 511 T4 and extends this page.

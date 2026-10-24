@@ -717,6 +717,62 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 
 See the CI workflow tiers table below for the per-step breakdown of the five workflow files it covers — `ci.yml`, `dependency-safety.yml`, `integration-nightly.yml`, `live-lindas-weekly.yml` and `live-lindas-weekly-autoretry.yml` — with local equivalents and CI-only reasons. The retired `tag-main.yml` workflow is deliberately absent from that table; release identity is documented in § Release identity tags and receipts.
 
+## Private build-report receipt (local helper only)
+
+`tools/receive_build_report.py` is a proposed SSH fixed-command capability, not a
+workflow, installed channel or full private-CI acceptance gate. Its installation
+and ownership prerequisites are in [security.md](security.md#bounded-build-report-upload-not-installed).
+Do not give CI an existing deployment key or restore broad private-source secrets.
+
+The operator's fixed JSON config has exactly `inbox` (canonical absolute path),
+`upload_uid` (non-root integer), `max_bytes` (1..67108864) and `timeout_seconds`
+(1..120). Unknown/duplicate keys and booleans-as-integers fail. No config is loaded
+from client arguments or environment. The root-owned config must be readable by
+the report principal without granting write access. A later SSH setup must bind
+its one inbox to the approved candidate/run/attempt independently of report bytes.
+
+Protocol: eight-byte unsigned big-endian payload length, exactly that many opaque
+bytes, then EOF. Empty, oversized, truncated, trailing or stalled input fails.
+Header validation happens before partial-file creation. The absolute input deadline
+is not extended by incremental progress. Publication retains its pre-link deadline
+check; a completed directory fsync is not retroactively rejected just because time
+then advanced. The receiver-only addition supplied no sender; the A1 implementation below adds
+a separate sender without changing this receiver contract.
+
+| Best-effort fixed status | Exit | Meaning |
+|---|---:|---|
+| `REPORT_RECEIVED` | 0 | Local file closed, no-clobber published and fsynced. Not independently accepted custody. |
+| `REPORT_REJECTED` | 1 | Invalid input/config, deadline, I/O failure, interruption or existing/stale state. |
+| `REPORT_BUSY` | 2 | Another receiver holds the private inbox directory lock. |
+
+Status uses bounded direct descriptor writes, not buffered stdout; SSH stdin and
+stdout can share nonblocking state. Original descriptor blocking modes are
+restored best-effort after use, without a blocking status write. A disconnected/
+blocked client may receive no complete line. No raw exception, path, report byte, hash or dynamic log is exposed.
+File state is authoritative after lost acknowledgement. Existing/uncertain final
+files are never automatically replaced; failed cleanup may leave a stale partial.
+The operator must inspect and reconcile without treating a retry as accepted proof.
+
+Before use as build evidence, an administrator separately revokes/quiesces the
+upload principal, copies regular completed bytes into administrator-owned new
+inodes, verifies size/hash and attaches independent approved run metadata. The
+uploader gets no access to that accepted storage. Retention and bounded cleanup
+need an explicit operational policy; this helper never deletes accepted reports.
+No public artifact fallback or alternate release authority is introduced.
+
+Focused offline tests use real private temporary files/pipes/socketpairs and
+injected clocks, with global conftest excluded. Run them as a non-root account in a
+checkout whose ancestors are root/test-user-owned and not group/world-writable;
+fixtures set private modes explicitly and fail rather than skip if these prerequisites
+are absent. Hard-killed test processes may leave `.report-tests-*` synthetic scratch
+directories in the checkout, requiring explicit local cleanup. The isolated results
+are not a normal-conftest/full-suite pass, native Linux/SSH confinement proof,
+private-output qualification, or permission to
+trigger CI. Later host setup and a synthetic rehearsal still require the scoped
+credential/admission controls, independent recommendation and actual orchestrator
+provider approval. Owner merge, release publication and application activation
+remain separate. Backup/recovery stays deferred and originals remain untouched.
+
 ## CI workflow tiers
 
 This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
@@ -1740,3 +1796,161 @@ Rebootstrap must preserve denial even with stale PUBLIC column grants and a fail
 later preflight. Backup-role SELECT remains unchanged. The generic database browser
 excludes the join from inventory, detail and rows. No TEST writer or runtime grant is
 enabled by this migration; normal owner SQL/COPY still hits the deployed refusal.
+
+
+## A1 private verification implementation (not operationally qualified)
+
+`.github/workflows/private-verification.yml` adds the existing controlled same-repo
+PR bootstrap and installed-main push route. It is not dispatch-only. Legacy
+`ci.yml` remains unchanged: **do not publish a PR/event until T2 contains its private
+consumers and unsafe outputs**. This local implementation does not install provider
+controls, credentials or the report receiver and does not authorise private execution.
+
+One `verify` job declares environment `private-verification`. All credential
+references occur in its captured execution step. This is deliberate within-job
+consolidation: local coverage files and private reports never require a public
+cross-job artifact bridge or an unprovided private download service. The original
+check contexts are not replaced by this patch; required-check mapping remains A2
+work after owner merge and installed-main proof. Runner capacity/runtime on this
+cold consolidated path is an unproven T2 condition, not a performance claim.
+Image contexts are archived from the bound Git commit into fresh private scratch,
+not copied from a workspace that tests may have populated with untracked files.
+Extraction and project tests use checkout-equivalent umask 022 (regular files 0644,
+executables 0755). The enclosing work and evidence directories remain 0700; report
+and key handling retain their private permissions.
+Both image probes/scans consume the captured immutable IDs; no image is exported.
+After a successful image build, scan/report enforcement and SBOM generation/validation
+record separate private outcomes. Trivy findings, operational errors and malformed
+reports do not suppress the SBOM or applicable identity/import proof. Default proof
+requires a valid SBOM, not a green scan; Aquacast proof retains its independence from
+SBOM. Any required component failure keeps the aggregate image gate failed, even if
+later independent checks pass.
+Private `disk-snapshots.jsonl` records total/used/free bytes, device and path labels
+before the gate loop, after every result (including blocked/aggregate gates), and
+after builder cleanup: 14 ordered samples. Root, workspace, attempt work and default
+Docker-root paths are labelled; matching device IDs identify shared filesystems.
+Unavailable observations are explicit nulls, never zero capacity. These boundary
+snapshots are sampled evidence, not peak-use measurements, and do not discover a
+nondefault Docker data root. They travel only in the existing private report; a job
+killed before delivery supplies no report or snapshots.
+
+| Existing substantive CI job | Retained private gate/evidence |
+|---|---|
+| `lint` | Plain frozen sync; PR release-target and map-contract checks; ruff check/format; ShellCheck; pyright JSON plus ratchet; Trivy filesystem HIGH/CRITICAL fixed-vulnerability gate. |
+| `unit` | All four existing `tools/unit_shards.py` partitions, `-n auto`, Aquacast extra and exact shim-node pass proof; scripts-shard sequential ordering regression; sysmon configuration/core proof; coverage and JUnit. No degraded private coverage. |
+| `unit-coverage` | Require all four successful shards and nonempty files; combine with `--keep`; whole-suite report, still informational/no new threshold. |
+| `wheel-only-guard` | Separate environment; no-build/no-cache guard before the existing ForecastInterface/recap exception reinstall. No new exception. |
+| `integration-shard` | Existing heavy/rest selectors, heavy partition proof, serial pytest and unchanged live/slow exclusions; a fresh pinned PostGIS container per shard; private JUnit. |
+| `integration` | Explicit fail-closed dependency assertion over both integration results; a failed/missing shard blocks the aggregate. |
+| `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation. |
+| `aquacast-release-image-proof` | Actual Aquacast amd64 build/load and existing identity/shim/import/entrypoint/isolation proof, without missing-token degradation. Also applies the same private scan/SBOM gates to this variant. |
+
+`tools/private_verification.py::CI_JOB_GATES` and focused tests bind this mapping to
+the actual eight legacy jobs and their shard sets. The shell runner retains the
+commands; the Python runner owns completeness, admission, private capture and
+receiver delivery. Independent gates continue after a failure; dependencies are
+explicitly blocked, never passed by skip. Each command group has a timeout, and the
+job has a 180-minute hard ceiling. That ceiling does not guarantee report delivery
+on hard kill, disk exhaustion or cancellation; these are failures, never successes.
+Retries are not gate exemptions: image scan operational errors get a second attempt;
+the vulnerability verdict is evaluated once from the resulting JSON. Tool download
+failures fail preparation rather than silently accepting an arbitrary installed tool.
+
+Pinned existing Actions prepare public tools before private fetches. Trivy's action
+scans only a newly created empty bootstrap directory to install its tool; it is NOT
+the substantive filesystem gate. Actual scans run under private capture. UV/Trivy
+caching and Buildx binary caching are disabled, and no upload-artifact, SARIF upload,
+build record, build summary or cache export is configured. Buildx public post-job
+cleanup is disabled; cleanup runs privately. Fresh per-attempt temporary caches
+allow within-job reuse only. No shared cross-run cache is restored or trusted.
+
+### Admission and private report contract
+
+The environment-scoped `PRIVATE_VERIFICATION_ADMISSION` is an exact JSON object
+matching the `Binding` fields: repository, event, ref, source SHA/tree, base/head
+SHAs, workflow ref/SHA, run ID/attempt, actor/triggering actor, job and environment.
+For main pushes the base is empty and head equals source. For PRs, both repositories
+must be canonical, base branch main and checkout parents exactly event base/head.
+Both actors must be the same human. Duplicate/extra/missing fields or mismatch fail.
+The owner-reviewed admission record must cover this exact final candidate/attempt;
+records cannot be reused for changed source or retries. The code checks before gate
+commands, between gates and before/after delivery. Git tracked-source drift fails.
+Provider snapshots/records do not prove that the current remote ref has not changed:
+provider ref/reviewer controls and final owner freshness verification remain required.
+
+The record and YAML conditions are result binding, **not credential authority**.
+T2 must qualify actual environment review/ref semantics, effective secret scope,
+remaining admission cases against this verifier, and contain legacy/dynamic consumers
+before bootstrap. It must not treat prior marker or local capture tests as that proof.
+The report-only SSH key is not a deployment/image-delivery/runtime/publication key.
+Gate subprocess environments omit the report key and Actions runtime cache tokens;
+this is exposure reduction, not process isolation from the trusted reviewed code.
+
+Environment-scoped inputs for the captured step are `RECAP_DG_CLIENT_TOKEN`,
+`AQUACAST_TOKEN`, `PRIVATE_VERIFICATION_ADMISSION`, `PRIVATE_REPORT_SSH_KEY`,
+`PRIVATE_REPORT_KNOWN_HOSTS` and `PRIVATE_REPORT_TARGET` (`user@host`, port 22).
+No values are provided by this patch. Both source credentials are mandatory; no
+Dependabot/fork/degraded route is introduced. Existing key custody/scope/migration
+and the provider-control prerequisites remain T2 work, not a reason for rotation.
+
+Private command stdout/stderr, workflow-command files, coverage/JUnit, dependency
+failures, scan/SBOM diagnostics and image identities stay under a fresh mode-0700
+attempt directory outside the checkout. Known credential byte strings are removed
+from packaged evidence; this is not a guarantee against malicious transformed-secret
+exfiltration. The reviewed source/host remain trusted. The report is a gzip tar
+containing the exact binding, complete gate outcomes, source-file hashes and private
+evidence. Nonregular evidence, excessive file count or size fails; there is no
+silent truncation/public fallback. Uncompressed evidence and compressed report are
+each limited to 64 MiB. T2 must measure actual report sizes and receiver limits.
+
+The sender reuses `receive_build_report.py` unchanged: eight-byte big-endian length,
+opaque report bytes and EOF over forced-command SSH `upload-build-report`. It pins
+host keys, disables interactive auth/agent/proxy/forwarding and requires exit zero
+plus exactly `REPORT_RECEIVED` with newline. Delivery failure fails verification,
+even if all gates passed; failed gates remain failed even after report receipt.
+`PRIVATE_VERIFICATION_COMPLETE` means required local gates plus durable receiver
+acknowledgement, **not administrator-accepted custody, merge or deployment approval**.
+Receiver confinement, independently bound inbox, accessible complete private reports
+and separate administrator-owned copying/acceptance remain operational requirements.
+Private errors are never echoed as public failure explanations; only the fixed
+complete/failed status is emitted. Local tests use synthetic commands/transports;
+they do not prove actual GitHub post-job visibility, SSH or runner isolation.
+
+T2 must execute the final real gates and both images with approved credentials,
+verify public/failure/post-job paths and actual cold capacity, and preserve full
+private evidence. Final full-suite validation after the last change remains required
+before merge. Old receiver test/full-suite results apply only to unchanged receiver
+code, not this verifier patch. No A3 export, release publication, runtime activation,
+model run or backup commissioning is implemented here.
+
+
+## Manual canonical release → private staging delivery
+
+`private-verification.yml` now dispatches only the reviewed published canonical tag
+through `staging-release`; it is not an automatic PR/main private verifier. Legacy
+CI and its package secrets remain unchanged. The bounded owner-approved ADMIN-key
+exception replaces the earlier bootstrap route without satisfying old isolation
+criteria. All eight substantive gates/twelve outcomes remain; PR-only comparisons
+are explicitly mapped to canonical publisher/source/tag/state validation, not fake
+PR fields or green skips.
+
+`release_identity.build_receipt` with its release adapter produces both images once.
+Independent image component failures survive receipt failure. Export uses their
+captured IDs; descriptor/config validation preserves raw ID semantics. The final
+SSH step follows fresh admission and cannot rebuild, publish or activate runtime.
+Default success is sealed deliver-only acceptance; load needs a separate receiver
+approval. Native target probes, when authorised, run without protected mounts/network.
+
+The [runbook](../deployment/actions-staging-release.md) lists exact configuration,
+private/digest-only output boundaries, capacity accounting and per-run live holds.
+No local synthetic result is provider/cold-capacity/transport qualification. Old
+8df full-suite evidence applies only to old bytes; the new patch needs review and
+final full validation before owner publication.
+
+Shared-tool effects also apply outside this manual route: the owner `build-receipt`
+CLI now rejects any release-state change during a build instead of recording a
+refreshed state; its Git contexts restore 0755/0644 Git mode parity (which can change
+layer bytes from older owner builds); legacy CI identity probes now use `--pull never
+--network none`. Existing publisher/probe and backup compatibility tests remain in
+the final suite. The 30-minute transfer step now accounts for pre-SSH work, cleanup
+and strictly nested receiver/sender budgets; the 180-minute job is not extended.

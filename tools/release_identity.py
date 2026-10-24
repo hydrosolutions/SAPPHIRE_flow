@@ -905,12 +905,15 @@ def run_docker(args: list[str], *, cwd: Path) -> str:
 
 
 def inspect_image(
-    image_tag: str, expected_version: str, expected_source: str
+    image_tag: str,
+    expected_version: str,
+    expected_source: str,
+    *,
+    variant: Literal["default", "aquacast"] | None = None,
 ) -> ReceiptImage:
     probe_module = _load_image_probe()
-    variant: Literal["default", "aquacast"] = (
-        "aquacast" if "aquacast" in image_tag else "default"
-    )
+    if variant is None:
+        variant = "aquacast" if "aquacast" in image_tag else "default"
     try:
         image = probe_module.probe_image(
             image_tag,
@@ -935,6 +938,14 @@ def create_git_tree_context(source: str) -> tempfile.TemporaryDirectory[str]:
     git(["archive", "--format=tar", f"--output={archive}", source])
     shutil.unpack_archive(str(archive), temp.name, "tar")
     archive.unlink()
+    # Git records the executable bit, not group-write permissions in tar headers.
+    for path in Path(temp.name).rglob("*"):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            path.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
     generated = Path(temp.name) / "src" / "sapphire_flow" / "_version.py"
     if generated.exists():
         raise ReleaseIdentityError("generated version metadata leaked into context")
@@ -964,7 +975,11 @@ def atomic_write_receipt(path: Path, payload: str) -> None:
 
 
 def build_receipt(
-    args: argparse.Namespace, *, docker_builder: DockerImageBuilder | None = None
+    args: argparse.Namespace,
+    *,
+    docker_builder: DockerImageBuilder | None = None,
+    approved_tag_object: str | None = None,
+    approved_release_state: str | None = None,
 ) -> int:
     version = Version.parse(args.version)
     source = require_full_sha(args.source)
@@ -981,6 +996,12 @@ def build_receipt(
         raise ReleaseIdentityError(
             "remote helper-era tag does not match version/source"
         )
+    if (approved_tag_object is None) != (approved_release_state is None):
+        raise ReleaseIdentityError("incomplete approved release binding")
+    if approved_tag_object is not None and (
+        tag.object_oid != approved_tag_object or state != approved_release_state
+    ):
+        raise ReleaseIdentityError("approved release binding changed before build")
     tree = ensure_clean_context(source)
     default_tag = f"sapphire-flow:{version.text}"
     aquacast_tag = f"sapphire-flow-aquacast:{version.text}"
@@ -1031,6 +1052,8 @@ def build_receipt(
     refreshed_main, refreshed_state, refreshed_tags = fetch_remote_state()
     if refreshed_state is None:
         raise ReleaseIdentityError("release-state disappeared before receipt write")
+    if refreshed_state != state:
+        raise ReleaseIdentityError("release-state changed before receipt write")
     validate_state(refreshed_state, refreshed_tags, refreshed_main)
     refreshed_tag = next(
         (item for item in refreshed_tags if item.name == version.tag), None

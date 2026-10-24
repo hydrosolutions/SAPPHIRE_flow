@@ -1523,6 +1523,61 @@ The named operator tooling projections follow the contract below.
 Full backups must continue to preserve both forecast classes and protected lineage.
 
 
+### Bounded build-report upload (not installed)
+
+`tools/receive_build_report.py` is a stdlib-only loose POSIX helper, not an
+application CLI or release receiver. It accepts only the fixed SSH command
+`upload-build-report`, no CLI options, and a root-selected inbox from the fixed
+`/etc/sapphire-flow/build-report-upload.json`. The opaque length-framed report
+has no filename, command, extraction or client-selected identity authority.
+
+A later installation requires a dedicated non-root report-only principal and key,
+root-controlled authorized keys, a root-owned reviewed script/interpreter invoked
+with isolated Python (`-I`), and SSH `restrict` or verified equivalents disabling
+port/agent/X11 forwarding, PTY and user RC. No shell/SFTP alternative, sudo,
+Docker/DB/runtime/release access or general deployment key is permitted. The
+helper does not install or prove those SSH restrictions. No such deployment is
+approved by the local implementation.
+
+The fixed config is at most 4 KiB, regular, single-link, root-owned and not
+writable by group/others. Its path and the configured inbox path must be canonical
+absolute paths, without empty, dot or parent components or symlinks. Opened ancestor
+directories must be root-owned and not group/world-writable; deployment must also
+exclude ACLs or other access grants that defeat those permissions. The inbox is
+owned by the configured non-root effective UID with mode 0700 under a stable
+root-owned parent. The helper locks the inbox directory itself nonblockingly;
+unsupported directory flock fails closed. The internal test-only trusted-owner
+argument is fixed to zero at the production entrypoint; it has no CLI/env override.
+
+One received report per inbox is allowed until operator clearance. Clean failures
+may retry; any pre-existing `report.bin` or stale `report.partial`, including
+symlinks, causes refusal without deletion. Exclusive no-follow creation, bounded
+streaming, read-only completion, file fsync and no-clobber hard-link publication
+precede directory fsync and success. Late failure can leave an uncertain final
+file, which must be reconciled rather than overwritten. Cleanup only concerns the
+current partial. HUP/INT/TERM use a one-shot interrupt; short signal-masked
+sections protect create/ownership and cleanup bookkeeping. Terminal CLI teardown
+blocks/ignores these signals to avoid exception leakage; in-process tests restore
+their original handlers and mask. Hard kill/cleanup failure can leave a bounded
+stale file and require operator clearance.
+
+The maximum configured report is 64 MiB and input deadline 120 seconds, both
+operator-lowerable. Memory uses fixed chunks, lock losers do not queue, and status
+output has a separate one-second best-effort bound. These are not a whole-host
+quota, connection-rate limit or hard kernel-I/O deadline. Later SSH process/session
+limits and an independent wall-clock supervisor are required. Same-UID hostile
+processes, administrator changes, malicious filesystems and writable/ACL-defeated
+trusted ancestors are outside the supported boundary. Read-only mode alone does
+not defeat a same-UID chmod or an already-open writer.
+
+`REPORT_RECEIVED` is local closed-file receipt, **not accepted evidence**. An
+independently authorised administrator must revoke/quiesce upload, copy completed
+regular bytes into administrator-owned new inodes outside uploader access, verify
+size/hash, and bind the report to independent approved run/candidate metadata.
+This separate handoff is not implemented here. The upload capability cannot reach
+accepted storage. No release ledger/authority, new service, backup prerequisite,
+protected data permission or CI credential admission is created.
+
 ### Operator forecast tooling isolation
 
 `scripts/forecast_feed_resilience.py` is the loose domain implementation;
@@ -1933,3 +1988,54 @@ UPDATE authority and durable CLI commit/reconnect remain essential Plan 519 T0/O
 holds. The focused candidate's three passing tests, setup-envelope observation and
 independently verified owned cleanup do not discharge these production duties.
 No grants, roles, activation policy or protected-writer boundaries change.
+
+### A1 private verification boundary (local implementation)
+
+The new `private-verification.yml` workflow gates its credential-consuming job with
+`private-verification`; legacy CI remains unchanged and must be contained before
+any bootstrap event. Required scopes, exact ref/reviewer settings, fresh attempt
+approval and narrow credential migration are operational holds, not YAML guarantees.
+See [the retained-gate/admission contract](cicd.md#a1-private-verification-implementation-not-operationally-qualified).
+
+`tools/private_verification.py` captures command stdout/stderr and substitutes private
+workflow-command files. It publishes no raw reports, SARIF, SBOM, JUnit, coverage,
+build record or cache. The same-user reviewed candidate is trusted: redirects and
+removed runtime tokens are not a sandbox, an egress firewall or proof against code
+that deliberately discovers another output channel. Fixed public status is separate
+from private diagnostics. Pinned tool bootstrap occurs before private fetches;
+post-job/private-output qualification still needs actual provider evidence.
+
+The SSH sender uses only a separately scoped report-upload key and pinned known
+hosts, with fixed command `upload-build-report`. No deployment key reuse, remote
+path/command selection, agent/proxy/PTY/forwarding, runtime credentials or publication
+rights are granted. The existing receiver stays unchanged. Its server confinement,
+per-attempt inbox binding, byte limits, retention and separate administrator-owned
+accepted custody remain mandatory; local synthetic transport tests do not prove them.
+
+
+### Manual staging release: explicit administrator-key exception
+
+The 2026-10-22 owner direction replaces the above A1 bootstrap for the bounded
+staging delivery, without claiming its credential migration/confinement complete.
+Existing package secrets and their locations/consumers remain unchanged; no CI pause
+is inferred. Only the existing staging ADMIN SSH key may be copied into the protected
+`staging-release` environment. Its fixed final command does not limit administrator
+authority, and root-owned server custody is not independent of CI holding that key.
+The owner retains the digest-only accepted identity record outside server control.
+
+Trust includes all executed actions, dependencies/base images, Docker/build services
+and privileged hosted-runner processes, not merely our Python code. Late step-level
+SSH injection reduces exposure, not hostile-code access on the same runner. The
+protected environment gates the SSH copy only; it does not repair existing source-key
+or legacy output/cache exposure. No new restricted account/key or old migration/
+deletion packet follows. See [the exact route and live holds](../deployment/actions-staging-release.md).
+
+Full private reports stay private; only a validated fixed digest projection reaches
+the owner summary. Release binding is rechecked before either release or failed-run
+diagnostic SSH. Deliver-only is default; source failure cannot use SSH, failed gates
+cannot deliver images, and image load requires separately bound target approval.
+Runtime activation, protected-original access and release publication are not granted.
+
+The fixed root-only `load-accepted` operation reuses sealed bytes without another
+CI run/build/transfer. Its separate server approval binds the original accepted
+binding **and receipt hash**. It cannot rewrite accepted bytes or activate runtime.

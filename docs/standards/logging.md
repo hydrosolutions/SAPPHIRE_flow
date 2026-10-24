@@ -639,3 +639,24 @@ name pointing at the same function, and it never passes
 `tests/unit/test_structlog_cache_isolation.py` for the locking regression
 (production configure → first bind → reconfigure → capture, proven to fail
 against the setup-only version of the fixture).
+
+### Private-verification bootstrap status
+
+`tools/private_verification.py` starts with the existing system Python before project
+installation. Like the bounded report receiver, its fixed stdio protocol is not an
+application logger: only `PRIVATE_VERIFICATION_COMPLETE` or
+`PRIVATE_VERIFICATION_FAILED` reaches the public Actions log. Subprocess diagnostics
+and all workflow-command files are captured privately; exception text/tracebacks are
+not public fallback diagnostics. The private report includes failed gate evidence.
+No change to application structlog conventions is implied. Synthetic canary tests
+cover capture and failure paths, not live provider/post-job visibility.
+
+
+### Manual staging release output
+
+The standalone release/receiver bootstraps emit only fixed phase failure/success
+status and an explicitly projected digest-only owner receipt. Full subprocess logs,
+SARIF, SBOM, test/coverage reports and exception details remain in private 0700
+work directories. Source/attempt validation failures cannot enter SSH diagnostics.
+Receipt fields are fixed typed identifiers/hashes/counts, never arbitrary labels,
+package inventories or server error text. See [the staging route](../deployment/actions-staging-release.md).
