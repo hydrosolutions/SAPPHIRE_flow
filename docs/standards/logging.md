@@ -654,8 +654,15 @@ cover capture and failure paths, not live provider/post-job visibility.
 
 ### Manual staging release output
 
-The standalone release/receiver bootstraps emit only fixed phase failure/success
-status and an explicitly projected digest-only owner receipt. Full subprocess logs,
+The standalone release/receiver bootstraps emit fixed phase failure/success status
+and an explicitly projected digest-only owner receipt. The release controller also
+emits a closed phase/checkpoint/outcome vocabulary through its saved public descriptor,
+with one fixed-byte write per marker. This is a stdio protocol, not an application
+logger; no structlog context or exception rendering is added. Repeated validations
+inside payload preparation stay silent. Marker writes suppress only `OSError`; an
+asynchronous transfer alarm can still interrupt emission. The reporter is disabled
+before its saved descriptor closes. Coarse PASS markers are not delivery evidence.
+Full subprocess logs,
 SARIF, SBOM, test/coverage reports and exception details remain in private 0700
 work directories. Source/attempt validation failures cannot enter SSH diagnostics.
 Receipt fields are fixed typed identifiers/hashes/counts, never arbitrary labels,

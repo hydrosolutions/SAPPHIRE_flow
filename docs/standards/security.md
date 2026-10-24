@@ -2031,7 +2031,11 @@ or legacy output/cache exposure. No new restricted account/key or old migration/
 deletion packet follows. See [the exact route and live holds](../deployment/actions-staging-release.md).
 
 Full private reports stay private; only a validated fixed digest projection reaches
-the owner summary. Release binding is rechecked before either release or failed-run
+the owner summary. Public controller progress uses only closed phase/checkpoint/outcome
+codes, never error text or input-derived values. Payload-internal checks remain silent
+to avoid disclosing gate cadence or readiness branches; aggregate phase timing remains
+observable. Private descriptor capture and all delivery gates are unchanged.
+Release binding is rechecked before either release or failed-run
 diagnostic SSH. Deliver-only is default; source failure cannot use SSH, failed gates
 cannot deliver images, and image load requires separately bound target approval.
 Runtime activation, protected-original access and release publication are not granted.
