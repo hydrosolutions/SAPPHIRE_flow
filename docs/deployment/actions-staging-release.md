@@ -215,6 +215,12 @@ if loading is separately approved. A mismatch, missing durable delivery ledger,
 partial upload or uncertain load state remains held for explicit reconciliation.
 No acknowledgement failure implies rollback, no images loaded, or runtime activation.
 
+The frozen dependency graph has security floors of `certifi>=2026.10.19`
+(compromised trust-root remediation) and `pillow>=13.0.0` (image-codec security fixes).
+These are resolver constraints, not overrides: Pillow remains Aquacast-only.
+Both resulting image variants still require fresh security/runtime proofs; prior
+image receipts do not qualify changed dependencies.
+
 The affected test selection includes the complete standalone
 `tests/unit/tools/test_image_identity_probe.py` suite. Its runtime-command contract
 asserts immutable image selection together with `--pull never --network none`,
