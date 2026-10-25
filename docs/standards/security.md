@@ -2043,3 +2043,29 @@ Runtime activation, protected-original access and release publication are not gr
 The fixed root-only `load-accepted` operation reuses sealed bytes without another
 CI run/build/transfer. Its separate server approval binds the original accepted
 binding **and receipt hash**. It cannot rewrite accepted bytes or activate runtime.
+
+The manual staging workflow's `exporter-smoke-only` route never enters secret-
+bearing or transfer steps. Case-sensitive event parsing must succeed in addition
+to Actions' positive private-route expressions (Actions string equality itself
+is case-insensitive). Existing release binding values and exact event comparison
+remain unchanged. Stock hosted Docker 28.0.4 is configured before private inputs,
+with zero-container/default-socket/configuration checks and a narrow root-owned
+atomic feature merge; no existing staging daemon is changed. This privileged
+setup remains inside the trusted hosted-runner boundary.
+
+Do not replace this setup with `docker/setup-docker-action` without a new review:
+the audited v5.6.0 implementation inherits public daemon output and prints daemon
+logs in post. No post-hook/log suppression workaround is authorized. The pinned
+BuildKit OCI index is checked against the running builder's approved amd64
+manifest/config identity graph. No public daemon journal/cache/history dump is
+added after private work.
+
+There is no new Docker **engine** installer. The existing SHA-pinned
+`docker/setup-buildx-action`, with `version: v0.38.0` and `cache-binary: false`,
+may acquire a public Buildx executable. That executable is later trusted with
+the existing BuildKit package-secret inputs. Its version selector and runtime
+version check are not a binary content digest; this patch makes no checksum or
+signature verification claim. The action, its artifact distribution and the
+acquired executable are part of the reviewed trusted-runner/supply-chain boundary.
+The action SHA and BuildKit OCI-index pin meet the explicit action/image pin rules;
+the executable's byte-integrity guarantee is a residual, not an inferred proof.
