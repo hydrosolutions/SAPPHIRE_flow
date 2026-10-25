@@ -1974,3 +1974,24 @@ layer bytes from older owner builds); legacy CI identity probes now use `--pull 
 --network none`. Existing publisher/probe and backup compatibility tests remain in
 the final suite. The 30-minute transfer step now accounts for pre-SSH work, cleanup
 and strictly nested receiver/sender budgets; the 180-minute job is not extended.
+
+The staging controller requires exactly eight successful preparation outcomes:
+`checkout`, `uv`, `buildx`, `trivy`, `syft`, `route`, `engine`, `exporter-smoke`.
+Missing, extra, skipped, failed or cancelled preparation cannot admit image gates.
+This does not change the historical private verifier or legacy `ci.yml` mapping.
+The existing dispatch field adds a public-only `exporter-smoke-only` choice; all
+private/SSH steps also require strict-route success and a positive deliver/load
+allowlist. A successful smoke-only environment record is not a release receipt.
+
+Public route/source validation has a 15-minute bound; hosted daemon setup has
+three minutes and exporter smoke five. No new verification/transfer-preflight
+cap or global budget increase is added. Existing 180-minute job, 30-minute transfer
+and substantive gate deadlines remain, without a worst-case delivery guarantee.
+The first hosted qualification remains an operational hold until the exact
+Docker 28.0.4/containerd + docker-container builder smoke passes; scanner/runtime
+compatibility still needs the separate complete private attempt.
+
+Pre-route failures, including setup-uv failure, intentionally cannot reach private
+diagnostics because strict route success is mandatory. This differs from a
+post-route preparation failure, which can still produce the existing approved
+diagnostic. The shared smoke checks are not a receiver/envelope/load rehearsal.

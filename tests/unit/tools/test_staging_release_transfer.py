@@ -588,7 +588,19 @@ class TestSyntheticReleasePipeline:
         )
         env = {
             "PRIVATE_PREPARATION": json.dumps(
-                dict.fromkeys(("checkout", "uv", "buildx", "trivy", "syft"), "success")
+                dict.fromkeys(
+                    (
+                        "checkout",
+                        "uv",
+                        "buildx",
+                        "trivy",
+                        "syft",
+                        "route",
+                        "engine",
+                        "exporter-smoke",
+                    ),
+                    "success",
+                )
             ),
             "RECAP_DG_CLIENT_TOKEN": "synthetic",
             "AQUACAST_TOKEN": "synthetic",

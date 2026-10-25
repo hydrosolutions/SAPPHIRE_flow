@@ -260,3 +260,50 @@ The affected test selection includes the complete standalone
 `tests/unit/tools/test_image_identity_probe.py` suite. Its runtime-command contract
 asserts immutable image selection together with `--pull never --network none`,
 while retaining the non-root user, explicit Python entrypoint and stdin checks.
+
+### Hosted containerd exporter qualification
+
+The manual workflow also accepts `delivery_mode: exporter-smoke-only`. This is
+an execution route, not a delivery mode in an approval or envelope. Its green
+workflow/environment deployment record is **not delivery, load or activation**.
+The strict public route check and positive private-route predicates prevent it
+from reaching package secrets, private verification, SSH or admin-key steps,
+including failure paths. Normal release event inputs remain the exact existing
+single-field object; no new default field is added.
+
+Before private input, the fresh hosted Linux/x64 job requires stock Docker
+28.0.4 at the default local socket and zero containers. It accepts the normal
+systemd `--containerd=/run/containerd/containerd.sock` argument, but rejects
+custom endpoints/configuration. A root-owned atomic daemon-config merge enables
+only `features.containerd-snapshotter`; the existing service is restarted only
+when its store needs changing. Unexpected host configuration fails closed.
+No installer, public daemon log streamer or post-job journal export is added.
+
+The public smoke uses the actual pinned docker-container builder, two tiny
+scratch/COPY/label images, production `.Id` capture and raw-ID save, and the
+unchanged archive and wire-identity validators. It keeps tags until after export.
+It caps the archive at 256 MiB and client work at five minutes. The 2 GiB growth
+STOP threshold samples root, Docker/containerd filesystems and owned bytes;
+it is not a quota or proof of exclusive use/cancellation. Only exact fixture
+tags/files are removed; failures may retain owned evidence/cache on the ephemeral
+runner. All work is outside checkout.
+
+First qualify this exact hosted path with the public-only route after reviewed
+publication. Local Docker 29.8.2 evidence does not qualify hosted 28.0.4.
+Any hosted engine-version drift blocks all release delivery routes until reviewed
+requalification. A later private attempt reruns its own setup/smoke and every existing test, scan, SBOM and
+image proof. The existing 180-minute job and 30-minute transfer limits remain;
+worst-case work does not guarantee diagnostic delivery before cancellation.
+
+Before strict route success, failures (including checkout or setup-uv failure)
+produce no private diagnostic: the route check is skipped or fails, and every
+private step remains unreachable. This is intentionally fail-closed. Failures
+in preparation after route success may still use the approved diagnostic path.
+
+Smoke includes the unchanged expanded-layer byte counter, including shared gzip
+layers. It does not create or validate a release envelope or run receiver-side
+load checks. The later full private attempt still supplies those boundaries.
+The public command runner currently merges stderr with stdout for comparisons;
+a benign tool warning can therefore fail smoke where production's stdout-only
+capture would not. This is a disclosed fail-closed availability/parity limit,
+not a reason to weaken the actual checks or retry with different bytes.

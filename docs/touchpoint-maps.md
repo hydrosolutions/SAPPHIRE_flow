@@ -2074,3 +2074,18 @@ runtime/production acceptance from implementation.
 - Local tests do not establish provider controls, private post-job behaviour,
   cold capacity, target identity or independently accepted custody. Final patch
   review/full tests and separate live approvals remain mandatory.
+
+Manual staging exporter preparation also touches
+`tools/qualify_image_exporter.py` and its unit tests: strict public dispatch/source
+validation, stock hosted daemon configuration and a bounded two-image smoke.
+Keep the existing exact release-event/binding schema, raw-ID capture/save and
+archive equality rejection. `require_untagged_pair` is shared without predicate
+changes; the save helper's optional smoke timeout preserves production defaults.
+The workflow's eight-key preparation gate and private-step route predicates must
+be tested together. Legacy CI, dependencies, receiver/load boundaries and private
+image gates remain unchanged. Hosted smoke-only success is not delivery evidence.
+
+The raw save helper also accepts an optional smoke observer (default `None`).
+Only the opt-in path samples during bounded readiness waits and sustained output;
+observer failure uses the existing owned-save-process cleanup and stderr capture.
+The original production wait/deadline/byte-cap path is unchanged.

@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import shutil
 import signal
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
 _spec = importlib.util.spec_from_file_location(
     "staging_transfer", Path(__file__).with_name("staging_release_transfer.py")
@@ -41,6 +42,7 @@ SOURCE_FILES = (
     ".github/workflows/private-verification.yml",
     "tools/staging_release.py",
     "tools/staging_release_transfer.py",
+    "tools/qualify_image_exporter.py",
     "tools/private_verification.py",
     "tools/private_verification_gates.sh",
     "tools/release_identity.py",
@@ -311,13 +313,35 @@ def gate_environment_ready(env: Mapping[str, str]) -> bool:
     preparation = transfer.parse_json(env["PRIVATE_PREPARATION"].encode())
     return (
         preparation
-        == dict.fromkeys(("checkout", "uv", "buildx", "trivy", "syft"), "success")
+        == dict.fromkeys(
+            (
+                "checkout",
+                "uv",
+                "buildx",
+                "trivy",
+                "syft",
+                "route",
+                "engine",
+                "exporter-smoke",
+            ),
+            "success",
+        )
         and all(env.get(n) for n in SECRET_NAMES[:2])
         and env.get("RUNNER_DEBUG", "0") != "1"
     )
 
 
-def archive_images(ids: list[str], output: Path, limit: int, errors_path: Path) -> None:
+def archive_images(
+    ids: list[str],
+    output: Path,
+    limit: int,
+    errors_path: Path,
+    *,
+    timeout_seconds: float = 600,
+    observer: Callable[[], None] | None = None,
+) -> None:
+    if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 600:
+        raise transfer.TransferError("invalid export timeout")
     receiver = transfer.tool("receive_build_report")
     with output.open("xb") as target, errors_path.open("xb") as errors:
         process = subprocess.Popen(
@@ -329,11 +353,23 @@ def archive_images(ids: list[str], output: Path, limit: int, errors_path: Path) 
         try:
             assert process.stdout is not None
             os.set_blocking(process.stdout.fileno(), False)
+            deadline = time.monotonic() + timeout_seconds
+
+            def observed_wait(fd: int, event: int, seconds: float) -> bool:
+                assert observer is not None
+                while True:
+                    observer()
+                    remaining = min(seconds, deadline - time.monotonic())
+                    if remaining <= 0:
+                        return False
+                    if receiver.wait_ready(fd, event, min(2, remaining)):
+                        return True
+
             stream = receiver.InputStream(
                 fd=process.stdout.fileno(),
-                deadline=time.monotonic() + 600,
+                deadline=deadline,
                 clock=time.monotonic,
-                wait=receiver.wait_ready,
+                wait=receiver.wait_ready if observer is None else observed_wait,
             )
             size = 0
             while chunk := stream.read(1024 * 1024):
@@ -343,7 +379,7 @@ def archive_images(ids: list[str], output: Path, limit: int, errors_path: Path) 
                 target.write(chunk)
             target.flush()
             os.fsync(target.fileno())
-            if process.wait(timeout=30):
+            if process.wait(timeout=min(30, timeout_seconds)):
                 raise transfer.TransferError("image export failed")
         finally:
             with contextlib.suppress(ProcessLookupError):
@@ -371,6 +407,25 @@ def runtime_bundle(root: Path, binding: transfer.ReleaseBinding, output: Path) -
             archive.addfile(member, io.BytesIO(result.stdout))
 
 
+def require_untagged_pair(raw: Path) -> None:
+    with tarfile.open(raw, "r:") as saved:
+        manifest_file = saved.extractfile("manifest.json")
+        if manifest_file is None:
+            raise transfer.TransferError("missing export manifest")
+        manifest = json.loads(manifest_file.read(transfer.MAX_METADATA + 1))
+        if (
+            not isinstance(manifest, list)
+            or len(manifest) != 2
+            or any(
+                not isinstance(item, dict) or item.get("RepoTags") not in (None, [])
+                for item in manifest
+            )
+        ):
+            raise transfer.TransferError(
+                "export must contain exactly two untagged images"
+            )
+
+
 def export_release(
     root: Path, work: Path, binding: transfer.ReleaseBinding, env: Mapping[str, str]
 ) -> tuple:
@@ -388,22 +443,7 @@ def export_release(
     ids = [transfer.image_id(image["image_id"]) for image in receipt["images"]]
     disk_sample(root, work, "before-export")
     archive_images(ids, raw, max_expanded, work / "evidence" / "export-save.log")
-    with tarfile.open(raw, "r:") as saved:
-        manifest_file = saved.extractfile("manifest.json")
-        if manifest_file is None:
-            raise transfer.TransferError("missing export manifest")
-        manifest = json.loads(manifest_file.read(transfer.MAX_METADATA + 1))
-        if (
-            not isinstance(manifest, list)
-            or len(manifest) != 2
-            or any(
-                not isinstance(item, dict) or item.get("RepoTags") not in (None, [])
-                for item in manifest
-            )
-        ):
-            raise transfer.TransferError(
-                "export must contain exactly two untagged images"
-            )
+    require_untagged_pair(raw)
     archive = transfer.tool("image_archive")
     driver = release.run_docker(["info", "--format", "{{.Driver}}"], cwd=root)
     status = release.run_docker(

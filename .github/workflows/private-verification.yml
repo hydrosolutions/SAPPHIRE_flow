@@ -6,7 +6,7 @@ on:
       delivery_mode:
         description: Deliver only, or load with a separately approved receiver binding
         type: choice
-        options: [deliver-only, load-images]
+        options: [deliver-only, load-images, exporter-smoke-only]
         default: deliver-only
         required: true
 
@@ -52,19 +52,45 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
           enable-cache: false
+      - name: Validate exact execution route and canonical public source
+        id: route
+        timeout-minutes: 15
+        env:
+          EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
+        run: python3 -I tools/qualify_image_exporter.py route
+      - name: Enable the approved hosted containerd image store
+        id: engine
+        if: ${{ steps.route.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
+        run: python3 -I tools/qualify_image_exporter.py engine
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
         id: buildx
+        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' }}
         timeout-minutes: 3
         with:
           name: private-verification
+          version: v0.38.0
+          driver: docker-container
+          driver-opts: image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
           cache-binary: false
           # No public post-job BuildKit diagnostic sink after private builds.
           cleanup: false
+      - name: Qualify the actual two-image raw-ID exporter
+        id: exporter-smoke
+        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' && steps.buildx.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
+        run: python3 -I tools/qualify_image_exporter.py smoke
       - name: Prepare empty public tool-bootstrap directory
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
         run: mkdir "$RUNNER_TEMP/private-trivy-bootstrap"
       - name: Install the existing pinned Trivy action's tool
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         id: trivy
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
         timeout-minutes: 5
         with:
           # Only an empty directory is scanned here, before any private fetch.
@@ -79,10 +105,11 @@ jobs:
           cache-dir: ${{ runner.temp }}/private-trivy-bootstrap-cache
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
         id: syft
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
         timeout-minutes: 3
       - name: Verify canonical release and export exact tested images
         id: verification
-        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' && steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
@@ -90,14 +117,15 @@ jobs:
           PRIVATE_PREPARATION: >-
             {"checkout":"${{ steps.checkout.outcome }}","uv":"${{ steps.uv.outcome }}",
              "buildx":"${{ steps.buildx.outcome }}","trivy":"${{ steps.trivy.outcome }}",
-             "syft":"${{ steps.syft.outcome }}"}
+             "syft":"${{ steps.syft.outcome }}","route":"${{ steps.route.outcome }}",
+             "engine":"${{ steps.engine.outcome }}","exporter-smoke":"${{ steps.exporter-smoke.outcome }}"}
         run: python3 -I tools/staging_release.py verify
       - name: Revalidate approved source and payload before SSH admission
         id: transfer_admission
-        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' && steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
         run: python3 -I tools/staging_release.py preflight
       - name: Privately deliver the approved release or failed-run diagnostics
-        if: ${{ always() && !cancelled() && steps.transfer_admission.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') && steps.transfer_admission.outcome == 'success' }}
         timeout-minutes: 30
         env:
           STAGING_ADMIN_SSH_KEY: ${{ secrets.STAGING_ADMIN_SSH_KEY }}

@@ -59,7 +59,19 @@ def environment(tmp_path: Path) -> dict[str, str]:
         "GITHUB_JOB": "verify",
         "GITHUB_EVENT_PATH": str(event),
         "PRIVATE_PREPARATION": json.dumps(
-            dict.fromkeys(("checkout", "uv", "buildx", "trivy", "syft"), "success")
+            dict.fromkeys(
+                (
+                    "checkout",
+                    "uv",
+                    "buildx",
+                    "trivy",
+                    "syft",
+                    "route",
+                    "engine",
+                    "exporter-smoke",
+                ),
+                "success",
+            )
         ),
         "RECAP_DG_CLIENT_TOKEN": "synthetic-source-1",
         "AQUACAST_TOKEN": "synthetic-source-2",
@@ -991,3 +1003,177 @@ class TestCheckpointCLI:
             "STAGING_RELEASE_PHASE_FAILED",
         ]
         assert "PRIVATE_SEND_CANARY" in (work / "transfer.log").read_text()
+
+
+class TestSmokeOnlyIsNotDeliveryAdmission:
+    def test_smoke_value_cannot_enter_release_binding(self) -> None:
+        raw = asdict(binding())
+        raw["delivery_mode"] = "exporter-smoke-only"
+        with pytest.raises(ValueError, match="not a valid DeliveryMode"):
+            transfer.ReleaseBinding.parse(raw)
+
+    @pytest.mark.parametrize(
+        "selected", ["exporter-smoke-only", "DELIVER-ONLY", "deliver-only "]
+    )
+    def test_direct_controller_still_requires_exact_private_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+    ) -> None:
+        canonical_remote(monkeypatch)
+        env = environment(tmp_path)
+        Path(env["GITHUB_EVENT_PATH"]).write_text(
+            json.dumps({"inputs": {"delivery_mode": selected}})
+        )
+        with pytest.raises(transfer.TransferError, match="event does not match"):
+            collector.require_local_release(tmp_path, env)
+
+    @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 601])
+    def test_export_timeout_override_cannot_expand_production_budget(
+        self, tmp_path: Path, timeout: float
+    ) -> None:
+        with pytest.raises(transfer.TransferError, match="invalid export timeout"):
+            collector.archive_images(
+                ["sha256:" + "a" * 64],
+                tmp_path / "images.tar",
+                1024,
+                tmp_path / "save.log",
+                timeout_seconds=timeout,
+            )
+        assert not (tmp_path / "images.tar").exists()
+
+
+class TestSaveObserver:
+    def install_fake_save(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[object, list[tuple], list[object]]:
+        receiver = collector.transfer.tool("receive_build_report")
+        killed: list[tuple] = []
+        waits: list[object] = []
+
+        class Pipe:
+            def fileno(self) -> int:
+                return 42
+
+        class Process:
+            pid = 424242
+            stdout = Pipe()
+
+            def wait(self, timeout: float | None = None) -> int:
+                waits.append(timeout)
+                return 0
+
+        def spawn(args: list[str], **kwargs: object) -> object:
+            assert args == ["docker", "image", "save", "sha256:" + "a" * 64]
+            assert kwargs["start_new_session"] is True
+            kwargs["stderr"].write(b"SYNTHETIC_SAVE_STDERR\n")
+            return Process()
+
+        monkeypatch.setattr(collector.subprocess, "Popen", spawn)
+        monkeypatch.setattr(collector.os, "set_blocking", lambda *args: None)
+        monkeypatch.setattr(collector.os, "killpg", lambda *args: killed.append(args))
+        return receiver, killed, waits
+
+    def test_default_wait_and_deadline_are_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, killed, waits = self.install_fake_save(monkeypatch)
+        observed = {}
+
+        class Stream:
+            def __init__(self, **kwargs: object) -> None:
+                observed.update(kwargs)
+                self.parts = iter((b"bytes", b""))
+
+            def read(self, size: int) -> bytes:
+                return next(self.parts)
+
+        monkeypatch.setattr(receiver, "InputStream", Stream)
+        monkeypatch.setattr(collector.time, "monotonic", lambda: 100.0)
+        collector.archive_images(
+            ["sha256:" + "a" * 64], tmp_path / "images.tar", 5, tmp_path / "save.log"
+        )
+        assert observed["wait"] is receiver.wait_ready
+        assert observed["deadline"] == 700.0
+        assert waits == [30, None]
+        assert killed == [(424242, collector.signal.SIGKILL)]
+        assert (tmp_path / "images.tar").read_bytes() == b"bytes"
+
+    def test_stalled_output_observer_aborts_and_preserves_capture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, killed, waits = self.install_fake_save(monkeypatch)
+        now = [100.0]
+        calls: list[float] = []
+
+        def wait(fd: int, event: int, seconds: float) -> bool:
+            assert seconds <= 2
+            now[0] += seconds
+            return False
+
+        def observe() -> None:
+            calls.append(now[0])
+            if len(calls) == 2:
+                raise ValueError("synthetic observed growth stop")
+
+        monkeypatch.setattr(receiver, "wait_ready", wait)
+        monkeypatch.setattr(collector.time, "monotonic", lambda: now[0])
+        with pytest.raises(ValueError, match="observed growth stop"):
+            collector.archive_images(
+                ["sha256:" + "a" * 64],
+                tmp_path / "images.tar",
+                10,
+                tmp_path / "save.log",
+                timeout_seconds=10,
+                observer=observe,
+            )
+        assert calls == [100.0, 102.0]
+        assert killed == [(424242, collector.signal.SIGKILL)]
+        assert waits == [None]
+        assert (tmp_path / "save.log").read_bytes() == b"SYNTHETIC_SAVE_STDERR\n"
+
+    def test_observer_cannot_extend_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, killed, waits = self.install_fake_save(monkeypatch)
+        now = [100.0]
+
+        def observe() -> None:
+            now[0] += 3
+
+        monkeypatch.setattr(collector.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            receiver,
+            "wait_ready",
+            lambda *args: pytest.fail("wait after expired deadline"),
+        )
+        with pytest.raises(receiver.ReportRejectedError, match="deadline exceeded"):
+            collector.archive_images(
+                ["sha256:" + "a" * 64],
+                tmp_path / "images.tar",
+                10,
+                tmp_path / "save.log",
+                timeout_seconds=2,
+                observer=observe,
+            )
+        assert killed == [(424242, collector.signal.SIGKILL)]
+        assert waits == [None]
+
+    def test_observer_runs_during_sustained_output_and_byte_cap_still_holds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, killed, _ = self.install_fake_save(monkeypatch)
+        calls: list[str] = []
+        monkeypatch.setattr(receiver, "wait_ready", lambda *args: True)
+        monkeypatch.setattr(collector.time, "monotonic", lambda: 100.0)
+        chunks = iter((b"aaa", b"bbb", b""))
+        monkeypatch.setattr(collector.os, "read", lambda *args: next(chunks))
+        with pytest.raises(transfer.TransferError, match="export exceeds capacity"):
+            collector.archive_images(
+                ["sha256:" + "a" * 64],
+                tmp_path / "images.tar",
+                5,
+                tmp_path / "save.log",
+                observer=lambda: calls.append("sample"),
+            )
+        assert calls == ["sample", "sample"]
+        assert (tmp_path / "images.tar").read_bytes() == b"aaa"
+        assert killed == [(424242, collector.signal.SIGKILL)]
