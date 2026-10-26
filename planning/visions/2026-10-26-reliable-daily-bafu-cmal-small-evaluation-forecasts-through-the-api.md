@@ -26,7 +26,8 @@ changing the dashboard is not part of this work.
   distinct and truthful. Preserve other models' schedules.
 - Use available compatible weather data, including supported older weather cycles,
   rather than waiting for a perfect training-source match. Record weather source,
-  cycle and age and preserve relevant quality flags. Meet declared model input
+  cycle and age and preserve relevant quality flags. Retain configured fallback-age
+  limits; an arbitrarily old complete cycle is not today's input. Meet declared model input
   requirements for coverage, units, timing and missing-data tolerances. Do not
   fabricate observations or silently bypass FI requirements.
 - Local-weather retraining follows proof of the workflow. It is not a prerequisite
@@ -67,7 +68,10 @@ access without being promoted to a usable forecast.
 
 Scope the permissive evaluation behavior explicitly. It must not silently relax
 other models, other deployments, Nepal scientific-use restrictions, alerts or
-publication rules. This delivery grants no new operational-warning or publication
+publication rules. Prove the evaluation exception does not promote flagged results
+to usable output through ordinary readers, combinations or caches/exports. Existing
+authorized diagnostic visibility is distinct from usable forecast selection.
+This delivery grants no new operational-warning or publication
 eligibility. Harden plausibility screening only after workflow acceptance, under
 a separate owner decision.
 
@@ -94,8 +98,21 @@ team; do not require frontend changes to prove backend acceptance.
 
 ## Evidence of completion
 
-Require seven consecutive days of unattended scheduled operation on the Mac mini.
-For each daily cycle:
+Require seven consecutive logical UTC issue days of unattended scheduled operation
+on the Mac mini. Freeze the expected roster from the current active assignment and
+explicit station/configuration rules before each daily attempt; do not shrink it
+after seeing failures. Report one authoritative outcome per expected member for
+that logical issue day. Apply declared input requirements to determine which
+members have usable inputs, independently of whether prediction succeeded.
+
+A day counts only if every member with usable inputs produces a structurally valid
+`cmal_small` forecast, every other expected member has an explicit reason, and at
+least one `cmal_small` forecast is produced. No additional percentage threshold is
+required; report produced/excluded/failed counts prominently so low coverage cannot
+look like fleet-wide success. A model or integrity failure for a usable-input member
+is accounted for but does not make that day pass. Configuration or assignment
+changes during the acceptance window restart it unless separately pre-authorized
+and evaluated. For each daily cycle:
 
 1. Verify persisted `cmal_small` forecasts and values for eligible members, not
    merely Prefect completion or a healthy process endpoint.
@@ -107,11 +124,10 @@ For each daily cycle:
 4. Preserve genuine timestamps, source/age and lineage; do not count a stale row
    or a fallback as today's successful `cmal_small` forecast.
 
-A manually pinned run or isolated replay is useful development evidence but does
-not count toward the seven-day unattended acceptance. A day with no successful
-`cmal_small` production does not establish the desired daily service even if its
-failure is explained. Demonstrate mixed healthy/unusable members in regression
-coverage even if the live week's data happen to be uniformly healthy.
+A manually pinned run, isolated replay or manual backfill cannot repair a counted
+day after the fact. Restart the consecutive window after a non-counting day.
+Demonstrate mixed healthy/unusable members in regression coverage even if the live
+week's data happen to be uniformly healthy.
 
 Deterioration notifications are lower priority and may follow core acceptance.
 Their intended direction is to warn when expected model/station production drops,
@@ -152,7 +168,9 @@ implementation. After owner merge, supply exact merge SHA, review references and
 validation evidence; Nepal6 schedules explicit adoption in a subsequent release.
 
 Use the repository's independent review and owner approval requirements. Scope
-code changes to demonstrated gaps, keep scientific/data-use isolation intact, and
-review the full Mac-mini upgrade path from its older release, including migration
-and rollback compatibility. No implicit deployment permission comes from this
+code changes to demonstrated gaps and keep scientific/data-use isolation intact.
+Before any Mac-mini update or acceptance run, require an owner-merged exact SHA,
+immutable release/image identity, verified migration state, backup and tested
+rollback path across the full upgrade from its older release. A branch/local image
+cannot begin the seven-day clock. No implicit deployment permission comes from this
 vision. Stop at any missing approval or prerequisite rather than claim success.
