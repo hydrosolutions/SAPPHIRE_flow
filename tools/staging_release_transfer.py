@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -756,6 +757,66 @@ def docker_store_mode(driver: str, raw_status: str) -> Literal["classic", "conta
     raise TransferError("unsupported Docker store")
 
 
+def target_image_id(
+    image: ImageBinding, store_mode: Literal["classic", "containerd"]
+) -> str:
+    if store_mode == "classic":
+        return image.config_digest
+    if image.id_kind != "oci-descriptor":
+        raise TransferError("config-only image unsupported on containerd target")
+    return image.raw_id
+
+
+def require_top_level_image_ids(envelope: Envelope, directory: Path) -> None:
+    with tarfile.open(directory / "images.tar", "r:") as archive:
+        indexes = []
+        for count, member in enumerate(archive, start=1):
+            if count > 100_000:
+                raise TransferError("too many image archive members")
+            if posixpath.normpath(member.name).lstrip("/") == "index.json":
+                if member.name != "index.json":
+                    raise TransferError("noncanonical image index name")
+                indexes.append(member)
+        if (
+            len(indexes) != 1
+            or not indexes[0].isfile()
+            or not 0 < indexes[0].size <= MAX_METADATA
+        ):
+            raise TransferError("invalid top-level image index")
+        stream = archive.extractfile(indexes[0])
+        if stream is None:
+            raise TransferError("missing top-level image index")
+        index = parse_json(stream.read(MAX_METADATA + 1))
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or len(manifests) != len(envelope.images):
+        raise TransferError("top-level image descriptor count mismatch")
+    ids = [item.get("digest") for item in manifests if isinstance(item, dict)]
+    if len(ids) != len(manifests) or any(not isinstance(item, str) for item in ids):
+        raise TransferError("invalid top-level image descriptor")
+    if len(set(ids)) != len(ids) or set(ids) != {i.raw_id for i in envelope.images}:
+        raise TransferError("raw image IDs must match top-level descriptors")
+
+
+def require_target_tag(tag: str, expected_id: str, *, run: Callable[..., str]) -> None:
+    existing = run(
+        [
+            "image",
+            "ls",
+            "--filter",
+            "reference=" + tag,
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ]
+    ).split()
+    if existing not in ([], [tag]):
+        raise TransferError("unexpected target tag listing")
+    if (
+        tag in existing
+        and run(["image", "inspect", "--format", "{{.Id}}", tag]) != expected_id
+    ):
+        raise TransferError("target tag conflict")
+
+
 def load_images(
     envelope: Envelope,
     directory: Path,
@@ -784,18 +845,15 @@ def load_images(
         run(["info", "--format", "{{.Driver}}"]),
         run(["info", "--format", "{{json .DriverStatus}}"]),
     )
+    selected_ids = {i.variant: target_image_id(i, store_mode) for i in envelope.images}
+    if store_mode == "containerd":
+        require_top_level_image_ids(envelope, directory)
     receipt = verify_receipt(envelope, directory / "receipt.json")
     records = {i["variant"]: i for i in receipt["images"]}
-    # Refuse any existing mutable tag before load; an idempotent matching tag is safe.
-    existing_tags = set(
-        run(["image", "ls", "--format", "{{.Repository}}:{{.Tag}} "]).split()
-    )
     for image in envelope.images:
-        tag = records[image.variant]["mutable_tag"]
-        if tag in existing_tags:
-            observed = run(["image", "inspect", "--format", "{{.Id}}", tag])
-            if observed not in (image.raw_id, image.config_digest):
-                raise TransferError("target tag conflict")
+        require_target_tag(
+            records[image.variant]["mutable_tag"], selected_ids[image.variant], run=run
+        )
     # Save-by-ID archives must not introduce a mutable tag during load.
     with tarfile.open(directory / "images.tar", "r:") as archive:
         manifest = json.load(archive.extractfile("manifest.json"))
@@ -807,10 +865,47 @@ def load_images(
     class Runner:
         def __init__(self) -> None:
             self.sequence = 0
+            self.expected_image_id: str | None = None
 
         def run(self, args: list[str], *, stdin: str | None = None) -> str:
             if args[0] != "run":
                 return run(args, stdin=stdin)
+            identity_prefix = [
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "-i",
+                "--user",
+                "app",
+                "--entrypoint",
+                "/app/.venv/bin/python",
+                "-e",
+                "EXPECTED_VERSION=" + envelope.binding.version,
+                "-e",
+                "EXPECTED_REVISION=" + envelope.binding.source_sha,
+            ]
+            entrypoint_prefix = [
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "-e",
+                "DB_PASSWORD=ci-smoke-only",
+            ]
+            prefixes = (identity_prefix, entrypoint_prefix)
+            prefix = next((p for p in prefixes if args[: len(p)] == p), None)
+            if prefix is None or len(args) <= len(prefix):
+                raise TransferError("unsupported native probe arguments")
+            if (
+                self.expected_image_id is None
+                or args[len(prefix)] != self.expected_image_id
+            ):
+                raise TransferError("native probe image identity changed")
             self.sequence += 1
             name = (
                 f"sapphire-release-probe-{envelope.binding.run_id}-"
@@ -863,12 +958,12 @@ def load_images(
     runner = Runner()
     loaded = []
     for image in envelope.images:
-        # Resolve the config identity without rewriting the recorded raw ID.
-        inspected = json.loads(run(["image", "inspect", image.config_digest]))[0]
+        selected_id = selected_ids[image.variant]
+        inspected = json.loads(run(["image", "inspect", selected_id]))[0]
         if inspected.get("Os") != "linux" or inspected.get("Architecture") != "amd64":
             raise TransferError("loaded platform mismatch")
         loaded_id = image_id(inspected["Id"])
-        if loaded_id not in (image.raw_id, image.config_digest):
+        if loaded_id != selected_id:
             raise TransferError("unsupported target ID mapping")
         loaded.append(
             {
@@ -878,13 +973,16 @@ def load_images(
                 "config_digest": image.config_digest,
             }
         )
-        probe.probe_image(
-            image.config_digest,
+        runner.expected_image_id = selected_id
+        probed = probe.probe_image(
+            loaded_id,
             envelope.binding.version,
             envelope.binding.source_sha,
             variant=image.variant,
             runner=runner,
         )
+        if probed.image_id != selected_id:
+            raise TransferError("native probe image identity changed")
         imports = "import sys, sapphire_flow, prefect" + (
             ", aquacast, torch" if image.variant == "aquacast" else ""
         )
@@ -898,7 +996,7 @@ def load_images(
                 "none",
                 "-e",
                 "DB_PASSWORD=ci-smoke-only",
-                image.config_digest,
+                loaded_id,
                 "python",
                 "-I",
                 "-c",
@@ -909,7 +1007,9 @@ def load_images(
             ]
         )
         tag = records[image.variant]["mutable_tag"]
-        run(["image", "tag", image.config_digest, tag])
+        # Docker has no compare-and-swap tag operation; exclude external tag writers.
+        require_target_tag(tag, selected_id, run=run)
+        run(["image", "tag", loaded_id, tag])
         if run(["image", "inspect", "--format", "{{.Id}}", tag]) != inspected["Id"]:
             raise TransferError("loaded tag identity changed")
     return {
