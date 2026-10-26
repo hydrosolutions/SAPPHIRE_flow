@@ -1,4 +1,4 @@
-# Reliable daily BAFU cmal_small evaluation forecasts through the API
+# Reliable daily CMAL evaluation forecasts for BAFU and Nepal21
 
 ## Confirmed outcome
 
@@ -8,8 +8,14 @@ the backend API. This is an evaluation deployment, not an operational warning
 service. Its purpose is to prove the forecasting workflow before retraining the
 model on local weather inputs and tightening forecast plausibility screening.
 
-The owner confirmed this scope through discussion on 2026-10-26. This is a
-standalone vision, not a Program Effort. It does not authorize implementation,
+Design the shared group-member isolation, daily CMAL scheduling, evaluation API
+selection/fallbacks and plausibility-flagged output visibility for BOTH BAFU and
+Nepal21. Evaluation behavior is explicitly configurable per deployment, not a
+BAFU-only code path. The Mac mini is the first rollout and seven-day acceptance
+target; Nepal6 owns deliberate Nepal21 adoption and activation separately.
+
+The owner confirmed this scope and the Nepal6 coordination amendment on 2026-10-26.
+This is a standalone vision, not a Program Effort. It does not authorize implementation,
 merging, live-data changes, forecast triggers or deployment by itself.
 
 The `sapphire-flow-map` repository owns the dashboard/map. Our scope ends at the
@@ -23,7 +29,10 @@ changing the dashboard is not part of this work.
 - Produce one logical daily forecast, with issue time aligned to the model's daily
   input windows. Execution may occur later when compatible inputs are available;
   actual execution time, issue time, weather-cycle time and valid time must remain
-  distinct and truthful. Preserve other models' schedules.
+  distinct and truthful. Preserve other models' schedules. Daily CMAL scheduling
+  must be reusable in both deployments. Installing a release or enabling evaluation
+  reads must not activate or alter a schedule: schedule activation requires explicit
+  approval for the deployment concerned.
 - Use available compatible weather data, including supported older weather cycles,
   rather than waiting for a perfect training-source match. Record weather source,
   cycle and age and preserve relevant quality flags. Retain configured fallback-age
@@ -55,9 +64,11 @@ own layer rather than splitting batches or bypassing FI as a workaround.
 ## Reviewable output, not false quality assurance
 
 Observation QC is unchanged. Forecast-output plausibility screening is initially
-permissive for BAFU `cmal_small` evaluation: structurally valid but physically
-questionable results remain visible through the evaluation API with clear QC
-flags and can remain the preferred evaluation forecast.
+permissive when the deployment explicitly enables CMAL evaluation: structurally
+valid but physically questionable results remain visible through the evaluation
+API with clear QC flags and can remain the preferred evaluation forecast. Provide
+the same capability for BAFU and Nepal21. Unconfigured deployments retain existing
+behavior; configuration in one deployment does not opt another deployment in.
 
 Do not erase flags, label a failed check as passed, or hide that this is an
 evaluation policy. Preserve hard integrity checks for malformed output,
@@ -66,9 +77,12 @@ contracts. An integrity-rejected forecast is not a usable preferred forecast.
 Diagnostic evidence may remain available under its existing authorized review
 access without being promoted to a usable forecast.
 
-Scope the permissive evaluation behavior explicitly. It must not silently relax
-other models, other deployments, Nepal scientific-use restrictions, alerts or
-publication rules. Prove the evaluation exception does not promote flagged results
+Scope the permissive evaluation behavior explicitly by deployment and intended
+model. Nepal21 may deliberately enable the same evaluation behavior, but doing so
+must preserve its scientific-use classification, access restrictions and input
+requirements. Evaluation configuration does not confer scientific validity, relax
+observation QC or FI, or opt in other models/deployments, alerts or publication.
+Prove the evaluation exception does not promote flagged results
 to usable output through ordinary readers, combinations or caches/exports. Existing
 authorized diagnostic visibility is distinct from usable forecast selection.
 This delivery grants no new operational-warning or publication
@@ -77,8 +91,10 @@ a separate owner decision.
 
 ## Preferred forecast and API contract
 
-`cmal_small` is the highest-priority evaluation model, and that preference must be
-observable in API selection, not only recorded as an assignment number.
+For an explicitly configured deployment, `cmal_small` is the highest-priority
+evaluation model, and that preference must be observable in API selection, not only
+recorded as an assignment number. Use the same selection/fallback contract for
+BAFU and Nepal21; no BAFU-specific identity inference may enable this policy.
 
 When its current structurally usable forecast exists, prefer it, including outputs
 with non-blocking plausibility flags under the evaluation policy. If no usable
@@ -97,6 +113,14 @@ plan and test it with an injected clock. Document the chosen behavior for the ma
 team; do not require frontend changes to prove backend acceptance.
 
 ## Evidence of completion
+
+Prove the shared behavior using BAFU-shaped and Nepal21-shaped multi-member tests,
+including explicit opt-in, disabled/default behavior, independent deployment
+configuration and the absence of new valid/publication/alert eligibility. Use
+synthetic authorized fixtures rather than copying restricted Nepal data. Deliver
+configuration requirements and API examples usable by both deployment owners.
+This is shared-code evidence, not a claim that Nepal21 has been activated or passed
+live acceptance. The live acceptance below is for the Mac mini.
 
 Require seven consecutive logical UTC issue days of unattended scheduled operation
 on the Mac mini. Freeze the expected roster from the current active assignment and
@@ -164,8 +188,11 @@ private delivery diagnosis, historical replay and deployment adoption. Its
 reported base is the same main SHA above, published version v0.1.1076; its delivery
 attempt did not activate release images. Do not change its checkout, dependencies,
 configuration or running attempt. Coordinate overlapping shared-file edits before
-implementation. After owner merge, supply exact merge SHA, review references and
-validation evidence; Nepal6 schedules explicit adoption in a subsequent release.
+implementation, including API, schedule and configuration surfaces. Its current
+delivery attempt stays pinned. After review and owner merge, supply exact merge SHA,
+review references, test evidence, configuration requirements/defaults and explicit
+schedule-activation prerequisites. Nepal6 assesses and schedules deliberate adoption
+in a subsequent release; neither shared design nor merge activates its deployment.
 
 Use the repository's independent review and owner approval requirements. Scope
 code changes to demonstrated gaps and keep scientific/data-use isolation intact.
