@@ -32,7 +32,13 @@ changing the dashboard is not part of this work.
   distinct and truthful. Preserve other models' schedules. Daily CMAL scheduling
   must be reusable in both deployments. Installing a release or enabling evaluation
   reads must not activate or alter a schedule: schedule activation requires explicit
-  approval for the deployment concerned.
+  approval for the deployment concerned. Use the regular Prefect forecast flow:
+  CMAL's daily dispatch replaces its ordinary intraday dispatch, while regression
+  and other models continue unchanged. Allow at most one automatic retry on a later
+  regular scheduled tick for the same logical day. After that, report failure or
+  incomplete coverage rather than adding more retries. Unknown crash ownership
+  requires conservative operator recovery, not automatic timeout-based takeover;
+  a manually recovered day does not count toward unattended acceptance.
 - Use available compatible weather data, including supported older weather cycles,
   rather than waiting for a perfect training-source match. Record weather source,
   cycle and age and preserve relevant quality flags. Retain configured fallback-age
