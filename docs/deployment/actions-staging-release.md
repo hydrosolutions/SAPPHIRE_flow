@@ -223,6 +223,60 @@ The final delivery/load receipt remains a separate result. Later `load-accepted`
 works from this original delivery ledger even when the first load failed.
 
 
+#### Target image identity and conflicts
+
+Before loading either variant, the receiver selects the immutable target identity:
+
+| Recorded ID kind | Target store | Required target ID |
+| --- | --- | --- |
+| `config` | classic | recorded config digest |
+| `oci-descriptor` | classic | recorded config digest |
+| `oci-descriptor` | containerd | recorded raw descriptor ID |
+| `config` | containerd | unsupported: HOLD before load |
+
+Source store mode remains provenance, not a target lookup rule. All variants must
+have a supported policy before mutation. Containerd also requires the two raw IDs
+to match the archive's unique top-level `index.json` descriptors; reachable nested
+manifests alone do not qualify. Noncanonical index member aliases (such as
+`./index.json`) are rejected by this receiver guard. The general archive validator
+and wire schema are unchanged. The receiver never retries a failed lookup using
+another identity.
+
+The loader does **not** enforce absence of index name annotations. Before every
+release load, independently verify that the accepted archive's `index.json` has
+neither `io.containerd.image.name` nor `org.opencontainers.image.ref.name` anywhere
+in its descriptor tree. Otherwise loading could introduce names outside the two
+checked version tags. Retain this per-release check with the load approval;
+v0.1.1076 already passed it. Top-level digest membership does not replace it.
+
+The loaded ID must equal the selected ID. Both native probes and tagging use that
+verified loaded ID. Before either probe runs, the receiver checks the image at
+the exact position in its supported probe argv form. A changed helper-inspected
+ID cannot execute a container. The helper's returned image ID must also match.
+The proof keeps original raw/config identities and the observed loaded ID in its existing fields.
+Existing version tags must be absent or point at the exact selected ID, both before
+load and immediately before tagging. Docker has no atomic compare-and-swap tag
+operation: exclude concurrent external tag writers throughout the approved window.
+The receiver lock does not serialize unrelated Docker clients.
+
+A receiver-only upgrade may retain an already accepted release unchanged. Record
+old/new hashes and trusted ownership/modes for `staging_release_transfer.py`,
+`image_identity_probe.py`, `receive_build_report.py` and `image_archive.py` in a
+separate rollout record. Receiver source provenance is not payload provenance.
+Recheck capacity on the actual Docker/containerd filesystems immediately before
+load; the built-in check measures DockerRootDir only. Separately approve loading,
+use bounded durable execution, and disarm digest-bound load approval afterwards.
+A failed load can leave image data or a first tag without a success ledger. HOLD
+for read-only reconciliation; never automatically retry, remove images, rebuild,
+rewrite tags or infer rollback. These checks do not authorize runtime activation.
+
+Fake-runner tests cover store/kind combinations and the native probe flow. Public
+synthetic daemon checks cover reference primitives only, not private image imports
+or native execution on another architecture. A nearby Docker patch-version result
+is not proof of the target daemon's load/run/tag behavior; retain the explicit
+version/architecture limitations and obtain owner acceptance before live loading.
+
+
 ### Transfer deadlines and acknowledgement reconciliation
 
 The existing transfer step remains 30 minutes and the whole job 180 minutes.

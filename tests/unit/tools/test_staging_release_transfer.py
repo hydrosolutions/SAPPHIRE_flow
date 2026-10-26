@@ -9,6 +9,7 @@ import sys
 import tarfile
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -46,11 +47,17 @@ def add_member(archive: tarfile.TarFile, name: str, content: bytes) -> None:
     archive.addfile(info, io.BytesIO(content))
 
 
-def payload(tmp_path: Path, approved: transfer.ReleaseBinding | None = None) -> tuple:
+def payload(
+    tmp_path: Path,
+    approved: transfer.ReleaseBinding | None = None,
+    *,
+    id_kind: Literal["config", "oci-descriptor"] = "config",
+    store_mode: Literal["classic", "containerd"] = "classic",
+) -> tuple:
     approved = approved or binding()
     directory = tmp_path / "payload"
     directory.mkdir()
-    manifest, images, receipt_images = [], [], []
+    manifest, images, receipt_images, descriptors = [], [], [], []
     raw = directory / "export.tar"
     with tarfile.open(raw, "w") as archive:
         for variant in ("default", "aquacast"):
@@ -78,15 +85,22 @@ def payload(tmp_path: Path, approved: transfer.ReleaseBinding | None = None) -> 
             manifest.append(
                 {"Config": config_name, "RepoTags": None, "Layers": [layer_name]}
             )
-            raw_id = "sha256:" + config_hash
+            config_id = "sha256:" + config_hash
+            raw_id = config_id
+            if id_kind == "oci-descriptor":
+                descriptor = transfer.json_bytes({"config": {"digest": config_id}})
+                raw_id = "sha256:" + hashlib.sha256(descriptor).hexdigest()
+                add_member(archive, "blobs/sha256/" + raw_id[7:], descriptor)
+                add_member(archive, "blobs/sha256/" + config_hash, config)
+                descriptors.append({"digest": raw_id})
             images.append(
                 transfer.ImageBinding(
                     variant=variant,
                     raw_id=raw_id,
-                    config_digest=raw_id,
-                    id_kind="config",
+                    config_digest=config_id,
+                    id_kind=id_kind,
                     platform="linux/amd64",
-                    store_mode="classic",
+                    store_mode=store_mode,
                 )
             )
             receipt_images.append(
@@ -104,6 +118,10 @@ def payload(tmp_path: Path, approved: transfer.ReleaseBinding | None = None) -> 
                 }
             )
         add_member(archive, "manifest.json", transfer.json_bytes(manifest))
+        if descriptors:
+            add_member(
+                archive, "index.json", transfer.json_bytes({"manifests": descriptors})
+            )
     raw_bytes = raw.read_bytes()
     (directory / "images.tar.gz").write_bytes(gzip.compress(raw_bytes, mtime=0))
     raw.unlink()
@@ -942,3 +960,374 @@ class TestEarlyAcceptedConflict:
             )
         assert not (store / ".123-2.partial").exists()
         assert (store / "v1.2.3/envelope.json").read_bytes() == envelope.encode()
+
+
+class IdentityDocker:
+    def __init__(
+        self,
+        envelope: transfer.Envelope,
+        root: Path,
+        target_store: Literal["classic", "containerd"],
+        *,
+        fault: str = "none",
+    ) -> None:
+        self.envelope = envelope
+        self.root = root
+        self.store = target_store
+        self.fault = fault
+        self.calls: list[list[str]] = []
+        self.tags: dict[str, str] = {}
+        self.loaded = False
+        self.runs = 0
+        self.inspects = 0
+        self.images = {
+            (i.raw_id if target_store == "containerd" else i.config_digest): i
+            for i in envelope.images
+        }
+        first = envelope.images[0]
+        self.tag = "sapphire-flow:" + envelope.binding.version
+        if fault == "matching-tag":
+            self.tags[self.tag] = (
+                first.raw_id if target_store == "containerd" else first.config_digest
+            )
+        if fault == "initial-conflict":
+            self.tags[self.tag] = (
+                first.config_digest if target_store == "containerd" else first.raw_id
+            )
+
+    def run(self, args: list[str], *, stdin: str | None = None) -> str:
+        self.calls.append(args)
+        if self.loaded:
+            forbidden = {
+                i.config_digest if self.store == "containerd" else i.raw_id
+                for i in self.envelope.images
+                if i.raw_id != i.config_digest
+            }
+            assert not forbidden.intersection(args)
+        if args[0] == "info":
+            return {
+                "{{.Architecture}}": "amd64",
+                "{{.DockerRootDir}}": str(self.root),
+                "{{.Driver}}": "overlayfs"
+                if self.store == "containerd"
+                else "overlay2",
+                "{{json .DriverStatus}}": (
+                    '[["driver-type","io.containerd.snapshotter.v1"]]'
+                    if self.store == "containerd"
+                    else "[]"
+                ),
+            }[args[-1]]
+        if args[:2] == ["container", "ls"]:
+            return ""
+        if args[:2] == ["image", "ls"]:
+            if self.fault == "unexpected-listing":
+                return "unrelated:tag"
+            tag = args[args.index("--filter") + 1].removeprefix("reference=")
+            return tag if tag in self.tags else ""
+        if args[:3] == ["image", "inspect", "--format"]:
+            return self.tags[args[-1]]
+        if args[:2] == ["image", "inspect"]:
+            self.inspects += 1
+            if self.fault == "inspect-failed":
+                raise transfer.TransferError("selected image inspection failed")
+            assert args[-1] in self.images
+            actual_id = args[-1]
+            if self.fault == "wrong-id":
+                actual_id = "sha256:" + "f" * 64
+            if self.fault == "probe-drift" and self.inspects == 2:
+                actual_id = "sha256:" + "e" * 64
+            version = self.envelope.binding.version
+            return json.dumps(
+                [
+                    {
+                        "Id": actual_id,
+                        "Os": "linux",
+                        "Architecture": "arm64"
+                        if self.fault == "wrong-platform"
+                        else "amd64",
+                        "Config": {
+                            "Labels": {
+                                "org.opencontainers.image.version": version,
+                                "org.opencontainers.image.revision": (
+                                    "f" * 40
+                                    if self.fault == "wrong-label"
+                                    else self.envelope.binding.source_sha
+                                ),
+                            }
+                        },
+                    }
+                ]
+            )
+        if args[:2] == ["image", "load"]:
+            self.loaded = True
+            return ""
+        if args[0] == "run":
+            self.runs += 1
+            assert "--network" in args and "none" in args
+            assert "--pull" in args and "never" in args
+            assert not {"-v", "--mount", "--privileged"}.intersection(args)
+            if self.fault == "late-conflict" and self.runs == 2:
+                self.tags[self.tag] = "sha256:" + "f" * 64
+            return self.envelope.binding.version if stdin else ""
+        if args[:2] == ["image", "tag"]:
+            assert args[2] in self.images
+            self.tags[args[3]] = args[2]
+            return ""
+        pytest.fail("unexpected Docker operation")
+
+
+def approved_loader(envelope: transfer.Envelope) -> transfer.ReceiverConfig:
+    return replace(
+        config(envelope.binding),
+        load_approval_binding_sha256=envelope.binding.sha256,
+        load_approval_receipt_sha256=envelope.files["receipt.json"].sha256,
+    )
+
+
+class TestTargetImagePolicy:
+    @pytest.mark.parametrize("source_store", ["classic", "containerd"])
+    @pytest.mark.parametrize("target_store", ["classic", "containerd"])
+    @pytest.mark.parametrize("kind", ["config", "oci-descriptor"])
+    def test_store_kind_matrix(
+        self,
+        tmp_path: Path,
+        source_store: Literal["classic", "containerd"],
+        target_store: Literal["classic", "containerd"],
+        kind: Literal["config", "oci-descriptor"],
+    ) -> None:
+        envelope, directory = payload(tmp_path, id_kind=kind, store_mode=source_store)
+        transfer.verify_payload(envelope, directory)
+        runner = IdentityDocker(envelope, tmp_path, target_store)
+        if kind == "config" and target_store == "containerd":
+            with pytest.raises(transfer.TransferError, match="config-only"):
+                transfer.load_images(
+                    envelope,
+                    directory,
+                    approval=approved_loader(envelope),
+                    run=runner.run,
+                )
+            assert not runner.loaded
+            return
+        proof = transfer.load_images(
+            envelope, directory, approval=approved_loader(envelope), run=runner.run
+        )
+        expected = [
+            i.raw_id if target_store == "containerd" else i.config_digest
+            for i in envelope.images
+        ]
+        assert [i["loaded_raw_id"] for i in proof["images"]] == expected
+        assert [i["source_raw_id"] for i in proof["images"]] == [
+            i.raw_id for i in envelope.images
+        ]
+        assert [i["config_digest"] for i in proof["images"]] == [
+            i.config_digest for i in envelope.images
+        ]
+        assert runner.runs == 4
+        assert runner.tags == {
+            "sapphire-flow:" + envelope.binding.version: expected[0],
+            "sapphire-flow-aquacast:" + envelope.binding.version: expected[1],
+        }
+        assert sum(args[:2] == ["image", "tag"] for args in runner.calls) == 2
+        assert proof["runtime_activation"] == "held"
+
+    @pytest.mark.parametrize("target_store", ["classic", "containerd"])
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            "initial-conflict",
+            "late-conflict",
+            "wrong-id",
+            "wrong-platform",
+            "wrong-label",
+            "probe-drift",
+        ],
+    )
+    def test_rejects_identity_or_tag_drift(
+        self, tmp_path: Path, target_store: Literal["classic", "containerd"], fault: str
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        runner = IdentityDocker(envelope, tmp_path, target_store, fault=fault)
+        error_type = (
+            transfer.tool("image_identity_probe").ImageIdentityProbeError
+            if fault == "wrong-label"
+            else transfer.TransferError
+        )
+        message = {
+            "initial-conflict": "target tag conflict",
+            "late-conflict": "target tag conflict",
+            "wrong-id": "unsupported target ID mapping",
+            "wrong-platform": "loaded platform mismatch",
+            "wrong-label": "container label org.opencontainers.image.revision mismatch",
+            "probe-drift": "native probe image identity changed",
+        }[fault]
+        with pytest.raises(error_type, match=message):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        assert not any(args[:2] == ["image", "tag"] for args in runner.calls)
+        if fault == "initial-conflict":
+            assert not runner.loaded
+        if fault == "probe-drift":
+            assert not any(args[0] == "run" for args in runner.calls)
+
+    @pytest.mark.parametrize("target_store", ["classic", "containerd"])
+    def test_matching_existing_tag_is_preserved(
+        self, tmp_path: Path, target_store: Literal["classic", "containerd"]
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        runner = IdentityDocker(envelope, tmp_path, target_store, fault="matching-tag")
+        before = runner.tags[runner.tag]
+        transfer.load_images(
+            envelope, directory, approval=approved_loader(envelope), run=runner.run
+        )
+        assert runner.tags[runner.tag] == before
+        assert runner.runs == 4
+
+    def test_unexpected_filtered_listing_holds_before_load(
+        self, tmp_path: Path
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        runner = IdentityDocker(
+            envelope, tmp_path, "containerd", fault="unexpected-listing"
+        )
+        with pytest.raises(
+            transfer.TransferError, match="unexpected target tag listing"
+        ):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        assert not runner.loaded
+
+    @pytest.mark.parametrize("target_store", ["classic", "containerd"])
+    def test_failed_selected_inspect_never_falls_back(
+        self, tmp_path: Path, target_store: Literal["classic", "containerd"]
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        runner = IdentityDocker(
+            envelope, tmp_path, target_store, fault="inspect-failed"
+        )
+        with pytest.raises(
+            transfer.TransferError, match="selected image inspection failed"
+        ):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        expected = (
+            envelope.images[0].raw_id
+            if target_store == "containerd"
+            else envelope.images[0].config_digest
+        )
+        assert [args for args in runner.calls if args[:2] == ["image", "inspect"]] == [
+            ["image", "inspect", expected]
+        ]
+        assert not any(
+            args[0] == "run" or args[:2] == ["image", "tag"] for args in runner.calls
+        )
+
+    def test_mixed_kinds_hold_before_load(self, tmp_path: Path) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        last = envelope.images[-1]
+        envelope = replace(
+            envelope,
+            images=(
+                envelope.images[0],
+                replace(last, raw_id=last.config_digest, id_kind="config"),
+            ),
+        )
+        runner = IdentityDocker(envelope, tmp_path, "containerd")
+        with pytest.raises(transfer.TransferError, match="config-only"):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        assert not runner.loaded
+
+
+class TestTopLevelImageIds:
+    @pytest.mark.parametrize(
+        "alias", ["./index.json", "a/../index.json", "/index.json"]
+    )
+    def test_noncanonical_index_alias_holds_before_load(
+        self, tmp_path: Path, alias: str
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        raw = directory / "images.tar"
+        with tarfile.open(raw, "a") as archive:
+            add_member(archive, alias, transfer.json_bytes({"manifests": []}))
+        hashed = transfer.FileDigest.of(raw)
+        envelope = replace(
+            envelope,
+            expanded_archive_bytes=hashed.length,
+            expanded_archive_sha256=hashed.sha256,
+        )
+        runner = IdentityDocker(envelope, tmp_path, "containerd")
+        with pytest.raises(
+            transfer.TransferError, match="noncanonical image index name"
+        ):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        assert not runner.loaded
+
+    @pytest.mark.parametrize("mutation", ["missing", "duplicate", "nested", "invalid"])
+    def test_rejects_non_top_level_identity_before_load(
+        self, tmp_path: Path, mutation: str
+    ) -> None:
+        envelope, directory = payload(
+            tmp_path, id_kind="oci-descriptor", store_mode="containerd"
+        )
+        transfer.verify_payload(envelope, directory)
+        descriptors = [{"digest": i.raw_id} for i in envelope.images]
+        index = {"manifests": descriptors}
+        if mutation == "missing":
+            index["manifests"] = descriptors[:1]
+        elif mutation == "duplicate":
+            index["manifests"] = [descriptors[0], descriptors[0]]
+        elif mutation == "nested":
+            index["manifests"] = [
+                {"digest": "sha256:" + "f" * 64, "manifests": descriptors},
+                descriptors[1],
+            ]
+        else:
+            index["manifests"] = [None, descriptors[1]]
+        # Rewrite fixture only; the loader must reject before Docker load.
+        raw = directory / "images.tar"
+        with tarfile.open(raw, "r:") as source:
+            entries = [
+                (m.name, source.extractfile(m).read())
+                for m in source
+                if m.name != "index.json"
+            ]
+        with tarfile.open(raw, "w") as target:
+            for name, content in entries:
+                add_member(target, name, content)
+            add_member(target, "index.json", transfer.json_bytes(index))
+        hashed = transfer.FileDigest.of(raw)
+        envelope = replace(
+            envelope,
+            expanded_archive_bytes=hashed.length,
+            expanded_archive_sha256=hashed.sha256,
+        )
+        runner = IdentityDocker(envelope, tmp_path, "containerd")
+        with pytest.raises(transfer.TransferError, match="top-level"):
+            transfer.load_images(
+                envelope, directory, approval=approved_loader(envelope), run=runner.run
+            )
+        assert not runner.loaded
