@@ -31,7 +31,6 @@ from sapphire_flow.services.training_data import (
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     AggregationMethod,
-    EnsembleRepresentation,
     ForcingRoute,
     ForcingType,
     QcStatus,
@@ -582,7 +581,7 @@ def run_station_hindcast(
                     model_artifact_id=artifact_id,
                     hindcast_step=issue_time,
                     forcing_type=ForcingType.REANALYSIS,
-                    representation=EnsembleRepresentation.MEMBERS,
+                    representation=ensemble.representation,
                     hindcast_run_id=hindcast_run_id,
                     ensemble=ensemble,
                     created_at=clock(),
@@ -878,7 +877,7 @@ def run_group_hindcast(
                         model_artifact_id=artifact_id,
                         hindcast_step=issue_time,
                         forcing_type=ForcingType.REANALYSIS,
-                        representation=EnsembleRepresentation.MEMBERS,
+                        representation=ensemble.representation,
                         hindcast_run_id=hindcast_run_id,
                         ensemble=ensemble,
                         created_at=clock(),
