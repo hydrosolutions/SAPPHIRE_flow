@@ -27,6 +27,11 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
+    from sapphire_flow.store.committed_forecast_writer import PgCommittedForecastWriter
+    from sapphire_flow.store.daily_forecast_store import (
+        PgDailyForecastStore,
+        daily_forecast_transaction_factory,
+    )
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
     from sapphire_flow.store.forecast_store import PgForecastStore
     from sapphire_flow.store.hindcast_store import PgHindcastStore
@@ -76,6 +81,12 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "formula_store": PgFormulaStore(conn),
         "tenant_store": PgTenantStore(conn),
         "audit_log_store": PgAuditLogStore(conn),
+        "daily_forecast_store": PgDailyForecastStore(
+            daily_forecast_transaction_factory(conn.engine.url)
+        ),
+        "daily_forecast_writer": PgCommittedForecastWriter(
+            daily_forecast_transaction_factory(conn.engine.url)
+        ),
         # Plan 404 T1 — a dedicated, bounded connection (NEVER the shared
         # AUTOCOMMIT connection above): the capture write is best-effort and
         # must never hold or break the flow's shared connection (D5).

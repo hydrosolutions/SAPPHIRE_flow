@@ -420,6 +420,10 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/qc/rules"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/skill"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"): "REVIEW_OR_HUMAN",
+        (
+            "GET",
+            "/api/v1/stations/{station_id}/evaluation-forecasts",
+        ): "REVIEW_OR_HUMAN",
         ("GET", "/api/v1/review/forecasts"): "HUMAN",
         ("GET", "/api/v1/review/forecasts/{forecast_id}"): "HUMAN",
         ("POST", "/api/v1/review/forecasts/{forecast_id}/publish"): "HUMAN",

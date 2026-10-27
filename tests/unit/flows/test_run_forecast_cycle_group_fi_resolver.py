@@ -17,6 +17,7 @@ only, the way ``tests/unit/models/test_aquacast_shim_translation.py`` is.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -27,7 +28,12 @@ from structlog.testing import capture_logs
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
 from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
-from sapphire_flow.types.enums import AlertEligibility, ModelTier, StationStatus
+from sapphire_flow.types.enums import (
+    AlertEligibility,
+    ModelTier,
+    QcStatus,
+    StationStatus,
+)
 from sapphire_flow.types.ids import ModelId, StationId
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeWeatherForecastSource
@@ -552,6 +558,41 @@ class TestGroupFiResolverInTheForecastCycle:
 
 
 class TestGroupMemberInputIsolationInCycle:
+    @pytest.mark.parametrize(
+        "excluded_index", [0, 1], ids=["excluded-first", "excluded-last"]
+    )
+    @pytest.mark.parametrize("qc_status", [QcStatus.QC_SUSPECT, QcStatus.QC_FAILED])
+    def test_qc_rejected_history_does_not_block_healthy_sibling(
+        self, excluded_index: int, qc_status: QcStatus
+    ) -> None:
+        stores, sid_a, sid_b = _seed_group_of_two()
+        ordered = sorted((sid_a, sid_b), key=str)
+        excluded = ordered[excluded_index]
+        healthy = ordered[1 - excluded_index]
+        observations = stores.obs_store.fetch_observations(
+            station_id=excluded,
+            parameter="discharge",
+            start=_clock() - timedelta(days=2),
+            end=_clock(),
+        )
+        assert observations
+        stores.obs_store.store_observations(
+            [replace(obs, qc_status=qc_status) for obs in observations]
+        )
+
+        events = _run_cycle(stores, models={_GROUP_MODEL_ID: _wrapped_group_adapter()})
+
+        rows = stores.forecast_store.fetch_forecasts_for_cycle(_clock())
+        assert {(row.station_id, row.model_id) for row in rows} == {
+            (healthy, _GROUP_MODEL_ID)
+        }
+        assert [
+            (event["station_id"], event["reason"])
+            for event in events
+            if event["event"] == "run_group_forecast.station_inputs_unavailable"
+        ] == [(str(excluded), "missing_required_target")]
+        assert _predict_batch_failures(events) == []
+
     @pytest.mark.parametrize("shortfall", ["future", "assembly", "binding"])
     def test_healthy_member_is_persisted_when_sibling_cannot_assemble(
         self, monkeypatch: pytest.MonkeyPatch, shortfall: str

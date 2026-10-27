@@ -10,6 +10,9 @@ from testcontainers.postgres import PostgresContainer
 from tests.conftest import (
     make_historical_forcing_record as make_historical_forcing_record,
 )
+from tests.integration.committed_database import (
+    isolated_committed_db_engine as isolated_committed_db_engine,
+)
 
 
 @pytest.fixture(scope="session")

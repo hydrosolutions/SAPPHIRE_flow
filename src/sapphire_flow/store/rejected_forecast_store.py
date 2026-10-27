@@ -14,12 +14,17 @@ import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
 
 from sapphire_flow.db.metadata import rejected_forecasts
-from sapphire_flow.exceptions import CaptureAbandonedError, ConfigurationError
+from sapphire_flow.exceptions import (
+    CaptureAbandonedError,
+    ConfigurationError,
+    DailyOutputRolledBackError,
+)
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import EnsembleRepresentation, ForecastDataUse, QcStatus
 from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+from sapphire_flow.types.forecast_reference import ForecastOutputKey
 from sapphire_flow.types.ids import (
     ArtifactId,
     ModelId,
@@ -36,6 +41,7 @@ if TYPE_CHECKING:
     import threading
     from collections.abc import Callable, Sequence
     from contextlib import AbstractContextManager as ContextManager
+    from uuid import UUID
 
     from sqlalchemy import RowMapping
 
@@ -78,7 +84,7 @@ def _nonfinite_decode(raw: object) -> float:
     return float(raw)  # type: ignore[arg-type]
 
 
-def _encode_series(ensemble: ForecastEnsemble) -> dict[str, list[list[object]]]:
+def encode_rejected_series(ensemble: ForecastEnsemble) -> dict[str, list[list[object]]]:
     """Plan 404's record contract: `values` keyed by member id or quantile
     level, each an array of `[valid_time, value]` pairs — each series keeps
     its OWN timestamps (`ForecastEnsemble` allows members with different
@@ -112,7 +118,7 @@ def _decode_series(
     return result
 
 
-def _qc_flags_json(flags: tuple[QcFlag, ...]) -> list[dict[str, object]]:
+def encode_rejected_qc_flags(flags: tuple[QcFlag, ...]) -> list[dict[str, object]]:
     return [
         {
             "rule_id": f.rule_id,
@@ -159,9 +165,9 @@ def _build_rows(entry: RejectedForecastEntry) -> list[dict[str, object]]:
                 "units": ensemble.units,
                 "representation": ensemble.representation.value,
                 "time_step_seconds": int(ensemble.time_step.total_seconds()),
-                "values": _encode_series(ensemble),
+                "values": encode_rejected_series(ensemble),
                 "qc_status": param.qc_status.value,
-                "qc_flags": _qc_flags_json(param.qc_flags),
+                "qc_flags": encode_rejected_qc_flags(param.qc_flags),
             }
         )
     return rows
@@ -248,6 +254,105 @@ class PgRejectedForecastStore:
                     raise CaptureAbandonedError(
                         "rejected-forecast capture abandoned before commit"
                     )
+
+    def write_committed(
+        self, entry: RejectedForecastEntry
+    ) -> dict[ForecastOutputKey, RejectedForecastId]:
+        """Return exact parameter references only after the transaction commits."""
+        with protect_lineage_errors(self._data_use):
+            if self._begin is None:
+                raise ConfigurationError(
+                    "RejectedForecastStore.write_committed requires "
+                    "a transaction_factory"
+                )
+            validate_rejected_assignment(entry.payload, self._data_use)
+            rows = _build_rows(entry)
+            if not rows:
+                raise ValueError("committed rejection requires at least one parameter")
+            references = {
+                ForecastOutputKey(
+                    station_id=entry.payload.station_id,
+                    model_id=entry.payload.model_id,
+                    issued_at=entry.payload.issued_at,
+                    parameter=parameter.ensemble.parameter,
+                ): RejectedForecastId(cast("UUID", row["id"]))
+                for parameter, row in zip(entry.payload.parameters, rows, strict=True)
+            }
+            if len(references) != len(rows):
+                raise ValueError("committed rejection has a duplicate parameter")
+            failure: Exception | None = None
+            with self._begin() as txn:
+                try:
+                    txn.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
+                    txn.execute(
+                        sa.text(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT}'")
+                    )
+                    txn.execute(sa.insert(rejected_forecasts), rows)
+                except Exception as exc:
+                    # Only successful rollback AND clean context exit prove failure.
+                    # Rollback/exit/commit errors remain ambiguous.
+                    txn.rollback()
+                    failure = exc
+            if failure is not None:
+                if self._data_use is not ForecastDataUse.STANDARD:
+                    # Preserve protected-purpose SQL error redaction at the boundary.
+                    raise failure
+                raise DailyOutputRolledBackError(
+                    "daily rejected output transaction rolled back"
+                ) from failure
+            return references
+
+    def fetch_rejected_forecast(
+        self, rejected_forecast_id: RejectedForecastId
+    ) -> PersistedRejectedForecast | None:
+        with protect_lineage_errors(self._data_use):
+            row = (
+                self._conn.execute(
+                    sa.select(
+                        *forecast_columns(rejected_forecasts, self._data_use)
+                    ).where(
+                        rejected_forecasts.c.id == rejected_forecast_id,
+                        rejected_forecasts.c.data_use == self._data_use.value,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            return _row_to_domain(row) if row is not None else None
+
+    def fetch_latest_rejected_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+        group_ids: tuple[StationGroupId, ...],
+    ) -> PersistedRejectedForecast | None:
+        with protect_lineage_errors(self._data_use):
+            row = (
+                self._conn.execute(
+                    sa.select(*forecast_columns(rejected_forecasts, self._data_use))
+                    .where(
+                        rejected_forecasts.c.data_use == self._data_use.value,
+                        rejected_forecasts.c.station_id == station_id,
+                        rejected_forecasts.c.model_id == model_id,
+                        rejected_forecasts.c.issued_at <= as_of,
+                        rejected_forecasts.c.recorded_at <= as_of,
+                        sa.or_(
+                            rejected_forecasts.c.group_id.in_(group_ids),
+                            rejected_forecasts.c.group_id.is_(None),
+                        ),
+                    )
+                    .order_by(
+                        rejected_forecasts.c.issued_at.desc(),
+                        rejected_forecasts.c.recorded_at.desc(),
+                        rejected_forecasts.c.id.desc(),
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            return _row_to_domain(row) if row is not None else None
 
     def fetch_rejected_forecasts(
         self,

@@ -9,11 +9,14 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import (
+    ConfigurationError,
     GroupForecastError,
     InsufficientDataError,
     ModelOutputError,
+    ModelPredictionFailure,
     StoreError,
 )
+from sapphire_flow.protocols.forecast_model import GroupInputGate
 from sapphire_flow.services.forecast_evidence import capture_group_evidence
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
@@ -32,8 +35,18 @@ from sapphire_flow.services.run_station_forecast import (
 )
 from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.domain import aggregate_input_quality
-from sapphire_flow.types.enums import ArtifactScope, ForecastStatus, QcStatus
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    ForecastStatus,
+    FutureWeatherPolicy,
+    ModelArtifactStatus,
+    QcStatus,
+)
 from sapphire_flow.types.forecast import OperationalForecast
+from sapphire_flow.types.group_input import (
+    GroupMemberInputIssue,
+    GroupMemberInputReason,
+)
 from sapphire_flow.types.ids import ForecastId
 from sapphire_flow.types.model import GroupModelInputs
 from sapphire_flow.types.rejected_forecast import (
@@ -90,20 +103,9 @@ class _StationResultOutcome:
     rejected: RejectedAssignmentPayload | None
 
 
-class GroupMemberInputReason(Enum):
-    CADENCE_MISMATCH = "cadence_mismatch"
-    MISSING_DECLARED_STATIC = "missing_declared_static"
-    MISSING_REQUIRED_TARGET = "missing_required_target"
-    DECLARED_STATIC_NOT_REPRESENTABLE = "declared_static_not_representable"
-    INSUFFICIENT_FUTURE = "insufficient_future"
-    INPUTS_UNAVAILABLE = "inputs_unavailable"
-    MISSING_FORECAST_BINDING = "missing_forecast_binding"
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class GroupMemberInputIssue:
-    station_id: StationId
-    reason: GroupMemberInputReason
+class GroupStatePolicy(Enum):
+    PRESERVE = "preserve"
+    STATELESS_ONLY = "stateless_only"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -118,12 +120,14 @@ class GroupInputAssembly:
 class GroupForecastOutcome:
     """Plan 404 T2 — `run_group_forecast`'s return: passing stations' results
     AND every rejected station's payload, D3 (group rejections are per
-    station)."""
+    station). `failure` retains unexpected gate/prediction faults for daily
+    classification; anticipated FI failures remain missing model outputs."""
 
     results: dict[StationId, StationForecastResult]
     rejected: tuple[RejectedAssignmentPayload, ...] = ()
     expected_station_ids: tuple[StationId, ...] = ()
     unavailable_members: tuple[GroupMemberInputIssue, ...] = ()
+    failure: Exception | None = None
 
 
 def _station_id_first(df: pl.DataFrame) -> pl.DataFrame:
@@ -356,6 +360,7 @@ def assemble_group_operational_inputs(
     clock: Callable[[], UtcDatetime],
     forecast_horizon_steps: int,
     time_step: timedelta,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> tuple[GroupModelInputs, dict[StationId, OperationalInputMetadata]] | None:
     assembly = assemble_group_operational_inputs_outcome(
         group=group,
@@ -373,6 +378,7 @@ def assemble_group_operational_inputs(
         clock=clock,
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
+        weather_policy=weather_policy,
     )
     if assembly.inputs is None:
         return None
@@ -396,6 +402,7 @@ def assemble_group_operational_inputs_outcome(
     clock: Callable[[], UtcDatetime],
     forecast_horizon_steps: int,
     time_step: timedelta,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> GroupInputAssembly:
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable: list[GroupMemberInputIssue] = []
@@ -434,6 +441,7 @@ def assemble_group_operational_inputs_outcome(
                 clock=clock,
                 forecast_horizon_steps=forecast_horizon_steps,
                 time_step=time_step,
+                weather_policy=weather_policy,
             )
         except StoreError:
             raise
@@ -628,6 +636,14 @@ def _build_station_result(
     # parameter has failed, an error anywhere in a REMAINING parameter's
     # block is logged and that parameter is recorded QC_UNCHECKED — never
     # escaping this function (it never drops the whole group).
+    if any(e.model_id not in (None, assignment.model_id) for e in ensembles.values()):
+        raise ModelOutputError("group output model identity differs from assignment")
+    ensembles = {
+        parameter: replace(ensemble, model_id=assignment.model_id)
+        if ensemble.model_id is None
+        else ensemble
+        for parameter, ensemble in ensembles.items()
+    }
     all_flags: dict[str, list[QcFlag]] = {}
     rejected_parameters: list[RejectedParameterPayload] = []
     failed_params: list[str] = []
@@ -836,6 +852,8 @@ def run_group_forecast(
     rng: random.Random,
     water_level_datums_masl: dict[StationId, float | None] | None = None,
     unavailable_members: tuple[GroupMemberInputIssue, ...] = (),
+    frozen_artifact_id: ArtifactId | None = None,
+    state_policy: GroupStatePolicy = GroupStatePolicy.PRESERVE,
 ) -> GroupForecastOutcome:
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable = list(unavailable_members)
@@ -862,12 +880,83 @@ def run_group_forecast(
             unavailable_members=tuple(unavailable),
         )
     group_inputs = _select_group_members(group_inputs, tuple(serviceable_ids))
+    if isinstance(model, GroupInputGate):
+        try:
+            issues = model.assess_group_inputs(group_inputs)
+            excluded_ids = {issue.station_id for issue in issues}
+            if len(excluded_ids) != len(issues) or not excluded_ids <= set(
+                serviceable_ids
+            ):
+                raise ModelOutputError(
+                    "group input gate returned invalid member identities"
+                )
+            unavailable.extend(issues)
+            serviceable_ids = [
+                sid for sid in serviceable_ids if sid not in excluded_ids
+            ]
+            if not serviceable_ids:
+                log.warning(
+                    "run_group_forecast.all_members_input_excluded",
+                    group_id=str(group.id),
+                    model_id=str(assignment.model_id),
+                    excluded_count=len(issues),
+                    forcing_gaps=_group_forcing_gap_details(
+                        group_inputs=group_inputs,
+                        data_requirements=model.data_requirements,
+                        iq_config=config.input_quality,
+                        metadata_by_station=metadata_by_station,
+                    ),
+                )
+                return GroupForecastOutcome(
+                    results={},
+                    expected_station_ids=expected,
+                    unavailable_members=tuple(unavailable),
+                )
+            group_inputs = _select_group_members(group_inputs, tuple(serviceable_ids))
+        except StoreError:
+            raise
+        except Exception as exc:
+            _raise_store_error_if_connection_fatal(
+                exc,
+                group=group,
+                model_id=assignment.model_id,
+                operation="input_gate",
+            )
+            log.error(
+                "run_group_forecast.input_gate_failed",
+                group_id=str(group.id),
+                model_id=str(assignment.model_id),
+                error_type=type(exc).__name__,
+            )
+            return GroupForecastOutcome(
+                results={},
+                expected_station_ids=expected,
+                unavailable_members=tuple(unavailable),
+                failure=exc,
+            )
 
     try:
-        artifact_result = artifact_store.fetch_active_artifact(
-            assignment.model_id,
-            group_id=group.id,
-        )
+        if frozen_artifact_id is None:
+            artifact_result = artifact_store.fetch_active_artifact(
+                assignment.model_id,
+                group_id=group.id,
+            )
+        else:
+            record = artifact_store.fetch_artifact_record(frozen_artifact_id)
+            if (
+                record is None
+                or record.model_id != assignment.model_id
+                or record.group_id != group.id
+                or record.status is not ModelArtifactStatus.ACTIVE
+            ):
+                raise ConfigurationError(
+                    "frozen group artifact is no longer active or matching"
+                )
+            artifact_result = artifact_store.fetch_artifact(frozen_artifact_id)
+            if artifact_result is None:
+                raise ModelOutputError("frozen group artifact bytes are unavailable")
+            if artifact_result[0] != frozen_artifact_id:
+                raise StoreError("frozen group artifact returned a different identity")
     except StoreError:
         raise
     except Exception as exc:
@@ -887,6 +976,7 @@ def run_group_forecast(
             results={},
             expected_station_ids=expected,
             unavailable_members=tuple(unavailable),
+            failure=exc,
         )
 
     if artifact_result is None:
@@ -919,7 +1009,7 @@ def run_group_forecast(
     try:
         artifact = model.deserialize_artifact(artifact_bytes)
         batch_result = model.predict_batch(artifact, group_inputs, rng)
-    except ModelOutputError as exc:
+    except ModelPredictionFailure as exc:
         log.warning(
             "run_group_forecast.predict_batch_failed",
             group_id=str(group.id),
@@ -962,6 +1052,14 @@ def run_group_forecast(
             results={},
             expected_station_ids=expected,
             unavailable_members=tuple(unavailable),
+            failure=exc,
+        )
+
+    if state_policy is GroupStatePolicy.STATELESS_ONLY and any(
+        new_state is not None for _, new_state in batch_result.values()
+    ):
+        raise ModelOutputError(
+            "stateless group execution returned unexpected post-state"
         )
 
     expected_station_ids = set(group_inputs.station_ids)

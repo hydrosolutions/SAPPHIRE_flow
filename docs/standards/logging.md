@@ -261,7 +261,36 @@ length/shape shortfalls remain the model's responsibility, not invented NaNs.
 Target history is never null-grid-filled: an absent frame or column is a member
 shortfall only for explicitly declared past-known targets. Output target names
 alone imply no history requirement; weather-only declarations are unaffected.
-The FI adapter's existing `station_input_nan_tolerance_exceeded` event explains a tolerance refusal.
+The FI adapter emits `forecast_interface.station_input_nan_tolerance_exceeded`
+once per excluded station during input assessment, with `station_id` and offending
+`variables` (counts/tolerances, never input arrays). This applies to ordinary and
+daily runs and direct adapter calls. The runner emits WARNING
+`run_group_forecast.all_members_input_excluded` with group/model IDs, exclusion
+count and forcing-gap details when no member can run; this is not a model failure.
+Gate configuration/contract errors emit ERROR `run_group_forecast.input_gate_failed`
+with group/model IDs and `error_type`. They are contained in the runner outcome's
+`failure` for typed daily-controller classification, not converted to input exclusions.
+Deserialize/predict exceptions also retain their original type in `failure`.
+The FI adapter uses `ModelPredictionFailure` only for a returned native FI
+`ModelFailure` or explicitly failed variables, not malformed output. The runner
+contains that anticipated result without setting `failure`; missing outputs remain
+model failures in daily completion. Native FI models still return, never raise,
+anticipated failures.
+The ordinary forecast-cycle caller currently ignores the `failure` carrier and
+keeps the existing empty-result containment. A gate fault is logged but does not
+add a cycle error or degrade health there. Changing that health policy requires
+an owner decision; this carrier does not implement it.
+Store and connection-fatal errors still propagate.
+
+`daily_forecast.failure` is an ERROR with bounded `group_id`, `attempt_id`,
+`phase`, `error_type`, typed `failure_reason`, and `ownership_uncertain`.
+`attempt_id` is `None` before admission or the submitted UUID; a submitted UUID
+alone is not proof of ownership. `admission_refused` denotes a definite
+validation refusal; `admission_uncertain` denotes an unknown acknowledgement
+and sets `ownership_uncertain` even without an executable owned claim. A proven
+first-write rollback clears uncertainty before the failure event is logged.
+It does not log exception messages, stacks, or raw payloads.
+
 Pre-conformance frames preserve per-station forcing-gap quality in both successful
 results and `predict_batch_failed` / `batch_missing_station_outputs` diagnostics.
 

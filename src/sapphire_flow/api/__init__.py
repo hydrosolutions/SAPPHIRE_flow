@@ -125,6 +125,11 @@ app.include_router(_api_review.router, dependencies=[Depends(require_reviewer)])
 # level `dependencies=`, deliberately outside Plan 402's `require_reviewer`
 # router above — that gate admits service-token principals only.
 app.include_router(_api_rejected.router)
+from sapphire_flow.api.routes import (  # noqa: E402
+    api_evaluation_forecasts as _api_evaluation,
+)
+
+app.include_router(_api_evaluation.router)
 # Review routes depend on a named OIDC human. Consumer publication routes
 # retain the existing service-token authorization and station scope.
 app.include_router(_publication.router)

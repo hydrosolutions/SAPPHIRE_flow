@@ -9,6 +9,10 @@ from uuid import UUID  # noqa: TC003 - Pydantic resolves this field at runtime.
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from sapphire_flow.config.daily_evaluation import DailyEvaluationConfig  # noqa: TC001
+from sapphire_flow.config.evaluation_forecasts import (
+    EvaluationForecastsConfig,  # noqa: TC001
+)
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
     SeasonDefinition,
@@ -80,6 +84,8 @@ class InputQualityConfig(BaseModel):
 
 
 class DeploymentConfig(BaseModel):
+    evaluation_forecasts: EvaluationForecastsConfig | None = None
+    daily_evaluation: DailyEvaluationConfig | None = None
     danger_levels: list[_DangerLevelInput] = []
     seasons: list[_SeasonInput] = []
     skill_interpretation: list[_SkillInterpretationInput] = []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from starlette.datastructures import MutableHeaders
@@ -10,7 +11,8 @@ if TYPE_CHECKING:
 
 def _forecast_bearing_path(path: str) -> bool:
     return (
-        path.startswith("/api/v1/review/forecasts")
+        bool(re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path))
+        or path.startswith("/api/v1/review/forecasts")
         or path.startswith("/api/v1/forecasts/")
         or path == "/api/v1/forecast-publications"
         or (

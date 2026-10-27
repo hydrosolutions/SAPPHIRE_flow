@@ -22,7 +22,7 @@ from fastapi.routing import APIRoute
 from sapphire_flow.api import app
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.0"
+MAP_CONTRACT_VERSION = "2.2"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
 # other route may appear in the committed file.
@@ -37,6 +37,7 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/stations/{station_id}/skill"),
         # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
         ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"),
+        ("GET", "/api/v1/stations/{station_id}/evaluation-forecasts"),
     }
 )
 
@@ -50,7 +51,10 @@ _REVIEW_PATHS: frozenset[str] = frozenset(
 # token still gets 403, same as the REVIEW_PATHS above, but the wording names
 # both principals.
 _REVIEW_OR_HUMAN_PATHS: frozenset[str] = frozenset(
-    {"/api/v1/stations/{station_id}/rejected-forecasts"}
+    {
+        "/api/v1/stations/{station_id}/rejected-forecasts",
+        "/api/v1/stations/{station_id}/evaluation-forecasts",
+    }
 )
 
 # Every route in _MAP_ROUTES except the station LIST parses at least one
@@ -67,6 +71,7 @@ _400_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/rejected-forecasts",
+        "/api/v1/stations/{station_id}/evaluation-forecasts",
     }
 )
 
@@ -82,10 +87,24 @@ _404_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/rejected-forecasts",
+        "/api/v1/stations/{station_id}/evaluation-forecasts",
     }
 )
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/stations/{station_id}/evaluation-forecasts"): (
+        "Read-only STANDARD evaluation selection per parameter, with "
+        "current/prior UTC-day "
+        "member diagnostics. Reviewer/admin or granted human only. "
+        "Disabled reads return "
+        "404 independently of scheduling. valid_at must be "
+        "timezone-aware; future times "
+        "never shift the logical issue day. Activated-tenant reviewer "
+        "values, flag detail "
+        "and detailed provenance are withheld for both sources. No "
+        "alternate value URLs. "
+        "All responses are no-store; unavailable scoped evidence returns 503."
+    ),
     ("GET", "/api/v1/stations"): (
         "Lists stations. A consumer, reviewer or admin token may call this; "
         "a consumer/reviewer token's result is silently filtered to its "
@@ -225,6 +244,8 @@ def build_map_openapi() -> dict[str, Any]:
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
                 )
+            if path == "/api/v1/stations/{station_id}/evaluation-forecasts":
+                responses["503"] = _error_response("Evaluation reads unavailable.")
             if path == "/api/v1/forecasts/{forecast_id}":
                 responses["410"] = {
                     "description": "Withdrawn forecast; metadata-only tombstone.",

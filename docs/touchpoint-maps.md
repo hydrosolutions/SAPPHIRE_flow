@@ -81,6 +81,15 @@ when changing them.
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**Daily group result boundary:** FI ensembles have no SAP3 model identity. Bind
+missing IDs from the group assignment before QC and reject present mismatches;
+never relax daily output integrity. `GroupInputGate.assess_group_inputs` is an
+optional SAP3-only capability returning `types/group_input.py` issues. It preserves
+pre-predict NaN exclusions through model failure and all-excluded batches without
+changing FI `predict` or native `GroupForecastModel.predict_batch`. Run
+`test_run_group_forecast.py`, the adapter NaN-gate tests, and
+`tests/integration/store/test_daily_forecast_fi_boundary.py` for changes here.
+
 **Plan 399 — warm-start retrain crosses this boundary.** `ForecastInterfaceAdapter` gained
 `retrain()` and a `supports_warm_start` property. ⛔ **Never decide warm-start support with a
 structural `isinstance` on the adapter**: it has no `__getattr__` passthrough and defines
@@ -2089,3 +2098,29 @@ The raw save helper also accepts an optional smoke observer (default `None`).
 Only the opt-in path samples during bounded readiness waits and sustained output;
 observer failure uses the existing owned-save-process cleanup and stderr capture.
 The original production wait/deadline/byte-cap path is unchanged.
+
+### Evaluation API addendum
+
+Route: `api/routes/api_evaluation_forecasts.py`; selection:
+`services/evaluation_forecasts.py`; boundary: `api/evaluation_schemas.py`.
+`api/deps.py` provides the request-transaction daily reader, injected clock and
+validated configuration-backed fallback declarations (empty when undeclared).
+Changes must preserve scope-before-read, STANDARD-only purpose checks, whole-summary
+authority, both-source publication redaction, no other-member roster and no bypass
+URLs. Keep exact-route GET-only credentialed CORS and no-store errors/preflights in
+`api/cors.py` and `api/publication_cache.py`. Update auth matrix, map contract
+version/schema and `test_api_evaluation_forecasts.py`; run rejected/publication
+regressions too. Never couple read activation to scheduling.
+
+### Evaluation per-model latest diagnostics
+
+`EvaluationForecasts.models` is independent of preferred/fallback selection.
+Route serialization must apply publication withholding to its accepted/rejected
+records too. Daily attempt-status diagnostics cover two days. Latest CMAL result
+metadata also uses bounded accepted/rejected history queries with exact issue-day
+summary checks; stored-only unverified rows never become scheduled authority or
+current selection. Active model assignments union all station groups within the
+authorized tenant. Ordinary
+`fetch_latest_forecast_at` uses a purpose-bound ID-only LIMIT 1 projection before
+protected exact hydration; preserve existing latest-reader semantics and test
+future-row shadowing, stale diagnostics and no selection promotion.

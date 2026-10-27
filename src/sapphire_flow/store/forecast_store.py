@@ -377,6 +377,31 @@ class PgForecastStore:
         with protect_lineage_errors(self._data_use):
             return _fetch_forecast(self._conn, forecast_id, self._data_use)
 
+    def fetch_latest_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+    ) -> OperationalForecast | None:
+        with protect_lineage_errors(self._data_use):
+            stmt = (
+                sa.select(forecasts.c.id)
+                .where(forecasts.c.station_id == station_id)
+                .where(forecasts.c.model_id == model_id)
+                .where(forecasts.c.issued_at <= as_of)
+                .where(forecasts.c.combination_strategy.is_(None))
+                .where(_is_current())
+                .where(forecasts.c.data_use == self._data_use.value)
+                .order_by(
+                    forecasts.c.issued_at.desc(),
+                    forecasts.c.version.desc(),
+                    forecasts.c.id.desc(),
+                )
+                .limit(1)
+            )
+            fid = self._conn.execute(stmt).scalar_one_or_none()
+            return self.fetch_forecast(ForecastId(fid)) if fid is not None else None
+
     def fetch_latest_forecast(
         self,
         station_id: StationId,
@@ -915,6 +940,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     ensemble = (
         ForecastEnsemble.from_members(
             station_id=station_id,
+            model_id=ModelId(header["model_id"]),
             issued_at=issued_at,
             parameter=parameter,
             units=units,
@@ -924,6 +950,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
         if is_members
         else ForecastEnsemble.from_quantiles(
             station_id=station_id,
+            model_id=ModelId(header["model_id"]),
             issued_at=issued_at,
             parameter=parameter,
             units=units,

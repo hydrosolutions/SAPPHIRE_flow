@@ -191,7 +191,7 @@ def test_live_runtime_temp_objects_do_not_abort_preflights(
             conn.commit()
             config = Config("alembic.ini")
             command.downgrade(config, "0070")
-            command.upgrade(config, "0071")
+            command.upgrade(config, "head")
             conn.execute(sa.text("SELECT id FROM forecasts LIMIT 1"))
             conn.commit()
             with (

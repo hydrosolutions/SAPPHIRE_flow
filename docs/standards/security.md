@@ -2069,3 +2069,33 @@ signature verification claim. The action, its artifact distribution and the
 acquired executable are part of the reviewed trusted-runner/supply-chain boundary.
 The action SHA and BuildKit OCI-index pin meet the explicit action/image pin rules;
 the executable's byte-integrity guarantee is a residual, not an inferred proof.
+
+### Daily scheduled ledger permissions (migration 0072)
+
+`daily_forecast_attempts` is readable by API and worker roles. The API has no
+ledger writes. The worker can insert claim columns and update only `state`,
+`finished_at`, `failure_reason` and `summary`. Neither runtime role can delete
+rows or write `recovery`; bootstrap removes stale column ACLs as well as table
+ACLs. The terminal-state constraint requires recovery evidence for `abandoned`,
+so ordinary worker finalization cannot authorize abandonment. The delivery-only
+operator gains no daily ledger authority. Protected scientific input and forecast
+lineage grants remain unchanged.
+
+Recovery still requires a separately authorized owner operation and positive
+confirmation that the run and every writer stopped. No recovery credential, CLI
+activation or delegated recovery role is introduced here. Worker credentials are
+shared across runs: SQL column grants do not enforce per-run ownership; the store's
+exact claim checks remain the application boundary for normal finalization.
+
+### Evaluation forecast reads
+
+The exact `/api/v1/stations/{id}/evaluation-forecasts` route shares the rejected
+route's reviewer-or-human authorization and GET-only credentialed human-dashboard
+CORS policy. Station scope/review grants are checked before data reads. The route
+accepts STANDARD only and restricts the ledger to configured tenant/deployment/groups.
+Publication-gated reviewer tokens receive no values, QC/input-quality flag detail,
+or detailed provenance from either accepted or rejected records. No alternate
+value URLs are returned. Admin and granted humans retain full review access.
+Success, errors and preflight responses are no-store. The ledger dependency borrows
+the authenticated request transaction and exposes only reads, not write methods
+or write grants. Read activation is independent of schedule activation.
