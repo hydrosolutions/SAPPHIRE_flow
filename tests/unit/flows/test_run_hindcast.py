@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 import pytest
@@ -970,3 +971,110 @@ class TestRunHindcastFlowValidation:
                 clock=_fixed_clock,
                 rng=rng,
             )
+
+
+class TestHindcastGroupFIStationCodes:
+    @pytest.mark.parametrize("source", ["raw", "wrapped", "discovered", "existing"])
+    def test_preserves_station_identity_through_group_prediction(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        source: Literal["raw", "wrapped", "discovered", "existing"],
+    ) -> None:
+        from sapphire_flow.adapters.forecast_interface import adapt_if_fi
+        from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+            SyntheticGroupFIModel,
+        )
+
+        issue = _utc(2022, 1, 1)
+        step = timedelta(hours=1)
+        stations = FakeStationStore()
+        groups = FakeStationGroupStore()
+        observations = FakeObservationStore()
+        forcing = FakeWeatherReanalysisSource()
+        outputs = FakeHindcastStore()
+        codes = {StationId(uuid4()): "gauge-a", StationId(uuid4()): "gauge-b"}
+        records = []
+        for index, (sid, code) in enumerate(codes.items()):
+            stations.store_station(make_station_config(station_id=sid, code=code))
+            stations.store_weather_source(_make_weather_source(sid))
+            observations.store_observations(
+                make_observations(
+                    n=3,
+                    station_id=sid,
+                    start=ensure_utc(issue - 3 * step),
+                    interval=step,
+                    rng=random.Random(index),
+                )
+            )
+            records.extend(
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    parameter=parameter,
+                    valid_time=ensure_utc(issue + offset * step),
+                    value=5.0,
+                )
+                for offset in range(3)
+                for parameter in ("precipitation", "temperature")
+            )
+        forcing.set_records(records)
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="portable-fi-test",
+            station_ids=frozenset(codes),
+            created_at=issue,
+        )
+        groups.store_group(group)
+        expected_codes = codes
+        model = SyntheticGroupFIModel()
+        if source == "existing":
+            # A deliberate alternative mapping proves the caller's resolver wins.
+            expected_codes = {
+                sid: "gauge-b" if code == "gauge-a" else "gauge-a"
+                for sid, code in codes.items()
+            }
+            model = adapt_if_fi(model, station_code_resolver=expected_codes.__getitem__)
+        elif source in ("wrapped", "discovered"):
+            model = adapt_if_fi(model)
+        if source == "discovered":
+            monkeypatch.setattr(
+                "sapphire_flow.services.model_registry.discover_models",
+                lambda: {_MODEL_ID: model},
+            )
+        run_id = uuid4()
+        results = run_hindcast_flow.fn(
+            model_id=_MODEL_ID,
+            artifact_id=ArtifactId(uuid4()),
+            group_id=group.id,
+            period_start=issue,
+            period_end=ensure_utc(issue + step),
+            time_step=step,
+            model=None if source == "discovered" else model,
+            artifact=b"artifact",
+            forcing_source=forcing,
+            obs_store=observations,
+            hindcast_store=outputs,
+            station_store=stations,
+            group_store=groups,
+            basin_store=FakeBasinStore(),
+            clock=_fixed_clock,
+            rng=random.Random(0),
+            hindcast_run_id=run_id,
+        )
+        assert isinstance(results, dict)
+        assert set(results) == set(codes)
+        for sid, code in expected_codes.items():
+            assert len(results[sid]) == 1 and results[sid][0].success
+            stored = outputs.fetch_hindcasts(
+                station_id=sid,
+                model_id=_MODEL_ID,
+                start=issue,
+                end=ensure_utc(issue + step),
+                hindcast_run_id=run_id,
+            )
+            assert len(stored) == 1
+            base = 100.0 if code == "gauge-a" else 200.0
+            assert stored[0].ensemble.values.sort("valid_time")["value"].to_list() == [
+                base,
+                base + 1,
+                base + 2,
+            ]

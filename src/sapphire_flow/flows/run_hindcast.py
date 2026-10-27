@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable  # noqa: TC003
 
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.protocols.forecast_model import ForecastModel
+    from sapphire_flow.protocols.stores import StationStore
 
 
 @task(
@@ -223,6 +225,13 @@ def run_hindcast_flow(
                 f"Model {model_id} not found in registry. "
                 f"Available: {list(all_models.keys())}"
             )
+
+    from sapphire_flow.services.model_registry import with_group_station_code_resolvers
+
+    model = with_group_station_code_resolvers(
+        {model_id: cast("ForecastModel", model)},
+        cast("StationStore", station_store),
+    )[model_id]
 
     if artifact is None:
         if artifact_store is None:
