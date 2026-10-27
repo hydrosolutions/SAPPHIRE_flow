@@ -10,12 +10,16 @@ row per station at the DB level (invalid states unrepresentable).
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 from shapely.geometry import MultiPolygon, Polygon
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.pool import NullPool
 
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
@@ -26,6 +30,10 @@ from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.ids import BasinId, PackageId, StationId
 from sapphire_flow.types.station import GatewayPolygonBindingRow
 from tests.conftest import make_station_config
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
 
 _GEOM = MultiPolygon(
     [Polygon([(7.0, 46.0), (8.0, 46.0), (8.0, 47.0), (7.0, 47.0), (7.0, 46.0)])]
@@ -419,3 +427,177 @@ class TestFetchBindingsOrdering:
         rows = store.fetch_bindings_for_station(station_id)
 
         assert [r.band_id for r in rows] == [1, 2]
+
+
+@pytest.fixture
+def prepared_connection(
+    db_engine: sa.Engine, record_property: Callable[[str, object], None]
+) -> Iterator[sa.Connection]:
+    engine = sa.create_engine(
+        db_engine.url, poolclass=NullPool, isolation_level="SERIALIZABLE"
+    )
+    try:
+        with engine.connect() as conn:
+            driver = conn.connection.driver_connection
+            assert isinstance(driver, psycopg.Connection)
+            assert not driver.autocommit
+            assert driver.prepare_threshold == 5
+            trans = conn.begin()
+            baseline = conn.scalar(sa.text("SHOW plan_cache_mode"))
+            try:
+                assert baseline == "auto"
+                indexes = (
+                    conn.execute(
+                        sa.text(
+                            """
+                        SELECT c.relname, i.indisvalid, i.indisunique,
+                               pg_get_expr(i.indpred, i.indrelid) AS predicate,
+                               ARRAY(
+                                 SELECT a.attname
+                                 FROM unnest(i.indkey::smallint[])
+                                      WITH ORDINALITY AS k(attnum, ordinal)
+                                 JOIN pg_attribute a
+                                   ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                                 WHERE k.ordinal <= i.indnkeyatts
+                                 ORDER BY k.ordinal
+                               ) AS key_columns
+                        FROM pg_index i
+                        JOIN pg_class c ON c.oid = i.indexrelid
+                        WHERE i.indrelid = 'recap_gateway_polygon_bindings'::regclass
+                        """
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                partial = next(
+                    row
+                    for row in indexes
+                    if row["relname"]
+                    == "uq_recap_gateway_polygon_bindings_one_basin_average_per_station"
+                )
+                assert partial["indisvalid"] and partial["indisunique"]
+                assert partial["key_columns"] == ["station_id"]
+                assert partial["predicate"] == "(spatial_type = 'basin_average'::text)"
+                assert not any(
+                    row["indisunique"]
+                    and row["key_columns"] == ["station_id"]
+                    and row["predicate"] is None
+                    for row in indexes
+                )
+                record_property(
+                    "migration_revision",
+                    conn.scalar(sa.text("SELECT version_num FROM alembic_version")),
+                )
+                yield conn
+            finally:
+                trans.rollback()
+                assert conn.scalar(sa.text("SHOW plan_cache_mode")) == baseline
+                conn.rollback()
+    finally:
+        engine.dispose()
+
+
+def _prepared_binding_statements(conn: sa.Connection) -> list[sa.RowMapping]:
+    return list(
+        conn.execute(
+            sa.text(
+                "SELECT name, custom_plans, generic_plans FROM pg_prepared_statements "
+                "WHERE statement LIKE 'INSERT INTO recap_gateway_polygon_bindings %'"
+            )
+        ).mappings()
+    )
+
+
+def _seed_prepared_bindings(
+    conn: sa.Connection, count: int
+) -> list[GatewayPolygonBindingRow]:
+    package_id = PackageId(f"pkg-{uuid.uuid4().hex}")
+    _seed_package(conn, package_id)
+    imported_at = ensure_utc(datetime(2026, 7, 22, 12, tzinfo=UTC))
+    bindings: list[GatewayPolygonBindingRow] = []
+    for ordinal in range(count):
+        basin_id = _seed_basin(conn)
+        bindings.append(
+            GatewayPolygonBindingRow(
+                station_id=_seed_station(conn, basin_id),
+                basin_id=basin_id,
+                gateway_hru_name="hru_prepared_v001",
+                name=f"g_{ordinal}",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                package_id=package_id,
+                imported_at=imported_at,
+            )
+        )
+    return bindings
+
+
+def _store_prepared_binding(
+    store: RecapGatewayPolygonStore,
+    binding: GatewayPolygonBindingRow,
+    ordinal: int,
+) -> None:
+    try:
+        store.store_binding(binding)
+    except DBAPIError as exc:
+        exc.add_note(
+            f"native write ordinal={ordinal}; "
+            f"SQLSTATE={getattr(exc.orig, 'sqlstate', None)}"
+        )
+        raise
+
+
+class TestPreparedBasinAverageUpsert:
+    def test_default_preparation_accepts_21_bindings(
+        self,
+        prepared_connection: sa.Connection,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        conn = prepared_connection
+        store = RecapGatewayPolygonStore(conn)
+        bindings = _seed_prepared_bindings(conn, 21)
+        for ordinal, binding in enumerate(bindings, 1):
+            record_property("native_write_ordinal", ordinal)
+            record_property("prepared_targets", str(_prepared_binding_statements(conn)))
+            _store_prepared_binding(store, binding, ordinal)
+
+        assert len(_prepared_binding_statements(conn)) == 1
+        for binding in bindings:
+            assert store.fetch_bindings_for_station(binding.station_id) == [binding]
+
+    def test_prepared_generic_plan_inserts_and_replaces_binding(
+        self,
+        prepared_connection: sa.Connection,
+        record_property: Callable[[str, object], None],
+    ) -> None:
+        conn = prepared_connection
+        store = RecapGatewayPolygonStore(conn)
+        bindings = _seed_prepared_bindings(conn, 13)
+        conn.execute(sa.text("SET LOCAL plan_cache_mode = 'force_custom_plan'"))
+        assert conn.scalar(sa.text("SHOW plan_cache_mode")) == "force_custom_plan"
+        for ordinal, binding in enumerate(bindings[:12], 1):
+            _store_prepared_binding(store, binding, ordinal)
+            if _prepared_binding_statements(conn):
+                break
+        else:
+            pytest.fail("native binding statement was not prepared during warm-up")
+        assert len(_prepared_binding_statements(conn)) == 1
+        record_property("prepared_targets", str(_prepared_binding_statements(conn)))
+
+        conn.execute(sa.text("SET LOCAL plan_cache_mode = 'force_generic_plan'"))
+        assert conn.scalar(sa.text("SHOW plan_cache_mode")) == "force_generic_plan"
+        record_property("native_write_ordinal", ordinal + 1)
+        _store_prepared_binding(store, bindings[-1], ordinal + 1)
+        replacement = replace(
+            bindings[0], gateway_hru_name="hru_prepared_v002", name="g_renamed"
+        )
+        _store_prepared_binding(store, replacement, ordinal + 2)
+        prepared = _prepared_binding_statements(conn)
+        record_property("prepared_targets_after_generic", str(prepared))
+        assert any(row["generic_plans"] > 0 for row in prepared)
+
+        assert store.fetch_bindings_for_station(bindings[-1].station_id) == [
+            bindings[-1]
+        ]
+        assert store.fetch_bindings_for_station(replacement.station_id) == [replacement]

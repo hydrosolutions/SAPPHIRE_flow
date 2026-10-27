@@ -146,6 +146,21 @@ violation, with a clear reason in the report).
    left completely untouched — packages are incremental/regional (waves of
    stations), and absence never means "remove this basin."
 
+## Prepared-statement failures
+
+The shared polygon store uses the fixed literal `spatial_type = 'basin_average'`
+in its partial-index conflict target. This preserves atomic replacement under
+repeated prepared statements and PostgreSQL generic plans; data values remain
+bound. A `42P10` error (no matching unique/exclusion constraint) can also arise
+from a parameterized arbiter predicate, so it is not proof of a missing index.
+Do not change indexes or disable preparation based on that error alone.
+
+Keep a failed operation on HOLD pending state reconciliation. Preserve its claim
+and evidence; do not silently retry or clear the claim. Adopting a reviewed shared
+fix through the normal release process and authorizing a new import attempt are
+separate actions. Package idempotency below does not authorize replay of an
+ambiguous failed operation.
+
 ## Idempotency
 
 Re-running the identical package (same `package_id`, same computed
