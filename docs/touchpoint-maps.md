@@ -1003,6 +1003,13 @@ When this map applies, name: which touch trigger (Prefect-layer, image/compose-l
 
 ### Touchpoint map: Training / hindcast / skill
 
+**Hindcast output representation:** station and group hindcast writers preserve
+`ensemble.representation`, just like operational forecasting. Native members keep
+`member_id`; native quantiles keep their quantile levels and values. Do not label
+quantiles as members or synthesize members during persistence. Skill scoring's
+existing quantile-as-pseudo-member approximation is separate and unchanged; it is
+not an exact conversion. This correction does not repair historical stored rows.
+
 **Plan 399 — warm-start retrain and the training-config channel.** `train_models_flow`
 now takes a `training_params` run parameter, threaded to `_train_model_task` and on to
 `model.train`/`model.retrain`. ⛔ *Before this it was a hardcoded `{}`, so NO model could

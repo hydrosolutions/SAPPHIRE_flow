@@ -192,7 +192,10 @@ class TestPgHindcastStoreProtocolConformance:
 
 
 class TestStoreAndFetch:
-    def test_store_and_fetch(self, db_connection: sa.Connection) -> None:
+    @pytest.mark.parametrize("representation", list(EnsembleRepresentation))
+    def test_store_and_fetch(
+        self, db_connection: sa.Connection, representation: EnsembleRepresentation
+    ) -> None:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
@@ -201,7 +204,9 @@ class TestStoreAndFetch:
         )
 
         step = _utc(2025, 3, 1)
-        hindcast = _make_hindcast(sid, mid, aid, hindcast_step=step)
+        hindcast = _make_hindcast(
+            sid, mid, aid, hindcast_step=step, representation=representation
+        )
         returned_id = store.store_hindcast(hindcast)
 
         assert returned_id == hindcast.id
@@ -216,7 +221,19 @@ class TestStoreAndFetch:
         assert fetched.model_artifact_id == aid
         assert fetched.hindcast_step == step
         assert fetched.forcing_type == ForcingType.NWP_ARCHIVE
-        assert fetched.representation == EnsembleRepresentation.MEMBERS
+        assert fetched.representation == representation
+        assert fetched.ensemble.representation == representation
+        key = (
+            "member_id"
+            if representation is EnsembleRepresentation.MEMBERS
+            else "quantile"
+        )
+        columns = ["valid_time", key, "value"]
+        assert (
+            fetched.ensemble.values.select(columns)
+            .sort(columns)
+            .equals(hindcast.ensemble.values.select(columns).sort(columns))
+        )
         assert fetched.hindcast_run_id == hindcast.hindcast_run_id
         assert fetched.ensemble.parameter == hindcast.ensemble.parameter
         assert fetched.ensemble.units == hindcast.ensemble.units

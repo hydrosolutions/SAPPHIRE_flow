@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from functools import partial
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+import polars as pl
 import pytest
 
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
@@ -12,6 +14,7 @@ from sapphire_flow.services.training_data import floor_to_time_step
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    EnsembleRepresentation,
     SpatialRepresentation,
     WeatherSourceRole,
     WeatherSourceStatus,
@@ -20,7 +23,11 @@ from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, Station
 from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.model import ModelArtifact, StationModelInputs
+    from sapphire_flow.types.model import (
+        GroupModelInputs,
+        ModelArtifact,
+        StationModelInputs,
+    )
 from tests.conftest import (
     make_observation,
     make_observations,
@@ -1927,3 +1934,123 @@ class TestHindcastFutureFrameIsExactlyTheDeclaredHorizon:
             (ensure_utc(day + timedelta(days=1)), pytest.approx(24.0)),
             (ensure_utc(day + timedelta(days=2)), pytest.approx(24.0)),
         ]
+
+
+class _RepresentationModel(FakeStationForecastModel):
+    def __init__(self, representation: EnsembleRepresentation) -> None:
+        self.representation = representation
+
+    def ensemble(
+        self, station_id: StationId, issue_time: UtcDatetime
+    ) -> ForecastEnsemble:
+        keys = (
+            [0, 1, 2]
+            if self.representation is EnsembleRepresentation.MEMBERS
+            else [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
+        )
+        column = (
+            "member_id"
+            if self.representation is EnsembleRepresentation.MEMBERS
+            else "quantile"
+        )
+        values = pl.DataFrame(
+            {
+                "valid_time": [issue_time + _STEP] * len(keys),
+                column: keys,
+                "value": [float(key) * 10 for key in keys],
+            }
+        )
+        factory = (
+            ForecastEnsemble.from_members
+            if self.representation is EnsembleRepresentation.MEMBERS
+            else ForecastEnsemble.from_quantiles
+        )
+        return factory(
+            station_id=station_id,
+            issued_at=issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=_STEP,
+            values=values,
+        )
+
+    def predict(
+        self,
+        artifact: ModelArtifact,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        return {"discharge": self.ensemble(inputs.station_id, inputs.issue_time)}, None
+
+    def predict_batch(
+        self, artifact: ModelArtifact, inputs: GroupModelInputs, rng: random.Random
+    ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
+        return {
+            sid: ({"discharge": self.ensemble(sid, inputs.issue_time)}, None)
+            for sid in inputs.station_ids
+        }
+
+
+class TestHindcastRepresentation:
+    @pytest.mark.parametrize("representation", list(EnsembleRepresentation))
+    @pytest.mark.parametrize("scope", ["station", "group"])
+    def test_preserves_native_representation_and_values(
+        self, representation: EnsembleRepresentation, scope: Literal["station", "group"]
+    ) -> None:
+        station = make_station_config()
+        stations = FakeStationStore()
+        stations.store_station(station)
+        stations.store_weather_source(_make_weather_source(station.id))
+        observations = FakeObservationStore()
+        forcing = FakeWeatherReanalysisSource()
+        _seed_observations(observations, station.id, _utc(2021, 12, 29), 4)
+        _seed_forcing(forcing, station.id, _utc(2021, 12, 29), 5)
+        outputs = FakeHindcastStore()
+        model = _RepresentationModel(representation)
+        model_id = ModelId("representation-test")
+        run_id = uuid4()
+        runner = partial(
+            run_station_hindcast if scope == "station" else run_group_hindcast,
+            model=model,
+            artifact=b"artifact",
+            model_id=model_id,
+            artifact_id=ArtifactId(uuid4()),
+            period_start=_PERIOD_START,
+            period_end=ensure_utc(_PERIOD_START + _STEP),
+            time_step=_STEP,
+            forcing_source=forcing,
+            obs_store=observations,
+            hindcast_store=outputs,
+            station_store=stations,
+            basin_store=FakeBasinStore(),
+            clock=_fixed_clock,
+            rng=random.Random(0),
+            hindcast_run_id=run_id,
+            lookback_steps=3,
+        )
+        if scope == "station":
+            result_set = runner(station_id=station.id)
+        else:
+            group = StationGroup(
+                id=StationGroupId(uuid4()),
+                name="representation-test",
+                station_ids=frozenset({station.id}),
+                created_at=_fixed_clock(),
+            )
+            result_set = runner(group=group)
+        results = result_set if isinstance(result_set, list) else result_set[station.id]
+        assert len(results) == 1 and results[0].success
+        stored = outputs.fetch_hindcasts(
+            station_id=station.id,
+            model_id=model_id,
+            start=_PERIOD_START,
+            end=ensure_utc(_PERIOD_START + _STEP),
+            hindcast_run_id=run_id,
+        )
+        assert len(stored) == 1
+        assert stored[0].representation is representation
+        assert stored[0].ensemble.representation is representation
+        assert stored[0].ensemble.values.equals(
+            model.ensemble(station.id, _PERIOD_START).values
+        )
