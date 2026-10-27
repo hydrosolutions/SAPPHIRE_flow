@@ -72,12 +72,10 @@ class RecapGatewayPolygonStore:
                     # Postgres' `ON CONFLICT ON CONSTRAINT <name>` only
                     # resolves actual constraints, so the conflict target
                     # must be inferred via index_elements + a WHERE clause
-                    # matching the index's own partial predicate exactly.
+                    # matching its predicate as a literal, not a bound value,
+                    # so generic plans can still infer the partial index.
                     index_elements=[recap_gateway_polygon_bindings.c.station_id],
-                    index_where=(
-                        recap_gateway_polygon_bindings.c.spatial_type
-                        == SpatialRepresentation.BASIN_AVERAGE.value
-                    ),
+                    index_where=sa.text("spatial_type = 'basin_average'"),
                     set_={
                         "basin_id": binding.basin_id,
                         "gateway_hru_name": binding.gateway_hru_name,
