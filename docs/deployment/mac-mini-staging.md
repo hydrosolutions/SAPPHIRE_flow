@@ -568,6 +568,20 @@ help. Either way, the watchdog (Plan 195) now alerts once when this
 agent's last exit status goes non-zero and once when it recovers — do
 not rely on this doc section alone to notice the failure.
 
+### Nightly database dump deadline
+
+The nightly `backup-database` flow allows `pg_dump` up to **2 hours**
+(`DUMP_TIMEOUT_S = 7200` in `flows/backup.py`), increased from 30 minutes
+as an interim limit after completed dumps approached that ceiling. This
+bounds the dump subprocess, not the entire flow. Reassess the limit using
+observed runtime and resource use after deployment.
+
+Backup contents (including old weather forecasts), retention, credentials,
+validation and partial-file cleanup are unchanged. The separate protected
+evidence backup tooling retains its existing deadlines. A longer deadline
+does not establish independent storage or restore readiness: verify the
+backup destination and a current restore point before a database upgrade.
+
 ### USB disk not detected / not verified
 
 Bootstrap step 6 (Plan 194) rejects `/Volumes/sapphire-backup` unless it

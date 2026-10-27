@@ -140,7 +140,7 @@ _FINAL_NAME_RE = re.compile(r"^sapphire_\d{8}_\d{6}_[0-9a-f]{8}\.dump$")
 TEMP_NAME_GLOB = "sapphire_*.dump.tmp"
 LOCK_FILENAME = ".backup.lock"
 
-DUMP_TIMEOUT_S = 1800.0  # 30 min ceiling for a nightly pg_dump
+DUMP_TIMEOUT_S = 7200.0  # Interim 2 h ceiling; reassess after measured backups
 VALIDATE_TIMEOUT_S = 120.0
 LOCK_ACQUIRE_TIMEOUT_S = 30.0
 STALE_TEMP_AGE_S = 3600.0  # a temp older than this is a crashed prior run
