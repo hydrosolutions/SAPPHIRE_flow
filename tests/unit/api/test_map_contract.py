@@ -33,6 +33,7 @@ _EXPECTED_PATHS = {
     "/api/v1/stations/{station_id}/skill",
     # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
     "/api/v1/stations/{station_id}/rejected-forecasts",
+    "/api/v1/stations/{station_id}/evaluation-forecasts",
 }
 
 

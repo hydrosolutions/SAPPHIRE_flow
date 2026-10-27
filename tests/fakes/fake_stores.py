@@ -572,6 +572,26 @@ class FakeForecastStore:
             reason="pre_capture_forecast",
         )
 
+    def fetch_latest_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+    ) -> OperationalForecast | None:
+        matches = [
+            f
+            for f in self._forecasts.values()
+            if f.data_use is self._data_use
+            and f.station_id == station_id
+            and f.model_id == model_id
+            and f.issued_at <= as_of
+            and f.status is not ForecastStatus.SUPERSEDED
+            and f.combination_strategy is None
+        ]
+        return max(
+            matches, key=lambda f: (f.issued_at, f.version, str(f.id)), default=None
+        )
+
     def fetch_latest_forecast(
         self,
         station_id: StationId,
@@ -2466,7 +2486,7 @@ def _fake_encode_series(
 ) -> dict[str, tuple[tuple[UtcDatetime, float], ...]]:
     """Groups an ensemble's rows into `PersistedRejectedForecast.values`'
     shape — a plain, un-JSON-encoded mirror of
-    `store/rejected_forecast_store.py::_encode_series` +
+    `store/rejected_forecast_store.py::encode_rejected_series` +
     `_decode_series` composed, since the fake never round-trips through
     JSONB."""
     is_members = ensemble.representation == EnsembleRepresentation.MEMBERS
@@ -2544,6 +2564,40 @@ class FakeRejectedForecastStore:
             )
         self.write_batch_calls += 1
         self._rows.extend(rows)
+
+    def fetch_rejected_forecast(
+        self, rejected_forecast_id: RejectedForecastId
+    ) -> PersistedRejectedForecast | None:
+        return next(
+            (
+                row
+                for row in self._rows
+                if row.id == rejected_forecast_id and row.data_use is self._data_use
+            ),
+            None,
+        )
+
+    def fetch_latest_rejected_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+        group_ids: tuple[StationGroupId, ...],
+    ) -> PersistedRejectedForecast | None:
+        return max(
+            (
+                row
+                for row in self._rows
+                if row.data_use is self._data_use
+                and row.station_id == station_id
+                and row.model_id == model_id
+                and row.issued_at <= as_of
+                and row.recorded_at <= as_of
+                and (row.group_id is None or row.group_id in group_ids)
+            ),
+            key=lambda row: (row.issued_at, row.recorded_at, row.id),
+            default=None,
+        )
 
     def fetch_rejected_forecasts(
         self,

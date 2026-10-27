@@ -46,10 +46,15 @@ from sapphire_flow.exceptions import (
     NoCycleAvailableError,
     StoreError,
 )
+from sapphire_flow.flows.daily_forecast_execution import (
+    prepare_daily_execution,
+    reserves_daily_group,
+)
 from sapphire_flow.protocols.adapters import (
     CandidateAwareForecastSource,
     SnowForecastSource,
 )
+from sapphire_flow.types.daily_forecast_claim import DailyFailureReason
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AlertEligibility,
@@ -93,6 +98,7 @@ if TYPE_CHECKING:
         RecapClientLike,
     )
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.flows.daily_forecast_execution import DailyForecastExecution
     from sapphire_flow.protocols.adapters import (
         WeatherForecastSource,
         WeatherReanalysisSource,
@@ -103,6 +109,8 @@ if TYPE_CHECKING:
         AlertStore,
         BasinStore,
         ClimBaselineStore,
+        CommittedForecastWriter,
+        CommittedRejectedForecastWriter,
         ForecastStore,
         HistoricalForcingStore,
         ModelArtifactStore,
@@ -115,6 +123,7 @@ if TYPE_CHECKING:
         StationStore,
         WeatherForecastStore,
     )
+    from sapphire_flow.services.daily_forecast_preflight import DailyRuntimeStore
     from sapphire_flow.services.run_station_forecast import (
         AssignmentFailure,
         StationForecastResult,
@@ -1390,6 +1399,7 @@ def _forecast_cycle_health(
     fallback_priority_drift: bool,
     snow_unavailable: bool = False,
     nwp_delivery_partial: bool = False,
+    daily_failed: bool = False,
 ) -> ForecastCycleHealth:
     if stations_attempted > 0 and stations_failed >= stations_attempted:
         return ForecastCycleHealth.FAILED
@@ -1400,6 +1410,7 @@ def _forecast_cycle_health(
         or fallback_priority_drift
         or snow_unavailable
         or nwp_delivery_partial
+        or daily_failed
     ):
         return ForecastCycleHealth.DEGRADED
     return ForecastCycleHealth.HEALTHY
@@ -2489,11 +2500,14 @@ def run_forecast_cycle_flow(
     # default is not a valid Prefect deployment parameter, so this resolves
     # to `uuid4` in the body, beside `clock`/`rng`.
     id_gen: object | None = None,
+    daily_forecast_store: object | None = None,
+    daily_forecast_writer: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
     created_http_client: Any = None
     rejected_buffer: list[RejectedForecastEntry] = []
+    daily_execution: DailyForecastExecution | None = None
     try:
         station_store = cast("StationStore | None", station_store)
         obs_store = cast("ObservationStore | None", obs_store)
@@ -2557,6 +2571,8 @@ def run_forecast_cycle_flow(
             baseline_store = cast("ClimBaselineStore", stores["baseline_store"])
             basin_store = cast("BasinStore", stores["basin_store"])
             group_store = stores["group_store"]
+            daily_forecast_store = stores["daily_forecast_store"]
+            daily_forecast_writer = stores["daily_forecast_writer"]
             forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
             gateway_polygon_store = cast(
                 "GatewayPolygonBindingStoreLike", stores["gateway_polygon_store"]
@@ -2745,6 +2761,30 @@ def run_forecast_cycle_flow(
 
         resolved_cycle_time: UtcDatetime = _resolve_cycle_time(cycle_time, clock)
 
+        daily_preflight_errors: list[str] = []
+        try:
+            daily_execution = prepare_daily_execution(
+                config=config,
+                models=models,
+                group_store=cast("StationGroupStore | None", group_store),
+                artifact_store=artifact_store,
+                store=cast("DailyRuntimeStore | None", daily_forecast_store),
+                writer=cast("CommittedForecastWriter | None", daily_forecast_writer),
+                rejected_writer=cast(
+                    "CommittedRejectedForecastWriter | None", rejected_forecast_store
+                ),
+                clock=clock,
+                id_gen=id_gen,
+            )
+        except Exception as exc:
+            daily_execution = None
+            daily_preflight_errors.append(
+                f"Daily preflight failed: {type(exc).__name__}"
+            )
+            log.error(
+                "forecast_cycle.daily_preflight_failed", error_type=type(exc).__name__
+            )
+
         # --- Batch pre-fetch: operational stations ---
         all_stations = station_store.fetch_all_stations(kind=StationKind.RIVER)  # type: ignore[union-attr]
         operational = [
@@ -2752,6 +2792,13 @@ def run_forecast_cycle_flow(
         ]
 
         if not operational:
+            if daily_execution is not None:
+                daily_execution.fail_unstarted(
+                    DailyFailureReason.NO_OPERATIONAL_STATIONS
+                )
+            no_operational_errors = tuple(daily_preflight_errors) + (
+                tuple(daily_execution.errors) if daily_execution is not None else ()
+            )
             log.info("forecast_cycle.no_operational_stations")
             _emit_forecast_freshness_record(
                 pipeline_health_store,
@@ -2762,14 +2809,16 @@ def run_forecast_cycle_flow(
             )
             return ForecastCycleResult(
                 cycle_time=resolved_cycle_time,
-                health=ForecastCycleHealth.HEALTHY,
+                health=ForecastCycleHealth.DEGRADED
+                if no_operational_errors
+                else ForecastCycleHealth.HEALTHY,
                 stations_attempted=0,
                 stations_succeeded=0,
                 stations_failed=0,
                 forecasts_stored=0,
                 alerts_checked=False,
                 duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
-                errors=(),
+                errors=no_operational_errors,
             )
 
         log.info("forecast_cycle.starting", stations=len(operational))
@@ -2836,7 +2885,7 @@ def run_forecast_cycle_flow(
         # and the group loop below skip already-failed stations instead of
         # re-resolving and re-counting them.
         stations_failed = 0
-        errors: list[str] = []
+        errors: list[str] = list(daily_preflight_errors)
         failed_station_ids: set[StationId] = set()
         forecast_bindings: dict[StationId, StationWeatherSource] = {}
         for s in operational:
@@ -3731,11 +3780,47 @@ def run_forecast_cycle_flow(
                     structlog.contextvars.unbind_contextvars("model_id")
             structlog.contextvars.unbind_contextvars("station_id")
 
+        daily_errors: tuple[str, ...] = ()
+        if daily_execution is not None:
+            daily_stored, daily_errors = daily_execution.execute(
+                operational_ids=frozenset(s.id for s in operational),
+                forecast_bindings=forecast_bindings,
+                forcing_source=forcing_source,
+                weather_forecast_store=weather_forecast_store,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                model_state_store=model_state_store,
+                cycle_time=nwp_readback_cycle_time,
+                nwp_cycle_source=nwp_cycle_source,
+                nwp_cycle_reference_time=nwp_cycle_reference_time,
+                qc_checker=qc_checker,
+                qc_rules=qc_rules,
+                all_baselines=all_baselines,
+                water_level_datums_masl=water_level_datums_masl,
+                rng=rng,
+            )
+            forecasts_stored += daily_stored
+            errors.extend(daily_errors)
+
         # --- Phase B2: per-group forecast loop ---
         if group_store is not None:
             operational_ids = {s.id for s in operational}
             group_produced_pairs: set[tuple[StationId, ModelId]] = set()
             for group, model_id in discover_group_runs(models, group_store):  # type: ignore[arg-type]
+                try:
+                    if reserves_daily_group(
+                        config=config,
+                        group=group,
+                        model_id=model_id,
+                        group_store=cast("StationGroupStore", group_store),
+                    ):
+                        continue
+                except Exception as exc:
+                    errors.append(
+                        f"Daily roster reservation failed: {type(exc).__name__}"
+                    )
+                    continue
                 group_t0 = time.perf_counter()
                 structlog.contextvars.bind_contextvars(
                     group_id=str(group.id),
@@ -4079,6 +4164,8 @@ def run_forecast_cycle_flow(
             health=_forecast_cycle_health(
                 stations_attempted=len(operational),
                 stations_failed=stations_failed,
+                daily_failed=bool(daily_preflight_errors)
+                or bool(daily_execution is not None and daily_errors),
                 alert_suppressed=alert_suppressed,
                 nwp_grid_stale=nwp_grid_stale,
                 fallback_priority_drift=fallback_priority_drift,
@@ -4124,8 +4211,14 @@ def run_forecast_cycle_flow(
         # buffered entry already carries its own copy.
         try:
             try:
-                if created_http_client is not None:
-                    created_http_client.close()
+                try:
+                    if daily_execution is not None:
+                        daily_execution.fail_unstarted(
+                            DailyFailureReason.SHARED_INPUT_FAILURE
+                        )
+                finally:
+                    if created_http_client is not None:
+                        created_http_client.close()
             finally:
                 # Capture must run even if closing the HTTP client raises —
                 # review finding, 2026-09-28: nesting it after `close()` in

@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import ArtifactScope
+    from sapphire_flow.types.group_input import GroupMemberInputIssue
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
         GroupModelInputs,
@@ -111,3 +112,12 @@ class RetrainableGroupModel(Protocol):
         rng: random.Random,
     ) -> ModelArtifact:
         raise NotImplementedError
+
+
+@runtime_checkable
+class GroupInputGate(Protocol):
+    """Optional SAP3 input assessment; never a model prediction or FI extension."""
+
+    def assess_group_inputs(
+        self, inputs: GroupModelInputs
+    ) -> tuple[GroupMemberInputIssue, ...]: ...

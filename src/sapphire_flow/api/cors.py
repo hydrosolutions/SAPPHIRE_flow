@@ -15,7 +15,9 @@ _REVIEW_PREFIX = "/api/v1/review/forecasts"
 # Plan 404 T3: GET /api/v1/stations/{id}/rejected-forecasts — a SEPARATE,
 # GET-only CORS policy (the review policy above also allows POST, which this
 # route never needs).
-_REJECTED_FORECASTS_PATH = re.compile(r"^/api/v1/stations/[^/]+/rejected-forecasts$")
+_REJECTED_FORECASTS_PATH = re.compile(
+    r"^/api/v1/stations/[^/]+/(?:rejected|evaluation)-forecasts$"
+)
 
 
 def parse_exact_origin(value: str) -> str:
@@ -90,4 +92,9 @@ class ScopedCorsMiddleware:
             )
         else:
             target = self._consumer
-        await target(scope, receive, send)
+        if re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path):
+            from sapphire_flow.api.publication_cache import PublicationCacheMiddleware
+
+            await PublicationCacheMiddleware(target)(scope, receive, send)
+        else:
+            await target(scope, receive, send)

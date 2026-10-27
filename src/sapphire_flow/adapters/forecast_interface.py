@@ -53,6 +53,7 @@ from forecast_interface import (
 from sapphire_flow.exceptions import (
     ConfigurationError,
     ModelOutputError,
+    ModelPredictionFailure,
     UnsupportedModelRequirementError,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -65,6 +66,10 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
 )
 from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
+from sapphire_flow.types.group_input import (
+    GroupMemberInputIssue,
+    GroupMemberInputReason,
+)
 from sapphire_flow.types.model import GroupModelInputs, ModelDataRequirements
 
 if TYPE_CHECKING:
@@ -395,7 +400,7 @@ def _assert_forecast_horizon(
 
 def _output_from_result(result: ModelResult) -> ModelOutput:
     if isinstance(result, ModelFailure):
-        raise ModelOutputError(
+        raise ModelPredictionFailure(
             f"ForecastInterface model failure: {result.cause.name}: {result.message}"
         )
     output = result.output
@@ -1201,6 +1206,32 @@ class ForecastInterfaceAdapter:
         # ForecastInterface is state-free; prior_state is intentionally ignored.
         return ensembles, None
 
+    def assess_group_inputs(
+        self, inputs: GroupModelInputs
+    ) -> tuple[GroupMemberInputIssue, ...]:
+        self._assert_single_deliverable_dynamic_branch()
+        issues: list[GroupMemberInputIssue] = []
+        for station_id in inputs.station_ids:
+            data = inputs.for_station(station_id)
+            over_tolerance = self._variables_over_nan_tolerance(
+                past_targets=data.past_targets,
+                past_dynamic=data.past_dynamic,
+                future_dynamic=data.future_dynamic,
+            )
+            if over_tolerance:
+                log.warning(
+                    "forecast_interface.station_input_nan_tolerance_exceeded",
+                    station_id=str(station_id),
+                    variables=over_tolerance,
+                )
+                issues.append(
+                    GroupMemberInputIssue(
+                        station_id=station_id,
+                        reason=GroupMemberInputReason.NAN_TOLERANCE_EXCEEDED,
+                    )
+                )
+        return tuple(issues)
+
     def predict_batch(
         self,
         artifact: ModelArtifact,
@@ -1217,24 +1248,10 @@ class ForecastInterfaceAdapter:
             station_id: self._station_code(station_id)
             for station_id in inputs.station_ids
         }
-        serviceable_station_ids: list[StationId] = []
-        for station_id in inputs.station_ids:
-            station_data = inputs.for_station(station_id)
-            over_tolerance = self._variables_over_nan_tolerance(
-                past_targets=station_data.past_targets,
-                past_dynamic=station_data.past_dynamic,
-                future_dynamic=station_data.future_dynamic,
-            )
-            if over_tolerance:
-                log.warning(
-                    "forecast_interface.station_input_nan_tolerance_exceeded",
-                    station_id=str(station_id),
-                    station_key=station_codes_by_id[station_id],
-                    variables=over_tolerance,
-                )
-                continue
-            serviceable_station_ids.append(station_id)
-
+        excluded_ids = {issue.station_id for issue in self.assess_group_inputs(inputs)}
+        serviceable_station_ids = [
+            sid for sid in inputs.station_ids if sid not in excluded_ids
+        ]
         if not serviceable_station_ids:
             raise ModelOutputError(
                 "ForecastInterface input max_nan tolerance exceeded for all stations"
@@ -1290,6 +1307,17 @@ class ForecastInterfaceAdapter:
             forecasts[station_id] = (ensembles, None)
 
         if not forecasts:
+            if all(
+                station_vars
+                and all(
+                    v.status is VariableStatus.FAILURE for v in station_vars.values()
+                )
+                for station_vars in output.variables.values()
+            ):
+                raise ModelPredictionFailure(
+                    "model produced no usable output: "
+                    "model returned only failed variables"
+                )
             raise ModelOutputError("model produced no usable output")
         return forecasts
 

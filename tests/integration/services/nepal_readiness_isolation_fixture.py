@@ -5281,8 +5281,13 @@ def run_qualification_case(
         for row in _records_field(oracle, "cases")
         if row["scenario"] == scenario.value
     )
-    names = [*_strings(oracle["unchanged_tables"]), "stations"]
-    assert len(names) == len(set(names)) == 58
+    # Preserve the immutable scientific oracle; extend its schema inventory.
+    unchanged_tables = [
+        *_strings(oracle["unchanged_tables"]),
+        "daily_forecast_attempts",
+    ]
+    names = [*unchanged_tables, "stations"]
+    assert len(names) == len(set(names)) == 59
     assert set(names) == set(db.metadata.tables)
     shared = assert_shared_requirements()
     original_assembler = nepal_onboarding.assemble_station_training_data
@@ -5340,7 +5345,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0071"
+                assert revision == "0072"
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now
                 roles = _owner_identity(conn)
@@ -5353,7 +5358,7 @@ def run_qualification_case(
                 evidence["protected_digests"] = _check_seed(
                     conn, oracle, case, scenario
                 )
-                before = _inventory(conn, _strings(oracle["unchanged_tables"]))
+                before = _inventory(conn, unchanged_tables)
                 station_before = _rows(conn, "stations")
                 evidence["before_snapshot"] = before
                 evidence["station_rows_before"] = _inventory(conn, ["stations"])
@@ -5535,10 +5540,11 @@ def run_qualification_case(
                     conn, station_before, oracle, case
                 )
                 evidence["station_targets"] = actual_targets
-                after = _inventory(conn, _strings(oracle["unchanged_tables"]))
+                after = _inventory(conn, unchanged_tables)
                 evidence["after_snapshot"] = after
                 assert after == before
                 evidence["57_other_tables_unchanged"] = True
+                evidence["daily_forecast_attempts_unchanged"] = True
                 evidence["station_rows_after"] = _inventory(conn, ["stations"])
                 evidence["guards_after"] = _guards(conn)
                 assert evidence["guards_after"] == guards

@@ -37,6 +37,10 @@ class ModelOutputError(SapphireError):
     """Model ran but produced zero convertible ensembles."""
 
 
+class ModelPredictionFailure(ModelOutputError):  # noqa: N818
+    """Adapter translation of an anticipated FI failure returned by the model."""
+
+
 class ConflictError(SapphireError):
     """Optimistic locking detected a concurrent modification."""
 
@@ -228,6 +232,10 @@ class ExtractionError(SapphireError):
 
 class StoreError(SapphireError):
     """Store data retrieval failure (archive not found, corrupt data)."""
+
+
+class DailyOutputRolledBackError(StoreError):
+    """Owned output transaction explicitly rolled back; its context exited cleanly."""
 
 
 class SkillGenerationIncompleteError(StoreError):

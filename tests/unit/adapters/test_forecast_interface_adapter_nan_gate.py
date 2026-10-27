@@ -1044,3 +1044,21 @@ class TestPerTrackRouteWithoutATimeStepFailsLoudly:
             )
             == {}
         )
+
+
+def test_group_input_assessment_reports_typed_nan_exclusion_without_predict() -> None:
+    from sapphire_flow.types.group_input import GroupMemberInputReason
+
+    adapter, model = _adapter(
+        _success_result({"gauge-b": {"discharge": _success_variable()}}),
+        artifact_scope=fi_boundary.FIArtifactScope.GROUP,
+    )
+    inputs = _group_model_inputs(
+        data_a=_station_input_data(discharge=[float("nan")] * 3),
+        data_b=_station_input_data(),
+    )
+    issues = adapter.assess_group_inputs(inputs)
+    assert [(i.station_id, i.reason) for i in issues] == [
+        (_SID_A, GroupMemberInputReason.NAN_TOLERANCE_EXCEEDED)
+    ]
+    assert model.predict_inputs is None

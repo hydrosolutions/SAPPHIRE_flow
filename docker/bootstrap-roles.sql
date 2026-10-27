@@ -315,6 +315,20 @@ REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_api, sapphire_worker;
 REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_api, sapphire_worker;
 
+-- Daily claims use column writes so runtime cannot supply recovery evidence.
+-- Table REVOKE above does not remove stale column ACLs; converge those too.
+DO $$
+DECLARE cols text;
+BEGIN
+    SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
+    WHERE attrelid = 'public.daily_forecast_attempts'::regclass
+      AND attnum > 0 AND NOT attisdropped;
+    EXECUTE format('REVOKE SELECT (%s), INSERT (%s), UPDATE (%s), REFERENCES (%s) '
+        'ON public.daily_forecast_attempts FROM PUBLIC, sapphire_api, sapphire_worker',
+        cols, cols, cols, cols);
+END $$;
+REVOKE ALL ON public.daily_forecast_attempts FROM PUBLIC;
+
 -- Protected input/provenance tables never join the runtime grant set. Strip stale
 -- table AND column ACLs before any grants or later backup preflight can fail.
 -- Keep the operator safe-state block first; do not move work ahead of it.
@@ -551,6 +565,15 @@ GRANT EXECUTE ON FUNCTION public.lock_publication_candidate(uuid)
 -- (onboarding, ingest, training, promotion, assignment) plus append-only
 -- `audit_log` INSERT (Slice E's write-isolation rejection events run as the
 -- worker too). NEVER UPDATE/DELETE on audit_log.
+-- Daily scheduled ledger: no DELETE, recovery write, or identity UPDATE.
+-- SELECT comes from the ordinary-table read grant above (API is read-only).
+GRANT INSERT (
+    id, tenant_id, deployment, group_id, model_id, data_use, issued_at,
+    trigger_kind, scheduled_tick, ordinal, parent_id, owner_id, started_at, state,
+    artifact_id, configuration_sha256, roster, output_contracts
+) ON daily_forecast_attempts TO sapphire_worker;
+GRANT UPDATE (state, finished_at, failure_reason, summary)
+    ON daily_forecast_attempts TO sapphire_worker;
 GRANT INSERT, UPDATE ON stations TO sapphire_worker;
 GRANT INSERT, UPDATE ON station_groups TO sapphire_worker;
 GRANT INSERT, DELETE ON station_group_members TO sapphire_worker;

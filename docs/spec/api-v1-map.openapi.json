@@ -1,6 +1,78 @@
 {
   "components": {
     "schemas": {
+      "DailyAttemptState": {
+        "enum": [
+          "active",
+          "complete",
+          "incomplete",
+          "failed",
+          "abandoned"
+        ],
+        "title": "DailyAttemptState",
+        "type": "string"
+      },
+      "DailyFailureReason": {
+        "enum": [
+          "no_operational_stations",
+          "shared_input_failure",
+          "configuration_changed",
+          "configuration_unavailable",
+          "model_failure",
+          "integrity_failure",
+          "internal_failure",
+          "persistence_failure"
+        ],
+        "title": "DailyFailureReason",
+        "type": "string"
+      },
+      "DailyMemberReason": {
+        "enum": [
+          "cadence_mismatch",
+          "missing_declared_static",
+          "missing_required_target",
+          "declared_static_not_representable",
+          "insufficient_future",
+          "inputs_unavailable",
+          "nan_tolerance_exceeded",
+          "missing_forecast_binding",
+          "not_operational",
+          "assignment_changed",
+          "model_failure",
+          "unsupported_post_state",
+          "output_integrity"
+        ],
+        "title": "DailyMemberReason",
+        "type": "string"
+      },
+      "DailyMemberState": {
+        "enum": [
+          "pending",
+          "produced",
+          "input_excluded",
+          "configuration_excluded",
+          "model_failed",
+          "integrity_rejected"
+        ],
+        "title": "DailyMemberState",
+        "type": "string"
+      },
+      "DailyRecoveryStatus": {
+        "enum": [
+          "untouched",
+          "operator_recovered"
+        ],
+        "title": "DailyRecoveryStatus",
+        "type": "string"
+      },
+      "EnsembleRepresentation": {
+        "enum": [
+          "members",
+          "quantiles"
+        ],
+        "title": "EnsembleRepresentation",
+        "type": "string"
+      },
       "EnsembleResponse": {
         "properties": {
           "forecast_horizon_steps": {
@@ -82,6 +154,769 @@
           "error"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "EvaluationAssignmentResponse": {
+        "properties": {
+          "declared_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Declared Parameters",
+            "type": "array"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model_id",
+          "priority",
+          "declared_parameters"
+        ],
+        "title": "EvaluationAssignmentResponse",
+        "type": "object"
+      },
+      "EvaluationDailyResponse": {
+        "properties": {
+          "authoritative_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authoritative Attempt Id"
+          },
+          "availability": {
+            "default": "available",
+            "enum": [
+              "available",
+              "post_as_of"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyFailureReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "issue_time": {
+            "format": "date-time",
+            "title": "Issue Time",
+            "type": "string"
+          },
+          "latest_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Attempt Id"
+          },
+          "latest_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyAttemptState"
+              },
+              {
+                "enum": [
+                  "not_attempted",
+                  "unavailable"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Latest State"
+          },
+          "member_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyMemberReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "member_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyMemberState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recovery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyRecoveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationReferenceResponse"
+            },
+            "title": "References",
+            "type": "array"
+          },
+          "required_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Parameters",
+            "type": "array"
+          },
+          "withheld": {
+            "title": "Withheld",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "group_id",
+          "issue_time",
+          "latest_attempt_id",
+          "latest_state",
+          "failure_reason",
+          "authoritative_attempt_id",
+          "member_state",
+          "member_reason",
+          "required_parameters",
+          "references",
+          "recovery_status",
+          "provenance",
+          "withheld"
+        ],
+        "title": "EvaluationDailyResponse",
+        "type": "object"
+      },
+      "EvaluationForecastsResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "assignments": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationAssignmentResponse"
+            },
+            "title": "Assignments",
+            "type": "array"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationDailyResponse"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "data_use": {
+            "const": "standard",
+            "default": "standard",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "diagnostic_window_start": {
+            "format": "date-time",
+            "title": "Diagnostic Window Start",
+            "type": "string"
+          },
+          "issue_time": {
+            "format": "date-time",
+            "title": "Issue Time",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationModelDiagnosticResponse"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "parameters": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationParameterResponse"
+            },
+            "title": "Parameters",
+            "type": "array"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "valid_at": {
+            "format": "date-time",
+            "title": "Valid At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "as_of",
+          "valid_at",
+          "issue_time",
+          "diagnostic_window_start",
+          "parameters",
+          "daily",
+          "assignments",
+          "models"
+        ],
+        "title": "EvaluationForecastsResponse",
+        "type": "object"
+      },
+      "EvaluationInputFlag": {
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/InputQualityCategory"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "level": {
+            "$ref": "#/components/schemas/InputQualityLevel"
+          }
+        },
+        "required": [
+          "category",
+          "level",
+          "detail"
+        ],
+        "title": "EvaluationInputFlag",
+        "type": "object"
+      },
+      "EvaluationModelDiagnosticResponse": {
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "authoritative_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authoritative Attempt Id"
+          },
+          "availability": {
+            "default": "available",
+            "enum": [
+              "available",
+              "post_as_of"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "diagnostic_window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostic Window Start"
+          },
+          "evidence_authority": {
+            "enum": [
+              "finalized_summary",
+              "stored_only_unverified",
+              "unknown"
+            ],
+            "title": "Evidence Authority",
+            "type": "string"
+          },
+          "freshness": {
+            "enum": [
+              "current",
+              "stale",
+              "absent",
+              "unknown"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
+          },
+          "issue_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Time"
+          },
+          "latest_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Attempt Id"
+          },
+          "latest_result_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Result At"
+          },
+          "latest_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DailyAttemptState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationSelected"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "stored_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationReferenceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model_id",
+          "freshness",
+          "latest_result_at",
+          "age_seconds",
+          "diagnostic_window_start",
+          "records",
+          "evidence_authority",
+          "stored_result",
+          "group_id",
+          "issue_time",
+          "latest_attempt_id",
+          "latest_state",
+          "authoritative_attempt_id"
+        ],
+        "title": "EvaluationModelDiagnosticResponse",
+        "type": "object"
+      },
+      "EvaluationParameterResponse": {
+        "properties": {
+          "absence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_usable_output",
+                  "no_valid_time_coverage"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absence"
+          },
+          "daily_absence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_usable_output",
+                  "no_valid_time_coverage"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Absence"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "selected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationSelected"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection": {
+            "enum": [
+              "current",
+              "fallback",
+              "absent"
+            ],
+            "title": "Selection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parameter",
+          "selection",
+          "absence",
+          "selected",
+          "daily_absence"
+        ],
+        "title": "EvaluationParameterResponse",
+        "type": "object"
+      },
+      "EvaluationProvenance": {
+        "properties": {
+          "input_quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InputQualityLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_quality_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvaluationInputFlag"
+            },
+            "title": "Input Quality Flags",
+            "type": "array"
+          },
+          "nwp_age_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nwp Age Hours"
+          },
+          "nwp_reference_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nwp Reference Time"
+          },
+          "nwp_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NwpCycleSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          }
+        },
+        "title": "EvaluationProvenance",
+        "type": "object"
+      },
+      "EvaluationReferenceResponse": {
+        "properties": {
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "output_id": {
+            "title": "Output Id",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "forecast",
+              "rejected"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "usability": {
+            "anyOf": [
+              {
+                "enum": [
+                  "usable",
+                  "superseded",
+                  "unavailable",
+                  "unverified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usability"
+          }
+        },
+        "required": [
+          "output_id",
+          "source",
+          "model_id",
+          "parameter",
+          "issued_at"
+        ],
+        "title": "EvaluationReferenceResponse",
+        "type": "object"
+      },
+      "EvaluationSelected": {
+        "properties": {
+          "age_seconds": {
+            "title": "Age Seconds",
+            "type": "number"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InputQualityLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input_quality_flags": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationInputFlag"
+            },
+            "title": "Input Quality Flags",
+            "type": "array"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "output_id": {
+            "title": "Output Id",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "qc_flags": {
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "$ref": "#/components/schemas/QcStatus"
+          },
+          "representation": {
+            "$ref": "#/components/schemas/EnsembleRepresentation"
+          },
+          "source": {
+            "enum": [
+              "forecast",
+              "rejected"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "number"
+          },
+          "units": {
+            "title": "Units",
+            "type": "string"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "$ref": "#/components/schemas/EvaluationValue"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
+          },
+          "withheld": {
+            "title": "Withheld",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "output_id",
+          "parameter",
+          "source",
+          "model_id",
+          "issued_at",
+          "age_seconds",
+          "representation",
+          "units",
+          "time_step_seconds",
+          "qc_status",
+          "qc_flags",
+          "input_quality",
+          "input_quality_flags",
+          "provenance",
+          "values",
+          "withheld"
+        ],
+        "title": "EvaluationSelected",
+        "type": "object"
+      },
+      "EvaluationValue": {
+        "properties": {
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "valid_time",
+          "value"
+        ],
+        "title": "EvaluationValue",
         "type": "object"
       },
       "ForecastDetail": {
@@ -698,6 +1533,25 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InputQualityCategory": {
+        "enum": [
+          "observation",
+          "nwp",
+          "warm_up",
+          "forcing"
+        ],
+        "title": "InputQualityCategory",
+        "type": "string"
+      },
+      "InputQualityLevel": {
+        "enum": [
+          "full",
+          "partial",
+          "degraded"
+        ],
+        "title": "InputQualityLevel",
+        "type": "string"
+      },
       "ModelAssignmentResponse": {
         "properties": {
           "model_id": {
@@ -749,6 +1603,15 @@
         ],
         "title": "NonFiniteValue",
         "type": "object"
+      },
+      "NwpCycleSource": {
+        "enum": [
+          "primary",
+          "fallback",
+          "runoff_only"
+        ],
+        "title": "NwpCycleSource",
+        "type": "string"
       },
       "ObservationQcRuleResponse": {
         "properties": {
@@ -1134,6 +1997,18 @@
         ],
         "title": "QcRulesResponse",
         "type": "object"
+      },
+      "QcStatus": {
+        "enum": [
+          "raw",
+          "qc_passed",
+          "qc_failed",
+          "qc_suspect",
+          "missing",
+          "qc_unchecked"
+        ],
+        "title": "QcStatus",
+        "type": "string"
       },
       "RejectedForecastResponse": {
         "properties": {
@@ -1973,7 +2848,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.0"
+    "version": "2.2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2344,6 +3219,120 @@
         "summary": "Get Station",
         "tags": [
           "api-stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/evaluation-forecasts": {
+      "get": {
+        "description": "Read-only STANDARD evaluation selection per parameter, with current/prior UTC-day member diagnostics. Reviewer/admin or granted human only. Disabled reads return 404 independently of scheduling. valid_at must be timezone-aware; future times never shift the logical issue day. Activated-tenant reviewer values, flag detail and detailed provenance are withheld for both sources. No alternate value URLs. All responses are no-store; unavailable scoped evidence returns 503.",
+        "operationId": "get_evaluation_forecasts_api_v1_stations__station_id__evaluation_forecasts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "valid_at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Valid At"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationForecastsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token, or a granted human, required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Evaluation reads unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Evaluation Forecasts",
+        "tags": [
+          "api-evaluation-forecasts"
         ]
       }
     },

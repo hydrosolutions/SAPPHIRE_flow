@@ -13,7 +13,12 @@ from polars.testing import assert_frame_equal
 from sqlalchemy.exc import DisconnectionError
 
 from sapphire_flow.config.deployment import DeploymentConfig
-from sapphire_flow.exceptions import GroupForecastError, ModelOutputError, StoreError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    GroupForecastError,
+    ModelOutputError,
+    StoreError,
+)
 from sapphire_flow.services import run_group_forecast as service
 from sapphire_flow.services.forecast_evidence import restore_frame, restore_snapshot
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
@@ -24,6 +29,7 @@ from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, 
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ForecastStatus,
+    FutureWeatherPolicy,
     InputQualityCategory,
     InputQualityLevel,
     ModelArtifactStatus,
@@ -228,6 +234,7 @@ def _patch_station_assembler(
         clock: Callable[[], UtcDatetime],
         forecast_horizon_steps: int,
         time_step: timedelta,
+        weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
         calls.append((station_id, nwp_source))
         return results[station_id]
@@ -415,6 +422,7 @@ class _BatchGroupModel:
 class _QcChecker:
     def __init__(self, failed_station_id: StationId | None = None) -> None:
         self.failed_station_id = failed_station_id
+        self.checked_station_ids: list[StationId] = []
 
     def check(
         self,
@@ -424,6 +432,7 @@ class _QcChecker:
         baselines: list[object],
         skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> list[QcFlag]:
+        self.checked_station_ids.append(ensemble.station_id)
         if ensemble.station_id == self.failed_station_id:
             return [
                 QcFlag(
@@ -442,6 +451,8 @@ def _call_run_group_forecast_outcome(
     group_inputs: GroupModelInputs,
     metadata_by_station: dict[StationId, OperationalInputMetadata],
     model: _BatchGroupModel,
+    frozen_artifact_id: ArtifactId | None = None,
+    state_policy: service.GroupStatePolicy = service.GroupStatePolicy.PRESERVE,
     artifact_store: FakeModelArtifactStore,
     qc_checker: _QcChecker | None = None,
     qc_rules: ForecastQcRuleSet | None = None,
@@ -455,6 +466,8 @@ def _call_run_group_forecast_outcome(
         assignment=_make_assignment(group),
         model=model,
         artifact_store=artifact_store,
+        frozen_artifact_id=frozen_artifact_id,
+        state_policy=state_policy,
         qc_checker=qc_checker or _QcChecker(),
         qc_rules=qc_rules or _empty_qc_rules(),
         qc_overrides=[],
@@ -2218,3 +2231,637 @@ class TestGroupAssemblyContracts:
         monkeypatch.setattr(service, "assemble_station_operational_inputs", fail)
         with pytest.raises(IntegrityError, match="fixture constraint"):
             _call_assemble_group_outcome(_make_group(a), {a: "nwp"})
+
+
+class TestFrozenGroupArtifact:
+    @pytest.mark.parametrize("case", ["matching", "missing", "foreign", "superseded"])
+    def test_never_substitutes_another_active_artifact(self, case: str) -> None:
+        sid = StationId(uuid4())
+        group = _make_group(sid)
+        inputs = _make_group_inputs(group)
+        store = FakeModelArtifactStore()
+        frozen_id = _seed_group_artifact(store, group)
+        if case == "missing":
+            frozen_id = ArtifactId(uuid4())
+        elif case == "foreign":
+            frozen_id = _seed_group_artifact(store, _make_group(StationId(uuid4())))
+        elif case == "superseded":
+            store.transition_artifact_status(frozen_id, ModelArtifactStatus.SUPERSEDED)
+            _seed_group_artifact(store, group)
+        model = _BatchGroupModel(
+            {sid: ({"discharge": _make_ensemble(sid, 10.0)}, None)}
+        )
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+            model=model,
+            artifact_store=store,
+            frozen_artifact_id=frozen_id,
+        )
+        if case == "matching":
+            assert outcome.results[sid].artifact_id == frozen_id
+            assert model.predict_calls == 1
+        else:
+            assert outcome.results == {}
+            assert model.predict_calls == 0
+
+
+class TestStatelessGroupExecution:
+    @pytest.mark.parametrize("new_state", [b"state", b""])
+    def test_rejects_whole_batch_before_qc(self, new_state: bytes) -> None:
+        first, second = StationId(uuid4()), StationId(uuid4())
+        group = _make_group(first, second)
+        inputs = _make_group_inputs(group)
+        store = FakeModelArtifactStore()
+        artifact_id = _seed_group_artifact(store, group)
+        checker = _QcChecker(failed_station_id=second)
+        model = _BatchGroupModel(
+            {
+                first: ({"discharge": _make_ensemble(first, 10.0)}, None),
+                second: ({"discharge": _make_ensemble(second, 20.0)}, new_state),
+            }
+        )
+        with pytest.raises(ModelOutputError, match="stateless.*post-state"):
+            _call_run_group_forecast_outcome(
+                group=group,
+                group_inputs=inputs,
+                metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+                model=model,
+                artifact_store=store,
+                qc_checker=checker,
+                frozen_artifact_id=artifact_id,
+                state_policy=service.GroupStatePolicy.STATELESS_ONLY,
+            )
+        assert checker.checked_station_ids == []
+
+    def test_accepts_stateless_results_without_dropping_qc_rejections(self) -> None:
+        first, second = StationId(uuid4()), StationId(uuid4())
+        group = _make_group(first, second)
+        inputs = _make_group_inputs(group)
+        store = FakeModelArtifactStore()
+        artifact_id = _seed_group_artifact(store, group)
+        model = _BatchGroupModel(
+            {
+                first: ({"discharge": _make_ensemble(first, 10.0)}, None),
+                second: ({"discharge": _make_ensemble(second, 20.0)}, None),
+            }
+        )
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+            model=model,
+            artifact_store=store,
+            qc_checker=_QcChecker(second),
+            frozen_artifact_id=artifact_id,
+            state_policy=service.GroupStatePolicy.STATELESS_ONLY,
+        )
+        assert set(outcome.results) == {first}
+        assert outcome.results[first].new_state is None
+        assert len(outcome.rejected) == 1
+        assert outcome.rejected[0].station_id == second
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_missing_model_identity_bound_before_qc(failed: bool) -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    inputs = _make_group_inputs(group)
+    store = FakeModelArtifactStore()
+    _seed_group_artifact(store, group)
+    ensemble = replace(_make_ensemble(sid, 10.0), model_id=None)
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=inputs,
+        metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+        model=_BatchGroupModel({sid: ({"discharge": ensemble}, None)}),
+        artifact_store=store,
+        qc_checker=_QcChecker(sid if failed else None),
+    )
+    actual = (
+        outcome.rejected[0].parameters[0].ensemble
+        if failed
+        else outcome.results[sid].forecasts[0].ensemble
+    )
+    assert actual.model_id == _MODEL_ID
+    assert ensemble.model_id is None
+
+
+def test_present_wrong_model_identity_is_rejected() -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    inputs = _make_group_inputs(group)
+    store = FakeModelArtifactStore()
+    _seed_group_artifact(store, group)
+    ensemble = replace(_make_ensemble(sid, 10.0), model_id=_OTHER_MODEL_ID)
+    with pytest.raises(GroupForecastError, match="model identity"):
+        _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+            model=_BatchGroupModel({sid: ({"discharge": ensemble}, None)}),
+            artifact_store=store,
+        )
+
+
+@pytest.mark.parametrize("all_gated", [False, True])
+def test_group_gate_preserves_exclusions_even_when_model_fails(all_gated: bool) -> None:
+    sid_a, sid_b = StationId(uuid4()), StationId(uuid4())
+    group = _make_group(sid_a, sid_b)
+    inputs = _make_group_inputs(group)
+    store = FakeModelArtifactStore()
+    _seed_group_artifact(store, group)
+
+    class GatedModel(_BatchGroupModel):
+        def assess_group_inputs(
+            self, inputs: GroupModelInputs
+        ) -> tuple[service.GroupMemberInputIssue, ...]:
+            return tuple(
+                service.GroupMemberInputIssue(
+                    station_id=sid,
+                    reason=service.GroupMemberInputReason.INPUTS_UNAVAILABLE,
+                )
+                for sid in ((sid_a, sid_b) if all_gated else (sid_a,))
+            )
+
+    model = GatedModel(exc=ModelOutputError("returned model failure"))
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=inputs,
+        metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+        model=model,
+        artifact_store=store,
+    )
+    assert {i.station_id for i in outcome.unavailable_members} == (
+        {sid_a, sid_b} if all_gated else {sid_a}
+    )
+    assert model.predict_calls == (0 if all_gated else 1)
+    if not all_gated:
+        assert model.predict_inputs is not None
+        assert model.predict_inputs.station_ids == (sid_b,)
+
+
+@pytest.mark.parametrize("state_policy", list(service.GroupStatePolicy))
+@pytest.mark.parametrize("error_kind", ["configuration", "invalid_identity", "store"])
+def test_group_input_gate_fault_is_contained_and_typed(
+    state_policy: service.GroupStatePolicy, error_kind: str
+) -> None:
+    from sapphire_flow.exceptions import ConfigurationError
+
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    inputs = _make_group_inputs(group)
+    error = (
+        StoreError("gate store failure")
+        if error_kind == "store"
+        else ConfigurationError("unsupported branch")
+    )
+
+    class BrokenGate(_BatchGroupModel):
+        def assess_group_inputs(
+            self, inputs: GroupModelInputs
+        ) -> tuple[service.GroupMemberInputIssue, ...]:
+            if error_kind == "invalid_identity":
+                return (
+                    service.GroupMemberInputIssue(
+                        station_id=StationId(uuid4()),
+                        reason=service.GroupMemberInputReason.INPUTS_UNAVAILABLE,
+                    ),
+                )
+            raise error
+
+    model = BrokenGate()
+    with structlog.testing.capture_logs() as logs:
+        if error_kind == "store":
+            with pytest.raises(StoreError, match="gate store failure"):
+                _call_run_group_forecast_outcome(
+                    group=group,
+                    group_inputs=inputs,
+                    metadata_by_station=_make_metadata_by_station((sid,)),
+                    model=model,
+                    artifact_store=FakeModelArtifactStore(),
+                    state_policy=state_policy,
+                )
+            return
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=_make_metadata_by_station((sid,)),
+            model=model,
+            artifact_store=FakeModelArtifactStore(),
+            state_policy=state_policy,
+        )
+    assert outcome.results == {}
+    assert outcome.unavailable_members == ()
+    assert outcome.expected_station_ids == (sid,)
+    assert isinstance(
+        outcome.failure,
+        ModelOutputError if error_kind == "invalid_identity" else ConfigurationError,
+    )
+    assert model.predict_calls == 0
+    assert any(
+        row["event"] == "run_group_forecast.input_gate_failed"
+        and row["log_level"] == "error"
+        for row in logs
+    )
+
+
+@pytest.mark.parametrize("state_policy", list(service.GroupStatePolicy))
+@pytest.mark.parametrize("all_gated", [False, True])
+def test_real_fi_gate_logs_and_mixed_batch_preserves_healthy_output(
+    state_policy: service.GroupStatePolicy, all_gated: bool
+) -> None:
+    from sapphire_flow.adapters import forecast_interface as fi
+    from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+        SyntheticGroupFIModel,
+    )
+
+    received: list[set[str]] = []
+
+    class MixedModel(SyntheticGroupFIModel):
+        def predict(
+            self,
+            artifact: bytes,
+            *,
+            inputs: fi.ModelInputs,
+            issue_datetime: datetime,
+            rng: random.Random,
+        ) -> fi.ModelResult:
+            received.append(set(inputs.stations))
+            result = super().predict(
+                artifact, inputs=inputs, issue_datetime=issue_datetime, rng=rng
+            )
+            assert isinstance(result, fi.ModelSuccess)
+            if "gauge-a" in result.output.variables:
+                output = result.output.variables["gauge-a"]["discharge"]
+                result.output.variables["gauge-a"]["discharge"] = fi.VariableOutput(
+                    metadata=output.metadata,
+                    status=fi.VariableStatus.FAILURE,
+                    flags=frozenset({fi.ForecastFlag.DATA_AVAILABILITY}),
+                )
+            return result
+
+    gated, failed, healthy = (StationId(UUID(int=n)) for n in (1, 2, 3))
+    codes = {gated: "gauge-gated", failed: "gauge-a", healthy: "gauge-b"}
+    group = _make_group(gated, failed, healthy)
+    inputs = _make_group_inputs(group)
+    inputs = replace(
+        inputs,
+        past_targets=inputs.past_targets.with_columns(
+            pl.when(pl.lit(all_gated) | (pl.col("station_id") == str(gated)))
+            .then(float("nan"))
+            .otherwise(pl.col("discharge"))
+            .alias("discharge")
+        ),
+    )
+    raw = MixedModel()
+    spec = raw.input_requirement.dynamic[_STEP].data[fi.FISpatialRepresentation.POINT]
+    spec.future_known["nwp"] = {
+        "temperature": fi.FutureKnownVariable(
+            unit=fi.Unit.DEG_C,
+            future_steps=2,
+            max_nan=0,
+        )
+    }
+    adapter = fi.ForecastInterfaceAdapter(raw, station_code_resolver=codes.__getitem__)
+    store = FakeModelArtifactStore()
+    _seed_group_artifact(store, group)
+    metadata = _make_metadata_by_station(inputs.station_ids)
+    with structlog.testing.capture_logs() as logs:
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=metadata,
+            model=adapter,
+            artifact_store=store,
+            state_policy=state_policy,
+        )
+    exclusions = [
+        row
+        for row in logs
+        if row["event"] == "forecast_interface.station_input_nan_tolerance_exceeded"
+    ]
+    assert len(exclusions) == (3 if all_gated else 1)
+    assert all("past_known.discharge" in row["variables"] for row in exclusions)
+    assert outcome.failure is None
+    assert {issue.station_id for issue in outcome.unavailable_members} == (
+        set(codes) if all_gated else {gated}
+    )
+    assert all(
+        issue.reason is service.GroupMemberInputReason.NAN_TOLERANCE_EXCEEDED
+        for issue in outcome.unavailable_members
+    )
+    assert outcome.expected_station_ids == (gated, failed, healthy)
+    if all_gated:
+        assert received == []
+        assert outcome.results == {}
+        assert any(
+            row["event"] == "run_group_forecast.all_members_input_excluded"
+            for row in logs
+        )
+        assert not any(
+            row["event"] == "run_group_forecast.predict_batch_failed" for row in logs
+        )
+        return
+    assert received == [{"gauge-a", "gauge-b"}]
+    assert set(outcome.results) == {healthy}
+    alone_inputs = replace(
+        inputs,
+        station_ids=(healthy,),
+        **{
+            name: getattr(inputs, name).filter(pl.col("station_id") == str(healthy))
+            for name in ("past_targets", "past_dynamic", "future_dynamic")
+        },
+    )
+    alone = _call_run_group_forecast_outcome(
+        group=replace(group, station_ids=frozenset({healthy})),
+        group_inputs=alone_inputs,
+        metadata_by_station={healthy: metadata[healthy]},
+        model=adapter,
+        artifact_store=store,
+        state_policy=state_policy,
+    )
+    actual = outcome.results[healthy].forecasts[0]
+    control = alone.results[healthy].forecasts[0]
+    assert actual.ensemble.model_id == _MODEL_ID
+    assert_frame_equal(actual.ensemble.values, control.ensemble.values)
+    assert actual.input_quality_flags == control.input_quality_flags
+    assert actual.qc_status == control.qc_status
+
+
+@pytest.mark.parametrize("state_policy", list(service.GroupStatePolicy))
+def test_actual_fi_multibranch_gate_configuration_failure_is_contained(
+    state_policy: service.GroupStatePolicy,
+) -> None:
+    from sapphire_flow.adapters import forecast_interface as fi
+    from sapphire_flow.exceptions import UnsupportedModelRequirementError
+    from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+        SyntheticGroupFIModel,
+    )
+
+    raw = SyntheticGroupFIModel()
+    spec = raw.input_requirement.dynamic[_STEP].data[fi.FISpatialRepresentation.POINT]
+    spec.future_known["nwp"] = {
+        "temperature": fi.FutureKnownVariable(
+            unit=fi.Unit.DEG_C,
+            future_steps=2,
+            max_nan=0,
+        )
+    }
+    raw.input_requirement.dynamic[timedelta(days=1)] = fi.SpatialInputSpec(
+        data={
+            fi.FISpatialRepresentation.POINT: fi.DynamicInputSpec(
+                past_known={
+                    "obs": {
+                        "precipitation": fi.PastKnownVariable(
+                            unit=fi.Unit.MM,
+                            lookback=1,
+                            max_nan=0,
+                        )
+                    },
+                }
+            ),
+        }
+    )
+    adapter = fi.ForecastInterfaceAdapter(
+        raw, station_code_resolver=lambda _: "gauge-a"
+    )
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=_make_group_inputs(group),
+        metadata_by_station=_make_metadata_by_station((sid,)),
+        model=adapter,
+        artifact_store=FakeModelArtifactStore(),
+        state_policy=state_policy,
+    )
+    assert isinstance(outcome.failure, UnsupportedModelRequirementError)
+    assert outcome.results == {}
+    assert outcome.unavailable_members == ()
+
+
+@pytest.mark.parametrize("state_policy", list(service.GroupStatePolicy))
+@pytest.mark.parametrize("stage", ["deserialize", "predict"])
+@pytest.mark.parametrize(
+    "error_type", [ConfigurationError, ModelOutputError, RuntimeError]
+)
+def test_actual_fi_fault_retains_type_and_input_exclusions(
+    state_policy: service.GroupStatePolicy,
+    stage: str,
+    error_type: type[Exception],
+) -> None:
+    _assert_actual_fi_failure_boundary(state_policy, stage, error_type("typed fault"))
+
+
+@pytest.mark.parametrize("state_policy", list(service.GroupStatePolicy))
+@pytest.mark.parametrize("result_kind", ["native_failure", "failed_variables"])
+def test_actual_fi_returned_failure_remains_anticipated(
+    state_policy: service.GroupStatePolicy, result_kind: str
+) -> None:
+    _assert_actual_fi_failure_boundary(state_policy, result_kind, None)
+
+
+def _assert_actual_fi_failure_boundary(
+    state_policy: service.GroupStatePolicy,
+    stage: str,
+    error: Exception | None,
+) -> None:
+    from forecast_interface.interface.failure import FailureCause
+
+    from sapphire_flow.adapters import forecast_interface as fi
+    from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+        SyntheticGroupFIModel,
+    )
+
+    class FailingModel(SyntheticGroupFIModel):
+        def deserialize_artifact(self, data: bytes) -> bytes:
+            if stage == "deserialize":
+                assert error is not None
+                raise error
+            return data
+
+        def predict(
+            self,
+            artifact: bytes,
+            *,
+            inputs: fi.ModelInputs,
+            issue_datetime: datetime,
+            rng: random.Random,
+        ) -> fi.ModelResult:
+            if stage == "predict":
+                assert error is not None
+                raise error
+            if stage == "native_failure":
+                return fi.ModelFailure(
+                    model_name="synthetic",
+                    issue_datetime=issue_datetime,
+                    cause=FailureCause.INPUT_DATA,
+                    message="anticipated shortfall",
+                )
+            result = super().predict(
+                artifact, inputs=inputs, issue_datetime=issue_datetime, rng=rng
+            )
+            assert isinstance(result, fi.ModelSuccess)
+            for variables in result.output.variables.values():
+                for name, output in variables.items():
+                    variables[name] = fi.VariableOutput(
+                        metadata=output.metadata,
+                        status=fi.VariableStatus.FAILURE,
+                        flags=frozenset({fi.ForecastFlag.DATA_AVAILABILITY}),
+                    )
+            return result
+
+    gated, serviceable = (StationId(UUID(int=n)) for n in (1, 2))
+    group = _make_group(gated, serviceable)
+    inputs = _make_group_inputs(group)
+    inputs = replace(
+        inputs,
+        past_targets=inputs.past_targets.with_columns(
+            pl.when(pl.col("station_id") == str(gated))
+            .then(float("nan"))
+            .otherwise(pl.col("discharge"))
+            .alias("discharge")
+        ),
+    )
+    raw = FailingModel()
+    spec = raw.input_requirement.dynamic[_STEP].data[fi.FISpatialRepresentation.POINT]
+    spec.future_known["nwp"] = {
+        "temperature": fi.FutureKnownVariable(
+            unit=fi.Unit.DEG_C, future_steps=2, max_nan=0
+        )
+    }
+    codes = {gated: "gauge-a", serviceable: "gauge-b"}
+    adapter = fi.ForecastInterfaceAdapter(raw, station_code_resolver=codes.__getitem__)
+    store = FakeModelArtifactStore()
+    _seed_group_artifact(store, group)
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=inputs,
+        metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+        model=adapter,
+        artifact_store=store,
+        state_policy=state_policy,
+    )
+    assert outcome.failure is error
+    assert outcome.results == {}
+    assert outcome.rejected == ()
+    assert outcome.expected_station_ids == (gated, serviceable)
+    assert outcome.unavailable_members == (
+        service.GroupMemberInputIssue(
+            station_id=gated,
+            reason=service.GroupMemberInputReason.NAN_TOLERANCE_EXCEEDED,
+        ),
+    )
+
+
+@pytest.mark.parametrize("stage", ["deserialize", "predict"])
+@pytest.mark.parametrize("error_type", [StoreError, DisconnectionError])
+def test_actual_fi_store_fault_still_propagates(
+    stage: str, error_type: type[Exception]
+) -> None:
+    with pytest.raises(StoreError, match="store failure|Connection-fatal"):
+        _assert_actual_fi_failure_boundary(
+            service.GroupStatePolicy.STATELESS_ONLY, stage, error_type("store failure")
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "inactive",
+        "model",
+        "group",
+        "bytes",
+        "unknown",
+        "store",
+        "connection",
+        "identity",
+    ],
+)
+def test_frozen_artifact_lookup_retains_failure_without_inference(
+    case: str,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    store = FakeModelArtifactStore()
+    artifact_id = _seed_group_artifact(store, group)
+    # A replacement is available, but frozen execution must not select it.
+    _seed_group_artifact(store, group)
+    record = store.fetch_artifact_record(artifact_id)
+    assert record is not None
+    error = {
+        "unknown": RuntimeError,
+        "store": StoreError,
+        "connection": DisconnectionError,
+    }.get(case, RuntimeError)("lookup fault")
+
+    def lookup(_: ArtifactId) -> object:
+        if case in ("unknown", "store", "connection"):
+            raise error
+        if case == "missing":
+            return None
+        if case == "inactive":
+            return replace(record, status=ModelArtifactStatus.SUPERSEDED)
+        if case == "model":
+            return replace(record, model_id=_OTHER_MODEL_ID)
+        if case == "group":
+            return replace(record, group_id=StationGroupId(uuid4()))
+        return record
+
+    monkeypatch.setattr(store, "fetch_artifact_record", lookup)
+
+    def bytes_lookup(_: ArtifactId) -> tuple[ArtifactId, bytes] | None:
+        return None if case == "bytes" else (ArtifactId(uuid4()), b"wrong")
+
+    if case in ("bytes", "identity"):
+        monkeypatch.setattr(store, "fetch_artifact", bytes_lookup)
+    model = _BatchGroupModel()
+
+    def run() -> service.GroupForecastOutcome:
+        return _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=_make_group_inputs(group),
+            metadata_by_station=_make_metadata_by_station((sid,)),
+            model=model,
+            artifact_store=store,
+            frozen_artifact_id=artifact_id,
+        )
+
+    if case in ("store", "connection", "identity"):
+        with pytest.raises(
+            StoreError, match="lookup fault|Connection-fatal|different identity"
+        ):
+            run()
+    else:
+        outcome = run()
+        assert outcome.results == {}
+        assert outcome.expected_station_ids == (sid,)
+        if case == "unknown":
+            assert outcome.failure is error
+        else:
+            assert isinstance(
+                outcome.failure,
+                ModelOutputError if case == "bytes" else ConfigurationError,
+            )
+    assert model.deserialize_calls == []
+    assert model.predict_calls == 0
+
+
+def test_unfrozen_missing_artifact_remains_an_ordinary_empty_result() -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    model = _BatchGroupModel()
+    outcome = _call_run_group_forecast_outcome(
+        group=group,
+        group_inputs=_make_group_inputs(group),
+        metadata_by_station=_make_metadata_by_station((sid,)),
+        model=model,
+        artifact_store=FakeModelArtifactStore(),
+    )
+    assert outcome.results == {}
+    assert outcome.failure is None
+    assert model.predict_calls == 0

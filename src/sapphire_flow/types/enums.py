@@ -1,6 +1,11 @@
 from enum import Enum, StrEnum
 
 
+class FutureWeatherPolicy(Enum):
+    LEGACY = "legacy"
+    COMPLETE_DAILY = "complete_daily"
+
+
 class QcStatus(Enum):
     RAW = "raw"
     QC_PASSED = "qc_passed"

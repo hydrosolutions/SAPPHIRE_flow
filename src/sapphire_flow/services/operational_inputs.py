@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from math import isfinite
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -26,6 +27,7 @@ from sapphire_flow.types.enums import (
     AggregationMethod,
     EnsembleMode,
     ForcingRoute,
+    FutureWeatherPolicy,
     ObservationQcCoverage,
     WarmUpSource,
 )
@@ -288,6 +290,63 @@ def _filter_and_cap_daily_records(
     return kept
 
 
+def _complete_daily_weather(
+    records: list[WeatherForecastRecord],
+    *,
+    issue_time: UtcDatetime,
+    forecast_horizon_steps: int,
+    features: frozenset[str],
+    ensemble_mode: EnsembleMode,
+) -> list[WeatherForecastRecord]:
+    """Return only a complete, contiguous day-zero prefix on a declared grid.
+
+    ICON precipitation is an hourly interval ending at valid_time; temperature
+    is an hourly point. Unknown source/feature contracts fail closed, not inferred.
+    Raw evidence remains untouched; only the reduction copy is interval-aligned.
+    """
+    selected = [
+        r
+        for r in records
+        if r.parameter in features
+        and (ensemble_mode is EnsembleMode.ENSEMBLE or r.member_id in (None, 0))
+    ]
+    if not selected or any(
+        r.nwp_source != "icon_ch2_eps"
+        or r.parameter not in {"precipitation", "temperature"}
+        for r in selected
+    ):
+        return []
+    members = {r.member_id for r in selected}
+    # Never infer a missing member from another feature or broadcast a partial grid.
+    keys = {(feature, member) for feature in features for member in members}
+    normalized = [
+        replace(r, valid_time=ensure_utc(r.valid_time - timedelta(hours=1)))
+        if r.parameter == "precipitation"
+        else r
+        for r in selected
+        if isfinite(r.value)
+        and not r.is_gap
+        and (r.parameter != "precipitation" or r.valid_time > r.cycle_time)
+    ]
+    points: dict[tuple[str, int | None, UtcDatetime], list[WeatherForecastRecord]] = (
+        defaultdict(list)
+    )
+    for record in normalized:
+        points[(record.parameter, record.member_id, record.valid_time)].append(record)
+    complete: list[WeatherForecastRecord] = []
+    for day in range(forecast_horizon_steps):
+        bucket = ensure_utc(issue_time + timedelta(days=day))
+        grid = _complete_bucket_grid(bucket, timedelta(days=1), timedelta(hours=1))
+        assert grid is not None
+        required = [
+            (feature, member, stamp) for feature, member in keys for stamp in grid
+        ]
+        if any(len(points[key]) != 1 for key in required):
+            break
+        complete.extend(points[key][0] for key in required)
+    return complete
+
+
 def build_future_dynamic_frame(
     records: list[WeatherForecastRecord],
     *,
@@ -297,6 +356,7 @@ def build_future_dynamic_frame(
     future_dynamic_features: frozenset[str],
     ensemble_mode: EnsembleMode,
     feature_horizons: dict[str, int] | None = None,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> pl.DataFrame:
     """Public: the shared hourly-to-model-time_step reduction (aggregate,
     broadcast deterministic features across members, drop backdated buckets,
@@ -317,6 +377,19 @@ def build_future_dynamic_frame(
     legacy scalar-cap behaviour byte-for-byte — the superset assembler below
     never passes it.
     """
+    if weather_policy is FutureWeatherPolicy.COMPLETE_DAILY:
+        if (
+            time_step != timedelta(days=1)
+            or floor_to_time_step(issue_time, time_step) != issue_time
+        ):
+            return pl.DataFrame()
+        records = _complete_daily_weather(
+            records,
+            issue_time=issue_time,
+            forecast_horizon_steps=forecast_horizon_steps,
+            features=future_dynamic_features,
+            ensemble_mode=ensemble_mode,
+        )
     daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
     daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
     kept_daily_records = _filter_and_cap_daily_records(
@@ -871,6 +944,7 @@ def assemble_station_operational_inputs(
     time_step: timedelta,
     requirements_override: ModelDataRequirements | None = None,
     static_naming_models: Sequence[object] | None = None,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
     now = clock()
     # When a station is assigned models with heterogeneous requirements, the
@@ -1098,6 +1172,7 @@ def assemble_station_operational_inputs(
         forecast_horizon_steps=forecast_horizon_steps,
         future_dynamic_features=reqs.future_dynamic_features,
         ensemble_mode=reqs.ensemble_mode,
+        weather_policy=weather_policy,
     )
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:

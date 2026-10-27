@@ -1344,6 +1344,14 @@ non-Swiss station remains in `sapphire`. The Nepal dashboard's token binds to th
 
 ## DB role bootstrap (Plan 147 Slice D, REALIZED)
 
+Daily evaluation requires migration `0072` followed by the matching role bootstrap.
+The bootstrap grants worker claim/finalization column writes on
+`daily_forecast_attempts`; API access remains SELECT-only. It does not authorize
+recovery or grant writes to protected scientific or lineage data. Re-running it
+also removes stale daily ledger column ACLs. This schema/grant requirement is not
+permission to deploy or activate daily schedules.
+
+
 Plan 341 T1 extends this bootstrap after migration 0062: `sapphire_api` may
 read the three human identity/grant tables and use their limited insert,
 update and delete grants for the operator CLI. `sapphire_worker`'s broad

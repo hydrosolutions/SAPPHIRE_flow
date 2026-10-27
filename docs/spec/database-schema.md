@@ -1260,3 +1260,46 @@ in types-and-protocols. Raw DB/HTML readers see null, never invented zero.
 Unsupported plain-tree nonfinite values fail; opaque native inputs keep driver
 behavior. JSONB key/numeric normalization is not a bitwise Python roundtrip.
 No historical rows are rewritten or assessed by this boundary repair.
+
+
+## Daily forecast attempt ownership (in progress)
+
+Migration `0072` adds `daily_forecast_attempts` without modifying existing forecast
+or rejected-output tables. Its scheduled key is tenant, deployment, group, model,
+data-use and UTC issue day. `trigger_kind` is `scheduled` (the compatibility
+default), `manual`, or `replay`. Both ordinal uniqueness and the active-owner
+partial unique index apply only to scheduled rows. Scheduled rows require a
+non-NULL tick and ordinal 1/2, matching UTC issue day, and a parent only for ordinal 2.
+Manual/replay rows require NULL tick, ordinal and parent, and midnight UTC issue
+time. Explicit NULL checks prevent SQL UNKNOWN from admitting malformed identities.
+One-shot UUIDs are globally unique and cannot be admitted again. One-shots cannot
+carry recovery evidence or enter `abandoned`, including through owner SQL. The group/tenant composite
+foreign key prevents mismatched group scope. Frozen roster JSON contains station
+IDs and required output parameters, validated at the store boundary against tenant
+ownership. The store serializes claims with a transaction-scoped advisory lock.
+
+Claims retain frozen output contracts as JSON alongside the roster. Successful
+finalization records one complete/incomplete summary with exact per-parameter
+references, after transaction-scoped identity and payload verification. Trigger
+protection rejects deletion, identity changes and finalized-row updates. Caught
+shared failures retain unknown roster members without inventing exclusions.
+Summaries include bounded input/weather provenance with unknowns explicit.
+An operator-confirmed abandonment records immutable recovery evidence, releases only
+the exact active owner, and makes the scoped day non-counting for unattended acceptance.
+The operator boundary must separately authenticate and verify termination; no automatic
+reclamation is implemented. Role bootstrap grants API SELECT only and worker INSERT
+on claim columns plus UPDATE on `state`, `finished_at`, `failure_reason`, `summary`.
+Neither role can write `recovery` or delete rows. The abandoned-state CHECK requires
+recovery evidence, so worker finalization grants do not permit abandonment.
+No delivery-operator authority is added. Assembly/flow integration remains subject to
+delivery verification. No existing rows are backfilled and no schedule is enabled.
+See [daily evaluation contract](../daily-evaluation-forecasts.md).
+
+
+Daily attempt artifact identity may be explicitly absent when candidate preparation
+finds no active artifact. The full roster can then be recorded as a failed
+`configuration_unavailable` attempt, not silently skipped or run with a substitute.
+No such claim is executable or eligible for output finalization. Both the store and
+`ck_daily_artifact` forbid complete/incomplete summaries without an artifact. The
+missing identity stays frozen on retry; later activation is configuration drift,
+not permission to substitute an artifact within the same daily identity.

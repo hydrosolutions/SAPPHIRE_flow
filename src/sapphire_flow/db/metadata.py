@@ -2796,3 +2796,123 @@ sa.Index(
 sa.Index("ix_provisional_discharge_curve", provisional_discharges.c.rating_curve_id)
 sa.Index("ix_provisional_discharge_feed", provisional_discharges.c.feed_evidence_id)
 sa.Index("ix_provisional_discharge_proof", provisional_discharges.c.reference_proof_id)
+
+
+# Daily scheduled ownership and immutable, verified outcome summaries.
+daily_forecast_attempts = sa.Table(
+    "daily_forecast_attempts",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("deployment", sa.Text, nullable=False),
+    sa.Column("group_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("model_id", sa.Text, sa.ForeignKey("models.id"), nullable=False),
+    sa.Column("data_use", sa.Text, nullable=False),
+    sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("trigger_kind", sa.Text, nullable=False, server_default="scheduled"),
+    sa.Column("scheduled_tick", sa.DateTime(timezone=True)),
+    sa.Column("ordinal", sa.Integer),
+    sa.Column(
+        "parent_id", UUID(as_uuid=True), sa.ForeignKey("daily_forecast_attempts.id")
+    ),
+    sa.Column("owner_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("finished_at", sa.DateTime(timezone=True)),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("failure_reason", sa.Text),
+    sa.Column(
+        "artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id"),
+        nullable=True,
+    ),
+    sa.Column("configuration_sha256", sa.Text, nullable=False),
+    sa.Column("roster", JSONB, nullable=False),
+    sa.Column("output_contracts", JSONB, nullable=False),
+    sa.Column("summary", JSONB),
+    sa.Column("recovery", JSONB),
+    sa.ForeignKeyConstraint(
+        ["group_id", "tenant_id"],
+        ["station_groups.id", "station_groups.tenant_id"],
+        name="fk_daily_group_tenant",
+    ),
+    sa.CheckConstraint("length(btrim(deployment)) > 0"),
+    sa.CheckConstraint("data_use = 'standard'"),
+    sa.CheckConstraint("trigger_kind IN ('scheduled', 'manual', 'replay')"),
+    sa.CheckConstraint(
+        "state IN ('active', 'failed', 'complete', 'incomplete', 'abandoned')"
+    ),
+    sa.CheckConstraint(
+        "failure_reason IN ('no_operational_stations', 'shared_input_failure', "
+        "'configuration_changed', 'configuration_unavailable', "
+        "'model_failure', 'integrity_failure', 'internal_failure', "
+        "'persistence_failure')"
+    ),
+    sa.CheckConstraint(
+        "state NOT IN ('complete', 'incomplete') OR artifact_id IS NOT NULL",
+        name="ck_daily_artifact",
+    ),
+    sa.CheckConstraint("configuration_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("jsonb_typeof(roster) = 'array'"),
+    sa.CheckConstraint("jsonb_typeof(output_contracts) = 'array'"),
+    sa.CheckConstraint("jsonb_typeof(summary) = 'array'"),
+    sa.CheckConstraint("jsonb_typeof(recovery) = 'object'"),
+    sa.CheckConstraint(
+        "(trigger_kind = 'scheduled' AND scheduled_tick IS NOT NULL "
+        "AND ordinal IS NOT NULL AND ordinal IN (1, 2) "
+        "AND issued_at = date_trunc('day', scheduled_tick AT TIME ZONE 'UTC') "
+        "AT TIME ZONE 'UTC' "
+        "AND ((ordinal = 1 AND parent_id IS NULL) "
+        "OR (ordinal = 2 AND parent_id IS NOT NULL))) OR "
+        "(trigger_kind IN ('manual', 'replay') AND scheduled_tick IS NULL "
+        "AND ordinal IS NULL AND parent_id IS NULL "
+        "AND issued_at = date_trunc('day', issued_at AT TIME ZONE 'UTC') "
+        "AT TIME ZONE 'UTC') ",
+        name="ck_daily_identity",
+    ),
+    sa.CheckConstraint(
+        "trigger_kind = 'scheduled' OR (state <> 'abandoned' AND recovery IS NULL)",
+        name="ck_daily_recovery",
+    ),
+    sa.CheckConstraint(
+        "(state = 'active' AND finished_at IS NULL AND failure_reason IS NULL "
+        "AND summary IS NULL AND recovery IS NULL) OR "
+        "(state = 'failed' AND finished_at IS NOT NULL AND failure_reason IS NOT NULL "
+        "AND summary IS NULL AND recovery IS NULL) OR "
+        "(state IN ('complete', 'incomplete') AND finished_at IS NOT NULL "
+        "AND failure_reason IS NULL AND summary IS NOT NULL AND recovery IS NULL) OR "
+        "(state = 'abandoned' AND finished_at IS NOT NULL AND failure_reason IS NULL "
+        "AND summary IS NULL AND recovery IS NOT NULL)",
+        name="ck_daily_terminal",
+    ),
+    sa.CheckConstraint("finished_at >= started_at", name="ck_daily_finish"),
+)
+sa.Index(
+    "uq_daily_active",
+    daily_forecast_attempts.c.tenant_id,
+    daily_forecast_attempts.c.deployment,
+    daily_forecast_attempts.c.group_id,
+    daily_forecast_attempts.c.model_id,
+    daily_forecast_attempts.c.data_use,
+    daily_forecast_attempts.c.issued_at,
+    unique=True,
+    postgresql_where=sa.and_(
+        daily_forecast_attempts.c.state == "active",
+        daily_forecast_attempts.c.trigger_kind == "scheduled",
+    ),
+)
+
+sa.Index(
+    "uq_daily_ordinal",
+    daily_forecast_attempts.c.tenant_id,
+    daily_forecast_attempts.c.deployment,
+    daily_forecast_attempts.c.group_id,
+    daily_forecast_attempts.c.model_id,
+    daily_forecast_attempts.c.data_use,
+    daily_forecast_attempts.c.issued_at,
+    daily_forecast_attempts.c.ordinal,
+    unique=True,
+    postgresql_where=daily_forecast_attempts.c.trigger_kind == "scheduled",
+)

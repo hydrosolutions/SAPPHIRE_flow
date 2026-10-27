@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         OperationalForecast,
     )
     from sapphire_flow.types.forecast_evidence import PersistedForecastEvidence
+    from sapphire_flow.types.forecast_reference import ForecastOutputKey
     from sapphire_flow.types.forecast_summary import ForecastSummaryRow
     from sapphire_flow.types.historical_forcing import (
         HistoricalForcingRecord,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
         PackageId,
         RatingCurveId,
         RatingReferenceProofId,
+        RejectedForecastId,
         StationGroupId,
         StationId,
         TenantId,
@@ -229,6 +231,18 @@ class ForecastStore(Protocol):
         synthetic ``pre_capture_forecast`` marker rather than ``None``."""
         raise NotImplementedError
 
+    def fetch_latest_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+    ) -> OperationalForecast | None:
+        """Latest non-superseded, uncombined row issued at or before as_of.
+
+        Purpose-bound; ties use version then ID. Does not assert QC usability.
+        """
+        raise NotImplementedError
+
     def fetch_latest_forecast(
         self,
         station_id: StationId,
@@ -321,6 +335,22 @@ class RejectedForecastStore(Protocol):
         gave up waiting on never lands after being logged as timed out."""
         raise NotImplementedError
 
+    def fetch_rejected_forecast(
+        self, rejected_forecast_id: RejectedForecastId
+    ) -> PersistedRejectedForecast | None:
+        """Exact ID within this purpose; missing or other-purpose IDs return None."""
+        raise NotImplementedError
+
+    def fetch_latest_rejected_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+        group_ids: tuple[StationGroupId, ...],
+    ) -> PersistedRejectedForecast | None:
+        """Latest stored rejection at the clock; bounded to one purpose-scoped row."""
+        raise NotImplementedError
+
     def fetch_rejected_forecasts(
         self,
         station_id: StationId,
@@ -332,6 +362,22 @@ class RejectedForecastStore(Protocol):
     ) -> tuple[list[PersistedRejectedForecast], int]:
         """`start <= issued_at < end` (half-open); newest first —
         `(issued_at DESC, recorded_at DESC, id DESC)`."""
+        raise NotImplementedError
+
+
+class CommittedForecastWriter(Protocol):
+    def write_committed(
+        self, forecasts: tuple[OperationalForecast, ...]
+    ) -> dict[ForecastOutputKey, ForecastId]:
+        """Return exact stored IDs only after the whole batch commits."""
+        raise NotImplementedError
+
+
+class CommittedRejectedForecastWriter(Protocol):
+    def write_committed(
+        self, entry: RejectedForecastEntry
+    ) -> dict[ForecastOutputKey, RejectedForecastId]:
+        """Return after commit; propagate failure or uncertain commit to the caller."""
         raise NotImplementedError
 
 

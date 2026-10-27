@@ -2267,6 +2267,15 @@ class PersistedRejectedForecast:
 
 Module: `types/rejected_forecast.py`.
 
+**Committed rejected writes**: the optional `CommittedRejectedForecastWriter`
+protocol exposes `write_committed(entry) -> dict[ForecastOutputKey, RejectedForecastId]`.
+`ForecastOutputKey` (`types/forecast_reference.py`) contains station, model, UTC issue
+time and parameter. `PgRejectedForecastStore` implements this synchronous operation;
+it returns only after commit and rejects empty/duplicate parameter mappings.
+Purpose/lineage guards remain unchanged. This capability is separate from ordinary
+best-effort capture and does not establish evaluation eligibility. See
+[daily evaluation forecasts](../daily-evaluation-forecasts.md).
+
 **RejectedForecastStore Protocol** (`protocols/stores.py`):
 
 ```python
@@ -2283,6 +2292,17 @@ class RejectedForecastStore(Protocol):
         # (value encoding included), inserts them, then — still inside the
         # transaction — checks `abandon` and raises `CaptureAbandonedError`
         # if set, immediately before COMMIT (D6).
+
+    def fetch_latest_rejected_forecast_at(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        as_of: UtcDatetime,
+        group_ids: tuple[StationGroupId, ...],
+    ) -> PersistedRejectedForecast | None: ...
+        # Bounded to one purpose-scoped row with issue/recording <= as_of.
+        # Configured groups or unknown legacy group only; same newest-first order.
+        # Stored diagnostic evidence, never scheduled acceptance authority.
 
     def fetch_rejected_forecasts(
         self,
@@ -6076,3 +6096,45 @@ The unchanged owned-container fixture supplies lifecycle evidence separately.
 Normal CI selection must collect these three cases once in integration(rest),
 without slow/deployment marks or skip/xfail. Native execution and independently
 verified cleanup, full-suite evidence, and deployment authority remain separate.
+
+
+`FrozenDailyAssignment.artifact_id` is `ArtifactId | None`: absence represents an
+unrunnable configuration, never a forecast artifact. Claim coordination records
+`DailyFailureReason.CONFIGURATION_UNAVAILABLE` and returns no executable claim.
+An attempt without an artifact cannot finalize output evidence; the missing identity
+is still immutable and cannot be replaced during a retry.
+
+
+### Evaluation latest-as-of forecast read
+
+`ForecastStore.fetch_latest_forecast_at(station_id, model_id, as_of)` returns at
+most one non-superseded, uncombined row within the store's fixed scientific purpose,
+with `issued_at <= as_of`. It orders by issue time, version and ID descending. It
+asserts neither QC usability nor scheduled provenance. PostgreSQL first selects
+only the bounded ID, then uses protected exact hydration. Existing
+`fetch_latest_forecast` behavior is unchanged. Evaluation uses this capability only
+for ordinary model diagnostics; scheduled CMAL remains ledger-authoritative.
+
+
+## Internal daily one-shot identity
+
+`types.daily_forecast_one_shot` keeps manual/replay identity separate from scheduled
+`DailyClaimKey` / `DailyClaim`:
+
+- `OneShotDailyKey(tenant_id, deployment, group_id, model_id, context, data_use)`
+  requires `OneShotDailyForecast` and STANDARD data. Its explicit date sets midnight UTC.
+- `OneShotDailyExecution(id, owner_id, key, frozen, started_at)` has no scheduled
+  ordinal, tick or retry parent. A new separately authorized invocation needs a new UUID.
+- `OneShotDailySnapshot(execution, state, finished_at, outcomes, failure_reason)`
+  has no scheduled authority or recovery marker.
+- `DailyExecution = DailyClaim | OneShotDailyExecution` is the narrow completion,
+  persistence and committed-output verification identity. It does not weaken output
+  contracts or assert output isolation.
+- `PgDailyForecastStore.start_one_shot(key, frozen, *, execution_id, owner_id,
+  started_at)` returns only after admission commit, rejecting repeated UUIDs.
+  `read_one_shot(key, *, execution_id)` returns an exact scoped snapshot or `None`.
+  `fail` and `finalize` accept the union and verify stored immutable identity.
+  Scheduled reads and `abandon` remain scheduled-only.
+
+These are internal capabilities, not public run authorization. The owned disposable
+runtime gate is documented in [daily evaluation forecasts](../daily-evaluation-forecasts.md).

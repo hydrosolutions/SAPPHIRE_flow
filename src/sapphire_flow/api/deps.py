@@ -1,8 +1,9 @@
+# ruff: noqa: TC001 -- FastAPI/Pydantic resolve annotations at runtime.
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager
-from datetime import timedelta
+from collections.abc import AsyncGenerator, Generator, Mapping
+from contextlib import asynccontextmanager, nullcontext
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
@@ -10,6 +11,11 @@ from fastapi import Depends, FastAPI, Request
 
 from sapphire_flow.config.deployment import DeploymentConfig, load_config
 from sapphire_flow.db.engine import create_engine_from_env
+from sapphire_flow.services.evaluation_forecasts import DailyEvaluationReader
+from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
+from sapphire_flow.types.daily_forecast_snapshot import DailyDaySnapshot
+from sapphire_flow.types.daily_output import DailyOutputContract
+from sapphire_flow.types.ids import ModelId
 
 
 @asynccontextmanager
@@ -136,3 +142,31 @@ def get_stores(
             conn, transaction_factory=None
         ),
     }
+
+
+def get_evaluation_clock() -> datetime:
+    return datetime.now(UTC)
+
+
+def get_evaluation_contracts(
+    config: DeploymentConfig | None = Depends(get_deployment_config),
+) -> Mapping[ModelId, tuple[DailyOutputContract, ...]]:
+    if config is None or config.evaluation_forecasts is None:
+        return {}
+    return config.evaluation_forecasts.declared_fallback_contracts()
+
+
+class _RequestDailyReader:
+    def __init__(self, conn: sa.Connection) -> None:
+        from sapphire_flow.store.daily_forecast_store import PgDailyForecastStore
+
+        self._store = PgDailyForecastStore(lambda: nullcontext(conn))
+
+    def read_day(self, key: DailyClaimKey) -> DailyDaySnapshot:
+        return self._store.read_day(key)
+
+
+def get_daily_evaluation_reader(
+    conn: sa.Connection = Depends(get_connection),
+) -> DailyEvaluationReader:
+    return _RequestDailyReader(conn)
