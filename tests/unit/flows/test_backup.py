@@ -880,6 +880,20 @@ class TestPublish:
 
 
 class TestDumpDatabaseTask:
+    def test_dump_uses_two_hour_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_backup_env(monkeypatch, tmp_path)
+        mock_run = MagicMock(side_effect=_dispatch_fake_subprocess_run().side_effect)
+
+        with _patch_subprocess_run(mock_run):
+            dump_database_task.fn(str(tmp_path / "backups"))
+
+        dump_call = next(
+            c for c in mock_run.call_args_list if c.args[0][0] == "pg_dump"
+        )
+        assert dump_call.kwargs["timeout"] == 7200.0
+
     def test_happy_path_publishes_a_single_validated_artifact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
