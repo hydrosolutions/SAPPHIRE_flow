@@ -62,7 +62,7 @@ check = "sapphire_flow.cli.check:main"
 
 [build-system]
 requires = [
-    "setuptools==84.0.0",
+    "setuptools==84.2.1",
     "setuptools-scm==10.3.4",
     "packaging==26.3",
     "vcs-versioning==2.6.0",
