@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import structlog
 
@@ -45,6 +45,42 @@ def build_station_code_resolver(
         return station_code
 
     return resolve_station_code
+
+
+def with_group_station_code_resolvers(
+    models: dict[ModelId, ForecastModel],
+    station_store: StationStore,
+) -> dict[ModelId, ForecastModel]:
+    """Attach a station-code resolver to every FI model that lacks one.
+
+    The guard tests RESOLVER ABSENCE, not adapter existence: discovery hands
+    back already-wrapped adapters with no resolver, which is exactly the case
+    this exists for. Non-FI models pass through untouched.
+    Adapters are bound in place; do not reuse a bound adapter across station stores.
+    """
+    from sapphire_flow.adapters.forecast_interface import (
+        ForecastInterfaceAdapter,
+        adapt_if_fi,
+    )
+
+    resolver = build_station_code_resolver(station_store)
+
+    def _with_resolver(model: ForecastModel) -> ForecastModel:
+        if (
+            isinstance(model, ForecastInterfaceAdapter)
+            and model.station_code_resolver is not None
+        ):
+            return model
+        adapted = adapt_if_fi(model, station_code_resolver=resolver)
+        if adapted is not model:
+            # A FRESH adapter — a RAW caller-supplied FI model. The adapter
+            # forwards nothing, so the raw model's own classification
+            # declarations would be lost here; discovery copies them at wrap
+            # time and this route is the only other one that wraps.
+            carry_model_classification(model, adapted)
+        return cast("ForecastModel", adapted)
+
+    return {model_id: _with_resolver(model) for model_id, model in models.items()}
 
 
 def _derive_display_name(model_id: str) -> str:

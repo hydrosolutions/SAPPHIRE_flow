@@ -1003,6 +1003,14 @@ When this map applies, name: which touch trigger (Prefect-layer, image/compose-l
 
 ### Touchpoint map: Training / hindcast / skill
 
+**Hindcast FI station-code wiring:** after resolving its deployment-scoped station
+store and model, the hindcast flow uses the shared
+`model_registry.with_group_station_code_resolvers` helper before artifact loading.
+The operational forecast cycle uses the same helper. Raw and discovered FI models
+receive a store-backed mapping; an explicitly supplied adapter mapping wins.
+Non-FI models pass through unchanged. Discovery itself stays store-independent.
+No station codes, tenant IDs, or deployment names are hardcoded in this wiring.
+
 **Hindcast output representation:** station and group hindcast writers preserve
 `ensemble.representation`, just like operational forecasting. Native members keep
 `member_id`; native quantiles keep their quantile levels and values. Do not label

@@ -2403,39 +2403,9 @@ def _with_group_station_code_resolvers(
     models: dict[ModelId, ForecastModel],
     station_store: StationStore,
 ) -> dict[ModelId, ForecastModel]:
-    """Attach a station-code resolver to every FI model that lacks one.
+    from sapphire_flow.services.model_registry import with_group_station_code_resolvers
 
-    The guard tests RESOLVER ABSENCE, not adapter existence: discovery hands
-    back already-wrapped adapters with no resolver, which is exactly the case
-    this exists for. Non-FI models pass through untouched.
-    """
-    from sapphire_flow.adapters.forecast_interface import (
-        ForecastInterfaceAdapter,
-        adapt_if_fi,
-    )
-    from sapphire_flow.services.model_registry import (
-        build_station_code_resolver,
-        carry_model_classification,
-    )
-
-    resolver = build_station_code_resolver(station_store)
-
-    def _with_resolver(model: ForecastModel) -> ForecastModel:
-        if (
-            isinstance(model, ForecastInterfaceAdapter)
-            and model.station_code_resolver is not None
-        ):
-            return model
-        adapted = adapt_if_fi(model, station_code_resolver=resolver)
-        if adapted is not model:
-            # A FRESH adapter — a RAW caller-supplied FI model. The adapter
-            # forwards nothing, so the raw model's own classification
-            # declarations would be lost here; discovery copies them at wrap
-            # time and this route is the only other one that wraps.
-            carry_model_classification(model, adapted)
-        return cast("ForecastModel", adapted)
-
-    return {model_id: _with_resolver(model) for model_id, model in models.items()}
+    return with_group_station_code_resolvers(models, station_store)
 
 
 @flow(
