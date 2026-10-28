@@ -2103,3 +2103,11 @@ value URLs are returned. Admin and granted humans retain full review access.
 Success, errors and preflight responses are no-store. The ledger dependency borrows
 the authenticated request transaction and exposes only reads, not write methods
 or write grants. Read activation is independent of schedule activation.
+
+### OAuthLib device-code dependency fix
+
+The frozen lock uses OAuthLib 4.0.0 to fix CVE-2026-49272
+(GHSA-3jp2-3mrg-2vxc), which affects OAuth2 device-code grant validation.
+It is transitive through Prefect, Apprise and requests-oauthlib. Apprise's
+OAuth1 signer is checked offline; this update adds no application OAuth endpoint
+and changes no application authentication, grants or scanner exceptions.
