@@ -81,14 +81,18 @@ class TestForecastDataUseMigration:
     ) -> None:
         engine, _ = migration_engine
         config = Config("alembic.ini")
-        command.upgrade(config, "0069")
+        # Current protected stores require the current reference schema. Seed
+        # only legacy evidence, then exercise the actual 0069 downgrade boundary.
+        command.upgrade(config, "head")
+        with engine.begin() as conn:
+            _, test = _pair(conn)
+        command.downgrade(config, "0069")
         with engine.begin() as conn:
             # This database is disposable; restore exactly the dormant trigger
             # before committing the synthetic fixture used by downgrade tests.
             conn.execute(
                 sa.text("DROP TRIGGER trg_forecast_test_write_refused ON forecasts")
             )
-            _, test = _pair(conn)
             _stores(conn)[1].store_forecast(test)
             conn.execute(
                 sa.text(

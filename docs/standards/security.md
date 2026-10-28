@@ -1321,8 +1321,12 @@ a failed bootstrap. Stale table and column grants (including PUBLIC grants) are
 removed before runtime re-grants and later backup preflights. Successful bootstrap
 grants API/worker only SELECT on the gate's
 `tenant_id` and `state`. The migration also strips inherited default relation grants.
-There is no proof/association approval writer, activation command, credential change,
-new role or role membership. Backup retains its existing protected full-database
+Migration `0073` adds an explicit reference basis with no INSERT default. The
+owner-only `PgProtectedReferenceWriter.append_reference_evidence` appends verified
+or owner-assumed-zero records on an injected transaction; it never commits or
+enables permissions. Assumptions retain separate owner authority, root mapping and
+unit evidence. They are not verified datum proof. There is no feed writer,
+activation command, credential change, new role or role membership. Backup retains its existing protected full-database
 read capability; this is not consumer access or new publication authority.
 
 Role-independent `SECURITY INVOKER` triggers refuse evidence UPDATE, DELETE and
@@ -2099,3 +2103,11 @@ value URLs are returned. Admin and granted humans retain full review access.
 Success, errors and preflight responses are no-store. The ledger dependency borrows
 the authenticated request transaction and exposes only reads, not write methods
 or write grants. Read activation is independent of schedule activation.
+
+### OAuthLib device-code dependency fix
+
+The frozen lock uses OAuthLib 4.0.0 to fix CVE-2026-49272
+(GHSA-3jp2-3mrg-2vxc), which affects OAuth2 device-code grant validation.
+It is transitive through Prefect, Apprise and requests-oauthlib. Apprise's
+OAuth1 signer is checked offline; this update adds no application OAuth endpoint
+and changes no application authentication, grants or scanner exceptions.

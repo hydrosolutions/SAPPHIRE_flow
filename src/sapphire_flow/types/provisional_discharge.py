@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, fields
+from typing import TYPE_CHECKING, cast
 
-from sapphire_flow.types.rating_reference import canonical_content, content_digest
+from sapphire_flow.types.rating_reference import (
+    OwnerAssumedZeroReference,
+    RatingReferenceProof,
+    canonical_content,
+    content_digest,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.types.ids import (
@@ -17,6 +22,10 @@ if TYPE_CHECKING:
         TenantId,
     )
     from sapphire_flow.types.rating_reference import CurveSnapshot, MeasurementSnapshot
+
+
+CONVERSION_VERSION = "expired-rating-linear-reference-v1"
+ASSUMED_CONVERSION_VERSION = "expired-rating-owner-assumed-zero-v1"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -47,6 +56,28 @@ class ProvisionalDischarge:
             or document["discharge"] != self.discharge
         ):
             raise ValueError("provisional content disagreement")
+        reference = document["reference_proof"]
+        if not isinstance(reference, dict):
+            raise ValueError("provisional reference must be an object")
+        reference = cast("dict[str, object]", reference)
+        basis = reference.get("basis", "verified")
+        versions = {
+            "verified": CONVERSION_VERSION,
+            "owner_assumed_same_zero": ASSUMED_CONVERSION_VERSION,
+        }
+        if (
+            not isinstance(basis, str)
+            or basis not in versions
+            or document["conversion_version"] != versions[basis]
+        ):
+            raise ValueError("provisional reference basis/version disagreement")
+        reference_type = (
+            OwnerAssumedZeroReference
+            if basis == "owner_assumed_same_zero"
+            else RatingReferenceProof
+        )
+        if set(reference) != {field.name for field in fields(reference_type)}:
+            raise ValueError("provisional reference fields disagree with basis")
         identities = {
             "id": self.feed_evidence_id,
             "tenant_id": self.tenant_id,

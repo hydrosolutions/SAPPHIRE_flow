@@ -5365,7 +5365,8 @@ src/sapphire_flow/
   Rule order is canonicalized. Capture/run time is not content identity.
 - `RatingReferenceStore.fetch_feed_evidence(id)` and `.fetch_reference_proof(id)`
   return the corresponding protected value or `None`. `PgRatingReferenceStore`
-  implements only these reads on an injected connection. There is no approval writer.
+  implements these reads on an injected connection. Migration 0073 adds the neutral
+  reference reader and separate owner-only reference append described below.
 - `ProvisionalDischargeStore.store_provisional_discharge(value, *, captured_at)`
   returns the content fingerprint. It locks and revalidates persisted sources,
   proofs and newest-curve chronology before insert-only idempotent persistence.
@@ -6138,3 +6139,48 @@ for ordinary model diagnostics; scheduled CMAL remains ledger-authoritative.
 
 These are internal capabilities, not public run authorization. The owned disposable
 runtime gate is documented in [daily evaluation forecasts](../daily-evaluation-forecasts.md).
+
+### Owner-assumed-zero reference evidence (0073)
+
+`RatingReferenceEvidence` is the union of unchanged `RatingReferenceProof` and
+`OwnerAssumedZeroReference`. Verified canonical payloads remain untagged and
+byte-identical. Assumed payloads have explicit `basis=owner_assumed_same_zero`,
+strict aware owner/mapping times, separately attributed metre-unit evidence and
+no numeric transform or verification fields. The basis defines zero.
+
+`RatingReferenceStore.fetch_reference_evidence(id)` returns either typed variant.
+The legacy proof parser/accessor refuses assumptions. The SQL basis column has
+no default; new INSERTs must state it. The reference-only owner writer is
+transaction-injected, append-only and idempotent for identical stable IDs.
+Different content under an existing ID is refused. No ordinary grants are added.
+
+`convert_reference_discharge` accepts the union; the original converter delegates
+for verified callers without changing their bytes. Assumed conversion uses
+`expired-rating-owner-assumed-zero-v1` and copies the full attributed snapshot.
+All existing QC, expired-newest-curve, range, source and permission guards remain.
+In-date assumed conversion is not authorized. Immutable provisional fingerprints
+retain assumption lineage transitively; both bases remain test-only. Feed and
+permission writers, actual consumed-lookback assembly and reason codes remain
+separate M4 work. Test forecast writes remain disabled.
+
+The migration backfills legacy rows without rewriting content, then removes the
+column default. Downgrade refuses if assumed reference/provisional data exists.
+See [protected reference admission](../operations/protected-reference-admission.md).
+
+### Lossless assumed curve snapshots
+
+`OwnerAssumedZeroReference.curve` accepts the existing canonical `CurveSnapshot`
+or an assumed-only `AssumedCurveSnapshot` containing a validated noncanonical JSON
+string. Both value types contain only `content`; the latter refuses already
+canonical strings, so parsing and exact retries select one type per string.
+Verified proofs refuse the assumed-only value type at runtime. The shared
+converter compares validated assumed content while retaining its exact inner
+string in provisional lineage. Migration 0073 checks raw duplicate keys, complete
+provenance, scalar types, finite numeric categories against persisted JSONB
+reconstruction, strict stage ordering and UTC timestamp spelling before admission.
+Point metadata is preserved by a paired raw-JSON/source-JSONB walk, including exact
+key sets and array order at every depth. The assumed-only bounds are 128 nested
+metadata containers (point object depth zero) and 4300 integer digits excluding
+sign; large metadata integers are not converted to floats.
+SQL admission is conservatively narrower than Python readability; no numeric
+coercion, verified-byte rewrite or extra writer/converter is introduced.

@@ -77,7 +77,9 @@ class TestProtectedMigration:
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         engine, _ = migration_engine
-        command.upgrade(Config("alembic.ini"), "0068")
+        # The current store requires the current reference schema; lock semantics
+        # introduced in0068 must survive all subsequent migrations.
+        command.upgrade(Config("alembic.ini"), "head")
         with engine.begin() as conn:
             args = seed(conn)
             permit_fixture(conn, args[2].tenant_id)

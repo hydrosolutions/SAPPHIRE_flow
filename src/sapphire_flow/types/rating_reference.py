@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import field as dataclass_field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlsplit
@@ -126,6 +128,125 @@ class CurveSnapshot:
                 raise ValueError("curve snapshot requires aware timestamps")
 
 
+def _unique_snapshot_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("assumed curve snapshot has duplicate fields")
+        result[key] = value
+    return result
+
+
+def _snapshot_number(token: str) -> int | float:
+    floating = any(c in token for c in ".eE")
+    if not floating and len(token.lstrip("-")) > 4300:
+        raise ValueError("assumed curve snapshot integer exceeds 4300 digits")
+    value = float(token) if floating else int(token)
+    if floating and (
+        not math.isfinite(value)
+        or (
+            value == 0
+            and any(c in "123456789" for c in token.lower().partition("e")[0])
+        )
+    ):
+        raise ValueError("assumed curve snapshot has unsafe floating number")
+    if token.startswith("-") and value == 0:
+        raise ValueError("assumed curve snapshot requires unsigned-zero numbers")
+    return value
+
+
+def _reject_snapshot_constant(token: str) -> None:
+    raise ValueError(f"assumed curve snapshot has invalid constant {token}")
+
+
+def assumed_curve_content(content: str) -> str:
+    try:
+        data = json.loads(
+            content,
+            object_pairs_hook=_unique_snapshot_object,
+            parse_int=_snapshot_number,
+            parse_float=_snapshot_number,
+            parse_constant=_reject_snapshot_constant,
+        )
+        canonical = canonical_content(data)
+    except (RecursionError, ValueError) as exc:
+        raise ValueError(f"invalid assumed curve snapshot: {exc}") from exc
+    try:
+        CurveSnapshot(content=canonical)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("assumed curve snapshot has invalid provenance types") from exc
+    for name in ("id", "station_id", "uploaded_by"):
+        value = data[name]
+        if name == "uploaded_by" and value is None:
+            continue
+        if not isinstance(value, str) or str(UUID(value)) != value:
+            raise ValueError("assumed curve snapshot requires canonical UUIDs")
+    if type(data["version"]) is not int or data["version"] <= 0:
+        raise ValueError("assumed curve snapshot requires integer version")
+    if data["interpolation"] not in ("linear", "log_linear"):
+        raise ValueError("assumed curve snapshot has invalid interpolation")
+    for name in ("delivery_id", "rating_type_label"):
+        if data[name] is not None and not isinstance(data[name], str):
+            raise ValueError("assumed curve snapshot has invalid provenance")
+    for name in ("valid_from", "valid_to", "created_at"):
+        value = data[name]
+        if name == "valid_to" and value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError("assumed curve snapshot requires UTC timestamps")
+        parsed = datetime.fromisoformat(value)
+        if parsed.utcoffset() != timedelta(0) or parsed.isoformat() != value:
+            raise ValueError("assumed curve snapshot requires UTC timestamps")
+    points = data["points"]
+    if not isinstance(points, list) or not points:
+        raise ValueError("assumed curve snapshot requires points")
+    previous = -math.inf
+    for raw_point in cast("list[object]", points):
+        if not isinstance(raw_point, dict):
+            raise ValueError("assumed curve snapshot has invalid point fields")
+        point = cast("dict[str, Any]", raw_point)
+        if not {"water_level", "discharge"} <= set(point):
+            raise ValueError("assumed curve snapshot has invalid point fields")
+        pending: list[tuple[object, int]] = [(point, 0)]
+        while pending:
+            node, depth = pending.pop()
+            if isinstance(node, (dict, list)):
+                if depth > 128:
+                    raise ValueError(
+                        "assumed curve snapshot metadata exceeds depth 128"
+                    )
+                children = (
+                    cast("dict[str, object]", node).values()
+                    if isinstance(node, dict)
+                    else cast("list[object]", node)
+                )
+                pending.extend((child, depth + 1) for child in children)
+        for name in ("water_level", "discharge"):
+            value = point[name]
+            if type(value) not in (int, float):
+                raise ValueError("assumed curve snapshot requires numeric points")
+            try:
+                finite = math.isfinite(float(value))
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ValueError("assumed curve snapshot requires finite core numbers")
+        stage = float(point["water_level"])
+        if stage <= previous:
+            raise ValueError("assumed curve snapshot requires strictly sorted stages")
+        previous = stage
+    return canonical
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AssumedCurveSnapshot:
+    content: str
+
+    def __post_init__(self) -> None:
+        if assumed_curve_content(self.content) == self.content:
+            raise ValueError("canonical assumed curve snapshot requires CurveSnapshot")
+
+
 def measurement_snapshot(observation: Observation) -> MeasurementSnapshot:
     data = asdict(observation)
     for key in ("qc_status", "qc_flags", "qc_rule_version"):
@@ -197,6 +318,11 @@ class MeasurementFeedEvidence:
             raise ValueError("measurement association identity mismatch")
 
 
+class RatingReferenceBasis(Enum):
+    VERIFIED = "verified"
+    OWNER_ASSUMED_SAME_ZERO = "owner_assumed_same_zero"
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RatingReferenceProof:
     id: RatingReferenceProofId
@@ -216,6 +342,8 @@ class RatingReferenceProof:
     verified_at: UtcDatetime
 
     def __post_init__(self) -> None:
+        if not isinstance(cast("object", self.curve), CurveSnapshot):
+            raise ValueError("verified reference requires canonical CurveSnapshot")
         _check_evidence(
             self.endpoint,
             self.api_station_id,
@@ -237,3 +365,84 @@ class RatingReferenceProof:
             self.station_id
         ):
             raise ValueError("curve proof identity mismatch")
+
+    @property
+    def basis(self) -> RatingReferenceBasis:
+        return RatingReferenceBasis.VERIFIED
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OwnerAssumedZeroReference:
+    id: RatingReferenceProofId
+    tenant_id: TenantId
+    station_id: StationId
+    rating_curve_id: RatingCurveId
+    curve: CurveSnapshot | AssumedCurveSnapshot
+    endpoint: str
+    api_station_id: int
+    level_unit: Literal["m"]
+    curve_unit: Literal["m"]
+    level_unit_evidence_reference: str
+    level_unit_evidence_sha256: str
+    curve_unit_evidence_reference: str
+    curve_unit_evidence_sha256: str
+    assumed_by: str
+    assumed_at: UtcDatetime
+    authority_reference: str
+    authority_sha256: str
+    binding_by: str
+    binding_at: UtcDatetime
+    binding_reference: str
+    binding_sha256: str
+    basis: Literal[RatingReferenceBasis.OWNER_ASSUMED_SAME_ZERO] = dataclass_field(
+        default=RatingReferenceBasis.OWNER_ASSUMED_SAME_ZERO, init=False
+    )
+
+    def __post_init__(self) -> None:
+        assumed_curve_content(self.curve.content)
+        _check_evidence(
+            self.endpoint,
+            self.api_station_id,
+            self.authority_reference,
+            self.assumed_by,
+            self.assumed_at,
+        )
+        _check_evidence(
+            self.endpoint,
+            self.api_station_id,
+            self.binding_reference,
+            self.binding_by,
+            self.binding_at,
+        )
+        if self.binding_at < self.assumed_at:
+            raise ValueError("reference binding predates owner authority")
+        if self.level_unit != "m" or self.curve_unit != "m":
+            raise ValueError(
+                "assumed reference requires independently evidenced metres"
+            )
+        if any(
+            not value.strip()
+            for value in (
+                self.level_unit_evidence_reference,
+                self.curve_unit_evidence_reference,
+            )
+        ):
+            raise ValueError("assumed reference requires independent unit evidence")
+        if any(
+            re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in (
+                self.level_unit_evidence_sha256,
+                self.curve_unit_evidence_sha256,
+                self.authority_sha256,
+                self.binding_sha256,
+            )
+        ):
+            raise ValueError("assumed reference evidence requires SHA256 digests")
+        data = json.loads(self.curve.content)
+        if data["id"] != str(self.rating_curve_id) or data["station_id"] != str(
+            self.station_id
+        ):
+            raise ValueError("curve assumption identity mismatch")
+
+
+RatingReferenceEvidence = RatingReferenceProof | OwnerAssumedZeroReference

@@ -2711,6 +2711,11 @@ sa.Index("ix_feed_evidence_observation", measurement_feed_evidence.c.observation
 rating_reference_proofs = sa.Table(
     "rating_reference_proofs",
     metadata,
+    sa.Column("reference_basis", sa.Text, nullable=False),
+    sa.CheckConstraint(
+        "reference_basis IN ('verified', 'owner_assumed_same_zero')",
+        name="ck_rating_reference_basis",
+    ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
     sa.Column("station_id", UUID(as_uuid=True), nullable=False),

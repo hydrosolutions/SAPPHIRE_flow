@@ -97,6 +97,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.rating_reference import (
         MeasurementFeedEvidence,
+        RatingReferenceEvidence,
         RatingReferenceProof,
     )
     from sapphire_flow.types.rejected_forecast import (
@@ -1248,7 +1249,7 @@ class NwpGridStore(Protocol):
 
 
 class RatingReferenceStore(Protocol):
-    """Read-only protected proofs; approval/attestation writers are not available."""
+    """Protected reference reader; no activation or feed writer."""
 
     def fetch_feed_evidence(
         self, evidence_id: MeasurementFeedEvidenceId
@@ -1257,6 +1258,10 @@ class RatingReferenceStore(Protocol):
     def fetch_reference_proof(
         self, proof_id: RatingReferenceProofId
     ) -> RatingReferenceProof | None: ...
+
+    def fetch_reference_evidence(
+        self, proof_id: RatingReferenceProofId
+    ) -> RatingReferenceEvidence | None: ...
 
 
 class ProvisionalDischargeStore(Protocol):

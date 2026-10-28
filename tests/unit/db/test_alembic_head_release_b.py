@@ -98,7 +98,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # upgrade, so the number is assigned at merge time, not at authoring time.
 # Raw forecast lineage protection chains 0071 onto 0070.
 # Daily scheduled and isolated one-shot summaries chain 0072 onto 0071.
-_RELEASE_B_HEAD = "0072"
+# Explicit owner-assumed reference basis chains 0073 onto 0072.
+_RELEASE_B_HEAD = "0073"
 
 
 def _down_revisions() -> dict[str, str | None]:

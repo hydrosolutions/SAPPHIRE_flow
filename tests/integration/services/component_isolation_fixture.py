@@ -1728,7 +1728,10 @@ def _assert_seed(
     )
     _same_rows(
         _rows(conn, "rating_reference_proofs"),
-        [expected_row(row) for row in oracle["reference_proof_rows"]],
+        [
+            expected_row(row) | {"reference_basis": "verified"}
+            for row in oracle["reference_proof_rows"]
+        ],
     )
     _same_rows(
         _rows(conn, "provisional_discharge_permissions"),

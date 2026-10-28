@@ -23,17 +23,20 @@ from sapphire_flow.db.metadata import (
     rating_reference_proofs,
     tenants,
 )
+from sapphire_flow.services.provisional_discharge import convert_reference_discharge
 from sapphire_flow.store.provisional_discharge_store import PgProvisionalDischargeStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+from sapphire_flow.store.rating_reference_store import PgProtectedReferenceWriter
 from sapphire_flow.types.ids import TenantId
+from sapphire_flow.types.rating_reference import RatingReferenceBasis
 from tests.integration.store.test_provisional_discharge_store import (
     NOW,
-    convert,
     permit_fixture,
     raw_values,
     seed,
     seed_reference,
 )
+from tests.unit.types.test_rating_reference import assumed_reference
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -65,7 +68,9 @@ def isolation_engine() -> Iterator[sa.Engine]:
                 os.environ["DATABASE_URL"] = previous
 
 
-def seed_case(engine: sa.Engine) -> tuple[ProvisionalDischarge, RatingCurve]:
+def seed_case(
+    engine: sa.Engine, basis: RatingReferenceBasis = RatingReferenceBasis.VERIFIED
+) -> tuple[ProvisionalDischarge, RatingCurve]:
     with engine.begin() as conn:
         tenant_id = TenantId(uuid4())
         conn.execute(
@@ -74,7 +79,18 @@ def seed_case(engine: sa.Engine) -> tuple[ProvisionalDischarge, RatingCurve]:
             )
         )
         args = seed(conn, tenant_id=tenant_id)
-        result = convert(*args)
+        obs, curve, feed, proof = args
+        reference = proof
+        if basis is RatingReferenceBasis.OWNER_ASSUMED_SAME_ZERO:
+            reference = replace(assumed_reference(proof), id=uuid4())
+            PgProtectedReferenceWriter(conn).append_reference_evidence(reference)
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[curve],
+            feed_evidence=feed,
+            reference_evidence=reference,
+            at=NOW,
+        )
         permit_fixture(conn, tenant_id)
     return result, args[1]
 
@@ -147,14 +163,16 @@ class TestProtectedWriteIsolation:
     @pytest.mark.parametrize("isolation", ["REPEATABLE READ", "SERIALIZABLE"])
     @pytest.mark.parametrize("writer", ["store", "sql"])
     @pytest.mark.parametrize("change", ["disable", "curve"])
+    @pytest.mark.parametrize("basis", list(RatingReferenceBasis))
     def test_fixed_snapshot_cannot_commit_after_parent_change(
         self,
         isolation_engine: sa.Engine,
+        basis: RatingReferenceBasis,
         isolation: str,
         writer: str,
         change: str,
     ) -> None:
-        result, curve = seed_case(isolation_engine)
+        result, curve = seed_case(isolation_engine, basis)
         with isolation_engine.connect().execution_options(
             isolation_level=isolation
         ) as stale:
@@ -174,13 +192,15 @@ class TestProtectedWriteIsolation:
 
     @pytest.mark.parametrize("writer", ["store", "sql"])
     @pytest.mark.parametrize("change", ["disable", "curve"])
+    @pytest.mark.parametrize("basis", list(RatingReferenceBasis))
     def test_read_committed_rechecks_previously_read_parent(
         self,
         isolation_engine: sa.Engine,
+        basis: RatingReferenceBasis,
         writer: str,
         change: str,
     ) -> None:
-        result, curve = seed_case(isolation_engine)
+        result, curve = seed_case(isolation_engine, basis)
         with isolation_engine.connect().execution_options(
             isolation_level="READ COMMITTED"
         ) as conn:
@@ -288,13 +308,15 @@ def append_in_thread(
 class TestReadCommittedLockVisibility:
     @pytest.mark.parametrize("writer", ["store", "sql"])
     @pytest.mark.parametrize("change", ["disable", "curve"])
+    @pytest.mark.parametrize("basis", list(RatingReferenceBasis))
     def test_waiting_writer_sees_committed_disable_or_newest_curve(
         self,
         isolation_engine: sa.Engine,
+        basis: RatingReferenceBasis,
         writer: str,
         change: str,
     ) -> None:
-        result, curve = seed_case(isolation_engine)
+        result, curve = seed_case(isolation_engine, basis)
         started: Queue[int] = Queue()
         with (
             isolation_engine.connect() as owner,
