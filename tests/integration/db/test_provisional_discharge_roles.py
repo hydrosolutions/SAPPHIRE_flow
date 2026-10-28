@@ -342,3 +342,82 @@ class TestProvisionalDischargeRoleBoundary:
             if abort:
                 with role_harness.owner_engine.begin() as conn:
                     conn.execute(sa.text("DROP TABLE public.lineage_bootstrap_abort"))
+
+
+class TestReferenceAdmissionRoleBoundary:
+    @pytest.mark.parametrize(
+        "role", ["sapphire_api", "sapphire_worker", "sapphire_operator"]
+    )
+    def test_basis_has_no_ordinary_column_privileges(
+        self, role_harness: _RoleBootstrapHarness, role: str
+    ) -> None:
+        result = role_harness.run_bootstrap(
+            "api-fixture", "worker-fixture", operator_password="operator-fixture"
+        )
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            for privilege in ("SELECT", "INSERT", "UPDATE"):
+                assert not conn.scalar(
+                    sa.text(
+                        "SELECT has_column_privilege(:role, "
+                        "'public.rating_reference_proofs', "
+                        "'reference_basis', :privilege)"
+                    ),
+                    {"role": role, "privilege": privilege},
+                )
+
+    def test_reference_writer_and_trigger_refuse_nonowner_login(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        from dataclasses import asdict, replace
+        from uuid import uuid4
+
+        from sapphire_flow.db.metadata import rating_reference_proofs
+        from sapphire_flow.store.rating_reference_store import (
+            PgProtectedReferenceWriter,
+        )
+        from sapphire_flow.types.rating_reference import (
+            canonical_content,
+            content_digest,
+        )
+        from tests.integration.store.test_provisional_discharge_store import seed
+        from tests.unit.types.test_rating_reference import assumed_reference
+
+        result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.begin() as conn:
+            reference = replace(assumed_reference(seed(conn)[3]), id=uuid4())
+            conn.execute(
+                sa.text(
+                    "GRANT INSERT ON public.rating_reference_proofs TO sapphire_api"
+                )
+            )
+        engine = sa.create_engine(role_harness.role_url("sapphire_api", "api-fixture"))
+        try:
+            with engine.connect() as conn:
+                with pytest.raises(ValueError, match="requires table owner"):
+                    PgProtectedReferenceWriter(conn).append_reference_evidence(
+                        reference
+                    )
+                content = canonical_content(asdict(reference))
+                with pytest.raises(sa.exc.DBAPIError, match="requires table owner"):
+                    conn.execute(
+                        sa.insert(rating_reference_proofs).values(
+                            id=reference.id,
+                            tenant_id=reference.tenant_id,
+                            station_id=reference.station_id,
+                            rating_curve_id=reference.rating_curve_id,
+                            reference_basis=reference.basis.value,
+                            content=content,
+                            fingerprint=content_digest(content),
+                        )
+                    )
+        finally:
+            engine.dispose()
+            with role_harness.owner_engine.begin() as conn:
+                conn.execute(
+                    sa.text(
+                        "REVOKE INSERT ON public.rating_reference_proofs "
+                        "FROM sapphire_api"
+                    )
+                )

@@ -1321,8 +1321,12 @@ a failed bootstrap. Stale table and column grants (including PUBLIC grants) are
 removed before runtime re-grants and later backup preflights. Successful bootstrap
 grants API/worker only SELECT on the gate's
 `tenant_id` and `state`. The migration also strips inherited default relation grants.
-There is no proof/association approval writer, activation command, credential change,
-new role or role membership. Backup retains its existing protected full-database
+Migration `0073` adds an explicit reference basis with no INSERT default. The
+owner-only `PgProtectedReferenceWriter.append_reference_evidence` appends verified
+or owner-assumed-zero records on an injected transaction; it never commits or
+enables permissions. Assumptions retain separate owner authority, root mapping and
+unit evidence. They are not verified datum proof. There is no feed writer,
+activation command, credential change, new role or role membership. Backup retains its existing protected full-database
 read capability; this is not consumer access or new publication authority.
 
 Role-independent `SECURITY INVOKER` triggers refuse evidence UPDATE, DELETE and

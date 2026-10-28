@@ -11,8 +11,13 @@ from sapphire_flow.services.rating_conversion import (
     RatingRange,
 )
 from sapphire_flow.types.enums import QcStatus
-from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
+from sapphire_flow.types.provisional_discharge import (
+    ASSUMED_CONVERSION_VERSION,
+    CONVERSION_VERSION,
+    ProvisionalDischarge,
+)
 from sapphire_flow.types.rating_reference import (
+    OwnerAssumedZeroReference,
     canonical_content,
     content_digest,
     curve_snapshot,
@@ -25,10 +30,9 @@ if TYPE_CHECKING:
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.rating_reference import (
         MeasurementFeedEvidence,
+        RatingReferenceEvidence,
         RatingReferenceProof,
     )
-
-CONVERSION_VERSION = "expired-rating-linear-reference-v1"
 
 
 def convert_provisional_discharge(
@@ -39,7 +43,27 @@ def convert_provisional_discharge(
     reference_proof: RatingReferenceProof | None,
     at: UtcDatetime,
 ) -> ProvisionalDischarge:
-    """Pure validation/conversion. Persistence must recheck locked source rows."""
+    if isinstance(reference_proof, OwnerAssumedZeroReference):
+        raise ValueError("verified conversion refuses assumed references")
+    return convert_reference_discharge(
+        observation=observation,
+        curves=curves,
+        feed_evidence=feed_evidence,
+        reference_evidence=reference_proof,
+        at=at,
+    )
+
+
+def convert_reference_discharge(
+    *,
+    observation: Observation,
+    curves: list[RatingCurve],
+    feed_evidence: MeasurementFeedEvidence | None,
+    reference_evidence: RatingReferenceEvidence | None,
+    at: UtcDatetime,
+) -> ProvisionalDischarge:
+    """Pure conversion; persistence must recheck locked source rows."""
+    reference_proof = reference_evidence
     if feed_evidence is None or reference_proof is None:
         raise ValueError("persisted feed evidence and reference proof are required")
     if observation.qc_status != QcStatus.QC_PASSED or not observation.qc_rule_version:
@@ -78,7 +102,11 @@ def convert_provisional_discharge(
         raise ValueError("newest curve must already be expired")
     if curve.valid_to <= curve.valid_from:
         raise ValueError("curve validity interval is invalid")
-    if feed_evidence.verified_at > at or reference_proof.verified_at > at:
+    assumed = isinstance(reference_proof, OwnerAssumedZeroReference)
+    reference_at = (
+        reference_proof.binding_at if assumed else reference_proof.verified_at
+    )
+    if feed_evidence.verified_at > at or reference_at > at:
         raise ValueError("reference evidence is future dated")
     if observation.timestamp < curve.valid_from:
         raise ValueError("measurement is before curve validity start")
@@ -88,7 +116,7 @@ def convert_provisional_discharge(
     if snapshot != reference_proof.curve:
         raise ValueError("curve differs from reference proof")
     assert observation.value is not None  # measurement_snapshot checked this
-    level = observation.value + reference_proof.offset_m
+    level = observation.value + (0.0 if assumed else reference_proof.offset_m)
     try:
         result = RatingConverter.from_curve(curve).convert(level)
     except (RatingConversionError, OverflowError):
@@ -111,7 +139,9 @@ def convert_provisional_discharge(
             "curve": json.loads(snapshot.content),
             "feed_evidence": asdict(feed_evidence),
             "reference_proof": asdict(reference_proof),
-            "conversion_version": CONVERSION_VERSION,
+            "conversion_version": (
+                ASSUMED_CONVERSION_VERSION if assumed else CONVERSION_VERSION
+            ),
             "discharge": result.discharge,
         }
     )

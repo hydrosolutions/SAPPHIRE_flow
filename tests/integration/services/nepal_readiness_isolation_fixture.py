@@ -4892,6 +4892,7 @@ def _check_protected(
             },
             "content": oracle["reference_content"],
             "fingerprint": oracle["reference_fingerprint"],
+            "reference_basis": "verified",
         }
     ]
     expected_feeds = [
@@ -5345,7 +5346,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0072"
+                assert revision == "0073"
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now
                 roles = _owner_identity(conn)

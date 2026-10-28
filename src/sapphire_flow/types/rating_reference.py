@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -197,6 +199,11 @@ class MeasurementFeedEvidence:
             raise ValueError("measurement association identity mismatch")
 
 
+class RatingReferenceBasis(Enum):
+    VERIFIED = "verified"
+    OWNER_ASSUMED_SAME_ZERO = "owner_assumed_same_zero"
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RatingReferenceProof:
     id: RatingReferenceProofId
@@ -237,3 +244,83 @@ class RatingReferenceProof:
             self.station_id
         ):
             raise ValueError("curve proof identity mismatch")
+
+    @property
+    def basis(self) -> RatingReferenceBasis:
+        return RatingReferenceBasis.VERIFIED
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OwnerAssumedZeroReference:
+    id: RatingReferenceProofId
+    tenant_id: TenantId
+    station_id: StationId
+    rating_curve_id: RatingCurveId
+    curve: CurveSnapshot
+    endpoint: str
+    api_station_id: int
+    level_unit: Literal["m"]
+    curve_unit: Literal["m"]
+    level_unit_evidence_reference: str
+    level_unit_evidence_sha256: str
+    curve_unit_evidence_reference: str
+    curve_unit_evidence_sha256: str
+    assumed_by: str
+    assumed_at: UtcDatetime
+    authority_reference: str
+    authority_sha256: str
+    binding_by: str
+    binding_at: UtcDatetime
+    binding_reference: str
+    binding_sha256: str
+    basis: Literal[RatingReferenceBasis.OWNER_ASSUMED_SAME_ZERO] = dataclass_field(
+        default=RatingReferenceBasis.OWNER_ASSUMED_SAME_ZERO, init=False
+    )
+
+    def __post_init__(self) -> None:
+        _check_evidence(
+            self.endpoint,
+            self.api_station_id,
+            self.authority_reference,
+            self.assumed_by,
+            self.assumed_at,
+        )
+        _check_evidence(
+            self.endpoint,
+            self.api_station_id,
+            self.binding_reference,
+            self.binding_by,
+            self.binding_at,
+        )
+        if self.binding_at < self.assumed_at:
+            raise ValueError("reference binding predates owner authority")
+        if self.level_unit != "m" or self.curve_unit != "m":
+            raise ValueError(
+                "assumed reference requires independently evidenced metres"
+            )
+        if any(
+            not value.strip()
+            for value in (
+                self.level_unit_evidence_reference,
+                self.curve_unit_evidence_reference,
+            )
+        ):
+            raise ValueError("assumed reference requires independent unit evidence")
+        if any(
+            re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in (
+                self.level_unit_evidence_sha256,
+                self.curve_unit_evidence_sha256,
+                self.authority_sha256,
+                self.binding_sha256,
+            )
+        ):
+            raise ValueError("assumed reference evidence requires SHA256 digests")
+        data = json.loads(self.curve.content)
+        if data["id"] != str(self.rating_curve_id) or data["station_id"] != str(
+            self.station_id
+        ):
+            raise ValueError("curve assumption identity mismatch")
+
+
+RatingReferenceEvidence = RatingReferenceProof | OwnerAssumedZeroReference

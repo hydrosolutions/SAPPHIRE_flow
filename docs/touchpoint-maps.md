@@ -2140,3 +2140,13 @@ authorized tenant. Ordinary
 `fetch_latest_forecast_at` uses a purpose-bound ID-only LIMIT 1 projection before
 protected exact hydration; preserve existing latest-reader semantics and test
 future-row shadowing, stale diagnostics and no selection promotion.
+
+### Owner-assumed-zero reference changes
+
+Route changes through `types/rating_reference.py`, the strict reference parser,
+`RatingReferenceStore`, reference-only owner writer, provisional converter/store,
+metadata and migration 0073 together. Preserve legacy verified bytes and no-default
+explicit SQL basis. Test direct SQL as well as typed writes, unit/mapping authority,
+expired-only conversion, wrong scope, concurrent append, downgrade refusal and
+ordinary-role denials. Do not add feed/permission writers or operational lookback
+assembly here; no scientific activation or ordinary observation path changes.

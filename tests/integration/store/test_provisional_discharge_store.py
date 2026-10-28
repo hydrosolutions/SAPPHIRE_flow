@@ -54,6 +54,10 @@ def seed_reference(
         else "rating_curve_id"
     )
     values[parent] = getattr(evidence, parent)
+    if table.name == "rating_reference_proofs" and "reference_basis" in {
+        column["name"] for column in sa.inspect(conn).get_columns(table.name)
+    }:
+        values["reference_basis"] = "verified"
     conn.execute(
         sa.insert(table).values(
             **values, content=content, fingerprint=content_digest(content)

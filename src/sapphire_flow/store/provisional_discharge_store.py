@@ -11,7 +11,7 @@ from sapphire_flow.db.metadata import (
     observations,
     provisional_discharges,
 )
-from sapphire_flow.services.provisional_discharge import convert_provisional_discharge
+from sapphire_flow.services.provisional_discharge import convert_reference_discharge
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.rating_reference_store import PgRatingReferenceStore
@@ -82,11 +82,11 @@ class PgProvisionalDischargeStore:
             discharge.station_id
         )
         references = PgRatingReferenceStore(self._conn)
-        checked = convert_provisional_discharge(
+        checked = convert_reference_discharge(
             observation=observation,
             curves=curves,
             feed_evidence=references.fetch_feed_evidence(discharge.feed_evidence_id),
-            reference_proof=references.fetch_reference_proof(
+            reference_evidence=references.fetch_reference_evidence(
                 discharge.reference_proof_id
             ),
             at=captured_at,
