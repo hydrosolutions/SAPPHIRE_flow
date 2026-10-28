@@ -31,3 +31,24 @@ identity. The writer canonicalizes aware timestamps to UTC before INSERT. Direct
 SQL assumed timestamps must use the same canonical UTC spelling (six fractional
 digits when nonzero); blank attribution is rejected using Python's whitespace set.
 Downgrade locks both evidence tables before checking for assumed records.
+
+Assumed curve snapshots retain the exact inner JSON string, including formatting.
+The assumed-only parser and SQL guard require complete provenance, unique fields
+at every object level, correctly typed finite numbers and canonical UTC timestamps.
+They reject unknown or missing fields, duplicate keys, negative-zero spellings,
+unsafe numeric ranges and tied or unsorted stages. Extra point metadata is retained
+only when it matches the persisted source, including nested fields and numeric types.
+Metadata integers retain precision up to 4300 digits (excluding sign); only core
+stage/discharge numbers require finite float conversion. Metadata container depth
+is limited to 128: the point object is depth zero, each nested object/array adds
+one, and scalars do not add depth. These new assumed-admission containment bounds
+can reject deeper formerly convertible metadata. Tied stages were already
+nonconvertible; their admission is now refused. Verified snapshot rules and bytes
+are unchanged. Same-ID retries require identical inner bytes, not merely equivalent
+formatting. Conversion uses the existing shared path and compares validated
+assumed snapshot content without discarding its original lineage string.
+
+Assumed admission also refuses persisted decimal values that overflow finite
+float8 or underflow to zero. Finite subnormal values remain supported. This
+fail-closed policy does not claim those rounded snapshots passed legacy SQL
+projection equality. Verified evidence is unaffected.

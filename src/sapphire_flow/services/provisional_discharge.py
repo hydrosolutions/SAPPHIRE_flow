@@ -18,6 +18,7 @@ from sapphire_flow.types.provisional_discharge import (
 )
 from sapphire_flow.types.rating_reference import (
     OwnerAssumedZeroReference,
+    assumed_curve_content,
     canonical_content,
     content_digest,
     curve_snapshot,
@@ -113,7 +114,12 @@ def convert_reference_discharge(
     if observation.timestamp > at:
         raise ValueError("measurement is future dated")
     snapshot = curve_snapshot(curve)
-    if snapshot != reference_proof.curve:
+    matches = (
+        snapshot.content == assumed_curve_content(reference_proof.curve.content)
+        if assumed
+        else snapshot == reference_proof.curve
+    )
+    if not matches:
         raise ValueError("curve differs from reference proof")
     assert observation.value is not None  # measurement_snapshot checked this
     level = observation.value + (0.0 if assumed else reference_proof.offset_m)

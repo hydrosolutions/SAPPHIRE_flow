@@ -6166,3 +6166,21 @@ separate M4 work. Test forecast writes remain disabled.
 The migration backfills legacy rows without rewriting content, then removes the
 column default. Downgrade refuses if assumed reference/provisional data exists.
 See [protected reference admission](../operations/protected-reference-admission.md).
+
+### Lossless assumed curve snapshots
+
+`OwnerAssumedZeroReference.curve` accepts the existing canonical `CurveSnapshot`
+or an assumed-only `AssumedCurveSnapshot` containing a validated noncanonical JSON
+string. Both value types contain only `content`; the latter refuses already
+canonical strings, so parsing and exact retries select one type per string.
+Verified proofs refuse the assumed-only value type at runtime. The shared
+converter compares validated assumed content while retaining its exact inner
+string in provisional lineage. Migration 0073 checks raw duplicate keys, complete
+provenance, scalar types, finite numeric categories against persisted JSONB
+reconstruction, strict stage ordering and UTC timestamp spelling before admission.
+Point metadata is preserved by a paired raw-JSON/source-JSONB walk, including exact
+key sets and array order at every depth. The assumed-only bounds are 128 nested
+metadata containers (point object depth zero) and 4300 integer digits excluding
+sign; large metadata integers are not converted to floats.
+SQL admission is conservatively narrower than Python readability; no numeric
+coercion, verified-byte rewrite or extra writer/converter is introduced.

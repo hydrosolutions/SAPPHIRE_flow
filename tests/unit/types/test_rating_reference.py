@@ -249,3 +249,142 @@ class TestVerifiedGoldenBytes:
     def test_direct_domain_rejects_naive_time(self, field: str) -> None:
         with pytest.raises(ValueError, match="aware time"):
             replace(assumed_reference(), **{field: NOW.replace(tzinfo=None)})
+
+
+SNAPSHOT_FAILURES = (
+    "unknown",
+    "missing",
+    "boolean",
+    "numeric_string",
+    "version_float",
+    "duplicate_points",
+    "duplicate_point",
+    "escaped_duplicate",
+    "nan",
+    "overflow",
+    "negative_zero",
+    "naive_time",
+    "offset_time",
+    "short_fraction",
+    "wrong_uuid",
+    "point_extra",
+    "unsorted",
+    "ties",
+    "provenance_type",
+)
+
+
+def malformed_inner_snapshot(content: str, mutation: str) -> str:
+    import json
+    import re
+
+    data = json.loads(content)
+    if mutation == "unknown":
+        data["unexpected"] = True
+    elif mutation == "missing":
+        del data["delivery_id"]
+    elif mutation == "boolean":
+        data["points"][0]["water_level"] = False
+    elif mutation == "numeric_string":
+        data["points"][0]["discharge"] = "10.0"
+    elif mutation == "version_float":
+        data["version"] = 1.0
+    elif mutation == "duplicate_points":
+        return '{"points":[],' + content[1:]
+    elif mutation in ("duplicate_point", "escaped_duplicate"):
+        key = "water\\u005flevel" if mutation == "escaped_duplicate" else "water_level"
+        return content.replace('"water_level":', '"' + key + '":0,"water_level":', 1)
+    elif mutation == "nan":
+        return re.sub(r'"discharge":[^,}]+', '"discharge":NaN', content, count=1)
+    elif mutation == "overflow":
+        return re.sub(r'"discharge":[^,}]+', '"discharge":1e400', content, count=1)
+    elif mutation == "negative_zero":
+        data["points"][0]["water_level"] = -0.0
+    elif mutation == "naive_time":
+        data["created_at"] = "2025-01-01T00:00:00"
+    elif mutation == "offset_time":
+        data["created_at"] = "2025-01-01T05:45:00+05:45"
+    elif mutation == "short_fraction":
+        data["created_at"] = "2025-01-01T00:00:00.000+00:00"
+    elif mutation == "wrong_uuid":
+        data["id"] = "invalid"
+    elif mutation == "point_extra":
+        data["points"][0]["unexpected"] = 1
+    elif mutation == "unsorted":
+        data["points"] = list(reversed(data["points"]))
+    elif mutation == "ties":
+        data["points"][1]["water_level"] = data["points"][0]["water_level"]
+    elif mutation == "provenance_type":
+        data["delivery_id"] = 10
+    return canonical_content(data)
+
+
+class TestAssumedCurveSnapshot:
+    def test_canonical_content_has_one_representation(self) -> None:
+        from sapphire_flow.types.rating_reference import AssumedCurveSnapshot
+
+        with pytest.raises(ValueError, match="requires CurveSnapshot"):
+            AssumedCurveSnapshot(content=inputs()[3].curve.content)
+
+    def test_verified_constructor_refuses_lossless_assumed_type(self) -> None:
+        import json
+
+        from sapphire_flow.types.rating_reference import AssumedCurveSnapshot
+
+        proof = inputs()[3]
+        snapshot = AssumedCurveSnapshot(
+            content=json.dumps(json.loads(proof.curve.content), indent=2)
+        )
+        with pytest.raises(ValueError, match="verified reference requires canonical"):
+            replace(proof, curve=snapshot)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("mutation", SNAPSHOT_FAILURES)
+    def test_strict_inner_validation(self, mutation: str) -> None:
+        from sapphire_flow.types.rating_reference import assumed_curve_content
+
+        if mutation == "point_extra":
+            assumed_curve_content(
+                malformed_inner_snapshot(inputs()[3].curve.content, mutation)
+            )
+            return
+        with pytest.raises(ValueError, match="snapshot|curve|UUID|isoformat"):
+            assumed_curve_content(
+                malformed_inner_snapshot(inputs()[3].curve.content, mutation)
+            )
+
+
+class TestAssumedParserLimits:
+    @pytest.mark.parametrize("token", ["1e-400", "-0", "NaN", "Infinity"])
+    def test_rejects_unsafe_metadata_numbers(self, token: str) -> None:
+        from sapphire_flow.types.rating_reference import assumed_curve_content
+
+        content = inputs()[3].curve.content.replace(
+            '"discharge":10.0', '"discharge":10.0,"metadata":' + token, 1
+        )
+        with pytest.raises(ValueError, match="snapshot"):
+            assumed_curve_content(content)
+
+    def test_year_boundary_offset_has_domain_error(self) -> None:
+        import json
+
+        from sapphire_flow.types.rating_reference import assumed_curve_content
+
+        data = json.loads(inputs()[3].curve.content)
+        data["created_at"] = "0001-01-01T00:00:00+01:00"
+        with pytest.raises(ValueError, match="UTC timestamps"):
+            assumed_curve_content(canonical_content(data))
+
+    def test_decoder_recursion_is_domain_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.types.rating_reference import assumed_curve_content
+
+        def exhausted_decoder(*args: object, **kwargs: object) -> object:
+            raise RecursionError("bounded parser exhaustion witness")
+
+        monkeypatch.setattr(
+            "sapphire_flow.types.rating_reference.json.loads", exhausted_decoder
+        )
+        with pytest.raises(ValueError, match="snapshot") as info:
+            assumed_curve_content("{}")
+        assert isinstance(info.value.__cause__, RecursionError)

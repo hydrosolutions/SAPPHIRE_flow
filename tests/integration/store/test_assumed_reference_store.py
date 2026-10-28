@@ -12,7 +12,10 @@ from sapphire_flow.store.rating_reference_store import (
     PgRatingReferenceStore,
 )
 from sapphire_flow.types.ids import RatingReferenceProofId
+from sapphire_flow.types.observation import Observation
+from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.rating_reference import (
+    MeasurementFeedEvidence,
     OwnerAssumedZeroReference,
     canonical_content,
     content_digest,
@@ -22,7 +25,7 @@ from tests.integration.store.test_provisional_discharge_store import (
     permit_fixture,
     seed,
 )
-from tests.unit.types.test_rating_reference import assumed_reference
+from tests.unit.types.test_rating_reference import SNAPSHOT_FAILURES, assumed_reference
 
 
 class TestAssumedReferenceStore:
@@ -435,3 +438,631 @@ class TestDirectSqlJsonAgreement:
             db_connection.execute(
                 sa.insert(provisional_discharges).values(**values, captured_at=NOW)
             )
+
+
+class TestAssumedInnerSnapshot:
+    @pytest.mark.parametrize("mutation", ["unknown", "missing"])
+    def test_rejects_incomplete_inner_provenance(
+        self, db_connection: sa.Connection, mutation: str
+    ) -> None:
+        import json
+
+        reference = replace(assumed_reference(seed(db_connection)[3]), id=uuid4())
+        data = asdict(reference)
+        inner = json.loads(reference.curve.content)
+        if mutation == "unknown":
+            inner["unexpected"] = True
+        else:
+            del inner["delivery_id"]
+        data["curve"]["content"] = canonical_content(inner)
+        with pytest.raises(sa.exc.DBAPIError, match="assumed curve snapshot"):
+            self.insert(db_connection, reference, canonical_content(data))
+
+    def test_pretty_inner_roundtrip_preserves_bytes(
+        self, db_connection: sa.Connection
+    ) -> None:
+        import json
+
+        obs, curve, feed, proof = seed(db_connection)
+        reference = replace(assumed_reference(proof), id=uuid4())
+        data = asdict(reference)
+        inner = json.dumps(json.loads(reference.curve.content), indent=2) + "\n"
+        data["curve"]["content"] = inner
+        content = canonical_content(data)
+        self.insert(db_connection, reference, content)
+        loaded = PgRatingReferenceStore(db_connection).fetch_reference_evidence(
+            reference.id
+        )
+        assert loaded is not None
+        assert loaded.curve.content == inner
+        assert (
+            PgProtectedReferenceWriter(db_connection).append_reference_evidence(loaded)
+            == loaded.id
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[curve],
+            feed_evidence=feed,
+            reference_evidence=loaded,
+            at=NOW,
+        )
+        store = PgProvisionalDischargeStore(db_connection)
+        assert (
+            store.store_provisional_discharge(result, captured_at=NOW)
+            == result.fingerprint
+        )
+        assert store.fetch_provisional_discharge(result.fingerprint) == result
+        assert (
+            json.loads(result.content)["reference_proof"]["curve"]["content"] == inner
+        )
+        row = db_connection.execute(
+            sa.select(
+                rating_reference_proofs.c.content, rating_reference_proofs.c.fingerprint
+            ).where(rating_reference_proofs.c.id == reference.id)
+        ).one()
+        assert row.content == content
+        assert row.fingerprint == content_digest(content)
+
+    @staticmethod
+    def insert(
+        conn: sa.Connection, reference: OwnerAssumedZeroReference, content: str
+    ) -> None:
+        conn.execute(
+            sa.insert(rating_reference_proofs).values(
+                id=reference.id,
+                tenant_id=reference.tenant_id,
+                station_id=reference.station_id,
+                rating_curve_id=reference.rating_curve_id,
+                reference_basis=reference.basis.value,
+                content=content,
+                fingerprint=content_digest(content),
+            )
+        )
+
+
+class TestAssumedSnapshotContainment:
+    @pytest.mark.parametrize("mutation", SNAPSHOT_FAILURES)
+    def test_sql_rejects_malformed_inner(
+        self, db_connection: sa.Connection, mutation: str
+    ) -> None:
+        from tests.unit.types.test_rating_reference import malformed_inner_snapshot
+
+        reference = replace(assumed_reference(seed(db_connection)[3]), id=uuid4())
+        data = asdict(reference)
+        data["curve"]["content"] = malformed_inner_snapshot(
+            reference.curve.content, mutation
+        )
+        with pytest.raises(sa.exc.DBAPIError, match="assumed curve snapshot"):
+            TestAssumedInnerSnapshot.insert(
+                db_connection, reference, canonical_content(data)
+            )
+
+    @pytest.mark.parametrize(
+        "lexeme", ["1e16", "1e-05", "1.5e1", "15.0", "1E+1", "-0.0", "0", "1.25"]
+    )
+    def test_fetched_numeric_oracle_roundtrip(
+        self, db_connection: sa.Connection, lexeme: str
+    ) -> None:
+        import json
+
+        from sapphire_flow.db.metadata import rating_curves
+        from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+        from sapphire_flow.types.rating_reference import curve_snapshot
+
+        obs, curve, feed, proof = seed(db_connection)
+        curve = replace(curve, id=uuid4(), version=2)
+        curves = PgRatingCurveStore(db_connection)
+        curves.store_rating_curve(curve)
+        raw = (
+            '[{"water_level":2.0,"discharge":'
+            + lexeme
+            + '},{"water_level":0.0,"discharge":'
+            + lexeme
+            + "}]"
+        )
+        db_connection.execute(
+            sa.update(rating_curves)
+            .where(rating_curves.c.id == curve.id)
+            .values(points=sa.cast(sa.literal(raw), sa.JSON))
+        )
+        fetched = next(
+            c
+            for c in curves.fetch_all_curves_for_station(curve.station_id)
+            if c.id == curve.id
+        )
+        expected_type = int if lexeme in {"1e16", "1.5e1", "1E+1", "0"} else float
+        assert type(fetched.points[0]["discharge"]) is expected_type
+        reference = replace(
+            assumed_reference(proof),
+            id=uuid4(),
+            rating_curve_id=fetched.id,
+            curve=curve_snapshot(fetched),
+        )
+        data = asdict(reference)
+        data["curve"]["content"] = json.dumps(
+            json.loads(reference.curve.content), indent=2
+        )
+        TestAssumedInnerSnapshot.insert(
+            db_connection, reference, canonical_content(data)
+        )
+        loaded = PgRatingReferenceStore(db_connection).fetch_reference_evidence(
+            reference.id
+        )
+        assert loaded is not None
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[fetched],
+            feed_evidence=feed,
+            reference_evidence=loaded,
+            at=NOW,
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        assert (
+            PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                result, captured_at=NOW
+            )
+            == result.fingerprint
+        )
+
+    def test_non_utc_session_microseconds_roundtrip(
+        self, db_connection: sa.Connection
+    ) -> None:
+        import json
+        from datetime import timedelta
+
+        from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+        from sapphire_flow.types.rating_reference import curve_snapshot
+
+        obs, curve, feed, proof = seed(db_connection)
+        curve = replace(
+            curve,
+            id=uuid4(),
+            version=2,
+            created_at=curve.created_at + timedelta(microseconds=123000),
+        )
+        curves = PgRatingCurveStore(db_connection)
+        curves.store_rating_curve(curve)
+        db_connection.execute(sa.text("SET LOCAL TIME ZONE 'Asia/Kathmandu'"))
+        fetched = next(
+            c
+            for c in curves.fetch_all_curves_for_station(curve.station_id)
+            if c.id == curve.id
+        )
+        reference = replace(
+            assumed_reference(proof),
+            id=uuid4(),
+            rating_curve_id=fetched.id,
+            curve=curve_snapshot(fetched),
+        )
+        data = asdict(reference)
+        data["curve"]["content"] = json.dumps(
+            json.loads(reference.curve.content), indent=2
+        )
+        TestAssumedInnerSnapshot.insert(
+            db_connection, reference, canonical_content(data)
+        )
+        loaded = PgRatingReferenceStore(db_connection).fetch_reference_evidence(
+            reference.id
+        )
+        assert loaded is not None
+        assert json.loads(loaded.curve.content)["created_at"].endswith(".123000+00:00")
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[fetched],
+            feed_evidence=feed,
+            reference_evidence=loaded,
+            at=NOW,
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        assert (
+            PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                result, captured_at=NOW
+            )
+            == result.fingerprint
+        )
+
+
+class TestAssumedRawNumericKinds:
+    @pytest.mark.parametrize("lexeme", ["10", "true", '"10.0"', "1e400", "1e-400"])
+    def test_sql_refuses_numeric_restatement(
+        self, db_connection: sa.Connection, lexeme: str
+    ) -> None:
+        reference = replace(assumed_reference(seed(db_connection)[3]), id=uuid4())
+        data = asdict(reference)
+        data["curve"]["content"] = reference.curve.content.replace(
+            '"discharge":10.0', '"discharge":' + lexeme, 1
+        )
+        with pytest.raises(sa.exc.DBAPIError, match="assumed curve snapshot"):
+            TestAssumedInnerSnapshot.insert(
+                db_connection, reference, canonical_content(data)
+            )
+
+    @pytest.mark.parametrize("lexeme", ["1E+1", "1.0e1", "10.000"])
+    def test_float_spellings_read_and_convert(
+        self, db_connection: sa.Connection, lexeme: str
+    ) -> None:
+        obs, curve, feed, proof = seed(db_connection)
+        reference = replace(assumed_reference(proof), id=uuid4())
+        data = asdict(reference)
+        data["curve"]["content"] = reference.curve.content.replace(
+            '"discharge":10.0', '"discharge":' + lexeme, 1
+        )
+        TestAssumedInnerSnapshot.insert(
+            db_connection, reference, canonical_content(data)
+        )
+        loaded = PgRatingReferenceStore(db_connection).fetch_reference_evidence(
+            reference.id
+        )
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[curve],
+            feed_evidence=feed,
+            reference_evidence=loaded,
+            at=NOW,
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        assert (
+            PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                result, captured_at=NOW
+            )
+            == result.fingerprint
+        )
+
+
+def metadata_fixture(
+    conn: sa.Connection, metadata: object, *, key: str = "metadata"
+) -> tuple[
+    Observation, RatingCurve, MeasurementFeedEvidence, OwnerAssumedZeroReference
+]:
+    from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+    from sapphire_flow.types.rating_reference import curve_snapshot
+
+    obs, curve, feed, proof = seed(conn)
+    curve = replace(
+        curve,
+        id=uuid4(),
+        version=2,
+        points=[p | {key: metadata} for p in curve.points],
+    )
+    store = PgRatingCurveStore(conn)
+    store.store_rating_curve(curve)
+    fetched = next(
+        c
+        for c in store.fetch_all_curves_for_station(curve.station_id)
+        if c.id == curve.id
+    )
+    reference = replace(
+        assumed_reference(proof),
+        id=uuid4(),
+        rating_curve_id=fetched.id,
+        curve=curve_snapshot(fetched),
+    )
+    return obs, fetched, feed, reference
+
+
+def nested_metadata(depth: int) -> object:
+    value: object = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+class TestPersistedPointMetadata:
+    @pytest.mark.parametrize(
+        "key,metadata",
+        [
+            ("label", "retained source metadata"),
+            (
+                "metadata",
+                {"label": "snow 雪", "items": [None, True, 1, 1.0, {"large": 10**400}]},
+            ),
+            ("metadata", nested_metadata(16)),
+            ("metadata", nested_metadata(128)),
+            ("metadata", 10**4299),
+            ("metadata", 5e-324),
+        ],
+    )
+    def test_lossless_native_roundtrip(
+        self, db_connection: sa.Connection, key: str, metadata: object
+    ) -> None:
+        import json
+
+        from sapphire_flow.types.rating_reference import AssumedCurveSnapshot
+
+        obs, curve, feed, reference = metadata_fixture(db_connection, metadata, key=key)
+        PgProtectedReferenceWriter(db_connection).append_reference_evidence(reference)
+        canonical_result = convert_reference_discharge(
+            observation=obs,
+            curves=[curve],
+            feed_evidence=feed,
+            reference_evidence=reference,
+            at=NOW,
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        store = PgProvisionalDischargeStore(db_connection)
+        store.store_provisional_discharge(canonical_result, captured_at=NOW)
+        reference = replace(reference, id=uuid4())
+        data = asdict(reference)
+        inner = json.dumps(
+            json.loads(reference.curve.content), ensure_ascii=False, indent=2
+        )
+        data["curve"]["content"] = inner
+        content = canonical_content(data)
+        TestAssumedInnerSnapshot.insert(db_connection, reference, content)
+        loaded = PgRatingReferenceStore(db_connection).fetch_reference_evidence(
+            reference.id
+        )
+        assert loaded is not None
+        assert isinstance(loaded.curve, AssumedCurveSnapshot)
+        assert loaded.curve.content == inner
+        assert (
+            PgProtectedReferenceWriter(db_connection).append_reference_evidence(loaded)
+            == loaded.id
+        )
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[curve],
+            feed_evidence=feed,
+            reference_evidence=loaded,
+            at=NOW,
+        )
+        assert (
+            store.store_provisional_discharge(result, captured_at=NOW)
+            == result.fingerprint
+        )
+        assert store.fetch_provisional_discharge(result.fingerprint) == result
+        assert (
+            json.loads(result.content)["reference_proof"]["curve"]["content"] == inner
+        )
+        with pytest.raises(ValueError, match="different content"):
+            PgProtectedReferenceWriter(db_connection).append_reference_evidence(
+                reference
+            )
+
+    @pytest.mark.parametrize("case", ["depth", "digits"])
+    def test_python_and_sql_containment_bounds(
+        self, db_connection: sa.Connection, case: str
+    ) -> None:
+        import json
+
+        from sapphire_flow.types.rating_reference import assumed_curve_content
+
+        reference = replace(assumed_reference(seed(db_connection)[3]), id=uuid4())
+        data = asdict(reference)
+        curve = json.loads(reference.curve.content)
+        curve["points"][0]["metadata"] = (
+            nested_metadata(129) if case == "depth" else "DIGITS"
+        )
+        inner = canonical_content(curve)
+        if case == "digits":
+            inner = inner.replace('"DIGITS"', "1" + "0" * 4300)
+        with pytest.raises(ValueError, match="snapshot"):
+            assumed_curve_content(inner)
+        # Seed source metadata without Python's integer decoder.
+        from sapphire_flow.db.metadata import rating_curves
+
+        db_connection.execute(
+            sa.update(rating_curves)
+            .where(rating_curves.c.id == reference.rating_curve_id)
+            .values(points=sa.cast(sa.literal(inner), sa.JSON)["points"])
+        )
+        if case == "digits":
+            from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+
+            with pytest.raises(ValueError, match="4300.*digits|4301 digits"):
+                PgRatingCurveStore(db_connection).fetch_all_curves_for_station(
+                    reference.station_id
+                )
+        data["curve"]["content"] = inner
+        with pytest.raises(sa.exc.DBAPIError, match="snapshot.*(depth|digit)"):
+            TestAssumedInnerSnapshot.insert(
+                db_connection, reference, canonical_content(data)
+            )
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "extra",
+            "missing",
+            "int_float",
+            "boolean",
+            "array_order",
+            "duplicate",
+            "escaped_duplicate",
+            "negative_zero",
+            "underflow",
+            "nul",
+            "array_short",
+            "nested_extra",
+            "nested_missing",
+            "array_duplicate",
+            "numeric_string",
+            "exponent_category",
+            "overflow",
+            "surrogate",
+            "changed_string",
+        ],
+    )
+    def test_nested_metadata_must_match_source(
+        self, db_connection: sa.Connection, mutation: str
+    ) -> None:
+        import json
+
+        _, _, _, reference = metadata_fixture(
+            db_connection,
+            {
+                "number": 1.0,
+                "zero": 0.0,
+                "count": 1,
+                "array": [1, 2, {"k": "v"}],
+                "obj": {"a": 1},
+                "label": "source",
+            },
+        )
+        data = asdict(reference)
+        inner = json.loads(reference.curve.content)
+        metadata = inner["points"][0]["metadata"]
+        if mutation == "extra":
+            metadata["extra"] = 1
+        elif mutation == "missing":
+            del metadata["label"]
+        elif mutation == "int_float":
+            metadata["number"] = 1
+        elif mutation == "boolean":
+            metadata["number"] = True
+        elif mutation == "array_order":
+            metadata["array"] = [2, 1, {"k": "v"}]
+        elif mutation == "array_short":
+            metadata["array"] = [1]
+        elif mutation == "nested_extra":
+            metadata["obj"]["b"] = 1
+        elif mutation == "nested_missing":
+            del metadata["obj"]["a"]
+        elif mutation == "numeric_string":
+            metadata["number"] = "1.0"
+        elif mutation == "changed_string":
+            metadata["label"] = "changed"
+        raw = canonical_content(inner)
+        if mutation == "array_duplicate":
+            raw = raw.replace('"k":"v"', '"k":"v","k":"v"', 1)
+        elif mutation == "exponent_category":
+            raw = raw.replace('"count":1', '"count":1e0', 1)
+        elif mutation == "overflow":
+            raw = raw.replace('"number":1.0', '"number":1e400', 1)
+        elif mutation == "surrogate":
+            raw = raw.replace('"label":"source"', '"label":"\\ud800"', 1)
+        elif mutation == "duplicate":
+            raw = raw.replace('"number":1.0', '"number":1.0,"number":1.0', 1)
+        elif mutation == "escaped_duplicate":
+            raw = raw.replace('"number":1.0', '"num\\u0062er":1.0,"number":1.0', 1)
+        elif mutation == "negative_zero":
+            raw = raw.replace('"zero":0.0', '"zero":-0', 1)
+        elif mutation == "underflow":
+            raw = raw.replace('"zero":0.0', '"zero":1e-400', 1)
+        elif mutation == "nul":
+            raw = raw.replace('"label":"source"', '"label":"\\u0000"', 1)
+        data["curve"]["content"] = raw
+        with pytest.raises(sa.exc.DBAPIError, match="assumed curve snapshot"):
+            TestAssumedInnerSnapshot.insert(
+                db_connection, reference, canonical_content(data)
+            )
+
+
+class TestAssumedGuardBranches:
+    @pytest.mark.parametrize(
+        "second_discharge,message",
+        [(10.0, "snapshot stage order"), (20.0, "assumed curve snapshot")],
+    )
+    def test_persisted_ties_fail_stage_order(
+        self, db_connection: sa.Connection, second_discharge: float, message: str
+    ) -> None:
+        from sapphire_flow.services.rating_conversion import (
+            RatingConversionError,
+            RatingConverter,
+        )
+        from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+        from sapphire_flow.types.rating_reference import curve_snapshot
+
+        _, curve, _, proof = seed(db_connection)
+        curve = replace(
+            curve,
+            id=uuid4(),
+            version=2,
+            points=[
+                {"water_level": 1.0, "discharge": 10.0},
+                {"water_level": 1.0, "discharge": second_discharge},
+            ],
+        )
+        store = PgRatingCurveStore(db_connection)
+        store.store_rating_curve(curve)
+        fetched = next(
+            c
+            for c in store.fetch_all_curves_for_station(curve.station_id)
+            if c.id == curve.id
+        )
+        with pytest.raises(RatingConversionError, match="duplicate or non-increasing"):
+            RatingConverter.from_curve(fetched)
+        reference = replace(assumed_reference(proof), id=uuid4())
+        data = asdict(reference)
+        data["rating_curve_id"] = str(fetched.id)
+        data["curve"]["content"] = curve_snapshot(fetched).content
+        with pytest.raises(sa.exc.DBAPIError, match=message):
+            db_connection.execute(
+                sa.insert(rating_reference_proofs).values(
+                    id=reference.id,
+                    tenant_id=reference.tenant_id,
+                    station_id=reference.station_id,
+                    rating_curve_id=fetched.id,
+                    reference_basis=reference.basis.value,
+                    content=canonical_content(data),
+                    fingerprint=content_digest(canonical_content(data)),
+                )
+            )
+
+    @pytest.mark.parametrize(
+        "style", ["Z", "space", "fraction", "offset", "infinity", "out_of_range"]
+    )
+    def test_exact_timestamp_shape(
+        self, db_connection: sa.Connection, style: str
+    ) -> None:
+        import json
+        from datetime import datetime, timedelta, timezone
+
+        reference = replace(assumed_reference(seed(db_connection)[3]), id=uuid4())
+        data = asdict(reference)
+        inner = json.loads(reference.curve.content)
+        original = inner["created_at"]
+        variants = {
+            "Z": original.replace("+00:00", "Z"),
+            "space": original.replace("T", " "),
+            "fraction": original.replace("+00:00", ".000+00:00"),
+            "offset": datetime.fromisoformat(original)
+            .astimezone(timezone(timedelta(hours=1)))
+            .isoformat(),
+            "infinity": "infinity",
+            "out_of_range": "10000-01-01T00:00:00+00:00",
+        }
+        inner["created_at"] = variants[style]
+        data["curve"]["content"] = canonical_content(inner)
+        with pytest.raises(sa.exc.DBAPIError, match="snapshot timestamp"):
+            TestAssumedInnerSnapshot.insert(
+                db_connection, reference, canonical_content(data)
+            )
+
+    def test_core_subnormal_roundtrip(self, db_connection: sa.Connection) -> None:
+        # A constant subnormal discharge remains finite and converter-valid.
+        obs, curve, feed, reference = metadata_fixture(db_connection, "subnormal-core")
+        from sapphire_flow.db.metadata import rating_curves
+        from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
+        from sapphire_flow.types.rating_reference import curve_snapshot
+
+        points = [p | {"discharge": 5e-324} for p in curve.points]
+        db_connection.execute(
+            sa.update(rating_curves)
+            .where(rating_curves.c.id == curve.id)
+            .values(points=points)
+        )
+        fetched = next(
+            c
+            for c in PgRatingCurveStore(db_connection).fetch_all_curves_for_station(
+                curve.station_id
+            )
+            if c.id == curve.id
+        )
+        reference = replace(reference, curve=curve_snapshot(fetched))
+        PgProtectedReferenceWriter(db_connection).append_reference_evidence(reference)
+        result = convert_reference_discharge(
+            observation=obs,
+            curves=[fetched],
+            feed_evidence=feed,
+            reference_evidence=reference,
+            at=NOW,
+        )
+        permit_fixture(db_connection, feed.tenant_id)
+        assert (
+            PgProvisionalDischargeStore(db_connection).store_provisional_discharge(
+                result, captured_at=NOW
+            )
+            == result.fingerprint
+        )

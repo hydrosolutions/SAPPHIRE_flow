@@ -12,6 +12,13 @@ CREATE OR REPLACE FUNCTION public.provisional_reference_insert() RETURNS trigger
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp
 SET timezone = 'UTC' AS $$
 DECLARE d jsonb; parent jsonb; assumed boolean := false; field text; expected text[];
+    inner_raw json; inner_data jsonb; point_raw json; point_data jsonb;
+    ordered_points jsonb; parent_point jsonb; point_index integer;
+    token text; parent_token text; number_value float8; parent_value float8;
+    previous_stage float8; stamp timestamptz;
+    raw_nodes json[]; source_nodes jsonb[]; node_depths integer[];
+    core_nodes boolean[]; stack_top integer; node_raw json; node_source jsonb;
+    node_depth integer; node_core boolean; node_type text; child record;
     python_whitespace constant text := (
                         U&'\0009\000a\000b\000c\000d\001c\001d\001e' ||
                         U&'\001f\0020\0085\00a0\1680\2000\2001\2002' ||
@@ -119,6 +126,181 @@ BEGIN
     ELSE
         SELECT to_jsonb(c) INTO parent FROM public.rating_curves c
             WHERE id = NEW.rating_curve_id AND station_id = NEW.station_id FOR SHARE;
+        IF assumed THEN
+            BEGIN
+                inner_raw := (d->'curve'->>'content')::json;
+                inner_data := inner_raw::jsonb;
+                expected := ARRAY['id','station_id','version','valid_from',
+                    'valid_to','points','interpolation','uploaded_by','created_at',
+                    'delivery_id','rating_type_label'];
+                IF NOT (json_typeof(inner_raw) = 'object'
+                    AND inner_data ?& expected AND inner_data - expected = '{}'
+                    AND (SELECT count(*) = count(DISTINCT key)
+                         FROM json_object_keys(inner_raw) key)) IS TRUE THEN
+                    RAISE EXCEPTION 'invalid assumed curve snapshot fields';
+                END IF;
+                FOREACH field IN ARRAY ARRAY['id','station_id','interpolation',
+                    'uploaded_by','delivery_id','rating_type_label'] LOOP
+                    IF NOT (inner_data->field = parent->field
+                        AND jsonb_typeof(inner_data->field) =
+                            jsonb_typeof(parent->field)) IS TRUE THEN
+                        RAISE EXCEPTION 'invalid assumed curve snapshot provenance';
+                    END IF;
+                END LOOP;
+                IF NOT (json_typeof(inner_raw->'version') = 'number'
+                    AND inner_raw->>'version' ~ '^[1-9][0-9]*$'
+                    AND inner_data->'version' = parent->'version') IS TRUE THEN
+                    RAISE EXCEPTION 'invalid assumed curve snapshot version';
+                END IF;
+                FOREACH field IN ARRAY ARRAY['valid_from','valid_to','created_at'] LOOP
+                    IF field = 'valid_to' AND parent->field = 'null'::jsonb THEN
+                        IF inner_data->field IS DISTINCT FROM 'null'::jsonb THEN
+                            RAISE EXCEPTION 'invalid assumed curve snapshot timestamp';
+                        END IF;
+                        CONTINUE;
+                    END IF;
+                    stamp := (parent->>field)::timestamptz;
+                    IF NOT (isfinite(stamp)
+                        AND extract(year FROM stamp) BETWEEN 1 AND 9999
+                        AND jsonb_typeof(inner_data->field) = 'string'
+                        AND inner_data->>field =
+                            to_char(stamp, 'YYYY-MM-DD"T"HH24:MI:SS') ||
+                            CASE WHEN extract(microseconds FROM stamp)::bigint
+                                % 1000000 = 0 THEN ''
+                            ELSE to_char(stamp, '.US') END || '+00:00') IS TRUE THEN
+                        RAISE EXCEPTION 'invalid assumed curve snapshot timestamp';
+                    END IF;
+                END LOOP;
+                IF NOT (json_typeof(inner_raw->'points') = 'array'
+                    AND json_array_length(inner_raw->'points') > 0
+                    AND json_array_length(inner_raw->'points') =
+                        jsonb_array_length(parent->'points')) IS TRUE THEN
+                    RAISE EXCEPTION 'invalid assumed curve snapshot points';
+                END IF;
+                SELECT jsonb_agg(p ORDER BY (p->>'water_level')::float8)
+                    INTO ordered_points FROM jsonb_array_elements(parent->'points') p;
+                previous_stage := '-Infinity'::float8;
+                point_index := 0;
+                FOR point_raw IN SELECT value
+                    FROM json_array_elements(inner_raw->'points') LOOP
+                    point_data := point_raw::jsonb;
+                    parent_point := ordered_points->point_index;
+                    IF NOT (json_typeof(point_raw) = 'object'
+                        AND point_data ?& ARRAY['water_level','discharge']) IS TRUE THEN
+                        RAISE EXCEPTION 'invalid assumed curve snapshot point fields';
+                    END IF;
+                    raw_nodes := ARRAY[point_raw];
+                    source_nodes := ARRAY[parent_point];
+                    node_depths := ARRAY[0]; core_nodes := ARRAY[false];
+                    stack_top := 1;
+                    WHILE stack_top > 0 LOOP
+                        node_raw := raw_nodes[stack_top];
+                        node_source := source_nodes[stack_top];
+                        node_depth := node_depths[stack_top];
+                        node_core := core_nodes[stack_top];
+                        stack_top := stack_top - 1;
+                        node_type := json_typeof(node_raw);
+                        IF node_core AND node_type IS DISTINCT FROM 'number' THEN
+                            RAISE EXCEPTION 'assumed curve snapshot core numeric type';
+                        END IF;
+                        IF node_type IS DISTINCT FROM jsonb_typeof(node_source) THEN
+                            RAISE EXCEPTION 'invalid assumed curve snapshot node type';
+                        END IF;
+                        IF node_type IN ('object','array') AND node_depth > 128 THEN
+                            RAISE EXCEPTION
+                                'assumed curve snapshot metadata depth limit';
+                        END IF;
+                        IF node_type = 'object' THEN
+                            IF NOT (SELECT count(*) = count(DISTINCT key)
+                                FROM json_object_keys(node_raw) key) THEN
+                                RAISE EXCEPTION 'assumed curve snapshot duplicate key';
+                            END IF;
+                            IF (SELECT array_agg(key ORDER BY key)
+                                FROM json_object_keys(node_raw) key) IS DISTINCT FROM
+                                (SELECT array_agg(key ORDER BY key)
+                                FROM jsonb_object_keys(node_source) key) THEN
+                                RAISE EXCEPTION
+                                    'assumed curve snapshot metadata fields';
+                            END IF;
+                            FOR child IN SELECT * FROM json_each(node_raw) LOOP
+                                stack_top := stack_top + 1;
+                                raw_nodes[stack_top] := child.value;
+                                source_nodes[stack_top] := node_source->child.key;
+                                node_depths[stack_top] := node_depth + 1;
+                                core_nodes[stack_top] := node_depth = 0 AND
+                                    child.key IN ('water_level','discharge');
+                            END LOOP;
+                        ELSIF node_type = 'array' THEN
+                            IF json_array_length(node_raw) <>
+                                jsonb_array_length(node_source) THEN
+                                RAISE EXCEPTION 'assumed curve snapshot metadata array';
+                            END IF;
+                            FOR child IN SELECT value, ordinality
+                                FROM json_array_elements(node_raw)
+                                WITH ORDINALITY LOOP
+                                stack_top := stack_top + 1;
+                                raw_nodes[stack_top] := child.value;
+                                source_nodes[stack_top] :=
+                                    node_source->(child.ordinality::integer - 1);
+                                node_depths[stack_top] := node_depth + 1;
+                                core_nodes[stack_top] := false;
+                            END LOOP;
+                        ELSIF node_type = 'number' THEN
+                            token := node_raw::text;
+                            parent_token := node_source::text;
+                            IF (token ~ '[.eE]') <> (parent_token ~ '[.eE]') THEN
+                                RAISE EXCEPTION
+                                    'invalid assumed curve snapshot numeric type';
+                            END IF;
+                            IF token ~ '[.eE]' THEN
+                                number_value := token::float8;
+                                parent_value := parent_token::float8;
+                                IF NOT (number_value > '-Infinity'::float8
+                                    AND number_value < 'Infinity'::float8
+                                    AND number_value = parent_value) THEN
+                                    RAISE EXCEPTION
+                                        'invalid assumed curve snapshot numeric value';
+                                END IF;
+                            ELSE
+                                IF length(ltrim(token, '-')) > 4300 THEN
+                                    RAISE EXCEPTION
+                                        'assumed curve snapshot integer digit limit';
+                                END IF;
+                                IF token::numeric <> parent_token::numeric THEN
+                                    RAISE EXCEPTION
+                                        'invalid assumed curve snapshot numeric value';
+                                END IF;
+                            END IF;
+                            IF left(token, 1) = '-' AND token::numeric = 0 THEN
+                                RAISE EXCEPTION 'assumed curve snapshot negative zero';
+                            END IF;
+                            IF node_core THEN
+                                number_value := token::float8;
+                                IF NOT (number_value > '-Infinity'::float8
+                                    AND number_value < 'Infinity'::float8) THEN
+                                    RAISE EXCEPTION
+                                        'assumed curve snapshot core number range';
+                                END IF;
+                            END IF;
+                        ELSIF node_core THEN
+                            RAISE EXCEPTION 'assumed curve snapshot core numeric type';
+                        ELSIF (node_raw #>> '{}') IS DISTINCT FROM
+                              (node_source #>> '{}') THEN
+                            RAISE EXCEPTION 'assumed curve snapshot metadata value';
+                        END IF;
+                    END LOOP;
+                    IF (point_raw->>'water_level')::float8 <= previous_stage THEN
+                        RAISE EXCEPTION 'invalid assumed curve snapshot stage order';
+                    END IF;
+                    previous_stage := (point_raw->>'water_level')::float8;
+                    point_index := point_index + 1;
+                END LOOP;
+            EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range
+                OR datetime_field_overflow OR invalid_parameter_value
+                OR untranslatable_character OR program_limit_exceeded THEN
+                RAISE EXCEPTION 'invalid assumed curve snapshot encoding or range';
+            END;
+        END IF;
         IF NOT (d->>'rating_curve_id' = NEW.rating_curve_id::text
             AND d->>'level_unit' = 'm' AND d->>'curve_unit' = 'm'
             AND (assumed OR (d->>'level_reference' IN ('gauge_zero', 'masl')

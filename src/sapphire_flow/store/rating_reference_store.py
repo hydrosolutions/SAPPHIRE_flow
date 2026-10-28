@@ -21,12 +21,14 @@ from sapphire_flow.types.ids import (
     TenantId,
 )
 from sapphire_flow.types.rating_reference import (
+    AssumedCurveSnapshot,
     CurveSnapshot,
     MeasurementFeedEvidence,
     MeasurementSnapshot,
     OwnerAssumedZeroReference,
     RatingReferenceEvidence,
     RatingReferenceProof,
+    assumed_curve_content,
     canonical_content,
     content_digest,
 )
@@ -142,7 +144,11 @@ def parse_reference_evidence(content: str) -> RatingReferenceEvidence:
         tenant_id=TenantId(p.tenant_id),
         station_id=StationId(p.station_id),
         rating_curve_id=RatingCurveId(p.rating_curve_id),
-        curve=CurveSnapshot(content=p.curve.content),
+        curve=(
+            CurveSnapshot(content=p.curve.content)
+            if assumed_curve_content(p.curve.content) == p.curve.content
+            else AssumedCurveSnapshot(content=p.curve.content)
+        ),
         endpoint=p.endpoint,
         api_station_id=p.api_station_id,
         level_unit=p.level_unit,
