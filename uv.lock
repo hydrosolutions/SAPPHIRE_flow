@@ -313,8 +313,8 @@ wheels = [
 
 [[package]]
 name = "aquacast"
-version = "0.1.356"
-source = { git = "https://github.com/hydrosolutions/aquacast.git?rev=5460f898e76b4ad57e3d2eb55c3ee2454f07b1cd#5460f898e76b4ad57e3d2eb55c3ee2454f07b1cd" }
+version = "0.1.372"
+source = { git = "https://github.com/hydrosolutions/aquacast.git?rev=a6074a2503b017bd56e43da3d77cebe0f9a9dc56#a6074a2503b017bd56e43da3d77cebe0f9a9dc56" }
 dependencies = [
     { name = "curvlinops-for-pytorch" },
     { name = "flashrnn" },
@@ -4969,7 +4969,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic" },
-    { name = "aquacast", marker = "extra == 'aquacast'", git = "https://github.com/hydrosolutions/aquacast.git?rev=5460f898e76b4ad57e3d2eb55c3ee2454f07b1cd" },
+    { name = "aquacast", marker = "extra == 'aquacast'", git = "https://github.com/hydrosolutions/aquacast.git?rev=a6074a2503b017bd56e43da3d77cebe0f9a9dc56" },
     { name = "camelsch", specifier = ">=0.2.0" },
     { name = "cfgrib", specifier = ">=0.9.15.1" },
     { name = "cryptography", specifier = ">=50.0.0" },

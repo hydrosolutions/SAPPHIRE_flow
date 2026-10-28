@@ -99,9 +99,9 @@ constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4
 # rather than letting the resolver drag prefect forward (and fastapi with it, where
 # route attributes change and silently empty the API auth-matrix test).
 #
-# Safe for OUR use: aquacast imports rich only in `logging_config.py` (console log
-# handler) and `training/callbacks.py` (progress bars). The shim uses
-# `aquacast.operational.*` only, which does not import rich — verified.
+# Accepted compatibility exception: Aquacast's operational import closure reaches
+# Rich through logging/training imports. Keep Rich 14 and verify real discovery
+# with the Aquacast extra; this override does not satisfy upstream's Rich >=15 floor.
 # REMOVE this the moment aquacast relaxes the floor.
 override-dependencies = ["rich>=14,<15"]
 cache-keys = [
@@ -119,7 +119,7 @@ default = true
 [tool.uv.sources]
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", tag = "v0.1.20" }
 recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
-aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "5460f898e76b4ad57e3d2eb55c3ee2454f07b1cd" }
+aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "a6074a2503b017bd56e43da3d77cebe0f9a9dc56" }
 
 [tool.ruff]
 target-version = "py311"
