@@ -73,21 +73,55 @@ class TestProtectedMigration:
                 == "0068"
             )
 
+    @pytest.mark.parametrize("revision", ["0068", "head"])
     def test_append_locks_measured_value_qc_and_curve_candidates(
-        self, migration_engine: tuple[sa.Engine, str]
+        self, migration_engine: tuple[sa.Engine, str], revision: str
     ) -> None:
         engine, _ = migration_engine
-        # The current store requires the current reference schema; lock semantics
-        # introduced in0068 must survive all subsequent migrations.
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config("alembic.ini"), revision)
+
         with engine.begin() as conn:
             args = seed(conn)
             permit_fixture(conn, args[2].tenant_id)
         result = convert(*args)
         with engine.connect() as writer, writer.begin():
-            PgProvisionalDischargeStore(writer).store_provisional_discharge(
-                result, captured_at=NOW
-            )
+            if revision == "head":
+                # Current store's lock + trusted-read contract at current schema.
+                PgProvisionalDischargeStore(writer).store_provisional_discharge(
+                    result, captured_at=NOW
+                )
+            else:
+                # Historical SQL protocol: explicit candidate table lock plus
+                # 0068 trigger row locks. This is not a current-store test.
+                writer.execute(sa.text("LOCK TABLE rating_curves IN SHARE MODE"))
+                writer.execute(
+                    sa.text(
+                        "INSERT INTO provisional_discharges "
+                        "(fingerprint,tenant_id,station_id,observation_id,rating_curve_id,"
+                        "feed_evidence_id,reference_proof_id,discharge,"
+                        "content,captured_at) "
+                        "VALUES (:fingerprint,:tenant_id,:station_id,:observation_id,"
+                        ":rating_curve_id,:feed_evidence_id,:reference_proof_id,"
+                        ":discharge,:content,:captured_at)"
+                    ),
+                    {
+                        **{
+                            name: getattr(result, name)
+                            for name in (
+                                "fingerprint",
+                                "tenant_id",
+                                "station_id",
+                                "observation_id",
+                                "rating_curve_id",
+                                "feed_evidence_id",
+                                "reference_proof_id",
+                                "discharge",
+                                "content",
+                            )
+                        },
+                        "captured_at": NOW,
+                    },
+                )
             for statement in (
                 "UPDATE observations SET value = 1.9",
                 "UPDATE observations SET qc_status = 'raw'",

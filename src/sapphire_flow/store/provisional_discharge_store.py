@@ -12,6 +12,7 @@ from sapphire_flow.db.metadata import (
     provisional_discharges,
 )
 from sapphire_flow.services.provisional_discharge import convert_reference_discharge
+from sapphire_flow.store.bafu_unit_read_filter import trusted_unit_predicate
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.rating_reference_store import PgRatingReferenceStore
@@ -57,6 +58,7 @@ class PgProvisionalDischargeStore:
         row = (
             self._conn.execute(
                 sa.select(observations)
+                .where(trusted_unit_predicate(observations))
                 .where(observations.c.id == discharge.observation_id)
                 .where(observations.c.station_id == discharge.station_id)
                 .with_for_update(read=True)

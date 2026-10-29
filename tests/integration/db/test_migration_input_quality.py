@@ -27,7 +27,6 @@ rebase is a two-line change.
 from __future__ import annotations
 
 import os
-import random
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -36,8 +35,8 @@ import pytest
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
-from sapphire_flow.store.station_store import PgStationStore
-from tests.conftest import make_station_config
+from tests.integration.db.historical_seeds import assert_revision
+from tests.integration.db.historical_seeds import seed_tenant_station as _seed_station
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -95,12 +94,6 @@ def _forecasts_columns(conn: sa.Connection) -> set[str]:
             )
         )
     }
-
-
-def _seed_station(conn: sa.Connection) -> uuid.UUID:
-    station = make_station_config(rng=random.Random(54))
-    PgStationStore(conn).store_station(station)
-    return station.id
 
 
 def _seed_model(conn: sa.Connection, model_id: str = "test_model_0055") -> str:
@@ -216,7 +209,8 @@ class TestMigration0055InputQuality:
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0055")
+        assert_revision(engine, "0055")
 
         with engine.begin() as conn:
             station_id = _seed_station(conn)
@@ -225,10 +219,11 @@ class TestMigration0055InputQuality:
                 conn, station_id=station_id, model_id=model_id
             )
 
-        # 0054 -> 0053 ONLY. Downgrading to 0052 would also tear out main's
+        # 0055 -> 0054 ONLY. Downgrading to 0052 would also tear out main's
         # independent Plan 241 T4 migration, which this revision merely
         # chains onto and must leave untouched.
         command.downgrade(cfg, _PRE_REVISION)
+        assert_revision(engine, _PRE_REVISION)
 
         with engine.connect() as conn:
             columns = _forecasts_columns(conn)
@@ -240,11 +235,12 @@ class TestMigration0055InputQuality:
         assert "input_quality" not in columns
         assert "input_quality_flags" not in columns
         assert "time_step_seconds" in columns, (
-            "downgrading 0054 must leave main's independent 0053 migration "
+            "downgrading 0055 must leave main's independent 0053 migration "
             "(forecasts.time_step_seconds) in place — this revision only "
             "chains onto it"
         )
         assert surviving_id == forecast_id
 
         # Round-trip: re-upgrade must succeed.
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0055")
+        assert_revision(engine, "0055")

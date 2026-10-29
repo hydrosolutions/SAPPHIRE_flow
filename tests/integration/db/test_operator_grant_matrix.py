@@ -61,6 +61,16 @@ class Grant:
 
 MATRIX: tuple[Grant, ...] = (
     Grant(
+        sql="GRANT SELECT ON bafu_unit_observation_read_state TO {role}",
+        commands=frozenset({Command.QC}),
+        denied_on="view bafu_unit_observation_read_state",
+    ),
+    Grant(
+        sql="GRANT EXECUTE ON FUNCTION observation_qc_lock(uuid, text) TO {role}",
+        commands=_REPLACE_QC,
+        denied_on="function observation_qc_lock",
+    ),
+    Grant(
         sql="GRANT INSERT ON audit_log TO {role}",
         commands=_ALL,
         denied_on="table audit_log",
@@ -184,6 +194,11 @@ def owner() -> Iterator[sa.Engine]:
 
 
 def _apply(conn: sa.Connection, grants: tuple[Grant, ...]) -> None:
+    conn.execute(
+        sa.text(
+            f"REVOKE ALL ON FUNCTION observation_qc_lock(uuid, text) FROM {SCRATCH}"
+        )
+    )
     conn.execute(sa.text(f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {SCRATCH}"))
     conn.execute(
         sa.text(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {SCRATCH}")

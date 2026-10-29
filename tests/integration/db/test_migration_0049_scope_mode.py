@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
 from sapphire_flow.types.datetime import ensure_utc
+from tests.integration.db.historical_seeds import assert_revision
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -106,6 +107,7 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
         # 1. Upgrade to 0048 (one before this migration), seed a consumer +
         # an admin token row under the PRE-0049 schema.
         command.upgrade(cfg, "0048")
+        assert_revision(engine, "0048")
 
         # A real tenant row for the consumer token's FK.
         tenant_id = uuid.uuid4()
@@ -129,7 +131,7 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
             )
             _insert_token(conn, token_id=admin_id, role="admin", tenant_id=None)
 
-        # 2. Upgrade to head (0049) — both rows must survive with
+        # 2. Upgrade to 0049 — both rows must survive with
         # scope_mode='stations', no other behaviour change.
         # A station and an EXISTING materialised grant row, seeded under the
         # PRE-0049 schema. Without these the round trip below asserts only on
@@ -160,7 +162,8 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
                 {"token_id": consumer_id, "station_id": station_id},
             )
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0049")
+        assert_revision(engine, "0049")
 
         with engine.begin() as conn:
             rows = {
@@ -211,6 +214,7 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
 
         # 5. Downgrade removes both CHECKs then the column.
         command.downgrade(cfg, "0048")
+        assert_revision(engine, "0048")
         with engine.begin() as conn:
             inspector = sa.inspect(conn)
             columns = {c["name"] for c in inspector.get_columns("access_tokens")}
@@ -228,7 +232,8 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
         # both rows land back on 'stations' (the column was dropped, so the
         # prior 'tenant' value on the consumer row is gone — this is the
         # downgrade-then-upgrade round trip the plan's exit criteria list).
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0049")
+        assert_revision(engine, "0049")
         with engine.begin() as conn:
             rows = {
                 row.id: row.scope_mode

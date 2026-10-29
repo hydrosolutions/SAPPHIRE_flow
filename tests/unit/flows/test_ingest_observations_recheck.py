@@ -282,7 +282,7 @@ class TestUncheckedIsReExamined:
         obs_store.store_raw_observations(recovered)
 
         outcome = _run_qc_task.fn(
-            obs_store,
+            obs_store.qc_context_reader(),
             FakeClimBaselineStore(),
             station_id,
             "discharge",

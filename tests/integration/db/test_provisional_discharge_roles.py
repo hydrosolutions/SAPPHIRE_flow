@@ -204,7 +204,23 @@ class TestProvisionalDischargeRoleBoundary:
                     .mappings()
                     .all()
                 )
-                table_grant_exclusions = {*TABLES, "forecasts", "rejected_forecasts"}
+                unit_protected = {
+                    "bafu_unit_batch_admissions",
+                    "bafu_unit_batch_receipts",
+                    "bafu_unit_events",
+                    "bafu_unit_read_holds",
+                    "bafu_unit_hold_releases",
+                    "bafu_unit_write_scopes",
+                    "bafu_unit_event_reconciliation",
+                    "bafu_unit_receipt_reconciliation",
+                    "observation_qc_boundaries",
+                }
+                table_grant_exclusions = {
+                    *TABLES,
+                    "forecasts",
+                    "rejected_forecasts",
+                    *unit_protected,
+                }
                 assert all(
                     row["current"]
                     == (row["prior"] and row["relname"] not in table_grant_exclusions)
@@ -228,6 +244,64 @@ class TestProvisionalDischargeRoleBoundary:
                         "'grant_scope_other.hidden', 'SELECT')"
                     )
                 )
+                projections = {
+                    "bafu_unit_read_holds": {
+                        "id",
+                        "station_id",
+                        "parameter",
+                        "source",
+                        "starts_at",
+                        "ends_at",
+                    },
+                    "bafu_unit_hold_releases": {
+                        "id",
+                        "hold_id",
+                        "starts_at",
+                        "ends_at",
+                    },
+                }
+                for table in unit_protected:
+                    columns = sa.inspect(conn).get_columns(table)
+                    for column in columns:
+                        assert conn.scalar(
+                            sa.text(
+                                "SELECT has_column_privilege('sapphire_api', "
+                                ":table, :column, 'SELECT')"
+                            ),
+                            {"table": table, "column": column["name"]},
+                        ) is (column["name"] in projections.get(table, set()))
+                assert conn.scalar(
+                    sa.text(
+                        "SELECT has_table_privilege('sapphire_worker', "
+                        "'observation_qc_boundaries', 'SELECT')"
+                    )
+                )
+            api = sa.create_engine(role_harness.role_url("sapphire_api", "api-fixture"))
+            try:
+                with api.connect() as conn:
+                    assert conn.scalar(sa.text("SELECT session_user")) == "sapphire_api"
+                    for table in sorted(unit_protected):
+                        with (
+                            pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                            conn.begin_nested(),
+                        ):
+                            conn.execute(sa.text(f"SELECT * FROM public.{table}"))
+                    for table, allowed_columns in projections.items():
+                        conn.execute(
+                            sa.text(
+                                f"SELECT {','.join(sorted(allowed_columns))} "
+                                f"FROM public.{table}"
+                            )
+                        )
+                        with (
+                            pytest.raises(sa.exc.DBAPIError, match="permission denied"),
+                            conn.begin_nested(),
+                        ):
+                            conn.execute(
+                                sa.text(f"SELECT approval_sha256 FROM public.{table}")
+                            )
+            finally:
+                api.dispose()
         finally:
             with role_harness.owner_engine.begin() as conn:
                 conn.execute(sa.text("DROP OWNED BY ordinary_grant_baseline"))

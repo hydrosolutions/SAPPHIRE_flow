@@ -119,6 +119,30 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class ObservationStore(Protocol):
+    def qc_context_reader(self) -> ObservationStore:
+        raise NotImplementedError
+
+    def update_qc_if_current(
+        self,
+        observation: Observation,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        raise NotImplementedError
+
+    def update_qc_batch_if_current(
+        self,
+        updates: list[tuple[Observation, QcStatus, list[QcFlag]]],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        raise NotImplementedError
+
+    def fetch_latest_capture_timestamp(
+        self, station_id: StationId, parameter: str
+    ) -> UtcDatetime | None:
+        raise NotImplementedError
+
     def fetch_delivery_observations(
         self, delivery_id: str, station_ids: list[StationId]
     ) -> list[Observation]:

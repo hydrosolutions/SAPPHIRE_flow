@@ -249,7 +249,14 @@ class AssumedCurveSnapshot:
 
 def measurement_snapshot(observation: Observation) -> MeasurementSnapshot:
     data = asdict(observation)
-    for key in ("qc_status", "qc_flags", "qc_rule_version"):
+    for key in (
+        "qc_status",
+        "qc_flags",
+        "qc_rule_version",
+        "qc_read_token",
+        "qc_context_segment",
+        "qc_context_requirement",
+    ):
         del data[key]
     return MeasurementSnapshot(content=canonical_content(data))
 

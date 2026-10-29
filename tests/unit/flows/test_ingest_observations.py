@@ -34,7 +34,9 @@ from sapphire_flow.types.observation import RawObservation
 from sapphire_flow.types.tenant import Tenant
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.domain import QcFlag
     from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.observation import Observation
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeStationDataSource
 from tests.fakes.fake_stores import (
@@ -760,7 +762,7 @@ class TestIngestObservationsFlow:
         obs_store.store_raw_observations([current])
 
         counts = _run_qc_task.fn(
-            obs_store,
+            obs_store.qc_context_reader(),
             FakeClimBaselineStore(),
             station.id,
             "water_level",
@@ -780,6 +782,7 @@ class TestIngestObservationsFlow:
             # Plan 317 T1: a first judgement, not a re-examination.
             "rechecked": 0,
             "newly_checked": 1,
+            "stale_evaluation": 0,
         }
         assert counts.zero_rule_groups == ()
         assert latest.value == 261.2
@@ -796,7 +799,7 @@ class TestIngestObservationsFlow:
         obs_store.store_raw_observations([current])
 
         counts = _run_qc_task.fn(
-            obs_store,
+            obs_store.qc_context_reader(),
             FakeClimBaselineStore(),
             station.id,
             "water_level",
@@ -815,6 +818,7 @@ class TestIngestObservationsFlow:
             "unjudged": 0,
             "rechecked": 0,
             "newly_checked": 1,
+            "stale_evaluation": 0,
         }
         assert counts.zero_rule_groups == ()
         assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
@@ -835,7 +839,7 @@ class TestIngestObservationsFlow:
             obs_store.store_raw_observations([current])
 
             counts = _run_qc_task.fn(
-                obs_store,
+                obs_store.qc_context_reader(),
                 FakeClimBaselineStore(),
                 station.id,
                 "discharge",
@@ -864,6 +868,7 @@ class TestIngestObservationsFlow:
                 "unjudged": 0,
                 "rechecked": 0,
                 "newly_checked": 1,
+                "stale_evaluation": 0,
             },
             QcStatus.QC_PASSED,
             [],
@@ -1265,3 +1270,63 @@ class TestLoadAdapterConfig:
         monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_file))
 
         assert _load_adapter_config().endpoint == "https://overlay.example/query"
+
+
+class TestStaleQcEvaluation:
+    def test_changed_value_is_not_counted_as_judged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        station = make_station_config()
+        store = FakeObservationStore().qc_context_reader()
+        store.store_raw_observations(
+            [
+                _make_obs(station.id, "discharge", 1.0, offset_minutes=10),
+                _make_obs(station.id, "discharge", 2.0),
+            ]
+        )
+        original = store.update_qc_batch_if_current
+
+        def changed(
+            updates: list[tuple[Observation, QcStatus, list[QcFlag]]],
+            qc_rule_version: str | None = None,
+        ) -> bool:
+            observation = updates[0][0]
+            store.store_raw_observations(
+                [
+                    RawObservation(
+                        station_id=observation.station_id,
+                        timestamp=observation.timestamp,
+                        parameter=observation.parameter,
+                        value=999.0,
+                        source=observation.source,
+                    )
+                ]
+            )
+            return original(updates, qc_rule_version)
+
+        monkeypatch.setattr(store, "update_qc_batch_if_current", changed)
+        outcome = _run_qc_task.fn(
+            store,
+            FakeClimBaselineStore(),
+            station.id,
+            "discharge",
+            qc_rules=_QC_RULES,
+            now=_NOW,
+            station_networks={station.id: station.network},
+        )
+        assert outcome.counts["stale_evaluation"] == 2
+        assert outcome.counts["passed"] == 0
+        assert outcome.counts["newly_checked"] == 0
+        assert all(row.qc_status is QcStatus.RAW for row in store.observations())
+        monkeypatch.setattr(store, "update_qc_batch_if_current", original)
+        fresh = _run_qc_task.fn(
+            store,
+            FakeClimBaselineStore(),
+            station.id,
+            "discharge",
+            qc_rules=_QC_RULES,
+            now=_NOW,
+            station_networks={station.id: station.network},
+        )
+        assert fresh.counts["stale_evaluation"] == 0
+        assert fresh.counts["newly_checked"] == 2

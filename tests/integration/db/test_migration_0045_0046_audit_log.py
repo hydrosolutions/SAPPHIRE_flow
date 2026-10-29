@@ -24,6 +24,7 @@ from testcontainers.postgres import PostgresContainer
 
 from sapphire_flow.db.metadata import audit_log
 from sapphire_flow.types.datetime import ensure_utc
+from tests.integration.db.historical_seeds import assert_revision
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -72,8 +73,9 @@ class TestMigration0045And0046UpgradeDowngradeRoundTrip:
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
 
-        # 1. Upgrade to head (0044 -> 0045 -> 0046).
-        command.upgrade(cfg, "head")
+        # 1. Upgrade to the historical upper revision (0046).
+        command.upgrade(cfg, "0046")
+        assert_revision(engine, "0046")
 
         with engine.begin() as conn:
             inspector = sa.inspect(conn)
@@ -117,6 +119,7 @@ class TestMigration0045And0046UpgradeDowngradeRoundTrip:
 
         # 2. Downgrade all the way through 0046 and 0045.
         command.downgrade(cfg, "0044")
+        assert_revision(engine, "0044")
 
         with engine.begin() as conn:
             inspector = sa.inspect(conn)
@@ -133,7 +136,8 @@ class TestMigration0045And0046UpgradeDowngradeRoundTrip:
         # 3. Re-upgrading from the downgraded state must succeed cleanly —
         # proves the downgrade left no orphaned trigger/function/constraint
         # behind that would collide with a fresh upgrade.
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0046")
+        assert_revision(engine, "0046")
         with engine.begin() as conn:
             inspector = sa.inspect(conn)
             assert "audit_log" in inspector.get_table_names()

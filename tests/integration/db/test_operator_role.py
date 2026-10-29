@@ -1,10 +1,12 @@
 """Plan 510 T4/T6 — the database-limited operator role, against a real Postgres.
 
-Everything here logs in as the real ``sapphire_operator`` (created NOLOGIN by
+Operator probes log in as the real ``sapphire_operator`` (created NOLOGIN by
 ``docker/bootstrap-roles.sql`` and given a password only through the overlay
-secret), so the guard's ``session_user`` test and the grants are exercised
-exactly as in production. Each attempt runs in a transaction that is always
-rolled back, so the committed baseline seeded by the owner never changes.
+secret), so the guard's ``session_user`` test and grants match production.
+Write attempts roll back; bootstrap tests deliberately change and restore ACLs.
+The SQL writer scan permits only the exact worker-only invoker QC batch CAS.
+Current-head downgrade refusal preserves protections; the historical 0067→0066
+contract runs in fresh clusters in ``test_operator_guard_historical.py``.
 """
 
 from __future__ import annotations
@@ -1070,14 +1072,67 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
         "AND pronamespace::regnamespace::text NOT LIKE 'pg_toast%'"
     )
 
-    def test_no_function_writes_the_guarded_tables(self, db: OperatorDb) -> None:
-        writers = db.scalar(
-            "SELECT string_agg(proname, ', ') FROM pg_proc "
-            f"WHERE {self._NON_SYSTEM} "
-            "AND prosrc ~* '(insert into|update|delete from|truncate)\\s+"
-            "(only\\s+)?([a-z_]+\\.)?(observations|rating_curves|stations)\\y'"
+    _EXPECTED_WRITERS = {
+        (
+            "public",
+            "observation_qc_batch_compare_and_set",
+            "uuid, text, timestamp with time zone, timestamp with time zone, "
+            "text, text, jsonb",
         )
-        assert writers is None
+    }
+
+    def _writers(self, conn: sa.Connection) -> set[tuple[str, str, str]]:
+        return {
+            tuple(row)
+            for row in conn.execute(
+                sa.text(
+                    "SELECT pronamespace::regnamespace::text, proname, "
+                    "oidvectortypes(proargtypes) FROM pg_proc "
+                    f"WHERE {self._NON_SYSTEM} "
+                    r"AND prosrc ~* '(insert into|update|delete from|truncate)\s+"
+                    r"(only\s+)?([a-z_]+\.)?(observations|rating_curves|stations)\y'"
+                )
+            )
+        }
+
+    def test_only_the_exact_invoker_qc_batch_function_writes_guarded_tables(
+        self, db: OperatorDb
+    ) -> None:
+        with db.owner.connect() as conn:
+            assert self._writers(conn) == self._EXPECTED_WRITERS
+            row = conn.execute(
+                sa.text(
+                    "SELECT prosecdef, proconfig, "
+                    "has_function_privilege('sapphire_api', oid, 'EXECUTE'), "
+                    "has_function_privilege('sapphire_operator', oid, 'EXECUTE'), "
+                    "has_function_privilege('sapphire_worker', oid, 'EXECUTE'), "
+                    "EXISTS (SELECT 1 FROM aclexplode(COALESCE(proacl, "
+                    "acldefault('f', proowner))) acl "
+                    "WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE') "
+                    "FROM pg_proc WHERE oid = "
+                    "'public.observation_qc_batch_compare_and_set(uuid, text, "
+                    "timestamptz, timestamptz, text, text, jsonb)'::regprocedure"
+                )
+            ).one()
+        assert row[0] is False
+        assert "search_path=pg_catalog, pg_temp" in row[1]
+        assert tuple(row[2:]) == (False, False, True, False)
+
+    def test_unknown_writer_is_not_allowlisted(self, db: OperatorDb) -> None:
+        with db.owner.connect() as conn, conn.begin():
+            conn.execute(
+                sa.text(
+                    "CREATE FUNCTION public.unexpected_observation_writer() "
+                    "RETURNS void LANGUAGE sql AS $$ "
+                    "DELETE FROM public.observations WHERE false $$"
+                )
+            )
+            try:
+                assert self._writers(conn) - self._EXPECTED_WRITERS == {
+                    ("public", "unexpected_observation_writer", "")
+                }
+            finally:
+                conn.rollback()
 
     def test_the_security_definer_functions_are_the_known_publication_locks(
         self, db: OperatorDb
@@ -1677,51 +1732,44 @@ def _guard_object_counts(db: OperatorDb) -> tuple[object, object]:
     )
 
 
-class TestGuardMigrationDowngrade:
-    """Last in the module: it removes and restores the guard."""
+class TestCurrentHeadDowngradeRefusal:
+    """Historical guard rollback is tested in its own 0067-only container."""
 
-    def test_downgrade_with_an_active_operator_revokes_dml_then_drops_the_guard(
+    def test_refusal_keeps_head_schema_and_protections_unchanged(
         self, db: OperatorDb
     ) -> None:
-        engine = db.engine()
-        try:
-            with engine.connect() as active:
-                assert active.scalar(sa.text("SELECT 1")) == 1
-                assert _dml_privileges(db)
-                _alembic("downgrade", "0066")
-                assert _dml_privileges(db) == []
-                assert _guard_object_counts(db) == (0, 0)
-                assert active.scalar(sa.text("SELECT 1")) == 1
-                blocked = db.attempt(
-                    [_INSERT_OBS.format(station="swiss", delivery="NULL")],
-                    engine=engine,
+        def snapshot() -> tuple[object, ...]:
+            with db.owner.connect() as conn:
+                return (
+                    conn.scalar(sa.text("SELECT version_num FROM alembic_version")),
+                    conn.execute(
+                        sa.text(
+                            "SELECT n.nspname, c.relname, c.relkind, c.relacl::text "
+                            "FROM pg_class c JOIN pg_namespace n ON "
+                            "n.oid=c.relnamespace "
+                            "WHERE n.nspname='public' ORDER BY 1, 2"
+                        )
+                    ).all(),
+                    conn.execute(
+                        sa.text(
+                            "SELECT tgname, tgenabled, pg_get_triggerdef(oid) "
+                            "FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname"
+                        )
+                    ).all(),
+                    conn.execute(
+                        sa.text(
+                            "SELECT oid::regprocedure::text, prosrc, proconfig, "
+                            "proacl::text FROM pg_proc "
+                            "WHERE pronamespace='public'::regnamespace ORDER BY 1"
+                        )
+                    ).all(),
+                    _signature(conn, OPERATOR),
                 )
-                assert blocked.permission_denied, blocked
-        finally:
-            engine.dispose()
-            _alembic("upgrade", "head")
-            db.bootstrap()
-        assert _guard_object_counts(db) == (10, 3)
-        assert _dml_privileges(db)
 
-    def test_downgrade_on_a_database_without_the_operator_role_does_not_error(
-        self, db: OperatorDb
-    ) -> None:
-        with db.owner.begin() as conn:
-            conn.execute(
-                sa.text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE usename = :r"
-                ),
-                {"r": OPERATOR},
-            )
-            conn.execute(sa.text(f"DROP OWNED BY {OPERATOR}"))
-            conn.execute(sa.text(f"DROP ROLE {OPERATOR}"))
-        try:
+        before = snapshot()
+        assert before[0] == "0078"
+        with pytest.raises(NotImplementedError, match="requires a drained deployment"):
             _alembic("downgrade", "0066")
-            assert _guard_object_counts(db) == (0, 0)
-        finally:
-            _alembic("upgrade", "head")
-            db.bootstrap()
+        assert snapshot() == before
         assert _guard_object_counts(db) == (10, 3)
         assert _dml_privileges(db)
