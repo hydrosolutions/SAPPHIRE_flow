@@ -197,7 +197,11 @@ capabilities and returns measured water levels in metres and UTC. DHM river
 cursors use `water_level`; Swiss river/lake and weather cursor choices are unchanged.
 Each DHM station fetch is complete or failed, with bounded history windows/pages
 and no in-adapter retry. Unsupported networks/kinds are skipped without outcomes;
-supported gauges with bad bindings or level metadata report `CONFIGURATION_ERROR`.
+supported gauges with bad bindings or level metadata report `CONFIGURATION_ERROR`. All-station
+preflight requires explicit request/accepted-byte/cooperative-time bounds and fails
+before HTTP if any local check or minimum work cannot fit. Runtime stops preserve
+prior completed stations and abort all later stations. Resource stops and
+unattempted stations are distinct from provider faults.
 
 DHM QC reads extend to cover recovered measurements plus preceding context and
 an exclusive end after the newest measurement. All RAW rows inside that interval

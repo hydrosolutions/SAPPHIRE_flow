@@ -289,6 +289,8 @@ class FetchOutcomeCause(Enum):
     MALFORMED_RESPONSE = "malformed_response"
     NO_DATA = "no_data"
     CONFIGURATION_ERROR = "configuration_error"
+    RESOURCE_LIMIT = "resource_limit"
+    BATCH_ABORTED = "batch_aborted"
 
 
 class GaugingStatus(Enum):

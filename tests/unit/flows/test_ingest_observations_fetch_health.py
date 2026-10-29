@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
+    _fetch_failure_category,
+    _fetch_health_detail,
     ingest_observations_flow,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -210,3 +212,45 @@ class TestMixedSuccessAndFailureReporting:
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.OK
         assert records[0].detail["stations_fetch_failed"] == 0
+
+
+class TestFetchFailureCategories:
+    def test_every_cause_has_explicit_expected_category(self) -> None:
+        expected = {
+            FetchOutcomeCause.RATE_LIMITED: "provider",
+            FetchOutcomeCause.HTTP_STATUS_ERROR: "provider",
+            FetchOutcomeCause.TRANSPORT_ERROR: "provider",
+            FetchOutcomeCause.MALFORMED_RESPONSE: "provider",
+            FetchOutcomeCause.CONFIGURATION_ERROR: "configuration",
+            FetchOutcomeCause.NO_DATA: "other",
+            FetchOutcomeCause.RESOURCE_LIMIT: "resource",
+            FetchOutcomeCause.BATCH_ABORTED: "unattempted",
+        }
+        assert {
+            cause: _fetch_failure_category(cause) for cause in FetchOutcomeCause
+        } == expected
+
+    def test_one_provider_fault_does_not_label_unattempted_sites_provider_faults(
+        self,
+    ) -> None:
+        causes = [
+            FetchOutcomeCause.RATE_LIMITED,
+            FetchOutcomeCause.BATCH_ABORTED,
+            FetchOutcomeCause.RESOURCE_LIMIT,
+        ]
+        outcomes = tuple(
+            StationFetchOutcome(
+                station_id=make_station_config(rng=random.Random(i)).id,
+                observations=(),
+                failure_cause=cause,
+                failure_detail=cause.value,
+            )
+            for i, cause in enumerate(causes)
+        )
+        detail = _fetch_health_detail(outcomes)
+        assert detail["failure_counts_by_category"] == {
+            "provider": 1,
+            "unattempted": 1,
+            "resource": 1,
+        }
+        assert detail["stations_fetch_failed"] == 3

@@ -302,6 +302,8 @@ class FetchOutcomeCause(Enum):
     MALFORMED_RESPONSE = "malformed_response"  # invalid readings/envelope or incomplete DHM pagination
     NO_DATA = "no_data"                 # BAFU snapshot has no usable bindings; DHM empty windows are clean
     CONFIGURATION_ERROR = "configuration_error"  # supported DHM gauge lacks valid binding/level metadata
+    RESOURCE_LIMIT = "resource_limit"  # operator bound, not a provider fault
+    BATCH_ABORTED = "batch_aborted"  # not attempted after batch stop/preflight rejection
 
 class NotificationChannel(Enum):
     EMAIL = "email"
@@ -4508,6 +4510,11 @@ with missing level capability/binding or incompatible unit/datum metadata return
 `CONFIGURATION_ERROR`. Empty completed windows are clean (`failure_cause=None`),
 not BAFU's snapshot-specific `NO_DATA`. Request/HTTP/malformed failures use the
 existing causes without retries or sensitive response/exception text.
+Required request/accepted-byte/cooperative-time bounds span the entire batch.
+Preflight is all-or-nothing; runtime failures preserve earlier complete stations
+and give later supported sites `BATCH_ABORTED`. Page/byte/request/time exhaustion
+uses `RESOURCE_LIMIT`, not a provider-fault cause. Health detail categories are
+additive; total availability failure counts and thresholds are unchanged.
 Flow 2 reads DHM river water-level cursors and extends only their level QC intervals
 to include recovered rows and preceding context, including the latest measurement
 under the store's exclusive upper-bound convention. Existing scientific rules and

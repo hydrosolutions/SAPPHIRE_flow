@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig
 
 log = structlog.get_logger(__name__)
+_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class _Reading(BaseModel):
@@ -54,6 +56,34 @@ class _FetchError(AdapterError):
         self.cause = cause
 
 
+@dataclass(slots=True, kw_only=True)
+class _BatchBudget:
+    deadline: float
+    requests: int = 0
+    received_bytes: int = 0
+    accepted_bytes: int = 0
+    last_request_at: float | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _StationWork:
+    station: StationConfig
+    binding: DhmBinding
+    start: UtcDatetime
+    windows: int
+
+
+def _failure(
+    station: StationConfig, cause: FetchOutcomeCause, detail: str
+) -> StationFetchOutcome:
+    return StationFetchOutcome(
+        station_id=station.id,
+        observations=(),
+        failure_cause=cause,
+        failure_detail=detail,
+    )
+
+
 class DhmAdapter:
     def __init__(
         self,
@@ -69,7 +99,7 @@ class DhmAdapter:
         self._clock = clock
         self._monotonic = monotonic
         self._sleeper = sleeper
-        self._last_request_at: float | None = None
+        self._window_span = timedelta(hours=config.window_hours)
         self._history_url = httpx.URL(config.endpoint.rstrip("/") + "/").join("river/")
         self._bindings = {(b.network, b.station_code): b for b in config.bindings}
 
@@ -85,18 +115,130 @@ class DhmAdapter:
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
     ) -> HydroScraperBatchResult:
+        budget = _BatchBudget(
+            deadline=self._monotonic() + self._config.max_batch_seconds
+        )
         end = ensure_utc(self._clock())
+        supported = [
+            s
+            for s in station_configs
+            if s.network == "dhm" and s.station_kind == StationKind.RIVER
+        ]
+        work, failures = self._preflight(supported, since, end, budget)
+        if failures:
+            return HydroScraperBatchResult(
+                outcomes=tuple(
+                    failures.get(s.id)
+                    or _failure(
+                        s,
+                        FetchOutcomeCause.BATCH_ABORTED,
+                        "DHM preflight stopped batch",
+                    )
+                    for s in supported
+                )
+            )
         outcomes: list[StationFetchOutcome] = []
-        for station in station_configs:
-            if station.network != "dhm" or station.station_kind != StationKind.RIVER:
-                log.info(
-                    "observation.station_skipped",
-                    station_id=str(station.id),
-                    reason="unsupported_dhm_station",
+        stop: FetchOutcomeCause | None = None
+        for item in work:
+            if stop is not None:
+                outcome = _failure(
+                    item.station,
+                    FetchOutcomeCause.BATCH_ABORTED,
+                    f"DHM batch stopped: {stop.value}",
+                )
+            else:
+                outcome = self._fetch_station(item, end, budget)
+                stop = outcome.failure_cause
+            outcomes.append(outcome)
+        log.info(
+            "observation.dhm_batch_finished",
+            requests=budget.requests,
+            received_bytes=budget.received_bytes,
+            accepted_bytes=budget.accepted_bytes,
+            deadline_overrun=self._monotonic() >= budget.deadline,
+        )
+        return HydroScraperBatchResult(outcomes=tuple(outcomes))
+
+    def _time_fits(self, requests: int, budget: _BatchBudget) -> bool:
+        remaining = budget.deadline - self._monotonic()
+        return (
+            remaining > 0
+            and max(0, requests - 1) * self._config.min_request_interval_s < remaining
+        )
+
+    def _preflight(
+        self,
+        stations: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+        end: UtcDatetime,
+        budget: _BatchBudget,
+    ) -> tuple[list[_StationWork], dict[StationId, StationFetchOutcome]]:
+        work: list[_StationWork] = []
+        failures: dict[StationId, StationFetchOutcome] = {}
+        for station in stations:
+            try:
+                binding = self._binding(station)
+                start = since.get(station.id)
+                if start is None:
+                    raise ConfigurationError("DHM station requires a fetch watermark")
+                start = ensure_utc(start)
+            except (ConfigurationError, ValueError, OverflowError):
+                failures[station.id] = _failure(
+                    station,
+                    FetchOutcomeCause.CONFIGURATION_ERROR,
+                    "Invalid DHM binding, metadata or watermark",
                 )
                 continue
-            outcomes.append(self._fetch_station(station, since.get(station.id), end))
-        return HydroScraperBatchResult(outcomes=tuple(outcomes))
+            quotient, remainder = divmod(
+                max(timedelta(0), end - start), self._window_span
+            )
+            windows = quotient + int(remainder > timedelta(0))
+            item = _StationWork(
+                station=station, binding=binding, start=start, windows=windows
+            )
+            work.append(item)
+            log.info(
+                "observation.dhm_preflight_station",
+                station_id=str(station.id),
+                minimum_requests=windows,
+            )
+            if windows and (
+                windows
+                > min(
+                    self._config.max_pages_per_station,
+                    self._config.max_requests_per_batch,
+                )
+                or not self._time_fits(windows, budget)
+            ):
+                failures[station.id] = _failure(
+                    station,
+                    FetchOutcomeCause.RESOURCE_LIMIT,
+                    "DHM station minimum work exceeds budget",
+                )
+        minimum = sum(item.windows for item in work)
+        log.info(
+            "observation.dhm_preflight_batch",
+            minimum_requests=minimum,
+            minimum_pacing_s=max(0, minimum - 1) * self._config.min_request_interval_s,
+        )
+        if (
+            not failures
+            and minimum
+            and (
+                minimum > self._config.max_requests_per_batch
+                or not self._time_fits(minimum, budget)
+            )
+        ):
+            failures = {
+                item.station.id: _failure(
+                    item.station,
+                    FetchOutcomeCause.RESOURCE_LIMIT,
+                    "DHM aggregate minimum work exceeds budget",
+                )
+                for item in work
+                if item.windows
+            }
+        return work, failures
 
     def _binding(self, station: StationConfig) -> DhmBinding:
         binding = self._bindings.get((station.network, station.code))
@@ -113,63 +255,132 @@ class DhmAdapter:
 
     def _fetch_station(
         self,
-        station: StationConfig,
-        since: UtcDatetime | None,
+        work: _StationWork,
         end: UtcDatetime,
+        budget: _BatchBudget,
     ) -> StationFetchOutcome:
         try:
-            binding = self._binding(station)
-            if since is None:
-                raise ConfigurationError("DHM station requires a fetch watermark")
-            observations = self._fetch_history(station, binding, ensure_utc(since), end)
+            observations = self._fetch_history(
+                work.station, work.binding, work.start, end, budget
+            )
+            if work.windows:
+                self._check_deadline(budget)
             return StationFetchOutcome(
-                station_id=station.id,
+                station_id=work.station.id,
                 observations=tuple(observations),
                 failure_cause=None,
                 failure_detail=None,
             )
-        except ConfigurationError as exc:
-            cause, detail = FetchOutcomeCause.CONFIGURATION_ERROR, str(exc)
         except _FetchError as exc:
             cause, detail = exc.cause, str(exc)
+        except httpx.TimeoutException:
+            if self._monotonic() >= budget.deadline:
+                cause, detail = FetchOutcomeCause.RESOURCE_LIMIT, "DHM deadline"
+            else:
+                cause, detail = (
+                    FetchOutcomeCause.TRANSPORT_ERROR,
+                    "DHM request timed out",
+                )
         except httpx.RequestError:
             cause, detail = FetchOutcomeCause.TRANSPORT_ERROR, "DHM request failed"
         except (ValueError, OverflowError):
-            cause = FetchOutcomeCause.MALFORMED_RESPONSE
-            detail = "Invalid DHM response or time range"
+            cause, detail = (
+                FetchOutcomeCause.MALFORMED_RESPONSE,
+                "Invalid DHM response or continuation",
+            )
         log.warning(
             "observation.fetch_failed",
-            station_id=str(station.id),
+            station_id=str(work.station.id),
             failure_cause=cause.value,
             reason=detail,
         )
-        return StationFetchOutcome(
-            station_id=station.id,
-            observations=(),
-            failure_cause=cause,
-            failure_detail=detail,
-        )
+        return _failure(work.station, cause, detail)
 
-    def _get_page(self, url: httpx.URL) -> _Page:
-        if self._last_request_at is not None:
-            remaining = self._config.min_request_interval_s - (
-                self._monotonic() - self._last_request_at
-            )
-            if remaining > 0:
-                self._sleeper(remaining)
-        self._last_request_at = self._monotonic()
-        response = self._http_client.get(
-            url,
-            timeout=self._config.timeout_s,
-            follow_redirects=False,
+    def _check_deadline(self, budget: _BatchBudget) -> None:
+        if self._monotonic() >= budget.deadline:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM deadline")
+
+    def _before_request(self, budget: _BatchBudget) -> float:
+        self._check_deadline(budget)
+        if budget.requests >= self._config.max_requests_per_batch:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM request budget")
+        if budget.accepted_bytes >= self._config.max_bytes_per_batch:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM batch_bytes")
+        now = self._monotonic()
+        earliest = (
+            now
+            if budget.last_request_at is None
+            else max(now, budget.last_request_at + self._config.min_request_interval_s)
         )
-        if response.status_code == 429:
-            raise _FetchError(FetchOutcomeCause.RATE_LIMITED, "DHM HTTP 429")
-        if not response.is_success:
+        if earliest >= budget.deadline:
             raise _FetchError(
-                FetchOutcomeCause.HTTP_STATUS_ERROR, f"DHM HTTP {response.status_code}"
+                FetchOutcomeCause.RESOURCE_LIMIT, "DHM pacing cannot fit deadline"
             )
-        return _Page.model_validate_json(response.content)
+        if earliest > now:
+            self._sleeper(earliest - now)
+        started = self._monotonic()
+        if started >= budget.deadline:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM deadline")
+        budget.requests += 1
+        budget.last_request_at = started
+        return min(self._config.timeout_s, budget.deadline - started)
+
+    @staticmethod
+    def _content_length(response: httpx.Response) -> int | None:
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        if encoding != "identity":
+            raise ValueError("DHM requires identity encoding")
+        lengths = response.headers.get_list("content-length")
+        if not lengths:
+            return None
+        value = lengths[0]
+        if len(lengths) != 1 or not value.isascii() or not value.isdigit():
+            raise ValueError("Invalid DHM Content-Length")
+        return int(value)
+
+    def _get_page(self, url: httpx.URL, budget: _BatchBudget) -> _Page:
+        timeout = self._before_request(budget)
+        with self._http_client.stream(
+            "GET",
+            url,
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"Accept-Encoding": "identity"},
+        ) as response:
+            if response.status_code == 429:
+                raise _FetchError(FetchOutcomeCause.RATE_LIMITED, "DHM HTTP 429")
+            if not response.is_success:
+                raise _FetchError(
+                    FetchOutcomeCause.HTTP_STATUS_ERROR,
+                    f"DHM HTTP {response.status_code}",
+                )
+            length = self._content_length(response)
+            self._check_deadline(budget)
+            if length is not None:
+                self._check_bytes(length, 0, budget)
+            body = bytearray()
+            # No chunk_size: HTTPX must not coalesce small raw yields before checks.
+            raw = response.iter_raw()
+            while True:
+                self._check_deadline(budget)
+                try:
+                    chunk = next(raw)
+                except StopIteration:
+                    break
+                budget.received_bytes += len(chunk)
+                self._check_deadline(budget)
+                self._check_bytes(len(chunk), len(body), budget)
+                body.extend(chunk)
+                budget.accepted_bytes += len(chunk)
+            return _Page.model_validate_json(body)
+
+    def _check_bytes(
+        self, incoming: int, response_bytes: int, budget: _BatchBudget
+    ) -> None:
+        if response_bytes + incoming > _RESPONSE_BYTES:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM response_bytes")
+        if budget.accepted_bytes + incoming > self._config.max_bytes_per_batch:
+            raise _FetchError(FetchOutcomeCause.RESOURCE_LIMIT, "DHM batch_bytes")
 
     def _fetch_history(
         self,
@@ -177,20 +388,20 @@ class DhmAdapter:
         binding: DhmBinding,
         since: UtcDatetime,
         end: UtcDatetime,
+        budget: _BatchBudget,
     ) -> list[RawObservation]:
         observations: dict[UtcDatetime, RawObservation] = {}
         window_start = since
         pages_used = 0
         while window_start < end:
-            window_end = min(
-                window_start + timedelta(hours=self._config.window_hours), end
-            )
+            window_end = min(window_start + self._window_span, end)
             window, count = self._fetch_window(
                 station,
                 binding,
                 window_start,
                 window_end,
                 self._config.max_pages_per_station - pages_used,
+                budget,
             )
             pages_used += count
             for observation in window:
@@ -260,6 +471,7 @@ class DhmAdapter:
         start: UtcDatetime,
         end: UtcDatetime,
         pages_remaining: int,
+        budget: _BatchBudget,
     ) -> tuple[list[RawObservation], int]:
         first = self._window_url(binding, start, end)
         url = first
@@ -270,7 +482,7 @@ class DhmAdapter:
             if url in seen_urls:
                 raise ValueError("Repeated DHM continuation")
             seen_urls.add(url)
-            page = self._get_page(url)
+            page = self._get_page(url, budget)
             if not page.results:
                 return observations, count
             signature = tuple(
@@ -285,7 +497,9 @@ class DhmAdapter:
             if not page.next:
                 raise ValueError("Empty DHM continuation")
             url = self._continuation(page.next, first)
-        raise ValueError("DHM station page limit exhausted")
+        raise _FetchError(
+            FetchOutcomeCause.RESOURCE_LIMIT, "DHM station page limit exhausted"
+        )
 
     @staticmethod
     def _observations(

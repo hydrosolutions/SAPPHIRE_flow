@@ -2150,3 +2150,21 @@ explicit SQL basis. Test direct SQL as well as typed writes, unit/mapping author
 expired-only conversion, wrong scope, concurrent append, downgrade refusal and
 ordinary-role denials. Do not add feed/permission writers or operational lookback
 assembly here; no scientific activation or ordinary observation path changes.
+
+
+### Touchpoint map: DHM bounded observation ingestion
+
+- `config/dhm.py`: required explicit batch bounds, strict boundary/direct validation;
+  `config/river_stations.py` parses only the selected provider.
+- `adapters/dhm.py`: all-local preflight, one shared budget, raw streamed bytes,
+  cooperative deadline, station-atomic results and whole-batch stop.
+- `types/enums.py` and `types/observation.py`: resource/unattempted causes are not
+  provider faults; failed outcomes never carry observations.
+- `flows/ingest_observations.py`: one batch call; storage/QC only after return.
+  Preserve total availability counts; categorize cause details independently.
+- Test config loading, adapter raw streams/closure/deadline/header ordering,
+  preflight parity, cross-station aborts, health categories and flow integration.
+- Live operation separately requires exact feed identity, explicit budgets,
+  zero retries, production read-ahead evidence and tested hard process containment.
+  See `docs/requirements/dhm-api-examples/README.md`. No cursor truncation or Q
+  conversion belongs in this safety path.
