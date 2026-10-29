@@ -162,10 +162,12 @@ the captured API ID is an example, not an official station-code mapping.
 type = "dhm"
 endpoint = "https://DHM-HOST/api/v1/"
 timeout_s = 30
-page_size = 500
+page_size = 100
 window_hours = 24
 max_pages_per_station = 100
-min_request_interval_s = 1.0
+min_request_interval_s = 5.0
+# REQUIRED: add operator-approved max_requests_per_batch, max_bytes_per_batch,
+# and max_batch_seconds. There are no defaults or implied provider grants.
 
 [[adapters.river_stations.bindings]]
 network = "dhm"
@@ -174,16 +176,27 @@ api_station_id = 168
 level_reference = "unknown"
 ```
 
-These limits are implementation defaults, not a provider polling agreement.
+This template is deliberately incomplete until the operator supplies all three
+batch bounds. Count limits must be positive integers; seconds must be positive
+and finite (booleans are invalid). Selected DHM configs without them fail closed.
+Deploy the bounds with or before new code. `load_river_station_config` parses DHM
+only when selected; the current production caller is observation ingest.
+Non-DHM source settings are unchanged. DHM requires page size <=100,
+start-to-start pacing >=5 seconds and inactivity timeout <=30 seconds.
+These limits are safety bounds, not a provider polling agreement.
 `max_pages_per_station` counts requests across all windows, including a terminal
 empty page. A short page with `next` is followed; `count` is ignored. Repeated
 pages, limit exhaustion, unsafe continuations and later-page failures discard
-that station's entire fetch. There is no in-adapter retry or automatic BIPAD fallback.
+that station's entire fetch. Any classified runtime failure stops all later
+supported stations: prior completed stations survive, the failed station is
+atomic, and remaining stations are `BATCH_ABORTED`. There is no retry or automatic
+BIPAD fallback. HTTP429 is terminal; `Retry-After` does not cause sleep/retry.
 
 Bindings require unique `(network, station_code)` keys and positive integer API
 IDs. Supported operational rows are DHM gauged rivers with measured `water_level`.
 Other kinds/networks are skipped; missing bindings or level capability are station
-configuration failures. `gauge_zero` and `unknown` require unit `m` and a null QC
+configuration failures. Preflight checks every supported station before any HTTP;
+one invalid station prevents the whole batch from fetching. `gauge_zero` and `unknown` require unit `m` and a null QC
 datum; `masl` permits `m` or `m a.s.l.` and may carry an independently confirmed
 datum. Null units and incompatible pairs are rejected before requests. Raw metres
 are retained; an unknown reference does not establish rating-curve readiness.
@@ -279,3 +292,62 @@ This does not provide an automatic skip, multi-year bootstrap or correction repl
 
 These are live-activation requirements; they do not require another copy of the
 confirmed API contract. No direct-DHM connection or live activation is claimed.
+
+
+### Bounded batch and one-run operations gates
+
+Before HTTP, preflight uses one captured end and the exact window timedelta used
+by fetch. It computes each station's minimum windows/requests and total pacing.
+All individual and aggregate lower bounds must fit, or **zero HTTP** occurs.
+For nonzero work, remaining time must be positive and minimum pacing must be
+strictly less than it. Per-station minimum counts and aggregate pacing are logged.
+Passing preflight is necessary, not sufficient: extra pages/bytes/time can still
+exhaust runtime limits. Future/equal watermarks are zero work, not advanced cursors.
+No cursor truncation, automatic expansion or historical gap repair is provided.
+The operator sizes backlog and approved bounds separately. Partial results arise
+only from normal classified runtime stops, not from a preflight rejection.
+
+Requests are charged just before transport, including failed attempts. Counters
+span all stations/windows/pages and reset only on a new explicit batch call.
+Responses use identity encoding and one non-coalescing `iter_raw()` iterator.
+Accepted buffered/parsed bytes cannot exceed 2 MiB per response or the batch
+accepted-byte budget. The full yielded raw chunk is counted as received before
+checking caps, including a rejected oversized chunk. Received bytes can therefore
+overshoot by one transport chunk; HTTPX does NOT impose a universal chunk/read-ahead
+bound. Headers and unseen transport buffers are not included in these body counts.
+No error body is drained. Responses close on every exit path.
+
+Header order is status → encoding/length syntax → deadline → declared response
+cap → batch cap → body. Any 2xx remains the success predicate. Timeout observed at
+or after the cooperative deadline is `RESOURCE_LIMIT`; an earlier timeout or any
+non-timeout transport error is `TRANSPORT_ERROR`. Syntax/encoding failures are
+`MALFORMED_RESPONSE`; framing errors raised by transport remain `TRANSPORT_ERROR`.
+All request/page/response/batch-byte/time limits are `RESOURCE_LIMIT`, not provider
+faults. Health details separate provider, configuration, resource, unattempted and
+other causes while preserving truthful incomplete-station counts and thresholds.
+
+`max_batch_seconds` is **cooperative**, using injected monotonic time across
+preflight/pacing/HTTP. DNS, headers and blocking reads can outlast it: inactivity
+timeouts are not a hard wall clock. Completed station outcomes are not rewritten
+by the final diagnostic overrun check. Storage/QC starts only after adapter return.
+An unexpected exception or process kill before return loses ALL in-memory results.
+
+The root operator must record these gates in the separately reviewed one-run packet:
+
+1. Verified feed-to-API-station IDs and explicit reference/units; never substitute
+   series IDs. Authorize only the intended ingest-eligible scope. Keep forecast
+   assignments, weather assignments and schedules unchanged/held.
+2. Explicit fresh batch bounds covering every lower bound; no inherited capture
+   grant. Capture exact config/image identity and rollback before changes.
+3. Pinned HTTPX/httpcore/h11 production transport and raw-chunk/read-ahead evidence.
+   Fake oversized-stream tests do not establish a production wire-byte quota.
+4. A tested hard **process** containment mechanism and explicit wall time for this
+   run, including termination/cleanup and loss-of-unreturned-results acceptance.
+   Do not assume a Prefect thread timeout is hard termination; no process-global
+   SIGALRM in a shared worker.
+5. Flow/task default retries verified zero before Prefect objects load; one
+   deployment, no cron, concurrency one. Briefly unpause only the ingest pool,
+   submit once, record run ID, restore pause after terminal state. No automatic
+   resubmission; a fresh adapter invocation is NOT retry authorization.
+6. Inspect truthful per-station outcomes, latest measured timestamps and QC. This
+   path emits water level, not discharge or forecast readiness.

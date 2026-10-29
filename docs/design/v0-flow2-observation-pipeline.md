@@ -288,6 +288,11 @@ watermark, with a single injected batch end, bounded windows and pages, and loca
 boundary filtering/deduplication. Configuration carries explicit official-code to
 API-ID bindings. Unsafe continuation URLs, malformed readings and incomplete
 fetches fail that station without advancing its cursor through partial data.
+Explicit request/accepted-byte/cooperative-time bounds apply across the batch.
+All-station minimum-work/config preflight fails before HTTP. Runtime stops preserve
+only prior completed stations and mark all later stations unattempted. Resource
+stops are not provider faults. Cooperative deadlines require separate hard process
+containment before live operation; see the operational procedure below.
 
 Recovered DHM level timestamps extend the QC read interval by the configured
 preceding context; its exclusive end includes the newest recovered measurement.

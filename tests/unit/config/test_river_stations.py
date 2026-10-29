@@ -32,6 +32,9 @@ timeout_s = 12
         overlay.write_text("""[adapters.river_stations]
 type = "dhm"
 endpoint = "https://dhm.example/api/v1/"
+max_requests_per_batch = 100
+max_bytes_per_batch = 10000000
+max_batch_seconds = 10000.0
 [[adapters.river_stations.bindings]]
 network = "dhm"
 station_code = "DHM-1"
@@ -71,3 +74,15 @@ level_reference = "unknown"
         assert load_river_station_config(path, []) == HydroScraperConfig(
             endpoint="https://bafu.example/query"
         )
+
+    def test_only_selected_dhm_requires_batch_bounds(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        body = (
+            '[adapters.river_stations]\ntype = "hydro_scraper"\n'
+            'endpoint = "https://dhm.example/api/v1/"\nbindings = []\n'
+        )
+        path.write_text(body)
+        assert isinstance(load_river_station_config(path, []), HydroScraperConfig)
+        path.write_text(body.replace('"hydro_scraper"', '"dhm"'))
+        with pytest.raises(ConfigurationError, match="Invalid DHM"):
+            load_river_station_config(path, [])

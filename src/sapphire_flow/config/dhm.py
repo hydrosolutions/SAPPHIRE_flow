@@ -31,11 +31,14 @@ class DhmBinding:
 class DhmConfig:
     endpoint: str
     bindings: tuple[DhmBinding, ...]
+    max_requests_per_batch: int
+    max_bytes_per_batch: int
+    max_batch_seconds: float
     timeout_s: float = 30.0
-    page_size: int = 500
+    page_size: int = 100
     window_hours: float = 24.0
     max_pages_per_station: int = 100
-    min_request_interval_s: float = 1.0
+    min_request_interval_s: float = 5.0
 
     def __post_init__(self) -> None:
         try:
@@ -50,14 +53,36 @@ class DhmConfig:
             or url.fragment
         ):
             raise ValueError("DHM endpoint requires HTTPS without credentials or query")
-        for limit in (self.timeout_s, self.window_hours, self.min_request_interval_s):
-            if isinstance(limit, bool) or not math.isfinite(limit) or limit <= 0:
+        for limit in (
+            self.timeout_s,
+            self.window_hours,
+            self.min_request_interval_s,
+            self.max_batch_seconds,
+        ):
+            if (
+                type(limit) not in (int, float)
+                or not math.isfinite(limit)
+                or limit <= 0
+            ):
                 raise ValueError("DHM time limits must be positive and finite")
         if timedelta(hours=self.window_hours) <= timedelta(0):
             raise ValueError("DHM window must span at least one microsecond")
-        for count in (self.page_size, self.max_pages_per_station):
+        for count in (
+            self.page_size,
+            self.max_pages_per_station,
+            self.max_requests_per_batch,
+            self.max_bytes_per_batch,
+        ):
             if type(count) is not int or count <= 0:
                 raise ValueError("DHM page limits must be positive integers")
+        if (
+            self.page_size > 100
+            or self.min_request_interval_s < 5
+            or self.timeout_s > 30
+        ):
+            raise ValueError(
+                "DHM requires page size <=100, pacing >=5s and timeout <=30s"
+            )
         keys = [(b.network, b.station_code) for b in self.bindings]
         if len(set(keys)) != len(keys):
             raise ValueError("Duplicate DHM binding key")
@@ -75,11 +100,14 @@ class _ConfigPayload(BaseModel):
     model_config = ConfigDict(strict=True)
     endpoint: str
     bindings: list[_BindingPayload]
-    timeout_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
-    page_size: int = Field(default=500, gt=0)
+    max_requests_per_batch: int = Field(gt=0)
+    max_bytes_per_batch: int = Field(gt=0)
+    max_batch_seconds: float = Field(gt=0, allow_inf_nan=False)
+    timeout_s: float = Field(default=30.0, gt=0, le=30, allow_inf_nan=False)
+    page_size: int = Field(default=100, gt=0, le=100)
     window_hours: float = Field(default=24.0, gt=0, allow_inf_nan=False)
     max_pages_per_station: int = Field(default=100, gt=0)
-    min_request_interval_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    min_request_interval_s: float = Field(default=5.0, ge=5, allow_inf_nan=False)
 
 
 def parse_dhm_config(raw: object) -> DhmConfig:
@@ -96,6 +124,9 @@ def parse_dhm_config(raw: object) -> DhmConfig:
                 )
                 for b in parsed.bindings
             ),
+            max_requests_per_batch=parsed.max_requests_per_batch,
+            max_bytes_per_batch=parsed.max_bytes_per_batch,
+            max_batch_seconds=parsed.max_batch_seconds,
             timeout_s=parsed.timeout_s,
             page_size=parsed.page_size,
             window_hours=parsed.window_hours,

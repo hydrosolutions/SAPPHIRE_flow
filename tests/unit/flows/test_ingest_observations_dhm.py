@@ -32,7 +32,15 @@ from tests.fakes.fake_stores import (
     FakePipelineHealthStore,
     FakeStationStore,
 )
-from tests.unit.adapters.test_dhm import NOW, reading, settings, station
+from tests.unit.adapters.test_dhm import (
+    NOW,
+    FakeTime,
+    batch_settings,
+    reading,
+    response,
+    settings,
+    station,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,12 +97,14 @@ class TestDhmIngest:
 
         class CapturingAdapter(FakeStationDataSource):
             captured: dict[StationId, UtcDatetime] = {}
+            calls: int = 0
 
             def fetch_observations_batch(
                 self,
                 station_configs: list[StationConfig],
                 since: dict[StationId, UtcDatetime],
             ) -> HydroScraperBatchResult:
+                self.calls += 1
                 self.captured = since
                 return super().fetch_observations_batch(station_configs, since)
 
@@ -108,6 +118,7 @@ class TestDhmIngest:
             clock=lambda: NOW,
         )
         assert adapter.captured[config.id] == level.timestamp
+        assert adapter.calls == 1
 
     def test_six_hour_recovery_qcs_old_rows_with_preceding_context(self) -> None:
         config = station()
@@ -127,7 +138,7 @@ class TestDhmIngest:
         ]
         with httpx.Client(
             transport=httpx.MockTransport(
-                lambda request: httpx.Response(200, json={"results": rows})
+                lambda request: response(200, json={"results": rows})
             )
         ) as client:
             adapter = DhmAdapter(
@@ -190,7 +201,7 @@ class TestDhmIngest:
 
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            return httpx.Response(
+            return response(
                 200,
                 json={
                     "results": [
@@ -218,15 +229,17 @@ class TestDhmIngest:
                 pipeline_health_store=health,
             )
             assert not client.is_closed
-        assert result.observations_stored == 1
-        assert result.stations_failed == int(include_unbound)
-        assert len(requests) == 1
+        assert result.observations_stored == (0 if include_unbound else 1)
+        assert result.stations_failed == (2 if include_unbound else 0)
+        assert len(requests) == (0 if include_unbound else 1)
         [record] = health.fetch_recent(PipelineCheckType.OBSERVATION_INGEST_FETCH)
         assert record.status is (
-            PipelineHealthStatus.WARNING if include_unbound else PipelineHealthStatus.OK
+            PipelineHealthStatus.CRITICAL
+            if include_unbound
+            else PipelineHealthStatus.OK
         )
         assert record.detail["failure_counts_by_cause"] == (
-            {"configuration_error": 1} if include_unbound else {}
+            {"configuration_error": 1, "batch_aborted": 1} if include_unbound else {}
         )
 
     def test_repeated_polls_advance_the_level_cursor(self) -> None:
@@ -240,7 +253,7 @@ class TestDhmIngest:
                 datetime.fromisoformat(request.url.params["water_level_on__gt"])
             )
             row = rows[len(requested_starts) - 1]
-            return httpx.Response(
+            return response(
                 200,
                 json={
                     "results": [
@@ -291,7 +304,7 @@ class TestDhmIngest:
             rows = [reading(newest.value, waterLevelOn=newest.timestamp.isoformat())]
             if lower <= bad_time:
                 rows.insert(0, reading("rejected", waterLevelOn=bad_time.isoformat()))
-            return httpx.Response(200, json={"results": rows})
+            return response(200, json={"results": rows})
 
         with httpx.Client(transport=httpx.MockTransport(respond)) as client:
             adapter = DhmAdapter(
@@ -435,6 +448,9 @@ class TestDhmIngest:
         config_file.write_text("""[adapters.river_stations]
 type = "dhm"
 endpoint = "https://dhm.example/api/v1/"
+max_requests_per_batch = 100
+max_bytes_per_batch = 10000000
+max_batch_seconds = 10000.0
 [[adapters.river_stations.bindings]]
 network = "dhm"
 station_code = "DHM-1"
@@ -447,7 +463,7 @@ level_reference = "unknown"
 
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            return httpx.Response(
+            return response(
                 200,
                 json={
                     "results": [
@@ -499,3 +515,57 @@ level_reference = "unknown"
         assert len(clients_created) == station_count
         assert client.is_closed == bool(station_count)
         client.close()
+
+    def test_batch_abort_stores_and_qcs_only_prior_completed_station(self) -> None:
+        configs = [station(f"DHM-{i + 1}") for i in range(3)]
+        clock = FakeTime()
+        store = FakeObservationStore()
+        health = FakePipelineHealthStore()
+        calls: list[int] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            api_id = int(request.url.params["station"])
+            calls.append(api_id)
+            if api_id == 169:
+                return response(429)
+            return response(
+                200,
+                json={
+                    "results": [
+                        reading(
+                            station=api_id,
+                            waterLevelOn=(NOW - timedelta(minutes=5)).isoformat(),
+                        )
+                    ]
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            adapter = DhmAdapter(
+                config=parse_dhm_config(batch_settings()),
+                http_client=client,
+                clock=lambda: NOW,
+                monotonic=clock.monotonic,
+                sleeper=clock.sleep,
+            )
+            result = ingest_observations_flow(
+                station_store=stations(*configs),
+                obs_store=store,
+                baseline_store=FakeClimBaselineStore(),
+                adapter=adapter,
+                qc_rules=RULES,
+                clock=lambda: NOW,
+                pipeline_health_store=health,
+            )
+        assert calls == [168, 169]
+        assert result.stations_failed == 2
+        assert result.observations_stored == 1
+        assert {o.station_id for o in store.observations()} == {configs[0].id}
+        assert store.observations()[0].qc_status is QcStatus.QC_UNCHECKED
+        assert store.fetch_latest_timestamp(configs[1].id, "water_level") is None
+        assert store.fetch_latest_timestamp(configs[2].id, "water_level") is None
+        [record] = health.fetch_recent(PipelineCheckType.OBSERVATION_INGEST_FETCH)
+        assert record.detail["failure_counts_by_category"] == {
+            "provider": 1,
+            "unattempted": 1,
+        }

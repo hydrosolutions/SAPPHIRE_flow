@@ -9,7 +9,7 @@ from sapphire_flow.adapters.dhm import DhmAdapter
 from sapphire_flow.config.dhm import parse_dhm_config
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.enums import FetchOutcomeCause
-from tests.unit.adapters.test_dhm import NOW, START, settings, station
+from tests.unit.adapters.test_dhm import NOW, START, response, settings, station
 
 
 class TestParseDhmConfig:
@@ -72,7 +72,7 @@ class TestParseDhmConfig:
             ("m", 123.0, "unknown"),
         ],
     )
-    def test_bad_metadata_fails_only_its_station(
+    def test_bad_metadata_preflight_aborts_batch(
         self, unit: str | None, datum: float | None, reference: str
     ) -> None:
         valid = station()
@@ -97,7 +97,7 @@ class TestParseDhmConfig:
 
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            return httpx.Response(200, json={"results": []})
+            return response(200, json={"results": []})
 
         with httpx.Client(transport=httpx.MockTransport(respond)) as client:
             result = DhmAdapter(
@@ -108,7 +108,57 @@ class TestParseDhmConfig:
             ).fetch_observations_batch(
                 [invalid, valid], {invalid.id: START, valid.id: START}
             )
-        assert len(requests) == 1
-        assert result.outcomes[1].failure_cause is None
+        assert requests == []
+        assert result.outcomes[1].failure_cause is FetchOutcomeCause.BATCH_ABORTED
         assert result.failed[0].station_id == invalid.id
         assert result.failed[0].failure_cause is FetchOutcomeCause.CONFIGURATION_ERROR
+
+
+class TestDhmBudgetConfig:
+    @pytest.mark.parametrize(
+        "field", ["max_requests_per_batch", "max_bytes_per_batch", "max_batch_seconds"]
+    )
+    def test_required_operator_bounds(self, field: str) -> None:
+        raw = settings()
+        del raw[field]
+        with pytest.raises(ConfigurationError, match="Invalid DHM"):
+            parse_dhm_config(raw)
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("max_requests_per_batch", True),
+            ("max_requests_per_batch", 0),
+            ("max_requests_per_batch", 1.5),
+            ("max_bytes_per_batch", -1),
+            ("max_bytes_per_batch", True),
+            ("max_batch_seconds", True),
+            ("max_batch_seconds", 0),
+            ("max_batch_seconds", float("nan")),
+            ("max_batch_seconds", float("inf")),
+            ("page_size", 101),
+            ("min_request_interval_s", 4.99),
+            ("timeout_s", 30.01),
+            ("window_hours", 0.1 / 3600000000),
+        ],
+    )
+    def test_parser_and_direct_dataclass_reject_invalid_bounds(
+        self, field: str, value: object
+    ) -> None:
+        with pytest.raises(ConfigurationError, match="Invalid DHM"):
+            parse_dhm_config(settings(**{field: value}))
+        valid = parse_dhm_config(settings())
+        with pytest.raises((ValueError, OverflowError), match="DHM"):
+            replace(valid, **{field: value})
+
+    def test_safe_defaults_and_exact_boundaries(self) -> None:
+        config = parse_dhm_config(
+            settings(
+                max_requests_per_batch=1, max_bytes_per_batch=1, max_batch_seconds=0.001
+            )
+        )
+        assert (config.page_size, config.min_request_interval_s, config.timeout_s) == (
+            100,
+            5,
+            30,
+        )

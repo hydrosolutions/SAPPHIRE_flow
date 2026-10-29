@@ -25,6 +25,7 @@ from sapphire_flow.services.station_qc_overrides import (
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    FetchOutcomeCause,
     GaugingStatus,
     PipelineCheckType,
     PipelineHealthStatus,
@@ -213,20 +214,45 @@ def _fetch_observations_task(
     return adapter.fetch_observations_batch(station_configs, since)
 
 
+def _fetch_failure_category(
+    cause: FetchOutcomeCause,
+) -> Literal["provider", "configuration", "resource", "unattempted", "other"]:
+    match cause:
+        case (
+            FetchOutcomeCause.RATE_LIMITED
+            | FetchOutcomeCause.HTTP_STATUS_ERROR
+            | FetchOutcomeCause.TRANSPORT_ERROR
+            | FetchOutcomeCause.MALFORMED_RESPONSE
+        ):
+            return "provider"
+        case FetchOutcomeCause.CONFIGURATION_ERROR:
+            return "configuration"
+        case FetchOutcomeCause.RESOURCE_LIMIT:
+            return "resource"
+        case FetchOutcomeCause.BATCH_ABORTED:
+            return "unattempted"
+        case _:
+            return "other"
+
+
 def _fetch_health_detail(
     outcomes: tuple[StationFetchOutcome, ...],
 ) -> dict[str, object]:
     failed = [o for o in outcomes if o.failure_cause is not None]
     failure_counts: dict[str, int] = {}
+    categories: dict[str, int] = {}
     for outcome in failed:
         if outcome.failure_cause is None:
             continue
+        category = _fetch_failure_category(outcome.failure_cause)
+        categories[category] = categories.get(category, 0) + 1
         cause_value = outcome.failure_cause.value
         failure_counts[cause_value] = failure_counts.get(cause_value, 0) + 1
     return {
         "stations_polled": len(outcomes),
         "stations_fetch_failed": len(failed),
         "failure_counts_by_cause": failure_counts,
+        "failure_counts_by_category": categories,
         "failed_station_ids": sorted(str(o.station_id) for o in failed),
     }
 
