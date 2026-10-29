@@ -100,7 +100,7 @@ constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4
 # route attributes change and silently empty the API auth-matrix test).
 #
 # Accepted compatibility exception: Aquacast's operational import closure reaches
-# Rich through logging/training imports. Keep Rich 14 and verify real discovery
+# Rich through logging/inference imports. Keep Rich 14 and verify real discovery
 # with the Aquacast extra; this override does not satisfy upstream's Rich >=15 floor.
 # REMOVE this the moment aquacast relaxes the floor.
 override-dependencies = ["rich>=14,<15"]
