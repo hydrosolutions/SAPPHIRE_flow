@@ -8,6 +8,20 @@ Companion: [`../standards/cicd.md`](../standards/cicd.md) § Required mounts —
 
 ## Before you start
 
+**Qualify the exact runtime and artifact separately from import.** Read the Aquacast and
+ForecastInterface pins from `pyproject.toml` and the resolved versions/revisions from `uv.lock`
+of the exact deployed release. A dependency update does not qualify an existing checkpoint.
+Aquacast `v0.1.372` uses unrestricted Torch deserialization, as did the previous `v0.1.356`
+pin. Use only trusted, hash-verified artifacts in a separately approved, isolated qualification
+process with no credentials or network access and bounded resources. Verify that the original
+bytes are a model-owned FI artifact, not merely a training checkpoint that needs export.
+
+Do not use this import procedure as a loading probe: on success, it writes artifact/provenance
+records and promotes the artifact. Qualification, training provenance, input eligibility and permission
+to import/promote are separate gates. A synthetic prediction does not establish current weather
+coverage or operational eligibility. Preserve the existing deployment until replacement has
+separate approval; a dependency PR or release publication alone does not authorize adoption.
+
 **You need the staging mount.** A deployment whose overlay does not bind a read-only artifact
 staging directory cannot import by path. Confirm it, composing **both** files:
 
