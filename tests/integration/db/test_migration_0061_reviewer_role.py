@@ -19,6 +19,7 @@ import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
 from sapphire_flow.types.datetime import ensure_utc
+from tests.integration.db.historical_seeds import assert_revision
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -187,7 +188,8 @@ class TestMigration0061Downgrade:
     ) -> None:
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0061")
+        assert_revision(engine, "0061")
         tenant_id = _seed_tenant(engine)
         station_id = _seed_station(engine, tenant_id)
         reviewer_id = _insert_token(engine, role="reviewer", tenant_id=tenant_id)
@@ -217,7 +219,15 @@ class TestMigration0061Downgrade:
             head = conn.execute(
                 sa.text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert head != _PRIOR
+        assert head == "0061"
+        with engine.connect() as conn:
+            assert conn.execute(
+                sa.text("SELECT role,disabled_at FROM access_tokens WHERE id=:id"),
+                {"id": reviewer_id},
+            ).one() == ("reviewer", _NOW)
+            assert conn.execute(
+                sa.text("SELECT token_id,station_id FROM access_token_stations")
+            ).one() == (reviewer_id, station_id)
 
     def test_succeeds_without_reviewer_rows_and_restores_prior_constraints(
         self, migration_engine: tuple[sa.Engine, str]
@@ -225,10 +235,12 @@ class TestMigration0061Downgrade:
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
         command.upgrade(cfg, _PRIOR)
+        assert_revision(engine, _PRIOR)
         prior_defs = _constraint_defs(engine)
         assert set(prior_defs) == set(_CONSTRAINTS)
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0061")
+        assert_revision(engine, "0061")
         tenant_id = _seed_tenant(engine)
         station_id = _seed_station(engine, tenant_id)
         reviewer_id = _insert_token(engine, role="reviewer", tenant_id=tenant_id)
@@ -244,6 +256,7 @@ class TestMigration0061Downgrade:
             conn.exec_driver_sql(_OPERATOR_DELETE_STATEMENTS)
 
         command.downgrade(cfg, _PRIOR)
+        assert_revision(engine, _PRIOR)
 
         with pytest.raises(sa.exc.IntegrityError, match=_ROLE_CHECK):
             _insert_token(engine, role="reviewer", tenant_id=tenant_id)

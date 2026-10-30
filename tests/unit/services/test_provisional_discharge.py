@@ -299,3 +299,20 @@ class TestProvisionalCurveChronology:
                 reference_proof=proof,
                 at=NOW,
             )
+
+
+class TestTransientQcMetadata:
+    def test_read_metadata_does_not_change_measurement_evidence(self) -> None:
+        from sapphire_flow.types.observation_read import QcReadToken
+
+        observation, _, _, _ = inputs()
+        snapshot = measurement_snapshot(observation)
+        loaded = replace(
+            observation,
+            qc_read_token=QcReadToken(
+                state_sha256="a" * 64,
+                context_sha256="b" * 64,
+            ),
+            qc_context_segment=3,
+        )
+        assert measurement_snapshot(loaded) == snapshot

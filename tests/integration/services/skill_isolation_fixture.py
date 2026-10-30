@@ -967,7 +967,9 @@ def seed_protected_lineage(
     for index in range(48 if presence == "present" else 0):
         measurement = protected_measurement(index)
         obs_store.store_observations([measurement])
-        snapshot_fields = dataclasses.asdict(measurement)
+        from tests.observation_contract import persisted_observation_fields
+
+        snapshot_fields = persisted_observation_fields(measurement)
         qc = {
             key: snapshot_fields.pop(key)
             for key in ("qc_status", "qc_flags", "qc_rule_version")
@@ -1117,7 +1119,9 @@ def assert_ordinary_manifest(
     assert {row.id: dataclasses.asdict(row) for row in actual} == {
         row.id: dataclasses.asdict(row) for row in expected
     }
-    assert all(len(dataclasses.asdict(row)) == 13 for row in actual)
+    from tests.observation_contract import persisted_observation_fields
+
+    assert all(len(persisted_observation_fields(row)) == 13 for row in actual)
     return actual
 
 
@@ -2038,7 +2042,13 @@ def assert_missing_half_snapshot(
 def assert_missing_half_inputs(case: CleanCase, half: MissingHalf) -> None:
     assert case.connection.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
     expected = {row.id: dataclasses.asdict(row) for row in missing_half_retained(half)}
-    assert len(expected) == 32 and all(len(row) == 13 for row in expected.values())
+    from tests.observation_contract import persisted_observation_fields
+
+    assert len(expected) == 32
+    assert all(
+        len(persisted_observation_fields(row)) == 13
+        for row in missing_half_retained(half)
+    )
     for qc in (None, QcStatus.QC_PASSED):
         actual = case.obs_store.fetch_observations(SID, "discharge", T, C, qc_status=qc)
         assert len(actual) == 32
@@ -2433,7 +2443,9 @@ def assert_absent_run_inputs(case: CleanCase) -> dict[str, object]:
     assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
     ordinary = assert_ordinary_manifest(case.obs_store)
     assert len(ordinary) == 64
-    assert all(len(dataclasses.asdict(row)) == 13 for row in ordinary)
+    from tests.observation_contract import persisted_observation_fields
+
+    assert all(len(persisted_observation_fields(row)) == 13 for row in ordinary)
     levels = case.obs_store.fetch_observations(SID, "water_level", T, C)
     assert len(levels) == 48
     assert_same_source(

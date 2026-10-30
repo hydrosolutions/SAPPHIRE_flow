@@ -1303,3 +1303,359 @@ No such claim is executable or eligible for output finalization. Both the store 
 `ck_daily_artifact` forbid complete/incomplete summaries without an artifact. The
 missing identity stays frozen on retry; later activation is configuration drift,
 not permission to substitute an artifact within the same daily identity.
+
+
+## BAFU unit batch journal (D1 build, not activated)
+
+`bafu_unit_batch_admissions` and `bafu_unit_batch_receipts` form the batch-receipt
+record family. An append-only admission fixes retry UUID, input digest, source and
+tenant/station binding, registry identity and received time. Its database-generated
+sequence orders admitted work within a station. Each row has an explicit immutable
+`disposition` (`admitted` or `rejected`), also represented by
+`BafuAdmissionDisposition`. Equal/older captures are recorded as rejected to bind
+every presented retry UUID to its original digest. Their generated ordinals never
+fence work: ordering queries select only admitted rows. Same rejected input remains
+rejected; changed input with that UUID is an integrity error. The public rejection
+result has no admission sequence. Migration 0074 is unreleased and defines this
+column directly; no extra ledger or migration layer is introduced.
+Admission is committed separately
+before value persistence: it is NOT a capture-success receipt. This durable start
+record prevents retrying an unresolved older batch after later work has started,
+even when that later value transaction rolls back. No time-based takeover exists.
+
+A committed receipt references the exact admitted input digest. The unwired
+`PgBafuUnitWriter` writes it in the same real transaction as observations, evidence
+and collision journal. Schema creation does not activate the writer. UPDATE, DELETE and TRUNCATE are
+blocked. Downgrade refuses populated journals. The API/table browser receives no
+access, including to the private identity sequence; runtime append grants are now defined by the dormant scoped-guard slice below. Eventual INSERT grants must exclude generated
+ordering/audit-time columns. Deferred database effect guards must require
+`disposition = 'admitted'`: a foreign key to an identity/digest alone is not authority
+for observations, events, holds or receipts. Rejected rows must never authorize
+those effects. The scoped guards below enforce admitted effects; live activation remains separately gated.
+Journal foreign keys intentionally prevent deleting
+referenced stations; audit retention is not cascade deletion.
+
+
+`bafu_unit_events` stores immutable captures, semantic fingerprints and before/after
+snapshots. Canonical events require a bound observation, finite canonical value and
+current-value fingerprint; quarantine/rejection events cannot carry a canonical
+observation ID or after-state. Batch/tenant/station foreign keys prevent rebinding.
+The same semantic fingerprint may recur in a later batch (A→B→A); it is not globally
+unique. Exact duplicate events within a batch are forbidden.
+
+`bafu_unit_read_holds` and `bafu_unit_hold_releases` are append-only half-open
+interval records. Every applicable unreleased hold wins. Releases name exactly one
+hold and must remain within its interval; they cannot override another hold.
+Ingest-created holds can cover only the exact timestamp of their quarantined event
+(`[timestamp, timestamp + 1 microsecond)`). Maintenance holds/releases require
+approval hashes; maintenance grants are defined by the scoped-guard slice below. No hold is seeded by migration.
+These private tables and the event sequence are excluded from generic API grants
+and browser access. Reader/QC wiring remains pending; the unwired
+audited writer does not change development-deployment eligibility.
+
+
+### Atomic writer documents and capacity
+
+The D1 writer uses a separately injected `engine.begin` transaction factory with
+READ COMMITTED isolation and driver autocommit disabled. Admission precedes the
+station effects transaction. Both acquire the same batch lock followed by sorted,
+deduplicated station/natural-key locks and validate the persisted station binding.
+No HTTP/source fetch occurs inside these transactions.
+
+Version-1 receipt JSON contains the input digest, expected unique discharge capture
+count, six outcome counts, one event reference per capture, and final snapshots of
+other usable parameters. The counts sum to the declared capture count. A canonical
+event stores exact value/QC/provenance before and after states. Its value-state hash
+excludes mutable QC fields, not observation identity or source provenance. JSONB
+receipts and observation snapshots are validated at the store boundary.
+
+Changed unproven legacy same-key discharge is **quarantined**, with reason
+`unproven_legacy_collision`, a before-image and exact-time hold. It is not repaired.
+Equal canonical values can acquire first evidence; l/s zero resets legacy QC because
+unit/context semantics changed. Pure evidence refresh of proven semantics preserves
+QC. Ingest never releases a hold.
+
+Cross-run dedup compares only the latest key event and current value/provenance,
+not a historical hash. Unchanged polls return `CURRENT` and existing event IDs;
+they append neither events nor receipts. The durable identity journal records each
+recognized retry identity; only admitted rows fence older unresolved work. `CURRENT` is not a
+claim that the new raw payload bytes were archived. Capture time, raw payload hash,
+refresh warnings and equivalent numeric spellings do not create scientific revisions.
+A changed scientific policy or A→B→A revision creates a new event.
+
+`BafuJournalQuota` is mandatory: station event/receipt counts, stored event/receipt
+bytes, and per-batch evidence bytes are bounded. Capacity failure rolls back every
+station effect, including otherwise usable water level/temperature. Admission remains
+a start record only. There is no purge or retention expiry. These limits do not
+budget admission/index/WAL growth or constitute a fleet disk budget; that separate
+activation budget, archival recovery procedure and owner acceptance remain required.
+A full budget stops capture explicitly; do not delete immutable evidence to resume.
+
+The per-batch stored-evidence quota includes both event rows and the batch receipt
+(including all usable non-discharge snapshots), not only captured discharge bytes.
+Exceeding it rolls back observations, events, holds and receipt together; the
+separately committed admitted/rejected identity remains. Identity rows, indexes and
+WAL still need the deferred operational retention/disk budget before activation.
+
+
+### Approved-scope database guards (D1 build; dormant until explicit approval)
+
+Migration 0076 creates an **empty** `bafu_unit_write_scopes` table. Each immutable
+approval binds tenant, persisted station UUID, BAFU network/code/kind, measured
+source, discharge parameter, half-open measurement interval and registry/approval
+hashes. It neither seeds a roster nor certifies the accepted legacy history.
+A protected station binding cannot be retargeted. Scope creation must be rehearsed
+with writers paused; no concurrent approval/activation protocol is implemented.
+
+An invoker-rights, initially deferred observation constraint trigger checks OLD and
+NEW scope and final transaction state. INSERT and numeric/provenance changes need
+a same-transaction event and receipt, an admitted bound batch, an approved registry,
+matching before/after fingerprints and a receipt reference. A session batch setting
+is only a correlation pointer. Database-generated transaction IDs prevent reuse of
+old events/receipts. Normal restatements additionally require the latest preceding
+canonical proof; an old historical matching value cannot authorize a mutation.
+Deletes and identity moves have no D1 operation and fail closed. QC-only changes
+remain possible; **the generic QC update is not a safe CAS capability**. Conditional
+QC application and reader wiring remain later work.
+
+Admission INSERTs (including direct SQL) require READ COMMITTED, take the station
+advisory lock, and validate/hold the persisted station binding with FOR SHARE.
+The ordering sequence is allocated again after the lock: default identity values
+are evaluated before BEFORE triggers, so gaps are intentional. An older/equal
+received time is recorded as rejected, never a latest-admission fence. Rejected
+IDs still bind their immutable input. Any admitted or rejected journal identity
+pins station network, code and kind, even without an approved scope and within
+the admitting transaction. Station name/elevation edits and unjournalled bindings
+remain editable. Binding changes on BAFU stations require READ COMMITTED before
+private journal reads; metadata-only and unrelated DHM changes do not. The ordinary
+AFTER UPDATE pin sees the final tuple after all BEFORE rewrites. The admission
+row share lock excludes concurrent retargeting. Scope approval also requires
+READ COMMITTED, with its existing binding advisory lock and plain station SELECT;
+maintenance does not need station UPDATE privileges.
+Effects and protected observation guards
+also require READ COMMITTED; stale repeatable-read snapshots cannot authorize them.
+
+Python takes its batch lock, then sorted natural-key/station advisory keys, then
+the station row share lock and observation/index locks. Admission triggers take
+only the station advisory and row share locks before journal index insertion;
+effect triggers take those locks before proof checks. Direct SQL may already hold
+row/index locks or acquire multiple station locks in caller order. This is not a
+deadlock-freedom guarantee: PostgreSQL deadlock/timeout aborts fail closed and the
+whole transaction must be retried/reconciled. Scope approval uses the separate
+binding advisory key, while station UPDATE already holds its target row lock.
+The paused/rehearsed approval requirement remains; do not run concurrent activation.
+
+Every newly appended event AND receipt rechecks final admitted/bound/latest
+eligibility at deferred completion, including quarantine, evidence-only and
+receipt-only effects. PostgreSQL deferrable checks may run early through
+`SET CONSTRAINTS ALL IMMEDIATE`; switching back to DEFERRED does not requeue
+checks that already ran. Protection therefore exists at BOTH subsequent mutation
+boundaries and normal deferred checks. Admission INSERT rejects an actually
+superseding START when the latest admitted batch has current-transaction events or
+a receipt. Non-fencing rejected admissions remain legal and ID-bound. The latest
+admitted batch is sufficient: effects require latest eligibility, and each later
+admission preserves this invariant under the station lock.
+
+A separate ordinary, nondeferrable AFTER ROW observation trigger seals only
+current-transaction receipts. It sees final NEW after all BEFORE trigger rewrites.
+It checks OLD and NEW identities for measured BAFU rows, including captured usable
+water levels and referenced discharge events. Changes to their value, provenance
+or identity are rejected after receipt insertion, regardless of constraint mode
+or the resettable correlation setting. QC-only updates and signed zero remain
+legal. Unrelated DHM/manual-import rows return before private projection access.
+The guard selects the latest admitted batch through the station/sequence index,
+then its receipt by primary key and referenced events by event ID; it does not
+scan historical receipt documents per water write. Existing transaction IDs on
+immutable journal rows provide rollback-aware authority, not a session flag or
+an early-validation marker. Savepoint rollback removes proofs with their effects.
+Previously committed receipts do not seal later transactions: later STARTs and
+normal updates can legitimately supersede them. This is transaction finality,
+not a fleetwide unit-evidence requirement.
+Final event and receipt checks retain FOR SHARE locks on referenced current
+observation rows through commit, including prior unchanged events and captured
+other parameters. This closes the direct-SQL receipt-only early-drain race without
+relying on the Python writer's existing FOR UPDATE reads. Concurrent QC-only
+updates may wait for commit, but QC remains excluded from conceptual proof hashes.
+Audited discharge also retains the existing station advisory serialization.
+Event completion is also deferred: every event needs its same-transaction receipt;
+canonical events must match the final row and their recorded Python value-state
+hash. The database proof hash (`bafu_unit_db_state`) is a separate representation:
+normalized float8 wire bits and UTC epoch timestamp, with identity/provenance but
+without mutable QC. The typed observation overload reads native float8 bits,
+never rounded `to_jsonb(OLD/NEW/row)` values. Signed zeros normalize to positive zero.
+The JSONB overload handles document proofs only. Python transactions pin
+`extra_float_digits=3` before fetching rows for document construction. The database
+row proof itself does not depend on that setting or session timezone.
+It does not replace the existing Python evidence digest.
+`bafu_unit_canonical_json` reproduces that existing digest's decimal-number and
+ASCII JSON contract for receipt validation without returning the private document.
+
+The worker reads owner-rights security-barrier reconciliation views. They expose
+IDs, digests, counts, scientific unit, capture-shape validity and logical byte sizes,
+not source literals, raw payloads or historic numeric before-images. The migration
+owner must remain the trusted view owner; runtime roles have no CREATE/replace
+rights. Guard functions remain SECURITY INVOKER and schema-qualify their relations.
+Unrelated DHM and manual-import identities return before private unit reads.
+BAFU measured non-discharge changes are inspected for current-transaction receipt
+snapshots by the immediate seal. Supported writers are the worker (with existing
+safe projection reads) and the DHM-only operator (which exits before private
+reads); the API is read-only. A custom BAFU measured-data writer without these
+projection privileges is unsupported. No broader SELECT grants are implied.
+The worker receives column-scoped append privileges, not generated identity/audit
+fields, scope approval, releases, journal UPDATE/DELETE/TRUNCATE or raw journal
+SELECT. API receives only the nonnumeric hold/release columns used by the trusted
+predicate; no unit diagnostic/browser surface is added.
+
+`sapphire_bafu_maintenance` is a separate NOLOGIN principal. Bootstrap grants only
+scope/hold/release approval inserts and their nonnumeric lookups. It grants neither
+observation mutation nor DHM delivery authority. D2 repair/rollback operations are
+not implemented or granted. No credential or runtime constructor is introduced.
+
+Rollback is fail-closed: migration 0076 refuses downgrade, including when scopes
+are empty. Stop conflicting writers and keep guards/dispositions in place during
+recovery; do not disable triggers, delete evidence or restart a legacy unrestricted
+writer. Any schema rollback or repair requires a separately reviewed recovery
+migration and approved backup/restore rehearsal. Ordinary application rollback is
+not permission to remove these protections.
+
+These tests do not approve activation or capacity. Event/receipt logical byte
+quotas still exclude admissions, indexes and WAL. Owner-approved fleet disk and
+retention budgets, all hold-aware reader images, QC CAS, independent security/guard
+review and the full final-code test suite remain release gates.
+
+
+Guard follow-up contracts: only `qc_status`, `qc_flags`, and `qc_rule_version`
+are mutable outside the canonical proof. `created_at` cannot change; unknown
+observation columns fail closed until the proof contract is reviewed. The JSON
+metadata comparison pins round-trip float output, while the proof still uses
+native float bits and normalizes signed zero. This is not QC CAS.
+
+Deferred receipt completion requires unique, same-station/tenant event references.
+New references derive their stored outcomes; earlier references count as unchanged
+and must remain latest/applicable to the final row (including quarantine before
+images). Earlier references are intentionally allowed. New event completion still
+requires inclusion in its same-transaction receipt. Receipt snapshots for usable
+other parameters must match final rows. Ingest holds also bind the admission's
+registry hash. Maintenance authorization tests the effective INSERT capability on
+the maintenance-only approval column; inherited worker access does not confer it.
+
+Explicit unit-guard violations use SQLSTATE `PBU01`; the writer raises
+`BafuBatchIntegrityError` for that marker only. Unrelated `P0001`, connection loss,
+and uncertain commit acknowledgement retain reconciliation/UNKNOWN handling.
+Canonical JSON covers PostgreSQL-storable controls (including U+007F) and non-BMP
+Unicode in keys and values. PostgreSQL JSONB rejects NUL; it is not supported.
+The document-to-database timestamp proof helper is STABLE, not IMMUTABLE: SQL
+accepts PostgreSQL timestamp input, while Python documents enforce their typed
+boundary. Functions use `pg_catalog, pg_temp` with qualified application objects.
+
+Apply migration 0076 before role bootstrap, and complete bootstrap before exposing
+runtime connections. Custom owner default ACLs must not expose new private objects
+during this maintenance window. Bootstrap removes unintended effective grants;
+post-bootstrap catalog checks enforce the runtime boundary. The migration owner
+remains trusted and can change schema/ACLs; this is not protection against that
+owner. Unkeyed low-entropy state hashes can be guessed and are not anonymization.
+Do not widen safe-view readership. A keyed EXPLAIN on disposable history verifies
+index restriction before receipt canonicalization; it is not a fleet capacity
+approval. Per-event repeated receipt checks and deadlock-abort risk remain.
+
+
+### BAFU safe read projection (0077)
+
+`bafu_unit_observation_read_state` exposes keys, current disposition booleans and
+hashes, not source literals, payloads or before-images. These migrations are still
+unreleased: 0077 no longer carries the superseded all-history context hash. No unit
+policy or scope is seeded. Scope approvals require paused cutover.
+
+### Bounded QC context and serialization (0078, build only)
+
+`observation_qc_window` is invoker-rights. One SQL snapshot materializes the bounded
+cohort and safe `observation_qc_boundaries` markers, computes timeline segments with
+a window aggregate, and hashes scientific state/presence and effective unit semantics.
+The marker view contains only station/parameter/source/time keys. It is worker-only,
+not registered for API table browsing. Ordinary TRUSTED eligibility stays unchanged.
+
+`observation_qc_batch_compare_and_set` takes the descriptor and shared digest. It
+acquires the transaction advisory lock `observation-qc-window-v1:<station>:<parameter>`,
+locks target rows in UUID order, then validates the fresh bounded snapshot once.
+It applies no target if any target or shared dependency is stale. Legacy unbounded
+`observation_qc_compare_and_set` always refuses. No persistent version ledger exists.
+
+Immediate AFTER ROW triggers join that same lock for observation INSERT/UPDATE/DELETE
+(including manual neighbours), and unit event/hold/release/scope INSERT. They inspect
+final rows after BEFORE rewriters; constraint drains cannot disable them. Event,
+hold, release and scope updates/deletes/truncates remain forbidden by existing guards.
+Runtime roles lack observation TRUNCATE. Observation triggers need no private unit
+reads; release triggers use only existing hold-column permissions. Binding semantics
+are sealed by admissions/scopes before canonical unit evidence can apply.
+
+Normal unit writers acquire their existing batch and sorted station/target advisory
+locks, then the QC station/parameter lock, before observation row writes. CAS needs
+only the QC lock and sorted target row locks. Direct SQL may already own row locks
+before its AFTER trigger acquires the QC lock, and multi-group transactions may
+invert lock order. Deadlocks are possible and must abort. The lock helper, mutator
+trigger and batch CAS set a five-second lock timeout; deadlock/timeout failures
+propagate, without applying or counting verdicts or blind retry. Transaction rollback
+(or rollback to the savepoint containing the work) rolls back writes and locks.
+Successful locks remain held through commit, even after SET CONSTRAINTS or RESET ALL.
+No session flag, raw private grant, SECURITY DEFINER function, all-station lock,
+maintenance station UPDATE grant or scope activation is introduced.
+
+QC_CONTEXT rejects `qc_status` filters, including batch fetches: read the full
+source/window cohort, evaluate it, then select targets. Its tokens include eligible
+cohort size; the checker rejects partial cohorts with these tokens. Source filtering
+still defines a separate complete cohort; TRUSTED status filters are unchanged.
+
+Each target token also carries a separate prior-QC hash (status, flags, rule version).
+CAS checks it under the target lock. An older pending evaluation cannot overwrite a
+completed different verdict/version, even if scientific inputs have not changed.
+Same-input duplicates with an obsolete prior-QC state refuse the entire batch;
+a true no-op whose prior and requested QC state match remains acceptable. QC state
+never enters the scientific/context digest, so QC on a neighbour does not invalidate
+unit evidence or an unchanged target. Opaque rule versions have no ordering. This
+is optimistic concurrency, not a global rule-configuration version authority.
+
+Malformed descriptors/verdicts (including NULL proofs, duplicate IDs and empty SQL
+batches) raise SQLSTATE 22023, rather than reporting staleness. A valid empty Python
+update list is a no-op. Valid stale batches return false for all targets. The final
+UPDATE must affect every requested row and preserve the requested QC and scientific
+state. Skipped or rewritten rows raise PQC01, mapped only to `QcBatchIntegrityError`;
+the entire SQL statement rolls back. NULL lock inputs also raise 22023. No error
+path authorizes a spinning or blind write retry.
+
+The unit writer takes all batch station/parameter contexts in sorted order before
+SQL row locks, including non-discharge parameters. Cross-group observation UPDATE
+triggers acquire distinct OLD/NEW keys in sorted order. These AFTER locks do not
+precede PostgreSQL tuple locking. Generic upserts and other multi-group writers can
+still deadlock. Abort, end the failed transaction, and obtain fresh inputs before
+reevaluation; unit-writer reconciliation remains read-only, not blind replay.
+
+Operational boundary: production ingest (`flows/_db.py`) and onboarding
+(`scripts/onboard.py`) use AUTOCOMMIT connections. Each CAS call is one group and
+one transaction; its locks end when that statement ends. Callers supplying explicit
+transactions must commit/rollback after one group, not accumulate groups. The
+five-second lock timeout is a lock-wait bound, not a total statement budget.
+The unit journal writer additionally sets a 30-second statement timeout. There is
+currently no project-approved QC statement, span or row quota. A bounded descriptor
+is not a server resource quota. Historical onboarding prevents assuming the ingest
+window is a safe universal cap. Selecting a QC operational budget and testing
+journal-heavy/fleet load remain owner decisions before activation; no capacity or
+DoS approval follows from these tests. API cannot execute the window or batch CAS.
+
+Runtime roles cannot set `session_replication_role` or disable triggers. Privileged
+restore and logical replication are not supported concurrent runtime mutators.
+No ALWAYS-trigger or backup/restore semantic change is made. Existing immediate
+composite admission FKs prevent orphan events; journals are immutable and station
+binding is sealed after admissions/scopes. Admission insertion alone cannot make
+an already-existing orphan event canonical. The scientific state helper already
+hashes identity/time/source/value/provenance and NULL values as array elements;
+no redundant scientific digest is added.
+
+Serialization here covers observation/unit context and expected prior target QC.
+Rule sets and supplied baselines retain their caller contracts. Full-suite and
+independent review remain gates; capture dispatch and scope activation stay paused.
+
+### D1 migration integration
+
+The unreleased unit chain is 0074–0078, after published 0073 (protected
+reference basis). Full upgrades retain that basis and its downgrade refusal
+before installing unit guards. No published migration is renumbered.

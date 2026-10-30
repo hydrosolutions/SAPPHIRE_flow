@@ -771,14 +771,15 @@ def _run_onboarding(
 
     # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
+    qc_obs_store = obs_store.qc_context_reader()
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
             log.warning("station_no_forecast_targets", station_id=str(station_id))
             continue
         try:
-            raw_obs = obs_store.fetch_observations(
-                station_id, parameter, start_utc, end_utc, qc_status=QcStatus.RAW
+            raw_obs = qc_obs_store.fetch_observations(
+                station_id, parameter, start_utc, end_utc
             )
             if not raw_obs:
                 continue
@@ -818,14 +819,18 @@ def _run_onboarding(
             # that is not that flow gets none; and onboarding's window is
             # historical and wide, so the daily rules do resolve. Known
             # limitation, not an oversight — see the plan before "fixing" it.
-            for obs_id, obs_flags in flags.items():
-                status = aggregate_qc_status(obs_flags)
-                obs_store.update_qc(
-                    obs_id,
-                    status,
-                    obs_flags,
-                    qc_rule_version=qc_rule_version,
-                )
+            updates = [
+                (obs, aggregate_qc_status(flags[obs.id]), flags[obs.id])
+                for obs in raw_obs
+                if obs.qc_status is QcStatus.RAW
+            ]
+            if not qc_obs_store.update_qc_batch_if_current(
+                updates,
+                qc_rule_version=qc_rule_version,
+            ):
+                log.info("onboarding.qc_stale_evaluation", count=len(updates))
+                continue
+            for _, status, _ in updates:
                 if status == QcStatus.QC_PASSED:
                     observations_qc_passed += 1
                 elif status == QcStatus.QC_FAILED:

@@ -2,20 +2,32 @@
 from __future__ import annotations
 
 import math
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 
 from sapphire_flow.db.metadata import observations as observations_table
 from sapphire_flow.exceptions import DeliveryCollisionError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
+from sapphire_flow.store.bafu_unit_read_filter import (
+    unit_read_predicate,
+)
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
 from sapphire_flow.types.observation import Observation, RawObservation
+from sapphire_flow.types.observation_read import (
+    ObservationReadPurpose,
+    QcContextRequirement,
+    QcContextWindow,
+    QcReadToken,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -48,18 +60,167 @@ def _qc_status_values(
     return [s.value for s in qc_status]
 
 
+class QcBatchIntegrityError(ValueError):
+    pass
+
+
 class PgObservationStore:
-    def __init__(self, conn: sa.Connection) -> None:
+    def __init__(
+        self,
+        conn: sa.Connection,
+        *,
+        purpose: ObservationReadPurpose = ObservationReadPurpose.TRUSTED,
+    ) -> None:
+        if purpose not in tuple(ObservationReadPurpose):
+            raise ValueError("observation read purpose must be typed")
+        if purpose is ObservationReadPurpose.SOURCE_AUDIT:
+            raise ValueError("SOURCE_AUDIT requires a restricted D2 capability")
         self._conn = conn
+        self._purpose = purpose
+
+    def qc_context_reader(self) -> PgObservationStore:
+        return PgObservationStore(self._conn, purpose=ObservationReadPurpose.QC_CONTEXT)
+
+    def _select_observations(self) -> sa.Select[Any]:
+        return sa.select(observations_table)
+
+    def _select_qc_window(self, window: QcContextWindow) -> sa.Select[Any]:
+        context = sa.func.public.observation_qc_window(
+            window.station_id,
+            window.parameter,
+            window.start,
+            window.end,
+            window.source.value if window.source is not None else None,
+        ).table_valued(
+            "observation_id",
+            "state_sha256",
+            "context_sha256",
+            "qc_context_segment",
+            "unit_governed",
+            "qc_state_sha256",
+            "cohort_size",
+        )
+        return (
+            sa.select(observations_table, context)
+            .join(context, context.c.observation_id == observations_table.c.id)
+            .where(
+                observations_table.c.station_id == window.station_id,
+                observations_table.c.parameter == window.parameter,
+                observations_table.c.timestamp >= window.start,
+                observations_table.c.timestamp < window.end,
+            )
+            .order_by(observations_table.c.timestamp, observations_table.c.source)
+        )
+
+    def fetch_observation_by_id(
+        self, observation_id: ObservationId
+    ) -> Observation | None:
+        # A single-target read is not a temporal group snapshot. Callers which
+        # evaluate neighbours must use fetch_observations over their full window.
+        row = (
+            self._conn.execute(
+                sa.select(observations_table).where(
+                    observations_table.c.id == observation_id,
+                    unit_read_predicate(observations_table, self._purpose),
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT:
+            rows = self.fetch_observations(
+                StationId(row["station_id"]),
+                row["parameter"],
+                utc_from_row(row["timestamp"]),
+                utc_from_row(row["timestamp"] + timedelta(microseconds=1)),
+                source=ObservationSource(row["source"]),
+            )
+            return next((obs for obs in rows if obs.id == observation_id), None)
+        return _row_to_domain(row)
+
+    def update_qc_if_current(
+        self,
+        observation: Observation,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        return self.update_qc_batch_if_current(
+            [(observation, qc_status, qc_flags)], qc_rule_version
+        )
+
+    def update_qc_batch_if_current(
+        self,
+        updates: list[tuple[Observation, QcStatus, list[QcFlag]]],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        if not updates:
+            return True
+        token = updates[0][0].qc_read_token
+        if token is None or token.window is None:
+            raise ValueError("conditional QC requires a bounded snapshot read token")
+        for observation, _, _ in updates:
+            current = observation.qc_read_token
+            if (
+                current is None
+                or current.window != token.window
+                or current.context_sha256 != token.context_sha256
+            ):
+                raise ValueError("conditional QC batch requires one shared snapshot")
+        if len({obs.id for obs, _, _ in updates}) != len(updates):
+            raise ValueError("conditional QC batch requires distinct targets")
+        if any(
+            obs.qc_read_token is None or obs.qc_read_token.qc_state_sha256 is None
+            for obs, _, _ in updates
+        ):
+            raise ValueError("conditional QC requires prior QC state")
+        window = token.window
+        verdicts = [
+            {
+                "id": str(obs.id),
+                "state_sha256": obs.qc_read_token.state_sha256,
+                "qc_state_sha256": obs.qc_read_token.qc_state_sha256,
+                "status": status.value,
+                "flags": _serialize_flags(flags),
+                "version": qc_rule_version,
+            }
+            for obs, status, flags in updates
+            if obs.qc_read_token is not None
+        ]
+        try:
+            return bool(
+                self._conn.execute(
+                    sa.select(
+                        sa.func.public.observation_qc_batch_compare_and_set(
+                            window.station_id,
+                            window.parameter,
+                            window.start,
+                            window.end,
+                            window.source.value if window.source is not None else None,
+                            token.context_sha256,
+                            sa.bindparam("verdicts", verdicts, type_=JSONB),
+                        )
+                    )
+                ).scalar_one()
+            )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "PQC01":
+                raise QcBatchIntegrityError("QC batch postcondition failed") from exc
+            raise
 
     def fetch_delivery_observations(
         self, delivery_id: str, station_ids: list[StationId]
     ) -> list[Observation]:
         if not station_ids:
             return []
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT:
+            raise ValueError("delivery QC requires an explicit bounded context window")
         rows = (
             self._conn.execute(
-                sa.select(observations_table)
+                self._select_observations()
+                .where(unit_read_predicate(observations_table, self._purpose))
                 .where(observations_table.c.delivery_id == delivery_id)
                 .where(observations_table.c.station_id.in_(station_ids))
                 .order_by(
@@ -296,8 +457,23 @@ class PgObservationStore:
         qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT:
+            if qc_status is not None:
+                raise ValueError(
+                    "QC context requires full cohort; select targets after reading"
+                )
+            window = QcContextWindow(
+                station_id=station_id,
+                parameter=parameter,
+                start=start,
+                end=end,
+                source=source,
+            )
+            rows = self._conn.execute(self._select_qc_window(window)).mappings().all()
+            return [_row_to_domain(row, window=window) for row in rows]
         stmt = (
-            sa.select(observations_table)
+            self._select_observations()
+            .where(unit_read_predicate(observations_table, self._purpose))
             .where(observations_table.c.station_id == station_id)
             .where(observations_table.c.parameter == parameter)
             .where(observations_table.c.timestamp >= start)
@@ -331,10 +507,23 @@ class PgObservationStore:
                 sa.and_(
                     observations_table.c.station_id == station_id,
                     observations_table.c.parameter == parameter,
+                    unit_read_predicate(observations_table, self._purpose),
                 )
             )
         ).scalar_one_or_none()
         return utc_or_none(row)
+
+    def fetch_latest_capture_timestamp(
+        self, station_id: StationId, parameter: str
+    ) -> UtcDatetime | None:
+        return utc_or_none(
+            self._conn.execute(
+                sa.select(sa.func.max(observations_table.c.timestamp)).where(
+                    observations_table.c.station_id == station_id,
+                    observations_table.c.parameter == parameter,
+                )
+            ).scalar_one_or_none()
+        )
 
     def fetch_observations_batch(
         self,
@@ -345,10 +534,22 @@ class PgObservationStore:
         qc_status: QcStatus | None = None,
         source: ObservationSource | None = None,
     ) -> dict[StationId, list[Observation]]:
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT and qc_status is not None:
+            raise ValueError(
+                "QC context requires full cohort; select targets after reading"
+            )
         if not station_ids:
             return {}
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT:
+            return {
+                sid: self.fetch_observations(
+                    sid, parameter, start, end, qc_status, source
+                )
+                for sid in station_ids
+            }
         stmt = (
-            sa.select(observations_table)
+            self._select_observations()
+            .where(unit_read_predicate(observations_table, self._purpose))
             .where(observations_table.c.station_id.in_(station_ids))
             .where(observations_table.c.parameter == parameter)
             .where(observations_table.c.timestamp >= start)
@@ -438,7 +639,11 @@ def _obs_to_values(obs: Observation) -> dict[str, object]:
     }
 
 
-def _row_to_domain(row: sa.engine.row.RowMapping) -> Observation:
+def _row_to_domain(
+    row: sa.engine.row.RowMapping,
+    *,
+    window: QcContextWindow | None = None,
+) -> Observation:
     return Observation(
         id=ObservationId(row["id"]),
         station_id=StationId(row["station_id"]),
@@ -457,4 +662,21 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Observation:
         qc_rule_version=row["qc_rule_version"],
         created_at=utc_from_row(row["created_at"]),
         delivery_id=row["delivery_id"],
+        qc_read_token=(
+            QcReadToken(
+                state_sha256=row["state_sha256"],
+                context_sha256=row["context_sha256"],
+                qc_state_sha256=row["qc_state_sha256"],
+                cohort_size=row["cohort_size"],
+                window=window,
+            )
+            if "state_sha256" in row
+            else None
+        ),
+        qc_context_segment=row.get("qc_context_segment", 0),
+        qc_context_requirement=(
+            QcContextRequirement.UNIT_GOVERNED
+            if row.get("unit_governed", False)
+            else QcContextRequirement.ORDINARY
+        ),
     )

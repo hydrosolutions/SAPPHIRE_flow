@@ -19,7 +19,19 @@ if TYPE_CHECKING:
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
 
-TABLES = (*PROVISIONAL_TABLES, "forecast_input_stations")
+TABLES = (
+    *PROVISIONAL_TABLES,
+    "forecast_input_stations",
+    "bafu_unit_batch_admissions",
+    "bafu_unit_batch_receipts",
+    "bafu_unit_events",
+    "bafu_unit_read_holds",
+    "bafu_unit_hold_releases",
+    "bafu_unit_write_scopes",
+    "bafu_unit_event_reconciliation",
+    "bafu_unit_receipt_reconciliation",
+    "bafu_unit_observation_read_state",
+)
 
 
 @pytest.fixture

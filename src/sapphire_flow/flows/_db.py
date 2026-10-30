@@ -55,6 +55,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.station_store import PgStationStore
     from sapphire_flow.store.tenant_store import PgTenantStore
     from sapphire_flow.store.weather_forecast_store import PgWeatherForecastStore
+    from sapphire_flow.types.observation_read import ObservationReadPurpose
 
     artifact_dir = resolve_artifact_dir()
 
@@ -63,6 +64,9 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "basin_store": PgBasinStore(conn),
         "station_store": PgStationStore(conn),
         "obs_store": PgObservationStore(conn),
+        "qc_obs_store": PgObservationStore(
+            conn, purpose=ObservationReadPurpose.QC_CONTEXT
+        ),
         "forcing_store": PgHistoricalForcingStore(conn),
         "baseline_store": PgClimBaselineStore(conn),
         "flow_regime_store": PgFlowRegimeConfigStore(conn),

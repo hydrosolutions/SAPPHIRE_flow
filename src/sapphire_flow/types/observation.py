@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.bafu_capture import (
+    DischargeParameterDiagnostic,
+    NormalizedDischargeCapture,
+    QuarantinedDischargeCapture,
+)
 from sapphire_flow.types.enums import QcStatus
+from sapphire_flow.types.observation_read import QcContextRequirement
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.bafu_capture import BafuDischargeCapture
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcFlag
     from sapphire_flow.types.enums import FetchOutcomeCause, ObservationSource
@@ -15,6 +22,7 @@ if TYPE_CHECKING:
         RatingCurveId,
         StationId,
     )
+    from sapphire_flow.types.observation_read import QcReadToken
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -44,6 +52,11 @@ class Observation:
     qc_rule_version: str | None
     created_at: UtcDatetime
     delivery_id: str | None = None
+    qc_read_token: QcReadToken | None = field(default=None, compare=False)
+    qc_context_segment: int = field(default=0, compare=False)
+    qc_context_requirement: QcContextRequirement = field(
+        default=QcContextRequirement.ORDINARY, compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.qc_status == QcStatus.MISSING and self.value is not None:
@@ -84,6 +97,15 @@ class StationFetchOutcome:
     observations: tuple[RawObservation, ...]
     failure_cause: FetchOutcomeCause | None
     failure_detail: str | None
+    source_captures: tuple[BafuDischargeCapture, ...] = ()
+
+    @property
+    def parameter_diagnostics(self) -> tuple[DischargeParameterDiagnostic, ...]:
+        return tuple(
+            DischargeParameterDiagnostic(reason=capture.result.reason)
+            for capture in self.source_captures
+            if isinstance(capture.result, QuarantinedDischargeCapture)
+        )
 
     def __post_init__(self) -> None:
         if (self.failure_cause is None) != (self.failure_detail is None):
@@ -92,6 +114,27 @@ class StationFetchOutcome:
                 f"be None, got failure_cause={self.failure_cause!r} "
                 f"failure_detail={self.failure_detail!r}"
             )
+        normalized = tuple(
+            capture.result
+            for capture in self.source_captures
+            if isinstance(capture.result, NormalizedDischargeCapture)
+        )
+        if self.failure_cause is not None and normalized:
+            raise ValueError("failed station outcome cannot carry normalized captures")
+        if self.source_captures:
+            expected = {
+                (result.measurement_time, result.canonical_value.value)
+                for result in normalized
+            }
+            actual = {
+                (obs.timestamp, obs.value)
+                for obs in self.observations
+                if obs.parameter == "discharge"
+            }
+            if expected != actual:
+                raise ValueError(
+                    "station discharge observations must match normalized captures"
+                )
         if self.failure_cause is not None and self.observations:
             raise ValueError(
                 "a failed StationFetchOutcome must not carry observations "
@@ -111,6 +154,10 @@ class HydroScraperBatchResult:
     @property
     def observations(self) -> list[RawObservation]:
         return [obs for outcome in self.outcomes for obs in outcome.observations]
+
+    @property
+    def captured_outcomes(self) -> tuple[StationFetchOutcome, ...]:
+        return tuple(outcome for outcome in self.outcomes if outcome.source_captures)
 
     @property
     def failed(self) -> tuple[StationFetchOutcome, ...]:

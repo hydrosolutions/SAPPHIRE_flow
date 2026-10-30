@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import math
 import re
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -9,6 +12,10 @@ import httpx
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from sapphire_flow.adapters.bafu_discharge_capture import (
+    capture_bafu_discharge,
+    parse_bafu_measurement_time,
+)
 from sapphire_flow.adapters.lindas_hydro_query import QUERY_LIMIT as _QUERY_LIMIT
 from sapphire_flow.adapters.lindas_hydro_query import (
     build_whole_graph_query,
@@ -19,6 +26,12 @@ from sapphire_flow.adapters.lindas_rate_limiter import (
     TokenBucketLindasLimiter,
 )
 from sapphire_flow.exceptions import AdapterError, LindasRateLimitExhaustedError
+from sapphire_flow.types.bafu_capture import (
+    DischargeCaptureFailure,
+    NormalizedDischargeCapture,
+    QuarantinedDischargeCapture,
+)
+from sapphire_flow.types.bafu_unit_registry import BafuDischargeKey, BafuGaugeCode
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import FetchOutcomeCause, ObservationSource, StationKind
 from sapphire_flow.types.observation import (
@@ -31,6 +44,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sapphire_flow.adapters.lindas_rate_limiter import LindasRateLimiter
+    from sapphire_flow.types.bafu_capture import BafuDischargeCapture
+    from sapphire_flow.types.bafu_unit_registry import BafuUnitRegistry
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationConfig
@@ -73,9 +88,15 @@ class HydroScraperAdapter:
         sleeper: Callable[[float], None] = time.sleep,
         max_retries: int = 2,
         limiter: LindasRateLimiter | None = None,
+        unit_registry: BafuUnitRegistry | None = None,
+        clock: Callable[[], UtcDatetime] | None = None,
     ) -> None:
         if not endpoint.startswith("https://"):
             raise ValueError(f"SPARQL endpoint must use HTTPS, got: {endpoint!r}")
+        if unit_registry is not None and clock is None:
+            raise ValueError("unit-aware BAFU capture requires an injected clock")
+        self._unit_registry = unit_registry
+        self._clock = clock
         self._endpoint = endpoint
         self._http_client = http_client
         # Plan 175 T1/T3: one shared limiter owns pacing + 429/5xx/transport
@@ -85,6 +106,10 @@ class HydroScraperAdapter:
             config=LindasLimiterConfig(max_attempts=max_retries + 1),
             sleeper=sleeper,
         )
+
+    @property
+    def unit_registry(self) -> BafuUnitRegistry | None:
+        return self._unit_registry
 
     def fetch_observations(
         self,
@@ -226,12 +251,16 @@ class HydroScraperAdapter:
             )
 
         grouped = self._group_by_requested_subject(bindings, index)
+        payload_sha256 = hashlib.sha256(response.content).hexdigest()
+        captured_at = self._clock() if self._clock is not None else None
         outcomes = tuple(
             self._extract_one(
                 station_config,
                 grouped.get(
                     (station_config.code, station_config.station_kind.value), []
                 ),
+                payload_sha256=payload_sha256,
+                captured_at=captured_at,
             )
             for station_config in eligible
         )
@@ -341,6 +370,9 @@ class HydroScraperAdapter:
         self,
         station_config: StationConfig,
         raw_group: list[dict[str, Any]],
+        *,
+        payload_sha256: str | None = None,
+        captured_at: UtcDatetime | None = None,
     ) -> StationFetchOutcome:
         """D4: NO_DATA and MALFORMED_RESPONSE stay subject-local — `raw_group`
         is already scoped to this one station's bindings (or empty, for a
@@ -350,6 +382,14 @@ class HydroScraperAdapter:
             raw_group, station_config.station_kind
         )
         try:
+            if self._unit_registry is not None:
+                if payload_sha256 is None or captured_at is None:
+                    raise ValueError(
+                        "unit-aware extraction requires payload identity and time"
+                    )
+                return self._extract_captured(
+                    station_config, filtered_group, payload_sha256, captured_at
+                )
             observations, cause, detail = self._parse_bindings_typed(
                 filtered_group, station_id
             )
@@ -392,6 +432,142 @@ class HydroScraperAdapter:
             observations=tuple(observations),
             failure_cause=cause,
             failure_detail=detail,
+        )
+
+    def _extract_captured(
+        self,
+        station: StationConfig,
+        raw_group: list[dict[str, Any]],
+        payload_sha256: str,
+        captured_at: UtcDatetime,
+    ) -> StationFetchOutcome:
+        registry = self._unit_registry
+        if registry is None or station.network != "bafu":
+            raise ValueError(
+                "captured extraction requires BAFU source registry and binding"
+            )
+        parsed: list[SparqlBinding] = []
+        shape_failure: FetchOutcomeCause | None = None
+        for raw in raw_group:
+            try:
+                parsed.append(
+                    SparqlBinding(
+                        predicate=raw["predicate"]["value"],
+                        object=raw["object"]["value"],
+                    )
+                )
+            except (KeyError, TypeError, ValidationError):
+                shape_failure = FetchOutcomeCause.MALFORMED_RESPONSE
+        times = tuple(
+            binding.object
+            for binding in parsed
+            if binding.predicate == f"{_DIMENSION_URL}/measurementTime"
+        )
+        literals = tuple(
+            binding.object
+            for binding in parsed
+            if binding.predicate == f"{_DIMENSION_URL}/discharge"
+        )
+        captures: tuple[BafuDischargeCapture, ...] = ()
+        if literals:
+            key = BafuDischargeKey(
+                gauge=BafuGaugeCode(value=station.code),
+                kind="river" if station.station_kind is StationKind.RIVER else "lake",
+            )
+            captures = (
+                capture_bafu_discharge(
+                    key=key,
+                    literals=literals,
+                    measurement_times=times,
+                    payload_sha256=payload_sha256,
+                    registry=registry,
+                    now=captured_at,
+                ),
+            )
+        if shape_failure is not None:
+            captures = tuple(
+                replace(
+                    capture,
+                    result=QuarantinedDischargeCapture(
+                        measurement_time=None,
+                        reason=DischargeCaptureFailure.SUBJECT_MALFORMED,
+                    ),
+                )
+                for capture in captures
+            )
+            return StationFetchOutcome(
+                station_id=station.id,
+                observations=(),
+                failure_cause=shape_failure,
+                failure_detail=(
+                    "malformed subject binding; discharge retained"
+                    if captures
+                    else "malformed subject binding; no recoverable capture"
+                ),
+                source_captures=captures,
+            )
+        timestamp = parse_bafu_measurement_time(times)
+        if isinstance(timestamp, DischargeCaptureFailure):
+            cause = (
+                FetchOutcomeCause.MALFORMED_RESPONSE
+                if raw_group
+                else FetchOutcomeCause.NO_DATA
+            )
+            return StationFetchOutcome(
+                station_id=station.id,
+                observations=(),
+                failure_cause=cause,
+                failure_detail=timestamp.value,
+                source_captures=captures,
+            )
+        other = [
+            raw
+            for raw, binding in zip(raw_group, parsed, strict=True)
+            if binding.predicate
+            in (
+                f"{_DIMENSION_URL}/measurementTime",
+                f"{_DIMENSION_URL}/waterLevel",
+                f"{_DIMENSION_URL}/waterTemperature",
+            )
+        ]
+        observations, cause, detail = self._parse_bindings_typed(other, station.id)
+        if any(not math.isfinite(obs.value) for obs in observations):
+            observations = []
+            cause = FetchOutcomeCause.MALFORMED_RESPONSE
+            detail = "non-finite ancillary observation; discharge retained"
+        if cause is FetchOutcomeCause.NO_DATA and captures:
+            cause, detail = None, None
+        if cause is not None:
+            captures = tuple(
+                replace(
+                    capture,
+                    result=QuarantinedDischargeCapture(
+                        measurement_time=timestamp,
+                        reason=DischargeCaptureFailure.SUBJECT_MALFORMED,
+                    ),
+                )
+                if isinstance(capture.result, NormalizedDischargeCapture)
+                else capture
+                for capture in captures
+            )
+        else:
+            observations.extend(
+                RawObservation(
+                    station_id=station.id,
+                    timestamp=capture.result.measurement_time,
+                    parameter="discharge",
+                    value=capture.result.canonical_value.value,
+                    source=ObservationSource.MEASURED,
+                )
+                for capture in captures
+                if isinstance(capture.result, NormalizedDischargeCapture)
+            )
+        return StationFetchOutcome(
+            station_id=station.id,
+            observations=tuple(observations),
+            failure_cause=cause,
+            failure_detail=detail,
+            source_captures=captures,
         )
 
     def verify_gauge_reachable(self, site_code: str, station_kind: StationKind) -> bool:

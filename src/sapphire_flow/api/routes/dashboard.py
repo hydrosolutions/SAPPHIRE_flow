@@ -60,7 +60,7 @@ def dashboard(
                 sa.select(
                     sa.func.min(obs_table.c.timestamp).label("min_ts"),
                     sa.func.max(obs_table.c.timestamp).label("max_ts"),
-                )
+                ).where(ordinary_forecast_rows(obs_table))
             )
             .mappings()
             .one()
@@ -72,6 +72,7 @@ def dashboard(
         rows = (
             conn.execute(
                 sa.select(obs_table.c.parameter, sa.func.count().label("cnt"))
+                .where(ordinary_forecast_rows(obs_table))
                 .group_by(obs_table.c.parameter)
                 .order_by(sa.func.count().desc())
             )

@@ -2921,3 +2921,346 @@ sa.Index(
     unique=True,
     postgresql_where=daily_forecast_attempts.c.trigger_kind == "scheduled",
 )
+
+
+bafu_unit_batch_admissions = sa.Table(
+    "bafu_unit_batch_admissions",
+    metadata,
+    sa.Column("batch_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("disposition", sa.Text, nullable=False),
+    sa.CheckConstraint("disposition IN ('admitted', 'rejected')"),
+    sa.Column(
+        "sequence", sa.BigInteger, sa.Identity(always=True), nullable=False, unique=True
+    ),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False
+    ),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("gauge_code", sa.Text, nullable=False),
+    sa.Column("lindas_kind", sa.Text, nullable=False),
+    sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("registry_version", sa.Text, nullable=False),
+    sa.Column("registry_sha256", sa.Text, nullable=False),
+    sa.Column("input_digest", sa.Text, nullable=False),
+    sa.Column(
+        "admitted_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        name="fk_bafu_admission_station",
+    ),
+    sa.UniqueConstraint("batch_id", "input_digest", name="uq_bafu_admission_input"),
+    sa.CheckConstraint("gauge_code ~ '^[0-9]{4}$'"),
+    sa.CheckConstraint("lindas_kind IN ('river', 'lake')"),
+    sa.CheckConstraint("length(btrim(registry_version)) > 0"),
+    sa.CheckConstraint("registry_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("input_digest ~ '^[0-9a-f]{64}$'"),
+)
+sa.Index(
+    "ix_bafu_admission_station_sequence",
+    bafu_unit_batch_admissions.c.tenant_id,
+    bafu_unit_batch_admissions.c.station_id,
+    bafu_unit_batch_admissions.c.sequence.desc(),
+)
+bafu_unit_batch_receipts = sa.Table(
+    "bafu_unit_batch_receipts",
+    metadata,
+    sa.Column("batch_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("input_digest", sa.Text, nullable=False),
+    sa.Column("result_digest", sa.Text, nullable=False),
+    sa.Column("result", JSONB, nullable=False),
+    sa.Column(
+        "committed_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.ForeignKeyConstraint(
+        ["batch_id", "input_digest"],
+        [
+            "bafu_unit_batch_admissions.batch_id",
+            "bafu_unit_batch_admissions.input_digest",
+        ],
+        name="fk_bafu_receipt_input",
+    ),
+    sa.CheckConstraint("result_digest ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("jsonb_typeof(result) = 'object'"),
+)
+
+
+bafu_unit_batch_admissions.append_constraint(
+    sa.UniqueConstraint(
+        "batch_id", "tenant_id", "station_id", name="uq_bafu_admission_scope"
+    )
+)
+
+bafu_unit_events = sa.Table(
+    "bafu_unit_events",
+    metadata,
+    sa.Column("event_id", sa.BigInteger, sa.Identity(always=True), primary_key=True),
+    sa.Column("batch_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("measurement_time", sa.DateTime(timezone=True)),
+    sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    sa.Column("source", sa.Text, nullable=False, server_default="measured"),
+    sa.Column("outcome", sa.Text, nullable=False),
+    sa.Column("fingerprint", sa.Text, nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True)),
+    sa.Column("canonical_value", sa.Float),
+    sa.Column("value_state_sha256", sa.Text),
+    sa.Column("capture", JSONB, nullable=False),
+    sa.Column("before_state", JSONB),
+    sa.Column("after_state", JSONB),
+    sa.Column("reason", sa.Text),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.ForeignKeyConstraint(
+        ["batch_id", "tenant_id", "station_id"],
+        [
+            "bafu_unit_batch_admissions.batch_id",
+            "bafu_unit_batch_admissions.tenant_id",
+            "bafu_unit_batch_admissions.station_id",
+        ],
+        name="fk_bafu_event_batch",
+    ),
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"],
+        ["observations.id", "observations.station_id"],
+        name="fk_bafu_event_observation",
+    ),
+    sa.UniqueConstraint(
+        "event_id", "tenant_id", "station_id", name="uq_bafu_event_scope"
+    ),
+    sa.UniqueConstraint(
+        "batch_id", "fingerprint", name="uq_bafu_event_batch_fingerprint"
+    ),
+    sa.CheckConstraint("parameter = 'discharge'"),
+    sa.CheckConstraint("source = 'measured'"),
+    sa.CheckConstraint(
+        "outcome IN ('inserted', 'restated', 'evidence_only', 'quarantined', "
+        "'rejected')"
+    ),
+    sa.CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("value_state_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("jsonb_typeof(capture) = 'object'"),
+    sa.CheckConstraint("jsonb_typeof(before_state) = 'object'"),
+    sa.CheckConstraint("jsonb_typeof(after_state) = 'object'"),
+    sa.CheckConstraint(
+        "(outcome IN ('inserted', 'restated', 'evidence_only') AND "
+        "measurement_time IS NOT NULL AND observation_id IS NOT NULL AND "
+        "canonical_value IS NOT NULL AND value_state_sha256 IS NOT NULL AND "
+        "after_state IS NOT NULL AND reason IS NULL) OR (outcome IN "
+        "('quarantined', 'rejected') AND observation_id IS NULL AND "
+        "canonical_value IS NULL AND value_state_sha256 IS NULL AND after_state"
+        " IS NULL AND reason IS NOT NULL)",
+        name="ck_bafu_event_shape",
+    ),
+    sa.CheckConstraint(
+        "canonical_value IS NULL OR canonical_value NOT IN ('NaN'::float8, "
+        "'Infinity'::float8, '-Infinity'::float8)",
+        name="ck_bafu_event_finite",
+    ),
+)
+sa.Index(
+    "ix_bafu_event_current",
+    bafu_unit_events.c.tenant_id,
+    bafu_unit_events.c.station_id,
+    bafu_unit_events.c.measurement_time,
+    bafu_unit_events.c.event_id.desc(),
+)
+
+bafu_unit_read_holds = sa.Table(
+    "bafu_unit_read_holds",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    sa.Column("source", sa.Text, nullable=False, server_default="measured"),
+    sa.Column("starts_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ends_at", sa.DateTime(timezone=True)),
+    sa.Column("reason", sa.Text, nullable=False),
+    sa.Column("origin", sa.Text, nullable=False),
+    sa.Column("event_id", sa.BigInteger),
+    sa.Column("approval_sha256", sa.Text),
+    sa.Column("registry_sha256", sa.Text, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        name="fk_bafu_hold_station",
+    ),
+    sa.ForeignKeyConstraint(
+        ["event_id", "tenant_id", "station_id"],
+        [
+            "bafu_unit_events.event_id",
+            "bafu_unit_events.tenant_id",
+            "bafu_unit_events.station_id",
+        ],
+        name="fk_bafu_hold_event",
+    ),
+    sa.UniqueConstraint("event_id", name="uq_bafu_hold_event"),
+    sa.CheckConstraint("parameter = 'discharge'"),
+    sa.CheckConstraint("source = 'measured'"),
+    sa.CheckConstraint("length(btrim(reason)) > 0"),
+    sa.CheckConstraint("origin IN ('ingest', 'maintenance')"),
+    sa.CheckConstraint("approval_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("registry_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint(
+        "ends_at IS NULL OR starts_at < ends_at", name="ck_bafu_hold_interval"
+    ),
+    sa.CheckConstraint(
+        "(origin = 'ingest' AND event_id IS NOT NULL AND approval_sha256 IS "
+        "NULL) OR (origin = 'maintenance' AND event_id IS NULL AND "
+        "approval_sha256 IS NOT NULL)",
+        name="ck_bafu_hold_authority",
+    ),
+)
+sa.Index(
+    "ix_bafu_hold_scope",
+    bafu_unit_read_holds.c.tenant_id,
+    bafu_unit_read_holds.c.station_id,
+    bafu_unit_read_holds.c.parameter,
+    bafu_unit_read_holds.c.source,
+    bafu_unit_read_holds.c.starts_at,
+)
+
+bafu_unit_hold_releases = sa.Table(
+    "bafu_unit_hold_releases",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "hold_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("bafu_unit_read_holds.id"),
+        nullable=False,
+    ),
+    sa.Column("starts_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ends_at", sa.DateTime(timezone=True)),
+    sa.Column("approval_sha256", sa.Text, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.CheckConstraint(
+        "ends_at IS NULL OR starts_at < ends_at", name="ck_bafu_release_interval"
+    ),
+    sa.CheckConstraint("approval_sha256 ~ '^[0-9a-f]{64}$'"),
+)
+sa.Index(
+    "ix_bafu_release_hold",
+    bafu_unit_hold_releases.c.hold_id,
+    bafu_unit_hold_releases.c.starts_at,
+)
+
+
+# Safe owner-rights views: no capture, before-image, or numeric receipt payload.
+bafu_unit_event_reconciliation = sa.table(
+    "bafu_unit_event_reconciliation",
+    *(
+        sa.column(name)
+        for name in (
+            "event_id",
+            "batch_id",
+            "tenant_id",
+            "station_id",
+            "measurement_time",
+            "parameter",
+            "source",
+            "outcome",
+            "fingerprint",
+            "observation_id",
+            "value_state_sha256",
+            "reason",
+            "transaction_id",
+            "before_db_sha256",
+            "after_db_sha256",
+            "scientific_unit",
+            "capture_valid",
+            "evidence_bytes",
+        )
+    ),
+)
+bafu_unit_receipt_reconciliation = sa.table(
+    "bafu_unit_receipt_reconciliation",
+    *(
+        sa.column(name)
+        for name in (
+            "batch_id",
+            "input_digest",
+            "result_digest",
+            "transaction_id",
+            "summary",
+            "states",
+            "evidence_bytes",
+            "digest_valid",
+        )
+    ),
+)
+
+
+bafu_unit_write_scopes = sa.Table(
+    "bafu_unit_write_scopes",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.Column("gauge_code", sa.Text, nullable=False),
+    sa.Column("lindas_kind", sa.Text, nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    sa.Column("source", sa.Text, nullable=False, server_default="measured"),
+    sa.Column("starts_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ends_at", sa.DateTime(timezone=True)),
+    sa.Column("registry_sha256", sa.Text, nullable=False),
+    sa.Column("approval_sha256", sa.Text, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.transaction_timestamp(),
+    ),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.CheckConstraint("network = 'bafu'"),
+    sa.CheckConstraint("gauge_code ~ '^[0-9]{4}$'"),
+    sa.CheckConstraint("lindas_kind IN ('river', 'lake')"),
+    sa.CheckConstraint("parameter = 'discharge'"),
+    sa.CheckConstraint("source = 'measured'"),
+    sa.CheckConstraint("registry_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("approval_sha256 ~ '^[0-9a-f]{64}$'"),
+    sa.CheckConstraint("ends_at IS NULL OR starts_at < ends_at"),
+)
+sa.Index(
+    "ix_bafu_write_scope",
+    bafu_unit_write_scopes.c.station_id,
+    bafu_unit_write_scopes.c.starts_at,
+)
+
+
+for _unit_effect_table in (bafu_unit_events, bafu_unit_batch_receipts):
+    _unit_effect_table.append_column(
+        sa.Column(
+            "transaction_id",
+            sa.Text,
+            nullable=False,
+            server_default=sa.text("pg_current_xact_id()::text"),
+        )
+    )

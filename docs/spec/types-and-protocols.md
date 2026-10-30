@@ -54,6 +54,102 @@ Module: `types/ids.py`
 
 ---
 
+## BAFU discharge unit boundary (D1 build; not activated)
+
+`adapters/bafu_discharge_units.py` parses finite source literals and converts typed
+`SourceDischargeValue` to `CanonicalDischargeValue` exactly once. Litres/second use
+`value / 1000.0`; cubic metres/second use identity. Negative values remain for QC;
+signed zero is normalized and numeric wrappers store floats. Nonzero literals or
+conversions that underflow to zero are rejected/quarantined, not recorded as zero.
+Canonical replay is not a source-native input.
+
+`config/bafu_units.py::parse_bafu_unit_registry(raw)` validates an explicit,
+versioned LINDAS FOEN hydro discharge registry and returns frozen domain types in
+`types/bafu_unit_registry.py`. Rules bind river/lake kind and four-digit gauge code
+to a unit, evidence reference/hash, verification time, half-open measurement-time
+validity, and refresh due time. An omitted validity end is open-ended. All internal
+timestamps are aware UTC. The boundary rejects extra fields (including `isLiter`),
+foreign sources/parameters, invalid units, missing evidence and duplicate rule IDs.
+Policy timestamps must be explicit-offset ISO text, never numeric epochs. The registry
+computes a canonical SHA-256 over its version and sorted complete rule declarations.
+
+`BafuUnitRegistry.resolve(key, measurement_time, *, now)` returns either
+`ResolvedBafuUnit(rule, refresh)` or `UnresolvedBafuUnit(reason)`. Missing rules,
+out-of-interval measurements, not-yet-verified evidence and overlapping applicable
+rules have distinct unresolved reasons. Overlap never selects a winner by order,
+even when units agree. Other gauges remain independently resolvable. Refresh due
+is an explicit warning state, not evidence expiry or fleet-wide withholding.
+
+`adapters/bafu_discharge_capture.py::capture_bafu_discharge` retains every original
+numeric/time literal plus the supplied source-payload SHA-256. Equivalent numeric
+spellings collapse by parsed float semantics; disagreeing values are quarantined,
+never last-wins. Equivalent aware time spellings resolve to the same instant;
+missing, invalid or conflicting times produce quarantine with no invented timestamp.
+Unknown/conflicting/out-of-interval unit evidence also produces quarantine. A
+normalized capture derives its canonical value through the shared domain normalizer,
+checks measurement-time validity, binds its source key to the resolved rule, and
+checks every retained numeric/time literal against its normalized result using shared
+parsers. Malformed-original quarantine remains representable; time-failure quarantine
+cannot invent a parsed time.
+These immutable results are in-memory capture decisions, not proof of durable
+quarantine. `StationFetchOutcome.source_captures` defaults to empty for existing
+adapters; its `parameter_diagnostics` derives discharge failures from captures
+without changing the station-level failure/observation invariant.
+`HydroScraperBatchResult.captured_outcomes` retains station binding and includes
+quarantine-only outcomes even when `observations` is empty. Usable other parameters
+can coexist with a discharge diagnostic. Failed outcomes cannot carry normalized
+captures, and capture-bearing outcomes must match canonical discharge observations.
+Atomic persistence and development-deployment wiring are still required.
+
+`types/bafu_capture_batch.py::BafuStationCaptureBatch` binds an injected retry ID
+to tenant/station/source identity, capture time, an immutable registry, canonical
+observations and source captures. Registry version/hash are derived properties, not
+caller-supplied claims. Each normalized result must match resolution by that registry. Its SHA-256 input digest uses sorted-key compact
+ASCII JSON (schema version 1), UTC ISO timestamps, UUID strings and enum values.
+The retry ID itself is excluded; all input/provenance fields are included. Exact
+duplicate rows/captures collapse; conflicting persistence keys are rejected.
+Observation order does not affect the digest. Each normalized discharge capture
+must have exactly its canonical observation, and vice versa; quarantine-only
+batches remain valid. Incoming delivery IDs are forbidden; the writer must still
+reject collisions with existing delivery-owned rows. Source binding, measured-source
+scope, finite values and UTC
+observation times are checked before persistence. Database binding validation,
+receipt reconciliation and serialized current-state comparisons remain the writer's
+responsibility: this digest alone does not establish cross-run revision identity.
+
+`store/bafu_batch_journal.py::PgBafuBatchJournal.admit(batch)` returns typed
+`BafuBatchAdmission` decisions: admitted, retry, or superseded. The factory must
+supply a real non-AUTOCOMMIT psycopg transaction at READ COMMITTED isolation. The method locks the batch ID,
+then sorted/deduplicated SHA-256-derived signed 64-bit station/natural-key advisory
+locks, validates persisted tenant/network/code/kind under a station row lock, and
+records or reconciles admission. A changed digest for an existing ID is an integrity
+error. A later admission makes an older batch reconcile-only, even without a final
+receipt. Different batch IDs with equal or older receive times are rejected without
+advancing admission order. Committed receipt/value writing is not implemented yet.
+
+The operational `HydroScraperAdapter` has an opt-in `unit_registry` plus injected
+`clock` path. It hashes the received HTTP body, records one shared capture time,
+normalizes discharge only, and retains usable water level/temperature when discharge
+is quarantined. Conflicting subject times suppress all canonical parameters. A
+malformed other parameter retains discharge evidence as subject-malformed quarantine
+rather than dropping it. The existing station-level failure invariant stays intact.
+Production constructors are not switched yet: no registry is implicitly installed,
+and this path must not be activated without the audited writer and read guards.
+Collector and canonical replay paths remain unchanged.
+
+`store/bafu_unit_read_filter.py::trusted_unit_predicate(observations)` expresses
+additive holds and named subrange releases in one correlated SQL statement. It is
+not yet wired into observation readers. Empty hold tables preserve legacy visibility;
+manual imports and other parameters do not match discharge/measured holds. No result
+cache or application-side read/filter race is introduced by the predicate.
+
+These primitives are not wired to production ingestion or readers yet. No production rules
+are seeded. Published LINDAS m³/s metadata conflicts with five station displays;
+registry activation requires the separate reviewed source-contract decision.
+Legacy eligibility is not changed by introducing these types.
+
+---
+
 ## UtcDatetime
 
 ```python
@@ -6191,6 +6287,175 @@ metadata containers (point object depth zero) and 4300 integer digits excluding
 sign; large metadata integers are not converted to floats.
 SQL admission is conservatively narrower than Python readability; no numeric
 coercion, verified-byte rewrite or extra writer/converter is introduced.
+
+
+### BAFU atomic station capture writer (D1 build; not wired)
+
+`PgBafuUnitWriter.write(BafuStationCaptureBatch) -> BafuWriteResult` uses a dedicated
+injected READ COMMITTED/non-AUTOCOMMIT transaction factory. A mandatory frozen
+`BafuJournalQuota` bounds evidence. It admits the retry identity separately, then
+rechecks binding and admission order under the batch and deterministic key locks.
+Database admission/effect boundaries also require READ COMMITTED for direct SQL.
+Admissions join the station lock and binding checks; every new event/receipt
+rechecks final eligibility at commit, including evidence-only/receipt-only work.
+Python sets transaction-local `extra_float_digits=3` before reading observations.
+This preserves float8 values when building documents; the separate database proof
+reads native row float bits and normalizes signed zero without JSON round-tripping.
+Lock/timeout failures require reconciliation, not an assumed rollback or automatic
+retry. Direct SQL is not guaranteed deadlock-free (see database-schema lock order).
+Canonical values, immutable events, quarantine holds and final receipt commit
+atomically, including all otherwise usable station parameters. Capacity or injected
+faults roll back the complete effects transaction. No live rules, activation grants,
+historical repair authority or operational wiring are supplied by this writer.
+
+`BafuWriteStatus` distinguishes:
+- `COMMITTED`: this call obtained acknowledgement for a new atomic receipt.
+- `REPLAYED`: the original committed receipt was read without applying it again.
+- `CURRENT`: scientific state already matches current evidence; no new receipt or
+  raw-payload archival claim. Existing event IDs identify the durable evidence.
+- `SUPERSEDED`: no receipt for this input; an immutable rejection or a proven
+  admission fence prevents application. For absent identity, this requires an
+  admitted equal/newer received time, not merely absence of an identity or receipt.
+- `NOT_COMMITTED`: a reliable locked reconciliation found no effects receipt at
+  that snapshot, with unknown applicability. This does not prove rollback or rule
+  out an in-flight future write after the read releases its locks. It is not a
+  capture-success claim and does not authorize automatic retry.
+- `UNKNOWN`: reconciliation could not establish a reliable result. Stop; never
+  infer rollback or reapply automatically.
+
+A receipt's historical outcome counts/digest remain unchanged on retry.
+`BafuApplicability` separately reports `CURRENT`, `SUPERSEDED` or `UNKNOWN` for
+current latest-event/value/provenance applicability. An old A receipt remains
+superseded after a later A→B→A event. Receipt existence is not trusted-read eligibility:
+additive holds remain until explicitly released by an authorized maintenance path.
+
+`reconcile(batch)` always uses a fresh transaction under the same locks. A failed
+commit acknowledgement triggers that read, never a blind write retry. Same UUID
+with a different digest raises `BafuBatchIntegrityError`. Existing delivery-owned
+rows retain `DeliveryCollisionError` protection. Raw canonical replay and other
+adapters keep their existing contracts; this writer accepts only captured BAFU
+station batches. Six immutable `BafuOutcomeCounts` fields partition unique captures:
+inserted, restated, evidence_only, unchanged, quarantined and rejected. Other usable
+parameters share the transaction but are not counted as discharge captures.
+
+Every capture with a non-null measurement time, including quarantine, must match
+shared parsing of all retained measurement literals. Missing, invalid, conflicting
+or different retained times cannot invent a persistence/hold key. Null-time
+malformed captures remain representable. Rejected older/equal batch IDs also bind
+the original digest; they never advance the effective admitted-work fence.
+
+
+#### D1 evidence boundaries and fail-closed limits
+
+Observation-state JSONB boundaries reject naive timestamps and serialize aware
+instants in UTC, independent of PostgreSQL session `TimeZone`. Snapshot values
+use the float observation domain with unsigned zero. Evidence hashes use sorted,
+compact ASCII JSON with lossless decimal-number canonicalization: JSON numeric
+spellings are parsed as exact decimals, expanded to fixed point, stripped of
+fractional trailing zeros, and signed zero becomes `0`. No decimal context
+rounding or integer-to-float conversion is used for hashing. Event IDs and counts
+remain exact integers. Numbers and quoted strings stay distinct; literal source
+strings remain unchanged. This encoding applies to the unreleased D1 journal;
+there are no deployed receipts to migrate. Source-unit conversion still uses the
+original `/1000` policy, not this serialization rule.
+
+Before certifying an event or receipt, the writer checks persisted observations
+against the intended raw value, natural key, source, rating-curve provenance and
+delivery ownership. The generic observation store already checks delivery
+ownership; these postconditions additionally detect skipped or altered writes.
+Foreign ownership raises `DeliveryCollisionError`; other mismatches raise
+`BafuBatchIntegrityError`. Either rolls back the entire effects batch. Unchanged
+rows keep their QC state. Malformed stored receipt/capture documents and missing
+referenced events raise `BafuBatchIntegrityError`, including during reconciliation.
+Actual connection/read/commit unavailability remains `UNKNOWN` when reconciliation
+cannot establish the result. Unchanged captures may reference events from earlier
+batches; batch-ID equality is not required for each receipt reference.
+
+The latest quarantine intentionally interrupts current proof. The writer does not
+search older matching events to authorize a changed value. Equal-value canonical
+evidence may establish proof again; later canonical restatements can then proceed.
+Neither operation releases any hold. Every unreleased hold still excludes the
+observation from trusted reads, even after fresh canonical evidence. Hold release
+and historical repair remain separately authorized work.
+
+Null-time `MISSING_TIME`, `INVALID_TIME` and `CONFLICTING_TIMES` reasons must match
+the shared retained-time parser. `SUBJECT_MALFORMED` may intentionally retain
+parseable literals without assigning a measurement time.
+
+Admission ordering remains station-sized latest-snapshot ordering, including
+later admitted work whose effects subsequently fail. A far-future injected
+receive clock can fence valid later polls. Clock correctness and operational
+acceptance are activation gates; this build adds no runtime clock-skew policy.
+
+Evidence quotas use `pg_column_size` as logical, approximate sizing. The
+receipt-inclusive postcheck is not a physical disk reservation. Admissions,
+indexes, WAL and actual disk budgets still need activation acceptance.
+
+
+### D1 reader/QC build (not activation)
+
+Observation readers default to construction-time `ObservationReadPurpose.TRUSTED`.
+`QC_CONTEXT` is a separate store instance; `SOURCE_AUDIT` raises until the restricted
+D2 capability exists. No QC-status filter changes reader purpose. Numeric reads,
+batch and delivery reads, by-ID reads and trusted latest timestamps evaluate the
+current SQL disposition in the same statement as values. The API station JSON,
+hindcast comparison, generic table browser and provisional direct read use the same
+predicate. Forecast, calculated onboarding, coverage, export and import callers use
+the default store. Ingest cursors use the separate timestamp-only capture method.
+The BAFU archive collector/replay contract is unchanged.
+
+Migration 0077 supplies an owner-rights security-barrier projection containing IDs,
+station/parameter/source/time keys, disposition booleans and hashes only. It selects the latest natural-key unit event
+before checking the current numeric/provenance fingerprint and approved policy.
+It never falls back to older matching events. Evidence absence alone does not
+exclude unprotected, unheld legacy rows. No raw event SELECT is granted to API.
+
+QC reads use `QcContextWindow` (station, parameter, optional source, and half-open
+time window) and a shared immutable dependency digest. Migration 0078 materializes
+the bounded cohort and its excluded/absent/partial-release boundary markers once.
+The digest covers row presence, numeric/provenance state, latest unit fingerprint,
+and effective eligibility; no global historical event ledger is hashed. Source-filtered
+reads exclude other sources from both segmentation and dependencies. Unfiltered
+reads preserve mixed-source groups. Changes outside the window do not stale a token.
+
+`update_qc_batch_if_current` validates that shared digest once under READ COMMITTED,
+then applies all target verdicts or none. The single-target method delegates to it.
+Ingest/rechecks and onboarding select targets from the same snapshot that supplied
+their passed neighbours. Stale batches add their target count to `stale_evaluation`,
+not judged counts; another evaluation needs a fresh read. Errors abort the transaction,
+not a blind write retry. The old SQL CAS entry point cannot authorize unbounded tokens.
+QC-context delivery reads require an explicit bounded window instead of fabricating
+context. By-ID context reads cover only that timestamp/source and cannot be combined
+with separately read neighbours. Ordinary fetch signatures and TRUSTED default remain.
+
+Temporal rules and cadence inference do not bridge excluded unit-uncertain interior
+rows; range/baseline judgement remains independent of temporal judgement. Explicit
+`UNIT_GOVERNED` checker inputs require bounded metadata, never implicit segment zero.
+All neighbours in a bounded group must share its snapshot. Hand-built ordinary
+DHM/manual inputs retain their prior contract. QC cannot release holds; historical
+hidden RAW/UNCHECKED rows await D2. Snapshot tokens, context requirements and segments
+remain transient and are excluded from rating-reference measurement digests.
+
+Scope approval remains a paused-cutover operation. The observation guard rejects
+BAFU measured-discharge candidates under non-READ-COMMITTED isolation before scope
+lookup. This is defense in depth, not support for concurrent activation. DHM and
+other parameters retain their existing guard paths.
+
+QC snapshot tokens and context segment markers are transient reader metadata.
+They do not enter rating-reference measurement snapshots or their existing digests.
+
+
+### BAFU unit ingest result boundary (D1 build)
+
+`BafuWriteResult` retains commit status and current applicability independently.
+`canonical_observations` contains only current, proven outputs admitted to ingest
+QC; quarantine and superseded/unknown results expose no such outputs.
+`observations_written` counts acknowledged new canonical mutations, including
+non-discharge parameters in the same station transaction. CURRENT and REPLAYED
+report zero new writes. The flow preserves these typed results in
+`IngestResult.bafu_unit_results`; it never retries UNKNOWN or splits a failed
+captured station into generic raw writes. Configuration and activation gates are
+listed in the LINDAS observation-ingest touchpoint map.
 
 ### Explicit operational weather scope
 

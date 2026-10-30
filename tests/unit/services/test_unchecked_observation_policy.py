@@ -610,12 +610,16 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     # Plan 143's delivery reader forwards training_data's QC_PASSED filter.
     "src/sapphire_flow/services/nepal_onboarding.py": ("qc_status",),
     "src/sapphire_flow/services/observation_alert_checker.py": ("QcStatus.QC_PASSED",),
+    # QC reads the full cohort before selecting RAW targets.
+    # Model reads stay passed-only.
     "src/sapphire_flow/services/onboarding.py": (
+        "<unfiltered>",
         "QcStatus.QC_PASSED",
         "QcStatus.QC_PASSED",
         "QcStatus.QC_PASSED",
-        "QcStatus.RAW",
     ),
+    # QC_CONTEXT by-id and batch wrappers preserve bounded, full-cohort reads.
+    "src/sapphire_flow/store/observation_store.py": ("<unfiltered>", "<unfiltered>"),
     "src/sapphire_flow/services/operational_inputs.py": (
         "MODEL_INPUT_QC_STATUSES",
         "MODEL_INPUT_QC_STATUSES",

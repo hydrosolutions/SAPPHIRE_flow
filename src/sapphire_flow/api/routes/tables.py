@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.db.metadata import metadata as _app_metadata
+from sapphire_flow.store.bafu_unit_read_filter import trusted_unit_predicate
 from sapphire_flow.types.enums import ForecastDataUse
 
 router = APIRouter(tags=["tables"])
@@ -24,6 +25,15 @@ _PROTECTED_INPUT_TABLES = frozenset(
         "provisional_discharges",
         "provisional_discharge_permissions",
         "forecast_input_stations",
+        "bafu_unit_batch_admissions",
+        "bafu_unit_batch_receipts",
+        "bafu_unit_events",
+        "bafu_unit_read_holds",
+        "bafu_unit_hold_releases",
+        "bafu_unit_write_scopes",
+        "bafu_unit_event_reconciliation",
+        "bafu_unit_receipt_reconciliation",
+        "bafu_unit_observation_read_state",
     }
 )
 SAPPHIRE_TABLES: frozenset[str] = (
@@ -34,6 +44,8 @@ PAGE_SIZE = 50
 
 
 def ordinary_forecast_rows(table: sa.Table) -> sa.ColumnElement[bool]:
+    if table.name == "observations":
+        return trusted_unit_predicate(table)
     if table.name in {"forecasts", "rejected_forecasts"}:
         return table.c.data_use == ForecastDataUse.STANDARD.value
     headers = _app_metadata.tables["forecasts"].alias("ordinary_forecast")

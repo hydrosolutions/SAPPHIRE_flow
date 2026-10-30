@@ -12,6 +12,7 @@ from prefect.cache_policies import NO_CACHE
 from prefect.runtime import flow_run, task_run
 
 from sapphire_flow.exceptions import ConfigurationError, DeliveryCollisionError
+from sapphire_flow.flows.bafu_ingest import dispatch_bafu_captures
 from sapphire_flow.services.qc import Stage1QualityChecker, resolve_selection
 from sapphire_flow.services.qc_datum import (
     add_observation_datum_details,
@@ -34,18 +35,22 @@ from sapphire_flow.types.enums import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from sapphire_flow.config.dhm import DhmConfig
     from sapphire_flow.config.river_stations import HydroScraperConfig
+    from sapphire_flow.flows.bafu_ingest import BafuCaptureWriter, BafuDispatchResult
     from sapphire_flow.protocols.adapters import BatchStationDataSource
+    from sapphire_flow.protocols.stores import ObservationStore
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.observation_store import PgObservationStore
     from sapphire_flow.store.station_store import PgStationStore
+    from sapphire_flow.types.bafu_unit_registry import BafuUnitRegistry
+    from sapphire_flow.types.bafu_write_result import BafuWriteResult
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import QcRuleSet, StationQcOverride
+    from sapphire_flow.types.domain import QcFlag, QcRuleSet, StationQcOverride
     from sapphire_flow.types.ids import ObservationId, StationId
     from sapphire_flow.types.observation import (
         HydroScraperBatchResult,
@@ -68,6 +73,7 @@ class IngestResult:
     qc_passed: int
     qc_failed: int
     qc_suspect: int
+    qc_stale_evaluation: int = 0
     qc_unchecked: int = 0
     # Plan 323 T4 (D5): readings whose group selected rules but which no rule
     # could judge. Stored `QC_UNCHECKED` like `qc_unchecked`, counted apart so
@@ -83,6 +89,7 @@ class IngestResult:
     stations_failed: int
     errors: tuple[str, ...]
     # Plan 015 step 2.5 — calculated-station derivation (0 when no calculated stations).
+    bafu_unit_results: tuple[BafuWriteResult, ...] = ()
     observations_derived: int = 0
     observations_missing: int = 0
     qc_threshold_pending: int = 0
@@ -161,7 +168,7 @@ def _fetch_configured_dhm(
         return _fetch_observations_task(adapter, station_configs, since)
 
 
-def _aggregate_qc_status(flags: list[object], *, rules_ran: bool = True) -> QcStatus:
+def _aggregate_qc_status(flags: list[QcFlag], *, rules_ran: bool = True) -> QcStatus:
     """Plan 272 T2b: an empty flag list means one of two OPPOSITE things.
 
     With a rule that judged the reading, it means that rule found nothing
@@ -172,7 +179,7 @@ def _aggregate_qc_status(flags: list[object], *, rules_ran: bool = True) -> QcSt
     """
     if not flags:
         return QcStatus.QC_PASSED if rules_ran else QcStatus.QC_UNCHECKED
-    if any(f.status == QcStatus.QC_FAILED for f in flags):  # type: ignore[union-attr]
+    if any(f.status == QcStatus.QC_FAILED for f in flags):
         return QcStatus.QC_FAILED
     return QcStatus.QC_SUSPECT
 
@@ -254,6 +261,18 @@ def _fetch_health_detail(
         "failure_counts_by_cause": failure_counts,
         "failure_counts_by_category": categories,
         "failed_station_ids": sorted(str(o.station_id) for o in failed),
+        "stations_parameter_withheld": sum(
+            bool(o.parameter_diagnostics) for o in outcomes
+        ),
+        "parameter_diagnostics": [
+            {
+                "station_id": str(o.station_id),
+                "parameter": "discharge",
+                "reason": d.reason.value,
+            }
+            for o in outcomes
+            for d in o.parameter_diagnostics
+        ],
     }
 
 
@@ -452,6 +471,7 @@ def _append_fetch_health_record(
     *,
     checked_at: UtcDatetime,
     outcomes: tuple[StationFetchOutcome, ...],
+    unit_dispatch: BafuDispatchResult | None = None,
 ) -> None:
     # Best-effort (mirrors flows/collect_bafu_observations.py's identically
     # -shaped helper): a health-store outage must never fail the ingest run
@@ -465,10 +485,46 @@ def _append_fetch_health_record(
     from sapphire_flow.types.pipeline import PipelineHealthRecord
 
     detail = _fetch_health_detail(outcomes)
+    failed_station_ids = {
+        outcome.station_id
+        for outcome in outcomes
+        if outcome.failure_cause is not None
+        or (not outcome.observations and outcome.parameter_diagnostics)
+    }
+    if unit_dispatch is not None:
+        failed_station_ids.update(unit_dispatch.failed_station_ids)
     status = _fetch_health_status(
         stations_polled=detail["stations_polled"],  # type: ignore[arg-type]
-        stations_fetch_failed=detail["stations_fetch_failed"],  # type: ignore[arg-type]
+        stations_fetch_failed=len(failed_station_ids),
     )
+    if unit_dispatch is not None:
+        detail["unit_capture_results"] = [
+            {
+                "batch_id": str(result.batch_id),
+                "status": result.status.value,
+                "applicability": result.applicability.value,
+                "quarantined": result.counts.quarantined if result.counts else None,
+            }
+            for result in unit_dispatch.results
+        ]
+        detail["unit_capture_failed_station_ids"] = sorted(
+            str(s) for s in unit_dispatch.failed_station_ids
+        )
+        detail["unit_capture_errors"] = list(unit_dispatch.errors)
+        detail["unit_refresh_due_station_ids"] = sorted(
+            str(s) for s in unit_dispatch.refresh_due_station_ids
+        )
+        if status is PipelineHealthStatus.OK and (
+            unit_dispatch.failed_station_ids
+            or unit_dispatch.refresh_due_station_ids
+            or any(
+                result.counts is not None and result.counts.quarantined
+                for result in unit_dispatch.results
+            )
+        ):
+            status = PipelineHealthStatus.WARNING
+    if status is PipelineHealthStatus.OK and detail["stations_parameter_withheld"]:
+        status = PipelineHealthStatus.WARNING
     try:
         append(
             PipelineHealthRecord(
@@ -528,6 +584,7 @@ def _empty_qc_counts() -> dict[str, int]:
         "unjudged": 0,
         "rechecked": 0,
         "newly_checked": 0,
+        "stale_evaluation": 0,
     }
 
 
@@ -588,7 +645,7 @@ def _append_threshold_config_health_record(
     cache_policy=NO_CACHE,
 )
 def _run_qc_task(
-    obs_store: PgObservationStore,
+    obs_store: ObservationStore,
     baseline_store: PgClimBaselineStore,
     station_id: StationId,
     parameter: str,
@@ -700,6 +757,23 @@ def _run_qc_task(
     version = obs_qc_rule_version(parameter, datum)
     obs_by_id = {obs.id: obs for obs in all_obs}
     unjudged_ids: dict[tuple[StationId, str], list[ObservationId]] = {}
+    updates = [
+        (
+            obs_by_id[obs_id],
+            _aggregate_qc_status(
+                obs_flags,
+                rules_ran=(obs_by_id[obs_id].station_id, obs_by_id[obs_id].parameter)
+                not in unresolved
+                and obs_id in checked.judged,
+            ),
+            obs_flags,
+        )
+        for obs_id, obs_flags in flags.items()
+        if obs_id in pending_ids
+    ]
+    if not obs_store.update_qc_batch_if_current(updates, qc_rule_version=version):
+        counts["stale_evaluation"] = len(updates)
+        return QcTaskOutcome(counts=counts, zero_rule_groups=())
     for obs_id, obs_flags in flags.items():
         if obs_id not in pending_ids:
             continue
@@ -713,7 +787,6 @@ def _run_qc_task(
             obs_flags,
             rules_ran=not zero_rule and obs_id in checked.judged,
         )
-        obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version=version)
         if obs_id in rechecked_ids:
             counts["rechecked"] += 1
         else:
@@ -956,9 +1029,24 @@ def ingest_observations_flow(
     tenant_store: object = None,
     context_window_hours: float = 2.0,
     default_lookback_hours: float = 1.0,
+    qc_obs_store: object = None,
+    bafu_unit_registry: object = None,
+    bafu_unit_writer: object = None,
 ) -> IngestResult:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
+
+    unit_config = None
+    unit_config_path = os.environ.get("SAPPHIRE_BAFU_UNIT_INGEST_CONFIG")
+    if unit_config_path is not None:
+        from sapphire_flow.config.bafu_units import load_bafu_unit_ingest_config
+
+        if bafu_unit_registry is not None or bafu_unit_writer is not None:
+            raise ConfigurationError(
+                "BAFU unit config cannot override injected dependencies"
+            )
+        unit_config = load_bafu_unit_ingest_config(Path(unit_config_path))
+        bafu_unit_registry = unit_config.registry
 
     # --- Production setup ---
     _conn: object = None
@@ -966,15 +1054,31 @@ def ingest_observations_flow(
         from sapphire_flow.flows._db import setup_production_stores
 
         database_url = os.environ["DATABASE_URL"]
+        if unit_config is not None:
+            from sqlalchemy.engine import make_url
+
+            from sapphire_flow.store.bafu_unit_writer import (
+                PgBafuUnitWriter,
+                bafu_unit_transaction_factory,
+            )
+
+            bafu_unit_writer = PgBafuUnitWriter(
+                bafu_unit_transaction_factory(make_url(database_url)),
+                quota=unit_config.quota,
+            )
         _conn, stores = setup_production_stores(database_url)
         station_store = stores["station_store"]  # type: ignore[assignment]
         obs_store = stores["obs_store"]  # type: ignore[assignment]
+        qc_obs_store = stores["qc_obs_store"]
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]
         alert_store = stores["alert_store"]  # type: ignore[assignment]
         formula_store = stores["formula_store"]  # type: ignore[assignment]
         tenant_store = stores["tenant_store"]
         if pipeline_health_store is None:
             pipeline_health_store = stores["pipeline_health_store"]  # type: ignore[assignment]
+
+    if (bafu_unit_registry is None) != (bafu_unit_writer is None):
+        raise ConfigurationError("BAFU unit registry and writer are required together")
 
     dhm_config: DhmConfig | None = None
     if adapter is None:
@@ -985,12 +1089,28 @@ def ingest_observations_flow(
 
         adapter_config = _load_adapter_config()
         if isinstance(adapter_config, DhmConfig):
+            if bafu_unit_registry is not None:
+                raise ConfigurationError(
+                    "BAFU unit configuration cannot govern DHM ingest"
+                )
             dhm_config = adapter_config
         else:
             adapter = HydroScraperAdapter(
                 endpoint=adapter_config.endpoint,
                 http_client=httpx.Client(timeout=30.0),
+                unit_registry=cast("BafuUnitRegistry | None", bafu_unit_registry),
+                clock=cast("Callable[[], UtcDatetime]", clock),
             )
+
+    from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+
+    if (
+        isinstance(adapter, HydroScraperAdapter)
+        and adapter.unit_registry != bafu_unit_registry
+    ):
+        raise ConfigurationError(
+            "BAFU live adapter registry must match the atomic writer binding"
+        )
 
     if qc_rules is None:
         qc_rules = _load_qc_rules()
@@ -1008,6 +1128,9 @@ def ingest_observations_flow(
         raise ConfigurationError("obs_store is required but was not provided")
     if baseline_store is None:
         raise ConfigurationError("baseline_store is required but was not provided")
+
+    if qc_obs_store is None:
+        qc_obs_store = cast("ObservationStore", obs_store).qc_context_reader()
 
     now: UtcDatetime = clock()  # type: ignore[assignment]
 
@@ -1065,7 +1188,9 @@ def ingest_observations_flow(
     since: dict[StationId, UtcDatetime] = {}
     for station in eligible:
         param = _cursor_parameter_for_station(station)
-        latest = obs_store.fetch_latest_timestamp(station.id, param)
+        latest = cast("ObservationStore", obs_store).fetch_latest_capture_timestamp(
+            station.id, param
+        )
         since[station.id] = latest if latest is not None else default_since
 
     # --- Step 2.1: Fetch observations ---
@@ -1089,13 +1214,31 @@ def ingest_observations_flow(
     )
     fetch_failed = batch_result.failed
     fetch_failed_station_ids = {o.station_id for o in fetch_failed}
+    fetch_failed_station_ids.update(
+        o.station_id
+        for o in batch_result.outcomes
+        if not o.observations and o.parameter_diagnostics
+    )
     fetch_errors = tuple(
         f"fetch failed for {o.station_id}: {o.failure_cause.value} "  # type: ignore[union-attr]
         f"({o.failure_detail})"
         for o in fetch_failed
     )
 
-    if not raw_obs:
+    unit_dispatch = dispatch_bafu_captures(
+        batch_result,
+        eligible,
+        cast("BafuUnitRegistry | None", bafu_unit_registry),
+        cast("BafuCaptureWriter | None", bafu_unit_writer),
+    )
+    if batch_result.captured_outcomes:
+        _append_fetch_health_record(
+            pipeline_health_store,
+            checked_at=now,
+            outcomes=batch_result.outcomes,
+            unit_dispatch=unit_dispatch,
+        )
+    if not raw_obs and not batch_result.captured_outcomes:
         log.info("ingest.no_new_data")
         return IngestResult(
             stations_polled=len(eligible),
@@ -1113,23 +1256,34 @@ def ingest_observations_flow(
         )
 
     # --- Step 2.2: Store raw observations ---
-    storage_failed_station_ids: set[StationId] = set()
-    storage_errors: list[str] = []
-    try:
-        stored_count = _store_raw_task(obs_store, raw_obs)
-    except DeliveryCollisionError:
-        stored_count = 0
-        for station_id in {row.station_id for row in raw_obs}:
-            station_rows = [row for row in raw_obs if row.station_id == station_id]
-            try:
-                stored_count += _store_raw_task(obs_store, station_rows)
-            except DeliveryCollisionError:
-                storage_failed_station_ids.add(station_id)
-                storage_errors.append(f"delivery collision at station {station_id}")
-                log.warning("ingest.delivery_collision", station_id=str(station_id))
-    stored_obs = [
-        row for row in raw_obs if row.station_id not in storage_failed_station_ids
+    # Captured station batches never reach the generic collision fallback.
+    generic_obs = [
+        row
+        for row in raw_obs
+        if row.station_id not in unit_dispatch.captured_station_ids
     ]
+    storage_failed_station_ids = set(unit_dispatch.failed_station_ids)
+    storage_errors = list(unit_dispatch.errors)
+    generic_stored = 0
+    if generic_obs:
+        try:
+            generic_stored = _store_raw_task(obs_store, generic_obs)
+        except DeliveryCollisionError:
+            for station_id in {row.station_id for row in generic_obs}:
+                station_rows = [
+                    row for row in generic_obs if row.station_id == station_id
+                ]
+                try:
+                    generic_stored += _store_raw_task(obs_store, station_rows)
+                except DeliveryCollisionError:
+                    storage_failed_station_ids.add(station_id)
+                    storage_errors.append(f"delivery collision at station {station_id}")
+                    log.warning("ingest.delivery_collision", station_id=str(station_id))
+    stored_count = generic_stored + unit_dispatch.observations_written
+    stored_obs = [
+        row for row in generic_obs if row.station_id not in storage_failed_station_ids
+    ]
+    stored_obs.extend(unit_dispatch.canonical_observations)
     skipped_count = len(raw_obs) - stored_count
     log.info("ingest.store_complete", stored=stored_count, skipped=skipped_count)
 
@@ -1169,7 +1323,7 @@ def ingest_observations_flow(
     for station_id, parameter in station_params:
         try:
             counts = _run_qc_task(
-                obs_store,
+                cast("ObservationStore", qc_obs_store),
                 baseline_store,
                 station_id,
                 parameter,
@@ -1188,6 +1342,7 @@ def ingest_observations_flow(
             totals["unjudged"] += counts.counts["unjudged"]
             totals["rechecked"] += counts.counts["rechecked"]
             totals["newly_checked"] += counts.counts["newly_checked"]
+            totals["stale_evaluation"] += counts.counts["stale_evaluation"]
             zero_rule_groups.extend(counts.zero_rule_groups)
             unjudged_groups.extend(counts.unjudged_groups)
         except ConfigurationError:
@@ -1295,11 +1450,13 @@ def ingest_observations_flow(
         qc_failed=totals["failed"],
         qc_suspect=totals["suspect"],
         qc_unchecked=totals["unchecked"],
+        qc_stale_evaluation=totals["stale_evaluation"],
         qc_unjudged=totals["unjudged"],
         qc_rechecked=totals["rechecked"],
         qc_newly_checked=totals["newly_checked"],
         stations_failed=len(all_failed_station_ids),
         errors=fetch_errors + tuple(errors),
+        bafu_unit_results=unit_dispatch.results,
         observations_derived=derived["derived"],
         observations_missing=derived["missing"],
         qc_threshold_pending=len(threshold_config.pending),
@@ -1317,6 +1474,7 @@ def ingest_observations_flow(
         qc_failed=result.qc_failed,
         qc_suspect=result.qc_suspect,
         qc_unchecked=result.qc_unchecked,
+        qc_stale_evaluation=result.qc_stale_evaluation,
         qc_unjudged=result.qc_unjudged,
         qc_rechecked=result.qc_rechecked,
         qc_newly_checked=result.qc_newly_checked,
