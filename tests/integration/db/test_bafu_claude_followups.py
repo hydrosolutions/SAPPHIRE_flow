@@ -34,6 +34,7 @@ from tests.integration.store.test_bafu_unit_writer import QUOTA
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from sapphire_flow.types.bafu_capture_batch import BafuStationCaptureBatch
 
@@ -223,10 +224,10 @@ class TestClaudeFollowups:
         worker: sa.Engine,
         protected: BafuStationCaptureBatch,
         isolated_committed_db_engine: sa.Engine,
+        tmp_path: Path,
     ) -> None:
         import json
         from dataclasses import replace
-        from pathlib import Path
 
         from tests.integration.store.test_bafu_unit_writer import later
 
@@ -255,10 +256,7 @@ class TestClaudeFollowups:
                 ),
                 {"batch": protected.batch_id},
             )
-        Path(
-            "/tmp/daily-evaluation-implementation-evidence/overnight-return/must-have/"
-            "p1-inventory/readiness/unit-write-guards/claude-followups/keyed-plan.json"
-        ).write_text(json.dumps(plan, indent=2))
+        (tmp_path / "keyed-plan.json").write_text(json.dumps(plan, indent=2))
         assert plan[0]["Plan"]["Actual Rows"] == 1
         with worker.connect() as conn:
             seal_plan = conn.scalar(
@@ -272,10 +270,7 @@ class TestClaudeFollowups:
                 ),
                 {"tenant": protected.tenant_id, "station": protected.station_id},
             )
-        Path(
-            "/tmp/daily-evaluation-implementation-evidence/overnight-return/must-have/"
-            "p1-inventory/readiness/unit-write-guards/early-constraint-fix/seal-plan.json"
-        ).write_text(json.dumps(seal_plan, indent=2))
+        (tmp_path / "seal-plan.json").write_text(json.dumps(seal_plan, indent=2))
         assert seal_plan[0]["Plan"]["Actual Rows"] == 0
 
     def test_catalog_contract(self, isolated_committed_db_engine: sa.Engine) -> None:

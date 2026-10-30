@@ -591,6 +591,9 @@ or pass explicit bounds when default-window behavior is not under test.
 Assert expected result counts before ordering checks so an empty response cannot pass.
 
 
+Test-generated query plans and other artifacts must use pytest's `tmp_path`, not
+pre-existing developer evidence directories.
+
 ### Observation test-fake snapshots
 
 Both fake conditional-QC update entrypoints use the batch validator and require a
