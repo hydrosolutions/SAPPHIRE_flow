@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import StationGroupId, StationId
+    from sapphire_flow.types.weather import GatewayHruName
 
 GAUGE_POLYGONS = (
     ("447", "g_447"),
@@ -21,6 +22,42 @@ GAUGE_POLYGONS = (
 GATEWAY_HRU = "nepal6_20260923"
 GATEWAY_HISTORY_SOURCE = "recap_era5_land_reanalysis"
 HISTORY_PARAMETERS = frozenset({"precipitation", "temperature"})
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class WeatherStationPolygon:
+    station_id: StationId
+    polygon_name: str
+
+    def __post_init__(self) -> None:
+        if not self.polygon_name or self.polygon_name != self.polygon_name.strip():
+            raise ValueError("polygon_name must be nonempty without outer whitespace")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OperationalWeatherScope:
+    group_id: StationGroupId
+    gateway_hru_name: GatewayHruName
+    station_polygons: tuple[WeatherStationPolygon, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.gateway_hru_name
+            or self.gateway_hru_name != self.gateway_hru_name.strip()
+        ):
+            raise ValueError(
+                "gateway_hru_name must be nonempty without outer whitespace"
+            )
+        if type(self.station_polygons) is not tuple or not self.station_polygons:
+            raise ValueError("station_polygons must be a nonempty tuple")
+        if len({p.station_id for p in self.station_polygons}) != len(
+            self.station_polygons
+        ):
+            raise ValueError("station_polygons contains duplicate station IDs")
+        if len({p.polygon_name for p in self.station_polygons}) != len(
+            self.station_polygons
+        ):
+            raise ValueError("station_polygons contains duplicate polygon names")
 
 
 class ReadinessStatus(Enum):
