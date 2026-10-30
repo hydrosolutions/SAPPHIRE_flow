@@ -334,7 +334,7 @@ class TestDhmIngest:
             assert resumed.failed == ()
             store.store_raw_observations(resumed.observations)
             _run_qc_task.fn(
-                store,
+                store.qc_context_reader(),
                 FakeClimBaselineStore(),
                 config.id,
                 "water_level",
@@ -389,7 +389,7 @@ class TestDhmIngest:
         rows = [observation(config, -110), observation(config, -120)]
         store.store_raw_observations(rows)
         _run_qc_task.fn(
-            store,
+            store.qc_context_reader(),
             FakeClimBaselineStore(),
             config.id,
             "water_level",

@@ -19,6 +19,7 @@ from sapphire_flow.types.domain import (
     StationQcOverride,
 )
 from sapphire_flow.types.enums import QcStatus
+from sapphire_flow.types.observation_read import QcContextRequirement
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -55,6 +56,35 @@ def _merge_thresholds(
     )
 
 
+def _require_shared_context(observations: list[Observation]) -> None:
+    bounded = [
+        o.qc_read_token
+        for o in observations
+        if o.qc_read_token is not None and o.qc_read_token.window is not None
+    ]
+    governed = any(
+        o.qc_context_requirement is QcContextRequirement.UNIT_GOVERNED
+        for o in observations
+    )
+    if governed and len(bounded) != len(observations):
+        raise ConfigurationError("unit-governed QC requires shared bounded context")
+    if bounded:
+        first = bounded[0]
+        if any(
+            t.cohort_size is not None
+            and t.cohort_size != len({o.id for o in observations})
+            for t in bounded
+        ):
+            raise ConfigurationError("QC neighbours require the full cohort")
+        if len(bounded) != len(observations) or any(
+            t.window != first.window or t.context_sha256 != first.context_sha256
+            for t in bounded
+        ):
+            raise ConfigurationError(
+                "QC neighbours must come from one context snapshot"
+            )
+
+
 def infer_time_step(obs: list[Observation]) -> timedelta | None:
     """Plan 272 T2: the cadence a group reports at, or ``None`` when it cannot
     be inferred.
@@ -73,11 +103,14 @@ def infer_time_step(obs: list[Observation]) -> timedelta | None:
     # minutes apart plus a same-instant sibling gives gaps [600, 0] and a median
     # of 300 s, which no rule declares. The cadence is a property of the SERIES,
     # not of how many sources reported each point.
-    stamps = sorted({o.timestamp for o in obs})
-    if len(stamps) < 2:
-        return None
-    diffs = [(stamps[i] - stamps[i - 1]).total_seconds() for i in range(1, len(stamps))]
-    return timedelta(seconds=median(diffs))
+    _require_shared_context(obs)
+    stamps = sorted({(o.timestamp, o.qc_context_segment) for o in obs})
+    diffs = [
+        (current[0] - previous[0]).total_seconds()
+        for previous, current in zip(stamps, stamps[1:], strict=False)
+        if current[1] == previous[1] and current[0] != previous[0]
+    ]
+    return timedelta(seconds=median(diffs)) if diffs else None
 
 
 def group_key(obs: Observation) -> tuple[StationId, str]:
@@ -430,17 +463,30 @@ class Stage1QualityChecker:
                 thresholds = _merge_thresholds(rule, overrides, station_id)
 
                 if rule.rule_id == "frozen_sensor":
-                    frozen_flags, frozen_judged = _apply_frozen_sensor(
-                        group, thresholds, rule
-                    )
-                    for obs_id, flag in frozen_flags.items():
-                        result[obs_id].append(flag)
-                    judged |= frozen_judged
+                    for _, segment_iter in groupby(
+                        group, key=lambda obs: obs.qc_context_segment
+                    ):
+                        frozen_flags, frozen_judged = _apply_frozen_sensor(
+                            list(segment_iter), thresholds, rule
+                        )
+                        for obs_id, flag in frozen_flags.items():
+                            result[obs_id].append(flag)
+                        judged |= frozen_judged
                     continue
 
                 for i, obs in enumerate(group):
                     prev = group[i - 1] if i > 0 else None
                     nxt = group[i + 1] if i < len(group) - 1 else None
+                    if (
+                        prev is not None
+                        and prev.qc_context_segment != obs.qc_context_segment
+                    ):
+                        prev = None
+                    if (
+                        nxt is not None
+                        and nxt.qc_context_segment != obs.qc_context_segment
+                    ):
+                        nxt = None
 
                     evaluation: _Evaluation = (Judgement.NOT_EVALUABLE, None)
                     match rule.rule_id:

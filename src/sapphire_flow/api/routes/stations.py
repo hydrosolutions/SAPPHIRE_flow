@@ -15,6 +15,7 @@ from sapphire_flow.api.model_visibility import (
     station_has_active_floor,
 )
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.store.bafu_unit_read_filter import trusted_unit_predicate
 from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import QcStatus
@@ -439,6 +440,7 @@ def station_observations_json(
     rows = (
         conn.execute(
             sa.select(obs.c.timestamp, obs.c.value, obs.c.qc_status)
+            .where(trusted_unit_predicate(obs))
             .where(
                 sa.and_(
                     obs.c.station_id == station_id,
@@ -690,6 +692,7 @@ def station_hindcasts_json(
         obs_rows = (
             conn.execute(
                 sa.select(obs.c.timestamp, obs.c.value)
+                .where(trusted_unit_predicate(obs))
                 .where(
                     sa.and_(
                         obs.c.station_id == station_id,

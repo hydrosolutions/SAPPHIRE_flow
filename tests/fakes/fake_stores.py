@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import threading  # noqa: TC003
+from bisect import bisect_right
 from collections.abc import (
     Callable,  # noqa: TC003
     Collection,  # noqa: TC003 — runtime isinstance/set use in fetch_observations
     Sequence,  # noqa: TC003
 )
 from dataclasses import replace
-from datetime import UTC, date, datetime  # noqa: TC003
+from datetime import UTC, date, datetime, timedelta  # noqa: TC003
 from pathlib import Path
 from typing import Literal, TypeAlias
 from uuid import UUID, uuid4
@@ -112,6 +113,12 @@ from sapphire_flow.types.observation import (  # noqa: TC001
     Observation,
     RawObservation,
 )
+from sapphire_flow.types.observation_read import (
+    ObservationReadPurpose,
+    QcContextRequirement,
+    QcContextWindow,
+    QcReadToken,
+)
 from sapphire_flow.types.pipeline import PipelineHealthRecord  # noqa: TC001
 from sapphire_flow.types.rating_curve import RatingCurve  # noqa: TC001
 from sapphire_flow.types.rejected_forecast import (
@@ -147,19 +154,248 @@ _ObservationNaturalKey: TypeAlias = tuple[
 
 
 class FakeObservationStore:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, purpose: ObservationReadPurpose = ObservationReadPurpose.TRUSTED
+    ) -> None:
+        if purpose not in tuple(ObservationReadPurpose):
+            raise ValueError("observation read purpose must be typed")
+        if purpose is ObservationReadPurpose.SOURCE_AUDIT:
+            raise ValueError("SOURCE_AUDIT requires a restricted D2 capability")
+        self._purpose = purpose
         self._observations: dict[ObservationId, Observation] = {}
+        self._unit_holds: dict[ObservationId, set[str]] = {}
+        self._unit_evidence: dict[ObservationId, Observation] = {}
         self.fetch_observations_call_count: int = 0
+
+    def qc_context_reader(self) -> FakeObservationStore:
+        reader = FakeObservationStore(purpose=ObservationReadPurpose.QC_CONTEXT)
+        reader._observations = self._observations
+        reader._unit_holds = self._unit_holds
+        reader._unit_evidence = self._unit_evidence
+        return reader
+
+    def hold_unit_observation(
+        self, observation_id: ObservationId, hold_id: str
+    ) -> None:
+        self._unit_holds.setdefault(observation_id, set()).add(hold_id)
+
+    def release_unit_hold(self, observation_id: ObservationId, hold_id: str) -> None:
+        self._unit_holds.get(observation_id, set()).discard(hold_id)
+
+    def record_unit_evidence(self, observation: Observation) -> None:
+        self._unit_evidence[observation.id] = observation
+
+    def _unit_visible(self, observation: Observation) -> bool:
+        evidence = self._unit_evidence.get(observation.id)
+        canonical = evidence is not None and all(
+            getattr(evidence, key) == getattr(observation, key)
+            for key in (
+                "station_id",
+                "timestamp",
+                "parameter",
+                "value",
+                "source",
+                "rating_curve_id",
+                "rating_curve_correction_version",
+                "delivery_id",
+            )
+        )
+        if evidence is not None and not canonical:
+            return False
+        if self._unit_holds.get(observation.id):
+            return self._purpose is ObservationReadPurpose.QC_CONTEXT and canonical
+        return True
+
+    _snapshot_fields = (
+        "id",
+        "station_id",
+        "timestamp",
+        "parameter",
+        "value",
+        "source",
+        "rating_curve_id",
+        "rating_curve_correction_version",
+        "delivery_id",
+    )
+
+    def _snapshot_context(
+        self,
+        observation: Observation,
+        window: QcContextWindow | None,
+    ) -> tuple[str, int, list[UtcDatetime]]:
+        rows = [
+            row
+            for row in self._observations.values()
+            if row.station_id == observation.station_id
+            and row.parameter == observation.parameter
+            and (window is None or window.start <= row.timestamp < window.end)
+            and (window is None or window.source is None or row.source == window.source)
+        ]
+        series_ids = {row.id for row in rows}
+        context = (
+            window,
+            sorted(
+                (str(row.id), tuple(getattr(row, key) for key in self._snapshot_fields))
+                for row in rows
+            ),
+            sorted(
+                (
+                    str(key),
+                    tuple(getattr(evidence, name) for name in self._snapshot_fields),
+                )
+                for key, evidence in self._unit_evidence.items()
+                if key in series_ids
+            ),
+            sorted(
+                (str(key), sorted(holds))
+                for key, holds in self._unit_holds.items()
+                if key in series_ids
+            ),
+        )
+        excluded = sorted(row.timestamp for row in rows if not self._unit_visible(row))
+        return (
+            hashlib.sha256(repr(context).encode()).hexdigest(),
+            len(rows) - len(excluded),
+            excluded,
+        )
+
+    def _snapshot(
+        self,
+        observation: Observation,
+        window: QcContextWindow | None = None,
+        context: tuple[str, int, list[UtcDatetime]] | None = None,
+    ) -> Observation:
+        if self._purpose is ObservationReadPurpose.TRUSTED:
+            return replace(
+                observation,
+                qc_read_token=None,
+                qc_context_segment=0,
+                qc_context_requirement=QcContextRequirement.ORDINARY,
+            )
+        context_hash, cohort_size, excluded = (
+            self._snapshot_context(observation, window) if context is None else context
+        )
+        state = tuple(getattr(observation, key) for key in self._snapshot_fields)
+        return replace(
+            observation,
+            qc_read_token=QcReadToken(
+                state_sha256=hashlib.sha256(repr(state).encode()).hexdigest(),
+                context_sha256=context_hash,
+                qc_state_sha256=hashlib.sha256(
+                    repr(
+                        (
+                            observation.qc_status,
+                            observation.qc_flags,
+                            observation.qc_rule_version,
+                        )
+                    ).encode()
+                ).hexdigest(),
+                cohort_size=cohort_size,
+                window=window,
+            ),
+            qc_context_segment=bisect_right(excluded, observation.timestamp),
+            qc_context_requirement=(
+                QcContextRequirement.UNIT_GOVERNED
+                if self._unit_holds.get(observation.id)
+                or observation.id in self._unit_evidence
+                else QcContextRequirement.ORDINARY
+            ),
+        )
+
+    def fetch_observation_by_id(
+        self, observation_id: ObservationId
+    ) -> Observation | None:
+        obs = self._observations.get(observation_id)
+        if obs is None or not self._unit_visible(obs):
+            return None
+        window = (
+            QcContextWindow(
+                station_id=obs.station_id,
+                parameter=obs.parameter,
+                start=obs.timestamp,
+                end=obs.timestamp + timedelta(microseconds=1),
+                source=obs.source,
+            )
+            if self._purpose is ObservationReadPurpose.QC_CONTEXT
+            else None
+        )
+        return self._snapshot(obs, window)
+
+    def update_qc_if_current(
+        self,
+        observation: Observation,
+        qc_status: QcStatus,
+        qc_flags: list[QcFlag],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        return self.update_qc_batch_if_current(
+            [(observation, qc_status, qc_flags)], qc_rule_version
+        )
+
+    def update_qc_batch_if_current(
+        self,
+        updates: list[tuple[Observation, QcStatus, list[QcFlag]]],
+        qc_rule_version: str | None = None,
+    ) -> bool:
+        if not updates:
+            return True
+        if len({obs.id for obs, _, _ in updates}) != len(updates):
+            raise ValueError("conditional QC batch requires distinct targets")
+        first = updates[0][0].qc_read_token
+        if any(
+            obs.qc_read_token is None
+            or obs.qc_read_token.window is None
+            or obs.qc_read_token.qc_state_sha256 is None
+            for obs, _, _ in updates
+        ):
+            raise ValueError("conditional QC requires a bounded snapshot read token")
+        assert first is not None and first.window is not None
+        if any(
+            o.qc_read_token is None
+            or o.qc_read_token.window != first.window
+            or o.qc_read_token.context_sha256 != first.context_sha256
+            for o, _, _ in updates
+        ):
+            raise ValueError("conditional QC batch requires one shared snapshot")
+        context = self._snapshot_context(updates[0][0], first.window)
+        for obs, _, _ in updates:
+            current = self._observations.get(obs.id)
+            if current is None or not self._unit_visible(current):
+                return False
+            token = obs.qc_read_token
+            if (
+                self._snapshot(
+                    current, token.window if token else None, context
+                ).qc_read_token
+                != token
+            ):
+                return False
+        for obs, status, flags in updates:
+            self.update_qc(obs.id, status, flags, qc_rule_version)
+        return True
+
+    def fetch_latest_capture_timestamp(
+        self, station_id: StationId, parameter: str
+    ) -> UtcDatetime | None:
+        stamps = [
+            o.timestamp
+            for o in self._observations.values()
+            if o.station_id == station_id and o.parameter == parameter
+        ]
+        return max(stamps) if stamps else None
 
     def fetch_delivery_observations(
         self, delivery_id: str, station_ids: list[StationId]
     ) -> list[Observation]:
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT:
+            raise ValueError("delivery QC requires an explicit bounded context window")
         wanted = set(station_ids)
         return sorted(
             (
-                observation
+                self._snapshot(observation)
                 for observation in self._observations.values()
                 if observation.delivery_id == delivery_id
+                and self._unit_visible(observation)
                 and observation.station_id in wanted
             ),
             key=lambda observation: (
@@ -334,6 +570,10 @@ class FakeObservationStore:
         qc_status: QcStatus | Collection[QcStatus] | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT and qc_status is not None:
+            raise ValueError(
+                "QC context requires full cohort; select targets after reading"
+            )
         self.fetch_observations_call_count += 1
         # Plan 316 T1: mirror the store's scalar-or-collection filter exactly.
         # A fake that accepted only the scalar would make every two-status
@@ -345,15 +585,29 @@ class FakeObservationStore:
             accepted = {qc_status}
         else:
             accepted = set(qc_status)
-        return [
+        window = QcContextWindow(
+            station_id=station_id,
+            parameter=parameter,
+            start=start,
+            end=end,
+            source=source,
+        )
+        rows = [
             o
             for o in self._observations.values()
             if o.station_id == station_id
+            and self._unit_visible(o)
             and o.parameter == parameter
             and start <= o.timestamp < end
             and (accepted is None or o.qc_status in accepted)
             and (source is None or o.source == source)
         ]
+        context = (
+            self._snapshot_context(rows[0], window)
+            if rows and self._purpose is ObservationReadPurpose.QC_CONTEXT
+            else None
+        )
+        return [self._snapshot(row, window, context) for row in rows]
 
     def fetch_latest_timestamp(
         self, station_id: StationId, parameter: str
@@ -361,7 +615,9 @@ class FakeObservationStore:
         timestamps = [
             o.timestamp
             for o in self._observations.values()
-            if o.station_id == station_id and o.parameter == parameter
+            if o.station_id == station_id
+            and o.parameter == parameter
+            and self._unit_visible(o)
         ]
         return max(timestamps) if timestamps else None
 
@@ -374,6 +630,10 @@ class FakeObservationStore:
         qc_status: QcStatus | None = None,
         source: ObservationSource | None = None,
     ) -> dict[StationId, list[Observation]]:
+        if self._purpose is ObservationReadPurpose.QC_CONTEXT and qc_status is not None:
+            raise ValueError(
+                "QC context requires full cohort; select targets after reading"
+            )
         return {
             sid: self.fetch_observations(sid, parameter, start, end, qc_status, source)
             for sid in station_ids
@@ -387,11 +647,23 @@ class FakeObservationStore:
         station_id: StationId,
         rating_curve_id: RatingCurveId,
     ) -> list[Observation]:
-        return [
+        rows = [
             o
             for o in self._observations.values()
-            if o.station_id == station_id and o.rating_curve_id == rating_curve_id
+            if o.station_id == station_id
+            and o.rating_curve_id == rating_curve_id
+            and self._unit_visible(o)
         ]
+        contexts: dict[str, tuple[str, int, list[UtcDatetime]]] = {}
+        snapshots = []
+        for row in rows:
+            if (
+                self._purpose is ObservationReadPurpose.QC_CONTEXT
+                and row.parameter not in contexts
+            ):
+                contexts[row.parameter] = self._snapshot_context(row, None)
+            snapshots.append(self._snapshot(row, context=contexts.get(row.parameter)))
+        return snapshots
 
 
 class FakeForecastStore:
@@ -1939,7 +2211,7 @@ class FakePipelineHealthStore:
         limit: int = 100,
     ) -> list[PipelineHealthRecord]:
         """Plan 222 fixer round — mirrors `PgPipelineHealthStore.fetch_recent`'s
-        `ORDER BY checked_at DESC` (newest first), not insertion order. The
+        `ORDER BY checked_at DESC, id DESC` (newest first, last append wins ties). The
         old `matches[-limit:]` silently relied on tests appending records in
         chronological order; any caller reading `records[0]` expecting "the
         newest record" would false-pass against the fake even with a wrong
@@ -1949,7 +2221,9 @@ class FakePipelineHealthStore:
         `ForecastStore.fetch_latest_uncombined_issued_at()` — but other
         `FORECAST_FRESHNESS` consumers still rely on this ordering.)"""
         matches = [
-            r for r in self._records if check_type is None or r.check_type == check_type
+            r
+            for r in reversed(self._records)
+            if check_type is None or r.check_type == check_type
         ]
         matches.sort(key=lambda r: r.checked_at, reverse=True)
         return matches[:limit]

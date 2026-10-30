@@ -171,6 +171,10 @@ def snapshot_consumed_input(
     else:
         raise TypeError("unsupported consumed input record")
     data = asdict(record)
+    if isinstance(record, Observation):
+        # Read-time concurrency/context markers are not consumed source evidence.
+        for field in ("qc_read_token", "qc_context_segment", "qc_context_requirement"):
+            data.pop(field)
     data.pop("created_at", None)
     data["value"] = _consumed_value(data["value"])
     return ForecastInputSnapshot(

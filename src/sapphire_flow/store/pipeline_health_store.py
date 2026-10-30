@@ -30,7 +30,9 @@ class PgPipelineHealthStore:
         check_type: PipelineCheckType | None = None,
         limit: int = 100,
     ) -> list[PipelineHealthRecord]:
-        stmt = sa.select(pipeline_health).order_by(pipeline_health.c.checked_at.desc())
+        stmt = sa.select(pipeline_health).order_by(
+            pipeline_health.c.checked_at.desc(), pipeline_health.c.id.desc()
+        )
         if check_type is not None:
             stmt = stmt.where(pipeline_health.c.check_type == check_type.value)
         stmt = stmt.limit(limit)

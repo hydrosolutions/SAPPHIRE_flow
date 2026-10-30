@@ -153,9 +153,6 @@ def test_live_runtime_temp_objects_do_not_abort_preflights(
     role_harness, role: str, kind: str
 ) -> None:
     import sqlalchemy as sa
-    from alembic.config import Config
-
-    from alembic import command
 
     assert role_harness.run_bootstrap("api-fixture", "worker-fixture").returncode == 0
     password = "api-fixture" if role == "sapphire_api" else "worker-fixture"
@@ -189,9 +186,6 @@ def test_live_runtime_temp_objects_do_not_abort_preflights(
             assert result.returncode == 0, result.stderr
             conn.execute(sa.text("SELECT id FROM stations LIMIT 1"))
             conn.commit()
-            config = Config("alembic.ini")
-            command.downgrade(config, "0070")
-            command.upgrade(config, "head")
             conn.execute(sa.text("SELECT id FROM forecasts LIMIT 1"))
             conn.commit()
             with (

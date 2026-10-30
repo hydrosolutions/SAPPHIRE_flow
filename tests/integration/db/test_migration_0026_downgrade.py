@@ -8,10 +8,10 @@ import pytest
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
+from tests.integration.db.historical_seeds import seed_station as _seed_station
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
     _seed_model,
-    _seed_station,
 )
 
 if TYPE_CHECKING:
@@ -66,12 +66,17 @@ class TestMigration0026Downgrade:
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         from alembic import command
-        from sapphire_flow.db.metadata import forecasts
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0026")
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == "0026"
+            )
 
+        forecasts = sa.Table("forecasts", sa.MetaData(), autoload_with=engine)
         forecast_id = uuid4()
         with engine.begin() as conn:
             station_id = _seed_station(conn)
@@ -96,6 +101,11 @@ class TestMigration0026Downgrade:
         # The reversibility contract: this must NOT raise despite the runoff-only
         # row that only migration 0026 made representable.
         command.downgrade(cfg, "0025")
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == "0025"
+            )
 
         with engine.connect() as conn:
             source, reference_time = conn.execute(

@@ -589,3 +589,19 @@ execution: a CLI can open the wrong database even when its seed fixture is corre
 Fixed-time API fixtures must control the route clock when testing default-now windows,
 or pass explicit bounds when default-window behavior is not under test.
 Assert expected result counts before ordering checks so an empty response cannot pass.
+
+
+Test-generated query plans and other artifacts must use pytest's `tmp_path`, not
+pre-existing developer evidence directories.
+
+### Observation test-fake snapshots
+
+Both fake conditional-QC update entrypoints use the batch validator and require a
+bounded snapshot token with prior-QC state, matching the PostgreSQL store.
+
+`FakeObservationStore` trusted reads return no QC snapshot token, matching the
+production reader. Tests that require conditional QC use `qc_context_reader()`
+and an explicit bounded full-cohort read. The fake computes shared context once
+per read or batch comparison, never caches it across calls, and hashes each
+target's prior QC state separately. Hold/evidence/input mutations must invalidate
+old tokens, including mutations to excluded neighbours.

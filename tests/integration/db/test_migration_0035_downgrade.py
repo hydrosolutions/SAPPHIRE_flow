@@ -8,10 +8,10 @@ import pytest
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
+from tests.integration.db.historical_seeds import seed_rating_curve
+from tests.integration.db.historical_seeds import seed_station as _seed_station
 from tests.integration.store.test_forecast_store import (
     _NOW,
-    _seed_rating_curve,
-    _seed_station,
 )
 
 if TYPE_CHECKING:
@@ -68,12 +68,17 @@ class TestMigration0035Downgrade:
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0035")
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == "0035"
+            )
 
         observation_id = uuid4()
         with engine.begin() as conn:
             station_id = _seed_station(conn)
-            curve_id = _seed_rating_curve(conn, station_id)
+            curve_id = seed_rating_curve(conn, station_id, _NOW)
             conn.execute(
                 sa.text(
                     "INSERT INTO observations "
@@ -93,6 +98,11 @@ class TestMigration0035Downgrade:
         # The reversibility contract: this must NOT raise despite the
         # rating-curve-derived row that only migration 0035 made representable.
         command.downgrade(cfg, "0034")
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == "0034"
+            )
 
         with engine.connect() as conn:
             (source,) = conn.execute(
@@ -114,4 +124,9 @@ class TestMigration0035Downgrade:
         assert "rating_curve_correction_version" not in columns
 
         # Re-upgrade must succeed on the coerced data (round-trip).
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0035")
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == "0035"
+            )

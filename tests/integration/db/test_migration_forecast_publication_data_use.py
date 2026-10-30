@@ -7,13 +7,14 @@ import sqlalchemy as sa
 from alembic.config import Config
 
 from alembic import command
+from tests.integration.db.historical_seeds import assert_revision
+from tests.integration.db.historical_seeds import seed_tenant_station as _seed_station
 from tests.integration.db.test_migration_0065_rejected_forecasts import (
     migration_engine as migration_engine,
 )
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
     _seed_model,
-    _seed_station,
 )
 
 
@@ -24,6 +25,7 @@ def test_legacy_rejection_defaults_and_roundtrip(
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     command.upgrade(config, "0069")
+    assert_revision(engine, "0069")
     rid = uuid4()
     with engine.begin() as conn:
         sid = _seed_station(conn)
@@ -39,7 +41,8 @@ def test_legacy_rejection_defaults_and_roundtrip(
             ),
             dict(id=rid, attempt=uuid4(), sid=sid, mid=mid, issued=_ISSUED_A),
         )
-    command.upgrade(config, "head")
+    command.upgrade(config, "0070")
+    assert_revision(engine, "0070")
     with engine.connect() as conn:
         assert conn.execute(
             sa.text(
@@ -48,6 +51,7 @@ def test_legacy_rejection_defaults_and_roundtrip(
             {"id": rid},
         ).one() == ("standard", None)
     command.downgrade(config, "0069")
+    assert_revision(engine, "0069")
     with engine.connect() as conn:
         assert (
             conn.scalar(
@@ -56,7 +60,8 @@ def test_legacy_rejection_defaults_and_roundtrip(
             )
             == 1
         )
-    command.upgrade(config, "head")
+    command.upgrade(config, "0070")
+    assert_revision(engine, "0070")
 
 
 @pytest.mark.parametrize("relation", ["forecasts", "rejected_forecasts"])
@@ -68,7 +73,8 @@ def test_downgrade_refuses_existing_test_data(
     engine, url = migration_engine
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0070")
+    assert_revision(engine, "0070")
     with engine.begin() as conn:
         sid = _seed_station(conn)
         mid = _seed_model(conn)
@@ -137,6 +143,7 @@ def test_downgrade_refuses_existing_test_data(
         starting_revision = conn.scalar(
             sa.text("SELECT version_num FROM alembic_version")
         )
+        before = _legacy_rows(conn)
     with pytest.raises(RuntimeError, match="downgrade refused"):
         command.downgrade(config, "0069")
     with engine.connect() as conn:
@@ -144,6 +151,7 @@ def test_downgrade_refuses_existing_test_data(
             conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
             == starting_revision
         )
+        assert _legacy_rows(conn) == before
 
 
 def _legacy_rows(conn: sa.Connection) -> dict[str, list[str]]:

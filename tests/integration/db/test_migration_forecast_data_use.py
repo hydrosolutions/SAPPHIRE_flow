@@ -20,7 +20,7 @@ from tests.integration.db.test_migration_0065_rejected_forecasts import (
     migration_engine as migration_engine,
 )
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
-from tests.integration.store.test_forecast_data_use import _pair, _stores
+from tests.integration.store.test_forecast_data_use import _pair
 from tests.integration.store.test_forecast_store import (
     _ISSUED_A,
     _seed_model,
@@ -81,19 +81,53 @@ class TestForecastDataUseMigration:
     ) -> None:
         engine, _ = migration_engine
         config = Config("alembic.ini")
-        # Current protected stores require the current reference schema. Seed
-        # only legacy evidence, then exercise the actual 0069 downgrade boundary.
-        command.upgrade(config, "head")
-        with engine.begin() as conn:
-            _, test = _pair(conn)
-        command.downgrade(config, "0069")
+        command.upgrade(config, "0069")
         with engine.begin() as conn:
             # This database is disposable; restore exactly the dormant trigger
             # before committing the synthetic fixture used by downgrade tests.
             conn.execute(
                 sa.text("DROP TRIGGER trg_forecast_test_write_refused ON forecasts")
             )
-            _stores(conn)[1].store_forecast(test)
+            import json
+
+            from tests.integration.db.historical_seeds import seed_tenant_station
+
+            sid = seed_tenant_station(conn)
+            mid = _seed_model(conn)
+            forecast_id = uuid4()
+            lineage = json.dumps(
+                {
+                    "snapshots": [],
+                    "static_attributes": [
+                        {
+                            "station_id": str(sid),
+                            "source": "fixture",
+                            "version": "v1",
+                            "values": {"area": 1.0},
+                        }
+                    ],
+                    "provisional_discharge_fingerprints": [],
+                    "contributor_forecast_ids": [],
+                    "transformation_versions": ["v1"],
+                }
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO forecasts "
+                    "(id,station_id,model_id,issued_at,representation,"
+                    "parameter,units,data_use,input_lineage) VALUES "
+                    "(:id,:sid,:mid,:issued,'members','discharge','m3/s',"
+                    "'expired_rating_test',:lineage)"
+                ),
+                {
+                    "id": forecast_id,
+                    "sid": sid,
+                    "mid": mid,
+                    "issued": _ISSUED_A,
+                    "lineage": lineage,
+                },
+            )
+
             conn.execute(
                 sa.text(
                     "CREATE TRIGGER trg_forecast_test_write_refused "
@@ -107,6 +141,19 @@ class TestForecastDataUseMigration:
             assert (
                 conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
                 == "0069"
+            )
+            assert conn.execute(
+                sa.text("SELECT data_use,input_lineage FROM forecasts WHERE id=:id"),
+                {"id": forecast_id},
+            ).one() == ("expired_rating_test", lineage)
+            assert (
+                conn.scalar(
+                    sa.text(
+                        "SELECT tgenabled FROM pg_trigger WHERE "
+                        "tgname='trg_forecast_test_write_refused'"
+                    )
+                )
+                == "O"
             )
 
 

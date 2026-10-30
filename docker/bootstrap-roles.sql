@@ -337,7 +337,11 @@ DECLARE t text; r text; cols text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
                             'rating_reference_proofs', 'provisional_discharges',
-                            'forecast_input_stations'] LOOP
+                            'forecast_input_stations', 'bafu_unit_batch_admissions',
+                            'bafu_unit_batch_receipts', 'bafu_unit_events',
+                            'bafu_unit_read_holds', 'bafu_unit_hold_releases',
+                       'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
+                       'bafu_unit_receipt_reconciliation'] LOOP
         SELECT string_agg(quote_ident(attname), ', ') INTO cols FROM pg_attribute
         WHERE attrelid = to_regclass('public.' || t) AND attnum > 0 AND NOT attisdropped;
         FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
@@ -509,7 +513,11 @@ JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND c.relname NOT IN ('provisional_discharge_permissions', 'measurement_feed_evidence',
                        'rating_reference_proofs', 'provisional_discharges',
-                       'forecast_input_stations', 'forecasts', 'rejected_forecasts')
+                       'forecast_input_stations', 'forecasts', 'rejected_forecasts',
+                       'bafu_unit_batch_admissions', 'bafu_unit_batch_receipts',
+                       'bafu_unit_events', 'bafu_unit_read_holds', 'bafu_unit_hold_releases',
+                       'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
+                       'bafu_unit_receipt_reconciliation', 'observation_qc_boundaries')
 ORDER BY c.relname
 \gexec
 
@@ -532,6 +540,9 @@ GRANT SELECT (
 -- USAGE (+SELECT, for currval()) on sequences is required for that INSERT to
 -- succeed. Sequences carry no data of their own — broad grant is low-risk.
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO sapphire_api, sapphire_worker;
+-- Unit-journal admission ordering is private; runtime authority is not enabled yet.
+REVOKE ALL ON SEQUENCE bafu_unit_batch_admissions_sequence_seq, bafu_unit_events_event_id_seq
+    FROM PUBLIC, sapphire_api, sapphire_worker;
 
 -- sapphire_api (conventions.md § Service users): the access-token lifecycle
 -- (CLI create/revoke via `docker compose exec api ...`, `last_used_at` write
@@ -1050,3 +1061,83 @@ JOIN pg_catalog.pg_proc p
 -- Minimal invoker guard reads only; no activation or protected-content grants.
 GRANT SELECT (tenant_id, state) ON provisional_discharge_permissions
     TO sapphire_api, sapphire_worker;
+
+
+-- BAFU D1 build only. No LOGIN/credential/activation is provisioned for maintenance.
+SELECT 'CREATE ROLE sapphire_bafu_maintenance NOLOGIN NOSUPERUSER NOCREATEDB '
+       'NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles
+                  WHERE rolname = 'sapphire_bafu_maintenance')
+\gexec
+ALTER ROLE sapphire_bafu_maintenance NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+    NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE sapphire_bafu_maintenance RESET ALL;
+ALTER ROLE sapphire_bafu_maintenance IN DATABASE sapphire RESET ALL;
+SELECT format('REVOKE %I FROM sapphire_bafu_maintenance', granted.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname = 'sapphire_bafu_maintenance'
+\gexec
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_shdepend d JOIN pg_catalog.pg_roles r
+        ON r.oid = d.refobjid WHERE r.rolname = 'sapphire_bafu_maintenance'
+        AND d.deptype = 'o') THEN
+        RAISE EXCEPTION 'sapphire_bafu_maintenance owns objects';
+    END IF;
+END $$;
+DROP OWNED BY sapphire_bafu_maintenance;
+GRANT CONNECT ON DATABASE sapphire TO sapphire_bafu_maintenance;
+GRANT USAGE ON SCHEMA public TO sapphire_bafu_maintenance;
+GRANT SELECT ON stations, bafu_unit_write_scopes, bafu_unit_read_holds,
+    bafu_unit_hold_releases TO sapphire_bafu_maintenance;
+GRANT INSERT (id, tenant_id, station_id, network, gauge_code, lindas_kind,
+    parameter, source, starts_at, ends_at, registry_sha256, approval_sha256)
+    ON bafu_unit_write_scopes TO sapphire_bafu_maintenance;
+GRANT INSERT (id, tenant_id, station_id, parameter, source, starts_at, ends_at,
+    reason, origin, approval_sha256, registry_sha256)
+    ON bafu_unit_read_holds TO sapphire_bafu_maintenance;
+GRANT INSERT (id, hold_id, starts_at, ends_at, approval_sha256)
+    ON bafu_unit_hold_releases TO sapphire_bafu_maintenance;
+
+-- Default owner-rights security-barrier views, owned by the migration principal.
+-- Runtime roles cannot CREATE/replace views or read the underlying private JSON.
+GRANT SELECT ON bafu_unit_batch_admissions, bafu_unit_event_reconciliation,
+    bafu_unit_receipt_reconciliation, bafu_unit_write_scopes TO sapphire_worker;
+GRANT INSERT (batch_id, disposition, tenant_id, station_id, gauge_code,
+    lindas_kind, received_at, registry_version, registry_sha256, input_digest)
+    ON bafu_unit_batch_admissions TO sapphire_worker;
+GRANT INSERT (batch_id, input_digest, result_digest, result)
+    ON bafu_unit_batch_receipts TO sapphire_worker;
+GRANT INSERT (batch_id, tenant_id, station_id, measurement_time, parameter, source,
+    outcome, fingerprint, observation_id, canonical_value, value_state_sha256,
+    capture, before_state, after_state, reason) ON bafu_unit_events TO sapphire_worker;
+GRANT SELECT (event_id) ON bafu_unit_events TO sapphire_worker;
+GRANT USAGE ON SEQUENCE bafu_unit_batch_admissions_sequence_seq,
+    bafu_unit_events_event_id_seq TO sapphire_worker;
+GRANT INSERT (id, tenant_id, station_id, starts_at, ends_at, reason, origin,
+    event_id, registry_sha256) ON bafu_unit_read_holds TO sapphire_worker;
+GRANT SELECT (id, station_id, parameter, source, starts_at, ends_at)
+    ON bafu_unit_read_holds TO sapphire_api, sapphire_worker;
+GRANT SELECT (id, hold_id, starts_at, ends_at)
+    ON bafu_unit_hold_releases TO sapphire_api, sapphire_worker;
+
+-- Safe current disposition only; no raw unit journal access.
+GRANT EXECUTE ON FUNCTION public.observation_qc_compare_and_set
+    (uuid, text, text, text, jsonb, text) TO sapphire_worker;
+GRANT SELECT ON bafu_unit_observation_read_state
+    TO sapphire_api, sapphire_worker;
+\if :operator_guard_ok
+    GRANT SELECT ON bafu_unit_observation_read_state TO sapphire_operator;
+    GRANT EXECUTE ON FUNCTION public.observation_qc_lock(uuid, text)
+        TO sapphire_operator;
+\endif
+
+-- Bounded QC: safe markers only, and invoker-rights execution. No raw reads.
+GRANT SELECT ON observation_qc_boundaries TO sapphire_worker;
+GRANT EXECUTE ON FUNCTION public.observation_qc_window
+    (uuid, text, timestamptz, timestamptz, text) TO sapphire_worker;
+GRANT EXECUTE ON FUNCTION public.observation_qc_batch_compare_and_set
+    (uuid, text, timestamptz, timestamptz, text, text, jsonb) TO sapphire_worker;
+GRANT EXECUTE ON FUNCTION public.observation_qc_lock(uuid, text)
+    TO sapphire_worker, sapphire_bafu_maintenance;

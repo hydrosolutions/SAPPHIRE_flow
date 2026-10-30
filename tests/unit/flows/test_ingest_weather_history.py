@@ -1185,9 +1185,10 @@ class TestWeatherHistoryHealthByEffect:
         # The first run advances the horizon from nothing to the row's
         # valid_time (healthy); the second run is a stuck duplicate with
         # IDENTICAL before/after MAX(valid_time) — zero effect, unhealthy.
-        assert records[0].status == PipelineHealthStatus.OK
-        assert records[1].status == PipelineHealthStatus.CRITICAL
-        assert records[1].detail["reason"] == "no_horizon_advance"
+        # Recent records are newest-first; equal timestamps use last append first.
+        assert records[1].status == PipelineHealthStatus.OK
+        assert records[0].status == PipelineHealthStatus.CRITICAL
+        assert records[0].detail["reason"] == "no_horizon_advance"
 
     def test_second_run_with_genuinely_new_data_is_healthy(self) -> None:
         # Guards against an over-broad fix: a second run that DOES land a

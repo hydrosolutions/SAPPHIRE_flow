@@ -99,7 +99,9 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Raw forecast lineage protection chains 0071 onto 0070.
 # Daily scheduled and isolated one-shot summaries chain 0072 onto 0071.
 # Explicit owner-assumed reference basis chains 0073 onto 0072.
-_RELEASE_B_HEAD = "0073"
+# BAFU unit evidence/guards/read state chain 0074–0077 onto published 0073;
+# bounded QC serialization chains 0078 onto 0077.
+_RELEASE_B_HEAD = "0078"
 
 
 def _down_revisions() -> dict[str, str | None]:
@@ -171,3 +173,17 @@ class TestReleaseBAlembicHeadIsSingleAndCurrent:
             "revision instead of chaining onto Release B's head, which "
             "would give Alembic multiple heads at deploy time."
         )
+
+    def test_unit_chain_preserves_published_reference_basis(self) -> None:
+        graph = _down_revisions()
+        assert {
+            revision: graph[revision]
+            for revision in ("0073", "0074", "0075", "0076", "0077", "0078")
+        } == {
+            "0073": "0072",
+            "0074": "0073",
+            "0075": "0074",
+            "0076": "0075",
+            "0077": "0076",
+            "0078": "0077",
+        }

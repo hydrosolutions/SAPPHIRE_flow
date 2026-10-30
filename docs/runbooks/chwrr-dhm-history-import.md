@@ -84,3 +84,22 @@ under `Asia/Kathmandu`, including the historical 1986 offset transition. It
 is a working assumption pending CHWRR confirmation. The old rating tables all
 expire before current operations, so this import does not enable a live
 level-to-discharge conversion.
+
+
+### Isolation from BAFU unit maintenance
+
+The DHM delivery operator has no BAFU unit scope, hold-release or raw-evidence
+privileges. The BAFU deferred write guard returns before private unit reads for
+DHM, manual-import and non-discharge changes. Do not grant unit maintenance rights
+to resolve an operator import error. BAFU unit approvals use the separate dormant
+NOLOGIN maintenance principal described in the
+[database contract](../spec/database-schema.md#approved-scope-database-guards-d1-build-dormant-until-explicit-approval).
+No BAFU scope, hold or registry is activated by the DHM procedure.
+
+After the D1 reader/QC migrations, the operator also needs SELECT on the safe
+current disposition view and EXECUTE on `observation_qc_lock(uuid, text)`.
+Bootstrap supplies these only while the existing operator guard check passes;
+the diagnostic minimal-grant matrix tests both. Neither
+grant exposes private unit journals. Observation mutations join the shared
+station/parameter transaction lock; a deadlock or five-second lock timeout aborts
+the command. Retry only after a fresh read and the normal operator checks.

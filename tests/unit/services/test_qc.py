@@ -716,3 +716,107 @@ class TestObservationQcSeverity:
         )
         statuses = {flag.status for flags in result.values() for flag in flags}
         assert statuses == {OBSERVATION_QC_SEVERITY[rule_id]}
+
+
+class TestUnitContextSegments:
+    def test_range_can_judge_first_row_after_unit_boundary(self) -> None:
+        observations = [
+            _make_obs(1.0, 0),
+            _make_obs(1.0, 1),
+            replace(_make_obs(50.0, 3), qc_context_segment=1),
+            replace(_make_obs(50.0, 4), qc_context_segment=1),
+        ]
+        temporal = _rule("rate_of_change", {"max_rate": 5.0})
+        checker = Stage1QualityChecker()
+        without_range = checker.check_with_coverage(
+            observations,
+            _rule_set(temporal),
+            [],
+            [],
+            station_networks={_STATION: "bafu"},
+        )
+        target = observations[2]
+        assert target.id not in without_range.judged
+        with_range = checker.check_with_coverage(
+            observations,
+            _rule_set(
+                temporal, _rule("range_check", {"value_min": 0.0, "value_max": 100.0})
+            ),
+            [],
+            [],
+            station_networks={_STATION: "bafu"},
+        )
+        assert target.id in with_range.judged
+        assert with_range.flags[target.id] == []
+
+    def test_frozen_run_cannot_cross_unit_boundary(self) -> None:
+        observations = [
+            _make_obs(1.0, 0),
+            _make_obs(1.0, 1),
+            replace(_make_obs(1.0, 3), qc_context_segment=1),
+            replace(_make_obs(1.0, 4), qc_context_segment=1),
+        ]
+        checked = Stage1QualityChecker().check_with_coverage(
+            observations,
+            _rule_set(
+                _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
+            ),
+            [],
+            [],
+            station_networks={_STATION: "bafu"},
+        )
+        assert checked.judged == frozenset()
+
+
+class TestExplicitUnitContext:
+    def test_missing_context_is_not_segment_zero(self) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+        from sapphire_flow.types.observation_read import QcContextRequirement
+
+        rows = [
+            replace(
+                _make_obs(1.0, i),
+                qc_context_requirement=QcContextRequirement.UNIT_GOVERNED,
+            )
+            for i in range(3)
+        ]
+        with pytest.raises(ConfigurationError, match="shared bounded context"):
+            _check(
+                Stage1QualityChecker(),
+                rows,
+                _rule_set(_rule("range_check", {"value_min": 0.0})),
+                [],
+                [],
+            )
+
+    def test_different_target_snapshots_cannot_be_combined_for_neighbour_qc(
+        self,
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+        from sapphire_flow.types.observation_read import QcContextWindow, QcReadToken
+
+        rows = [_make_obs(1.0, i) for i in range(3)]
+        rows = [
+            replace(
+                o,
+                qc_read_token=QcReadToken(
+                    state_sha256="a" * 64,
+                    context_sha256="b" * 64,
+                    window=QcContextWindow(
+                        station_id=o.station_id,
+                        parameter=o.parameter,
+                        start=o.timestamp,
+                        end=o.timestamp + _STEP,
+                    ),
+                ),
+            )
+            for o in rows
+        ]
+        with pytest.raises(ConfigurationError, match="one context snapshot"):
+            _check(
+                Stage1QualityChecker(),
+                rows,
+                _rule_set(_rule("rate_of_change", {"max_rate": 10.0})),
+                [],
+                [],
+            )

@@ -2111,3 +2111,56 @@ The frozen lock uses OAuthLib 4.0.0 to fix CVE-2026-49272
 It is transitive through Prefect, Apprise and requests-oauthlib. Apprise's
 OAuth1 signer is checked offline; this update adds no application OAuth endpoint
 and changes no application authentication, grants or scanner exceptions.
+
+
+### BAFU discharge-unit integrity (D1 build only)
+
+Migration 0076 uses invoker-rights mutation-boundary and deferred guards, not
+privileged write functions.
+The empty approved scopes bind exact source/station/time and registry identities.
+Bootstrap creates a separate NOLOGIN `sapphire_bafu_maintenance` role for immutable
+scope/hold/release approvals; `sapphire_operator` keeps only DHM delivery authority.
+Normal workers append ingest records through column grants and read safe owner-rights
+security-barrier projections. They cannot read raw captures/before-images or release
+holds. API grants are limited to the nonnumeric hold/release predicate columns.
+Generated identity/audit/transaction fields are excluded from caller INSERT grants.
+Admission INSERT and effect guards enforce READ COMMITTED and station serialization
+in the database, not only in the Python caller. Event/receipt eligibility is
+rechecked by deferred checks even without a numeric mutation. PostgreSQL permits
+early execution with SET CONSTRAINTS; therefore admission INSERT also rejects
+supersession of current-transaction effects, and an immediate OLD/NEW observation
+AFTER ROW guard prevents invalidating current-transaction receipt snapshots,
+including later BEFORE-trigger rewrites. Any admitted or rejected journal identity
+pins its station network/code/kind, even without an approved scope; metadata
+edits remain legal. BAFU binding changes and scope approvals require READ COMMITTED
+before private binding reads. The station pin runs AFTER UPDATE to see final tuples.
+Admission retains its station row share lock. Final event/receipt observation reads
+retain share locks until commit; concurrent QC may wait without entering proof hashes.
+Scope approval keeps its plain station SELECT and existing advisory lock; no
+maintenance station UPDATE grant is required. Journal-row
+transaction IDs survive early checks and roll back with their effects; caller
+correlation settings are not finality authority. Historical receipts are not
+frozen across transactions. Native float8 row proofs are
+independent of caller output precision; signed-zero equivalence is deliberate.
+Direct SQL may invert row/advisory lock order: deadlocks fail closed, not silently
+bypass guards. Concurrent scope activation remains unsupported; pause writers.
+No repair/rollback write operation, credential, live scope or activation is added.
+The migration owner is trusted to own the safe views; runtime schema CREATE remains
+denied. See [database guards and recovery constraints](../spec/database-schema.md#approved-scope-database-guards-d1-build-dormant-until-explicit-approval).
+
+
+The D1 safe `bafu_unit_observation_read_state` view is SELECT-only for API, worker
+and the existing delivery operator. It contains no raw source values. The
+invoker-rights conditional QC function confers no UPDATE privilege: API remains
+read-only. It accepts only a current snapshot token and never releases a hold.
+
+
+Migration 0078 adds invoker-rights bounded QC read/batch-CAS functions, worker-only
+safe boundary-marker SELECT, and EXECUTE-only `observation_qc_lock` for worker,
+delivery operator and maintenance. It adds no private read or station UPDATE grant.
+Actual observation and unit-context mutations join this transaction lock through
+immediate final-row triggers; resets and deferred-constraint drains cannot release it.
+Maintenance remains NOLOGIN. Unit journal UPDATE/DELETE/TRUNCATE stays forbidden;
+runtime observation TRUNCATE is ungranted. Direct lock-order inversions can deadlock;
+five-second lock timeouts and database aborts fail closed. See the 0078 database
+serialization contract. Scope activation stays paused; these builds are not approval.

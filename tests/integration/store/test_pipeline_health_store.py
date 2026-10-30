@@ -9,6 +9,7 @@ from sapphire_flow.types.enums import PipelineCheckType, PipelineHealthStatus
 from sapphire_flow.types.pipeline import PipelineHealthRecord
 
 if TYPE_CHECKING:
+    import pytest
     import sqlalchemy as sa
 
 
@@ -145,3 +146,26 @@ class TestUnjudgedRecordRoundTrip:
             }
         ]
         assert record.detail["observations_unjudged"] == 1
+
+
+def test_equal_time_returns_last_health_record(db_connection: sa.Connection) -> None:
+    store = PgPipelineHealthStore(db_connection)
+    store.append_health_record(_make_record())
+    store.append_health_record(_make_record(status=PipelineHealthStatus.CRITICAL))
+    assert store.fetch_recent(limit=1)[0].status is PipelineHealthStatus.CRITICAL
+
+
+def test_unknown_flow_final_health_wins_same_time(
+    db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.fakes.fake_stores as fakes
+    from tests.unit.flows.test_bafu_ingest_dispatch import (
+        test_flow_preserves_capture_and_never_falls_back_on_unknown,
+    )
+
+    store = PgPipelineHealthStore(db_connection)
+    monkeypatch.setattr(fakes, "FakePipelineHealthStore", lambda: store)
+    test_flow_preserves_capture_and_never_falls_back_on_unknown(monkeypatch, True)
+    [latest] = store.fetch_recent(PipelineCheckType.OBSERVATION_INGEST_FETCH, limit=1)
+    assert latest.status is PipelineHealthStatus.CRITICAL
+    assert latest.detail["stations_fetch_failed"] == 0

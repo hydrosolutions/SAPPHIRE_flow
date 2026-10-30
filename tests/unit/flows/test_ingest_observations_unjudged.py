@@ -119,7 +119,7 @@ def _run_task(
     parameter: str = "water_level",
 ) -> QcTaskOutcome:
     return _run_qc_task.fn(
-        store,
+        store.qc_context_reader(),
         FakeClimBaselineStore(),
         station_id,
         parameter,

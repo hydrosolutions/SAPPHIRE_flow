@@ -4405,7 +4405,9 @@ def _observation(row: Mapping[str, object]) -> Observation:
         created_at=_time_field(row, "created_at"),
         delivery_id=_nullable_text_field(row, "delivery_id"),
     )
-    assert _json_value(asdict(result)) == row
+    from tests.observation_contract import persisted_observation_fields
+
+    assert _json_value(persisted_observation_fields(result)) == row
     return result
 
 
@@ -4983,7 +4985,12 @@ def _check_seed(
         "dhm-barkhk-2026-09-08",
         [_station(row).id for row in _records_field(oracle, "stations")],
     )
-    _same_rows([_json_value(asdict(row)) for row in actual_delivery], ordinary)
+    from tests.observation_contract import persisted_observation_fields
+
+    _same_rows(
+        [_json_value(persisted_observation_fields(row)) for row in actual_delivery],
+        ordinary,
+    )
     forcing = _rows(conn, "historical_forcing")
     assert len(forcing) == case["forcing_count"] == 120
     _same_rows(
@@ -5286,9 +5293,15 @@ def run_qualification_case(
     unchanged_tables = [
         *_strings(oracle["unchanged_tables"]),
         "daily_forecast_attempts",
+        "bafu_unit_batch_admissions",
+        "bafu_unit_batch_receipts",
+        "bafu_unit_events",
+        "bafu_unit_read_holds",
+        "bafu_unit_hold_releases",
+        "bafu_unit_write_scopes",
     ]
     names = [*unchanged_tables, "stations"]
-    assert len(names) == len(set(names)) == 59
+    assert len(names) == len(set(names)) == 65
     assert set(names) == set(db.metadata.tables)
     shared = assert_shared_requirements()
     original_assembler = nepal_onboarding.assemble_station_training_data
@@ -5346,7 +5359,8 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0073"
+                assert revision == "0078"
+
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now
                 roles = _owner_identity(conn)

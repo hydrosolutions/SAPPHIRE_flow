@@ -1276,6 +1276,84 @@ When this map applies, the context packet should name: which touch trigger appli
 
 ### Touchpoint map: LINDAS / BAFU observation ingest
 
+**D1 unit-safe dispatch (build only, inactive by default).**
+`flows/bafu_ingest.py` carries complete station outcomes, including failed or
+all-quarantined captures, into `BafuStationCaptureBatch`. The injected immutable
+registry must match the live adapter. `PgBafuUnitWriter` owns admission and
+reconciliation; generic raw writes exclude the whole captured station. Other
+parameters share the atomic transaction. UNKNOWN/SUPERSEDED do not trigger split
+writes or automatic retries. QC receives only currently proven canonical outputs.
+The existing capture cursor remains separate from trusted-read visibility.
+
+`SAPPHIRE_BAFU_UNIT_INGEST_CONFIG` is an optional JSON file path. Its only top-level
+keys are `registry` (the existing versioned registry schema) and `quota` (required
+positive integers: `max_station_events`, `max_station_receipts`,
+`max_station_evidence_bytes`, `max_batch_bytes`). No defaults or station policies
+are seeded. Absent config retains legacy/replay behavior; config cannot override
+injected dependencies. Activation still needs approved evidence, quota/retention,
+refresh ownership and cutover holds. The dedicated factory uses NullPool, fresh
+READ COMMITTED transactions and a 5-second connect timeout; existing journal locks
+set 5-second lock and 30-second statement timeouts. It never changes the shared
+AUTOCOMMIT connection. Test injection requires both registry and writer.
+
+Flow results retain typed unit outcomes. `observations_stored` counts acknowledged
+new canonical inserts/restatements (including other parameters), not evidence-only
+changes or replayed receipts. Reconciled receipts expose their historical counts
+in `bafu_unit_results`; they do not claim a new write. Skipped includes unchanged,
+withheld and unacknowledged attempted canonical rows. Source-native quarantine is
+not counted as a canonical observation. Fetch-health details include partial
+parameter diagnostics and a second post-dispatch record for capture persistence
+outcomes. Failed quarantine capture remains a station failure. Health reads order
+by `checked_at DESC, id DESC`, so final dispatch records win same-time ties.
+Fetch counts remain fetch-only; combined fetch/dispatch failure severity is
+CRITICAL when all stations fail, WARNING for partial failures. Due registry
+refresh appears as `unit_refresh_due_station_ids` and WARNING without withholding.
+In unit mode, non-finite ancillary values quarantine the original discharge
+capture as `SUBJECT_MALFORMED`; batch validation failures are station-local and
+never trigger generic fallback. The shipped worker URL uses `postgresql+psycopg`;
+production store setup does not rewrite its driver.
+Historical migration rollback tests use fresh disposable clusters pinned to the
+migration's own upper revision, with SQL-era seeds instead of current stores.
+They must not downgrade current head through the 0076/0078 recovery barriers;
+those guards remain fail-closed. Current-head role/bootstrap checks stay separate.
+Observation lineage snapshots retain the existing persistent source/QC fields,
+not ephemeral `qc_read_token`, `qc_context_segment` or `qc_context_requirement`.
+Strict snapshot validation still rejects unknown fields. Isolation fixtures check
+the original 13 persistent fields and independently require ordinary QC context.
+
+
+**Unit-normalization build:** strict parsing/conversion, versioned source-unit
+registry, source captures and station-batch identity are implemented locally in
+`adapters/bafu_discharge_units.py`, `adapters/bafu_discharge_capture.py`,
+`config/bafu_units.py` and the `types/bafu_*` modules. `HydroScraperAdapter` has an
+opt-in capture path; no live constructor is switched. `store/bafu_batch_journal.py`
+and migration 0074 provide private admission/receipt records, not capture success.
+Migration 0075 adds immutable evidence and additive named read holds/releases;
+`store/bafu_unit_read_filter.py` supplies the tested trusted-read SQL predicate.
+The atomic value writer is locally implemented but unwired; complete reader/QC
+wiring remains unfinished. Migration 0076 adds empty approved protection scopes,
+invoker-rights mutation-boundary/deferred write guards and safe worker projections;
+`tests/integration/db/test_bafu_unit_guards.py` covers real-role commit boundaries.
+`test_bafu_guard_regressions.py` additionally covers caller float precision,
+adjacent doubles, altered-session writer commits, database admission locking,
+stale isolation and same-transaction event/receipt supersession. PostgreSQL checks
+may run early: verify SET CONSTRAINTS IMMEDIATE→DEFERRED and savepoint rollback
+against BOTH later admission and OLD/NEW observation mutation boundaries. Only
+current-transaction receipts seal captured states; historical receipts do not.
+Verify the ordinary AFTER ROW seal against later BEFORE rewrites. Any admitted
+or rejected identity pins station network/code/kind even with empty scopes;
+check same-transaction toggles and concurrent station updates without widening grants. Changes to
+row proofs must keep native float bits separate from Python document digests;
+changes to admission must preserve rejected-ID binding and rejected-not-fence rules.
+See the schema lock-order limitations; direct SQL is not claimed deadlock-free.
+No scope/hold or runtime path is activated. The immutable journal also records
+rejected identities; only admitted dispositions may order work or authorize future
+database-guarded effects. Reconciliation without a receipt is a snapshot, not proof
+of rollback. Per-batch quotas include event and receipt bytes. Review `docker/bootstrap-roles.sql` and `api/routes/tables.py` whenever
+adding these private records. No unit is inferred from `isLiter`, and existing
+canonical replay must not be converted again. Follow the
+[bounded implementation plan](plans/2026-10-28-bafu-observation-unit-normalization.md).
+
 **DHM observation ingest (Plan 300) shares Flow 2's integration boundary.** When
 editing selection, watermarks, per-station outcomes or QC intervals also inspect:
 `config/river_stations.py` (merged source selection), `config/dhm.py` (typed
@@ -2168,3 +2246,80 @@ assembly here; no scientific activation or ordinary observation path changes.
   zero retries, production read-ahead evidence and tested hard process containment.
   See `docs/requirements/dhm-api-examples/README.md`. No cursor truncation or Q
   conversion belongs in this safety path.
+
+
+### D1 reader/QC build (not activation)
+
+Observation readers default to construction-time `ObservationReadPurpose.TRUSTED`.
+`QC_CONTEXT` is a separate store instance; `SOURCE_AUDIT` raises until the restricted
+D2 capability exists. No QC-status filter changes reader purpose. Numeric reads,
+batch and delivery reads, by-ID reads and trusted latest timestamps evaluate the
+current SQL disposition in the same statement as values. The API station JSON,
+hindcast comparison, generic table browser and provisional direct read use the same
+predicate. Forecast, calculated onboarding, coverage, export and import callers use
+the default store. Ingest cursors use the separate timestamp-only capture method.
+The BAFU archive collector/replay contract is unchanged.
+
+Migration 0077 supplies an owner-rights security-barrier projection containing IDs,
+station/parameter/source/time keys, disposition booleans and hashes only. It selects the latest natural-key unit event
+before checking the current numeric/provenance fingerprint and approved policy.
+It never falls back to older matching events. Evidence absence alone does not
+exclude unprotected, unheld legacy rows. No raw event SELECT is granted to API.
+
+QC reads use `QcContextWindow` (station, parameter, optional source, and half-open
+time window) and a shared immutable dependency digest. Migration 0078 materializes
+the bounded cohort and its excluded/absent/partial-release boundary markers once.
+The digest covers row presence, numeric/provenance state, latest unit fingerprint,
+and effective eligibility; no global historical event ledger is hashed. Source-filtered
+reads exclude other sources from both segmentation and dependencies. Unfiltered
+reads preserve mixed-source groups. Changes outside the window do not stale a token.
+
+`update_qc_batch_if_current` validates that shared digest once under READ COMMITTED,
+then applies all target verdicts or none. The single-target method delegates to it.
+Ingest/rechecks and onboarding select targets from the same snapshot that supplied
+their passed neighbours. Stale batches add their target count to `stale_evaluation`,
+not judged counts; another evaluation needs a fresh read. Errors abort the transaction,
+not a blind write retry. The old SQL CAS entry point cannot authorize unbounded tokens.
+QC-context delivery reads require an explicit bounded window instead of fabricating
+context. By-ID context reads cover only that timestamp/source and cannot be combined
+with separately read neighbours. Ordinary fetch signatures and TRUSTED default remain.
+
+Temporal rules and cadence inference do not bridge excluded unit-uncertain interior
+rows; range/baseline judgement remains independent of temporal judgement. Explicit
+`UNIT_GOVERNED` checker inputs require bounded metadata, never implicit segment zero.
+All neighbours in a bounded group must share its snapshot and supplied cohort size.
+QC_CONTEXT status filters are rejected; select targets only after full-context QC.
+Prior target QC has its own CAS hash, separate from scientific/context evidence.
+Skipped/rewritten final QC updates abort the whole batch (PQC01), never partial success.
+Hand-built ordinary DHM/manual inputs retain their prior contract. QC cannot release holds; historical
+hidden RAW/UNCHECKED rows await D2. Snapshot tokens, context requirements and segments
+remain transient and are excluded from rating-reference measurement digests.
+
+Scope approval remains a paused-cutover operation. The observation guard rejects
+BAFU measured-discharge candidates under non-READ-COMMITTED isolation before scope
+lookup. This is defense in depth, not support for concurrent activation. DHM and
+other parameters retain their existing guard paths.
+
+
+#### Reader/QC review corrections (build only)
+
+Canonical eligibility for new unit-evidenced rows requires a covering approved
+write scope matching the admitted registry hash. Conflicting covering scopes still
+exclude the row. This uses existing immutable approval records, not a second unit
+registry. Unheld legacy rows without evidence and independent manual imports retain
+their eligibility.
+
+Source-filtered QC segmentation uses only that source's persisted and absent
+boundaries. Unfiltered station/parameter groups retain mixed-source segmentation.
+Dashboard observation count, date range and parameter totals use the same trusted
+predicate. Conditional writes bind empty flags as SQL NULL. The conditional-write
+function is public-schema-qualified, denies NULL tokens and missing state, and is
+executable by the worker role, not PUBLIC or the API role.
+
+Bounded-context follow-up is implemented in unreleased 0077/0078, not approved
+for activation. Verify the actual reader and internal EXPLAIN plans, real-role
+mutable-neighbour/absent-boundary races, stale batch counts, rollback/savepoints,
+and unrelated-source/window stability. Include the normal unit writer, API privacy,
+DHM delivery operator, rating snapshots, onboarding and recheck gates. Independent
+review and the full final-code suite remain release gates. Scope activation remains
+a paused-cutover operation. See the database-schema serialization contract.

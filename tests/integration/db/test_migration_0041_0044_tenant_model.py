@@ -32,6 +32,7 @@ from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import StationGroup
 from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE, DEFAULT_TENANT_ID
+from tests.integration.db.historical_seeds import assert_revision
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -446,17 +447,18 @@ class TestMigrationDowngradeReversesCleanly:
     """F14: the tenant migration upgrades AND downgrades cleanly on
     populated data."""
 
-    def test_downgrade_from_head_removes_tenant_columns_keeps_data(
+    def test_downgrade_from_0044_removes_tenant_columns_keeps_data(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         from alembic import command
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0044")
+        assert_revision(engine, "0044")
 
         with engine.begin() as conn:
-            # At head all three tenant_id columns are NOT NULL with no default.
+            # At 0044 all three tenant_id columns are NOT NULL with no default.
             sid = _insert_pre_tenant_station(
                 conn, code="DOWNGRADE-001", tenant_id=DEFAULT_TENANT_ID
             )
@@ -468,6 +470,7 @@ class TestMigrationDowngradeReversesCleanly:
             )
 
         command.downgrade(cfg, "0040")
+        assert_revision(engine, "0040")
 
         with engine.connect() as conn:
             columns = {
@@ -497,6 +500,15 @@ class TestMigrationDowngradeReversesCleanly:
                 sa.select(stations.c.code).where(stations.c.id == sid)
             ).scalar_one()
             assert code == "DOWNGRADE-001"
+            assert (
+                conn.scalar(
+                    sa.text("SELECT name FROM station_groups WHERE id=:id"), {"id": gid}
+                )
+                == "downgrade-group"
+            )
+            assert conn.execute(
+                sa.text("SELECT group_id,station_id FROM station_group_members")
+            ).one() == (gid, sid)
 
     def test_downgrade_fails_loudly_on_cross_tenant_group_name_collision(
         self, migration_engine: tuple[sa.Engine, str]
@@ -505,7 +517,8 @@ class TestMigrationDowngradeReversesCleanly:
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0044")
+        assert_revision(engine, "0044")
 
         other_tenant_id = uuid.uuid4()
         with engine.begin() as conn:
@@ -532,8 +545,20 @@ class TestMigrationDowngradeReversesCleanly:
         # The downgrade cannot honestly re-establish a global UNIQUE(name)
         # with two tenants holding the same name — it must fail loudly, not
         # silently drop a row or arbitrarily pick a survivor.
-        with pytest.raises(IntegrityError):
+        with engine.connect() as conn:
+            before = conn.execute(
+                sa.text("SELECT id,name,tenant_id FROM station_groups ORDER BY id")
+            ).all()
+        with pytest.raises(IntegrityError, match="station_groups_name_key"):
             command.downgrade(cfg, "0040")
+        assert_revision(engine, "0044")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    sa.text("SELECT id,name,tenant_id FROM station_groups ORDER BY id")
+                ).all()
+                == before
+            )
 
 
 def _now():
