@@ -60,7 +60,10 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import StationTrainingData
-    from sapphire_flow.types.nepal_onboarding import TrainingWindow
+    from sapphire_flow.types.nepal_onboarding import (
+        OperationalWeatherScope,
+        TrainingWindow,
+    )
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationConfig
 
@@ -110,6 +113,76 @@ def chwrr_stations(
         ):
             raise ConfigurationError(
                 f"station {code} already has an active model assignment"
+            )
+        stations.append(station)
+    return stations
+
+
+def operational_weather_stations(
+    conn: sa.Connection,
+    identity: DeploymentIdentityConfig,
+    scope: OperationalWeatherScope,
+    *,
+    now: UtcDatetime,
+) -> list[StationConfig]:
+    if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
+        raise ConfigurationError(
+            "Nepal weather ingest requires CHWRR-only write authority"
+        )
+    tenants = PgTenantStore(conn)
+    principal = resolve_run_principal(tenants, identity, tenant_code="chwrr")
+    if principal.tenant_id is None:
+        raise ConfigurationError("CHWRR principal must be tenant scoped")
+    tenants.lock_tenant(principal.tenant_id)
+    group = PgStationGroupStore(conn).fetch_group(scope.group_id)
+    if group is None or group.tenant_id != principal.tenant_id:
+        raise ConfigurationError("weather scope group missing or outside CHWRR tenant")
+    if group.station_ids != frozenset(p.station_id for p in scope.station_polygons):
+        raise ConfigurationError("weather scope must match exact group membership")
+    store = PgStationStore(conn)
+    polygons = RecapGatewayPolygonStore(conn)
+    stations: list[StationConfig] = []
+    for expected in scope.station_polygons:
+        station = store.fetch_station(expected.station_id)
+        if station is None:
+            raise ConfigurationError(
+                f"missing weather scope station {expected.station_id}"
+            )
+        enforce_tenant_isolation(
+            principal=principal,
+            target_tenant_id=station.tenant_id,
+            audit_log_store=None,
+            event_type=AuditEventType.STATION_ONBOARDED,
+            target_type="station",
+            target_id=str(station.id),
+            detail=None,
+            now=now,
+        )
+        if station.station_status not in (
+            StationStatus.ONBOARDING,
+            StationStatus.OPERATIONAL,
+        ):
+            raise ConfigurationError(
+                f"station {station.code} is not admitted for weather ingest"
+            )
+        if history_binding(station.id) not in store.fetch_weather_sources(station.id):
+            raise ConfigurationError(
+                f"missing active reanalysis binding: {station.code}"
+            )
+        matches = [
+            row
+            for row in polygons.fetch_bindings_for_station(station.id)
+            if row.spatial_type is SpatialRepresentation.BASIN_AVERAGE
+        ]
+        if len(matches) != 1 or (
+            station.basin_id is None
+            or matches[0].basin_id != station.basin_id
+            or matches[0].gateway_hru_name != scope.gateway_hru_name
+            or matches[0].name != expected.polygon_name
+            or matches[0].band_id is not None
+        ):
+            raise ConfigurationError(
+                f"missing or conflicting weather polygon: {station.code}"
             )
         stations.append(station)
     return stations

@@ -231,3 +231,30 @@ own — HRU 12300 cannot provide one (snow depth is flat 0.0000 there in every
 season, measured under Plan 219), so the first basin that actually has snow is
 still the first chance to see a magnitude error. The register that records each
 unit and its authority lives in `adapters/recap_gateway.py` (Plan 243).
+
+## Operational group ERA5 history
+
+`ingest_recap_era5_reanalysis_flow(..., scope=OperationalWeatherScope(...))`
+uses an explicit runtime group, registered Gateway HRU and station-to-polygon
+snapshot. The scope is not limited to six or 21 stations. It must match the
+existing group membership exactly. CHWRR-only authority, each station tenant,
+ONBOARDING/OPERATIONAL status, active `era5_land` REANALYSIS source and exact
+basin-average polygon binding are checked before any provider request.
+
+The flow does not create bindings or change station status, groups or model
+assignments. An active model assignment does not prevent history ingestion.
+The registered HRU comes from the polygon store through the native adapter;
+a package HRU label is not evidence of provider registration. Operators must
+bind registered feature identities and product availability before invocation.
+Do not rewrite source-package provenance to change a runtime alias.
+
+Omitting `scope` retains the original six-station onboarding admission rules.
+Rebinding overlapping stations to a different HRU can therefore make that old
+path reject them; use the explicit operational scope after migration. Record
+before/after bindings for every overlapping station.
+
+Storage, finite-value/source/window validation and 31-day batching are unchanged.
+Only genuine ERA5 history is stored; forecast-fill is excluded by the adapter.
+Returned counts and timestamp bounds do not establish complete daily support.
+This extension does not enable HRES acquisition, IFS past-tail filling, forecast
+scheduling, or model readiness. These remain separate existing-flow gates.

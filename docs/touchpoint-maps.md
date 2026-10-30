@@ -2168,3 +2168,19 @@ assembly here; no scientific activation or ordinary observation path changes.
   zero retries, production read-ahead evidence and tested hard process containment.
   See `docs/requirements/dhm-api-examples/README.md`. No cursor truncation or Q
   conversion belongs in this safety path.
+
+### Explicit operational ERA5 group admission
+
+- Runtime scope: `types/nepal_onboarding.py::OperationalWeatherScope` and
+  `WeatherStationPolygon`; no dataset-specific IDs or station count in source.
+- Admission: `services/nepal_onboarding.py::operational_weather_stations`.
+  Keep `chwrr_stations` and six-site onboarding semantics unchanged.
+- Flow: `flows/ingest_recap_era5_reanalysis.py`, optional keyword-only `scope`.
+  Exact group/tenant/status/source/polygon preflight precedes any provider call.
+- Must not change: station/model/group state, source-package provenance, native
+  ERA5 source/version handling or default six-site admission. Runtime rebinding
+  of the overlapping six is an explicit migration, not unchanged behavior.
+- Verify: `tests/unit/flows/test_ingest_recap_era5_reanalysis.py` (native adapter
+  and store-backed resolver alias test plus admission rejection),
+  `tests/unit/types/test_nepal_onboarding.py`, existing readiness/store tests.
+- Operations: `docs/operations/recap-gateway-runbook.md`, operational group ERA5.

@@ -9,6 +9,8 @@ from prefect import flow
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.nepal_onboarding import (
     chwrr_stations,
+    history_binding,
+    operational_weather_stations,
     require_history_bindings,
 )
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
@@ -26,7 +28,10 @@ if TYPE_CHECKING:
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.nepal_onboarding import HistoryWindow
+    from sapphire_flow.types.nepal_onboarding import (
+        HistoryWindow,
+        OperationalWeatherScope,
+    )
 
 
 @flow(
@@ -42,9 +47,14 @@ def ingest_recap_era5_reanalysis_flow(
     window: HistoryWindow,
     *,
     now: UtcDatetime,
+    scope: OperationalWeatherScope | None = None,
 ) -> tuple[HistoryCoverage, ...]:
-    stations = chwrr_stations(conn, identity, now=now)
-    bindings = require_history_bindings(conn, stations)
+    if scope is None:
+        stations = chwrr_stations(conn, identity, now=now)
+        bindings = require_history_bindings(conn, stations)
+    else:
+        stations = operational_weather_stations(conn, identity, scope, now=now)
+        bindings = [history_binding(station.id) for station in stations]
     station_ids = {s.id for s in stations}
     store = PgHistoricalForcingStore(conn)
     start = window.start

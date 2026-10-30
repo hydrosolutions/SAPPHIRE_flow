@@ -6191,3 +6191,21 @@ metadata containers (point object depth zero) and 4300 integer digits excluding
 sign; large metadata integers are not converted to floats.
 SQL admission is conservatively narrower than Python readability; no numeric
 coercion, verified-byte rewrite or extra writer/converter is introduced.
+
+### Explicit operational weather scope
+
+`types/nepal_onboarding.py` adds frozen keyword-only values:
+
+- `WeatherStationPolygon(station_id: StationId, polygon_name: str)` rejects
+  empty or outer-whitespace polygon names.
+- `OperationalWeatherScope(group_id: StationGroupId,
+  gateway_hru_name: GatewayHruName,
+  station_polygons: tuple[WeatherStationPolygon, ...])` rejects empty HRU/scope,
+  outer-whitespace HRU names, duplicate station IDs and duplicate polygon names.
+  Registered HRU and station values are runtime inputs, not source constants.
+
+`ingest_recap_era5_reanalysis_flow` accepts keyword-only
+`scope: OperationalWeatherScope | None = None`. An explicit scope admits the
+exact existing CHWRR group with ONBOARDING or OPERATIONAL stations and validated
+active reanalysis/polygon bindings. `None` retains the legacy six-site path.
+No store or adapter Protocol signatures change.
