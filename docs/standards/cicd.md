@@ -700,9 +700,21 @@ JUnit XML duration artifacts for 14 days. These artifacts aid diagnosis and do
 not replace the existing coverage data, coverage combine step, scan gates or
 severity thresholds.
 
-The first integration shard split uses the latest available JUnit evidence to
-keep the reviewed six-file `heavy` shard and a computed `rest` shard. Current
-summed testcase time is 278.162s for `heavy` and 309.646s for `rest`. The two shards run as separate GitHub jobs, but pytest stays serial inside each job. This follow-up duplicates the integration setup cost across two runners and intentionally adds a six-collection native proof in the `heavy` leg; that proof took 21.32s on the implementation machine. The earlier T2 unit-shard slice remains separate evidence and does not prove this integration follow-up. Current runner-minute estimates are therefore approximate and include duplicated setup plus the proof overhead; GitHub Actions measurements decide whether a later rebalance is needed.
+The original integration split used six curated `heavy` files and a computed
+`rest` shard. Its historical JUnit summed testcase times were 278.162s and
+309.646s respectively; these are not current wall-time estimates.
+
+On 2026-10-31, PR #430 run `41198457664` reached the 25-minute limit in
+`rest` at 97% of tests, while `heavy` passed in 6m33s. The curated `heavy`
+set now also includes `test_skill_data_use_isolation.py` and
+`test_observation_unit_readers.py`. Log timestamp differences attribute about
+199s and 145s to those files; these are approximate, not JUnit durations or
+proof of the new balance. Fresh passing CI jobs remain the acceptance gate.
+
+Both shards remain serial internally, with unchanged filters and timeouts.
+The computed catch-all and native collection proof retain every selected test
+exactly once. Moving fixtures can duplicate container setup across runners;
+measure actual job wall times before claiming a speed improvement.
 
 ### Known external-dependency caveats
 

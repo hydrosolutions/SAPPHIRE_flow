@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from sapphire_flow.api.deps import get_connection, get_stores
+from sapphire_flow.api.deps import get_connection, get_observation_clock, get_stores
 from sapphire_flow.api.forecast_read import (
     require_standard_results,
     require_standard_store,
@@ -28,6 +28,8 @@ from sapphire_flow.api.routes.api_forecasts import to_forecast_detail
 from sapphire_flow.api.schemas import (
     ForecastSummary,
     GeoCoordResponse,
+    LatestObservationsResponse,
+    LatestStationObservationResponse,
     ModelAssignmentResponse,
     ObservationResponse,
     PaginatedResponse,
@@ -44,7 +46,12 @@ from sapphire_flow.api.security import (
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.dhm_delivery import DELIVERY_ID
-from sapphire_flow.types.enums import QcStatus, StationKind, StationStatus
+from sapphire_flow.types.enums import (
+    ObservationSource,
+    QcStatus,
+    StationKind,
+    StationStatus,
+)
 from sapphire_flow.types.ids import ModelId, StationId
 
 router = APIRouter(prefix="/api/v1", tags=["api-stations"])
@@ -200,6 +207,61 @@ def list_stations(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/observations/latest")
+def list_latest_observations(
+    parameter: Literal["discharge"] = Query(...),
+    source: ObservationSource = Query(ObservationSource.MEASURED),
+    observation_hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(200, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
+    now: datetime = Depends(get_observation_clock),
+) -> LatestObservationsResponse:
+    as_of = ensure_utc(now)
+    window_start = ensure_utc(as_of - timedelta(hours=observation_hours))
+    stations = sorted(
+        (
+            station
+            for station in stores["station_store"].fetch_all_stations()
+            if principal.is_admin or principal.station_in_scope(station.id)
+        ),
+        key=lambda station: str(station.id),
+    )
+    page = stations[offset : offset + limit]
+    latest = stores["obs_store"].fetch_latest_observations(
+        [station.id for station in page],
+        parameter,
+        window_start,
+        as_of,
+        source=source,
+        excluded_delivery_id=None if principal.is_admin else DELIVERY_ID,
+    )
+    return LatestObservationsResponse(
+        parameter=parameter,
+        source=source,
+        window_start=window_start,
+        generated_at=as_of,
+        total=len(stations),
+        limit=limit,
+        offset=offset,
+        items=[
+            LatestStationObservationResponse(
+                station_id=str(station.id),
+                code=station.code,
+                network=station.network,
+                measured_parameters=sorted(station.measured_parameters),
+                observation=(
+                    _to_observation_response(observation)
+                    if (observation := latest[station.id]) is not None
+                    else None
+                ),
+            )
+            for station in page
+        ],
     )
 
 

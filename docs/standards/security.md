@@ -2166,3 +2166,15 @@ Maintenance remains NOLOGIN. Unit journal UPDATE/DELETE/TRUNCATE stays forbidden
 runtime observation TRUNCATE is ungranted. Direct lock-order inversions can deadlock;
 five-second lock timeouts and database aborts fail closed. See the 0078 database
 serialization contract. Scope activation stays paused; these builds are not approval.
+
+### Scoped latest-observation projection
+
+`GET /api/v1/observations/latest` uses the PRINCIPAL bearer gate. Consumer and
+reviewer scope filtering precedes station counts, UUID pagination and data reads;
+admin retains the existing unscoped observation semantics. Consumer/reviewer
+DHM delivery exclusion and trusted-unit predicates apply inside latest selection,
+not after it. No human-session or forecast-publication authority is implied.
+The window is explicit (default168h, maximum720h), page size<=200, and absent
+visible data is null without revealing held/restricted history. All response
+paths, including401/422/500, are no-store. This route does not change frontend
+admission or permit fleet requests under the existing private-use agreement.

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 # time to build each model's schema, the same reason forecast_lab.py keeps
 # ForecastLabSnapshot and ModelCombinationStrategy out of TYPE_CHECKING.
 from sapphire_flow.types.domain import ForecastQcRuleId, QcRuleId  # noqa: TC001
+from sapphire_flow.types.enums import ObservationSource  # noqa: TC001
 
 T = TypeVar("T")
 
@@ -110,6 +111,21 @@ class ObservationResponse(BaseModel):
     # generation marker, not a rule-set version (see Repository facts);
     # `null` when none is stored.
     qc_rule_version: str | None = None
+
+
+class LatestStationObservationResponse(BaseModel):
+    station_id: str
+    code: str
+    network: str
+    measured_parameters: list[str]
+    observation: ObservationResponse | None
+
+
+class LatestObservationsResponse(PaginatedResponse[LatestStationObservationResponse]):
+    parameter: Literal["discharge"]
+    source: ObservationSource
+    window_start: datetime
+    generated_at: datetime
 
 
 class ForecastSummary(BaseModel):

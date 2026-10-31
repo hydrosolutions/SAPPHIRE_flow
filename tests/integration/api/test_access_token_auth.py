@@ -752,6 +752,7 @@ _DETAIL_ROUTES: dict[str, str] = {
     ),
 }
 _COLLECTION_ROUTES: dict[str, str] = {
+    "/api/v1/observations/latest": "/api/v1/observations/latest?parameter=discharge",
     "/api/v1/stations": "/api/v1/stations",
     "/api/v1/alerts": "/api/v1/alerts?station_id={sid}",
     "/api/v1/forecast-lab/snapshot": "/api/v1/forecast-lab/snapshot",
@@ -810,6 +811,20 @@ def _comparable(resp: object) -> tuple[int, object]:
 class TestReviewerOnPrincipalRoutes:
     """Plan 401 D2: on every existing PRINCIPAL route a reviewer gets exactly
     what a consumer with the same scope gets."""
+
+    @pytest.fixture(autouse=True)
+    def fixed_latest_clock(self) -> Generator[None, None, None]:
+        from datetime import UTC, datetime
+
+        from sapphire_flow.api.deps import get_observation_clock
+
+        app.dependency_overrides[get_observation_clock] = lambda: datetime(
+            2025, 1, 2, tzinfo=UTC
+        )
+        try:
+            yield
+        finally:
+            app.dependency_overrides.pop(get_observation_clock, None)
 
     def test_route_lists_cover_every_get_principal_route(self) -> None:
         from tests.unit.api.test_security import _classify_routes
@@ -877,6 +892,14 @@ class TestReviewerOnPrincipalRoutes:
             f"/api/v1/alerts?station_id={scene.other}", headers=reviewer
         )
         snapshot = client.get("/api/v1/forecast-lab/snapshot", headers=reviewer)
+        latest = client.get(
+            "/api/v1/observations/latest?parameter=discharge", headers=reviewer
+        )
+        assert latest.status_code == 200
+        assert latest.headers["cache-control"] == "no-store"
+        assert [i["station_id"] for i in latest.json()["items"]] == [
+            str(scene.in_scope)
+        ]
 
         assert [i["id"] for i in stations.json()["items"]] == [str(scene.in_scope)]
         assert (alerts_out.status_code, alerts_out.json()["items"]) == (200, [])
@@ -1009,3 +1032,15 @@ class TestForecastDetailHidesOutOfScopeExistence:
             absent.json(),
         )
         assert absent.status_code == 404
+
+
+class TestLatestRealAuthentication:
+    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer invalid"}])
+    def test_missing_or_invalid_key_is_not_cached(
+        self, client: TestClient, headers: dict[str, str]
+    ) -> None:
+        response = client.get(
+            "/api/v1/observations/latest?parameter=discharge", headers=headers
+        )
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"

@@ -138,6 +138,19 @@ class ObservationStore(Protocol):
     ) -> bool:
         raise NotImplementedError
 
+    def fetch_latest_observations(
+        self,
+        station_ids: list[StationId],
+        parameter: str,
+        window_start: UtcDatetime,
+        as_of: UtcDatetime,
+        *,
+        source: ObservationSource,
+        excluded_delivery_id: str | None = None,
+    ) -> dict[StationId, Observation | None]:
+        """Latest visible row per station in the inclusive time window; no QC filter."""
+        raise NotImplementedError
+
     def fetch_latest_capture_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:

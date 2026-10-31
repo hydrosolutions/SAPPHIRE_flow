@@ -513,6 +513,58 @@ class PgObservationStore:
         ).scalar_one_or_none()
         return utc_or_none(row)
 
+    def fetch_latest_observations(
+        self,
+        station_ids: list[StationId],
+        parameter: str,
+        window_start: UtcDatetime,
+        as_of: UtcDatetime,
+        *,
+        source: ObservationSource,
+        excluded_delivery_id: str | None = None,
+    ) -> dict[StationId, Observation | None]:
+        if self._purpose is not ObservationReadPurpose.TRUSTED:
+            raise ValueError("latest observations require a trusted read purpose")
+        if window_start > as_of:
+            raise ValueError("latest observation window starts after as_of")
+        if not station_ids:
+            return {}
+        requested = (
+            sa.values(sa.column("station_id", sa.Uuid()), name="requested_stations")
+            .data([(sid,) for sid in dict.fromkeys(station_ids)])
+            .cte()
+        )
+        # Keep trust checks correlated per candidate; flattening EXISTS can
+        # materialize all historical trust rows before applying the window.
+        candidate = self._select_observations().where(
+            observations_table.c.station_id == requested.c.station_id,
+            observations_table.c.parameter == parameter,
+            observations_table.c.source == source.value,
+            observations_table.c.timestamp >= window_start,
+            observations_table.c.timestamp <= as_of,
+            sa.select(unit_read_predicate(observations_table, self._purpose))
+            .correlate(observations_table)
+            .scalar_subquery(),
+        )
+        if excluded_delivery_id is not None:
+            candidate = candidate.where(
+                observations_table.c.delivery_id.is_distinct_from(excluded_delivery_id)
+            )
+        latest = (
+            candidate.order_by(observations_table.c.timestamp.desc())
+            .limit(1)
+            .correlate(requested)
+            .lateral("latest")
+        )
+        rows = self._conn.execute(
+            sa.select(latest).select_from(requested.join(latest, sa.true()))
+        ).mappings()
+        result: dict[StationId, Observation | None] = dict.fromkeys(station_ids)
+        for row in rows:
+            observation = _row_to_domain(row)
+            result[observation.station_id] = observation
+        return result
+
     def fetch_latest_capture_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:

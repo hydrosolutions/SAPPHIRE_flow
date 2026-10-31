@@ -18,8 +18,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500,
         content={"error": "internal_server_error", "detail": None},
         headers={"Cache-Control": "no-store"}
-        if re.fullmatch(
-            r"/api/v1/stations/[^/]+/evaluation-forecasts", request.url.path
+        if (
+            request.url.path
+            in {"/api/v1/forecast-lab/snapshot", "/api/v1/observations/latest"}
+            or re.fullmatch(
+                r"/api/v1/stations/[^/]+/evaluation-forecasts", request.url.path
+            )
         )
         else None,
     )

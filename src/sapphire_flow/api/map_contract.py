@@ -14,20 +14,27 @@ which number moved; that's a review judgement).
 
 from __future__ import annotations
 
+from copy import copy
 from typing import Any
 
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from sapphire_flow.api import app
+from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.2"
+MAP_CONTRACT_VERSION = "2.3"
+_SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
 # other route may appear in the committed file.
 _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", _SNAPSHOT_PATH),
+        ("GET", "/api/v1/observations/latest"),
         ("GET", "/api/v1/stations"),
         ("GET", "/api/v1/stations/{station_id}"),
         ("GET", "/api/v1/stations/{station_id}/observations"),
@@ -92,6 +99,17 @@ _404_PATHS: frozenset[str] = frozenset(
 )
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/observations/latest"): (
+        "Latest visible discharge observation per scoped station within an "
+        "inclusive window ending at generated_at. All scoped stations count, "
+        "including those without readings; UUID-sorted pages. Null means no "
+        "visible reading in this window, not no history. A MISSING observation "
+        "remains an object with null value and its QC status. No QC-pass filter "
+        "or automatic freshness classification. measured_parameters describes "
+        "station configuration; source selects one observation source. "
+        "Consumer/reviewer delivery restrictions apply before latest selection; "
+        "admin includes deliveries. All responses are no-store."
+    ),
     ("GET", "/api/v1/stations/{station_id}/evaluation-forecasts"): (
         "Read-only STANDARD evaluation selection per parameter, with "
         "current/prior UTC-day "
@@ -197,6 +215,59 @@ def _select_routes() -> list[APIRoute]:
     return selected
 
 
+class _SnapshotOpenApiSchema(GenerateJsonSchema):
+    def tagged_union_schema(
+        self, schema: core_schema.TaggedUnionSchema
+    ) -> JsonSchemaValue:
+        result = super().tagged_union_schema(schema)
+        # OpenAPI discriminator properties are strings; boolean unions use oneOf/const.
+        if all(isinstance(choice, bool) for choice in schema["choices"]):
+            result.pop("discriminator", None)
+        return result
+
+
+def _contract_routes() -> list[APIRoute]:
+    routes = _select_routes()
+    result: list[APIRoute] = []
+    for route in routes:
+        if route.path == _SNAPSHOT_PATH:
+            route = copy(route)
+            route.response_field = None
+        result.append(route)
+    return result
+
+
+def _add_snapshot_schema(doc: dict[str, Any]) -> None:
+    schema = ForecastLabSnapshot.model_json_schema(
+        ref_template="#/components/schemas/{model}",
+        schema_generator=_SnapshotOpenApiSchema,
+        mode="serialization",
+    )
+    definitions = schema.pop("$defs", {})
+    definitions["ForecastLabSnapshot"] = schema
+    components = doc.setdefault("components", {}).setdefault("schemas", {})
+    for name, definition in definitions.items():
+        if name in components and components[name] != definition:
+            raise ValueError(f"OpenAPI schema component collision: {name}")
+        components[name] = definition
+    operation = doc["paths"][_SNAPSHOT_PATH]["get"]
+    operation["responses"]["200"]["content"]["application/json"]["schema"] = {
+        "$ref": "#/components/schemas/ForecastLabSnapshot"
+    }
+    operation["description"] += (
+        " All responses are no-store. Omitted station_code selects eligible scoped "
+        "stations; any unknown, ineligible or out-of-scope requested code rejects "
+        "the whole request. This comparison view is not authoritative evaluation."
+    )
+    for status, description in {
+        "403": "Forecast Lab is unavailable for publication-gated stations.",
+        "404": "Unknown, ineligible or out-of-scope station.",
+        "500": "Snapshot unavailable due to an internal or configuration error.",
+        "503": "Ordinary forecast reads are unavailable.",
+    }.items():
+        operation["responses"][status] = _error_response(description)
+
+
 def build_map_openapi() -> dict[str, Any]:
     doc = get_openapi(
         title="SAPPHIRE Flow — flow map contract",
@@ -209,8 +280,9 @@ def build_map_openapi() -> dict[str, Any]:
             "header from the raw Request, so FastAPI's own generator sees "
             "no security scheme."
         ),
-        routes=_select_routes(),
+        routes=_contract_routes(),
     )
+    _add_snapshot_schema(doc)
 
     doc.setdefault("components", {}).setdefault("schemas", {})["ErrorResponse"] = (
         ErrorResponse.model_json_schema()
@@ -244,6 +316,8 @@ def build_map_openapi() -> dict[str, Any]:
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
                 )
+            if path == "/api/v1/observations/latest":
+                responses["500"] = _error_response("Latest observations unavailable.")
             if path == "/api/v1/stations/{station_id}/evaluation-forecasts":
                 responses["503"] = _error_response("Evaluation reads unavailable.")
             if path == "/api/v1/forecasts/{forecast_id}":

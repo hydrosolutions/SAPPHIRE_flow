@@ -112,6 +112,21 @@ class TestIntegrationShardDefinitions:
         assert SHARDS[-1].id == CATCH_ALL_SHARD_ID
         assert SHARDS[-1].ignores == claimed
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/integration/services/test_skill_data_use_isolation.py",
+            "tests/integration/store/test_observation_unit_readers.py",
+        ],
+    )
+    def test_expensive_isolation_and_reader_tests_run_only_in_heavy(
+        self, path: str
+    ) -> None:
+        shards = {shard.id: shard for shard in SHARDS}
+
+        assert path in shards["heavy"].paths
+        assert path in shards["rest"].ignores
+
     def test_pytest_args_scope_a_shard_to_its_paths(self) -> None:
         shard = Shard(
             id="x",
@@ -221,7 +236,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "7 selected nodes, 8 non-live files"
+            "9 selected nodes, 10 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:

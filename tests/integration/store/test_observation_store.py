@@ -557,3 +557,84 @@ class TestTwoStatusRead:
         )
 
         assert len(fetched) == 4
+
+
+class TestFetchLatestObservations:
+    def test_inclusive_window_source_parameter_and_missing(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+        from datetime import timedelta
+
+        sid = _seed_station(db_connection, rng_seed=801, code="LATEST-801")
+        absent = _seed_station(db_connection, rng_seed=802, code="LATEST-802")
+        store = PgObservationStore(db_connection)
+        rng = random.Random(801)
+        older = make_observation(station_id=sid, timestamp=_utc(hour=0), rng=rng)
+        missing = make_observation(
+            station_id=sid, timestamp=_utc(hour=1), qc_status=QcStatus.MISSING, rng=rng
+        )
+        future = make_observation(station_id=sid, timestamp=_utc(hour=2), rng=rng)
+        other_parameter = make_observation(
+            station_id=sid, timestamp=_utc(hour=1), parameter="water_level", rng=rng
+        )
+        other_source = replace(
+            make_observation(station_id=sid, timestamp=_utc(hour=1), rng=rng),
+            source=ObservationSource.MANUAL_IMPORT,
+        )
+        store.store_observations(
+            [older, missing, future, other_parameter, other_source]
+        )
+        result = store.fetch_latest_observations(
+            [sid, absent],
+            "discharge",
+            _utc(hour=0),
+            _utc(hour=1),
+            source=ObservationSource.MEASURED,
+        )
+        assert result[sid] is not None
+        assert result[sid].id == missing.id
+        assert result[sid].value is None
+        assert result[absent] is None
+        result = store.fetch_latest_observations(
+            [sid],
+            "discharge",
+            ensure_utc(_utc(hour=2) + timedelta(seconds=1)),
+            _utc(hour=3),
+            source=ObservationSource.MEASURED,
+        )
+        assert result[sid] is None
+
+    def test_null_safe_delivery_filter_before_limit(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.dhm_delivery import DELIVERY_ID
+
+        sid = _seed_station(db_connection, rng_seed=803, code="LATEST-803")
+        store = PgObservationStore(db_connection)
+        rng = random.Random(803)
+        ordinary = make_observation(station_id=sid, timestamp=_utc(hour=0), rng=rng)
+        delivery = replace(
+            make_observation(station_id=sid, timestamp=_utc(hour=1), rng=rng),
+            delivery_id=DELIVERY_ID,
+        )
+        store.store_observations([ordinary, delivery])
+        scoped = store.fetch_latest_observations(
+            [sid],
+            "discharge",
+            _utc(hour=0),
+            _utc(hour=1),
+            source=ObservationSource.MEASURED,
+            excluded_delivery_id=DELIVERY_ID,
+        )
+        admin = store.fetch_latest_observations(
+            [sid],
+            "discharge",
+            _utc(hour=0),
+            _utc(hour=1),
+            source=ObservationSource.MEASURED,
+        )
+        assert scoped[sid] is not None and scoped[sid].id == ordinary.id
+        assert admin[sid] is not None and admin[sid].id == delivery.id
