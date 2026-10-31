@@ -38,6 +38,8 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/db/test_role_bootstrap.py",
             "tests/integration/flows/test_train_models_warm_start_pg.py",
             "tests/integration/ops/test_protected_evidence_restore.py",
+            "tests/integration/services/test_skill_data_use_isolation.py",
+            "tests/integration/store/test_observation_unit_readers.py",
         ),
     ),
 )

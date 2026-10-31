@@ -341,7 +341,7 @@ def list_observations(
     observations = stores["obs_store"].fetch_observations(
         sid, parameter, start_dt, end_dt, qc_status=qc
     )
-    if not principal.is_admin:
+    if not principal.can_review:
         observations = [o for o in observations if o.delivery_id != DELIVERY_ID]
     return [_to_observation_response(o) for o in observations]
 

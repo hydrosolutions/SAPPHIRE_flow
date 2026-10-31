@@ -4,7 +4,7 @@ import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import pytest
@@ -258,7 +258,7 @@ class TestGetStation:
 
 
 class TestListObservations:
-    def test_restricted_delivery_values_are_admin_only(
+    def test_restricted_delivery_values_are_visible_to_scoped_reviewers(
         self, client: TestClient, fake_stores: dict[str, Any]
     ) -> None:
         station = make_station_config(rng=random.Random(1))
@@ -294,7 +294,10 @@ class TestListObservations:
         _set_principal(AccessTokenRole.REVIEWER, frozenset({station.id}))
         reviewer = client.get(url, params=params)
         assert reviewer.status_code == 200
-        assert [row["id"] for row in reviewer.json()] == [str(ordinary.id)]
+        assert {row["id"] for row in reviewer.json()} == {
+            str(restricted.id),
+            str(ordinary.id),
+        }
 
         _set_principal(AccessTokenRole.ADMIN, frozenset())
         admin = client.get(url, params=params)
@@ -303,6 +306,31 @@ class TestListObservations:
             str(restricted.id),
             str(ordinary.id),
         }
+
+    @pytest.mark.parametrize("scope", ["empty", "other_station"])
+    def test_restricted_delivery_reviewer_requires_station_scope(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        scope: Literal["empty", "other_station"],
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        station_ids = (
+            frozenset() if scope == "empty" else frozenset({StationId(uuid4())})
+        )
+        _set_principal(AccessTokenRole.REVIEWER, station_ids)
+
+        response = client.get(
+            f"/api/v1/stations/{station.id}/observations",
+            params={
+                "parameter": "discharge",
+                "start": "2025-01-01T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+
+        assert response.status_code == 404
 
     def test_returns_observations(
         self, client: TestClient, fake_stores: dict[str, Any]

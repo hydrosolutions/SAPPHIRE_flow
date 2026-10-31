@@ -71,3 +71,9 @@ C/D remain deferred. Owner explicitly requires database-backed station threshold
 metadata: investigate the existing schema before proposing an extension; do not
 substitute a file-based API. Preserve provenance and separate interpretation from
 alert/skill use. Any schema/import decision returns to the owner before applying.
+
+CI follow-up: the rest integration shard timed out at 97%. Two costly files
+move into the existing heavy shard without changing filters or timeouts.
+Both independent reviews found no blockers. Base refreshed to
+`f27a4c30132436abc95d0973fb7ecd9959aa05e0`; current release target is
+0.1.1092. The earlier suite result remains historical; refreshed CI must pass.

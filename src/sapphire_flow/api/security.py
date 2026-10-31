@@ -9,7 +9,7 @@ fallback for local dev only).
 
 Three roles (G4, role list amended by Plan 401 D1): `consumer` (read,
 station-scoped), `reviewer` (read, scoped exactly like a consumer, plus the
-REVIEW routes gated by `require_reviewer`) and `admin` (read, unscoped + CLI
+REVIEW routes and scoped restricted DHM history) and `admin` (read, unscoped + CLI
 token/tenant management). No bearer key of any role may mutate state —
 that is enforced by simply never `Depends`-ing security on a
 POST/PATCH/DELETE route (the sole exception, alert acknowledgement, is
@@ -135,7 +135,7 @@ class Principal:
 
     @property
     def can_review(self) -> bool:
-        """Plan 401 D2: REVIEW routes admit reviewer and admin tokens."""
+        """Admit REVIEW routes and restricted DHM history, subject to station scope."""
         return self.role in (AccessTokenRole.REVIEWER, AccessTokenRole.ADMIN)
 
     def station_in_scope(self, station_id: StationId | None) -> bool:

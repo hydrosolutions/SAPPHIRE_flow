@@ -32,8 +32,10 @@ described as consent in any document, the dashboard, or a message to DHM.
 - Bulk download of the restricted measurements, or publication of derived metrics outside the password-protected
   dashboard. Plan 268 D5's publication limit and the map deployment plan's separate DHM letter (display, download,
   derived metrics) remain open.
-- A change to what tokens may read: consumer and reviewer tokens still never receive delivery-tagged rows
-  (`security.md` § Restricted DHM history).
+- At this decision's date, consumer and reviewer tokens could not receive delivery-tagged rows.
+  **Superseded for private reviewer access on 2026-10-31:** the owner authorized historical discharge
+  reads through the existing tenant/station-scoped reviewer role. Consumers remain excluded;
+  this does not authorize public release (`security.md` § Restricted DHM history).
 
 ## Conditions and consequences
 
