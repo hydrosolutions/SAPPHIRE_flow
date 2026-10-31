@@ -258,3 +258,9 @@ Only genuine ERA5 history is stored; forecast-fill is excluded by the adapter.
 Returned counts and timestamp bounds do not establish complete daily support.
 This extension does not enable HRES acquisition, IFS past-tail filling, forecast
 scheduling, or model readiness. These remain separate existing-flow gates.
+
+## Native operational ERA5 history
+
+Named-scope history uses the standard `ingest-operational-era5-history` deployment,
+not a local wrapper. See [admission and submission](nepal-station-onboarding-runbook.md#native-named-scope-era5-history)
+for worker config, credentials, endpoint, batch semantics and coverage limits.

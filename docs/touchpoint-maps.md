@@ -2339,3 +2339,15 @@ a paused-cutover operation. See the database-schema serialization contract.
   and store-backed resolver alias test plus admission rejection),
   `tests/unit/types/test_nepal_onboarding.py`, existing readiness/store tests.
 - Operations: `docs/operations/recap-gateway-runbook.md`, operational group ERA5.
+
+### Native ERA5 history routing
+
+Weather/onboarding: `config/nepal_weather.py` → `types/nepal_onboarding.py` →
+`services/nepal_onboarding.py::admit_weather_bindings` → native polygon/weather stores.
+Coordinate membership edits through the existing tenant lock in all three
+`PgStationGroupStore` membership mutators. Preserve package provenance and unrelated data.
+Prefect/deployment: `cli/onboard_nepal.py` submits the registered three-string
+`flows/ingest_recap_era5_reanalysis.py::ingest_operational_era5_history_flow`;
+`cli/register_deployments.py` owns registration, and the Nepal compose skip list
+holds activation. Verify config overlays, actual worker grants, roster races,
+batch rollback, SDK cleanup, real parameter schema and legacy CLI behavior.

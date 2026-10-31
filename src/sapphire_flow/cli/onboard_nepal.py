@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import structlog
+from prefect.client.orchestration import get_client
 
 from sapphire_flow import __version__
 from sapphire_flow.config.deployment_identity import load_deployment_identity_config
@@ -13,11 +15,13 @@ from sapphire_flow.db.engine import create_engine_from_env
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
     ingest_recap_era5_reanalysis_flow,
+    parse_history_window,
 )
 from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.services.basin_package_loader import load_basin_package
 from sapphire_flow.services.model_registry import discover_models
 from sapphire_flow.services.nepal_onboarding import (
+    admit_weather_bindings,
     import_nepal_package,
     qualify_discharge_targets,
 )
@@ -45,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
         description="Prepare the six CHWRR gauges without activating forecasts"
     )
     commands = result.add_subparsers(dest="command", required=True)
-    for name in ("basins", "history", "qualify"):
+    for name in ("basins", "history", "qualify", "weather-bindings"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--tenant", choices=["chwrr"], required=True)
@@ -69,12 +73,18 @@ def parser() -> argparse.ArgumentParser:
                     "Confirm the snow deployment is scoped and unscoped runs drained"
                 ),
             )
-        else:
+        elif name != "weather-bindings":
             command.add_argument(
                 "--start", required=True, help="Inclusive ISO timestamp with timezone"
             )
             command.add_argument(
                 "--end", required=True, help="Exclusive ISO timestamp with timezone"
+            )
+        if name in ("history", "weather-bindings"):
+            command.add_argument("--weather-scope", required=name == "weather-bindings")
+        if name == "weather-bindings":
+            command.add_argument(
+                "--confirm-package-joins", action="store_true", required=True
             )
         if name == "qualify":
             command.add_argument("--model", required=True)
@@ -114,10 +124,29 @@ def build_history_adapter(
     )
 
 
+async def submit_scoped_history(start: str, end: str, weather_scope: str) -> None:
+    async with get_client() as client:
+        deployment = await client.read_deployment_by_name(
+            "ingest-operational-era5-history/ingest-operational-era5-history"
+        )
+        await client.create_flow_run_from_deployment(
+            deployment.id,
+            parameters={"start": start, "end": end, "weather_scope": weather_scope},
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     configure_cli_logging()
     try:
+        if args.command == "history" and args.weather_scope is not None:
+            if not args.weather_scope.strip():
+                raise ConfigurationError("weather scope must not be empty")
+            if args.dry_run:
+                raise ConfigurationError("scoped history does not support dry-run")
+            parse_history_window(args.start, args.end)
+            asyncio.run(submit_scoped_history(args.start, args.end, args.weather_scope))
+            return 0
         identity = load_deployment_identity_config(args.config)
         if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
             raise ConfigurationError(
@@ -126,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         now = ensure_utc(datetime.now(UTC))
         window = None
         model = None
-        if args.command != "basins":
+        if args.command in ("history", "qualify"):
             start = ensure_utc(datetime.fromisoformat(args.start))
             end = ensure_utc(datetime.fromisoformat(args.end))
             window = HistoryWindow(start=start, end=end)
@@ -166,7 +195,18 @@ def main(argv: list[str] | None = None) -> int:
             with engine.connect() as conn:
                 for batch in batches:
                     with conn.begin() as transaction:
-                        if loaded is not None:
+                        if args.command == "weather-bindings":
+                            from sapphire_flow.config.nepal_weather import (
+                                load_weather_scope,
+                            )
+
+                            admit_weather_bindings(
+                                conn,
+                                identity,
+                                load_weather_scope(args.config, args.weather_scope),
+                                now=now,
+                            )
+                        elif loaded is not None:
                             report = import_nepal_package(
                                 conn, loaded, identity, clock=lambda: now
                             )

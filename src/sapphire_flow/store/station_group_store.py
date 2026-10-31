@@ -1,6 +1,7 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
@@ -13,6 +14,7 @@ from sapphire_flow.db.metadata import (
 )
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
@@ -38,6 +40,7 @@ class PgStationGroupStore:
 
     def store_group(self, group: StationGroup) -> None:
         with self._begin() as txn:
+            PgTenantStore(txn).lock_tenant(group.tenant_id)
             # A group's tenant is IMMUTABLE (Plan 147 Slice A, R4). A separate
             # SELECT-then-Python-check (the earlier approach) is a TOCTOU race:
             # two concurrent store_group calls for the same new id, different
@@ -166,30 +169,53 @@ class PgStationGroupStore:
     def add_station_to_group(
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
-        # tenant_id comes from the GROUP (never the caller/station) — the
-        # composite FK (station_id, tenant_id) -> stations(id, tenant_id)
-        # then structurally rejects the insert if the station belongs to a
-        # different tenant (Plan 147 Slice A, R4).
-        group_tenant_id = self._conn.execute(
-            sa.select(station_groups.c.tenant_id).where(station_groups.c.id == group_id)
-        ).scalar_one()
-        self._conn.execute(
-            pg_insert(station_group_members)
-            .values(group_id=group_id, station_id=station_id, tenant_id=group_tenant_id)
-            .on_conflict_do_nothing()
-        )
+        with (
+            self._begin()
+            if self._conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT"
+            else nullcontext(self._conn)
+        ) as txn:
+            # tenant_id comes from the GROUP (never the caller/station) — the
+            # composite FK (station_id, tenant_id) -> stations(id, tenant_id)
+            # then structurally rejects the insert if the station belongs to a
+            # different tenant (Plan 147 Slice A, R4).
+            group_tenant_id = txn.execute(
+                sa.select(station_groups.c.tenant_id).where(
+                    station_groups.c.id == group_id
+                )
+            ).scalar_one()
+            PgTenantStore(txn).lock_tenant(TenantId(group_tenant_id))
+            txn.execute(
+                pg_insert(station_group_members)
+                .values(
+                    group_id=group_id, station_id=station_id, tenant_id=group_tenant_id
+                )
+                .on_conflict_do_nothing()
+            )
 
     def remove_station_from_group(
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
-        self._conn.execute(
-            sa.delete(station_group_members).where(
-                sa.and_(
-                    station_group_members.c.group_id == group_id,
-                    station_group_members.c.station_id == station_id,
+        with (
+            self._begin()
+            if self._conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT"
+            else nullcontext(self._conn)
+        ) as txn:
+            tenant_id = txn.execute(
+                sa.select(station_groups.c.tenant_id).where(
+                    station_groups.c.id == group_id
+                )
+            ).scalar_one_or_none()
+            if tenant_id is None:
+                return
+            PgTenantStore(txn).lock_tenant(TenantId(tenant_id))
+            txn.execute(
+                sa.delete(station_group_members).where(
+                    sa.and_(
+                        station_group_members.c.group_id == group_id,
+                        station_group_members.c.station_id == station_id,
+                    )
                 )
             )
-        )
 
     def store_group_model_assignment(self, assignment: GroupModelAssignment) -> None:
         self._conn.execute(

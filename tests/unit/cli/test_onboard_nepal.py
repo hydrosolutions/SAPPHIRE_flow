@@ -155,3 +155,97 @@ class TestOnboardNepal:
                     "accepted-package",
                 ]
             )
+
+
+class TestScopedHistory:
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["--dry-run"],
+            ["--weather-scope", ""],
+            ["--start", "2020-01-01"],
+            ["--end", "2019-01-01T00:00:00Z"],
+        ],
+    )
+    def test_rejects_before_configuration_or_submission(
+        self, monkeypatch: pytest.MonkeyPatch, extra: list[str]
+    ) -> None:
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("must reject before config, database or submission")
+
+        monkeypatch.setattr(onboard_nepal, "load_deployment_identity_config", forbidden)
+        monkeypatch.setattr(onboard_nepal, "create_engine_from_env", forbidden)
+        monkeypatch.setattr(onboard_nepal, "submit_scoped_history", forbidden)
+        assert (
+            onboard_nepal.main(
+                [
+                    "history",
+                    "--config",
+                    "missing.toml",
+                    "--tenant",
+                    "chwrr",
+                    "--confirm-t8",
+                    "--weather-scope",
+                    "test",
+                    "--start",
+                    "2020-01-01T00:00:00Z",
+                    "--end",
+                    "2020-02-01T00:00:00Z",
+                    *extra,
+                ]
+            )
+            == 1
+        )
+
+    def test_submits_only_three_parameters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        class Client:
+            async def __aenter__(self) -> Client:
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                pass
+
+            async def read_deployment_by_name(self, name: str) -> SimpleNamespace:
+                calls.append(name)
+                return SimpleNamespace(id="deployment-id")
+
+            async def create_flow_run_from_deployment(
+                self, deployment_id: str, *, parameters: dict[str, str]
+            ) -> None:
+                calls.append((deployment_id, parameters))
+
+        monkeypatch.setattr(onboard_nepal, "get_client", Client)
+        assert (
+            onboard_nepal.main(
+                [
+                    "history",
+                    "--config",
+                    "missing.toml",
+                    "--tenant",
+                    "chwrr",
+                    "--confirm-t8",
+                    "--weather-scope",
+                    "test",
+                    "--start",
+                    "2020-01-01T00:00:00Z",
+                    "--end",
+                    "2020-02-01T00:00:00Z",
+                ]
+            )
+            == 0
+        )
+        assert calls == [
+            "ingest-operational-era5-history/ingest-operational-era5-history",
+            (
+                "deployment-id",
+                {
+                    "start": "2020-01-01T00:00:00Z",
+                    "end": "2020-02-01T00:00:00Z",
+                    "weather_scope": "test",
+                },
+            ),
+        ]

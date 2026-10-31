@@ -25,6 +25,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | 11 — NWP gap recovery | `recover_nwp_gaps` | `ops` | Event-triggered (from Flow 4) | — | **v0c+** (§D5) |
 | 12 — Observation reprocessing | `reprocess_observations` | `ops` | Event-triggered / on-demand | Per-station (see below) | v0+v1 |
 | 13 — Model onboarding | `onboard_model_flow` | `training` (v0: `default`) | On-demand | 1 | v0+v1 |
+| Operational ERA5 history | `ingest_operational_era5_history_flow` | `ingest` | On-demand, held by Nepal skip default | 1 | v0+v1 |
 | Backup | `backup_database_flow` | `ops` | Cron (daily) | — | v0+v1 |
 | DLQ drain | `drain_dlq` | `ops` | Cron (hourly) | — | **v1** (§A1) |
 | Data archival | `archive_cold_data` | `ops` | Cron (monthly) | — | **v1** (§A2) |

@@ -6474,3 +6474,12 @@ listed in the LINDAS observation-ingest touchpoint map.
 exact existing CHWRR group with ONBOARDING or OPERATIONAL stations and validated
 active reanalysis/polygon bindings. `None` retains the legacy six-site path.
 No store or adapter Protocol signatures change.
+
+### Native weather admission
+
+`OperationalWeatherAdmission` is a frozen value containing `scope: OperationalWeatherScope`
+and `original_gateway_hru_name: GatewayHruName`. The config boundary parses named
+weather-history scopes into this value. `admit_weather_bindings` validates the whole
+exact CHWRR roster before native-store writes in the caller transaction. The production
+Prefect entrypoint accepts only `start: str`, `end: str`, `weather_scope: str`; injected
+flow signatures and weather adapter Protocols remain unchanged.
