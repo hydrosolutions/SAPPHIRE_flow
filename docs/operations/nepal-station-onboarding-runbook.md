@@ -424,8 +424,9 @@ For each batch:
    delivery tags and QC verdicts; do not invert curves or rerun generic
    onboarding QC. Keep unqualified targets unset and report the hold reason.
    Repeat qualification after delivery replacement or QC changes. The readiness
-   report contains aggregates only; consumer and reviewer access to restricted
-   observations remains withheld.
+   report contains aggregates only. Consumer access to restricted observations
+   remains withheld; owner-authorized private dashboard reviewers may read them
+   within their existing tenant/station scope (2026-10-31; security standard).
    Plan 268 D9's pilot approval and Plan 143 D2's discharge-first decision are
    the recorded scope authority; no runtime training-permission flag exists or
    is required here. Record the unresolved model-output publication question

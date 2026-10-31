@@ -83,9 +83,11 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   had *two* roles; Plan 401 D1 (owner, 2026-09-26) amends G4's **role list only** — GET-only (next
   bullet) stands for every token. No session roles, no `operator`/`forecaster` role.
 - **Restricted DHM history**: `GET /api/v1/stations/{station_id}/observations`
-  withholds Plan 268's delivery-tagged discharge rows from consumer and reviewer
-  tokens even when the station is in scope. Internal admin tokens can read them;
-  do not issue such a token externally without the data owner's permission.
+  withholds Plan 268's delivery-tagged discharge rows from consumer tokens.
+  The owner authorized private dashboard review on 2026-10-31: reviewer tokens
+  can read these rows only for stations in their existing tenant-bound scope.
+  Internal admin access is unchanged. This is not public-release permission;
+  never replace a dashboard reviewer token with an admin token.
 - **Access tokens are strictly GET-only** — no bearer key of any role may POST/PATCH/DELETE. The
   sole state-changing v0/v1.0 route, `POST /alerts/{id}/acknowledge`, is removed from the v1.0 surface
   (returns `501`); it returns with the Flow 3 dashboard + session tokens in v1.x.
@@ -400,7 +402,7 @@ Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(re
 | `POST /api/v1/access-tokens/{id}/regenerate` | ✓ | — | — | — | — | — |
 | `PATCH /api/v1/users/me/password` | ✓ | ✓ | ✓ | ✓ | — | — |
 
-**Reviewer token column (Plan 401):** a reviewer gets exactly the consumer's access on every existing route, plus the REVIEW class; an admin token also reaches REVIEW routes; human-role access to them (`v1.x`) is decided with the session stack. "All statuses" stays `—` for a reviewer where Plan 341's publication gate is active (§ Reviewer tokens).
+**Reviewer token column (Plan 401):** a reviewer gets consumer access plus the REVIEW class and the scoped restricted-DHM-history permission described above; an admin token also reaches REVIEW routes; human-role access to them (`v1.x`) is decided with the session stack. "All statuses" stays `—` for a reviewer where Plan 341's publication gate is active (§ Reviewer tokens).
 
 **API consumer scope filtering**: A `✓` for an API consumer (or a reviewer token, scoped identically) means the endpoint is accessible, not that the consumer sees all data. Responses are filtered server-side by the token's `scope` (see `access_tokens.scope` in architecture-context.md § Authentication schemas). A consumer scoped to specific stations receives only those stations from `GET /api/v1/stations`, only their forecasts, observations, and alerts. Requests for out-of-scope station IDs return 404. Human roles (org admin through forecaster) are unscoped — they see all data.
 

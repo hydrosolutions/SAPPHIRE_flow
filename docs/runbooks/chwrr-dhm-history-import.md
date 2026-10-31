@@ -6,9 +6,11 @@ targets, or promote stations. Keep the delivered `DFL_*.txt` and `RT_*.txt`
 files outside the checkout. Never put individual discharge or rating-point
 values in logs, tickets, or commits.
 
-The station observations API withholds this delivery from consumer and reviewer
-tokens; only an internal admin token can read its individual values. Do not
-issue an admin token externally without the data owner's permission.
+The station observations API withholds this delivery from consumer tokens.
+The owner authorized private dashboard review on 2026-10-31: reviewer tokens
+can read individual values only at stations in their existing tenant-bound scope.
+Internal admin access is unchanged. This does not authorize public release or
+issuing an admin token to a dashboard.
 
 Run this only after the Plan 268 migration and Plan 510's guard migration (`0067`)
 are deployed. The `chwrr` tenant must already exist: the host's overlay declares
