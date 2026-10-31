@@ -3321,6 +3321,14 @@ class ArtifactIntegrityError(SapphireError):
 
 ```python
 class ObservationStore(Protocol):
+    def fetch_latest_observations(
+        self, station_ids: list[StationId], parameter: str,
+        window_start: UtcDatetime, as_of: UtcDatetime, *,
+        source: ObservationSource, excluded_delivery_id: str | None = None,
+    ) -> dict[StationId, Observation | None]: ...
+        # TRUSTED only. Inclusive bounded window; all requested IDs map to a row
+        # or None. Unit visibility and NULL-safe optional delivery exclusion apply
+        # before latest selection. Preserves QC, including MISSING; no QC fallback.
     def fetch_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> list[Observation]: ...
     def delete_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> int: ...
     def store_observations(self, observations: list[Observation]) -> None: ...

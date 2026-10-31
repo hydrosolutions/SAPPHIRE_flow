@@ -374,6 +374,39 @@ class FakeObservationStore:
             self.update_qc(obs.id, status, flags, qc_rule_version)
         return True
 
+    def fetch_latest_observations(
+        self,
+        station_ids: list[StationId],
+        parameter: str,
+        window_start: UtcDatetime,
+        as_of: UtcDatetime,
+        *,
+        source: ObservationSource,
+        excluded_delivery_id: str | None = None,
+    ) -> dict[StationId, Observation | None]:
+        if self._purpose is not ObservationReadPurpose.TRUSTED:
+            raise ValueError("latest observations require a trusted read purpose")
+        if window_start > as_of:
+            raise ValueError("latest observation window starts after as_of")
+        result: dict[StationId, Observation | None] = dict.fromkeys(station_ids)
+        for observation in self._observations.values():
+            if (
+                observation.station_id not in result
+                or observation.parameter != parameter
+                or observation.source != source
+                or not window_start <= observation.timestamp <= as_of
+                or not self._unit_visible(observation)
+                or (
+                    excluded_delivery_id is not None
+                    and observation.delivery_id == excluded_delivery_id
+                )
+            ):
+                continue
+            previous = result[observation.station_id]
+            if previous is None or observation.timestamp > previous.timestamp:
+                result[observation.station_id] = self._snapshot(observation)
+        return result
+
     def fetch_latest_capture_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:

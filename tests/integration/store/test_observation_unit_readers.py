@@ -15,6 +15,8 @@ from tests.integration.store.test_bafu_unit_read_filter import NOW, hold
 from tests.integration.store.test_bafu_unit_read_filter import station as station
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sapphire_flow.types.ids import StationId, TenantId
 
 
@@ -647,4 +649,238 @@ class TestBoundedDependencyWindow:
                 )
             )
             == "raw"
+        )
+
+
+class TestLatestVisibleObservation:
+    def test_bulk_latest_respects_unit_hold(
+        self, db_connection: sa.Connection, station: tuple[StationId, TenantId]
+    ) -> None:
+        from sapphire_flow.types.enums import ObservationSource
+
+        store = PgObservationStore(db_connection)
+        visible = store.fetch_latest_observations(
+            [station[0]],
+            "discharge",
+            NOW,
+            NOW + timedelta(days=1),
+            source=ObservationSource.MEASURED,
+        )
+        assert visible[station[0]] is not None
+        hold(db_connection, station)
+        assert store.fetch_latest_observations(
+            [station[0]],
+            "discharge",
+            NOW,
+            NOW + timedelta(days=1),
+            source=ObservationSource.MEASURED,
+        ) == {station[0]: None}
+
+    def test_qc_context_reader_cannot_use_latest_projection(
+        self, db_connection: sa.Connection, station: tuple[StationId, TenantId]
+    ) -> None:
+        from sapphire_flow.types.enums import ObservationSource
+
+        with pytest.raises(ValueError, match="trusted read purpose"):
+            PgObservationStore(
+                db_connection
+            ).qc_context_reader().fetch_latest_observations(
+                [station[0]],
+                "discharge",
+                NOW,
+                NOW + timedelta(days=1),
+                source=ObservationSource.MEASURED,
+            )
+
+
+class TestLatestObservationQueryEvidence:
+    def test_bounded_window_with_history_hidden_tails_and_absent_parameter(
+        self,
+        db_connection: sa.Connection,
+        station: tuple[StationId, TenantId],
+        tmp_path: Path,
+    ) -> None:
+        import json
+        from typing import Any
+
+        from sapphire_flow.types.dhm_delivery import DELIVERY_ID
+        from sapphire_flow.types.enums import ObservationSource
+
+        historical = [
+            {
+                "id": uuid4(),
+                "station_id": station[0],
+                "timestamp": NOW - timedelta(days=60) + timedelta(minutes=i),
+                "parameter": "discharge",
+                "source": "measured",
+                "value": 1.0,
+                "qc_status": "raw",
+                "delivery_id": None,
+            }
+            for i in range(9000)
+        ]
+        recent = [
+            {
+                "id": uuid4(),
+                "station_id": station[0],
+                "timestamp": NOW + timedelta(minutes=i + 1),
+                "parameter": "discharge" if i % 2 == 0 else "water_level",
+                "source": "measured",
+                "value": 1.0,
+                "qc_status": "raw",
+                "delivery_id": DELIVERY_ID if i >= 900 else None,
+            }
+            for i in range(1000)
+        ]
+        db_connection.execute(sa.insert(observations), historical + recent)
+        db_connection.exec_driver_sql("ANALYZE observations")
+        store = PgObservationStore(db_connection)
+        plans: dict[str, Any] = {}
+
+        def measure(name: str, parameter: str) -> dict[StationId, Any]:
+            captured: list[tuple[str, Any]] = []
+
+            def capture(
+                conn: sa.Connection,
+                cursor: Any,
+                statement: str,
+                parameters: Any,
+                context: Any,
+                executemany: bool,
+            ) -> None:
+                captured.append((statement, parameters))
+
+            sa.event.listen(db_connection, "before_cursor_execute", capture)
+            try:
+                result = store.fetch_latest_observations(
+                    [station[0]],
+                    parameter,
+                    NOW,
+                    NOW + timedelta(days=1),
+                    source=ObservationSource.MEASURED,
+                    excluded_delivery_id=DELIVERY_ID,
+                )
+            finally:
+                sa.event.remove(db_connection, "before_cursor_execute", capture)
+            assert len(captured) == 1
+            statement, parameters = captured[0]
+            plans[name] = db_connection.exec_driver_sql(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + statement,
+                parameters,
+            ).scalar_one()
+            return result
+
+        visible = measure("mixed_parameters_hidden_delivery_tail", "discharge")
+        assert visible[station[0]].timestamp == NOW + timedelta(minutes=899)
+        assert measure("absent_parameter", "not_measured")[station[0]] is None
+        hold(
+            db_connection,
+            station,
+            start=NOW + timedelta(minutes=1),
+            end=NOW + timedelta(days=1),
+        )
+        held = measure("unit_held_tail", "discharge")
+        assert held[station[0]].timestamp == NOW
+        (tmp_path / "latest-query-plans.json").write_text(json.dumps(plans, indent=2))
+        pending = [plans["unit_held_tail"][0]["Plan"]]
+        observation_reads: list[dict[str, Any]] = []
+        while pending:
+            node = pending.pop()
+            if node.get("Relation Name") == "observations":
+                observation_reads.append(node)
+            pending.extend(node.get("Plans", []))
+        # Includes the trust-view lookup: no scan may enumerate the 9,000
+        # historical rows outside the requested window.
+        assert observation_reads
+        assert all(node["Actual Rows"] <= 1001 for node in observation_reads)
+
+
+class TestLatestObservationMaximumPage:
+    def test_maximum_window_page_with_no_matching_parameter_and_other_source_tail(
+        self,
+        db_connection: sa.Connection,
+        tmp_path: Path,
+    ) -> None:
+        import json
+        import random
+        from typing import Any
+
+        from sapphire_flow.store.station_store import PgStationStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import ObservationSource
+        from tests.conftest import make_station_config
+
+        stations = [
+            make_station_config(code=f"MAX-{i:03}", rng=random.Random(9000 + i))
+            for i in range(200)
+        ]
+        station_store = PgStationStore(db_connection)
+        for item in stations:
+            station_store.store_station(item)
+        ids = [item.id for item in stations]
+        start = ensure_utc(NOW - timedelta(hours=720))
+        db_connection.execute(
+            sa.text("""
+            INSERT INTO observations
+                (id, station_id, timestamp, parameter, source, value, qc_status)
+            SELECT md5(s.id::text || ':' || ticks.i::text || ':' || src.kind)::uuid,
+                   s.id, CAST(:start AS timestamptz) + ticks.i * interval '10 minutes',
+                   CASE WHEN src.kind='measured' THEN 'water_level'
+                        ELSE 'discharge' END,
+                   src.kind, 1.0, 'raw'
+            FROM stations s CROSS JOIN generate_series(1, 4320) AS ticks(i)
+            CROSS JOIN (VALUES ('measured'), ('manual_import')) AS src(kind)
+            WHERE s.id=ANY(CAST(:ids AS uuid[]))
+        """),
+            {"start": start, "ids": ids},
+        )
+        db_connection.exec_driver_sql("ANALYZE observations")
+        captured: list[tuple[str, Any]] = []
+
+        def capture(
+            conn: sa.Connection,
+            cursor: Any,
+            statement: str,
+            parameters: Any,
+            context: Any,
+            executemany: bool,
+        ) -> None:
+            captured.append((statement, parameters))
+
+        sa.event.listen(db_connection, "before_cursor_execute", capture)
+        try:
+            result = PgObservationStore(db_connection).fetch_latest_observations(
+                ids,
+                "discharge",
+                start,
+                NOW,
+                source=ObservationSource.MEASURED,
+            )
+        finally:
+            sa.event.remove(db_connection, "before_cursor_execute", capture)
+        assert result == dict.fromkeys(ids)
+        assert len(captured) == 1
+        statement, parameters = captured[0]
+        plans = db_connection.exec_driver_sql(
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + statement,
+            parameters,
+        ).scalar_one()
+        (tmp_path / "maximum-page-query-plan.json").write_text(
+            json.dumps(plans, indent=2)
+        )
+        pending = [plans[0]["Plan"]]
+        observation_reads: list[dict[str, Any]] = []
+        while pending:
+            node = pending.pop()
+            if node.get("Relation Name") == "observations":
+                observation_reads.append(node)
+            pending.extend(node.get("Plans", []))
+        assert observation_reads
+        assert all("Index" in node["Node Type"] for node in observation_reads)
+        assert all(node["Actual Rows"] == 0 for node in observation_reads)
+        root_plan = plans[0]["Plan"]
+        assert (
+            root_plan.get("Shared Hit Blocks", 0)
+            + root_plan.get("Shared Read Blocks", 0)
+            < 1_000_000
         )

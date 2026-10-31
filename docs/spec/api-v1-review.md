@@ -1,12 +1,13 @@
 # The `/api/v1` interface for review dashboards (Plan 402)
 
 **Consumer page for the SAPPHIRE-flow-map project** (and any other reviewer
-dashboard). The map reads `/api/v1` directly — not a snapshot document; see
-`docs/spec/forecast-lab-snapshot.md` for the separate, unrelated
-`forecast-lab-snapshot/v2` document, which stays exactly as it is (it still
-carries archived BAFU forecasts, which have no API route).
+dashboard). The map reads authenticated `/api/v1` routes, including
+`GET /api/v1/forecast-lab/snapshot` for archived BAFU forecasts and ordinary
+SAPPHIRE comparisons. Its `forecast-lab-snapshot/v2` wire format is unchanged;
+see `docs/spec/forecast-lab-snapshot.md`. It does not replace authoritative
+evaluation selection, QC diagnostics or skill routes.
 
-The authoritative shape for the eight routes the map reads is the committed,
+The authoritative shape for the dashboard routes is the committed,
 drift-tested contract: `docs/spec/api-v1-map.openapi.json`
 (`api/map_contract.py::build_map_openapi()`, `tests/unit/api/test_map_contract.py`).
 This page explains conventions the schema alone does not — auth, error
@@ -25,6 +26,47 @@ change a given diff is stays a **review judgement**, not machine-checked
 mechanically fails a pull request that changes the file without SOME greater
 version. Regenerate with `uv run python tools/generate_map_contract.py`
 after editing routes/schemas or bumping the constant.
+
+## Bulk latest observations
+
+`GET /api/v1/observations/latest?parameter=discharge` accepts an authenticated
+consumer, reviewer or admin bearer token. It returns `items`, `total`, `limit`,
+`offset`, `parameter`, `source`, `window_start` and `generated_at`. Each item has
+`station_id`, `code`, `network`, `measured_parameters` and nullable `observation`
+(the existing observation DTO with timestamp, value, source and typed QC flags).
+
+- `observation_hours`: default168, range1–720; the window includes both endpoints.
+- `source`: one ObservationSource value, default `measured`.
+- `limit`: default200, maximum200; `offset`>=0. All scoped stations count, sorted
+  by UUID before pagination, including stations without a visible reading.
+- `parameter` currently accepts only `discharge`. Invalid/missing query values
+  return FastAPI422 (`detail` list), not the ordinary HTTP error envelope.
+- Null means no visible record in this window. It does not reveal hidden history
+  or assert that the station has never measured this parameter. A latest MISSING
+  record retains its timestamp/QC and null value; failed/raw/unchecked QC is not
+  silently replaced by an older passed reading. Clients derive age from the
+  timestamps and must not label stale or unverified readings as current trusted
+  values. No new unit certification or conversion is implied.
+- Trusted-unit holds and consumer/reviewer delivery restrictions are applied
+  before selection. Admin retains existing delivery visibility. Observation reads
+  follow the existing observation route, not the forecast publication gate.
+- Success, validation, authentication and internal-error responses are `no-store`.
+  This backend capability does not expand the current frontend no-fleet agreement.
+
+## Snapshot contract export
+
+Contract 2.3 adds the existing snapshot route, including its bounded observation
+window, repeated station-code filter and error responses. All snapshot responses
+are `no-store`. Unknown/ineligible/out-of-scope requested codes reject the whole
+request; publication-gated stations return 403, and unavailable ordinary forecast
+reads return 503. Omitting codes selects the eligible scoped fleet; frontend fleet
+use still requires its separate operational admission.
+
+The maintained exporter removes boolean `available` discriminator hints only in
+OpenAPI. The nested `oneOf`/`const` validation and string `representation`
+discriminators remain. Runtime validation and the standalone v2 JSON Schema do
+not change. No public OpenAPI endpoint is enabled. Pull the committed contract
+from this repository; regenerate it with the command above.
 
 ## Auth
 

@@ -1,6 +1,686 @@
 {
   "components": {
     "schemas": {
+      "AlignedDailyBafuSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "hour_count": {
+            "title": "Hour Count",
+            "type": "integer"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "p25": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P25"
+          },
+          "p75": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75"
+          }
+        },
+        "required": [
+          "minimum",
+          "p25",
+          "median",
+          "p75",
+          "maximum",
+          "hour_count",
+          "complete"
+        ],
+        "title": "AlignedDailyBafuSchema",
+        "type": "object"
+      },
+      "AlignedDailyObservationSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value",
+          "sample_count",
+          "complete"
+        ],
+        "title": "AlignedDailyObservationSchema",
+        "type": "object"
+      },
+      "AlignedDailyRowSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bafu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlignedDailyBafuSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "day_end": {
+            "format": "date-time",
+            "title": "Day End",
+            "type": "string"
+          },
+          "day_start": {
+            "format": "date-time",
+            "title": "Day Start",
+            "type": "string"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/AlignedDailyObservationSchema"
+          },
+          "sapphire": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AlignedDailySapphireEntrySchema"
+            },
+            "title": "Sapphire",
+            "type": "object"
+          }
+        },
+        "required": [
+          "day_start",
+          "day_end",
+          "observation",
+          "bafu",
+          "sapphire"
+        ],
+        "title": "AlignedDailyRowSchema",
+        "type": "object"
+      },
+      "AlignedDailySapphireEntrySchema": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "p25": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P25"
+          },
+          "p75": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75"
+          }
+        },
+        "required": [
+          "minimum",
+          "p25",
+          "median",
+          "p75",
+          "maximum",
+          "complete"
+        ],
+        "title": "AlignedDailySapphireEntrySchema",
+        "type": "object"
+      },
+      "AvailabilitySchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bafu_forecast": {
+            "title": "Bafu Forecast",
+            "type": "boolean"
+          },
+          "observations": {
+            "title": "Observations",
+            "type": "boolean"
+          },
+          "sapphire_forecast": {
+            "title": "Sapphire Forecast",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "observations",
+          "bafu_forecast",
+          "sapphire_forecast"
+        ],
+        "title": "AvailabilitySchema",
+        "type": "object"
+      },
+      "BafuForecastAvailableSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": true,
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "inventory_produced_at": {
+            "format": "date-time",
+            "title": "Inventory Produced At",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "licence_status": {
+            "const": "unresolved",
+            "default": "unresolved",
+            "title": "Licence Status",
+            "type": "string"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "point_count": {
+            "title": "Point Count",
+            "type": "integer"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/QuantileEnvelopeSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "quality_flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Quality Flags",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "source": {
+            "const": "bafu",
+            "default": "bafu",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_product": {
+            "const": "hydrodaten_plot",
+            "default": "hydrodaten_plot",
+            "title": "Source Product",
+            "type": "string"
+          },
+          "station_code": {
+            "title": "Station Code",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_code",
+          "run_id",
+          "issued_at",
+          "inventory_produced_at",
+          "native_step_seconds",
+          "horizon_start",
+          "horizon_end",
+          "point_count",
+          "quality_flags",
+          "points"
+        ],
+        "title": "BafuForecastAvailableSchema",
+        "type": "object"
+      },
+      "BafuForecastUnavailableSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": false,
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "BafuForecastUnavailableSchema",
+        "type": "object"
+      },
+      "CombinedForecastMembersSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": true,
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "combination_strategy": {
+            "title": "Combination Strategy",
+            "type": "string"
+          },
+          "ensemble_size": {
+            "title": "Ensemble Size",
+            "type": "integer"
+          },
+          "forecast_id": {
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_key": {
+            "title": "Model Key",
+            "type": "string"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/QuantileEnvelopeSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "representation": {
+            "const": "members",
+            "default": "members",
+            "title": "Representation",
+            "type": "string"
+          },
+          "source": {
+            "const": "sapphire",
+            "default": "sapphire",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Model Ids",
+            "type": "array"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "model_key",
+          "combination_strategy",
+          "source_model_ids",
+          "issued_at",
+          "observation_staleness_hours",
+          "native_step_seconds",
+          "horizon_start",
+          "horizon_end",
+          "points",
+          "ensemble_size"
+        ],
+        "title": "CombinedForecastMembersSchema",
+        "type": "object"
+      },
+      "CombinedForecastQuantilesSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": true,
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "combination_strategy": {
+            "title": "Combination Strategy",
+            "type": "string"
+          },
+          "forecast_id": {
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_key": {
+            "title": "Model Key",
+            "type": "string"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/QuantileEnvelopeSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "quantile_level_count": {
+            "title": "Quantile Level Count",
+            "type": "integer"
+          },
+          "representation": {
+            "const": "quantiles",
+            "default": "quantiles",
+            "title": "Representation",
+            "type": "string"
+          },
+          "source": {
+            "const": "sapphire",
+            "default": "sapphire",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_model_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Model Ids",
+            "type": "array"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "model_key",
+          "combination_strategy",
+          "source_model_ids",
+          "issued_at",
+          "observation_staleness_hours",
+          "native_step_seconds",
+          "horizon_start",
+          "horizon_end",
+          "points",
+          "quantile_level_count"
+        ],
+        "title": "CombinedForecastQuantilesSchema",
+        "type": "object"
+      },
+      "CombinedForecastUnavailableSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": false,
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "enum": [
+              "strategy_primary",
+              "no_combined_forecast"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "CombinedForecastUnavailableSchema",
+        "type": "object"
+      },
+      "ComparisonSemanticsSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bafu_daily_completeness_minimum": {
+            "title": "Bafu Daily Completeness Minimum",
+            "type": "integer"
+          },
+          "daily_aggregation": {
+            "title": "Daily Aggregation",
+            "type": "string"
+          },
+          "display_run_rule": {
+            "title": "Display Run Rule",
+            "type": "string"
+          },
+          "observation_daily_completeness_minimum": {
+            "title": "Observation Daily Completeness Minimum",
+            "type": "integer"
+          },
+          "sapphire_quantile_method": {
+            "const": "linear",
+            "default": "linear",
+            "title": "Sapphire Quantile Method",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_run_rule",
+          "daily_aggregation",
+          "bafu_daily_completeness_minimum",
+          "observation_daily_completeness_minimum"
+        ],
+        "title": "ComparisonSemanticsSchema",
+        "type": "object"
+      },
       "DailyAttemptState": {
         "enum": [
           "active",
@@ -1199,6 +1879,54 @@
         "title": "ForecastDetail",
         "type": "object"
       },
+      "ForecastLabSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "comparison_semantics": {
+            "$ref": "#/components/schemas/ComparisonSemanticsSchema"
+          },
+          "data_cutoff_at": {
+            "format": "date-time",
+            "title": "Data Cutoff At",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "forecast-lab-snapshot/v2",
+            "default": "forecast-lab-snapshot/v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/StationEntrySchema"
+            },
+            "title": "Stations",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StatusBlockSchema"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "generated_at",
+          "data_cutoff_at",
+          "status",
+          "comparison_semantics",
+          "stations"
+        ],
+        "title": "ForecastLabSnapshot",
+        "type": "object"
+      },
       "ForecastQcRuleResponse": {
         "properties": {
           "parameter": {
@@ -1520,6 +2248,31 @@
         "title": "GeoCoordResponse",
         "type": "object"
       },
+      "GeoCoordSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "crs": {
+            "const": "EPSG:4326",
+            "default": "EPSG:4326",
+            "title": "Crs",
+            "type": "string"
+          },
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "longitude",
+          "latitude"
+        ],
+        "title": "GeoCoordSchema",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1551,6 +2304,101 @@
         ],
         "title": "InputQualityLevel",
         "type": "string"
+      },
+      "LatestObservationsResponse": {
+        "properties": {
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LatestStationObservationResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "parameter": {
+            "const": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ObservationSource"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "window_start": {
+            "format": "date-time",
+            "title": "Window Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "parameter",
+          "source",
+          "window_start",
+          "generated_at"
+        ],
+        "title": "LatestObservationsResponse",
+        "type": "object"
+      },
+      "LatestStationObservationResponse": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "measured_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Measured Parameters",
+            "type": "array"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          },
+          "observation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObservationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "code",
+          "network",
+          "measured_parameters",
+          "observation"
+        ],
+        "title": "LatestStationObservationResponse",
+        "type": "object"
       },
       "ModelAssignmentResponse": {
         "properties": {
@@ -1612,6 +2460,32 @@
         ],
         "title": "NwpCycleSource",
         "type": "string"
+      },
+      "ObservationPointSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "qc_status": {
+            "const": "qc_passed",
+            "default": "qc_passed",
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "valid_time",
+          "value"
+        ],
+        "title": "ObservationPointSchema",
+        "type": "object"
       },
       "ObservationQcRuleResponse": {
         "properties": {
@@ -1795,6 +2669,75 @@
           "qc_flags"
         ],
         "title": "ObservationResponse",
+        "type": "object"
+      },
+      "ObservationSource": {
+        "enum": [
+          "measured",
+          "rating_curve_derived",
+          "component_derived",
+          "manual_import"
+        ],
+        "title": "ObservationSource",
+        "type": "string"
+      },
+      "ObservationsSectionSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "latest_available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Available At"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationPointSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          },
+          "window_end": {
+            "format": "date-time",
+            "title": "Window End",
+            "type": "string"
+          },
+          "window_start": {
+            "format": "date-time",
+            "title": "Window Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "native_step_seconds",
+          "window_start",
+          "window_end",
+          "latest_available_at",
+          "points"
+        ],
+        "title": "ObservationsSectionSchema",
         "type": "object"
       },
       "PaginatedResponse_ForecastSummary_": {
@@ -2010,6 +2953,81 @@
         "title": "QcStatus",
         "type": "string"
       },
+      "QuantileEnvelopeSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "p25": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P25"
+          },
+          "p75": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "valid_time",
+          "minimum",
+          "p25",
+          "median",
+          "p75",
+          "maximum"
+        ],
+        "title": "QuantileEnvelopeSchema",
+        "type": "object"
+      },
       "RejectedForecastResponse": {
         "properties": {
           "attempt_id": {
@@ -2164,6 +3182,300 @@
           "value"
         ],
         "title": "RejectedForecastValuePoint",
+        "type": "object"
+      },
+      "SapphireForecastMembersSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": true,
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "ensemble_size": {
+            "title": "Ensemble Size",
+            "type": "integer"
+          },
+          "forecast_id": {
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/SapphireModelSchema"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/QuantileEnvelopeSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "representation": {
+            "const": "members",
+            "default": "members",
+            "title": "Representation",
+            "type": "string"
+          },
+          "source": {
+            "const": "sapphire",
+            "default": "sapphire",
+            "title": "Source",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "model",
+          "issued_at",
+          "observation_staleness_hours",
+          "native_step_seconds",
+          "horizon_start",
+          "horizon_end",
+          "points",
+          "ensemble_size"
+        ],
+        "title": "SapphireForecastMembersSchema",
+        "type": "object"
+      },
+      "SapphireForecastQuantilesSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": true,
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "forecast_id": {
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/SapphireModelSchema"
+          },
+          "native_step_seconds": {
+            "title": "Native Step Seconds",
+            "type": "integer"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/QuantileEnvelopeSchema"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "quantile_level_count": {
+            "title": "Quantile Level Count",
+            "type": "integer"
+          },
+          "representation": {
+            "const": "quantiles",
+            "default": "quantiles",
+            "title": "Representation",
+            "type": "string"
+          },
+          "source": {
+            "const": "sapphire",
+            "default": "sapphire",
+            "title": "Source",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          },
+          "variable": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Variable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "model",
+          "issued_at",
+          "observation_staleness_hours",
+          "native_step_seconds",
+          "horizon_start",
+          "horizon_end",
+          "points",
+          "quantile_level_count"
+        ],
+        "title": "SapphireForecastQuantilesSchema",
+        "type": "object"
+      },
+      "SapphireForecastUnavailableSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "const": false,
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "model": {
+            "$ref": "#/components/schemas/SapphireModelRefSchema"
+          },
+          "reason": {
+            "enum": [
+              "no_forecast",
+              "unsupported_representation"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "reason"
+        ],
+        "title": "SapphireForecastUnavailableSchema",
+        "type": "object"
+      },
+      "SapphireModelRefSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "SapphireModelRefSchema",
+        "type": "object"
+      },
+      "SapphireModelSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "code_or_image_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Or Image Version"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "is_primary": {
+            "title": "Is Primary",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "display_name",
+          "artifact_id",
+          "artifact_sha256",
+          "code_or_image_version",
+          "is_primary"
+        ],
+        "title": "SapphireModelSchema",
         "type": "object"
       },
       "SkillRowResponse": {
@@ -2335,6 +3647,50 @@
         "title": "SkillRowResponse",
         "type": "object"
       },
+      "SourceStatusSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "latest_available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Available At"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "missing"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "latest_available_at",
+          "message"
+        ],
+        "title": "SourceStatusSchema",
+        "type": "object"
+      },
       "StationDetail": {
         "properties": {
           "basin_id": {
@@ -2486,6 +3842,113 @@
           "weather_sources"
         ],
         "title": "StationDetail",
+        "type": "object"
+      },
+      "StationEntrySchema": {
+        "additionalProperties": false,
+        "properties": {
+          "aligned_daily_comparison": {
+            "items": {
+              "$ref": "#/components/schemas/AlignedDailyRowSchema"
+            },
+            "title": "Aligned Daily Comparison",
+            "type": "array"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/AvailabilitySchema"
+          },
+          "bafu_forecast": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BafuForecastAvailableSchema"
+              },
+              {
+                "$ref": "#/components/schemas/BafuForecastUnavailableSchema"
+              }
+            ],
+            "title": "Bafu Forecast"
+          },
+          "combined_forecast": {
+            "oneOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "members": "#/components/schemas/CombinedForecastMembersSchema",
+                    "quantiles": "#/components/schemas/CombinedForecastQuantilesSchema"
+                  },
+                  "propertyName": "representation"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CombinedForecastMembersSchema"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CombinedForecastQuantilesSchema"
+                  }
+                ]
+              },
+              {
+                "$ref": "#/components/schemas/CombinedForecastUnavailableSchema"
+              }
+            ],
+            "title": "Combined Forecast"
+          },
+          "observations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObservationsSectionSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sapphire_forecasts": {
+            "items": {
+              "oneOf": [
+                {
+                  "discriminator": {
+                    "mapping": {
+                      "members": "#/components/schemas/SapphireForecastMembersSchema",
+                      "quantiles": "#/components/schemas/SapphireForecastQuantilesSchema"
+                    },
+                    "propertyName": "representation"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SapphireForecastMembersSchema"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SapphireForecastQuantilesSchema"
+                    }
+                  ]
+                },
+                {
+                  "$ref": "#/components/schemas/SapphireForecastUnavailableSchema"
+                }
+              ]
+            },
+            "title": "Sapphire Forecasts",
+            "type": "array"
+          },
+          "station": {
+            "$ref": "#/components/schemas/StationSchema"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSchema"
+          }
+        },
+        "required": [
+          "station",
+          "availability",
+          "observations",
+          "bafu_forecast",
+          "sapphire_forecasts",
+          "combined_forecast",
+          "aligned_daily_comparison",
+          "verification"
+        ],
+        "title": "StationEntrySchema",
         "type": "object"
       },
       "StationObservationQcRuleResponse": {
@@ -2664,6 +4127,76 @@
         "title": "StationQcRulesResponse",
         "type": "object"
       },
+      "StationSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "basin_area_km2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basin Area Km2"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "location": {
+            "$ref": "#/components/schemas/GeoCoordSchema"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network": {
+            "const": "bafu",
+            "default": "bafu",
+            "title": "Network",
+            "type": "string"
+          },
+          "river": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "River"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "display_name",
+          "river",
+          "location",
+          "basin_area_km2",
+          "active"
+        ],
+        "title": "StationSchema",
+        "type": "object"
+      },
       "StationSkillResponse": {
         "properties": {
           "rows": {
@@ -2746,6 +4279,37 @@
         "title": "StationSummary",
         "type": "object"
       },
+      "StatusBlockSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bafu_forecasts": {
+            "$ref": "#/components/schemas/SourceStatusSchema"
+          },
+          "observations": {
+            "$ref": "#/components/schemas/SourceStatusSchema"
+          },
+          "overall": {
+            "enum": [
+              "ok",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Overall",
+            "type": "string"
+          },
+          "sapphire_forecasts": {
+            "$ref": "#/components/schemas/SourceStatusSchema"
+          }
+        },
+        "required": [
+          "overall",
+          "observations",
+          "bafu_forecasts",
+          "sapphire_forecasts"
+        ],
+        "title": "StatusBlockSchema",
+        "type": "object"
+      },
       "ThresholdResponse": {
         "properties": {
           "danger_level": {
@@ -2814,6 +4378,61 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VerificationSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "method_version": {
+            "const": "forecast-comparison/v1",
+            "default": "forecast-comparison/v1",
+            "title": "Method Version",
+            "type": "string"
+          },
+          "status": {
+            "const": "insufficient_data",
+            "default": "insufficient_data",
+            "title": "Status",
+            "type": "string"
+          },
+          "window_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window End"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "limitations"
+        ],
+        "title": "VerificationSchema",
+        "type": "object"
+      },
       "WeatherSourceResponse": {
         "properties": {
           "extraction_type": {
@@ -2848,10 +4467,128 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.2"
+    "version": "2.3"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/forecast-lab/snapshot": {
+      "get": {
+        "description": "A versioned, read-only JSON export of BAFU observations, archived BAFU forecasts and SAPPHIRE forecasts for one or more eligible stations (Plan 198, extended by Plan 204). See docs/spec/forecast-lab-snapshot.md for the full contract \u2014 timestamp/quantile conventions, the F3 percentile-band sign correction, partial-vs-500 semantics, and offline-caching guidance. All responses are no-store. Omitted station_code selects eligible scoped stations; any unknown, ineligible or out-of-scope requested code rejects the whole request. This comparison view is not authoritative evaluation.",
+        "operationId": "get_forecast_lab_snapshot_api_v1_forecast_lab_snapshot_get",
+        "parameters": [
+          {
+            "description": "Repeatable. Omit to return every eligible station in the caller's scope (D8).",
+            "in": "query",
+            "name": "station_code",
+            "required": false,
+            "schema": {
+              "default": [],
+              "description": "Repeatable. Omit to return every eligible station in the caller's scope (D8).",
+              "items": {
+                "type": "string"
+              },
+              "title": "Station Code",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Lookback window for the observations section, in hours.",
+            "in": "query",
+            "name": "observation_hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "description": "Lookback window for the observations section, in hours.",
+              "maximum": 720,
+              "minimum": 1,
+              "title": "Observation Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastLabSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forecast Lab is unavailable for publication-gated stations."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown, ineligible or out-of-scope station."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Snapshot unavailable due to an internal or configuration error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Ordinary forecast reads are unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Forecast Lab snapshot (forecast-lab-snapshot/v2)",
+        "tags": [
+          "forecast-lab"
+        ]
+      }
+    },
     "/api/v1/forecasts/{forecast_id}": {
       "get": {
         "description": "Forecast detail, with typed qc_flags. For an activated CHWRR tenant only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400.",
@@ -2927,6 +4664,119 @@
         "summary": "Get Forecast",
         "tags": [
           "api-forecasts"
+        ]
+      }
+    },
+    "/api/v1/observations/latest": {
+      "get": {
+        "description": "Latest visible discharge observation per scoped station within an inclusive window ending at generated_at. All scoped stations count, including those without readings; UUID-sorted pages. Null means no visible reading in this window, not no history. A MISSING observation remains an object with null value and its QC status. No QC-pass filter or automatic freshness classification. measured_parameters describes station configuration; source selects one observation source. Consumer/reviewer delivery restrictions apply before latest selection; admin includes deliveries. All responses are no-store.",
+        "operationId": "list_latest_observations_api_v1_observations_latest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "parameter",
+            "required": true,
+            "schema": {
+              "const": "discharge",
+              "title": "Parameter",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ObservationSource",
+              "default": "measured"
+            }
+          },
+          {
+            "in": "query",
+            "name": "observation_hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "maximum": 720,
+              "minimum": 1,
+              "title": "Observation Hours",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatestObservationsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Latest observations unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List Latest Observations",
+        "tags": [
+          "api-stations"
         ]
       }
     },

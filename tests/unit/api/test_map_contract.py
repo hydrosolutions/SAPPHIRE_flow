@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import jsonschema
 import pytest
+from fastapi.routing import APIRoute
 
+from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.map_contract import MAP_CONTRACT_VERSION, build_map_openapi
 from sapphire_flow.api.schemas import (
     ForecastQcRuleSetResponse,
@@ -34,6 +36,8 @@ _EXPECTED_PATHS = {
     # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
     "/api/v1/stations/{station_id}/rejected-forecasts",
     "/api/v1/stations/{station_id}/evaluation-forecasts",
+    "/api/v1/forecast-lab/snapshot",
+    "/api/v1/observations/latest",
 }
 
 
@@ -182,3 +186,134 @@ class TestQcRulesDiscriminatorIsActuallyRequired:
                 schema=response_schema,
                 resolver=jsonschema.RefResolver.from_schema(response_schema),
             )
+
+
+class TestSnapshotContract:
+    def test_snapshot_export_is_valid_openapi(self) -> None:
+        from fastapi.openapi.models import OpenAPI
+
+        doc = build_map_openapi()
+        OpenAPI.model_validate(doc)
+        operation = doc["paths"]["/api/v1/forecast-lab/snapshot"]["get"]
+        assert operation["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": "#/components/schemas/ForecastLabSnapshot"}
+        assert {"401", "403", "404", "422", "500", "503"} <= operation[
+            "responses"
+        ].keys()
+
+    def test_export_does_not_mutate_runtime_schema_or_routes(self) -> None:
+        from sapphire_flow.api import app
+
+        before = ForecastLabSnapshot.model_json_schema()
+        route = next(
+            r
+            for r in app.routes
+            if isinstance(r, APIRoute) and r.path == "/api/v1/forecast-lab/snapshot"
+        )
+        response_field = route.response_field
+        build_map_openapi()
+        assert route.response_field is response_field
+        assert ForecastLabSnapshot.model_json_schema() == before
+
+    def test_nested_union_retains_representation_but_not_boolean_discriminator(
+        self,
+    ) -> None:
+        doc = build_map_openapi()
+        properties = doc["components"]["schemas"]["StationEntrySchema"]["properties"]
+        for union in [
+            properties["sapphire_forecasts"]["items"],
+            properties["combined_forecast"],
+        ]:
+            assert "discriminator" not in union
+            available = next(branch for branch in union["oneOf"] if "oneOf" in branch)
+            assert available["discriminator"]["propertyName"] == "representation"
+            assert all(
+                isinstance(ref, str)
+                for ref in available["discriminator"]["mapping"].values()
+            )
+
+
+class TestSnapshotContractValidation:
+    @pytest.mark.parametrize("representation", ["members", "quantiles", "unavailable"])
+    def test_response_variants_validate(self, representation: str) -> None:
+        doc = build_map_openapi()
+        example = json.loads(
+            (
+                _REPO_ROOT
+                / "tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json"
+            ).read_text()
+        )
+        entry = example["stations"][0]["sapphire_forecasts"][0]
+        assert entry["available"] is True
+        if representation == "quantiles":
+            entry["representation"] = "quantiles"
+            entry.pop("ensemble_size")
+            entry["quantile_level_count"] = 7
+            for point in entry["points"]:
+                point["minimum"] = None
+                point["maximum"] = None
+        elif representation == "unavailable":
+            example["stations"][0]["sapphire_forecasts"][0] = {
+                "available": False,
+                "model": {"key": entry["model"]["key"]},
+                "reason": "no_forecast",
+            }
+        schema = {
+            "$ref": "#/components/schemas/ForecastLabSnapshot",
+            "components": doc["components"],
+        }
+        jsonschema.validate(
+            instance=example, schema=schema, cls=jsonschema.Draft202012Validator
+        )
+        ForecastLabSnapshot.model_validate(example)
+
+    @pytest.mark.parametrize("variant", ["quantiles", "members", "unavailable"])
+    def test_invalid_representation_fields_are_rejected(self, variant: str) -> None:
+        doc = build_map_openapi()
+        example = json.loads(
+            (
+                _REPO_ROOT
+                / "tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json"
+            ).read_text()
+        )
+        entry = example["stations"][0]["sapphire_forecasts"][0]
+        assert entry["available"] is True
+        if variant == "quantiles":
+            entry["representation"] = "quantiles"
+        elif variant == "members":
+            entry.pop("ensemble_size")
+            entry["quantile_level_count"] = 7
+        else:
+            entry["available"] = False
+            entry["reason"] = "no_forecast"
+        schema = {
+            "$ref": "#/components/schemas/ForecastLabSnapshot",
+            "components": doc["components"],
+        }
+        with pytest.raises(
+            jsonschema.ValidationError,
+            match="Additional properties"
+            if variant == "unavailable"
+            else "was expected",
+        ):
+            jsonschema.validate(
+                instance=example, schema=schema, cls=jsonschema.Draft202012Validator
+            )
+
+    def test_every_local_reference_resolves(self) -> None:
+        doc = build_map_openapi()
+        pending: list[Any] = [doc]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                mapping = cast("dict[str, Any]", node)
+                if "$ref" in mapping:
+                    ref = mapping["$ref"]
+                    assert isinstance(ref, str) and ref.startswith("#/")
+                    target = doc
+                    for part in ref[2:].split("/"):
+                        target = target[part.replace("~1", "/").replace("~0", "~")]
+                pending.extend(mapping.values())
+            elif isinstance(node, list):
+                pending.extend(cast("list[Any]", node))

@@ -144,6 +144,10 @@ def get_stores(
     }
 
 
+def get_observation_clock() -> datetime:
+    return datetime.now(UTC)
+
+
 def get_evaluation_clock() -> datetime:
     return datetime.now(UTC)
 

@@ -23,7 +23,7 @@ def _forecast_bearing_path(path: str) -> bool:
                 or "/rejected-forecasts" in path
             )
         )
-        or path == "/api/v1/forecast-lab/snapshot"
+        or path in {"/api/v1/forecast-lab/snapshot", "/api/v1/observations/latest"}
     )
 
 
