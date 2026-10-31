@@ -43,10 +43,14 @@ from sapphire_flow.types.nepal_onboarding import (
 )
 from tests.conftest import make_observation, make_station_config
 from tests.fakes.fake_models import FakeStationForecastModel
+from tests.integration.db.test_role_bootstrap import role_harness as role_harness
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sapphire_flow.types.basin_package import LoadedBasinPackage
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
+    from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
 NOW = ensure_utc(datetime(2026, 9, 29, tzinfo=UTC))
 START = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
@@ -537,3 +541,225 @@ class TestNepalOnboarding:
         assert first == second
         assert len(first) == 12
         assert all(item.rows == 1 for item in first)
+
+
+class TestWeatherAdmission:
+    @pytest.fixture
+    def db_connection(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> Iterator[sa.Connection]:
+        result = role_harness.run_bootstrap("weather-test-api", "weather-test-worker")
+        assert result.returncode == 0, result.stderr
+        with role_harness.owner_engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                yield conn
+            finally:
+                transaction.rollback()
+
+    @pytest.mark.parametrize("mode", ["success", "rollback", "conflict", "partial"])
+    def test_worker_admission_preserves_package_and_converges(
+        self,
+        db_connection: sa.Connection,
+        cohort: list[StationConfig],
+        mode: str,
+    ) -> None:
+        from contextlib import nullcontext
+
+        from sapphire_flow.db.metadata import station_weather_sources
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+        from sapphire_flow.store.recap_gateway_polygon_store import (
+            RecapGatewayPolygonStore,
+        )
+        from sapphire_flow.store.station_group_store import PgStationGroupStore
+        from sapphire_flow.types.ids import StationGroupId
+        from sapphire_flow.types.nepal_onboarding import (
+            OperationalWeatherAdmission,
+            OperationalWeatherScope,
+            WeatherStationPolygon,
+        )
+        from sapphire_flow.types.station import StationGroup
+        from sapphire_flow.types.weather import GatewayHruName
+
+        import_nepal_package(db_connection, package(), IDENTITY, clock=lambda: NOW)
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="weather-test",
+            description=None,
+            created_at=NOW,
+            tenant_id=cohort[0].tenant_id,
+            station_ids=frozenset(s.id for s in cohort),
+        )
+        PgStationGroupStore(
+            db_connection, transaction_factory=lambda: nullcontext(db_connection)
+        ).store_group(group)
+        polygons = RecapGatewayPolygonStore(db_connection)
+        before = [polygons.fetch_bindings_for_station(s.id)[0] for s in cohort]
+        scope = OperationalWeatherScope(
+            group_id=group.id,
+            gateway_hru_name=GatewayHruName("runtime"),
+            station_polygons=tuple(
+                WeatherStationPolygon(
+                    station_id=s.id, polygon_name=dict(GAUGE_POLYGONS)[s.code]
+                )
+                for s in cohort
+            ),
+        )
+        admission = OperationalWeatherAdmission(
+            scope=scope, original_gateway_hru_name=GatewayHruName(GATEWAY_HRU)
+        )
+        db_connection.execute(
+            sa.delete(station_weather_sources).where(
+                station_weather_sources.c.station_id.in_([s.id for s in cohort])
+            )
+        )
+        if mode == "conflict":
+            polygons.store_binding(replace(before[-1], gateway_hru_name="unknown"))
+        if mode == "partial":
+            polygons.store_binding(replace(before[0], gateway_hru_name="runtime"))
+            PgStationStore(db_connection).store_weather_source(
+                history_binding(cohort[0].id)
+            )
+        with db_connection.begin_nested() as transaction:
+            db_connection.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+            if mode == "conflict":
+                with pytest.raises(
+                    ConfigurationError, match="conflicting weather package"
+                ):
+                    admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                assert polygons.fetch_bindings_for_station(cohort[0].id)[0] == before[0]
+                return
+            admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            admitted = [polygons.fetch_bindings_for_station(s.id)[0] for s in cohort]
+            admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            assert admitted == [
+                replace(row, gateway_hru_name="runtime") for row in before
+            ]
+            assert [
+                polygons.fetch_bindings_for_station(s.id)[0] for s in cohort
+            ] == admitted
+            if mode == "rollback":
+                transaction.rollback()
+        if mode == "rollback":
+            assert [
+                polygons.fetch_bindings_for_station(s.id)[0] for s in cohort
+            ] == before
+        else:
+            assert all(
+                PgStationStore(db_connection).fetch_weather_sources(s.id)
+                == [history_binding(s.id)]
+                for s in cohort
+            )
+
+    @pytest.mark.parametrize(
+        "mode", ["caller_transaction", "autocommit_add", "autocommit_remove"]
+    )
+    def test_membership_writer_waits_for_admission_tenant_lock(
+        self, role_harness: _RoleBootstrapHarness, mode: str
+    ) -> None:
+        from contextlib import nullcontext
+
+        from sqlalchemy.exc import OperationalError
+
+        from sapphire_flow.store.station_group_store import PgStationGroupStore
+        from sapphire_flow.types.ids import StationGroupId
+        from sapphire_flow.types.station import StationGroup
+
+        result = role_harness.run_bootstrap("weather-test-api", "weather-test-worker")
+        assert result.returncode == 0, result.stderr
+        engine = role_harness.owner_engine
+        tenant_id = TenantId(uuid4())
+        station = make_station_config(
+            station_id=uuid4(), tenant_id=tenant_id, code=f"race-{uuid4()}"
+        )
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="weather-race",
+            description=None,
+            created_at=NOW,
+            tenant_id=tenant_id,
+            station_ids=frozenset({station.id}),
+        )
+        with engine.begin() as conn:
+            PgTenantStore(conn).ensure_tenant(
+                tenant_id=tenant_id, code=f"race-{uuid4()}", name="race"
+            )
+            PgStationStore(conn).store_station(station)
+            PgStationGroupStore(
+                conn, transaction_factory=lambda: nullcontext(conn)
+            ).store_group(group)
+        with engine.begin() as admission:
+            admission.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+            PgTenantStore(admission).lock_tenant(tenant_id)
+            if mode == "caller_transaction":
+                with engine.begin() as writer:
+                    writer.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+                    writer.execute(sa.text("SET LOCAL lock_timeout = '100ms'"))
+                    with pytest.raises(OperationalError, match="lock timeout"):
+                        PgStationGroupStore(writer).remove_station_from_group(
+                            group.id, station.id
+                        )
+            else:
+                from sapphire_flow.flows._db import make_pg_stores
+
+                worker_engine = sa.create_engine(
+                    role_harness.role_url("sapphire_worker", "weather-test-worker"),
+                    connect_args={"options": "-c lock_timeout=100ms"},
+                )
+                try:
+                    with worker_engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT"
+                    ) as writer:
+                        store = make_pg_stores(writer)["group_store"]
+                        assert isinstance(store, PgStationGroupStore)
+                        mutation = (
+                            store.add_station_to_group
+                            if mode == "autocommit_add"
+                            else store.remove_station_from_group
+                        )
+                        with pytest.raises(OperationalError, match="lock timeout"):
+                            mutation(group.id, station.id)
+                finally:
+                    worker_engine.dispose()
+        with engine.begin() as writer:
+            writer.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+            PgStationGroupStore(writer).remove_station_from_group(group.id, station.id)
+            assert (
+                PgStationGroupStore(writer).fetch_group(group.id).station_ids
+                == frozenset()
+            )
+
+    def test_store_group_owning_factory_reuses_tenant_locked_transaction(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.store.station_group_store import PgStationGroupStore
+        from sapphire_flow.types.ids import StationGroupId
+        from sapphire_flow.types.station import StationGroup
+
+        tenant_id = (
+            PgTenantStore(db_connection)
+            .ensure_tenant(
+                tenant_id=TenantId(uuid4()), code="locked-group", name="locked"
+            )
+            .id
+        )
+        PgTenantStore(db_connection).lock_tenant(tenant_id)
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="locked",
+            description=None,
+            created_at=NOW,
+            tenant_id=tenant_id,
+            station_ids=frozenset(),
+        )
+        from contextlib import nullcontext
+
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=lambda: nullcontext(db_connection)
+        )
+        store.store_group(group)
+        assert store.fetch_group(group.id) == group
+        store.remove_station_from_group(
+            StationGroupId(uuid4()), make_station_config().id
+        )
+        assert store.fetch_group(group.id) == group

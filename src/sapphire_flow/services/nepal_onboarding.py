@@ -5,8 +5,11 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import polars as pl
+import sqlalchemy as sa
 
 from sapphire_flow.adapters.store_backed_reanalysis import StoreBackedReanalysisSource
+from sapphire_flow.db.metadata import recap_gateway_polygon_bindings
+from sapphire_flow.db.metadata import stations as station_table
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.basin_importer import import_loaded_basin_package
 from sapphire_flow.services.qc_datum import obs_qc_rule_version
@@ -48,8 +51,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection
     from datetime import timedelta
 
-    import sqlalchemy as sa
-
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.types.basin_package import (
@@ -61,11 +62,12 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import StationTrainingData
     from sapphire_flow.types.nepal_onboarding import (
+        OperationalWeatherAdmission,
         OperationalWeatherScope,
         TrainingWindow,
     )
     from sapphire_flow.types.observation import Observation
-    from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.station import GatewayPolygonBindingRow, StationConfig
 
 
 def chwrr_stations(
@@ -186,6 +188,93 @@ def operational_weather_stations(
             )
         stations.append(station)
     return stations
+
+
+def admit_weather_bindings(
+    conn: sa.Connection,
+    identity: DeploymentIdentityConfig,
+    admission: OperationalWeatherAdmission,
+    *,
+    now: UtcDatetime,
+) -> None:
+    if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
+        raise ConfigurationError(
+            "Nepal weather admission requires CHWRR-only write authority"
+        )
+    tenants = PgTenantStore(conn)
+    principal = resolve_run_principal(tenants, identity, tenant_code="chwrr")
+    if principal.tenant_id is None:
+        raise ConfigurationError("CHWRR principal must be tenant scoped")
+    tenants.lock_tenant(principal.tenant_id)
+    scope = admission.scope
+    group = PgStationGroupStore(conn).fetch_group(scope.group_id)
+    ids = frozenset(p.station_id for p in scope.station_polygons)
+    if (
+        group is None
+        or group.tenant_id != principal.tenant_id
+        or group.station_ids != ids
+    ):
+        raise ConfigurationError(
+            "weather scope must match exact CHWRR group membership"
+        )
+    conn.execute(
+        sa.select(station_table.c.id)
+        .where(station_table.c.id.in_(ids))
+        .order_by(station_table.c.id)
+        .with_for_update()
+    ).all()
+    conn.execute(
+        sa.select(recap_gateway_polygon_bindings)
+        .where(recap_gateway_polygon_bindings.c.station_id.in_(ids))
+        .order_by(recap_gateway_polygon_bindings.c.station_id)
+        .with_for_update()
+    ).all()
+    store = PgStationStore(conn)
+    polygons = RecapGatewayPolygonStore(conn)
+    pending: list[tuple[GatewayPolygonBindingRow, list[StationWeatherSource]]] = []
+    for expected in scope.station_polygons:
+        station = store.fetch_station(expected.station_id)
+        if (
+            station is None
+            or station.tenant_id != principal.tenant_id
+            or station.station_status
+            not in (StationStatus.ONBOARDING, StationStatus.OPERATIONAL)
+        ):
+            raise ConfigurationError("station is not admitted for weather binding")
+        rows = polygons.fetch_bindings_for_station(station.id)
+        if len(rows) != 1:
+            raise ConfigurationError(
+                "weather admission requires exactly one package polygon"
+            )
+        row = rows[0]
+        if (
+            station.basin_id is None
+            or row.basin_id != station.basin_id
+            or row.name != expected.polygon_name
+            or row.band_id is not None
+            or row.spatial_type is not SpatialRepresentation.BASIN_AVERAGE
+            or row.package_id is None
+            or row.imported_at is None
+            or row.gateway_hru_name
+            not in (admission.original_gateway_hru_name, scope.gateway_hru_name)
+        ):
+            raise ConfigurationError("conflicting weather package polygon")
+        sources = [
+            s
+            for s in store.fetch_weather_sources(station.id)
+            if s.nwp_source == "era5_land"
+        ]
+        if sources and sources != [history_binding(station.id)]:
+            raise ConfigurationError("conflicting reanalysis binding")
+        pending.append((row, sources))
+    for row, sources in pending:
+        if row.gateway_hru_name != scope.gateway_hru_name:
+            polygons.store_binding(
+                replace(row, gateway_hru_name=scope.gateway_hru_name)
+            )
+        if not sources:
+            store.store_weather_source(history_binding(row.station_id))
+    operational_weather_stations(conn, identity, scope, now=now)
 
 
 def history_binding(station_id: StationId) -> StationWeatherSource:

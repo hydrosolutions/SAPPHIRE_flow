@@ -41,7 +41,7 @@ services:
     environment:
       <<: *nepal-overlay-env
       # Plan 511 D4: the Swiss BAFU collectors are not registered on this host.
-      SAPPHIRE_SKIP_DEPLOYMENTS: collect-bafu-forecasts,collect-bafu-observations
+      SAPPHIRE_SKIP_DEPLOYMENTS: collect-bafu-forecasts,collect-bafu-observations,ingest-operational-era5-history
     volumes:
       - *nepal-overlay-mount
 

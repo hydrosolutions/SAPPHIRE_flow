@@ -49,6 +49,7 @@ from tests.fakes.fake_stores import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from sqlalchemy import Connection
 
@@ -384,3 +385,193 @@ class TestOperationalWeatherScopeFlow:
         f.station_store.store_model_assignment(assignment)
         run_scoped(f)
         assert f.station_store.fetch_model_assignments(f.stations[0].id) == [assignment]
+
+
+class TestProductionEra5:
+    def test_real_deployment_has_only_required_strings(self) -> None:
+        from sapphire_flow.cli.register_deployments import _all_specs
+
+        deployment = module.ingest_operational_era5_history_flow.to_deployment(
+            name="ingest-operational-era5-history",
+            work_pool_name="ingest",
+            concurrency_limit=1,
+        )
+        assert deployment.enforce_parameter_schema
+        schema = module.ingest_operational_era5_history_flow.parameters.model_dump()
+        assert set(schema["required"]) == {"start", "end", "weather_scope"}
+        assert {name: item["type"] for name, item in schema["properties"].items()} == {
+            "start": "string",
+            "end": "string",
+            "weather_scope": "string",
+        }
+        spec = next(
+            s
+            for s in _all_specs()
+            if s.deployment_name == "ingest-operational-era5-history"
+        )
+        assert (spec.cron, spec.concurrency_limit, spec.work_pool_name) == (
+            None,
+            1,
+            "ingest",
+        )
+
+    @pytest.mark.parametrize("failure", ["none", "admission", "second_batch"])
+    def test_transaction_and_resource_lifecycle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        import recap_client
+        import sqlalchemy as sa
+
+        from sapphire_flow.config import (
+            deployment_identity,
+            nepal_weather,
+            recap_gateway,
+        )
+        from sapphire_flow.db import engine as engine_module
+
+        engine = sa.create_engine(f"sqlite:///{tmp_path / 'production.db'}")
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE batches (ordinal INTEGER)"))
+        monkeypatch.setattr(engine_module, "create_engine_from_env", lambda: engine)
+        monkeypatch.setattr(
+            deployment_identity, "load_deployment_identity_config", lambda _: IDENTITY
+        )
+        monkeypatch.setattr(
+            nepal_weather,
+            "load_weather_scope",
+            lambda *a: SimpleNamespace(scope=object()),
+        )
+        monkeypatch.setattr(
+            recap_gateway, "load_recap_gateway_config", lambda _: object()
+        )
+        monkeypatch.setattr(recap_gateway, "load_recap_api_key", lambda: "test")
+        monkeypatch.setattr(
+            recap_gateway, "build_recap_client_config", lambda **kw: object()
+        )
+        sessions = []
+
+        class Session:
+            closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        def client(config: object) -> SimpleNamespace:
+            session = Session()
+            sessions.append(session)
+            return SimpleNamespace(
+                ecmwf=SimpleNamespace(_http=SimpleNamespace(_session=session))
+            )
+
+        monkeypatch.setattr(recap_client, "RecapClient", client)
+
+        def admit(*args: object, **kwargs: object) -> None:
+            if failure == "admission":
+                raise ConfigurationError("inadmissible roster")
+
+        monkeypatch.setattr(module, "operational_weather_stations", admit)
+        calls = 0
+        logged: list[int] = []
+
+        def record_coverage(event: str, **fields: object) -> None:
+            assert event == "nepal_onboarding.history"
+            with engine.connect() as observer:
+                committed = observer.scalar(sa.text("SELECT count(*) FROM batches"))
+            assert committed == calls
+            logged.append(committed)
+
+        monkeypatch.setattr(module, "log", SimpleNamespace(info=record_coverage))
+
+        def ingest(
+            conn: Connection, *args: object, **kwargs: object
+        ) -> tuple[HistoryCoverage, ...]:
+            nonlocal calls
+            calls += 1
+            conn.execute(
+                sa.text("INSERT INTO batches VALUES (:ordinal)"), {"ordinal": calls}
+            )
+            if failure == "second_batch" and calls == 2:
+                raise ConfigurationError("provider failure")
+            return (
+                HistoryCoverage(
+                    station_id=StationId(uuid4()),
+                    code="fixture",
+                    parameter="temperature",
+                    rows=1,
+                    start=START,
+                    end=START,
+                ),
+            )
+
+        monkeypatch.setattr(module, "_ingest_history", ingest)
+        if failure == "none":
+            module.ingest_operational_era5_history_flow.fn(
+                "2020-01-01T00:00:00Z", "2020-03-11T00:00:00Z", "test"
+            )
+        else:
+            with pytest.raises(
+                ConfigurationError, match="Operational ERA5 history failed"
+            ):
+                module.ingest_operational_era5_history_flow.fn(
+                    "2020-01-01T00:00:00Z", "2020-03-11T00:00:00Z", "test"
+                )
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(sa.text("SELECT count(*) FROM batches"))
+                == {"none": 3, "admission": 0, "second_batch": 1}[failure]
+            )
+        assert (
+            logged == {"none": [1, 2, 3], "admission": [], "second_batch": [1]}[failure]
+        )
+        assert all(session.closed for session in sessions)
+        if failure == "admission":
+            assert not sessions
+        engine.dispose()
+
+    def test_sdk_secret_never_reaches_prefect_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import traceback
+
+        secret = "synthetic-only-secret-7293"
+
+        def fail(*args: object) -> tuple[HistoryCoverage, ...]:
+            try:
+                raise ValueError(f"request https://example.invalid?api_key={secret}")
+            except ValueError as exc:
+                raise RuntimeError(f"provider rejected {secret}") from exc
+
+        monkeypatch.setattr(module, "_run_operational_history", fail)
+        with pytest.raises(
+            ConfigurationError, match="Operational ERA5 history failed"
+        ) as captured:
+            module.ingest_operational_era5_history_flow.fn("start", "end", "scope")
+        error = captured.value
+        assert error.__context__ is None
+        assert error.__cause__ is None
+        rendered = "".join(traceback.format_exception(error))
+        assert secret not in rendered
+        frames = traceback.extract_tb(error.__traceback__)
+        assert not any(frame.name == "fail" for frame in frames)
+
+    def test_pinned_sdk_session_cleanup_path_without_http(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import requests
+        from recap_client import ApiClientConfig, RecapClient
+
+        closed: list[requests.Session] = []
+
+        def close(session: requests.Session) -> None:
+            closed.append(session)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("lifecycle check must not issue HTTP")
+
+        monkeypatch.setattr(requests.Session, "close", close)
+        monkeypatch.setattr(requests.Session, "request", forbidden)
+        client = RecapClient(
+            ApiClientConfig(base_url="https://example.invalid", api_key="synthetic")
+        )
+        client.ecmwf._http._session.close()
+        assert len(closed) == 1

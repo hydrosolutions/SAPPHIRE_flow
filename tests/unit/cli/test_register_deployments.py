@@ -32,6 +32,7 @@ def _cron_minute_set(cron: str | None) -> set[int]:
 
 
 DEPLOYMENT_NAMES = {
+    "ingest-operational-era5-history",
     "ingest-observations",
     "forecast-cycle",
     "backup-database",
@@ -100,6 +101,7 @@ class TestBuildSpecs:
         for name, spec in by_name.items():
             if name in (
                 "ingest-observations",
+                "ingest-operational-era5-history",
                 "backup-database",
                 "collect-bafu-observations",
             ):
@@ -134,7 +136,7 @@ class TestBuildSpecs:
         # Plan 146 adds the recap-reanalysis snow ingest; Plan 157 adds the
         # external-artifact import path.
         specs = _build_specs()
-        assert len(specs) == 14
+        assert len(specs) == 15
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
 
     def test_import_model_artifact_is_manual_and_on_the_default_pool(self) -> None:
@@ -548,7 +550,9 @@ class TestRegisterAll:
 # Plan 511 D4/T2: a host can opt out of deployments (SAPPHIRE_SKIP_DEPLOYMENTS)
 # ---------------------------------------------------------------------------
 
-_NEPAL_SKIP = "collect-bafu-forecasts,collect-bafu-observations"
+_NEPAL_SKIP = (
+    "collect-bafu-forecasts,collect-bafu-observations,ingest-operational-era5-history"
+)
 
 
 class TestSkippedDeployments:

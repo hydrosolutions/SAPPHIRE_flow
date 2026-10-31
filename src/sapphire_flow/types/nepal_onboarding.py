@@ -60,6 +60,19 @@ class OperationalWeatherScope:
             raise ValueError("station_polygons contains duplicate polygon names")
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OperationalWeatherAdmission:
+    scope: OperationalWeatherScope
+    original_gateway_hru_name: GatewayHruName
+
+    def __post_init__(self) -> None:
+        name = self.original_gateway_hru_name
+        if not name or name != name.strip():
+            raise ValueError(
+                "original_gateway_hru_name must be nonempty without outer whitespace"
+            )
+
+
 class ReadinessStatus(Enum):
     READY = "ready_for_model_onboarding"
     HELD = "held"

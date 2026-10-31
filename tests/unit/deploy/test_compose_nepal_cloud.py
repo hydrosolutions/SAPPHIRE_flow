@@ -59,11 +59,12 @@ class TestConfigOverlayIsOnEveryConfigReader:
 
 
 class TestBafuCollectorsAreNotRegistered:
-    def test_init_skips_exactly_the_two_bafu_collectors(self) -> None:
+    def test_init_skips_bafu_collectors_and_held_era5(self) -> None:
         skip = _env(_services(OVERLAY)["init"])["SAPPHIRE_SKIP_DEPLOYMENTS"]
         assert set(skip.split(",")) == {
             "collect-bafu-forecasts",
             "collect-bafu-observations",
+            "ingest-operational-era5-history",
         }
 
     def test_only_init_carries_the_skip_list(self) -> None:

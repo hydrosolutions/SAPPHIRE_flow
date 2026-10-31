@@ -544,3 +544,67 @@ Mac-mini. The prior delivery run is not permission to reuse its credential.
 - [Basin/static package importer runbook](basin-static-importer-runbook.md)
 - [Recap Data Gateway operations runbook](recap-gateway-runbook.md)
 - [Plan 143 — DHM v1 station, basin and Gateway onboarding](../plans/143-dhm-v1-basin-gauge-onboarding.md)
+
+## Native named-scope ERA5 history
+
+Use `[weather_history.scopes.NAME]` in the merged worker configuration. Set
+`group_id`, `original_gateway_hru_name`, `runtime_gateway_hru_name`, and
+`station_polygons = [{station_id = "UUID", polygon_name = "registered_name"}, ...]`.
+Use the actual exact group roster; a later overlay replaces the whole array.
+There are no built-in production UUIDs.
+
+After package-join confirmation, use the existing worker database role:
+
+```sh
+uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings \
+  --config config.toml --tenant chwrr --confirm-t8 \
+  --weather-scope NAME --confirm-package-joins --dry-run
+```
+
+Remove `--dry-run` only for approved admission. This validates all stations before
+changing runtime HRU aliases and adding exact active ERA5 reanalysis bindings.
+It preserves geometry, package provenance, station status, observations, model
+assignments and unrelated sources. Repeating exact admission is a no-op. Group
+membership writers share the tenant advisory lock; direct privileged SQL requires
+operator writer exclusion. Admission makes no provider request.
+
+Deploy the reviewed worker image and mount the same approved configuration and
+overlays on `prefect-worker-ingest`. The flow reads `SAPPHIRE_CONFIG` and
+`SAPPHIRE_CONFIG_OVERLAY` there, not the submitting CLI's config path. Keep the
+existing `sapphire_worker` credentials and `sapphire_dg_api_key` secret. The
+accepted native SDK endpoint is `exports/era5-land/reanalysis` under the configured
+Recap base URL `https://recap.ieasyhydro.org/sdk` (keep the `/sdk` prefix).
+It retains SDK request/unit/provenance behavior and HTTP timeout;
+there is no aggregate 64 MiB response cap.
+
+The standard registrar defines `ingest-operational-era5-history` on `ingest`,
+concurrency 1, no cron or automatic retries. It remains in the Nepal held skip
+list until operator admission. Do not run register-all or start workers implicitly.
+Once admitted and registered, submit via the existing Prefect client:
+
+```sh
+uv run python -m sapphire_flow.cli.onboard_nepal history \
+  --config config.toml --tenant chwrr --confirm-t8 --weather-scope NAME \
+  --start 2026-09-01T00:00:00Z --end 2026-10-01T00:00:00Z
+```
+
+The equivalent standard command is `prefect deployment run
+ingest-operational-era5-history/ingest-operational-era5-history --param start=...
+--param end=... --param weather_scope=NAME`. Only these three required strings
+are deployment parameters. Scoped history rejects `--dry-run` before any work.
+CLI success means submission, not completed ingestion or forecast readiness.
+
+Windows are timezone-aware, start inclusive and end exclusive. Each <=31-day
+batch uses a real transaction. Coverage is logged after each batch commits.
+A failed batch rolls back; earlier batches and their coverage logs remain.
+Native same-key repeats do not overwrite values. Changed provider provenance can
+create a new version. Empty or partial coverage is not forecast-ready: 42 nonempty
+station/parameter entries do not prove 30 complete days. No tail filling occurs.
+Unscoped history keeps the legacy six-station rules. Admitting overlapping stations
+to a different runtime alias intentionally makes subsequent legacy calls reject
+that mismatch; no parallel compatibility mappings are created.
+
+The production flow replaces SDK exceptions with a static, unchained failure before
+Prefect records them: provider URLs and API keys are not diagnostic output. Native
+group membership changes on production AUTOCOMMIT stores use real owning
+transactions for the shared tenant lock and mutation; caller transactions remain intact.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import math
-from datetime import timedelta
-from typing import TYPE_CHECKING
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+import structlog
 from prefect import flow
 
 from sapphire_flow.exceptions import ConfigurationError
@@ -20,6 +23,7 @@ from sapphire_flow.types.nepal_onboarding import (
     GATEWAY_HISTORY_SOURCE,
     HISTORY_PARAMETERS,
     HistoryCoverage,
+    HistoryWindow,
 )
 
 if TYPE_CHECKING:
@@ -29,9 +33,11 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.nepal_onboarding import (
-        HistoryWindow,
         OperationalWeatherScope,
     )
+
+
+log = structlog.get_logger(__name__)
 
 
 @flow(
@@ -41,6 +47,18 @@ if TYPE_CHECKING:
     validate_parameters=False,
 )
 def ingest_recap_era5_reanalysis_flow(
+    conn: sa.Connection,
+    identity: DeploymentIdentityConfig,
+    adapter: WeatherReanalysisSource,
+    window: HistoryWindow,
+    *,
+    now: UtcDatetime,
+    scope: OperationalWeatherScope | None = None,
+) -> tuple[HistoryCoverage, ...]:
+    return _ingest_history(conn, identity, adapter, window, now=now, scope=scope)
+
+
+def _ingest_history(
     conn: sa.Connection,
     identity: DeploymentIdentityConfig,
     adapter: WeatherReanalysisSource,
@@ -101,3 +119,98 @@ def ingest_recap_era5_reanalysis_flow(
                 )
             )
     return tuple(coverage)
+
+
+def parse_history_window(start: str, end: str) -> HistoryWindow:
+    return HistoryWindow(
+        start=ensure_utc(datetime.fromisoformat(start)),
+        end=ensure_utc(datetime.fromisoformat(end)),
+    )
+
+
+@flow(
+    name="ingest-operational-era5-history",
+    log_prints=False,
+    persist_result=False,
+    retries=0,
+)
+def ingest_operational_era5_history_flow(
+    start: str,
+    end: str,
+    weather_scope: str,
+) -> tuple[HistoryCoverage, ...]:
+    try:
+        return _run_operational_history(start, end, weather_scope)
+    except Exception:
+        # SDK errors may carry prepared URLs containing the API key.
+        # Raise outside the handler so Prefect receives no chained exception.
+        pass
+    raise ConfigurationError("Operational ERA5 history failed")
+
+
+def _run_operational_history(
+    start: str,
+    end: str,
+    weather_scope: str,
+) -> tuple[HistoryCoverage, ...]:
+    from recap_client import RecapClient
+
+    from sapphire_flow.adapters.recap_gateway import (
+        RecapClientLike,
+        RecapGatewayReanalysisAdapter,
+        StoreBackedGatewayPolygonResolver,
+    )
+    from sapphire_flow.config.deployment_identity import load_deployment_identity_config
+    from sapphire_flow.config.nepal_weather import load_weather_scope
+    from sapphire_flow.config.recap_gateway import (
+        build_recap_client_config,
+        load_recap_api_key,
+        load_recap_gateway_config,
+    )
+    from sapphire_flow.db.engine import create_engine_from_env
+    from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
+
+    window = parse_history_window(start, end)
+    config_path = Path(os.environ.get("SAPPHIRE_CONFIG", "config.toml"))
+    identity = load_deployment_identity_config(config_path)
+    scope = load_weather_scope(config_path, weather_scope).scope
+    config = load_recap_gateway_config(config_path)
+    engine = create_engine_from_env()
+    try:
+        with engine.connect() as conn:
+            coverage: tuple[HistoryCoverage, ...] = ()
+            for batch in window.batches():
+                with conn.begin():
+                    now = ensure_utc(datetime.now(UTC))
+                    operational_weather_stations(conn, identity, scope, now=now)
+                    client = RecapClient(
+                        build_recap_client_config(
+                            api_key=load_recap_api_key(), config=config
+                        )
+                    )
+                    try:
+                        adapter = RecapGatewayReanalysisAdapter(
+                            client=cast("RecapClientLike", client),
+                            resolver=StoreBackedGatewayPolygonResolver(
+                                RecapGatewayPolygonStore(conn)
+                            ),
+                        )
+                        batch_coverage = _ingest_history(
+                            conn, identity, adapter, batch, now=now, scope=scope
+                        )
+                    finally:
+                        # The pinned SDK has no public close/context-manager API.
+                        client.ecmwf._http._session.close()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+                coverage += batch_coverage
+                for item in batch_coverage:
+                    log.info(
+                        "nepal_onboarding.history",
+                        station=item.code,
+                        parameter=item.parameter,
+                        rows=item.rows,
+                        start=item.start,
+                        end=item.end,
+                    )
+            return coverage
+    finally:
+        engine.dispose()

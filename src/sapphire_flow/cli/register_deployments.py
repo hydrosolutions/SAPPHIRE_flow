@@ -112,6 +112,13 @@ def _all_specs() -> list[DeploymentSpec]:
 
     return [
         DeploymentSpec(
+            flow_module="sapphire_flow.flows.ingest_recap_era5_reanalysis",
+            flow_attr="ingest_operational_era5_history_flow",
+            deployment_name="ingest-operational-era5-history",
+            concurrency_limit=1,
+            work_pool_name=INGEST_POOL,
+        ),
+        DeploymentSpec(
             flow_module="sapphire_flow.flows.ingest_observations",
             flow_attr="ingest_observations_flow",
             deployment_name="ingest-observations",
