@@ -6418,6 +6418,13 @@ before checking the current numeric/provenance fingerprint and approved policy.
 It never falls back to older matching events. Evidence absence alone does not
 exclude unprotected, unheld legacy rows. No raw event SELECT is granted to API.
 
+`PgObservationStore.fetch_observations` keeps the trusted disposition predicate in
+an observation-correlated scalar subquery, like `fetch_latest_observations`. This
+prevents flattening the trust check into an all-history projection scan before
+applying the station/parameter/time bounds. The half-open window, optional source
+and QC filters, and chronological ordering are unchanged; QC-context reads still
+use their separate bounded-cohort path.
+
 QC reads use `QcContextWindow` (station, parameter, optional source, and half-open
 time window) and a shared immutable dependency digest. Migration 0078 materializes
 the bounded cohort and its excluded/absent/partial-release boundary markers once.
