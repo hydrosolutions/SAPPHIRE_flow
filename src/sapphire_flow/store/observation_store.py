@@ -473,7 +473,13 @@ class PgObservationStore:
             return [_row_to_domain(row, window=window) for row in rows]
         stmt = (
             self._select_observations()
-            .where(unit_read_predicate(observations_table, self._purpose))
+            # Keep trust checks per bounded candidate, as in the latest reader.
+            # Flattening EXISTS can scan the full historical trust projection.
+            .where(
+                sa.select(unit_read_predicate(observations_table, self._purpose))
+                .correlate(observations_table)
+                .scalar_subquery()
+            )
             .where(observations_table.c.station_id == station_id)
             .where(observations_table.c.parameter == parameter)
             .where(observations_table.c.timestamp >= start)
