@@ -220,6 +220,9 @@ class TestProvisionalDischargeRoleBoundary:
                     "forecasts",
                     "rejected_forecasts",
                     *unit_protected,
+                    "rating_delivery_files",
+                    "rating_delivery_curves",
+                    "rating_derived_discharge",
                 }
                 assert all(
                     row["current"]

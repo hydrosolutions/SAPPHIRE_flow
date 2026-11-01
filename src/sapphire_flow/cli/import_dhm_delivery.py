@@ -709,12 +709,14 @@ def run_delivery_qc(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Import restricted DHM history")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("stations", "replace", "qc"):
+    for name in ("stations", "replace", "qc", "ratings-only"):
         command = commands.add_parser(name)
         command.add_argument("--tenant", required=True)
         command.add_argument("--dry-run", action="store_true")
         if name == "replace":
             command.add_argument("--input-dir", required=True, type=Path)
+        if name == "ratings-only":
+            command.add_argument("--manifest", required=True, type=Path)
     return parser
 
 
@@ -731,13 +733,21 @@ def main(argv: list[str] | None = None) -> int:
         raise ConfigurationError("DHM import tenant must be chwrr")
     identity = _require_chwrr_identity(config_path)
     metadata_path = config_path.resolve().parent / "tests/fixtures/dhm/stations.toml"
-    metadata = load_station_metadata(metadata_path)
+    metadata = (
+        None if args.command == "ratings-only" else load_station_metadata(metadata_path)
+    )
+    rating_files = ()
+    if args.command == "ratings-only":
+        from sapphire_flow.cli.rating_delivery_manifest import load_rating_manifest
+
+        rating_files = load_rating_manifest(args.manifest)
     files = None
     if args.command == "replace":
         if args.input_dir.resolve().is_relative_to(config_path.resolve().parent):
             raise ConfigurationError(
                 "restricted DHM input directory must be outside checkout"
             )
+        assert metadata is not None
         files = load_delivery_files(args.input_dir, metadata)
     engine = create_engine_from_env()
     try:
@@ -747,7 +757,21 @@ def main(argv: list[str] | None = None) -> int:
                 tenant_store = PgTenantStore(conn)
                 audit_log_store = PgAuditLogStore(conn)
                 now = ensure_utc(datetime.now(UTC))
-                if args.command == "stations":
+                if args.command == "ratings-only":
+                    from sapphire_flow.services.rating_delivery import (
+                        admit_rating_deliveries,
+                    )
+
+                    _assert_chwrr_scoped(identity)
+                    tenant = tenant_store.fetch_tenant_by_code(DELIVERY_TENANT_CODE)
+                    if tenant is None:
+                        raise ConfigurationError(_TENANT_MISSING)
+                    admitted = admit_rating_deliveries(
+                        conn, tenant.id, rating_files, now=now
+                    )
+                    log.info("dhm_import.ratings_only", files_admitted=admitted)
+                elif args.command == "stations":
+                    assert metadata is not None
                     created = register_stations(
                         tenant_store,
                         PgStationStore(conn),

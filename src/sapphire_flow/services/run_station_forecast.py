@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random  # noqa: TC003
 from collections.abc import Callable, Sequence  # noqa: TC003
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import TYPE_CHECKING, cast
 from uuid import UUID  # noqa: TC003
@@ -26,6 +26,7 @@ from sapphire_flow.services.nwp_coverage import assess_future_coverage, member_i
 from sapphire_flow.services.operational_inputs import (
     ModelRunContext,
     OperationalInputMetadata,  # noqa: TC001
+    WarmUpState,
     load_warm_up_state,
 )
 from sapphire_flow.services.qc_datum import (
@@ -39,7 +40,13 @@ from sapphire_flow.services.track_assembly import (
     UnavailableTrackContext,
 )
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
-from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
+from sapphire_flow.types.enums import (
+    EnsembleMode,
+    ForecastDataUse,
+    ForecastStatus,
+    QcStatus,
+    WarmUpSource,
+)
 from sapphire_flow.types.forcing_track import FeatureName  # noqa: TC001
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
@@ -74,6 +81,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource, ObservationQcCoverage
+    from sapphire_flow.types.forecast_lineage import ForecastInputLineage
     from sapphire_flow.types.model import StationModelInputs
     from sapphire_flow.types.station import ModelAssignment
 
@@ -277,6 +285,7 @@ def _run_single_model(
     id_gen: Callable[[], UUID],
     rng: random.Random,
     forcing_contract: ForcingContract | None = None,
+    input_lineage: ForecastInputLineage | None = None,
 ) -> AssignmentOutcome:
     """``forcing_contract`` is the Plan 151 D10a per-track substitution:
     ``None`` (the default) is the LEGACY route — every forcing read below
@@ -408,14 +417,34 @@ def _run_single_model(
         )
 
     artifact_id, artifact_bytes = artifact_result
+    if input_lineage is not None:
+        if input_lineage.rating_input is None:
+            raise ValueError("native station runner only accepts rating lineage")
+        input_lineage = replace(
+            input_lineage,
+            rating_input=replace(input_lineage.rating_input, artifact_id=artifact_id),
+        )
+    data_use = (
+        ForecastDataUse.PROVISIONAL_RATING
+        if input_lineage is not None
+        else ForecastDataUse.STANDARD
+    )
 
     # Plan 148 D3: resolve THIS assignment's warm-up state uniformly, after
     # every eligibility gate above, before the reject-guard first reads state
     # below. A store-read failure is assignment-local — it never aborts a
     # station whose earlier (higher-priority) assignment already succeeded.
     try:
-        warm_up = load_warm_up_state(
-            model_state_store, station_id, assignment.model_id, clock
+        warm_up = (
+            WarmUpState(
+                prior_state=None,
+                warm_up_source=WarmUpSource.COLD_START,
+                warm_up_state_age_hours=None,
+            )
+            if input_lineage is not None
+            else load_warm_up_state(
+                model_state_store, station_id, assignment.model_id, clock
+            )
         )
     except Exception as exc:
         log.warning(
@@ -598,6 +627,14 @@ def _run_single_model(
                 detail=f"unsupported stateful ensemble: {exc}",
             )
 
+    if input_lineage is not None and (
+        new_state is not None or any(ensemble_member_states or [])
+    ):
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE,
+            detail="provisional rating execution requires stateless output",
+        )
+
     ensembles = cast("dict[str, ForecastEnsemble]", ensembles)
     new_state = cast("bytes | None", new_state)
 
@@ -675,6 +712,8 @@ def _run_single_model(
                 model_artifact_id=artifact_id,
                 issued_at=context.inputs.issue_time,
                 parameters=tuple(rejected_parameters),
+                data_use=data_use,
+                input_lineage=input_lineage,
             ),
         )
 
@@ -724,6 +763,8 @@ def _run_single_model(
             input_quality=input_quality,
             input_quality_flags=input_quality_flags,
             evidence=evidence,
+            data_use=data_use,
+            input_lineage=input_lineage,
         )
         forecasts.append(forecast)
 
@@ -796,6 +837,7 @@ def run_all_station_forecasts(
                 clock=clock,
                 id_gen=id_gen,
                 rng=rng,
+                input_lineage=input_metadata.input_lineage,
             )
         except Exception as exc:  # backstop for UNANTICIPATED bugs only (D3/D6)
             log.error(

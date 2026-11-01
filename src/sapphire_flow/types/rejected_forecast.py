@@ -111,5 +111,9 @@ def validate_rejected_assignment(
         return
     if not isinstance(payload.input_lineage, ForecastInputLineage):
         raise ValueError("test rejection requires typed consumed input lineage")
+    if (data_use is ForecastDataUse.PROVISIONAL_RATING) != (
+        payload.input_lineage.rating_input is not None
+    ):
+        raise ValueError("rejected forecast purpose and lineage variant disagree")
     if not any(p.qc_status is QcStatus.QC_FAILED for p in payload.parameters):
         raise ValueError("test rejection requires a QC-failed parameter")

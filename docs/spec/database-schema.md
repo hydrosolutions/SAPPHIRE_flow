@@ -1659,3 +1659,20 @@ independent review remain gates; capture dispatch and scope activation stay paus
 The unreleased unit chain is 0074–0078, after published 0073 (protected
 reference basis). Full upgrades retain that basis and its downgrade refusal
 before installing unit guards. No published migration is renumbered.
+
+
+## Native provisional rating provenance
+
+Migration 0079 adds immutable `rating_delivery_files`, `rating_delivery_curves`
+and `rating_derived_discharge`. Original file bytes and hashes remain available.
+Derived rows retain source/QC, curve, reference, delivery and policy snapshots;
+the SHA-256 fingerprint is the primary key. Tenant/station/source foreign keys
+prevent cross-scope references and destructive source deletion. No derived sample
+is stored in `observations`.
+
+Forecast and rejection purpose checks admit `provisional_rating` with its own
+lineage variant. Native lineage triggers verify source identities and bind the
+output artifact/issue time. Standard and expired-test purpose semantics remain
+separate. Publication remains standard-only. Runtime cannot SELECT protected
+lineage columns; `native_rating_lineage(uuid,boolean)` exposes only native-purpose
+rows. Downgrade refuses surviving native provenance or native forecasts.

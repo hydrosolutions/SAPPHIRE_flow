@@ -29,6 +29,7 @@ from sapphire_flow.types.enums import (
     ForcingRoute,
     FutureWeatherPolicy,
     ObservationQcCoverage,
+    QcStatus,
     WarmUpSource,
 )
 from sapphire_flow.types.forecast_evidence import StationSourceEvidence
@@ -53,7 +54,9 @@ if TYPE_CHECKING:
         StationStore,
         WeatherForecastStore,
     )
+    from sapphire_flow.services.rating_inputs import NativeRatingInputs
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forecast_lineage import ForecastInputLineage
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.observation import Observation
@@ -73,6 +76,7 @@ class OperationalInputMetadata:
     # dataframe conversion below keeps no QC column, so the fact is taken
     # from the observations and carried here.
     observation_qc_coverage: ObservationQcCoverage
+    input_lineage: ForecastInputLineage | None = None
     # Group schema conformance must not erase pre-fill temporal/column gaps.
     past_forcing_before_conformance: pl.DataFrame | None = field(
         default=None, compare=False, repr=False
@@ -945,6 +949,7 @@ def assemble_station_operational_inputs(
     requirements_override: ModelDataRequirements | None = None,
     static_naming_models: Sequence[object] | None = None,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    rating_inputs: NativeRatingInputs | None = None,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
     now = clock()
     # When a station is assigned models with heterogeneous requirements, the
@@ -992,6 +997,68 @@ def assemble_station_operational_inputs(
     past_targets = resample_to_time_step(
         past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
+    rating_lineage = None
+    latest_rating_timestamp = None
+    if rating_inputs is not None:
+        from sapphire_flow.services.rating_inputs import merge_rating_days
+
+        if time_step != timedelta(days=1):
+            raise ConfigurationError(
+                "provisional rating input requires native daily cadence"
+            )
+        samples = rating_inputs.read(
+            station_id, model_id, start=past_targets_start, end=past_targets_end, at=now
+        )
+        past_targets, rating_lineage, latest_rating_timestamp = merge_rating_days(
+            past_targets, samples, issue_time=issue_time, weather_cycle_time=cycle_time
+        )
+        if rating_lineage is None:
+            log.info(
+                "operational_inputs.no_provisional_rating_days",
+                station_id=str(station_id),
+            )
+            return None
+        assert rating_lineage.rating_input is not None
+        rejected_measured = obs_store.fetch_observations(
+            station_id=station_id,
+            parameter="discharge",
+            start=past_targets_start,
+            end=past_targets_end,
+            qc_status=(QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING),
+        )
+        rejected_counts: dict[UtcDatetime, int] = {}
+        for observation in rejected_measured:
+            day = ensure_utc(
+                observation.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            )
+            rejected_counts[day] = rejected_counts.get(day, 0) + 1
+        rating_lineage = replace(
+            rating_lineage,
+            rating_input=replace(
+                rating_lineage.rating_input,
+                days=tuple(
+                    replace(
+                        day,
+                        measured_rejected=rejected_counts.get(day.day, 0),
+                        warnings=tuple(
+                            sorted(
+                                set(day.warnings)
+                                | (
+                                    {"measured_discharge_rejected"}
+                                    if rejected_counts.get(day.day, 0)
+                                    else set()
+                                )
+                            )
+                        ),
+                    )
+                    for day in rating_lineage.rating_input.days
+                ),
+            ),
+        )
+        assert rating_lineage.rating_input is not None
+        if any(day.unassessed for day in rating_lineage.rating_input.days):
+            observation_qc_coverage = ObservationQcCoverage.CONTAINS_UNCHECKED
+
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.
     #
@@ -1039,6 +1106,12 @@ def assemble_station_operational_inputs(
             )
 
     latest_obs_ts = max((o.timestamp for o in freshness_observations), default=None)
+    if latest_rating_timestamp is not None:
+        latest_obs_ts = (
+            max(latest_obs_ts, latest_rating_timestamp)
+            if latest_obs_ts
+            else latest_rating_timestamp
+        )
     observation_staleness_hours: float | None = None
     if latest_obs_ts is not None:
         observation_staleness_hours = (now - latest_obs_ts).total_seconds() / 3600.0
@@ -1230,7 +1303,29 @@ def assemble_station_operational_inputs(
     # assembler — the station-cycle path reads its own per-assignment state
     # via ``ModelRunContext`` (Plan 148 D2). Only source/age survive on
     # ``OperationalInputMetadata`` as shared provenance for the GROUP path.
-    warm_up = load_warm_up_state(model_state_store, station_id, model_id, lambda: now)
+    warm_up = (
+        WarmUpState(
+            prior_state=None,
+            warm_up_source=WarmUpSource.COLD_START,
+            warm_up_state_age_hours=None,
+        )
+        if rating_inputs is not None
+        else load_warm_up_state(model_state_store, station_id, model_id, lambda: now)
+    )
+    if rating_lineage is not None:
+        assert rating_lineage.rating_input is not None
+        rating_lineage = replace(
+            rating_lineage,
+            rating_input=replace(
+                rating_lineage.rating_input,
+                weather_record_ids=tuple(
+                    sorted(str(record.id) for record in [*nwp_records, *tail_records])
+                ),
+                forcing_versions=tuple(
+                    sorted({(record.source, record.version) for record in raw_forcing})
+                ),
+            ),
+        )
     warm_up_state_age_hours = warm_up.warm_up_state_age_hours
     warm_up_source = warm_up.warm_up_source
 
@@ -1266,6 +1361,7 @@ def assemble_station_operational_inputs(
         warm_up_state_age_hours=warm_up_state_age_hours,
         observation_staleness_hours=observation_staleness_hours,
         observation_qc_coverage=observation_qc_coverage,
+        input_lineage=rating_lineage,
         nwp_age_hours=nwp_age_hours,
     )
 

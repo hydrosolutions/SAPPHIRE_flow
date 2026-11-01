@@ -101,7 +101,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Explicit owner-assumed reference basis chains 0073 onto 0072.
 # BAFU unit evidence/guards/read state chain 0074–0077 onto published 0073;
 # bounded QC serialization chains 0078 onto 0077.
-_RELEASE_B_HEAD = "0078"
+# Native rating provenance chains 0079 onto 0078.
+_RELEASE_B_HEAD = "0079"
 
 
 def _down_revisions() -> dict[str, str | None]:

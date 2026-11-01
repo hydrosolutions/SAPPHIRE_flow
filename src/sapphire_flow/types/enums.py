@@ -23,6 +23,7 @@ class QcStatus(Enum):
 class ForecastDataUse(Enum):
     STANDARD = "standard"
     EXPIRED_RATING_TEST = "expired_rating_test"
+    PROVISIONAL_RATING = "provisional_rating"
 
 
 class ForecastStatus(Enum):

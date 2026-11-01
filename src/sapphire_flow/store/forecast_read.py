@@ -20,6 +20,11 @@ def forecast_columns(
     return [
         sa.cast(sa.null(), sa.Text).label("input_lineage")
         if column.name == "input_lineage" and data_use is ForecastDataUse.STANDARD
+        else sa.func.native_rating_lineage(
+            table.c.id, table.name == "rejected_forecasts"
+        ).label("input_lineage")
+        if column.name == "input_lineage"
+        and data_use is ForecastDataUse.PROVISIONAL_RATING
         else column
         for column in table.columns
     ]

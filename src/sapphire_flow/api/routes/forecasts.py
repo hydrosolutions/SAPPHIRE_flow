@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -9,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected, visible_columns
-from sapphire_flow.types.enums import ForecastDataUse
+from sapphire_flow.types.forecast_lineage import ForecastInputLineage
 
 router = APIRouter(tags=["forecasts"])
 
@@ -19,6 +20,7 @@ def forecast_list(
     request: Request,
     station_id: str | None = Query(None),
     page: int = Query(0, ge=0),
+    data_use: Literal["standard", "provisional_rating"] = Query("standard"),
     conn: sa.Connection = Depends(get_connection),
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
@@ -33,13 +35,13 @@ def forecast_list(
     if has_forecasts:
         q = (
             sa.select(*visible_columns(forecasts))
-            .where(forecasts.c.data_use == ForecastDataUse.STANDARD.value)
+            .where(forecasts.c.data_use == data_use)
             .order_by(forecasts.c.issued_at.desc())
         )
         count_q = (
             sa.select(sa.func.count())
             .select_from(forecasts)
-            .where(forecasts.c.data_use == ForecastDataUse.STANDARD.value)
+            .where(forecasts.c.data_use == data_use)
         )
 
         if station_id:
@@ -73,6 +75,7 @@ def forecast_list(
             "hindcast_count": hindcast_count,
             "has_forecasts": has_forecasts,
             "active_nav": "forecasts",
+            "data_use": data_use,
         },
     )
 
@@ -81,6 +84,7 @@ def forecast_list(
 def forecast_detail(
     request: Request,
     forecast_id: str,
+    data_use: Literal["standard", "provisional_rating"] = Query("standard"),
     conn: sa.Connection = Depends(get_connection),
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
@@ -94,7 +98,7 @@ def forecast_detail(
         conn.execute(
             sa.select(*visible_columns(forecasts)).where(
                 forecasts.c.id == forecast_id,
-                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
+                forecasts.c.data_use == data_use,
             )
         )
         .mappings()
@@ -105,6 +109,7 @@ def forecast_detail(
 
     forecast = dict(row)
     forecast["model_tier"] = model_tier_for_model_id(forecast.get("model_id")).value
+    forecast.update(_rating_summary(conn, forecast_id, data_use))
 
     # Get forecast values
     fv = reflected.tables.get("forecast_values")
@@ -128,6 +133,7 @@ def forecast_detail(
             "forecast": forecast,
             "values": values,
             "active_nav": "forecasts",
+            "data_use": data_use,
         },
     )
 
@@ -135,6 +141,7 @@ def forecast_detail(
 @router.get("/api/v1/forecasts/{forecast_id}/data.json")
 def forecast_data_json(
     forecast_id: str,
+    data_use: Literal["standard", "provisional_rating"] = Query("standard"),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
     reflected = get_reflected(conn)
@@ -148,7 +155,7 @@ def forecast_data_json(
         conn.execute(
             sa.select(*visible_columns(forecasts)).where(
                 forecasts.c.id == forecast_id,
-                forecasts.c.data_use == ForecastDataUse.STANDARD.value,
+                forecasts.c.data_use == data_use,
             )
         )
         .mappings()
@@ -185,6 +192,7 @@ def forecast_data_json(
             quantiles[q]["values"].append(r["value"])
         return JSONResponse(
             {
+                **_rating_summary(conn, forecast_id, data_use),
                 "representation": "quantiles",
                 "quantiles": quantiles,
                 "units": units,
@@ -204,6 +212,7 @@ def forecast_data_json(
             members[m]["values"].append(r["value"])
         return JSONResponse(
             {
+                **_rating_summary(conn, forecast_id, data_use),
                 "representation": "members",
                 "members": members,
                 "units": units,
@@ -211,3 +220,29 @@ def forecast_data_json(
                 "model_tier": model_tier,
             }
         )
+
+
+def _rating_summary(
+    conn: sa.Connection, forecast_id: str, data_use: str
+) -> dict[str, object]:
+    if data_use != "provisional_rating":
+        return {}
+    content = conn.execute(
+        sa.select(sa.func.native_rating_lineage(sa.cast(forecast_id, sa.Uuid), False))
+    ).scalar_one_or_none()
+    if content is None:
+        raise HTTPException(503, "Provisional rating evidence is unavailable")
+    try:
+        lineage = ForecastInputLineage.from_content(content).rating_input
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Provisional rating evidence is unavailable") from None
+    if lineage is None:
+        raise HTTPException(503, "Provisional rating evidence is unavailable")
+    return {
+        "data_use": "provisional_rating",
+        "badge": "PROVISIONAL",
+        "warnings": sorted(
+            {warning for day in lineage.days for warning in day.warnings}
+        ),
+        "rating_input": json.loads(content)["rating_input"],
+    }

@@ -1134,14 +1134,18 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
             finally:
                 conn.rollback()
 
-    def test_the_security_definer_functions_are_the_known_publication_locks(
+    def test_security_definers_are_only_publication_locks_and_native_rating_guards(
         self, db: OperatorDb
     ) -> None:
         names = db.scalar(
             "SELECT string_agg(proname, ', ' ORDER BY proname) FROM pg_proc "
             f"WHERE {self._NON_SYSTEM} AND prosecdef"
         )
-        assert names == "lock_publication_candidate, lock_publication_grants"
+        assert names == (
+            "lock_publication_candidate, lock_publication_grants, "
+            "native_rating_curve_guard, native_rating_lineage, "
+            "native_rating_lineage_guard"
+        )
 
 
 class TestCopyIsGuarded:
@@ -1767,7 +1771,7 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0078"
+        assert before[0] == "0079"
         with pytest.raises(NotImplementedError, match="requires a drained deployment"):
             _alembic("downgrade", "0066")
         assert snapshot() == before

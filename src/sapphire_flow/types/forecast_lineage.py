@@ -4,7 +4,7 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 from uuid import UUID
 
 from pydantic import (
@@ -19,6 +19,10 @@ from pydantic import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus, SpatialRepresentation
+from sapphire_flow.types.rating_input_lineage import (
+    RatingDaySupport,
+    RatingInputLineage,
+)
 from sapphire_flow.types.rating_reference import canonical_content, content_digest
 
 if TYPE_CHECKING:
@@ -227,6 +231,7 @@ class ForecastInputLineage:
     static_attributes: tuple[ForecastStaticAttributes, ...] = ()
     provisional_discharge_fingerprints: tuple[str, ...] = ()
     contributor_forecast_ids: tuple[ForecastId, ...] = ()
+    rating_input: RatingInputLineage | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -268,6 +273,7 @@ class ForecastInputLineage:
             or self.static_attributes
             or self.provisional_discharge_fingerprints
             or self.contributor_forecast_ids
+            or self.rating_input is not None
         ):
             raise ValueError("input lineage requires consumed inputs")
         if not self.transformation_versions or any(
@@ -285,6 +291,14 @@ class ForecastInputLineage:
     def content(self) -> str:
         return canonical_content(
             {
+                **(
+                    {
+                        "kind": "provisional_rating",
+                        "rating_input": asdict(self.rating_input),
+                    }
+                    if self.rating_input is not None
+                    else {}
+                ),
                 "static_attributes": sorted(
                     (
                         {
@@ -342,6 +356,7 @@ class ForecastInputLineage:
                     ForecastId(UUID(i)) for i in data["contributor_forecast_ids"]
                 ),
                 transformation_versions=tuple(data["transformation_versions"]),
+                rating_input=_parse_rating_input(data) if "kind" in data else None,
             )
             if result.content != content:
                 raise ValueError("input lineage must be canonical")
@@ -350,3 +365,46 @@ class ForecastInputLineage:
             raise ValueError(
                 "consumed input lineage is malformed or noncanonical"
             ) from None
+
+
+def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
+    from datetime import datetime
+
+    from sapphire_flow.types.ids import ArtifactId
+
+    if data["kind"] != "provisional_rating":
+        raise ValueError("unknown input lineage kind")
+    rating = cast("dict[str, Any]", data["rating_input"])
+    days = tuple(
+        RatingDaySupport(
+            day=ensure_utc(datetime.fromisoformat(day["day"])),
+            fingerprints=tuple(day["fingerprints"]),
+            accepted=day["accepted"],
+            rejected=day["rejected"],
+            extrapolated=day["extrapolated"],
+            assessed=day["assessed"],
+            unassessed=day["unassessed"],
+            first=ensure_utc(datetime.fromisoformat(day["first"]))
+            if day["first"]
+            else None,
+            last=ensure_utc(datetime.fromisoformat(day["last"]))
+            if day["last"]
+            else None,
+            warnings=tuple(day["warnings"]),
+            measured_rejected=day["measured_rejected"],
+        )
+        for day in rating["days"]
+    )
+    return RatingInputLineage(
+        issue_time=ensure_utc(datetime.fromisoformat(rating["issue_time"])),
+        weather_cycle_time=ensure_utc(
+            datetime.fromisoformat(rating["weather_cycle_time"])
+        ),
+        days=days,
+        policy=rating["policy"],
+        weather_record_ids=tuple(rating["weather_record_ids"]),
+        forcing_versions=tuple(tuple(item) for item in rating["forcing_versions"]),
+        artifact_id=ArtifactId(UUID(rating["artifact_id"]))
+        if rating["artifact_id"]
+        else None,
+    )

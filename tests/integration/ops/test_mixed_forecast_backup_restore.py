@@ -582,3 +582,33 @@ def test_cleanup_record_failures_do_not_mask_readiness_or_skip_owned_handles(
     assert "record disk unavailable" in " ".join(caught.value.__notes__)
     if stop_mode == "fail-first":
         assert "first cleanup stop failed" in " ".join(caught.value.__notes__)
+
+
+def test_restored_native_reader_has_only_intended_execute_roles(
+    restored: Restored,
+) -> None:
+    with restored.harness.owner_engine.connect() as conn:
+        for role, allowed in [
+            ("sapphire_api", True),
+            ("sapphire_worker", True),
+            ("sapphire_operator", False),
+            ("sapphire_publication_health", False),
+        ]:
+            assert (
+                conn.scalar(
+                    sa.text(
+                        "SELECT has_function_privilege(:role,"
+                        "'public.native_rating_lineage(uuid,boolean)','EXECUTE')"
+                    ),
+                    {"role": role},
+                )
+                is allowed
+            )
+        assert not conn.scalar(
+            sa.text(
+                "SELECT EXISTS (SELECT 1 FROM pg_proc p CROSS JOIN LATERAL "
+                "aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a "
+                "WHERE p.oid='public.native_rating_lineage(uuid,boolean)'"
+                "::regprocedure AND a.grantee=0 AND a.privilege_type='EXECUTE')"
+            )
+        )

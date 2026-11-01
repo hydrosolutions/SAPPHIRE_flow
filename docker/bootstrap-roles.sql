@@ -329,6 +329,23 @@ BEGIN
 END $$;
 REVOKE ALL ON public.daily_forecast_attempts FROM PUBLIC;
 
+-- Restore --no-acl resets function PUBLIC EXECUTE. Revoke native entrypoints
+-- before the unknown-definer preflight, including trigger-only guards.
+DO $$
+DECLARE f text; r text;
+BEGIN
+    FOREACH f IN ARRAY ARRAY['native_rating_curve_guard()',
+        'native_rating_lineage_guard()', 'native_rating_lineage(uuid,boolean)'] LOOP
+        FOREACH r IN ARRAY ARRAY['PUBLIC', 'sapphire_api', 'sapphire_worker',
+            'sapphire_operator', 'sapphire_publication_health'] LOOP
+            IF r = 'PUBLIC' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+                EXECUTE format('REVOKE ALL ON FUNCTION public.%s FROM %s', f,
+                    CASE WHEN r = 'PUBLIC' THEN r ELSE quote_ident(r) END);
+            END IF;
+        END LOOP;
+    END LOOP;
+END $$;
+
 -- Protected input/provenance tables never join the runtime grant set. Strip stale
 -- table AND column ACLs before any grants or later backup preflight can fail.
 -- Keep the operator safe-state block first; do not move work ahead of it.
@@ -337,7 +354,9 @@ DECLARE t text; r text; cols text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['provisional_discharge_permissions', 'measurement_feed_evidence',
                             'rating_reference_proofs', 'provisional_discharges',
-                            'forecast_input_stations', 'bafu_unit_batch_admissions',
+                            'forecast_input_stations', 'rating_delivery_files',
+                            'rating_delivery_curves', 'rating_derived_discharge',
+                            'bafu_unit_batch_admissions',
                             'bafu_unit_batch_receipts', 'bafu_unit_events',
                             'bafu_unit_read_holds', 'bafu_unit_hold_releases',
                        'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
@@ -467,7 +486,8 @@ BEGIN
           AND NOT pg_is_other_temp_schema(n.oid)
           AND f.oid NOT IN (
               'public.lock_publication_grants(uuid,uuid,uuid)'::regprocedure,
-              'public.lock_publication_candidate(uuid)'::regprocedure)
+              'public.lock_publication_candidate(uuid)'::regprocedure,
+              'public.native_rating_lineage(uuid,boolean)'::regprocedure)
           AND NOT EXISTS (SELECT 1 FROM pg_depend extension_dependency
               WHERE extension_dependency.classid = 'pg_proc'::regclass
                 AND extension_dependency.objid = f.oid
@@ -514,6 +534,8 @@ WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND c.relname NOT IN ('provisional_discharge_permissions', 'measurement_feed_evidence',
                        'rating_reference_proofs', 'provisional_discharges',
                        'forecast_input_stations', 'forecasts', 'rejected_forecasts',
+                       'rating_delivery_files', 'rating_delivery_curves',
+                       'rating_derived_discharge',
                        'bafu_unit_batch_admissions', 'bafu_unit_batch_receipts',
                        'bafu_unit_events', 'bafu_unit_read_holds', 'bafu_unit_hold_releases',
                        'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
@@ -617,6 +639,11 @@ GRANT INSERT, UPDATE ON basins TO sapphire_worker;
 GRANT INSERT, UPDATE ON basin_versions TO sapphire_worker;
 GRANT INSERT ON basin_static_packages TO sapphire_worker;
 GRANT INSERT, UPDATE ON rating_curves TO sapphire_worker;
+-- Native rating provenance is immutable and never part of generic API reads.
+GRANT SELECT, INSERT ON rating_delivery_files, rating_delivery_curves,
+    rating_derived_discharge TO sapphire_worker;
+GRANT EXECUTE ON FUNCTION public.native_rating_lineage(uuid,boolean)
+    TO sapphire_api, sapphire_worker;
 GRANT INSERT ON historical_forcing TO sapphire_worker;
 GRANT INSERT, UPDATE, DELETE ON clim_baselines TO sapphire_worker;
 GRANT INSERT ON flow_regime_configs TO sapphire_worker;
@@ -1020,8 +1047,9 @@ JOIN pg_catalog.pg_trigger t
    AND t.tgrelid = to_regclass('public.' || expected.rel)
    AND NOT t.tgisinternal
    AND t.tgenabled IN ('O', 'A')
-   AND pg_catalog.pg_get_expr(t.tgqual, t.tgrelid)
-       = '(SESSION_USER = ''sapphire_operator''::name)'
+   AND substring(pg_catalog.pg_get_triggerdef(t.oid)
+       FROM ' WHEN (.*) EXECUTE FUNCTION ')
+       = '((SESSION_USER = ''sapphire_operator''::name))'
    AND t.tgtype = expected.trigger_type
 JOIN pg_catalog.pg_proc p
     ON p.oid = t.tgfoid

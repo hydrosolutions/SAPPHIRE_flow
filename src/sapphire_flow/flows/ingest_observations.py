@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from sapphire_flow.flows.bafu_ingest import BafuCaptureWriter, BafuDispatchResult
     from sapphire_flow.protocols.adapters import BatchStationDataSource
     from sapphire_flow.protocols.stores import ObservationStore
+    from sapphire_flow.services.rating_reconciliation import RatingReconciliationResult
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.observation_store import PgObservationStore
@@ -95,11 +96,118 @@ class IngestResult:
     qc_threshold_pending: int = 0
     qc_threshold_rejected: int = 0
     qc_threshold_not_applicable: int = 0
+    rating_results: tuple[RatingReconciliationResult, ...] = ()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@task(name="reconcile-native-rating", cache_policy=NO_CACHE)
+def _reconcile_native_ratings_task(
+    writer: object,
+    config: object,
+    now: UtcDatetime,
+    *,
+    station_ids: list[str] | None = None,
+    start: UtcDatetime | None = None,
+    end: UtcDatetime | None = None,
+) -> tuple[RatingReconciliationResult, ...]:
+    from uuid import UUID
+
+    from sapphire_flow.config.dhm import DhmConfig
+    from sapphire_flow.services.rating_reconciliation import (
+        RatingDerivedWriter,
+        RatingReconciliationResult,
+        RatingReconciliationState,
+        reconcile_rating_window,
+    )
+    from sapphire_flow.types.ids import StationId
+
+    configured = getattr(config, "provisional_ratings", ())
+    bindings = [item.to_domain() for item in configured]
+    if station_ids is not None:
+        requested = {StationId(UUID(identity)) for identity in station_ids}
+        bindings = [binding for binding in bindings if binding.station_id in requested]
+        if {binding.station_id for binding in bindings} != requested:
+            raise ConfigurationError(
+                "rating backfill stations require explicit opt-in bindings"
+            )
+    if not bindings:
+        return ()
+    try:
+        dhm = _load_adapter_config()
+        if not isinstance(dhm, DhmConfig) or writer is None:
+            raise ValueError(
+                "native rating requires DHM config and transactional writer"
+            )
+    except Exception as exc:
+        return tuple(
+            RatingReconciliationResult(
+                station_id=binding.station_id,
+                state=RatingReconciliationState.HELD,
+                accepted=0,
+                rejected=0,
+                failed_chunks=1,
+                reasons=(str(exc),),
+            )
+            for binding in bindings
+        )
+    outcomes = []
+    midnight = ensure_utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
+    for binding in bindings:
+        lower = start or ensure_utc(
+            midnight - timedelta(days=binding.reconciliation_days)
+        )
+        upper = end or now
+        windows = [(lower, upper)]
+        if start is None and end is None and midnight < now:
+            windows = [(lower, midnight), (midnight, now)]
+        parts = []
+        for window_start, window_end in windows:
+            try:
+                parts.append(
+                    reconcile_rating_window(
+                        cast("RatingDerivedWriter", writer),
+                        binding,
+                        dhm,
+                        start=window_start,
+                        end=window_end,
+                        at=now,
+                    )
+                )
+            except Exception as exc:
+                parts.append(
+                    RatingReconciliationResult(
+                        station_id=binding.station_id,
+                        state=RatingReconciliationState.HELD,
+                        accepted=0,
+                        rejected=0,
+                        failed_chunks=1,
+                        reasons=(
+                            str(exc)
+                            if isinstance(exc, ValueError)
+                            else type(exc).__name__,
+                        ),
+                    )
+                )
+        failed = sum(part.failed_chunks for part in parts)
+        outcomes.append(
+            RatingReconciliationResult(
+                station_id=binding.station_id,
+                state=RatingReconciliationState.HELD
+                if failed
+                else RatingReconciliationState.COMPLETE,
+                accepted=sum(part.accepted for part in parts),
+                rejected=sum(part.rejected for part in parts),
+                failed_chunks=failed,
+                reasons=tuple(
+                    sorted({reason for part in parts for reason in part.reasons})
+                ),
+            )
+        )
+    return tuple(outcomes)
 
 
 def _load_qc_rules() -> QcRuleSet:
@@ -109,7 +217,7 @@ def _load_qc_rules() -> QcRuleSet:
     return rule_set
 
 
-def _load_adapter_config() -> HydroScraperConfig | DhmConfig:
+def load_adapter_config() -> HydroScraperConfig | DhmConfig:
     from sapphire_flow.config._overlay import (
         _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
     )
@@ -120,6 +228,10 @@ def _load_adapter_config() -> HydroScraperConfig | DhmConfig:
         Path(config_path) if config_path is not None else None,
         _resolve_overlay_paths(),
     )
+
+
+def _load_adapter_config() -> HydroScraperConfig | DhmConfig:
+    return load_adapter_config()
 
 
 # Plan 217 (M-G1) D3: the `fetch_latest_timestamp` cursor parameter, keyed
@@ -1032,6 +1144,10 @@ def ingest_observations_flow(
     qc_obs_store: object = None,
     bafu_unit_registry: object = None,
     bafu_unit_writer: object = None,
+    rating_derived_store: object = None,
+    rating_backfill_station_ids: list[str] | None = None,
+    rating_backfill_start: datetime | None = None,
+    rating_backfill_end: datetime | None = None,
 ) -> IngestResult:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -1067,6 +1183,7 @@ def ingest_observations_flow(
                 quota=unit_config.quota,
             )
         _conn, stores = setup_production_stores(database_url)
+        rating_derived_store = stores["rating_derived_store"]
         station_store = stores["station_store"]  # type: ignore[assignment]
         obs_store = stores["obs_store"]  # type: ignore[assignment]
         qc_obs_store = stores["qc_obs_store"]
@@ -1076,6 +1193,45 @@ def ingest_observations_flow(
         tenant_store = stores["tenant_store"]
         if pipeline_health_store is None:
             pipeline_health_store = stores["pipeline_health_store"]  # type: ignore[assignment]
+
+    if deployment_config is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            deployment_config = load_config(config_path)
+
+    if rating_backfill_station_ids is not None:
+        if (
+            not rating_backfill_station_ids
+            or rating_backfill_start is None
+            or rating_backfill_end is None
+        ):
+            raise ConfigurationError(
+                "rating backfill requires stations and explicit bounds"
+            )
+        results = _reconcile_native_ratings_task(
+            rating_derived_store,
+            deployment_config,
+            cast("Callable[[], UtcDatetime]", clock)(),
+            station_ids=rating_backfill_station_ids,
+            start=ensure_utc(rating_backfill_start),
+            end=ensure_utc(rating_backfill_end),
+        )
+        return IngestResult(
+            stations_polled=0,
+            observations_fetched=0,
+            observations_stored=0,
+            observations_skipped=0,
+            qc_passed=0,
+            qc_failed=0,
+            qc_suspect=0,
+            stations_failed=0,
+            errors=(),
+            rating_results=results,
+        )
+    if rating_backfill_start is not None or rating_backfill_end is not None:
+        raise ConfigurationError("rating backfill bounds require explicit stations")
 
     if (bafu_unit_registry is None) != (bafu_unit_writer is None):
         raise ConfigurationError("BAFU unit registry and writer are required together")
@@ -1250,6 +1406,13 @@ def ingest_observations_flow(
             qc_suspect=0,
             stations_failed=len(fetch_failed_station_ids),
             errors=fetch_errors,
+            rating_results=(
+                _reconcile_native_ratings_task(
+                    rating_derived_store, deployment_config, now
+                )
+                if getattr(deployment_config, "provisional_ratings", ())
+                else ()
+            ),
             qc_threshold_pending=len(threshold_config.pending),
             qc_threshold_rejected=len(threshold_config.rejected),
             qc_threshold_not_applicable=len(threshold_config.not_applicable),
@@ -1388,6 +1551,12 @@ def ingest_observations_flow(
         totals=totals,
     )
 
+    rating_results = (
+        _reconcile_native_ratings_task(rating_derived_store, deployment_config, now)
+        if getattr(deployment_config, "provisional_ratings", ())
+        else ()
+    )
+
     # --- Step 2.5: Calculated-station derivation (Plan 015) ---
     # Sequential post-QC step (NOT a task.map fan-out): the QC loop finishing is the
     # barrier. Calculated stations were excluded from `eligible` by the GAUGED guard, so
@@ -1457,6 +1626,7 @@ def ingest_observations_flow(
         stations_failed=len(all_failed_station_ids),
         errors=fetch_errors + tuple(errors),
         bafu_unit_results=unit_dispatch.results,
+        rating_results=rating_results,
         observations_derived=derived["derived"],
         observations_missing=derived["missing"],
         qc_threshold_pending=len(threshold_config.pending),
