@@ -29,6 +29,56 @@ def fixed_clock() -> None:
 
 
 class TestListLatestObservations:
+    def test_water_level_outside_thirty_days_is_not_returned(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config()
+        fake_stores["station_store"].store_station(station)
+        fake_stores["obs_store"].store_observations(
+            [
+                make_observation(
+                    station_id=station.id,
+                    parameter="water_level",
+                    timestamp=ensure_utc(_NOW - timedelta(days=30, seconds=1)),
+                )
+            ]
+        )
+        response = client.get(
+            _PATH, params={"parameter": "water_level", "observation_hours": 720}
+        )
+        assert response.status_code == 200
+        assert response.json()["items"][0]["observation"] is None
+
+    @pytest.mark.parametrize("qc", list(QcStatus))
+    def test_water_level_preserves_latest_raw_or_unusable_sample(
+        self, client: TestClient, fake_stores: dict[str, Any], qc: QcStatus
+    ) -> None:
+        station = make_station_config()
+        fake_stores["station_store"].store_station(station)
+        older = make_observation(
+            station_id=station.id,
+            parameter="water_level",
+            timestamp=ensure_utc(_NOW - timedelta(days=15)),
+            rng=random.Random(61),
+        )
+        latest = make_observation(
+            station_id=station.id,
+            parameter="water_level",
+            timestamp=ensure_utc(_NOW - timedelta(days=14)),
+            qc_status=qc,
+            rng=random.Random(62),
+        )
+        fake_stores["obs_store"].store_observations([older, latest])
+        response = client.get(
+            _PATH, params={"parameter": "water_level", "observation_hours": 720}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["parameter"] == "water_level"
+        assert body["items"][0]["observation"]["id"] == str(latest.id)
+        assert body["items"][0]["observation"]["qc_status"] == qc.value
+        assert response.headers["cache-control"] == "no-store"
+
     def test_null_and_missing_items_match_maintained_contract(
         self, client: TestClient, fake_stores: dict[str, Any]
     ) -> None:
@@ -100,13 +150,22 @@ class TestListLatestObservations:
     @pytest.mark.parametrize(
         "role", [AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER]
     )
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_no_grants_does_not_expose_populated_inventory(
-        self, client: TestClient, fake_stores: dict[str, Any], role: AccessTokenRole
+        self,
+        client: TestClient,
+        parameter: str,
+        fake_stores: dict[str, Any],
+        role: AccessTokenRole,
     ) -> None:
         station = make_station_config()
         fake_stores["station_store"].store_station(station)
         fake_stores["obs_store"].store_observations(
-            [make_observation(station_id=station.id, timestamp=_NOW)]
+            [
+                make_observation(
+                    parameter=parameter, station_id=station.id, timestamp=_NOW
+                )
+            ]
         )
         app.dependency_overrides[require_principal] = lambda: Principal(
             token_id=AccessTokenId(UUID(int=1)),
@@ -114,13 +173,16 @@ class TestListLatestObservations:
             tenant_id=None,
             station_ids=frozenset(),
         )
-        response = client.get(_PATH, params={"parameter": "discharge"})
+        response = client.get(_PATH, params={"parameter": parameter})
         assert response.status_code == 200
         assert response.json()["total"] == 0
         assert response.json()["items"] == []
 
-    def test_empty_scope_is_empty_and_not_cached(self, client: TestClient) -> None:
-        response = client.get(_PATH, params={"parameter": "discharge"})
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
+    def test_empty_scope_is_empty_and_not_cached(
+        self, client: TestClient, parameter: str
+    ) -> None:
+        response = client.get(_PATH, params={"parameter": parameter})
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert response.json()["items"] == []
@@ -129,8 +191,13 @@ class TestListLatestObservations:
     @pytest.mark.parametrize(
         "role", [AccessTokenRole.CONSUMER, AccessTokenRole.REVIEWER]
     )
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_scope_filters_before_count_and_page(
-        self, client: TestClient, fake_stores: dict[str, Any], role: AccessTokenRole
+        self,
+        client: TestClient,
+        parameter: str,
+        fake_stores: dict[str, Any],
+        role: AccessTokenRole,
     ) -> None:
         stations = [
             make_station_config(code=f"S-{i}", rng=random.Random(i)) for i in range(3)
@@ -145,7 +212,7 @@ class TestListLatestObservations:
             station_ids=frozenset(s.id for s in allowed),
         )
         response = client.get(
-            _PATH, params={"parameter": "discharge", "limit": 1, "offset": 1}
+            _PATH, params={"parameter": parameter, "limit": 1, "offset": 1}
         )
         assert response.status_code == 200
         body = response.json()
@@ -154,45 +221,65 @@ class TestListLatestObservations:
         assert body["items"][0]["observation"] is None
 
     @pytest.mark.parametrize("qc", list(QcStatus))
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_latest_qc_is_not_replaced_by_older_passed(
-        self, client: TestClient, fake_stores: dict[str, Any], qc: QcStatus
+        self,
+        client: TestClient,
+        parameter: str,
+        fake_stores: dict[str, Any],
+        qc: QcStatus,
     ) -> None:
         station = make_station_config()
         fake_stores["station_store"].store_station(station)
         older = make_observation(
+            parameter=parameter,
             station_id=station.id,
             timestamp=ensure_utc(_NOW - timedelta(hours=1)),
             rng=random.Random(10),
         )
         latest = make_observation(
-            station_id=station.id, timestamp=_NOW, qc_status=qc, rng=random.Random(11)
+            parameter=parameter,
+            station_id=station.id,
+            timestamp=_NOW,
+            qc_status=qc,
+            rng=random.Random(11),
         )
         future = make_observation(
+            parameter=parameter,
             station_id=station.id,
             timestamp=ensure_utc(_NOW + timedelta(seconds=1)),
             rng=random.Random(12),
         )
         fake_stores["obs_store"].store_observations([older, latest, future])
-        body = client.get(_PATH, params={"parameter": "discharge"}).json()
+        body = client.get(_PATH, params={"parameter": parameter}).json()
         assert body["items"][0]["observation"]["id"] == str(latest.id)
         assert body["items"][0]["observation"]["qc_status"] == qc.value
         assert body["generated_at"] == "2026-10-30T00:00:00Z"
         assert body["window_start"] == "2026-10-23T00:00:00Z"
 
     @pytest.mark.parametrize("role", list(AccessTokenRole))
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_delivery_exclusion_precedes_latest_and_keeps_null_delivery(
-        self, client: TestClient, fake_stores: dict[str, Any], role: AccessTokenRole
+        self,
+        client: TestClient,
+        parameter: str,
+        fake_stores: dict[str, Any],
+        role: AccessTokenRole,
     ) -> None:
         station = make_station_config()
         fake_stores["station_store"].store_station(station)
         older = make_observation(
+            parameter=parameter,
             station_id=station.id,
             timestamp=ensure_utc(_NOW - timedelta(hours=1)),
             rng=random.Random(20),
         )
         hidden = replace(
             make_observation(
-                station_id=station.id, timestamp=_NOW, rng=random.Random(21)
+                parameter=parameter,
+                station_id=station.id,
+                timestamp=_NOW,
+                rng=random.Random(21),
             ),
             delivery_id=DELIVERY_ID,
         )
@@ -203,26 +290,31 @@ class TestListLatestObservations:
             tenant_id=None,
             station_ids=frozenset({station.id}),
         )
-        response = client.get(_PATH, params={"parameter": "discharge"})
+        response = client.get(_PATH, params={"parameter": parameter})
         expected = hidden if role is AccessTokenRole.ADMIN else older
         assert response.json()["items"][0]["observation"]["id"] == str(expected.id)
 
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_outside_window_and_held_values_are_not_exposed(
-        self, client: TestClient, fake_stores: dict[str, Any]
+        self, client: TestClient, parameter: str, fake_stores: dict[str, Any]
     ) -> None:
         station = make_station_config()
         fake_stores["station_store"].store_station(station)
         old = make_observation(
+            parameter=parameter,
             station_id=station.id,
             timestamp=ensure_utc(_NOW - timedelta(days=8)),
             rng=random.Random(30),
         )
         held = make_observation(
-            station_id=station.id, timestamp=_NOW, rng=random.Random(31)
+            parameter=parameter,
+            station_id=station.id,
+            timestamp=_NOW,
+            rng=random.Random(31),
         )
         fake_stores["obs_store"].store_observations([old, held])
         fake_stores["obs_store"].hold_unit_observation(held.id, "test-hold")
-        response = client.get(_PATH, params={"parameter": "discharge"})
+        response = client.get(_PATH, params={"parameter": parameter})
         assert response.json()["items"][0]["observation"] is None
 
     @pytest.mark.parametrize(
@@ -230,7 +322,7 @@ class TestListLatestObservations:
         [
             {},
             {"parameter": ""},
-            {"parameter": "water_level"},
+            {"parameter": "temperature"},
             {"parameter": "discharge", "source": "invalid"},
             {"parameter": "discharge", "limit": 201},
             {"parameter": "discharge", "observation_hours": 721},

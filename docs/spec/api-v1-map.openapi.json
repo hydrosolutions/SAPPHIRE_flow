@@ -2328,7 +2328,10 @@
             "type": "integer"
           },
           "parameter": {
-            "const": "discharge",
+            "enum": [
+              "discharge",
+              "water_level"
+            ],
             "title": "Parameter",
             "type": "string"
           },
@@ -4467,7 +4470,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.3"
+    "version": "2.4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4669,7 +4672,7 @@
     },
     "/api/v1/observations/latest": {
       "get": {
-        "description": "Latest visible discharge observation per scoped station within an inclusive window ending at generated_at. All scoped stations count, including those without readings; UUID-sorted pages. Null means no visible reading in this window, not no history. A MISSING observation remains an object with null value and its QC status. No QC-pass filter or automatic freshness classification. measured_parameters describes station configuration; source selects one observation source. Consumer/reviewer delivery restrictions apply before latest selection; admin includes deliveries. All responses are no-store.",
+        "description": "Latest visible observation of the requested parameter per scoped station within an inclusive window ending at generated_at. All scoped stations count, including those without readings; UUID-sorted pages. Null means no visible reading in this window, not no history. A MISSING observation remains an object with null value and its QC status. No QC-pass filter or automatic freshness classification. measured_parameters describes station configuration; source selects one observation source. Consumer/reviewer delivery restrictions apply before latest selection; admin includes deliveries. All responses are no-store.",
         "operationId": "list_latest_observations_api_v1_observations_latest_get",
         "parameters": [
           {
@@ -4677,7 +4680,10 @@
             "name": "parameter",
             "required": true,
             "schema": {
-              "const": "discharge",
+              "enum": [
+                "discharge",
+                "water_level"
+              ],
               "title": "Parameter",
               "type": "string"
             }

@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.3"
+MAP_CONTRACT_VERSION = "2.4"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -100,7 +100,8 @@ _404_PATHS: frozenset[str] = frozenset(
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/observations/latest"): (
-        "Latest visible discharge observation per scoped station within an "
+        "Latest visible observation of the requested parameter per scoped station "
+        "within an "
         "inclusive window ending at generated_at. All scoped stations count, "
         "including those without readings; UUID-sorted pages. Null means no "
         "visible reading in this window, not no history. A MISSING observation "

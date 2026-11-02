@@ -560,8 +560,9 @@ class TestTwoStatusRead:
 
 
 class TestFetchLatestObservations:
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_inclusive_window_source_parameter_and_missing(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, parameter: str
     ) -> None:
         from dataclasses import replace
         from datetime import timedelta
@@ -570,16 +571,29 @@ class TestFetchLatestObservations:
         absent = _seed_station(db_connection, rng_seed=802, code="LATEST-802")
         store = PgObservationStore(db_connection)
         rng = random.Random(801)
-        older = make_observation(station_id=sid, timestamp=_utc(hour=0), rng=rng)
-        missing = make_observation(
-            station_id=sid, timestamp=_utc(hour=1), qc_status=QcStatus.MISSING, rng=rng
+        older = make_observation(
+            parameter=parameter, station_id=sid, timestamp=_utc(hour=0), rng=rng
         )
-        future = make_observation(station_id=sid, timestamp=_utc(hour=2), rng=rng)
+        missing = make_observation(
+            parameter=parameter,
+            station_id=sid,
+            timestamp=_utc(hour=1),
+            qc_status=QcStatus.MISSING,
+            rng=rng,
+        )
+        future = make_observation(
+            parameter=parameter, station_id=sid, timestamp=_utc(hour=2), rng=rng
+        )
         other_parameter = make_observation(
-            station_id=sid, timestamp=_utc(hour=1), parameter="water_level", rng=rng
+            station_id=sid,
+            timestamp=_utc(hour=1),
+            parameter="water_level" if parameter == "discharge" else "discharge",
+            rng=rng,
         )
         other_source = replace(
-            make_observation(station_id=sid, timestamp=_utc(hour=1), rng=rng),
+            make_observation(
+                parameter=parameter, station_id=sid, timestamp=_utc(hour=1), rng=rng
+            ),
             source=ObservationSource.MANUAL_IMPORT,
         )
         store.store_observations(
@@ -587,7 +601,7 @@ class TestFetchLatestObservations:
         )
         result = store.fetch_latest_observations(
             [sid, absent],
-            "discharge",
+            parameter,
             _utc(hour=0),
             _utc(hour=1),
             source=ObservationSource.MEASURED,
@@ -598,15 +612,16 @@ class TestFetchLatestObservations:
         assert result[absent] is None
         result = store.fetch_latest_observations(
             [sid],
-            "discharge",
+            parameter,
             ensure_utc(_utc(hour=2) + timedelta(seconds=1)),
             _utc(hour=3),
             source=ObservationSource.MEASURED,
         )
         assert result[sid] is None
 
+    @pytest.mark.parametrize("parameter", ["discharge", "water_level"])
     def test_null_safe_delivery_filter_before_limit(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, parameter: str
     ) -> None:
         from dataclasses import replace
 
@@ -615,15 +630,19 @@ class TestFetchLatestObservations:
         sid = _seed_station(db_connection, rng_seed=803, code="LATEST-803")
         store = PgObservationStore(db_connection)
         rng = random.Random(803)
-        ordinary = make_observation(station_id=sid, timestamp=_utc(hour=0), rng=rng)
+        ordinary = make_observation(
+            parameter=parameter, station_id=sid, timestamp=_utc(hour=0), rng=rng
+        )
         delivery = replace(
-            make_observation(station_id=sid, timestamp=_utc(hour=1), rng=rng),
+            make_observation(
+                parameter=parameter, station_id=sid, timestamp=_utc(hour=1), rng=rng
+            ),
             delivery_id=DELIVERY_ID,
         )
         store.store_observations([ordinary, delivery])
         scoped = store.fetch_latest_observations(
             [sid],
-            "discharge",
+            parameter,
             _utc(hour=0),
             _utc(hour=1),
             source=ObservationSource.MEASURED,
@@ -631,7 +650,7 @@ class TestFetchLatestObservations:
         )
         admin = store.fetch_latest_observations(
             [sid],
-            "discharge",
+            parameter,
             _utc(hour=0),
             _utc(hour=1),
             source=ObservationSource.MEASURED,
