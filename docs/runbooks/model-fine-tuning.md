@@ -26,6 +26,44 @@ assigned, or served automatically. A person decides that separately.
 4. **Training data for the target stations** in the deployment database, over the
    training window you choose.
 
+## Aquacast artifact compatibility after a dependency update
+
+The current immutable Aquacast source pin declares 0.1.376; ForecastInterface
+remains at 0.1.20. This is a merged Git source pin, not evidence of an upstream
+published wheel or tag. The existing Rich 14 compatibility override remains an
+unresolved exception to Aquacast's declared Rich >=15 requirement.
+
+Aquacast's artifact loader, reached through the SAP shim, now uses restricted
+loading on CPU, with no unrestricted fallback. Qualify the exact stored bytes for every ACTIVE assignment before
+model execution with a new image. Deploying the image affects existing ACTIVE
+artifacts even without a new import. A construction test alone is insufficient.
+
+- Compare declarations, effective settings and fixed-input CPU outputs against
+  the previous pin. Two newly added training settings,
+  `training_supervision_file` and `training_samples_per_epoch`, default to `None`;
+  unchanged prior fields do not make the complete parsed configurations identical.
+- Test portable export/reload separately from cross-version output comparison.
+  Within-version determinism is not a promise of cross-version bitwise equality.
+- Keep trusted producer, portable-export and stored-byte digests separate. The
+  importer preserves supplied bytes; it does not normalize training checkpoints.
+- Export clears the known daily-encoder checkpoint path in a copy, not in the
+  original. Bundle reconstruction uses embedded weights. This is not a general
+  path scrubber or a guarantee of donor-independent training-pipeline resume.
+- The scoped Torch safe-global registry is process-global. Require isolated,
+  non-overlapping loading across forecast, hindcast, import, onboarding and
+  training flows. Existing grants for the same types also overlap. Verify the
+  initial approved registry is restored; a sequential local test is not proof of
+  deployed process isolation. Do not add a broad allowlist or unsafe fallback.
+- Check each actual artifact's posterior. Lazy Laplace import does not prove
+  first-use availability. Restricted loading does not establish provenance or
+  resource safety.
+- Roll back an image only if no new-version artifacts were created/promoted, or
+  all such artifacts are qualified against the previous runtime.
+
+The Aquacast-extra artifact-policy tests use synthetic bundles, not private
+checkpoints. Run them with `pytest -rs` and require no relevant skips. Real
+ACTIVE-artifact qualification and deployment approval remain separate gates.
+
 ## The run parameters
 
 The `train-models` flow takes these (all per run, all recorded with the artifact):
