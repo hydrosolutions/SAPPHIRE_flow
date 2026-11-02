@@ -39,7 +39,7 @@ consumer, reviewer or admin bearer token. It returns `items`, `total`, `limit`,
 - `source`: one ObservationSource value, default `measured`.
 - `limit`: default200, maximum200; `offset`>=0. All scoped stations count, sorted
   by UUID before pagination, including stations without a visible reading.
-- `parameter` currently accepts only `discharge`. Invalid/missing query values
+- `parameter` accepts `discharge` and `water_level` (contract 2.4). Invalid/missing query values
   return FastAPI422 (`detail` list), not the ordinary HTTP error envelope.
 - Null means no visible record in this window. It does not reveal hidden history
   or assert that the station has never measured this parameter. A latest MISSING
@@ -51,7 +51,9 @@ consumer, reviewer or admin bearer token. It returns `items`, `total`, `limit`,
   before selection. Admin retains existing delivery visibility. Observation reads
   follow the existing observation route, not the forecast publication gate.
 - Success, validation, authentication and internal-error responses are `no-store`.
-  This backend capability does not expand the current frontend no-fleet agreement.
+  Nepal monitoring may request one bounded latest-water-level summary (720 hours),
+  then a six-hour history only for the selected station. This does not authorize
+  fleet history downloads. Historical visibility does not prove ingestion is current.
 
 ## Snapshot contract export
 

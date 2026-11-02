@@ -212,7 +212,7 @@ def list_stations(
 
 @router.get("/observations/latest")
 def list_latest_observations(
-    parameter: Literal["discharge"] = Query(...),
+    parameter: Literal["discharge", "water_level"] = Query(...),
     source: ObservationSource = Query(ObservationSource.MEASURED),
     observation_hours: int = Query(168, ge=1, le=720),
     limit: int = Query(200, ge=1, le=200),

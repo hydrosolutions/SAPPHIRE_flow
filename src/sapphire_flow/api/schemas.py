@@ -122,7 +122,7 @@ class LatestStationObservationResponse(BaseModel):
 
 
 class LatestObservationsResponse(PaginatedResponse[LatestStationObservationResponse]):
-    parameter: Literal["discharge"]
+    parameter: Literal["discharge", "water_level"]
     source: ObservationSource
     window_start: datetime
     generated_at: datetime
