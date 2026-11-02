@@ -39,11 +39,39 @@ class TestFetchRejectedForecast:
                     ),
                 ),
             )
+        if purpose is ForecastDataUse.PROVISIONAL_RATING:
+            import polars as pl
+
+            from sapphire_flow.services.rating_inputs import merge_rating_days
+            from tests.unit.services.test_rating_inputs import NOW, samples
+
+            _, lineage, _ = merge_rating_days(
+                pl.DataFrame(),
+                samples(),
+                issue_time=NOW + timedelta(days=1),
+                weather_cycle_time=NOW + timedelta(days=1),
+            )
+            assert lineage is not None and lineage.rating_input is not None
+            lineage = replace(
+                lineage,
+                rating_input=replace(
+                    lineage.rating_input,
+                    artifact_id=entry.payload.model_artifact_id,
+                ),
+            )
+            entry = replace(
+                entry,
+                payload=replace(
+                    entry.payload,
+                    issued_at=NOW + timedelta(days=1),
+                    input_lineage=lineage,
+                ),
+            )
         store.write_batch([entry], abandon=threading.Event())
         row = store.fetch_rejected_forecasts(
             entry.payload.station_id,
-            _NOW - timedelta(days=1),
-            _NOW + timedelta(days=1),
+            entry.payload.issued_at - timedelta(days=1),
+            entry.payload.issued_at + timedelta(days=1),
         )[0][0]
         assert store.fetch_rejected_forecast(row.id) == row
         assert store.fetch_rejected_forecast(RejectedForecastId(uuid4())) is None

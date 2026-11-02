@@ -235,6 +235,7 @@ def _patch_station_assembler(
         forecast_horizon_steps: int,
         time_step: timedelta,
         weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+        rating_inputs: object | None = None,
     ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
         calls.append((station_id, nwp_source))
         return results[station_id]
@@ -2865,3 +2866,73 @@ def test_unfrozen_missing_artifact_remains_an_ordinary_empty_result() -> None:
     assert outcome.results == {}
     assert outcome.failure is None
     assert model.predict_calls == 0
+
+
+class TestNativeRatingGroupPurpose:
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_native_dispatch_keeps_purpose_and_actual_artifact(
+        self, failed: bool
+    ) -> None:
+        from sapphire_flow.types.enums import ForecastDataUse
+        from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+        from sapphire_flow.types.rating_input_lineage import (
+            RatingDaySupport,
+            RatingInputLineage,
+        )
+
+        sid = StationId(uuid4())
+        group = _make_group(sid)
+        inputs = _make_group_inputs(group)
+        store = FakeModelArtifactStore()
+        artifact_id = _seed_group_artifact(store, group)
+        day = _ISSUE - timedelta(days=1)
+        lineage = ForecastInputLineage(
+            transformation_versions=("native-rating-linear-endpoints-v1",),
+            rating_input=RatingInputLineage(
+                issue_time=_ISSUE,
+                weather_cycle_time=_CYCLE,
+                days=(
+                    RatingDaySupport(
+                        day=day,
+                        fingerprints=("a" * 64,),
+                        accepted=1,
+                        rejected=0,
+                        extrapolated=1,
+                        assessed=0,
+                        unassessed=1,
+                        first=day,
+                        last=day,
+                        warnings=("qc_unassessed", "extrapolated_above"),
+                    ),
+                ),
+            ),
+        )
+        metadata = {
+            sid: replace(
+                _make_metadata(1.0),
+                input_lineage=lineage,
+                warm_up_source=WarmUpSource.COLD_START,
+                warm_up_state_age_hours=None,
+                observation_qc_coverage=ObservationQcCoverage.CONTAINS_UNCHECKED,
+            )
+        }
+        model = _BatchGroupModel(
+            {sid: ({"discharge": _make_ensemble(sid, 10.0)}, None)}
+        )
+        outcome = _call_run_group_forecast_outcome(
+            group=group,
+            group_inputs=inputs,
+            metadata_by_station=metadata,
+            model=model,
+            artifact_store=store,
+            qc_checker=_QcChecker(sid if failed else None),
+            state_policy=service.GroupStatePolicy.STATELESS_ONLY,
+        )
+        result = outcome.rejected[0] if failed else outcome.results[sid].forecasts[0]
+        assert result.data_use is ForecastDataUse.PROVISIONAL_RATING
+        assert result.input_lineage.rating_input.artifact_id == artifact_id
+        assert result.input_lineage.rating_input.days == lineage.rating_input.days
+        assert model.predict_calls == 1
+        if not failed:
+            assert outcome.results[sid].new_state is None
+            assert result.rating_curve_id is None

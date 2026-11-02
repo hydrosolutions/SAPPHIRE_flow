@@ -185,6 +185,9 @@ def test_rejection_browser_projects_only_standard_rows(
             "ON rejected_forecasts"
         )
     )
+    from tests.integration.store.test_native_rating_forecasts import native_pair
+
+    _, native = native_pair(db_connection)
     for purpose in ForecastDataUse:
         lineage = (
             None
@@ -194,6 +197,20 @@ def test_rejection_browser_projects_only_standard_rows(
                 transformation_versions=("v1",),
             )
         )
+        current_entry = entry
+        if purpose is ForecastDataUse.PROVISIONAL_RATING:
+            current_entry = _entry(
+                station_id=native.station_id,
+                model_id=native.model_id,
+                issued_at=native.issued_at,
+            )
+            current_entry = replace(
+                current_entry,
+                payload=replace(
+                    current_entry.payload, model_artifact_id=native.model_artifact_id
+                ),
+            )
+            lineage = native.input_lineage
         store = PgRejectedForecastStore(
             db_connection,
             transaction_factory=savepoint_factory(db_connection),
@@ -202,9 +219,9 @@ def test_rejection_browser_projects_only_standard_rows(
         store.write_batch(
             [
                 replace(
-                    entry,
+                    current_entry,
                     payload=replace(
-                        entry.payload, data_use=purpose, input_lineage=lineage
+                        current_entry.payload, data_use=purpose, input_lineage=lineage
                     ),
                 )
             ],
@@ -222,6 +239,7 @@ def test_rejection_browser_projects_only_standard_rows(
             assert response.status_code == 200
             assert str(identities["standard"]) in response.text
             assert str(identities["expired_rating_test"]) not in response.text
+            assert str(identities["provisional_rating"]) not in response.text
             assert ">input_lineage<" not in response.text
             assert "a" * 64 not in response.text
     finally:

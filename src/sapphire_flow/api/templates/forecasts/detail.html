@@ -2,6 +2,10 @@
 {% block title %}Forecast {{ forecast.id | string | truncate(8, True, '...') }}{% endblock %}
 {% block content %}
 <h2>Forecast Detail</h2>
+{% if data_use == "provisional_rating" %}
+<p><span class="badge badge-yellow">PROVISIONAL</span> Not for publication or alerts.</p>
+<ul>{% for warning in forecast.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+{% endif %}
 
 <div class="card" style="margin-bottom:2rem;">
   <table>
@@ -55,7 +59,7 @@
 
 <script>
 const OBS_WINDOW_DAYS = 7;
-fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
+fetch("/api/v1/forecasts/{{ forecast.id }}/data.json?data_use={{ data_use }}")
   .then(r => r.json())
   .then(data => {
     const traces = [];

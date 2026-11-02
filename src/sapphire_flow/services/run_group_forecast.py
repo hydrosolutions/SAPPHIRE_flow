@@ -37,6 +37,7 @@ from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    ForecastDataUse,
     ForecastStatus,
     FutureWeatherPolicy,
     ModelArtifactStatus,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
     from sapphire_flow.services.operational_inputs import OperationalInputMetadata
+    from sapphire_flow.services.rating_inputs import NativeRatingInputs
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         ClimBaseline,
@@ -361,6 +363,7 @@ def assemble_group_operational_inputs(
     forecast_horizon_steps: int,
     time_step: timedelta,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    rating_inputs: NativeRatingInputs | None = None,
 ) -> tuple[GroupModelInputs, dict[StationId, OperationalInputMetadata]] | None:
     assembly = assemble_group_operational_inputs_outcome(
         group=group,
@@ -379,6 +382,7 @@ def assemble_group_operational_inputs(
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
         weather_policy=weather_policy,
+        rating_inputs=rating_inputs,
     )
     if assembly.inputs is None:
         return None
@@ -403,6 +407,7 @@ def assemble_group_operational_inputs_outcome(
     forecast_horizon_steps: int,
     time_step: timedelta,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    rating_inputs: NativeRatingInputs | None = None,
 ) -> GroupInputAssembly:
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable: list[GroupMemberInputIssue] = []
@@ -442,6 +447,7 @@ def assemble_group_operational_inputs_outcome(
                 forecast_horizon_steps=forecast_horizon_steps,
                 time_step=time_step,
                 weather_policy=weather_policy,
+                rating_inputs=rating_inputs,
             )
         except StoreError:
             raise
@@ -636,6 +642,15 @@ def _build_station_result(
     # parameter has failed, an error anywhere in a REMAINING parameter's
     # block is logged and that parameter is recorded QC_UNCHECKED — never
     # escaping this function (it never drops the whole group).
+    lineage = input_metadata.input_lineage
+    data_use = ForecastDataUse.STANDARD
+    if lineage is not None:
+        if lineage.rating_input is None:
+            raise ValueError("native group received unknown input lineage")
+        lineage = replace(
+            lineage, rating_input=replace(lineage.rating_input, artifact_id=artifact_id)
+        )
+        data_use = ForecastDataUse.PROVISIONAL_RATING
     if any(e.model_id not in (None, assignment.model_id) for e in ensembles.values()):
         raise ModelOutputError("group output model identity differs from assignment")
     ensembles = {
@@ -709,6 +724,8 @@ def _build_station_result(
                 issued_at=group_inputs.issue_time,
                 group_id=assignment.group_id,
                 parameters=tuple(rejected_parameters),
+                data_use=data_use,
+                input_lineage=lineage,
             ),
         )
 
@@ -775,6 +792,8 @@ def _build_station_result(
                 input_quality=input_quality,
                 input_quality_flags=input_quality_flags,
                 evidence=evidence,
+                data_use=data_use,
+                input_lineage=lineage,
             )
         )
 
@@ -855,6 +874,14 @@ def run_group_forecast(
     frozen_artifact_id: ArtifactId | None = None,
     state_policy: GroupStatePolicy = GroupStatePolicy.PRESERVE,
 ) -> GroupForecastOutcome:
+    if (
+        any(
+            metadata.input_lineage is not None
+            for metadata in metadata_by_station.values()
+        )
+        and state_policy is not GroupStatePolicy.STATELESS_ONLY
+    ):
+        raise ConfigurationError("provisional rating group requires STATELESS_ONLY")
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable = list(unavailable_members)
     serviceable_ids: list[StationId] = []

@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlalchemy as sa  # noqa: TCH002 — used in function bodies via typed params
 
 from sapphire_flow.db.engine import create_engine_from_env as create_engine_from_env
+from sapphire_flow.types.enums import ForecastDataUse
 
 # _db.py → flows/ → sapphire_flow/ → src/ → repo_root
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -20,7 +21,9 @@ def run_migrations(engine: sa.Engine) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
+def make_pg_stores(
+    conn: sa.Connection, *, data_use: ForecastDataUse = ForecastDataUse.STANDARD
+) -> dict[str, object]:
     from sapphire_flow.config.paths import resolve_artifact_dir
     from sapphire_flow.store.alert_store import PgAlertStore
     from sapphire_flow.store.audit_log_store import PgAuditLogStore
@@ -43,6 +46,10 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.observation_store import PgObservationStore
     from sapphire_flow.store.parameter_store import PgParameterStore
     from sapphire_flow.store.pipeline_health_store import PgPipelineHealthStore
+    from sapphire_flow.store.rating_derived_store import (
+        PgRatingDerivedStore,
+        rating_transaction_factory,
+    )
     from sapphire_flow.store.recap_gateway_polygon_store import (
         RecapGatewayPolygonStore,
     )
@@ -60,6 +67,9 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     artifact_dir = resolve_artifact_dir()
 
     return {
+        "rating_derived_store": PgRatingDerivedStore(
+            rating_transaction_factory(conn.engine.url)
+        ),
         "alert_store": PgAlertStore(conn),
         "basin_store": PgBasinStore(conn),
         "station_store": PgStationStore(conn),
@@ -77,7 +87,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "hindcast_store": PgHindcastStore(conn),
         "skill_store": PgSkillStore(conn),
         "weather_forecast_store": PgWeatherForecastStore(conn),
-        "forecast_store": PgForecastStore(conn),
+        "forecast_store": PgForecastStore(conn, data_use=data_use),
         "model_state_store": PgModelStateStore(conn),
         "parameter_store": PgParameterStore(conn),
         "pipeline_health_store": PgPipelineHealthStore(conn),
@@ -96,6 +106,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         # must never hold or break the flow's shared connection (D5).
         "rejected_forecast_store": PgRejectedForecastStore(
             conn,
+            data_use=data_use,
             transaction_factory=rejected_capture_transaction_factory(conn.engine.url),
         ),
     }
@@ -103,10 +114,12 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
 
 def setup_production_stores(
     database_url: str,
+    *,
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD,
 ) -> tuple[sa.Connection, dict[str, object]]:
     engine = sa.create_engine(database_url, pool_pre_ping=True)
     # Migrations are handled by the init container (docker-compose).
     # For local dev, run: alembic upgrade head
     conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-    stores = make_pg_stores(conn)
+    stores = make_pg_stores(conn, data_use=data_use)
     return conn, stores

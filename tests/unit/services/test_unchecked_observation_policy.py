@@ -621,6 +621,8 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     # QC_CONTEXT by-id and batch wrappers preserve bounded, full-cohort reads.
     "src/sapphire_flow/store/observation_store.py": ("<unfiltered>", "<unfiltered>"),
     "src/sapphire_flow/services/operational_inputs.py": (
+        # Native lineage counts rejected measured Q; never model input values.
+        "(QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING)",
         "MODEL_INPUT_QC_STATUSES",
         "MODEL_INPUT_QC_STATUSES",
     ),
@@ -632,6 +634,9 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     # Locked evidence revalidation, not model input. Strict reconversion rejects
     # unchecked/nonpassing rows and missing generation or passing-rule evidence.
     "src/sapphire_flow/store/provisional_discharge_store.py": ("<unfiltered>",),
+    # Isolated native derivation records rejected sources and unassessed flags;
+    # it does not write ordinary Q or certify QC.
+    "src/sapphire_flow/store/rating_derived_store.py": ("<unfiltered>",),
 }
 
 

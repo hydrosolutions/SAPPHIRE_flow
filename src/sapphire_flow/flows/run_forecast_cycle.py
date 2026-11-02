@@ -59,6 +59,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AlertEligibility,
     ForecastCycleHealth,
+    ForecastDataUse,
     ModelAssignmentStatus,
     NwpCycleSource,
     PipelineCheckType,
@@ -279,7 +280,7 @@ def _bind_rating_curve(
             fc,
             evidence=evidence.with_thresholds(tuple(thresholds.get(fc.station_id, []))),
         )
-    if active_curves is None:
+    if active_curves is None or fc.data_use is ForecastDataUse.PROVISIONAL_RATING:
         return fc
     curve = active_curves.get(fc.station_id)
     if curve is None:
@@ -2472,8 +2473,18 @@ def run_forecast_cycle_flow(
     id_gen: object | None = None,
     daily_forecast_store: object | None = None,
     daily_forecast_writer: object | None = None,
+    data_use: ForecastDataUse = ForecastDataUse.STANDARD,
+    rating_inputs: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
+    if data_use not in (ForecastDataUse.STANDARD, ForecastDataUse.PROVISIONAL_RATING):
+        raise ConfigurationError(
+            "native forecast cycle does not support this data purpose"
+        )
+    if data_use is ForecastDataUse.STANDARD and rating_inputs is not None:
+        raise ConfigurationError(
+            "standard cycle cannot receive provisional rating inputs"
+        )
 
     created_http_client: Any = None
     rejected_buffer: list[RejectedForecastEntry] = []
@@ -2527,7 +2538,13 @@ def run_forecast_cycle_flow(
             from sapphire_flow.flows._db import setup_production_stores
 
             database_url = os.environ["DATABASE_URL"]
-            _conn, stores = setup_production_stores(database_url)
+            _conn, stores = (
+                setup_production_stores(database_url)
+                if data_use is ForecastDataUse.STANDARD
+                else setup_production_stores(database_url, data_use=data_use)
+            )
+            if data_use is ForecastDataUse.PROVISIONAL_RATING and rating_inputs is None:
+                rating_inputs = stores["rating_derived_store"]
             station_store = cast("StationStore", stores["station_store"])
             obs_store = cast("ObservationStore", stores["obs_store"])
             weather_forecast_store = cast(
@@ -2561,6 +2578,43 @@ def run_forecast_cycle_flow(
                 from sapphire_flow.config.deployment import DeploymentConfig
 
                 config = DeploymentConfig(max_retention_days=600)
+
+        if data_use is ForecastDataUse.PROVISIONAL_RATING:
+            from sapphire_flow.config.dhm import DhmConfig
+            from sapphire_flow.flows.ingest_observations import load_adapter_config
+            from sapphire_flow.services.rating_inputs import (
+                NativeRatingInputs,
+                RatingCurrentReader,
+            )
+
+            if not config.provisional_ratings:
+                raise ConfigurationError(
+                    "provisional rating cycle requires explicit scoped opt-ins"
+                )
+            if not isinstance(rating_inputs, NativeRatingInputs):
+                dhm = load_adapter_config()
+                if not isinstance(dhm, DhmConfig) or rating_inputs is None:
+                    raise ConfigurationError(
+                        "provisional rating cycle requires native DHM reader"
+                    )
+                rating_inputs = NativeRatingInputs(
+                    reader=cast("RatingCurrentReader", rating_inputs),
+                    dhm=dhm,
+                    bindings=tuple(
+                        item.to_domain() for item in config.provisional_ratings
+                    ),
+                )
+            if getattr(forecast_store, "data_use", None) is not data_use:
+                raise ConfigurationError(
+                    "provisional rating cycle requires purpose-scoped forecast store"
+                )
+            if (
+                rejected_forecast_store is not None
+                and getattr(rejected_forecast_store, "data_use", None) is not data_use
+            ):
+                raise ConfigurationError(
+                    "provisional rating cycle requires purpose-scoped rejection store"
+                )
 
         config_path_for_adapter = os.environ.get("SAPPHIRE_CONFIG")
         # The grid_extractor selector is honored whether or not an adapter is
@@ -2688,6 +2742,22 @@ def run_forecast_cycle_flow(
         # fills a gap and never overrides a deliberate configuration.
         models = _with_group_station_code_resolvers(models, station_store)
 
+        if data_use is ForecastDataUse.PROVISIONAL_RATING:
+            from sapphire_flow.protocols.forecast_model import GroupForecastModel
+
+            enabled_models = {
+                ModelId(model_id)
+                for binding in config.provisional_ratings
+                for model_id in binding.model_ids
+            }
+            if any(
+                not isinstance(models.get(model_id), GroupForecastModel)
+                for model_id in enabled_models
+            ):
+                raise ConfigurationError(
+                    "provisional rating cycle requires installed native group models"
+                )
+
         build_grid = nwp_enabled and config.nwp_grid_archive_base_path is not None
         if build_grid:
             if grid_store is None:
@@ -2733,18 +2803,25 @@ def run_forecast_cycle_flow(
 
         daily_preflight_errors: list[str] = []
         try:
-            daily_execution = prepare_daily_execution(
-                config=config,
-                models=models,
-                group_store=cast("StationGroupStore | None", group_store),
-                artifact_store=artifact_store,
-                store=cast("DailyRuntimeStore | None", daily_forecast_store),
-                writer=cast("CommittedForecastWriter | None", daily_forecast_writer),
-                rejected_writer=cast(
-                    "CommittedRejectedForecastWriter | None", rejected_forecast_store
-                ),
-                clock=clock,
-                id_gen=id_gen,
+            daily_execution = (
+                prepare_daily_execution(
+                    config=config,
+                    models=models,
+                    group_store=cast("StationGroupStore | None", group_store),
+                    artifact_store=artifact_store,
+                    store=cast("DailyRuntimeStore | None", daily_forecast_store),
+                    writer=cast(
+                        "CommittedForecastWriter | None", daily_forecast_writer
+                    ),
+                    rejected_writer=cast(
+                        "CommittedRejectedForecastWriter | None",
+                        rejected_forecast_store,
+                    ),
+                    clock=clock,
+                    id_gen=id_gen,
+                )
+                if data_use is ForecastDataUse.STANDARD
+                else None
             )
         except Exception as exc:
             daily_execution = None
@@ -2771,7 +2848,7 @@ def run_forecast_cycle_flow(
             )
             log.info("forecast_cycle.no_operational_stations")
             _emit_forecast_freshness_record(
-                pipeline_health_store,
+                pipeline_health_store if data_use is ForecastDataUse.STANDARD else None,
                 cycle_time_param=cycle_time,
                 resolved_cycle_time=resolved_cycle_time,
                 forecasts_stored=0,
@@ -2961,7 +3038,9 @@ def run_forecast_cycle_flow(
                 StoreError,
             ) as exc:
                 emit_freshness_on_fatal_exit(
-                    pipeline_health_store,
+                    pipeline_health_store
+                    if data_use is ForecastDataUse.STANDARD
+                    else None,
                     cycle_time_param=cycle_time,
                     resolved_cycle_time=resolved_cycle_time,
                     forecasts_stored=0,
@@ -3063,7 +3142,9 @@ def run_forecast_cycle_flow(
                     "forecast_cycle.nwp_fetch_failed_aborting", reason=abort_reason
                 )
                 _emit_forecast_freshness_record(
-                    pipeline_health_store,
+                    pipeline_health_store
+                    if data_use is ForecastDataUse.STANDARD
+                    else None,
                     cycle_time_param=cycle_time,
                     resolved_cycle_time=resolved_cycle_time,
                     forecasts_stored=0,
@@ -3147,6 +3228,7 @@ def run_forecast_cycle_flow(
             build_superset_requirements,
         )
         from sapphire_flow.services.run_group_forecast import (
+            GroupStatePolicy,
             assemble_group_operational_inputs_outcome,
             discover_group_runs,
             run_group_forecast,
@@ -3171,6 +3253,9 @@ def run_forecast_cycle_flow(
         refused_forecasts: set[tuple[StationId, ModelId, str]] = set()
 
         for station in operational:
+            if data_use is ForecastDataUse.PROVISIONAL_RATING:
+                # The current opt-in model is GROUP-scoped; keep native group dispatch.
+                continue
             sid = station.id
             if sid in failed_station_ids:
                 # Already recorded as failed during the up-front forecast-binding
@@ -3779,7 +3864,7 @@ def run_forecast_cycle_flow(
             group_produced_pairs: set[tuple[StationId, ModelId]] = set()
             for group, model_id in discover_group_runs(models, group_store):  # type: ignore[arg-type]
                 try:
-                    if reserves_daily_group(
+                    if data_use is ForecastDataUse.STANDARD and reserves_daily_group(
                         config=config,
                         group=group,
                         model_id=model_id,
@@ -3892,6 +3977,9 @@ def run_forecast_cycle_flow(
                                 model.data_requirements.forecast_horizon_steps
                             ),
                             time_step=assignment.time_step,
+                            rating_inputs=cast(
+                                "NativeRatingInputs | None", rating_inputs
+                            ),
                         )
                     except StoreError:
                         raise
@@ -3930,6 +4018,9 @@ def run_forecast_cycle_flow(
                         id_gen=uuid4,
                         rng=rng,  # type: ignore[arg-type]
                         water_level_datums_masl=water_level_datums_masl,
+                        state_policy=GroupStatePolicy.STATELESS_ONLY
+                        if data_use is ForecastDataUse.PROVISIONAL_RATING
+                        else GroupStatePolicy.PRESERVE,
                     )
                     for rejected_payload in group_outcome.rejected:
                         rejected_buffer.append(
@@ -3983,7 +4074,9 @@ def run_forecast_cycle_flow(
                                     error=str(exc),
                                 )
                                 _emit_forecast_freshness_record(
-                                    pipeline_health_store,
+                                    pipeline_health_store
+                                    if data_use is ForecastDataUse.STANDARD
+                                    else None,
                                     cycle_time_param=cycle_time,
                                     resolved_cycle_time=resolved_cycle_time,
                                     forecasts_stored=forecasts_stored,
@@ -4097,7 +4190,11 @@ def run_forecast_cycle_flow(
 
         # --- Phase C: alert checking ---
         alerts_checked = False
-        if config.enable_forecast_alerts and alert_eligible_ensembles:
+        if (
+            data_use is ForecastDataUse.STANDARD
+            and config.enable_forecast_alerts
+            and alert_eligible_ensembles
+        ):
             from sapphire_flow.services.alert_checker import check_station_alerts
 
             alert_t0 = time.perf_counter()
@@ -4122,7 +4219,7 @@ def run_forecast_cycle_flow(
         total_ms = round((time.perf_counter() - flow_t0) * 1000, 1)
 
         _emit_forecast_freshness_record(
-            pipeline_health_store,
+            pipeline_health_store if data_use is ForecastDataUse.STANDARD else None,
             cycle_time_param=cycle_time,
             resolved_cycle_time=resolved_cycle_time,
             forecasts_stored=forecasts_stored,

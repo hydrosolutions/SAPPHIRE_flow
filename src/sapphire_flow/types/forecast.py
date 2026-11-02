@@ -86,9 +86,22 @@ class OperationalForecast:
     def __post_init__(self) -> None:
         if not isinstance(cast("object", self.data_use), ForecastDataUse):
             raise ValueError("forecast data use must be typed")
-        if self.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
+        if self.data_use is ForecastDataUse.PROVISIONAL_RATING:
+            if self.input_lineage is None or self.input_lineage.rating_input is None:
+                raise ValueError(
+                    "provisional rating forecast requires rating input lineage"
+                )
+            if self.rating_curve_id is not None:
+                raise ValueError(
+                    "provisional source curves belong only in input lineage"
+                )
+        elif self.data_use is ForecastDataUse.EXPIRED_RATING_TEST:
             if not isinstance(self.input_lineage, ForecastInputLineage):
                 raise ValueError("test forecast requires input lineage")
+            if self.input_lineage.rating_input is not None:
+                raise ValueError(
+                    "expired test forecast cannot carry rating input lineage"
+                )
         elif self.input_lineage is not None:
             raise ValueError("standard forecast cannot carry test input lineage")
 

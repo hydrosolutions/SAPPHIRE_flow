@@ -2,6 +2,7 @@
 {% block title %}Forecasts — SAPPHIRE Flow{% endblock %}
 {% block content %}
 <h2>Forecasts</h2>
+{% if data_use == "provisional_rating" %}<p><span class="badge badge-yellow">PROVISIONAL</span> Not for publication or alerts.</p>{% endif %}
 
 {% if not has_forecasts %}
 <p class="muted">No forecasts table found. Forecast cycle has not run yet.</p>
@@ -10,6 +11,10 @@
 
 <form method="get" action="/forecasts/" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
   <input type="text" name="station_id" placeholder="Filter by station ID..." value="{{ station_id }}" style="max-width:400px;">
+  <select name="data_use" aria-label="Forecast purpose">
+    <option value="standard" {% if data_use == "standard" %}selected{% endif %}>Standard</option>
+    <option value="provisional_rating" {% if data_use == "provisional_rating" %}selected{% endif %}>Provisional rating</option>
+  </select>
   <button type="submit">Filter</button>
   {% if station_id %}<a href="/forecasts/" role="button" class="outline">Clear</a>{% endif %}
 </form>
@@ -30,7 +35,7 @@
   <tbody>
     {% for f in forecasts %}
     <tr>
-      <td><a href="/forecasts/{{ f.id }}/">{{ f.issued_at }}</a></td>
+      <td><a href="/forecasts/{{ f.id }}/?data_use={{ data_use }}">{{ f.issued_at }}</a></td>
       <td><a href="/stations/{{ f.station_id }}/">{{ f.station_id | string | truncate(8, True, '...') }}</a></td>
       <td>
         {{ f.model_id | string | truncate(8, True, '...') if f.model_id else '' }}
@@ -51,8 +56,8 @@
 </table>
 
 <div style="display:flex; gap:1rem;">
-  {% if page > 0 %}<a href="/forecasts/?page={{ page - 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">&#8592; Previous</a>{% endif %}
-  {% if has_next %}<a href="/forecasts/?page={{ page + 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">Next &#8594;</a>{% endif %}
+  {% if page > 0 %}<a href="/forecasts/?data_use={{ data_use }}&page={{ page - 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">&#8592; Previous</a>{% endif %}
+  {% if has_next %}<a href="/forecasts/?data_use={{ data_use }}&page={{ page + 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">Next &#8594;</a>{% endif %}
   <span class="muted" style="align-self:center;">Page {{ page + 1 }}</span>
 </div>
 {% else %}

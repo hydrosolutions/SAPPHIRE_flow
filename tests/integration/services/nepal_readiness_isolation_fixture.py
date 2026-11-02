@@ -5299,9 +5299,12 @@ def run_qualification_case(
         "bafu_unit_read_holds",
         "bafu_unit_hold_releases",
         "bafu_unit_write_scopes",
+        "rating_delivery_files",
+        "rating_delivery_curves",
+        "rating_derived_discharge",
     ]
     names = [*unchanged_tables, "stations"]
-    assert len(names) == len(set(names)) == 65
+    assert len(names) == len(set(names)) == 68
     assert set(names) == set(db.metadata.tables)
     shared = assert_shared_requirements()
     original_assembler = nepal_onboarding.assemble_station_training_data
@@ -5359,7 +5362,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0078"
+                assert revision == "0079"
 
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now

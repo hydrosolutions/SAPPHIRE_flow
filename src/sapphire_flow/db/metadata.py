@@ -1173,11 +1173,13 @@ forecasts = sa.Table(
     sa.Column("data_use", sa.Text, nullable=False, server_default="standard"),
     sa.Column("input_lineage", sa.Text, nullable=True),
     sa.CheckConstraint(
-        "data_use IN ('standard', 'expired_rating_test')", name="ck_forecasts_data_use"
+        "data_use IN ('standard', 'expired_rating_test', 'provisional_rating')",
+        name="ck_forecasts_data_use",
     ),
     sa.CheckConstraint(
         "(data_use = 'standard' AND input_lineage IS NULL) OR "
-        "(data_use = 'expired_rating_test' AND input_lineage IS NOT NULL)",
+        "(data_use IN ('expired_rating_test', 'provisional_rating') "
+        "AND input_lineage IS NOT NULL)",
         name="ck_forecasts_input_lineage",
     ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
@@ -1337,12 +1339,13 @@ rejected_forecasts = sa.Table(
     sa.Column("data_use", sa.Text, nullable=False, server_default="standard"),
     sa.Column("input_lineage", sa.Text, nullable=True),
     sa.CheckConstraint(
-        "data_use IN ('standard', 'expired_rating_test')",
+        "data_use IN ('standard', 'expired_rating_test', 'provisional_rating')",
         name="ck_rejected_forecasts_data_use",
     ),
     sa.CheckConstraint(
         "(data_use = 'standard' AND input_lineage IS NULL) OR (data_use ="
-        " 'expired_rating_test' AND input_lineage IS NOT NULL)",
+        " 'expired_rating_test' AND input_lineage IS NOT NULL) OR "
+        "(data_use = 'provisional_rating' AND input_lineage IS NOT NULL)",
         name="ck_rejected_forecasts_input_lineage",
     ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
@@ -3264,3 +3267,93 @@ for _unit_effect_table in (bafu_unit_events, bafu_unit_batch_receipts):
             server_default=sa.text("pg_current_xact_id()::text"),
         )
     )
+
+
+# Immutable originals and explicit native rating-file/curve associations.
+rating_delivery_files = sa.Table(
+    "rating_delivery_files",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("delivery_id", sa.Text, nullable=False),
+    sa.Column("delivered_on", sa.Date, nullable=False),
+    sa.Column("sha256", sa.Text, nullable=False),
+    sa.Column("original", sa.LargeBinary, nullable=False),
+    sa.Column("admitted_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.UniqueConstraint(
+        "tenant_id", "station_id", "delivery_id", name="uq_rating_delivery_file"
+    ),
+    sa.UniqueConstraint("id", "station_id", name="uq_rating_delivery_file_scope"),
+    sa.CheckConstraint(
+        "sha256 = encode(sha256(original), 'hex')", name="ck_rating_file_digest"
+    ),
+    sa.CheckConstraint(
+        "length(btrim(delivery_id)) > 0", name="ck_rating_file_identity"
+    ),
+)
+rating_delivery_curves = sa.Table(
+    "rating_delivery_curves",
+    metadata,
+    sa.Column("file_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("rating_curve_id", UUID(as_uuid=True), primary_key=True),
+    sa.ForeignKeyConstraint(
+        ["file_id", "station_id"],
+        ["rating_delivery_files.id", "rating_delivery_files.station_id"],
+    ),
+    sa.ForeignKeyConstraint(
+        ["rating_curve_id", "station_id"],
+        ["rating_curves.id", "rating_curves.station_id"],
+    ),
+)
+
+
+rating_derived_discharge = sa.Table(
+    "rating_derived_discharge",
+    metadata,
+    sa.Column("fingerprint", sa.Text, primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("file_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("discharge", sa.Float),
+    sa.Column("rejection", sa.Text),
+    sa.Column("content", sa.Text, nullable=False),
+    sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"], ["observations.id", "observations.station_id"]
+    ),
+    sa.ForeignKeyConstraint(
+        ["rating_curve_id", "station_id"],
+        ["rating_curves.id", "rating_curves.station_id"],
+    ),
+    sa.ForeignKeyConstraint(
+        ["file_id", "station_id"],
+        ["rating_delivery_files.id", "rating_delivery_files.station_id"],
+    ),
+    sa.CheckConstraint(
+        "fingerprint = encode(sha256(convert_to(content, 'UTF8')), 'hex')",
+        name="ck_rating_derived_digest",
+    ),
+    sa.CheckConstraint(
+        "(discharge IS NULL) <> (rejection IS NULL)", name="ck_rating_derived_result"
+    ),
+    sa.CheckConstraint(
+        "discharge >= 0 AND discharge < 'Infinity'::float8",
+        name="ck_rating_derived_finite",
+    ),
+)
+sa.Index(
+    "ix_rating_derived_station_time",
+    rating_derived_discharge.c.station_id,
+    rating_derived_discharge.c.timestamp,
+)

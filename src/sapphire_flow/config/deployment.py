@@ -13,6 +13,9 @@ from sapphire_flow.config.daily_evaluation import DailyEvaluationConfig  # noqa:
 from sapphire_flow.config.evaluation_forecasts import (
     EvaluationForecastsConfig,  # noqa: TC001
 )
+from sapphire_flow.config.provisional_rating import (
+    ProvisionalRatingConfig,  # noqa: TC001
+)
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
     SeasonDefinition,
@@ -84,6 +87,7 @@ class InputQualityConfig(BaseModel):
 
 
 class DeploymentConfig(BaseModel):
+    provisional_ratings: tuple[ProvisionalRatingConfig, ...] = ()
     evaluation_forecasts: EvaluationForecastsConfig | None = None
     daily_evaluation: DailyEvaluationConfig | None = None
     danger_levels: list[_DangerLevelInput] = []

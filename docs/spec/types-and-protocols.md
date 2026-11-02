@@ -2106,12 +2106,22 @@ Module: `types/model.py`
 
 ### Forecast data use and consumed input lineage
 
-`ForecastDataUse` (`types/enums.py`) has `STANDARD = "standard"` and
-`EXPIRED_RATING_TEST = "expired_rating_test"`. This immutable axis is independent of
+`ForecastDataUse` (`types/enums.py`) has `STANDARD = "standard"`,
+`EXPIRED_RATING_TEST = "expired_rating_test"`, and
+`PROVISIONAL_RATING = "provisional_rating"`. This immutable axis is independent of
 lifecycle, input quality and numerical QC. STANDARD does not certify validity.
 `OperationalForecast.data_use` defaults to STANDARD. Test forecasts require
 `input_lineage: ForecastInputLineage`; STANDARD keeps this projection absent.
 `ForecastSummaryRow` carries classification but never raw lineage.
+
+PROVISIONAL_RATING uses the explicit `kind="provisional_rating"` lineage variant.
+Its `RatingInputLineage` contains immutable derived fingerprints grouped by UTC day,
+accepted/rejected/extrapolated/assessed support, measured-rejection counts, warnings,
+issue/weather times and actual artifact/weather identities. STANDARD cannot carry
+lineage; EXPIRED_RATING_TEST cannot carry this native variant. Its existing protected
+write gate remains unchanged. The native channel is default-off, uses stateless group
+dispatch, and never enters standard daily attempts, alerts or publication. See
+[`native-provisional-rating.md`](../native-provisional-rating.md).
 
 `ForecastInputLineage` (`types/forecast_lineage.py`) is frozen and contains tuples of
 as-used `ForecastInputSnapshot` records, `ForecastStaticAttributes`, protected provisional-discharge

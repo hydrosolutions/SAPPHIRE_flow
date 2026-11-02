@@ -134,6 +134,35 @@ def convert_level_to_discharge(level: float, curve: RatingCurve) -> ConversionRe
     return RatingConverter.from_curve(curve).convert(level)
 
 
+def convert_provisional_level(level: float, curve: RatingCurve) -> ConversionResult:
+    """Explicit provisional policy; strict conversion continues to clamp."""
+    if curve.interpolation is not InterpolationMethod.LINEAR:
+        raise RatingConversionError("provisional rating requires LINEAR interpolation")
+    converter = RatingConverter.from_curve(curve)
+    stages, flows = converter.stages, converter.discharges
+    if len(stages) < 2 or any(q < 0 for q in flows):
+        raise RatingConversionError(
+            "provisional rating requires two points and nonnegative discharge"
+        )
+    if not math.isfinite(level):
+        raise RatingConversionError("level must be finite")
+    if stages[0] <= level <= stages[-1]:
+        result = converter.convert(level)
+    else:
+        index = 0 if level < stages[0] else len(stages) - 2
+        h0, h1 = stages[index : index + 2]
+        q0, q1 = flows[index : index + 2]
+        result = ConversionResult(
+            discharge=q0 + (level - h0) * (q1 - q0) / (h1 - h0),
+            range_flag=RatingRange.BELOW
+            if index == 0 and level < stages[0]
+            else RatingRange.ABOVE,
+        )
+    if not math.isfinite(result.discharge) or result.discharge < 0:
+        raise RatingConversionError("negative or nonfinite provisional discharge")
+    return result
+
+
 def _as_finite_float(value: object, index: int, field: str) -> float:
     # bool is an int subclass — reject it so a stray True/False can't masquerade as 1/0.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
