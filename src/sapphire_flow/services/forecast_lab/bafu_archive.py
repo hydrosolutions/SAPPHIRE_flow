@@ -23,11 +23,13 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import polars as pl
 import structlog
+from pydantic import BaseModel, Field
 
 from sapphire_flow.types.datetime import ensure_utc
 
@@ -46,6 +48,11 @@ _TRACE_MEDIAN = "Median"
 _TRACE_PERCENTILE_BAND = "25.-75. Percentile"
 
 _FLAG_NON_MONOTONIC = "non_monotonic_envelope"
+
+
+class BafuUnitPolicy(Enum):
+    SNAPSHOT_COMPATIBLE = "snapshot_compatible"
+    EXPLICIT_DISCHARGE = "explicit_discharge"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -100,11 +107,11 @@ def _list_run_issued_ats(base_path: Path, station_code: str) -> list[UtcDatetime
         match = pattern.match(path.name)
         if match is None:
             continue
-        issued_ats.append(_parse_stamp(match.group(1)))
+        issued_ats.append(parse_archive_stamp(match.group(1)))
     return issued_ats
 
 
-def _parse_stamp(stamp: str) -> UtcDatetime:
+def parse_archive_stamp(stamp: str) -> UtcDatetime:
     from datetime import UTC, datetime
 
     return ensure_utc(datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC))
@@ -216,6 +223,91 @@ def read_latest_bafu_run(
             ),
         )
 
+    return read_bafu_run(base_path, station_code, issued_at=issued_at)
+
+
+class _RawUnit(BaseModel):
+    unit: str = ""
+
+
+class _RawTrace(BaseModel):
+    name: str
+    x: list[str]
+    y: list[float | None]
+    meta: _RawUnit = Field(default_factory=_RawUnit)
+    yaxis: str
+
+
+class _RawAnnotation(BaseModel):
+    text: str | None = None
+    x: str | float | None = None
+
+
+class _RawLayout(BaseModel):
+    annotations: list[_RawAnnotation]
+
+
+class _RawFigure(BaseModel):
+    data: list[_RawTrace]
+    layout: _RawLayout
+
+
+class _RawArchive(BaseModel):
+    plot: _RawFigure
+
+
+def _raw_discharge_evidence(
+    path: Path, frame: pl.DataFrame, issued_at: UtcDatetime
+) -> bool:
+    # Match the collector's same-stem raw payload to selected parsed trace data.
+    # A parquet unit may be an adapter default, so it is not evidence alone.
+    limit = 1024 * 1024
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            return False
+        payload = _RawArchive.model_validate_json(raw)
+        issues = [
+            ensure_utc(datetime.fromisoformat(annotation.x))
+            for annotation in payload.plot.layout.annotations
+            if annotation.text is not None
+            and annotation.text.startswith("Forecast as of")
+            and isinstance(annotation.x, str)
+        ]
+        if issues != [issued_at]:
+            return False
+        names = {_TRACE_MIN, _TRACE_MAX, _TRACE_MEDIAN, _TRACE_PERCENTILE_BAND}
+        traces = [trace for trace in payload.plot.data if trace.name in names]
+        if len(traces) != len(names) or {trace.name for trace in traces} != names:
+            return False
+        axes = {trace.yaxis for trace in traces}
+        if len(axes) != 1 or not all(axes):
+            return False
+        for trace in traces:
+            if trace.meta.unit not in {"m³/s", "m3/s"} and not (
+                trace.name == _TRACE_PERCENTILE_BAND and trace.meta.unit == ""
+            ):
+                return False
+            points = [
+                (ensure_utc(datetime.fromisoformat(time)), value)
+                for time, value in zip(trace.x, trace.y, strict=True)
+            ]
+            if points != _trace_series(frame, trace.name):
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def read_bafu_run(
+    base_path: Path,
+    station_code: str,
+    *,
+    issued_at: UtcDatetime,
+    unit_policy: BafuUnitPolicy = BafuUnitPolicy.SNAPSHOT_COMPATIBLE,
+) -> BafuRunResult:
+    """Read one selected run through the unchanged snapshot parser."""
     path = _run_path(base_path, station_code, issued_at)
     try:
         frame = pl.read_parquet(path)
@@ -231,6 +323,21 @@ def read_latest_bafu_run(
     if frame.is_empty():
         return BafuRunUnavailable(reason="empty_archive_file")
 
+    if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and (
+        "unit" not in frame.columns
+        or any(unit not in {"m3/s", "m³/s"} for unit in frame["unit"].to_list())
+    ):
+        return BafuRunUnavailable(reason="unverified_unit")
+    if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and (
+        set(frame["station_key"].to_list()) != {station_code}
+        or set(frame["issued_at"].to_list()) != {issued_at}
+        or set(frame["metric"].to_list()) != {"discharge_ms"}
+    ):
+        return BafuRunUnavailable(reason="invalid_identity")
+    if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and not _raw_discharge_evidence(
+        base_path / "raw" / f"{path.stem}.json", frame, issued_at
+    ):
+        return BafuRunUnavailable(reason="unverified_raw_source")
     split = _split_percentile_band(frame)
     if split is None:
         return BafuRunUnavailable(
@@ -246,6 +353,10 @@ def read_latest_bafu_run(
     maximum_series = _trace_series(frame, _TRACE_MAX)
 
     canonical_times = [t for t, _ in p25_series]
+    if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and (
+        not canonical_times or canonical_times != sorted(set(canonical_times))
+    ):
+        return BafuRunUnavailable(reason="invalid_time_axis")
     for name, series in (
         ("Median", median_series),
         (_TRACE_MIN, minimum_series),

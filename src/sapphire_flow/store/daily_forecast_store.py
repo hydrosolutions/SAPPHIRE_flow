@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.pool import NullPool
 
+from sapphire_flow.exceptions import DailyAuthorityIntegrityError
 from sapphire_flow.services.daily_forecast_dispatch import next_daily_attempt
 from sapphire_flow.store.daily_forecast_documents import (
     contracts_json,
@@ -603,7 +604,12 @@ class PgDailyForecastStore:
                 .mappings()
                 .all()
             )
-        attempts = tuple(_snapshot(row) for row in rows)
+        try:
+            attempts = tuple(_snapshot(row) for row in rows)
+        except ValueError as exc:
+            raise DailyAuthorityIntegrityError(
+                "invalid persisted daily authority"
+            ) from exc
         authoritative = next(
             (attempt for attempt in attempts if attempt.outcomes is not None), None
         )

@@ -309,3 +309,11 @@ class ForecastCycleAbortedError(SapphireError):
     failed rather than COMPLETED, agreeing with the watchdog that already
     calls this event critical. Raised AFTER the forced-CRITICAL freshness
     record is written, never before."""
+
+
+class DailyAuthorityIntegrityError(ValueError):
+    """Persisted daily authority violates its scope or summary contract."""
+
+
+class StoredForecastDecodeError(ValueError):
+    """An exact stored forecast row cannot be decoded into its domain record."""

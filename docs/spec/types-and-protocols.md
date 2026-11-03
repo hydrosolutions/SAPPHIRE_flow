@@ -3335,10 +3335,13 @@ class ObservationStore(Protocol):
         self, station_ids: list[StationId], parameter: str,
         window_start: UtcDatetime, as_of: UtcDatetime, *,
         source: ObservationSource, excluded_delivery_id: str | None = None,
+        qc_status: QcStatus | None = None,
+        window_start_bound: ObservationWindowStart = ObservationWindowStart.INCLUSIVE,
     ) -> dict[StationId, Observation | None]: ...
-        # TRUSTED only. Inclusive bounded window; all requested IDs map to a row
-        # or None. Unit visibility and NULL-safe optional delivery exclusion apply
-        # before latest selection. Preserves QC, including MISSING; no QC fallback.
+        # TRUSTED only. Inclusive bounded window by default; explicit QC and
+        # exclusive-start options support overview windows. All requested IDs map
+        # to a row or None. Trust/hold/delivery/QC filters precede latest selection.
+        # Defaults preserve all QC states, including MISSING; no QC fallback.
     def fetch_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> list[Observation]: ...
     def delete_delivery_observations(self, delivery_id: str, station_ids: list[StationId]) -> int: ...
     def store_observations(self, observations: list[Observation]) -> None: ...
@@ -6508,3 +6511,30 @@ weather-history scopes into this value. `admit_weather_bindings` validates the w
 exact CHWRR roster before native-store writes in the caller transaction. The production
 Prefect entrypoint accepts only `start: str`, `end: str`, `weather_scope: str`; injected
 flow signatures and weather adapter Protocols remain unchanged.
+
+
+### Swiss overview read types (Phase B)
+
+`types.swiss_overview` defines immutable `SwissRosterEntry`, `MedianPeak`, and
+`HeadlineAbsence`. `CurrentHeadline` carries a selected evaluation candidate or
+explicit absence; publication redaction remains an HTTP boundary operation.
+`CurrentMemberSelection` is shared by the station panel and batched overview.
+`DailyAuthorityIntegrityError` distinguishes invalid persisted/scope authority
+from unrelated service failures.
+
+`ObservationStore.fetch_latest_observations` adds optional `qc_status` and
+`window_start_bound: ObservationWindowStart = INCLUSIVE`. Existing callers retain
+inclusive bounds and no QC filter. Overview requests `QC_PASSED` and `EXCLUSIVE`
+for its three hourly queries. Trust/hold/delivery predicates still precede LIMIT.
+
+`ForecastStore.fetch_forecasts_by_ids` and
+`RejectedForecastStore.fetch_rejected_forecasts_by_ids` return exact-ID maps using
+the same purpose-bound projection, ensemble conversion, and lineage guards as
+scalar reads. No query strips validation fields to produce compact headlines.
+
+Swiss overview review corrections: current candidate maps are keyed by the frozen
+`DailyClaim` and `DailyOutputReference`, preserving group/attempt/contract authority.
+Exact STANDARD batch record construction raises `StoredForecastDecodeError`
+(`ValueError`) for malformed persisted values; protected and database errors remain
+fatal. Overview alone validates bounded same-stem raw BAFU unit/axis, issue and
+trace evidence. Snapshot parsing and latest-observation defaults are unchanged.

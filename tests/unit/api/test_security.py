@@ -405,6 +405,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/models/{model_id}/skill-chart.json"): "ADMIN",
         ("GET", "/api/v1/stations"): "PRINCIPAL",
         ("GET", "/api/v1/observations/latest"): "PRINCIPAL",
+        ("GET", "/api/v1/swiss/overview"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/observations"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/forecasts"): "PRINCIPAL",

@@ -24,6 +24,7 @@ from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
 from sapphire_flow.types.observation import Observation, RawObservation
 from sapphire_flow.types.observation_read import (
     ObservationReadPurpose,
+    ObservationWindowStart,
     QcContextRequirement,
     QcContextWindow,
     QcReadToken,
@@ -528,6 +529,8 @@ class PgObservationStore:
         *,
         source: ObservationSource,
         excluded_delivery_id: str | None = None,
+        qc_status: QcStatus | None = None,
+        window_start_bound: ObservationWindowStart = ObservationWindowStart.INCLUSIVE,
     ) -> dict[StationId, Observation | None]:
         if self._purpose is not ObservationReadPurpose.TRUSTED:
             raise ValueError("latest observations require a trusted read purpose")
@@ -546,7 +549,9 @@ class PgObservationStore:
             observations_table.c.station_id == requested.c.station_id,
             observations_table.c.parameter == parameter,
             observations_table.c.source == source.value,
-            observations_table.c.timestamp >= window_start,
+            (observations_table.c.timestamp > window_start)
+            if window_start_bound is ObservationWindowStart.EXCLUSIVE
+            else (observations_table.c.timestamp >= window_start),
             observations_table.c.timestamp <= as_of,
             sa.select(unit_read_predicate(observations_table, self._purpose))
             .correlate(observations_table)
@@ -555,6 +560,10 @@ class PgObservationStore:
         if excluded_delivery_id is not None:
             candidate = candidate.where(
                 observations_table.c.delivery_id.is_distinct_from(excluded_delivery_id)
+            )
+        if qc_status is not None:
+            candidate = candidate.where(
+                observations_table.c.qc_status == qc_status.value
             )
         latest = (
             candidate.order_by(observations_table.c.timestamp.desc())

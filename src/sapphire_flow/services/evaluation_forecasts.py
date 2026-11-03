@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING, Protocol
 
 import polars as pl
 
+from sapphire_flow.exceptions import DailyAuthorityIntegrityError
 from sapphire_flow.services.daily_output_integrity import assess_daily_output
 from sapphire_flow.services.forecast_read import (
     require_standard_forecast_results,
     require_standard_forecast_store,
 )
 from sapphire_flow.types.daily_forecast import DailyAttemptState, ScheduledDailyForecast
-from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
+from sapphire_flow.types.daily_forecast_claim import DailyClaim, DailyClaimKey
 from sapphire_flow.types.daily_forecast_outcome import (
     DailyMemberState,
     DailyOutputReference,
@@ -49,7 +50,7 @@ from sapphire_flow.types.ids import ForecastId, RejectedForecastId
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import (
@@ -116,9 +117,11 @@ def read_evaluation_forecasts(
     current: dict[str, EvaluationCandidate] = {}
     uncovered: set[str] = set()
     parameters = list(settings.parameters)
-    chosen_group = None
+    current_days: dict[DailyClaimKey, DailyDaySnapshot] = {}
     daily_model: EvaluationModelDiagnostic | None = None
-    candidate_cache: dict[object, EvaluationCandidate | None] = {}
+    candidate_cache: dict[
+        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+    ] = {}
     window_start = ensure_utc(issue - timedelta(days=1))
     keys = [
         (day_issue, group_id)
@@ -134,7 +137,9 @@ def read_evaluation_forecasts(
             context=ScheduledDailyForecast(scheduled_tick=day_issue),
         )
         day = stores.daily.read_day(key)
-        if not _day_available(day, key, now):
+        if day_issue == issue:
+            current_days[key] = day
+        if not daily_day_available(day, key, now):
             diagnostics.append(
                 EvaluationDailyDiagnostic(
                     group_id=group_id,
@@ -170,7 +175,7 @@ def read_evaluation_forecasts(
         reference_status: dict[DailyOutputReference, EvaluationReferenceUsability] = {}
         if summary is not None and member is not None:
             for ref in member.references:
-                candidate_cache[ref] = _daily_candidate(
+                candidate_cache[summary.claim, ref] = _daily_candidate(
                     stores, summary, ref, now, settings, reference_status
                 )
         diagnostics.append(
@@ -198,7 +203,7 @@ def read_evaluation_forecasts(
             diagnostic_records: list[EvaluationCandidate] = []
             if summary is not None and member is not None:
                 for ref in member.references:
-                    diagnostic_candidate = candidate_cache[ref]
+                    diagnostic_candidate = candidate_cache[summary.claim, ref]
                     if diagnostic_candidate is not None:
                         diagnostic_records.append(diagnostic_candidate)
             result_at = day.latest.finished_at or day.latest.claim.started_at
@@ -220,33 +225,17 @@ def read_evaluation_forecasts(
                 latest_state=day.latest.state,
                 authoritative_attempt_id=summary.claim.id if summary else None,
             )
-        if day_issue != issue or chosen_group is not None:
-            continue
-        if member is not None:
-            chosen_group = group_id
-            parameters.extend(
-                p for p in member.required_parameters if p not in parameters
-            )
-        if (
-            summary is None
-            or member is None
-            or member.state is not DailyMemberState.PRODUCED
-        ):
-            continue
-        for ref in member.references:
-            if ref.key.parameter not in parameters:
-                continue
-            if ref not in candidate_cache:
-                candidate_cache[ref] = _daily_candidate(
-                    stores, summary, ref, now, settings
-                )
-            candidate = candidate_cache[ref]
-            if candidate is None:
-                continue
-            if _covers(candidate, valid):
-                current.setdefault(ref.key.parameter, candidate)
-            else:
-                uncovered.add(ref.key.parameter)
+    selection = select_current_daily(
+        station_id=station.id,
+        parameters=tuple(parameters),
+        days=current_days,
+        candidates=candidate_cache,
+        now=now,
+        valid_at=valid,
+    )
+    parameters = list(selection.parameters)
+    current = dict(selection.candidates)
+    uncovered = set(selection.uncovered)
     if any(a.model_id == settings.daily_model_id for a in assignments) and (
         daily_model is None
         or daily_model.availability is EvaluationDiagnosticAvailability.AVAILABLE
@@ -315,7 +304,80 @@ def read_evaluation_forecasts(
     )
 
 
-def _day_available(day: DailyDaySnapshot, key: DailyClaimKey, now: UtcDatetime) -> bool:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CurrentMemberSelection:
+    parameters: tuple[str, ...]
+    candidates: Mapping[str, EvaluationCandidate]
+    uncovered: frozenset[str]
+
+
+def select_current_daily(
+    *,
+    station_id: StationId,
+    parameters: tuple[str, ...],
+    days: Mapping[DailyClaimKey, DailyDaySnapshot],
+    candidates: Mapping[
+        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+    ],
+    now: UtcDatetime,
+    valid_at: UtcDatetime,
+) -> CurrentMemberSelection:
+    # Validate every group before selecting the first sorted group with this member.
+    available = [
+        (key, day) for key, day in days.items() if daily_day_available(day, key, now)
+    ]
+    for _, day in sorted(available, key=lambda item: str(item[0].group_id)):
+        selected = select_current_member(
+            summary=day.authoritative,
+            station_id=station_id,
+            parameters=parameters,
+            candidates=candidates,
+            valid_at=valid_at,
+        )
+        if selected is not None:
+            return selected
+    return CurrentMemberSelection(
+        parameters=parameters, candidates={}, uncovered=frozenset()
+    )
+
+
+def select_current_member(
+    *,
+    summary: DailyAttemptSnapshot | None,
+    station_id: StationId,
+    parameters: tuple[str, ...],
+    candidates: Mapping[
+        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+    ],
+    valid_at: UtcDatetime,
+) -> CurrentMemberSelection | None:
+    if summary is None:
+        return None
+    member = next(
+        (m for m in summary.outcomes or () if m.station_id == station_id), None
+    )
+    if member is None:
+        return None
+    declared = tuple(dict.fromkeys((*parameters, *member.required_parameters)))
+    current: dict[str, EvaluationCandidate] = {}
+    uncovered: set[str] = set()
+    if member.state is DailyMemberState.PRODUCED:
+        for ref in member.references:
+            candidate = candidates.get((summary.claim, ref))
+            if ref.key.parameter not in declared or candidate is None:
+                continue
+            if _covers(candidate, valid_at):
+                current.setdefault(ref.key.parameter, candidate)
+            else:
+                uncovered.add(ref.key.parameter)
+    return CurrentMemberSelection(
+        parameters=declared, candidates=current, uncovered=frozenset(uncovered)
+    )
+
+
+def daily_day_available(
+    day: DailyDaySnapshot, key: DailyClaimKey, now: UtcDatetime
+) -> bool:
     snapshots = tuple(s for s in (day.latest, day.authoritative) if s is not None)
     if any(
         s.claim.key.tenant_id != key.tenant_id
@@ -326,12 +388,14 @@ def _day_available(day: DailyDaySnapshot, key: DailyClaimKey, now: UtcDatetime) 
         or s.claim.key.context.issue_time != key.context.issue_time
         for s in snapshots
     ):
-        raise ValueError("daily snapshot is outside requested scope")
+        raise DailyAuthorityIntegrityError("daily snapshot is outside requested scope")
     if day.authoritative is not None and day.authoritative.state not in (
         DailyAttemptState.COMPLETE,
         DailyAttemptState.INCOMPLETE,
     ):
-        raise ValueError("daily authority must be a finalized whole summary")
+        raise DailyAuthorityIntegrityError(
+            "daily authority must be a finalized whole summary"
+        )
     # No transition history is available. Do not invent an earlier state.
     return not any(
         s.claim.started_at > now
@@ -395,7 +459,7 @@ def _daily_history(
             context=ScheduledDailyForecast(scheduled_tick=issue),
         )
         day = stores.daily.read_day(key)
-        if not _day_available(day, key, now):
+        if not daily_day_available(day, key, now):
             return EvaluationModelDiagnostic(
                 model_id=settings.daily_model_id,
                 freshness=EvaluationFreshness.UNKNOWN,
@@ -567,6 +631,33 @@ def _daily_candidate(
         if ref.source is DailyOutputSource.FORECAST
         else stores.rejected.fetch_rejected_forecast(RejectedForecastId(ref.output_id))
     )
+    return daily_candidate_from_record(
+        summary=summary,
+        ref=ref,
+        record=record,
+        now=now,
+        settings=settings,
+        reference_status=reference_status,
+    )
+
+
+def daily_candidate_from_record(
+    *,
+    summary: DailyAttemptSnapshot,
+    ref: DailyOutputReference,
+    record: OperationalForecast | PersistedRejectedForecast | None,
+    now: UtcDatetime,
+    settings: EvaluationReadSettings,
+    reference_status: dict[DailyOutputReference, EvaluationReferenceUsability]
+    | None = None,
+) -> EvaluationCandidate | None:
+    claim = summary.claim
+    contract = next(
+        (c for c in claim.frozen.output_contracts if c.parameter == ref.key.parameter),
+        None,
+    )
+    if contract is None or claim.frozen.artifact_id is None:
+        return None
     if record is None:
         return None
     require_standard_forecast_results((record,))

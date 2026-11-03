@@ -253,6 +253,83 @@
         "title": "AvailabilitySchema",
         "type": "object"
       },
+      "BafuAvailable": {
+        "properties": {
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "inferred_level": {
+            "title": "Inferred Level",
+            "type": "null"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "peak_statistic": {
+            "const": "median",
+            "default": "median",
+            "title": "Peak Statistic",
+            "type": "string"
+          },
+          "peak_valid_time": {
+            "format": "date-time",
+            "title": "Peak Valid Time",
+            "type": "string"
+          },
+          "peak_value": {
+            "title": "Peak Value",
+            "type": "number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "null"
+          },
+          "source": {
+            "const": "bafu",
+            "default": "bafu",
+            "title": "Source",
+            "type": "string"
+          },
+          "state": {
+            "const": "available",
+            "default": "available",
+            "title": "State",
+            "type": "string"
+          },
+          "threshold_profile": {
+            "title": "Threshold Profile",
+            "type": "null"
+          },
+          "threshold_source": {
+            "title": "Threshold Source",
+            "type": "null"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issued_at",
+          "horizon_start",
+          "horizon_end",
+          "peak_value",
+          "peak_valid_time"
+        ],
+        "title": "BafuAvailable",
+        "type": "object"
+      },
       "BafuForecastAvailableSchema": {
         "additionalProperties": false,
         "properties": {
@@ -388,6 +465,201 @@
           "reason"
         ],
         "title": "BafuForecastUnavailableSchema",
+        "type": "object"
+      },
+      "BafuWithheld": {
+        "properties": {
+          "reason": {
+            "const": "publication_gate",
+            "default": "publication_gate",
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "const": "bafu",
+            "default": "bafu",
+            "title": "Source",
+            "type": "string"
+          },
+          "state": {
+            "const": "withheld",
+            "default": "withheld",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "BafuWithheld",
+        "type": "object"
+      },
+      "CmalAvailable": {
+        "properties": {
+          "horizon_end": {
+            "format": "date-time",
+            "title": "Horizon End",
+            "type": "string"
+          },
+          "horizon_start": {
+            "format": "date-time",
+            "title": "Horizon Start",
+            "type": "string"
+          },
+          "inferred_level": {
+            "title": "Inferred Level",
+            "type": "null"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_flags": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewInputFlag"
+            },
+            "title": "Input Quality Flags",
+            "type": "array"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "output_id": {
+            "title": "Output Id",
+            "type": "string"
+          },
+          "output_source": {
+            "enum": [
+              "forecast",
+              "rejected"
+            ],
+            "title": "Output Source",
+            "type": "string"
+          },
+          "peak_statistic": {
+            "const": "ensemble_median",
+            "default": "ensemble_median",
+            "title": "Peak Statistic",
+            "type": "string"
+          },
+          "peak_valid_time": {
+            "format": "date-time",
+            "title": "Peak Valid Time",
+            "type": "string"
+          },
+          "peak_value": {
+            "title": "Peak Value",
+            "type": "number"
+          },
+          "qc_status": {
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "null"
+          },
+          "source": {
+            "const": "daily_cmal",
+            "default": "daily_cmal",
+            "title": "Source",
+            "type": "string"
+          },
+          "state": {
+            "const": "available",
+            "default": "available",
+            "title": "State",
+            "type": "string"
+          },
+          "threshold_profile": {
+            "title": "Threshold Profile",
+            "type": "null"
+          },
+          "threshold_source": {
+            "title": "Threshold Source",
+            "type": "null"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issued_at",
+          "horizon_start",
+          "horizon_end",
+          "peak_value",
+          "peak_valid_time",
+          "output_id",
+          "output_source",
+          "qc_status",
+          "model_id",
+          "input_quality",
+          "input_quality_flags"
+        ],
+        "title": "CmalAvailable",
+        "type": "object"
+      },
+      "CmalWithheld": {
+        "properties": {
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "output_id": {
+            "title": "Output Id",
+            "type": "string"
+          },
+          "output_source": {
+            "enum": [
+              "forecast",
+              "rejected"
+            ],
+            "title": "Output Source",
+            "type": "string"
+          },
+          "qc_status": {
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "reason": {
+            "const": "publication_gate",
+            "default": "publication_gate",
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "const": "withheld",
+            "default": "withheld",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "output_id",
+          "output_source",
+          "qc_status",
+          "model_id",
+          "issued_at"
+        ],
+        "title": "CmalWithheld",
         "type": "object"
       },
       "CombinedForecastMembersSchema": {
@@ -2286,6 +2558,38 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HeadlineAbsence": {
+        "enum": [
+          "pending_current_issue",
+          "no_current_candidate",
+          "authority_integrity_error",
+          "expired_horizon",
+          "missing_archive",
+          "invalid_source_data",
+          "source_read_failed",
+          "not_onboarded"
+        ],
+        "title": "HeadlineAbsence",
+        "type": "string"
+      },
+      "HeadlineUnavailable": {
+        "properties": {
+          "reason": {
+            "$ref": "#/components/schemas/HeadlineAbsence"
+          },
+          "state": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "HeadlineUnavailable",
+        "type": "object"
+      },
       "InputQualityCategory": {
         "enum": [
           "observation",
@@ -2741,6 +3045,246 @@
           "points"
         ],
         "title": "ObservationsSectionSchema",
+        "type": "object"
+      },
+      "OverviewFlowClass": {
+        "properties": {
+          "availability": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "classification_scheme": {
+            "title": "Classification Scheme",
+            "type": "null"
+          },
+          "code": {
+            "title": "Code",
+            "type": "null"
+          },
+          "collected_at": {
+            "title": "Collected At",
+            "type": "null"
+          },
+          "label": {
+            "title": "Label",
+            "type": "null"
+          },
+          "reason": {
+            "const": "not_onboarded",
+            "default": "not_onboarded",
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "null"
+          },
+          "source_time": {
+            "title": "Source Time",
+            "type": "null"
+          }
+        },
+        "title": "OverviewFlowClass",
+        "type": "object"
+      },
+      "OverviewHour": {
+        "properties": {
+          "hour_end": {
+            "format": "date-time",
+            "title": "Hour End",
+            "type": "string"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverviewSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "hour_end",
+          "sample"
+        ],
+        "title": "OverviewHour",
+        "type": "object"
+      },
+      "OverviewInputFlag": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "level": {
+            "title": "Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "level",
+          "detail"
+        ],
+        "title": "OverviewInputFlag",
+        "type": "object"
+      },
+      "OverviewObservation": {
+        "properties": {
+          "availability": {
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "hourly": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewHour"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "title": "Hourly",
+            "type": "array"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverviewSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "const": "no_eligible_observation",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "availability",
+          "reason",
+          "latest",
+          "hourly"
+        ],
+        "title": "OverviewObservation",
+        "type": "object"
+      },
+      "OverviewReportedLevel": {
+        "properties": {
+          "availability": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "collected_at": {
+            "title": "Collected At",
+            "type": "null"
+          },
+          "level": {
+            "title": "Level",
+            "type": "null"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "null"
+          },
+          "publisher": {
+            "title": "Publisher",
+            "type": "null"
+          },
+          "reason": {
+            "const": "not_onboarded",
+            "default": "not_onboarded",
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "null"
+          },
+          "state": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "OverviewReportedLevel",
+        "type": "object"
+      },
+      "OverviewSample": {
+        "properties": {
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "qc_status": {
+            "const": "qc_passed",
+            "default": "qc_passed",
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "observed_at",
+          "value"
+        ],
+        "title": "OverviewSample",
+        "type": "object"
+      },
+      "OverviewStation": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "network",
+          "code"
+        ],
+        "title": "OverviewStation",
         "type": "object"
       },
       "PaginatedResponse_ForecastSummary_": {
@@ -4313,6 +4857,133 @@
         "title": "StatusBlockSchema",
         "type": "object"
       },
+      "SwissOverviewItem": {
+        "properties": {
+          "bafu_comparison": {
+            "discriminator": {
+              "mapping": {
+                "available": "#/components/schemas/BafuAvailable",
+                "unavailable": "#/components/schemas/HeadlineUnavailable",
+                "withheld": "#/components/schemas/BafuWithheld"
+              },
+              "propertyName": "state"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BafuAvailable"
+              },
+              {
+                "$ref": "#/components/schemas/BafuWithheld"
+              },
+              {
+                "$ref": "#/components/schemas/HeadlineUnavailable"
+              }
+            ],
+            "title": "Bafu Comparison"
+          },
+          "flow_class": {
+            "$ref": "#/components/schemas/OverviewFlowClass"
+          },
+          "forecast": {
+            "discriminator": {
+              "mapping": {
+                "available": "#/components/schemas/CmalAvailable",
+                "unavailable": "#/components/schemas/HeadlineUnavailable",
+                "withheld": "#/components/schemas/CmalWithheld"
+              },
+              "propertyName": "state"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CmalAvailable"
+              },
+              {
+                "$ref": "#/components/schemas/CmalWithheld"
+              },
+              {
+                "$ref": "#/components/schemas/HeadlineUnavailable"
+              }
+            ],
+            "title": "Forecast"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/OverviewObservation"
+          },
+          "reported_level": {
+            "$ref": "#/components/schemas/OverviewReportedLevel"
+          },
+          "station": {
+            "$ref": "#/components/schemas/OverviewStation"
+          },
+          "thresholds": {
+            "items": {
+              "type": "null"
+            },
+            "maxItems": 0,
+            "title": "Thresholds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "station",
+          "observation",
+          "forecast",
+          "bafu_comparison"
+        ],
+        "title": "SwissOverviewItem",
+        "type": "object"
+      },
+      "SwissOverviewResponse": {
+        "properties": {
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SwissOverviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "observation_display_unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Observation Display Unit",
+            "type": "string"
+          },
+          "observation_source": {
+            "const": "measured",
+            "default": "measured",
+            "title": "Observation Source",
+            "type": "string"
+          },
+          "parameter": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "station_count": {
+            "title": "Station Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "station_count",
+          "items"
+        ],
+        "title": "SwissOverviewResponse",
+        "type": "object"
+      },
       "ThresholdResponse": {
         "properties": {
           "danger_level": {
@@ -4470,7 +5141,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.4"
+    "version": "2.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -5754,6 +6425,73 @@
         "summary": "Get Station Skill",
         "tags": [
           "api-review"
+        ]
+      }
+    },
+    "/api/v1/swiss/overview": {
+      "get": {
+        "description": "Reviewer/admin bearer only. Approved Swiss roster intersected with tenant and reviewer grants. Disabled or drifted configuration returns 503. Latest QC-passed measured discharge and three exclusive-start hourly windows; CURRENT daily CMAL authority only, separate BAFU comparison. No yesterday/ordinary fallback. Publication redaction applies; all responses and preflights are no-store. Metadata not onboarded is explicit.",
+        "operationId": "get_swiss_overview_api_v1_swiss_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwissOverviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Swiss overview internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Swiss overview configuration or forecast reads unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Swiss Overview",
+        "tags": [
+          "api-swiss-overview"
         ]
       }
     }

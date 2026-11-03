@@ -164,6 +164,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 sapphire_flow = [
     "py.typed",
+    "config/swiss_display_roster.json",
     "data/icon_ch2_eps_grid.npz",
     "api/templates/**/*.html",
     "models/aquacast/configs/*.yaml",

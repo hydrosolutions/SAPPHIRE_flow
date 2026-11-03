@@ -115,6 +115,7 @@ from sapphire_flow.types.observation import (  # noqa: TC001
 )
 from sapphire_flow.types.observation_read import (
     ObservationReadPurpose,
+    ObservationWindowStart,
     QcContextRequirement,
     QcContextWindow,
     QcReadToken,
@@ -383,6 +384,8 @@ class FakeObservationStore:
         *,
         source: ObservationSource,
         excluded_delivery_id: str | None = None,
+        qc_status: QcStatus | None = None,
+        window_start_bound: ObservationWindowStart = ObservationWindowStart.INCLUSIVE,
     ) -> dict[StationId, Observation | None]:
         if self._purpose is not ObservationReadPurpose.TRUSTED:
             raise ValueError("latest observations require a trusted read purpose")
@@ -395,6 +398,11 @@ class FakeObservationStore:
                 or observation.parameter != parameter
                 or observation.source != source
                 or not window_start <= observation.timestamp <= as_of
+                or (
+                    window_start_bound is ObservationWindowStart.EXCLUSIVE
+                    and observation.timestamp == window_start
+                )
+                or (qc_status is not None and observation.qc_status is not qc_status)
                 or not self._unit_visible(observation)
                 or (
                     excluded_delivery_id is not None
@@ -847,6 +855,16 @@ class FakeForecastStore:
             )
         ] = forecast.id
         return forecast.id
+
+    def fetch_forecasts_by_ids(
+        self,
+        forecast_ids: list[ForecastId],
+    ) -> dict[ForecastId, OperationalForecast]:
+        return {
+            fid: row
+            for fid in forecast_ids
+            if (row := self.fetch_forecast(fid)) is not None
+        }
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
         forecast = self._forecasts.get(forecast_id)
@@ -2871,6 +2889,16 @@ class FakeRejectedForecastStore:
             )
         self.write_batch_calls += 1
         self._rows.extend(rows)
+
+    def fetch_rejected_forecasts_by_ids(
+        self,
+        forecast_ids: list[RejectedForecastId],
+    ) -> dict[RejectedForecastId, PersistedRejectedForecast]:
+        return {
+            fid: row
+            for fid in forecast_ids
+            if (row := self.fetch_rejected_forecast(fid)) is not None
+        }
 
     def fetch_rejected_forecast(
         self, rejected_forecast_id: RejectedForecastId

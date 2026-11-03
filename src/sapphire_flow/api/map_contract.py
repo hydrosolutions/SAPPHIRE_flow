@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.4"
+MAP_CONTRACT_VERSION = "2.5"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -34,6 +34,7 @@ _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", _SNAPSHOT_PATH),
+        ("GET", "/api/v1/swiss/overview"),
         ("GET", "/api/v1/observations/latest"),
         ("GET", "/api/v1/stations"),
         ("GET", "/api/v1/stations/{station_id}"),
@@ -50,7 +51,11 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
 
 # The two REVIEW-gated routes (Plan 401/402) — reviewer or admin token only.
 _REVIEW_PATHS: frozenset[str] = frozenset(
-    {"/api/v1/qc/rules", "/api/v1/stations/{station_id}/skill"}
+    {
+        "/api/v1/qc/rules",
+        "/api/v1/stations/{station_id}/skill",
+        "/api/v1/swiss/overview",
+    }
 )
 
 # The REVIEW_OR_HUMAN-gated route (Plan 404 T3) — a reviewer/admin service
@@ -99,6 +104,14 @@ _404_PATHS: frozenset[str] = frozenset(
 )
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/swiss/overview"): (
+        "Reviewer/admin bearer only. Approved Swiss roster intersected with tenant "
+        "and reviewer grants. Disabled or drifted configuration returns 503. "
+        "Latest QC-passed measured discharge and three exclusive-start hourly "
+        "windows; CURRENT daily CMAL authority only, separate BAFU comparison. "
+        "No yesterday/ordinary fallback. Publication redaction applies; all "
+        "responses and preflights are no-store. Metadata not onboarded is explicit."
+    ),
     ("GET", "/api/v1/observations/latest"): (
         "Latest visible observation of the requested parameter per scoped station "
         "within an "
@@ -316,6 +329,11 @@ def build_map_openapi() -> dict[str, Any]:
                 responses["404"] = _error_response(
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
+                )
+            if path == "/api/v1/swiss/overview":
+                responses["500"] = _error_response("Swiss overview internal error.")
+                responses["503"] = _error_response(
+                    "Swiss overview configuration or forecast reads unavailable."
                 )
             if path == "/api/v1/observations/latest":
                 responses["500"] = _error_response("Latest observations unavailable.")

@@ -20,7 +20,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         headers={"Cache-Control": "no-store"}
         if (
             request.url.path
-            in {"/api/v1/forecast-lab/snapshot", "/api/v1/observations/latest"}
+            in {
+                "/api/v1/forecast-lab/snapshot",
+                "/api/v1/observations/latest",
+                "/api/v1/swiss/overview",
+            }
             or re.fullmatch(
                 r"/api/v1/stations/[^/]+/evaluation-forecasts", request.url.path
             )

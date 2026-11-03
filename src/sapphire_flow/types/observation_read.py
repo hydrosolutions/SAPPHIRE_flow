@@ -6,6 +6,11 @@ from sapphire_flow.types.enums import ObservationSource
 from sapphire_flow.types.ids import StationId
 
 
+class ObservationWindowStart(Enum):
+    INCLUSIVE = "inclusive"
+    EXCLUSIVE = "exclusive"
+
+
 class ObservationReadPurpose(Enum):
     TRUSTED = "trusted"
     QC_CONTEXT = "qc_context"
