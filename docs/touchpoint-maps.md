@@ -2377,4 +2377,7 @@ Swiss overview review corrections: current candidate maps are keyed by the froze
 Exact STANDARD batch record construction raises `StoredForecastDecodeError`
 (`ValueError`) for malformed persisted values; protected and database errors remain
 fatal. Overview alone validates bounded same-stem raw BAFU unit/axis, issue and
-trace evidence. Snapshot parsing and latest-observation defaults are unchanged.
+trace evidence. Omitted Plotly trace `yaxis` uses primary `"y"`; explicit axis
+values and discharge-unit evidence remain checked. Keep synthetic raw fixtures
+faithful to the checked-in BAFU payload, which omits axes on all five traces.
+Snapshot parsing and latest-observation defaults are unchanged.

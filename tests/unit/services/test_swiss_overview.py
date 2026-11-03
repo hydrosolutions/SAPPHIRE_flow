@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from sapphire_flow.services.evaluation_forecasts import read_evaluation_forecasts
+from sapphire_flow.services.forecast_lab.bafu_archive import read_latest_bafu_run
 from sapphire_flow.services.swiss_overview import (
     candidate_peak,
     median_peak,
@@ -159,6 +160,35 @@ class TestBafuHeadlines:
 
 
 class TestRawArchiveEvidence:
+    @pytest.mark.parametrize("axes", ["omitted", "explicit", "mixed"])
+    def test_primary_axis_forms_preserve_the_same_envelope(
+        self, tmp_path: Path, axes: str
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+        raw = write_raw_evidence(tmp_path, "2135", _ISSUED_AT, rows)
+        payload = json.loads(raw.read_text())
+        assert {t["name"] for t in payload["plot"]["data"]} == {
+            "Median",
+            "Min / Max",
+            "Min. / Max.",
+            "25.-75. Percentile",
+            "Measured",
+        }
+        for trace in payload["plot"]["data"]:
+            assert "yaxis" not in trace
+            if axes == "explicit" or (axes == "mixed" and trace["name"] == "Median"):
+                trace["yaxis"] = "y"
+        raw.write_text(json.dumps(payload))
+
+        result = read_bafu_headlines(tmp_path, ["2135"], as_of=ensure_utc(_NOW))
+        assert not isinstance(result["2135"], HeadlineAbsence)
+        run, _ = result["2135"]
+        snapshot = read_latest_bafu_run(tmp_path, "2135", now=ensure_utc(_NOW))
+        assert run == snapshot
+
     @pytest.mark.parametrize(
         "fault",
         [
@@ -167,6 +197,9 @@ class TestRawArchiveEvidence:
             "default_only",
             "wrong_unit",
             "wrong_axis",
+            "null_axis",
+            "empty_axis",
+            "invalid_axis",
             "wrong_issue",
             "wrong_points",
             "oversize",
@@ -199,6 +232,12 @@ class TestRawArchiveEvidence:
                 trace["meta"]["unit"] = "ft3/s"
             elif fault == "wrong_axis":
                 trace["yaxis"] = "y2"
+            elif fault == "null_axis":
+                trace["yaxis"] = None
+            elif fault == "empty_axis":
+                trace["yaxis"] = ""
+            elif fault == "invalid_axis":
+                trace["yaxis"] = "not-an-axis"
             elif fault == "wrong_issue":
                 payload["plot"]["layout"]["annotations"][0]["x"] = (
                     _ISSUED_AT - timedelta(hours=1)

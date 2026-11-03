@@ -418,7 +418,12 @@ never replaces CMAL. It uses one archive listing and scoped selected files throu
 the full envelope parser. The overview additionally requires the same-stem raw
 JSON (at most 1 MiB), matching issue annotation and relevant trace times/values.
 Median and both Min/Max traces must explicitly declare `m³/s` or `m3/s` on the
-same axis. Only the percentile fill band may inherit that shared-axis evidence.
+same axis. An omitted trace `yaxis` means the primary `"y"` axis, including on
+Measured traces; explicit null, empty or conflicting axis values are not defaulted.
+This follows Plotly's `Scatter.yaxis` contract (Plotly 6.6.0 installed API
+documentation and [scatter reference](https://plotly.com/python/reference/scatter/#scatter-yaxis):
+`"y"` is the default and refers to `layout.yaxis`). Only the percentile fill band
+may inherit that shared-axis evidence. Axis defaulting never supplies missing units.
 A parquet unit alone is not evidence: the collector may have defaulted it.
 Missing/inconsistent raw evidence makes only that BAFU component unavailable;
 the existing station snapshot parser remains unchanged. Source issue time is not

@@ -235,7 +235,7 @@ class _RawTrace(BaseModel):
     x: list[str]
     y: list[float | None]
     meta: _RawUnit = Field(default_factory=_RawUnit)
-    yaxis: str
+    yaxis: str = "y"
 
 
 class _RawAnnotation(BaseModel):
