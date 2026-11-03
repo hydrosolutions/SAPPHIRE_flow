@@ -861,6 +861,20 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | Scheduled (event-driven) | `retry` | `sleep 300` (Wait 5 minutes for BAFU LINDAS to recover) | n/a | n/a (event-triggered automation) | Yes — bounded wait for upstream recovery |
 | Scheduled (event-driven) | `retry` | `gh workflow run live-lindas-weekly.yml` (Re-dispatch live-lindas-weekly.yml) | sleep | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
 
+### Integration shard balance
+
+`tools/integration_shards.py::NAMED_GROUPS` is the source of truth for heavy
+file membership; `rest` is its computed complement. New assignments should follow
+JUnit durations, not test counts. Keep every test and parameter case in the moved
+files; rebalancing changes placement, not coverage or the existing live/slow
+exclusions.
+
+Each leg has its own runner and PostGIS service. Pytest remains serial inside
+each leg; fixtures also create their own Testcontainers databases. The native
+partition proof and aggregate integration gate remain mandatory. Judge rebalances
+by the slower leg's duration, including duplicated fixture setup, not summed file
+durations. Do not add shared-database xdist to rebalance this suite.
+
 ### The unit-suite shard matrix (Plan 319)
 
 The `unit` job runs as a **four-leg matrix**, one leg per shard, each on its own

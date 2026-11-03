@@ -40,6 +40,9 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/ops/test_protected_evidence_restore.py",
             "tests/integration/services/test_skill_data_use_isolation.py",
             "tests/integration/store/test_observation_unit_readers.py",
+            # Append timing-led moves to preserve the existing heavy-file order.
+            "tests/integration/store/test_daily_forecast_one_shot_runner.py",
+            "tests/integration/store/test_swiss_overview.py",
         ),
     ),
 )
