@@ -127,6 +127,22 @@ class TestIntegrationShardDefinitions:
         assert path in shards["heavy"].paths
         assert path in shards["rest"].ignores
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/integration/store/test_daily_forecast_one_shot_runner.py",
+            "tests/integration/store/test_swiss_overview.py",
+        ],
+    )
+    def test_timing_led_store_files_run_only_in_heavy(self, path: str) -> None:
+        shards = {shard.id: shard for shard in SHARDS}
+
+        assert path in shards["heavy"].paths
+        assert path in shards["rest"].ignores
+
+    def test_shard_ids_remain_heavy_and_rest(self) -> None:
+        assert SHARD_IDS == ("heavy", "rest")
+
     def test_pytest_args_scope_a_shard_to_its_paths(self) -> None:
         shard = Shard(
             id="x",
@@ -236,7 +252,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "9 selected nodes, 10 non-live files"
+            "11 selected nodes, 12 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:
