@@ -126,7 +126,7 @@ jobs:
         run: python3 -I tools/staging_release.py preflight
       - name: Privately deliver the approved release or failed-run diagnostics
         if: ${{ always() && !cancelled() && steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') && steps.transfer_admission.outcome == 'success' }}
-        timeout-minutes: 30
+        timeout-minutes: 40
         env:
           STAGING_ADMIN_SSH_KEY: ${{ secrets.STAGING_ADMIN_SSH_KEY }}
           STAGING_KNOWN_HOSTS: ${{ vars.STAGING_KNOWN_HOSTS }}

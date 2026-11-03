@@ -571,12 +571,15 @@ class TestExportFailureEvidence:
 
 
 class TestTransferStepBudget:
-    def test_workflow_budget_has_not_been_extended(self) -> None:
+    def test_workflow_budget_matches_bounded_transfer_extension(self) -> None:
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/private-verification.yml").read_text()
         )
         job = workflow["jobs"]["verify"]
         assert job["timeout-minutes"] == 180
+        assert job["steps"][-1]["timeout-minutes"] == 40
+        assert transfer.TRANSFER_STEP_SECONDS == 2400
+        assert transfer.TRANSFER_WORK_SECONDS == 2340
         assert (
             job["steps"][-1]["timeout-minutes"] * 60 == transfer.TRANSFER_STEP_SECONDS
         )
@@ -587,6 +590,37 @@ class TestTransferStepBudget:
 
 
 class TestPreflightBudgetAccounting:
+    def test_observed_preflight_cost_keeps_original_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        now = [0.0]
+        monkeypatch.setattr(collector.time, "monotonic", lambda: now[0])
+
+        def preflight(*args: object, **kwargs: object) -> object:
+            now[0] = 441.0
+            return SimpleNamespace(kind=transfer.PayloadKind.RELEASE)
+
+        def send(*args: object, timeout_seconds: int, deadline: float) -> dict:
+            assert deadline == transfer.TRANSFER_WORK_SECONDS
+            assert (
+                transfer.remaining_ssh_budget(timeout_seconds, deadline, now[0]) == 1500
+            )
+            return {"status": "delivered"}
+
+        monkeypatch.setattr(collector, "preflight", preflight)
+        monkeypatch.setattr(transfer, "send", send)
+        collector.transfer_release(
+            tmp_path,
+            tmp_path,
+            {
+                "STAGING_TRANSFER_TIMEOUT": "1500",
+                "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+            },
+        )
+        assert json.loads((tmp_path / "accepted-owner-receipt.json").read_text()) == {
+            "status": "delivered"
+        }
+
     def test_preflight_cost_is_not_reset_before_sender(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -594,7 +628,12 @@ class TestPreflightBudgetAccounting:
         monkeypatch.setattr(collector.time, "monotonic", lambda: now[0])
 
         def preflight(*args: object, **kwargs: object) -> object:
-            now[0] = 500.0
+            now[0] = (
+                transfer.TRANSFER_WORK_SECONDS
+                - transfer.TRANSFER_CLEANUP_SECONDS
+                - transfer.MAX_RECEIVER_SECONDS
+                - transfer.ACK_MARGIN_SECONDS
+            )
             return SimpleNamespace(kind=transfer.PayloadKind.RELEASE)
 
         def send(*args: object, timeout_seconds: int, deadline: float) -> dict:
