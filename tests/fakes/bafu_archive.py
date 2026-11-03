@@ -20,7 +20,6 @@ def write_raw_evidence(
                 name=name,
                 x=[r["valid_time"].isoformat() for r in points],
                 y=[r["value"] for r in points],
-                yaxis="y",
                 meta={"unit": "" if name == "25.-75. Percentile" else "m³/s"},
             )
         )
