@@ -18,7 +18,7 @@
 # Runbook: docs/operations/nepal-forcing-runbook.md
 services:
   postgres:
-    image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07  # postgis/postgis:16-3.4
+    image: postgis/postgis:16-3.6@sha256:d07ce3f06f657b6516c7511412232e97174d7e9dcf4c9fe520109b682b44a201  # postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: sapphire
       POSTGRES_PASSWORD_FILE: /run/secrets/nepal_db_password
