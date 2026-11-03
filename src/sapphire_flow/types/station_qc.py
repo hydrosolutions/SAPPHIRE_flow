@@ -49,3 +49,6 @@ class ThresholdConfigOutcome:
     pending: tuple[str, ...] = ()
     rejected: tuple[str, ...] = ()
     not_applicable: tuple[str, ...] = ()
+    pending_station_keys: tuple[tuple[str, str], ...] = ()
+    rejected_station_keys: tuple[tuple[str, str], ...] = ()
+    not_applicable_station_keys: tuple[tuple[str, str], ...] = ()

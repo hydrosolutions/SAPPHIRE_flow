@@ -110,8 +110,12 @@ def native_pair(conn: sa.Connection) -> tuple[OperationalForecast, OperationalFo
         reference=reference,
         at=_NOW,
     )
+    assert sample.evidence_version == 1 and sample.capture_id is None
     values = asdict(sample)
     values.pop("warnings")
+    # Keep this v1 fixture usable by the historical 0079 migration test.
+    values.pop("capture_id")
+    values.pop("evidence_version")
     conn.execute(
         sa.insert(rating_derived_discharge).values(
             **values, fingerprint=sample.fingerprint, captured_at=_NOW
@@ -143,6 +147,13 @@ class TestNativeRatingForecasts:
     ) -> None:
         conn = db_connection
         ordinary, native = native_pair(conn)
+        stored_evidence = conn.execute(
+            sa.select(
+                rating_derived_discharge.c.capture_id,
+                rating_derived_discharge.c.evidence_version,
+            )
+        ).one()
+        assert tuple(stored_evidence) == (None, 1)
         standard = PgForecastStore(conn, transaction_factory=savepoint_factory(conn))
         scoped = PgForecastStore(
             conn,

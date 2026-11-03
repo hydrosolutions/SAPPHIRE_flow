@@ -29,6 +29,7 @@ from sapphire_flow.types.enums import (
     ForcingRoute,
     FutureWeatherPolicy,
     ObservationQcCoverage,
+    ProvisionalIfsTailMode,
     QcStatus,
     WarmUpSource,
 )
@@ -656,6 +657,59 @@ def _complete_bucket_grid(
     )
 
 
+def _ifs_control_tail_points(
+    records: list[WeatherForecastRecord],
+    *,
+    station_id: StationId,
+    parameters: frozenset[str],
+    start: UtcDatetime,
+    end: UtcDatetime,
+) -> tuple[dict[tuple[str, UtcDatetime], float], list[WeatherForecastRecord]]:
+    candidates: dict[tuple[str, UtcDatetime, UtcDatetime], dict[UtcDatetime, float]] = (
+        defaultdict(dict)
+    )
+    conflicts: set[tuple[str, UtcDatetime, UtcDatetime]] = set()
+    eligible: list[WeatherForecastRecord] = []
+    for record in records:
+        stamp, cycle = ensure_utc(record.valid_time), ensure_utc(record.cycle_time)
+        lead = stamp - cycle
+        if (
+            record.station_id != station_id
+            or record.nwp_source != "ifs_ecmwf"
+            or record.member_id != 0
+            or record.parameter not in parameters
+            or record.is_gap
+            or not isfinite(record.value)
+            or not start <= stamp < end
+            or not timedelta(0) <= lead <= timedelta(hours=144)
+            or lead % timedelta(hours=3) != timedelta(0)
+        ):
+            continue
+        eligible.append(record)
+        bucket = floor_to_time_step(stamp, timedelta(days=1))
+        key = (record.parameter, bucket, cycle)
+        values = candidates[key]
+        if stamp in values and values[stamp] != record.value:
+            conflicts.add(key)
+        values[stamp] = record.value
+    chosen: dict[
+        tuple[str, UtcDatetime], tuple[UtcDatetime, dict[UtcDatetime, float]]
+    ] = {}
+    for (param, bucket, cycle), values in candidates.items():
+        if (param, bucket, cycle) in conflicts or frozenset(
+            values
+        ) != _complete_bucket_grid(bucket, timedelta(days=1), timedelta(hours=3)):
+            continue
+        incumbent = chosen.get((param, bucket))
+        if incumbent is None or cycle > incumbent[0]:
+            chosen[(param, bucket)] = (cycle, values)
+    return {
+        (param, stamp): value
+        for (param, _bucket), (_cycle, values) in chosen.items()
+        for stamp, value in values.items()
+    }, eligible
+
+
 def fill_past_forcing_tail(
     past_dynamic: pl.DataFrame,
     *,
@@ -667,6 +721,7 @@ def fill_past_forcing_tail(
     time_step: timedelta,
     aggregation_methods: dict[str, AggregationMethod],
     source_records: list[WeatherForecastRecord] | None = None,
+    provisional_ifs_tail_mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.DISABLED,
 ) -> pl.DataFrame:
     """Extend each past-forcing series to the end of the aligned lookback
     window using stored NWP forecasts (Plan 261 T1).
@@ -725,7 +780,25 @@ def fill_past_forcing_tail(
     if fetch_start >= window_end:
         return past_dynamic
 
-    native_step = _NATIVE_STEP_BY_SOURCE.get(nwp_source)
+    ifs_tail = (
+        nwp_source == "ifs_ecmwf"
+        and provisional_ifs_tail_mode is ProvisionalIfsTailMode.CONTROL_3H
+    )
+    if ifs_tail and (
+        time_step != timedelta(days=1)
+        or any(
+            aggregation_methods.get(param)
+            is not {
+                "precipitation": AggregationMethod.SUM,
+                "temperature": AggregationMethod.MEAN,
+            }[param]
+            for param in last_measured
+        )
+    ):
+        return past_dynamic
+    native_step = (
+        timedelta(hours=3) if ifs_tail else _NATIVE_STEP_BY_SOURCE.get(nwp_source)
+    )
     if native_step is None:
         # Resolved BEFORE the read: an undeclared source cannot complete a
         # bucket, so fetching thousands of rows to discard them would be waste.
@@ -744,9 +817,9 @@ def fill_past_forcing_tail(
         start=fetch_start,
         end=window_end,
         parameters=list(last_measured),
-        member_ids=_CONTROL_MEMBER_IDS,
+        member_ids=frozenset({0}) if ifs_tail else _CONTROL_MEMBER_IDS,
     )
-    if source_records is not None:
+    if source_records is not None and not ifs_tail:
         source_records.extend(records)
     if not records:
         log.info(
@@ -759,7 +832,20 @@ def fill_past_forcing_tail(
         )
         return past_dynamic
 
-    points = _freshest_control_points(records)
+    if ifs_tail:
+        points, eligible = _ifs_control_tail_points(
+            records,
+            station_id=station_id,
+            parameters=frozenset(last_measured),
+            start=fetch_start,
+            end=window_end,
+        )
+        if source_records is not None:
+            source_records.extend(eligible)
+        if not points:
+            return past_dynamic
+    else:
+        points = _freshest_control_points(records)
 
     wide_rows: dict[UtcDatetime, dict[str, object]] = {}
     for (param, valid_time), value in points.items():
@@ -950,7 +1036,23 @@ def assemble_station_operational_inputs(
     static_naming_models: Sequence[object] | None = None,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     rating_inputs: NativeRatingInputs | None = None,
+    provisional_ifs_tail_mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.DISABLED,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
+    if provisional_ifs_tail_mode is ProvisionalIfsTailMode.CONTROL_3H:
+        if nwp_source != "ifs_ecmwf" or rating_inputs is None:
+            raise ConfigurationError(
+                "provisional IFS tail requires IFS and native rating inputs"
+            )
+        if (
+            sum(
+                binding.station_id == station_id and model_id in binding.model_ids
+                for binding in rating_inputs.bindings
+            )
+            != 1
+        ):
+            raise ConfigurationError(
+                "provisional IFS tail requires a unique station/model binding"
+            )
     now = clock()
     # When a station is assigned models with heterogeneous requirements, the
     # caller passes a SUPERSET ``requirements_override`` so every model receives
@@ -1006,11 +1108,28 @@ def assemble_station_operational_inputs(
             raise ConfigurationError(
                 "provisional rating input requires native daily cadence"
             )
-        samples = rating_inputs.read(
+        rating_window = rating_inputs.read_window(
             station_id, model_id, start=past_targets_start, end=past_targets_end, at=now
         )
+        from sapphire_flow.types.rating_input_lineage import RatingUnreconciledSource
+
+        omissions = tuple(
+            RatingUnreconciledSource(
+                observation_id=source.observation_id,
+                timestamp=source.timestamp,
+                source_snapshot_sha256=source.source_snapshot_sha256,
+            )
+            for source in rating_window.held
+            if source.observation_id is not None
+            and source.timestamp is not None
+            and source.source_snapshot_sha256 is not None
+        )
         past_targets, rating_lineage, latest_rating_timestamp = merge_rating_days(
-            past_targets, samples, issue_time=issue_time, weather_cycle_time=cycle_time
+            past_targets,
+            rating_window.records,
+            issue_time=issue_time,
+            weather_cycle_time=cycle_time,
+            unreconciled_sources=omissions,
         )
         if rating_lineage is None:
             log.info(
@@ -1199,6 +1318,7 @@ def assemble_station_operational_inputs(
                 time_step=time_step,
                 aggregation_methods=resolved_aggregation_methods(reqs),
                 source_records=tail_records,
+                provisional_ifs_tail_mode=provisional_ifs_tail_mode,
             )
     else:
         past_dynamic = pl.DataFrame()
@@ -1319,7 +1439,7 @@ def assemble_station_operational_inputs(
             rating_input=replace(
                 rating_lineage.rating_input,
                 weather_record_ids=tuple(
-                    sorted(str(record.id) for record in [*nwp_records, *tail_records])
+                    sorted({str(record.id) for record in [*nwp_records, *tail_records]})
                 ),
                 forcing_versions=tuple(
                     sorted({(record.source, record.version) for record in raw_forcing})

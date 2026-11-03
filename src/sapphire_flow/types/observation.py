@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         RatingCurveId,
         StationId,
     )
+    from sapphire_flow.types.native_capture import DhmRequestEvidence
     from sapphire_flow.types.observation_read import QcReadToken
 
 
@@ -35,6 +36,21 @@ class RawObservation:
     rating_curve_id: RatingCurveId | None = None
     rating_curve_correction_version: str | None = None
     delivery_id: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RawObservationWriteResult:
+    written_ids: tuple[ObservationId, ...] = ()
+    inserted_ids: tuple[ObservationId, ...] = ()
+    updated_ids: tuple[ObservationId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if set(self.inserted_ids) & set(self.updated_ids):
+            raise ValueError("raw insert and update identities must be distinct")
+        if set(self.written_ids) != set(self.inserted_ids) | set(self.updated_ids):
+            raise ValueError("raw written identities differ from insert/update result")
+        if len(set(self.written_ids)) != len(self.written_ids):
+            raise ValueError("raw written identities must be unique")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -98,6 +114,7 @@ class StationFetchOutcome:
     failure_cause: FetchOutcomeCause | None
     failure_detail: str | None
     source_captures: tuple[BafuDischargeCapture, ...] = ()
+    dhm_request_evidence: DhmRequestEvidence | None = None
 
     @property
     def parameter_diagnostics(self) -> tuple[DischargeParameterDiagnostic, ...]:
@@ -114,6 +131,11 @@ class StationFetchOutcome:
                 f"be None, got failure_cause={self.failure_cause!r} "
                 f"failure_detail={self.failure_detail!r}"
             )
+        if (
+            self.dhm_request_evidence is not None
+            and self.dhm_request_evidence.station_id != self.station_id
+        ):
+            raise ValueError("DHM request evidence differs from outcome station")
         normalized = tuple(
             capture.result
             for capture in self.source_captures

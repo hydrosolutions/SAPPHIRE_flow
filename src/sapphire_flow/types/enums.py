@@ -422,6 +422,11 @@ class AuditEventType(Enum):
     DELIVERY_IMPORTED = "delivery_imported"
 
 
+class ProvisionalIfsTailMode(Enum):
+    DISABLED = "disabled"
+    CONTROL_3H = "control_3h"
+
+
 class ForcingProvenance(Enum):
     NWP_DIRECT = "nwp_direct"
     OBSERVED = "observed"

@@ -5444,7 +5444,12 @@ enabled = false
             "parameter": ["discharge"],
         }
 
-    def test_group_path_runs_without_station_model_assignments(self) -> None:
+    @pytest.mark.parametrize("tail_mode", ["disabled", "control_3h"])
+    def test_group_path_runs_without_station_model_assignments(
+        self, tail_mode: str
+    ) -> None:
+        from sapphire_flow.types.enums import ProvisionalIfsTailMode
+
         sid_a = StationId(uuid4())
         sid_b = StationId(uuid4())
         group_model_id = ModelId("fake_group_model")
@@ -5500,7 +5505,9 @@ enabled = false
             forcing_store=forcing_store,
             adapter=FakeWeatherForecastSource(result={}),
             models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
-            config=_make_config(),
+            config=_make_config().model_copy(
+                update={"provisional_ifs_tail_mode": ProvisionalIfsTailMode(tail_mode)}
+            ),
             qc_rules=_empty_qc_rules(),
             clock=_clock,
             rng=random.Random(42),

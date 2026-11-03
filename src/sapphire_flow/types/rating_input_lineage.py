@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import ArtifactId
+    from sapphire_flow.types.ids import ArtifactId, ObservationId
+    from sapphire_flow.types.native_capture import Sha256Digest
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -58,6 +59,13 @@ class RatingDaySupport:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class RatingUnreconciledSource:
+    observation_id: ObservationId
+    timestamp: UtcDatetime
+    source_snapshot_sha256: Sha256Digest
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class RatingInputLineage:
     issue_time: UtcDatetime
     weather_cycle_time: UtcDatetime
@@ -66,6 +74,7 @@ class RatingInputLineage:
     weather_record_ids: tuple[str, ...] = ()
     forcing_versions: tuple[tuple[str, str], ...] = ()
     policy: str = "utc-day-sample-first-mean-measured-precedence-v1"
+    unreconciled_sources: tuple[RatingUnreconciledSource, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -77,3 +86,15 @@ class RatingInputLineage:
             raise ValueError("rating lineage contains nonhistorical day")
         if len({day.day for day in self.days}) != len(self.days):
             raise ValueError("rating lineage has duplicate days")
+
+        if len({source.observation_id for source in self.unreconciled_sources}) != len(
+            self.unreconciled_sources
+        ):
+            raise ValueError("rating lineage contains duplicate omitted sources")
+        if any(
+            source.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(days=1)
+            > self.issue_time
+            for source in self.unreconciled_sources
+        ):
+            raise ValueError("rating lineage contains nonhistorical omitted source")

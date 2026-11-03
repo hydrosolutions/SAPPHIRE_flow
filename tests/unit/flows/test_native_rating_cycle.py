@@ -43,7 +43,16 @@ from tests.unit.services.test_rating_inputs import NOW, samples
 
 
 @pytest.mark.parametrize(
-    "mode", ["native", "wrong_store", "missing_model", "fatal_store", "pretrack_fatal"]
+    "mode",
+    [
+        "native",
+        "ifs_tail",
+        "unapproved_tail",
+        "wrong_store",
+        "missing_model",
+        "fatal_store",
+        "pretrack_fatal",
+    ],
 )
 def test_native_cycle_group_dispatch_isolated_and_stateless(
     monkeypatch: pytest.MonkeyPatch, mode: str
@@ -157,7 +166,34 @@ def test_native_cycle_group_dispatch_isolated_and_stateless(
         return original(**kwargs)
 
     monkeypatch.setattr(group_service, "run_group_forecast", group_run)
-    config = _make_config().model_copy(update={"provisional_ratings": (opt,)})
+    from sapphire_flow.types.enums import ProvisionalIfsTailMode
+
+    tail_modes = []
+    original_assemble = group_service.assemble_group_operational_inputs_outcome
+
+    def assemble(**kwargs: Any) -> Any:
+        tail_modes.append(kwargs.get("provisional_ifs_tail_mode_by_station", {}))
+        return original_assemble(**kwargs)
+
+    monkeypatch.setattr(
+        group_service, "assemble_group_operational_inputs_outcome", assemble
+    )
+    configured_opt = opt
+    if mode in ("ifs_tail", "unapproved_tail"):
+        original_binding = station.fetch_forecast_binding(sid)
+        monkeypatch.setattr(
+            station,
+            "fetch_forecast_binding",
+            lambda station_id: replace(original_binding, nwp_source="ifs_ecmwf"),
+        )
+        if mode == "unapproved_tail":
+            configured_opt = opt.model_copy(update={"model_ids": ("other-model",)})
+    config = _make_config().model_copy(
+        update={
+            "provisional_ratings": (configured_opt,),
+            "provisional_ifs_tail_mode": ProvisionalIfsTailMode.CONTROL_3H,
+        }
+    )
     kwargs = dict(
         pipeline_health_store=health,
         station_store=station,
@@ -172,7 +208,13 @@ def test_native_cycle_group_dispatch_isolated_and_stateless(
         group_store=groups,
         forcing_store=forcing,
         adapter=FakeWeatherForecastSource(result={}),
-        models={} if mode == "missing_model" else {mid: model},
+        models={}
+        if mode == "missing_model"
+        else (
+            {mid: model, ModelId("other-model"): model}
+            if mode == "unapproved_tail"
+            else {mid: model}
+        ),
         config=config,
         qc_rules=_empty_qc_rules(),
         clock=lambda: NOW + timedelta(days=1, hours=6),
@@ -217,7 +259,7 @@ def test_native_cycle_group_dispatch_isolated_and_stateless(
             cycle.run_forecast_cycle_flow(**kwargs)
         assert health.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS) == []
         return
-    if mode != "native":
+    if mode not in ("native", "ifs_tail", "unapproved_tail"):
         from sapphire_flow.exceptions import ConfigurationError
 
         with pytest.raises(
@@ -227,6 +269,9 @@ def test_native_cycle_group_dispatch_isolated_and_stateless(
         return
     result = cycle.run_forecast_cycle_flow(**kwargs)
     assert result.errors == ()
+    assert tail_modes == (
+        [{sid: ProvisionalIfsTailMode.CONTROL_3H}] if mode == "ifs_tail" else [{}]
+    )
     assert result.forecasts_stored == 1
     assert recorded == [GroupStatePolicy.STATELESS_ONLY]
     assert result.alerts_checked is False

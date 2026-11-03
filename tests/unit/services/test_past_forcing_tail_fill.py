@@ -3,15 +3,25 @@ forecasts at its tail, and only there."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import polars as pl
+import pytest
 from structlog.testing import capture_logs
 
-from sapphire_flow.services.operational_inputs import fill_past_forcing_tail
+from sapphire_flow.services.operational_inputs import (
+    build_future_dynamic_frame,
+    fill_past_forcing_tail,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import AggregationMethod, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    AggregationMethod,
+    EnsembleMode,
+    ProvisionalIfsTailMode,
+    SpatialRepresentation,
+)
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.fakes.fake_stores import FakeWeatherForecastStore
@@ -670,3 +680,170 @@ class TestFillPastForcingTail:
         filled = _fill(frame, [], window_end=_ts(2026, 9, 9))
 
         assert filled.equals(frame)
+
+
+def _ifs_grid(
+    *,
+    day: int = 8,
+    cycle_day: int = 8,
+    value: float = 2.0,
+    parameter: str = "precipitation",
+) -> list[WeatherForecastRecord]:
+    return [
+        replace(
+            record,
+            id=uuid4(),
+            nwp_source="ifs_ecmwf",
+            cycle_time=_ts(2026, 9, cycle_day),
+        )
+        for record in _hourly_forecast(
+            day=day,
+            parameter=parameter,
+            cycle_day=cycle_day,
+            value_per_hour=value,
+            hours=range(0, 24, 3),
+        )
+    ]
+
+
+def _fill_ifs(
+    records: list[WeatherForecastRecord],
+    *,
+    frame: pl.DataFrame | None = None,
+    mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.CONTROL_3H,
+    aggregation: dict[str, AggregationMethod] | None = None,
+    evidence: list[WeatherForecastRecord] | None = None,
+) -> pl.DataFrame:
+    store = FakeWeatherForecastStore()
+    store.store_weather_forecasts(records)
+    return fill_past_forcing_tail(
+        _reanalysis_frame(7) if frame is None else frame,
+        station_id=_STATION,
+        nwp_source="ifs_ecmwf",
+        weather_forecast_store=store,
+        parameters=["precipitation", "temperature"],
+        window_end=_ts(2026, 9, 9),
+        time_step=_DAY,
+        aggregation_methods=_AGG if aggregation is None else aggregation,
+        source_records=evidence,
+        provisional_ifs_tail_mode=mode,
+    )
+
+
+class TestProvisionalIfsTail:
+    def test_matches_native_future_consumer_including_lead_zero(self) -> None:
+        records = [*_ifs_grid(), *_ifs_grid(parameter="temperature", value=4.0)]
+        evidence: list[WeatherForecastRecord] = []
+        filled = _fill_ifs(records, evidence=evidence).tail(1)
+        future = build_future_dynamic_frame(
+            records,
+            time_step=_DAY,
+            issue_time=_ts(2026, 9, 8),
+            forecast_horizon_steps=1,
+            future_dynamic_features=frozenset(_AGG),
+            ensemble_mode=EnsembleMode.SINGLE,
+        )
+        assert (
+            filled.select("precipitation", "temperature").to_dicts()
+            == future.select("precipitation", "temperature").to_dicts()
+        )
+        assert filled["precipitation"].to_list() == [16.0]
+        assert {record.id for record in evidence} == {record.id for record in records}
+        assert all(
+            record.member_id == 0 and record.cycle_time == _ts(2026, 9, 8)
+            for record in evidence
+        )
+
+    def test_default_off_and_invalid_aggregation_decline(self) -> None:
+        assert _fill_ifs(_ifs_grid(), mode=ProvisionalIfsTailMode.DISABLED).equals(
+            _reanalysis_frame(7)
+        )
+        assert _fill_ifs(
+            _ifs_grid(), aggregation={"precipitation": AggregationMethod.MEAN}
+        ).equals(_reanalysis_frame(7))
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "missing",
+            "nan",
+            "inf",
+            "irregular",
+            "six_hour",
+            "long_lead",
+            "perturbed",
+            "none_member",
+            "gap",
+            "future_cycle",
+            "conflict",
+            "empty",
+        ],
+    )
+    def test_incomplete_or_ineligible_support_is_not_filled(self, case: str) -> None:
+        records = _ifs_grid()
+        if case == "missing":
+            records = records[:-1]
+        elif case == "nan":
+            records[0] = replace(records[0], value=float("nan"))
+        elif case == "inf":
+            records[0] = replace(records[0], value=float("inf"))
+        elif case == "irregular":
+            records[0] = replace(
+                records[0], valid_time=records[0].valid_time + timedelta(hours=1)
+            )
+        elif case == "six_hour":
+            records = records[::2]
+        elif case == "long_lead":
+            records = _ifs_grid(cycle_day=1)
+        elif case == "perturbed":
+            records = [replace(record, member_id=1) for record in records]
+        elif case == "none_member":
+            records = [replace(record, member_id=None) for record in records]
+        elif case == "gap":
+            records[0] = replace(records[0], is_gap=True, gap_status="unrecoverable")
+        elif case == "future_cycle":
+            records = [
+                replace(record, cycle_time=_ts(2026, 9, 9)) for record in records
+            ]
+        elif case == "conflict":
+            records.append(replace(records[0], id=uuid4(), value=3.0))
+        elif case == "empty":
+            records = []
+        assert _fill_ifs(records).equals(_reanalysis_frame(7))
+
+    @pytest.mark.parametrize("newer", ["partial", "conflict", "ineligible", "complete"])
+    def test_single_complete_cycle_and_older_fallback(self, newer: str) -> None:
+        old = _ifs_grid(cycle_day=7, value=1.0)
+        fresh = _ifs_grid(value=5.0)
+        if newer == "partial":
+            fresh = fresh[:-1]
+        elif newer == "conflict":
+            fresh.append(replace(fresh[0], id=uuid4(), value=6.0))
+        elif newer == "ineligible":
+            fresh = [replace(row, cycle_time=_ts(2026, 9, 8, 1)) for row in fresh]
+        result = _fill_ifs([*old, *fresh])
+        assert result["precipitation"].to_list()[-1] == (
+            40.0 if newer == "complete" else 8.0
+        )
+
+    def test_partial_cycles_cannot_combine_into_one_day(self) -> None:
+        records = [*_ifs_grid(cycle_day=7)[:4], *_ifs_grid()[4:]]
+        assert _fill_ifs(records).equals(_reanalysis_frame(7))
+
+    def test_equal_duplicates_collapse(self) -> None:
+        records = _ifs_grid()
+        records.append(replace(records[0], id=uuid4()))
+        assert _fill_ifs(records)["precipitation"].to_list()[-1] == 16.0
+
+    def test_reanalysis_and_interior_gap_are_preserved(self) -> None:
+        frame = _reanalysis_frame(7).filter(pl.col("timestamp") != _ts(2026, 9, 4))
+        filled = _fill_ifs(
+            [
+                *_ifs_grid(day=4, cycle_day=4),
+                *_ifs_grid(day=7, cycle_day=7),
+                *_ifs_grid(),
+            ],
+            frame=frame,
+        )
+        assert filled.head(frame.height).equals(frame)
+        assert _ts(2026, 9, 4) not in filled["timestamp"].to_list()

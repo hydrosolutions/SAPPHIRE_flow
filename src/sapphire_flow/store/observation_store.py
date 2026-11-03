@@ -21,7 +21,11 @@ from sapphire_flow.store.bafu_unit_read_filter import (
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
-from sapphire_flow.types.observation import Observation, RawObservation
+from sapphire_flow.types.observation import (
+    Observation,
+    RawObservation,
+    RawObservationWriteResult,
+)
 from sapphire_flow.types.observation_read import (
     ObservationReadPurpose,
     ObservationWindowStart,
@@ -34,6 +38,10 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.native_capture import (
+        CaptureQcWindow,
+        CaptureRecoveryWindow,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -291,8 +299,13 @@ class PgObservationStore:
     def store_raw_observations(
         self, observations: list[RawObservation]
     ) -> list[ObservationId]:
+        return list(self.store_raw_observations_detailed(observations).written_ids)
+
+    def store_raw_observations_detailed(
+        self, observations: list[RawObservation]
+    ) -> RawObservationWriteResult:
         if not observations:
-            return []
+            return RawObservationWriteResult()
 
         deduped = _dedupe_raw_observations(observations)
         self._assert_delivery_collisions(
@@ -325,6 +338,8 @@ class PgObservationStore:
         ]
 
         ids: list[ObservationId] = []
+        inserted_ids: list[ObservationId] = []
+        updated_ids: list[ObservationId] = []
         inserted_count = 0
         updated_count = 0
         for i in range(0, len(rows), self._BATCH_SIZE):
@@ -369,6 +384,12 @@ class PgObservationStore:
             ]
             written_id_set = set(written_ids)
             ids.extend(written_ids)
+            inserted_ids.extend(
+                identity for identity in written_ids if identity in proposed_ids
+            )
+            updated_ids.extend(
+                identity for identity in written_ids if identity not in proposed_ids
+            )
             inserted_count += len(written_id_set & proposed_ids)
             updated_count += len(written_id_set - proposed_ids)
 
@@ -381,7 +402,11 @@ class PgObservationStore:
             deduped_count=len(rows),
         )
 
-        return ids
+        return RawObservationWriteResult(
+            written_ids=tuple(ids),
+            inserted_ids=tuple(inserted_ids),
+            updated_ids=tuple(updated_ids),
+        )
 
     def _assert_delivery_collisions(
         self,
@@ -505,6 +530,142 @@ class PgObservationStore:
             stmt = stmt.where(observations_table.c.source == source.value)
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_domain(row) for row in rows]
+
+    def fetch_capture_qc_window(
+        self,
+        recovery: CaptureRecoveryWindow,
+        *,
+        context_window_hours: float,
+        excluded_ids: frozenset[ObservationId] = frozenset(),
+    ) -> CaptureQcWindow:
+        import math
+
+        from sapphire_flow.db.metadata import native_measurement_captures
+        from sapphire_flow.store.native_capture_predicates import (
+            current_capture_matches_observation,
+        )
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.native_capture import CaptureQcWindow
+        from sapphire_flow.types.rating_reconciliation import (
+            RatingHeldSource,
+            RatingHoldReason,
+            RatingInputsUnavailable,
+        )
+
+        if self._purpose is not ObservationReadPurpose.QC_CONTEXT:
+            raise ValueError("capture recovery requires a QC-context reader")
+        if not math.isfinite(context_window_hours) or context_window_hours < 0:
+            raise ValueError("capture recovery requires finite nonnegative context")
+        targets = tuple(
+            row
+            for row in recovery.current_raw
+            if row.observation_id not in excluded_ids
+        )
+        if not targets:
+            return CaptureQcWindow(observations=(), target_ids=frozenset())
+        window = QcContextWindow(
+            station_id=recovery.station_id,
+            parameter="water_level",
+            start=ensure_utc(recovery.start - timedelta(hours=context_window_hours)),
+            end=ensure_utc(recovery.end + timedelta(hours=context_window_hours)),
+            source=None,
+        )
+        bounded = (
+            sa.select(observations_table.c.id)
+            .where(
+                observations_table.c.station_id == window.station_id,
+                observations_table.c.parameter == window.parameter,
+                observations_table.c.timestamp >= window.start,
+                observations_table.c.timestamp < window.end,
+            )
+            .limit(1001)
+            .cte("recovery_candidates")
+            .prefix_with("MATERIALIZED")
+        )
+        size = (
+            sa.select(sa.func.count().label("n"))
+            .select_from(bounded)
+            .cte("recovery_size")
+        )
+        guarded_start = sa.case((size.c.n <= 1000, window.start), else_=window.end)
+        context = (
+            sa.func.public.observation_qc_window(
+                window.station_id,
+                window.parameter,
+                guarded_start,
+                window.end,
+                None,
+            )
+            .table_valued(
+                "observation_id",
+                "state_sha256",
+                "context_sha256",
+                "qc_context_segment",
+                "unit_governed",
+                "qc_state_sha256",
+                "cohort_size",
+            )
+            .lateral()
+        )
+        proof = sa.exists(
+            sa.select(1)
+            .select_from(native_measurement_captures)
+            .where(
+                current_capture_matches_observation(),
+                sa.tuple_(
+                    native_measurement_captures.c.id,
+                    native_measurement_captures.c.observation_id,
+                    native_measurement_captures.c.source_version_sha256,
+                ).in_(
+                    [
+                        (
+                            row.capture_id,
+                            row.observation_id,
+                            row.source_version_sha256.value,
+                        )
+                        for row in targets
+                    ]
+                ),
+            )
+            .correlate(observations_table)
+        )
+        query = (
+            sa.select(
+                observations_table,
+                context,
+                size.c.n,
+                sa.and_(
+                    observations_table.c.qc_status == QcStatus.RAW.value, proof
+                ).label("recovery_target"),
+            )
+            .select_from(
+                size.outerjoin(context, sa.true()).outerjoin(
+                    observations_table,
+                    observations_table.c.id == context.c.observation_id,
+                )
+            )
+            .order_by(observations_table.c.timestamp, observations_table.c.source)
+        )
+        rows = self._conn.execute(query).mappings().all()
+        if rows[0]["n"] > 1000:
+            raise RatingInputsUnavailable(
+                (
+                    RatingHeldSource(
+                        observation_id=None,
+                        source_version_sha256=None,
+                        reason=RatingHoldReason.CHUNK_LIMIT,
+                    ),
+                )
+            )
+        actual = tuple(
+            _row_to_domain(row, window=window) for row in rows if row["id"] is not None
+        )
+        return CaptureQcWindow(
+            observations=actual,
+            target_ids=frozenset(
+                ObservationId(row["id"]) for row in rows if row["recovery_target"]
+            ),
+        )
 
     def fetch_latest_timestamp(
         self, station_id: StationId, parameter: str

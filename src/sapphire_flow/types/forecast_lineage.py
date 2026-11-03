@@ -22,6 +22,7 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus, SpatialRepres
 from sapphire_flow.types.rating_input_lineage import (
     RatingDaySupport,
     RatingInputLineage,
+    RatingUnreconciledSource,
 )
 from sapphire_flow.types.rating_reference import canonical_content, content_digest
 
@@ -289,12 +290,27 @@ class ForecastInputLineage:
 
     @property
     def content(self) -> str:
+        rating_content = (
+            asdict(self.rating_input) if self.rating_input is not None else None
+        )
+        if rating_content is not None and self.rating_input is not None:
+            if self.rating_input.unreconciled_sources:
+                rating_content["unreconciled_sources"] = [
+                    {
+                        "observation_id": source.observation_id,
+                        "timestamp": source.timestamp,
+                        "source_snapshot_sha256": source.source_snapshot_sha256.value,
+                    }
+                    for source in self.rating_input.unreconciled_sources
+                ]
+            else:
+                rating_content.pop("unreconciled_sources")
         return canonical_content(
             {
                 **(
                     {
                         "kind": "provisional_rating",
-                        "rating_input": asdict(self.rating_input),
+                        "rating_input": rating_content,
                     }
                     if self.rating_input is not None
                     else {}
@@ -370,7 +386,8 @@ class ForecastInputLineage:
 def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
     from datetime import datetime
 
-    from sapphire_flow.types.ids import ArtifactId
+    from sapphire_flow.types.ids import ArtifactId, ObservationId
+    from sapphire_flow.types.native_capture import Sha256Digest
 
     if data["kind"] != "provisional_rating":
         raise ValueError("unknown input lineage kind")
@@ -401,6 +418,16 @@ def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
             datetime.fromisoformat(rating["weather_cycle_time"])
         ),
         days=days,
+        unreconciled_sources=tuple(
+            RatingUnreconciledSource(
+                observation_id=ObservationId(UUID(source["observation_id"])),
+                timestamp=ensure_utc(datetime.fromisoformat(source["timestamp"])),
+                source_snapshot_sha256=Sha256Digest(
+                    value=source["source_snapshot_sha256"]
+                ),
+            )
+            for source in rating.get("unreconciled_sources", ())
+        ),
         policy=rating["policy"],
         weather_record_ids=tuple(rating["weather_record_ids"]),
         forcing_versions=tuple(tuple(item) for item in rating["forcing_versions"]),

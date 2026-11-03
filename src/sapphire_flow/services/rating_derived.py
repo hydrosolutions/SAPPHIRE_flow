@@ -12,7 +12,9 @@ from sapphire_flow.services.rating_conversion import (
 )
 from sapphire_flow.types.enums import QcStatus
 from sapphire_flow.types.rating_derived import (
+    CAPTURE_POLICY,
     POLICY,
+    NativeCaptureFeed,
     NativeFeedCustody,
     RatingDerivedDischarge,
 )
@@ -21,6 +23,7 @@ from sapphire_flow.types.rating_reference import (
     assumed_curve_content,
     canonical_content,
     curve_snapshot,
+    measurement_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -52,18 +55,30 @@ def derive_rating_sample(
     file_id: UUID,
     file_sha256: str,
     delivered_on: str,
-    feed: NativeFeedCustody,
+    feed: NativeFeedCustody | NativeCaptureFeed,
     reference: RatingReferenceEvidence,
     at: UtcDatetime,
 ) -> RatingDerivedDischarge:
     if observation.timestamp > at or observation.timestamp < curve.valid_from:
         raise ValueError("measurement outside eligible conversion time")
+    reference_endpoint = reference.endpoint
+    if isinstance(feed, NativeCaptureFeed):
+        from sapphire_flow.types.native_capture import canonical_provider_endpoint
+
+        reference_endpoint = canonical_provider_endpoint(reference.endpoint)
+        if feed.capture.source_version.measurement != measurement_snapshot(observation):
+            raise ValueError("capture differs from current raw measurement")
+        if not isinstance(reference, OwnerAssumedZeroReference) and (
+            feed.capture.source_version.level_reference.value
+            != reference.level_reference
+        ):
+            raise ValueError("capture datum differs from exact reference binding")
     if (
         (feed.tenant_id, feed.station_id, feed.endpoint, feed.api_station_id)
         != (
             reference.tenant_id,
             reference.station_id,
-            reference.endpoint,
+            reference_endpoint,
             reference.api_station_id,
         )
         or observation.station_id != curve.station_id
@@ -77,7 +92,9 @@ def derive_rating_sample(
     reference_at = reference.binding_at if assumed else reference.verified_at
     if reference_at > at:
         raise ValueError("future reference evidence")
-    if not feed.start <= observation.timestamp < feed.end:
+    if isinstance(feed, NativeFeedCustody) and not (
+        feed.start <= observation.timestamp < feed.end
+    ):
         raise ValueError("measurement outside documented native feed custody")
     if observation.parameter != "water_level" or observation.source.value != "measured":
         raise ValueError("native conversion requires genuine measured water level")
@@ -149,13 +166,15 @@ def derive_rating_sample(
     content = canonical_content(
         {
             **identity,
-            "policy": POLICY,
+            "policy": CAPTURE_POLICY if isinstance(feed, NativeCaptureFeed) else POLICY,
             "source": source,
             "curve": json.loads(snapshot.content),
             "file_sha256": file_sha256,
             "delivered_on": delivered_on,
             "selection": "newest_delivery_then_latest_eligible_start",
-            "feed": asdict(feed),
+            "feed": feed.content
+            if isinstance(feed, NativeCaptureFeed)
+            else asdict(feed),
             "reference": asdict(reference),
             "discharge": value,
             "rejection": rejection,
@@ -176,4 +195,6 @@ def derive_rating_sample(
         rejection=rejection,
         warnings=tuple(warnings),
         content=content,
+        capture_id=feed.capture.id if isinstance(feed, NativeCaptureFeed) else None,
+        evidence_version=2 if isinstance(feed, NativeCaptureFeed) else 1,
     )

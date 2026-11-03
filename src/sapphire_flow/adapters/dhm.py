@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import httpx
 import structlog
@@ -12,6 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sapphire_flow.exceptions import AdapterError, ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import FetchOutcomeCause, ObservationSource, StationKind
+from sapphire_flow.types.native_capture import (
+    CanonicalProviderIdentity,
+    CaptureBatchId,
+    CaptureRequestInterval,
+    DhmRequestEvidence,
+    NativeFetchOutcome,
+)
 from sapphire_flow.types.observation import (
     HydroScraperBatchResult,
     RawObservation,
@@ -20,6 +29,7 @@ from sapphire_flow.types.observation import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from uuid import UUID
 
     from sapphire_flow.config.dhm import DhmBinding, DhmConfig
     from sapphire_flow.types.datetime import UtcDatetime
@@ -28,6 +38,35 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 _RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+class DhmBoundsMode(Enum):
+    POLLING = "polling"
+    HISTORICAL = "historical"
+
+
+def validate_dhm_station_binding(
+    config: DhmConfig, station: StationConfig
+) -> DhmBinding:
+    binding = next(
+        (
+            item
+            for item in config.bindings
+            if (item.network, item.station_code) == (station.network, station.code)
+        ),
+        None,
+    )
+    if binding is None or "water_level" not in station.measured_parameters:
+        raise ConfigurationError("DHM station requires binding and measured level")
+    unit = station.water_level_unit
+    compatible = (
+        unit in ("m", "m a.s.l.")
+        if binding.level_reference == "masl"
+        else unit == "m" and station.water_level_datum_masl is None
+    )
+    if not compatible:
+        raise ConfigurationError("Incompatible DHM station unit or datum")
+    return binding
 
 
 class _Reading(BaseModel):
@@ -71,6 +110,7 @@ class _StationWork:
     binding: DhmBinding
     start: UtcDatetime
     windows: int
+    bounds_mode: DhmBoundsMode = DhmBoundsMode.POLLING
 
 
 def _failure(
@@ -84,6 +124,14 @@ def _failure(
     )
 
 
+@dataclass(slots=True)
+class _RequestTrace:
+    intervals: list[CaptureRequestInterval] = field(
+        default_factory=list[CaptureRequestInterval]
+    )
+    started_at: UtcDatetime | None = None
+
+
 class DhmAdapter:
     def __init__(
         self,
@@ -93,12 +141,16 @@ class DhmAdapter:
         clock: Callable[[], UtcDatetime],
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        id_gen: Callable[[], UUID] = uuid4,
+        request_clock: Callable[[], UtcDatetime] | None = None,
     ) -> None:
         self._config = config
         self._http_client = http_client
         self._clock = clock
         self._monotonic = monotonic
         self._sleeper = sleeper
+        self._id_gen = id_gen
+        self._request_clock = request_clock or clock
         self._window_span = timedelta(hours=config.window_hours)
         self._history_url = httpx.URL(config.endpoint.rstrip("/") + "/").join("river/")
         self._bindings = {(b.network, b.station_code): b for b in config.bindings}
@@ -115,16 +167,46 @@ class DhmAdapter:
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
     ) -> HydroScraperBatchResult:
+        return self._fetch_batch(station_configs, since, None, DhmBoundsMode.POLLING)
+
+    def fetch_observations_window(
+        self,
+        station_configs: list[StationConfig],
+        *,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> HydroScraperBatchResult:
+        if start.utcoffset() is None or end.utcoffset() is None:
+            raise ConfigurationError("DHM historical bounds must be timezone aware")
+        start, end = ensure_utc(start), ensure_utc(end)
+        if not start < end or end - start > timedelta(days=31):
+            raise ConfigurationError("DHM historical interval must be at most 31 days")
+        return self._fetch_batch(
+            station_configs,
+            {station.id: start for station in station_configs},
+            end,
+            DhmBoundsMode.HISTORICAL,
+        )
+
+    def _fetch_batch(
+        self,
+        station_configs: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+        end: UtcDatetime | None,
+        bounds_mode: DhmBoundsMode,
+    ) -> HydroScraperBatchResult:
         budget = _BatchBudget(
             deadline=self._monotonic() + self._config.max_batch_seconds
         )
-        end = ensure_utc(self._clock())
+        if end is None:
+            end = ensure_utc(self._clock())
         supported = [
             s
             for s in station_configs
             if s.network == "dhm" and s.station_kind == StationKind.RIVER
         ]
         work, failures = self._preflight(supported, since, end, budget)
+        work = [replace(item, bounds_mode=bounds_mode) for item in work]
         if failures:
             return HydroScraperBatchResult(
                 outcomes=tuple(
@@ -140,6 +222,10 @@ class DhmAdapter:
         outcomes: list[StationFetchOutcome] = []
         stop: FetchOutcomeCause | None = None
         for item in work:
+            trace = _RequestTrace()
+            batch_id = CaptureBatchId(self._id_gen())
+            requests_before = budget.requests
+            bytes_before = budget.accepted_bytes
             if stop is not None:
                 outcome = _failure(
                     item.station,
@@ -147,8 +233,31 @@ class DhmAdapter:
                     f"DHM batch stopped: {stop.value}",
                 )
             else:
-                outcome = self._fetch_station(item, end, budget)
+                outcome = self._fetch_station(item, end, budget, trace)
                 stop = outcome.failure_cause
+            request_count = budget.requests - requests_before
+            outcome = replace(
+                outcome,
+                dhm_request_evidence=DhmRequestEvidence(
+                    batch_id=batch_id,
+                    station_id=item.station.id,
+                    provider=CanonicalProviderIdentity.parse(
+                        self._config.endpoint, item.binding.api_station_id
+                    ),
+                    requested_intervals=tuple(trace.intervals),
+                    request_started_at=trace.started_at,
+                    retrieved_at=ensure_utc(self._request_clock()),
+                    outcome=(
+                        NativeFetchOutcome.FAILED
+                        if outcome.failure_cause is not None
+                        else NativeFetchOutcome.COMPLETE
+                        if request_count
+                        else NativeFetchOutcome.NO_REQUEST
+                    ),
+                    request_count=request_count,
+                    accepted_bytes=budget.accepted_bytes - bytes_before,
+                ),
+            )
             outcomes.append(outcome)
         log.info(
             "observation.dhm_batch_finished",
@@ -241,27 +350,24 @@ class DhmAdapter:
         return work, failures
 
     def _binding(self, station: StationConfig) -> DhmBinding:
-        binding = self._bindings.get((station.network, station.code))
-        if binding is None or "water_level" not in station.measured_parameters:
-            raise ConfigurationError("DHM station requires binding and measured level")
-        unit = station.water_level_unit
-        if binding.level_reference == "masl":
-            compatible = unit in ("m", "m a.s.l.")
-        else:
-            compatible = unit == "m" and station.water_level_datum_masl is None
-        if not compatible:
-            raise ConfigurationError("Incompatible DHM station unit or datum")
-        return binding
+        return validate_dhm_station_binding(self._config, station)
 
     def _fetch_station(
         self,
         work: _StationWork,
         end: UtcDatetime,
         budget: _BatchBudget,
+        trace: _RequestTrace | None = None,
     ) -> StationFetchOutcome:
         try:
             observations = self._fetch_history(
-                work.station, work.binding, work.start, end, budget
+                work.station,
+                work.binding,
+                work.start,
+                end,
+                budget,
+                trace,
+                bounds_mode=work.bounds_mode,
             )
             if work.windows:
                 self._check_deadline(budget)
@@ -338,8 +444,26 @@ class DhmAdapter:
             raise ValueError("Invalid DHM Content-Length")
         return int(value)
 
-    def _get_page(self, url: httpx.URL, budget: _BatchBudget) -> _Page:
+    def _get_page(
+        self,
+        url: httpx.URL,
+        budget: _BatchBudget,
+        trace: _RequestTrace | None = None,
+    ) -> _Page:
         timeout = self._before_request(budget)
+        if trace is not None:
+            interval = CaptureRequestInterval(
+                lower_exclusive=ensure_utc(
+                    datetime.fromisoformat(url.params["water_level_on__gt"])
+                ),
+                upper_exclusive=ensure_utc(
+                    datetime.fromisoformat(url.params["water_level_on__lt"])
+                ),
+            )
+            if interval not in trace.intervals:
+                trace.intervals.append(interval)
+            if trace.started_at is None:
+                trace.started_at = ensure_utc(self._request_clock())
         with self._http_client.stream(
             "GET",
             url,
@@ -389,6 +513,9 @@ class DhmAdapter:
         since: UtcDatetime,
         end: UtcDatetime,
         budget: _BatchBudget,
+        trace: _RequestTrace | None = None,
+        *,
+        bounds_mode: DhmBoundsMode = DhmBoundsMode.POLLING,
     ) -> list[RawObservation]:
         observations: dict[UtcDatetime, RawObservation] = {}
         window_start = since
@@ -402,17 +529,25 @@ class DhmAdapter:
                 window_end,
                 self._config.max_pages_per_station - pages_used,
                 budget,
+                trace,
+                bounds_mode=bounds_mode,
             )
             pages_used += count
             for observation in window:
-                if observation.timestamp <= since:
+                if (
+                    bounds_mode is DhmBoundsMode.POLLING
+                    and observation.timestamp <= since
+                ):
                     continue
                 previous = observations.get(observation.timestamp)
                 if previous is not None and previous.value != observation.value:
                     raise ValueError("Conflicting DHM measurements")
                 observations[observation.timestamp] = observation
             window_start = window_end
-        return sorted(observations.values(), key=lambda obs: obs.timestamp)
+        selected = list(observations.values())
+        if bounds_mode is DhmBoundsMode.HISTORICAL:
+            selected = [row for row in selected if since <= row.timestamp < end]
+        return sorted(selected, key=lambda obs: obs.timestamp)
 
     def _window_url(
         self,
@@ -472,6 +607,9 @@ class DhmAdapter:
         end: UtcDatetime,
         pages_remaining: int,
         budget: _BatchBudget,
+        trace: _RequestTrace | None = None,
+        *,
+        bounds_mode: DhmBoundsMode = DhmBoundsMode.POLLING,
     ) -> tuple[list[RawObservation], int]:
         first = self._window_url(binding, start, end)
         url = first
@@ -482,7 +620,7 @@ class DhmAdapter:
             if url in seen_urls:
                 raise ValueError("Repeated DHM continuation")
             seen_urls.add(url)
-            page = self._get_page(url, budget)
+            page = self._get_page(url, budget, trace)
             if not page.results:
                 return observations, count
             signature = tuple(
@@ -491,7 +629,11 @@ class DhmAdapter:
             if signature in seen_pages:
                 raise ValueError("Repeated DHM response page")
             seen_pages.add(signature)
-            observations.extend(self._observations(page, station, binding, start, end))
+            observations.extend(
+                self._observations(
+                    page, station, binding, start, end, bounds_mode=bounds_mode
+                )
+            )
             if page.next is None:
                 return observations, count
             if not page.next:
@@ -508,13 +650,22 @@ class DhmAdapter:
         binding: DhmBinding,
         start: UtcDatetime,
         end: UtcDatetime,
+        *,
+        bounds_mode: DhmBoundsMode = DhmBoundsMode.POLLING,
     ) -> list[RawObservation]:
         observations: list[RawObservation] = []
         for row in page.results:
             if row.station != binding.api_station_id:
                 raise ValueError("Response station differs from requested DHM station")
             timestamp = ensure_utc(row.measured_at)
-            if row.water_level is not None and start <= timestamp <= end:
+            in_window = (
+                start <= timestamp <= end
+                if bounds_mode is DhmBoundsMode.POLLING
+                else start - timedelta(seconds=1)
+                < timestamp
+                < end + timedelta(seconds=1)
+            )
+            if row.water_level is not None and in_window:
                 observations.append(
                     RawObservation(
                         station_id=station.id,
