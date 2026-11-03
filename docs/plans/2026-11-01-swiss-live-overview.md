@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 owner: Swiss dashboard delivery
 ---
 # Swiss live overview — minimum operational delivery
@@ -171,8 +171,9 @@ remain HTTP errors. Authority-integrity failure is item component state, not HTT
 
 Use EvaluationReadSettings from config.evaluation_forecasts.to_domain(), plus
 the contracts frozen in each day snapshot (claim.frozen.output_contracts), not
-the deployment fallback-contract mapping; preserve configured group order,
-current-day snapshots and exact hydrated candidate maps as inputs to the extracted
+the deployment fallback-contract mapping; preserve the existing UUID-string-sorted
+precedence among configured groups (not configuration-list order), current-day
+snapshots and exact hydrated candidate maps as inputs to the extracted
 pure current selector. No second overview authority-settings type or station-name
 lookup. Group/tenant/parameter/PRODUCED/coverage checks stay inside shared logic.
 Only assignment resolution used for ordinary fallback/history/diagnostics is
@@ -309,8 +310,14 @@ stale data to look current. User LaunchAgent is not an unattended boot guarantee
 Update map_contract.py route/auth sets and version2.3→2.4, publication_cache.py,
 errors.py, cors.py and auth-matrix tests. No ETag/shared-cache feature in first delivery. Compression may use existing
 infrastructure if correctly supported and verified; not a prerequisite for correctness.
-Target p95<1s for134 stations under representative load; target <=150KiB raw JSON,
-measure compressed bytes if enabled. Adjust only via explicit review of evidence.
+Target p95<1s for134 stations under representative load. The owner approved a
+PhaseB limit of <=256KiB raw JSON after reviewing the 238728-byte representative
+response, replacing the original150KiB target. The isolated archive-history
+benchmark measured p95 0.718499s; this is not live/load admission. Its
+`raw_payload_target_met` field still records the original150KiB comparison, not
+the revised approval. Measure compressed bytes if enabled; measured compression
+is not proof of deployed compression. Reassess the budget before PhaseC metadata
+is added. Further adjustments require explicit review of evidence.
 
 Frontend consumes only this route for dynamic overview; exactly3 station-open
 reads remain unchanged. Remove Swiss staged dynamic dependencies after passing
@@ -378,3 +385,30 @@ its interrupted run was retried. Corrected selector type/frozen-contract naming
 and explicit package-data inclusion per review. Full reports stay local.
 This records design review, not implementation approval or fulfilled PhaseA
 source evidence. No live services or production data were changed by planning.
+
+## Phase B implementation admission
+Owner merged PR433 and explicitly authorized implementation after coordinating
+with the Nepal deployment session. Root orchestration admits PhaseB following
+independent Claude/Codex/boundary reviews with no design blockers and read-only
+PhaseA checks:134 roster entries exactly match approved reviewer grants and one
+Swiss tenant; evaluation is STANDARD CMAL, publication gate inactive, archive
+mounted; ingest5min and BAFU collection hourly. PhaseC source/threshold evidence
+conditions remain required; this is not permission to import or activate them.
+
+Implementation base is f46ef1310fdef76b5023e6b5b059ded6ca678384 (merged PR434),
+including native rating migration0079 and OpenAPI2.4. Preserve discharge and
+water_level latest reads, provisional lineage isolation and all existing metadata.
+The overview's additive export version will be2.5, superseding the old2.3→2.4
+number in the reviewed plan. No PhaseB migration is needed. Before PR publication,
+the branch was refreshed onto merged Aquacast PR435 at
+c05fe409f3d0b6c2842fb4f798214c40fa74a59f, preserving its dependency and lockfile;
+Swiss PhaseB uses release target0.1.1098 after Nepal's0.1.1097.
+Run both benchmark shapes together as a regression check against the shared
+committed test database, with disjoint station codes and no benchmark/profile
+output environment variables. Capture timing/payload evidence in separate runs
+selected by `-k production_quantiles` or `-k stress_members`, using distinct output
+paths; profiling applies only to `stress_members`. Keep production timing isolated
+from the stress case's committed rows.
+No Infomaniak operations; Nepal session retains exclusive ownership of its
+sapphire-nepal21-test runtime and active catch-up ingest worker. Coordinate shared
+contract changes and target/migration allocation before committing them.

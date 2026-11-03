@@ -2178,3 +2178,16 @@ The window is explicit (default168h, maximum720h), page size<=200, and absent
 visible data is null without revealing held/restricted history. All response
 paths, including401/422/500, are no-store. This route does not change frontend
 admission or permit fleet requests under the existing private-use agreement.
+
+
+### Swiss overview read boundary
+
+`GET /api/v1/swiss/overview` is bearer REVIEW-gated (reviewer/admin only), not a
+human-session route. The packaged digest-pinned Swiss roster and configured
+evaluation tenant constrain every role, including admin. Reviewer station grants
+further narrow scope. Missing configuration or metadata drift fails closed before
+data reads. All responses and preflights are no-store. The active publication gate
+withholds reviewer CMAL values/details and BAFU for every role. Protected Nepal
+observation deliveries are never included, including for admins. No display
+thresholds, new grants, migrations, or ingestion activation are introduced in
+Phase B. Phase C unavailable components do not imply safe levels.

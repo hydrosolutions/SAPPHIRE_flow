@@ -1,0 +1,672 @@
+[
+  {
+    "station_id": "04728ad7-5435-4d74-ac22-89ea10f47a42",
+    "network": "bafu",
+    "code": "2290"
+  },
+  {
+    "station_id": "050d2301-8a4d-4de7-aa92-0ca497026a13",
+    "network": "bafu",
+    "code": "2307"
+  },
+  {
+    "station_id": "060ecd71-e2f7-46cc-9f91-3069cbad969f",
+    "network": "bafu",
+    "code": "2174"
+  },
+  {
+    "station_id": "0985130f-a2e1-47ec-92c5-5f76a1a7344c",
+    "network": "bafu",
+    "code": "2602"
+  },
+  {
+    "station_id": "0a0b3086-929c-488c-b161-49432282351e",
+    "network": "bafu",
+    "code": "2490"
+  },
+  {
+    "station_id": "0ec739e1-7061-41a7-9925-63470fc950a7",
+    "network": "bafu",
+    "code": "2321"
+  },
+  {
+    "station_id": "18658990-2325-45e2-ba87-4f542fb2a9d2",
+    "network": "bafu",
+    "code": "2342"
+  },
+  {
+    "station_id": "19209f89-260f-48b0-922f-6d22e4b9a331",
+    "network": "bafu",
+    "code": "2478"
+  },
+  {
+    "station_id": "1f3b1e6a-f832-417b-ae44-82a9f7b7c26a",
+    "network": "bafu",
+    "code": "2018"
+  },
+  {
+    "station_id": "20c37774-3487-48f1-b8b2-b3a0dd7bec32",
+    "network": "bafu",
+    "code": "2269"
+  },
+  {
+    "station_id": "223d8ce0-9977-419d-9578-c4cbbaf61f66",
+    "network": "bafu",
+    "code": "2347"
+  },
+  {
+    "station_id": "24e856f5-e6d7-401c-b4f9-1f08f1802aac",
+    "network": "bafu",
+    "code": "2139"
+  },
+  {
+    "station_id": "28a6df0c-a757-4a51-be2a-6845fcf7f7fa",
+    "network": "bafu",
+    "code": "2086"
+  },
+  {
+    "station_id": "295e1358-ed77-4024-9fcc-c1521a46f7b2",
+    "network": "bafu",
+    "code": "2374"
+  },
+  {
+    "station_id": "2a53e853-4fc3-4c88-806c-9e9e4ad9ed74",
+    "network": "bafu",
+    "code": "2152"
+  },
+  {
+    "station_id": "2adf3206-59cc-44e3-b73b-920a097d48d8",
+    "network": "bafu",
+    "code": "2243"
+  },
+  {
+    "station_id": "305a3777-5bb4-4394-b15d-d2dcc327e07b",
+    "network": "bafu",
+    "code": "2085"
+  },
+  {
+    "station_id": "31db929e-4471-4f91-aced-178b1ab74b1e",
+    "network": "bafu",
+    "code": "2141"
+  },
+  {
+    "station_id": "35ed4475-d41b-4cf6-b861-09f02f070f8b",
+    "network": "bafu",
+    "code": "2019"
+  },
+  {
+    "station_id": "371be362-d779-463d-b11a-c59f09e1ae67",
+    "network": "bafu",
+    "code": "2099"
+  },
+  {
+    "station_id": "3766e650-9efe-4aba-b5cb-05c8945f0686",
+    "network": "bafu",
+    "code": "2369"
+  },
+  {
+    "station_id": "3917cc10-eaa9-49f5-b90c-6248aa83c48e",
+    "network": "bafu",
+    "code": "2430"
+  },
+  {
+    "station_id": "39d58da4-c0ae-48ed-abe4-6ac2e0740599",
+    "network": "bafu",
+    "code": "2500"
+  },
+  {
+    "station_id": "3b590df3-0682-4a09-a4c2-83ff99046073",
+    "network": "bafu",
+    "code": "2640"
+  },
+  {
+    "station_id": "419d9ad8-029b-453d-b853-8ad73c7faa72",
+    "network": "bafu",
+    "code": "2029"
+  },
+  {
+    "station_id": "42a82324-d989-4b0b-84d2-710d41a55797",
+    "network": "bafu",
+    "code": "2494"
+  },
+  {
+    "station_id": "42fb57b6-6afd-4f5f-8c28-ae3fcbda0d9f",
+    "network": "bafu",
+    "code": "2617"
+  },
+  {
+    "station_id": "43c9119c-75ed-47c1-911e-ae11d58f0061",
+    "network": "bafu",
+    "code": "2629"
+  },
+  {
+    "station_id": "448cf790-39b9-4969-8a8c-aa45c26eb0e2",
+    "network": "bafu",
+    "code": "2609"
+  },
+  {
+    "station_id": "44ed2935-7f4a-4c5b-a944-1bf898d9c72f",
+    "network": "bafu",
+    "code": "2426"
+  },
+  {
+    "station_id": "4a95b2e6-140e-474d-8c8d-516dffde8039",
+    "network": "bafu",
+    "code": "2256"
+  },
+  {
+    "station_id": "4ca396fc-f000-42af-8b32-609b01f43a65",
+    "network": "bafu",
+    "code": "2608"
+  },
+  {
+    "station_id": "4ef36f82-5d64-4c9b-9f80-01a1f860775c",
+    "network": "bafu",
+    "code": "2132"
+  },
+  {
+    "station_id": "525e2e84-fba4-48c4-922e-59356d82da44",
+    "network": "bafu",
+    "code": "2610"
+  },
+  {
+    "station_id": "55948790-132c-4fb5-8a64-4f5668a8a74c",
+    "network": "bafu",
+    "code": "2185"
+  },
+  {
+    "station_id": "571d6a23-0ffd-476a-86c0-86e217e81d73",
+    "network": "bafu",
+    "code": "2016"
+  },
+  {
+    "station_id": "58db88e2-6e6a-42a4-b35c-8452f0b34a50",
+    "network": "bafu",
+    "code": "2477"
+  },
+  {
+    "station_id": "5991a8dc-829a-46d6-be61-850fccd36fb6",
+    "network": "bafu",
+    "code": "2110"
+  },
+  {
+    "station_id": "5a9992ac-8e59-4cd9-af19-c2abb8d40cd2",
+    "network": "bafu",
+    "code": "2497"
+  },
+  {
+    "station_id": "5c4fa9ab-1a26-4222-8337-4d5b35694cf3",
+    "network": "bafu",
+    "code": "2056"
+  },
+  {
+    "station_id": "639e7ccf-9267-4d80-8c5d-12f02818aa4b",
+    "network": "bafu",
+    "code": "2604"
+  },
+  {
+    "station_id": "644ed269-0dc1-47da-9b75-bc54f49094fd",
+    "network": "bafu",
+    "code": "2603"
+  },
+  {
+    "station_id": "653e077b-71fb-4b9a-9474-7bc214b3fb43",
+    "network": "bafu",
+    "code": "2631"
+  },
+  {
+    "station_id": "6a789e6c-998d-4f6c-a55f-e151a89e8695",
+    "network": "bafu",
+    "code": "2303"
+  },
+  {
+    "station_id": "6affb95b-9d3a-4e8e-9477-ed2cc2868523",
+    "network": "bafu",
+    "code": "2486"
+  },
+  {
+    "station_id": "6e30fe75-1ee5-48dd-aeb7-9af135155083",
+    "network": "bafu",
+    "code": "2481"
+  },
+  {
+    "station_id": "70ef94ef-eb8a-42a8-bc83-0435b5cd507e",
+    "network": "bafu",
+    "code": "2473"
+  },
+  {
+    "station_id": "71e5439b-76c6-4964-8794-0a46bd3003a2",
+    "network": "bafu",
+    "code": "2268"
+  },
+  {
+    "station_id": "71ea8328-08c7-43b8-bf39-737e47ae2c8f",
+    "network": "bafu",
+    "code": "2434"
+  },
+  {
+    "station_id": "73eb40bd-b4cb-4d78-8a8b-da9086b7a3ae",
+    "network": "bafu",
+    "code": "2612"
+  },
+  {
+    "station_id": "767726f5-9c39-428e-a8a3-ca4fd9d53b17",
+    "network": "bafu",
+    "code": "2370"
+  },
+  {
+    "station_id": "776079ee-164b-4f13-a8e5-379d7afe0f60",
+    "network": "bafu",
+    "code": "2418"
+  },
+  {
+    "station_id": "78d8f5c5-4469-4974-8a3f-a5433f1890f3",
+    "network": "bafu",
+    "code": "2474"
+  },
+  {
+    "station_id": "7a8ed55f-5688-4c15-b041-8e3c80e7688d",
+    "network": "bafu",
+    "code": "2126"
+  },
+  {
+    "station_id": "7eb3069b-564d-4712-bf04-8d4e899b6dcf",
+    "network": "bafu",
+    "code": "2041"
+  },
+  {
+    "station_id": "8094e83b-8b69-4338-8753-7a89e4b08d54",
+    "network": "bafu",
+    "code": "2009"
+  },
+  {
+    "station_id": "8278b671-6c9d-4da4-84d4-421e0780e689",
+    "network": "bafu",
+    "code": "2135"
+  },
+  {
+    "station_id": "82fdb122-0b9c-454f-b6a8-965305c73bd9",
+    "network": "bafu",
+    "code": "2210"
+  },
+  {
+    "station_id": "8442f9b5-2bc9-4509-9e83-8b6a454601cb",
+    "network": "bafu",
+    "code": "2200"
+  },
+  {
+    "station_id": "84dc8e7c-3e75-4c77-be7b-2f0c76823e70",
+    "network": "bafu",
+    "code": "2364"
+  },
+  {
+    "station_id": "85e142ce-e826-44e6-ac45-404456df08d2",
+    "network": "bafu",
+    "code": "2475"
+  },
+  {
+    "station_id": "861ba953-afd4-4e35-9cfd-9f4d228e5b1c",
+    "network": "bafu",
+    "code": "2263"
+  },
+  {
+    "station_id": "867be369-5a8f-453e-a81e-4b9941984954",
+    "network": "bafu",
+    "code": "2181"
+  },
+  {
+    "station_id": "86cc208b-f41d-4a90-b6d3-b6ba92f45bc8",
+    "network": "bafu",
+    "code": "2104"
+  },
+  {
+    "station_id": "871da89b-0293-4fe1-afca-cb02b76db431",
+    "network": "bafu",
+    "code": "2176"
+  },
+  {
+    "station_id": "8754db02-f9d5-4137-86d1-e2cb3a21ece7",
+    "network": "bafu",
+    "code": "2020"
+  },
+  {
+    "station_id": "887ad174-d4ec-4469-9bce-43ab60fb04d3",
+    "network": "bafu",
+    "code": "2155"
+  },
+  {
+    "station_id": "88c0da8d-7ccd-4684-ac67-7681b7206a89",
+    "network": "bafu",
+    "code": "2202"
+  },
+  {
+    "station_id": "894c0cfb-0e97-4bf2-8546-14afecb36e67",
+    "network": "bafu",
+    "code": "2308"
+  },
+  {
+    "station_id": "8adaf191-56c1-4c12-9f40-366b888dfc01",
+    "network": "bafu",
+    "code": "2199"
+  },
+  {
+    "station_id": "9093d546-637d-483d-b20e-c8ff30fa4e2d",
+    "network": "bafu",
+    "code": "2084"
+  },
+  {
+    "station_id": "91058725-06c3-44ee-8a60-4153517d438e",
+    "network": "bafu",
+    "code": "2215"
+  },
+  {
+    "station_id": "943ccb57-9969-41f5-a547-65d47f60e334",
+    "network": "bafu",
+    "code": "2366"
+  },
+  {
+    "station_id": "97611826-b252-40ac-ac8f-6c251df5f775",
+    "network": "bafu",
+    "code": "2372"
+  },
+  {
+    "station_id": "99012005-3627-4795-b84d-466b06c96f58",
+    "network": "bafu",
+    "code": "2420"
+  },
+  {
+    "station_id": "995c9c3d-ee7a-4a2a-add2-6df6036cc5bb",
+    "network": "bafu",
+    "code": "2289"
+  },
+  {
+    "station_id": "9a033d1d-523f-4a99-9d6a-749d3e993e69",
+    "network": "bafu",
+    "code": "2063"
+  },
+  {
+    "station_id": "9a6839de-e068-4631-9be4-eb4e74db134e",
+    "network": "bafu",
+    "code": "2262"
+  },
+  {
+    "station_id": "9edebe2a-a636-41ef-a347-eb27a08fc82d",
+    "network": "bafu",
+    "code": "2122"
+  },
+  {
+    "station_id": "9fbece55-0d97-4931-84df-6abd0fb9356b",
+    "network": "bafu",
+    "code": "2160"
+  },
+  {
+    "station_id": "a05287d9-694b-47c2-8aea-963dce0480d3",
+    "network": "bafu",
+    "code": "2419"
+  },
+  {
+    "station_id": "a0aa6f2a-e318-42e2-99e5-4224e4639af2",
+    "network": "bafu",
+    "code": "2024"
+  },
+  {
+    "station_id": "a1d2cefb-bac6-4bb8-84be-fd26eac492a5",
+    "network": "bafu",
+    "code": "2106"
+  },
+  {
+    "station_id": "a4fc3b6e-3773-4c9b-a1f9-e5e582084f28",
+    "network": "bafu",
+    "code": "2112"
+  },
+  {
+    "station_id": "a6411bb6-4aca-48b3-9ce4-797e11ad4fe2",
+    "network": "bafu",
+    "code": "2117"
+  },
+  {
+    "station_id": "a75ea84e-4fce-4de4-b144-61778f42c53a",
+    "network": "bafu",
+    "code": "2288"
+  },
+  {
+    "station_id": "a7664b54-e8c9-4210-9a87-67dc8d36d8f5",
+    "network": "bafu",
+    "code": "2300"
+  },
+  {
+    "station_id": "a95bef4b-f61b-4bca-9124-00f63f6583a2",
+    "network": "bafu",
+    "code": "2265"
+  },
+  {
+    "station_id": "ab6fc41f-2201-4701-86e7-8851ddf39f84",
+    "network": "bafu",
+    "code": "2091"
+  },
+  {
+    "station_id": "ac24f683-ee2a-41c6-a33d-b5c447823d16",
+    "network": "bafu",
+    "code": "2378"
+  },
+  {
+    "station_id": "b0d54b2b-fc7c-4868-afe2-868cbdcae1a1",
+    "network": "bafu",
+    "code": "2410"
+  },
+  {
+    "station_id": "b173cb84-b953-4b18-9ad8-a66a99d55061",
+    "network": "bafu",
+    "code": "2491"
+  },
+  {
+    "station_id": "b24bf4c0-189b-4ade-ac2d-fed4cbbf581f",
+    "network": "bafu",
+    "code": "2607"
+  },
+  {
+    "station_id": "b364806e-ff59-4307-bcc8-ec6500290912",
+    "network": "bafu",
+    "code": "2011"
+  },
+  {
+    "station_id": "b655b1e5-13f1-4e5b-bd33-9e3584f54782",
+    "network": "bafu",
+    "code": "2033"
+  },
+  {
+    "station_id": "b6a91db3-a0a5-4ac1-9697-f8815d1c6b9b",
+    "network": "bafu",
+    "code": "2620"
+  },
+  {
+    "station_id": "b84c57e2-bf1a-4a2d-9b1b-577f9d20d9ae",
+    "network": "bafu",
+    "code": "2044"
+  },
+  {
+    "station_id": "babdf4b4-1f77-411e-81a7-a436d174b689",
+    "network": "bafu",
+    "code": "2119"
+  },
+  {
+    "station_id": "bbcc9e3d-a0bd-4f93-ad72-89d4e3798357",
+    "network": "bafu",
+    "code": "2412"
+  },
+  {
+    "station_id": "bbfdda1a-3b29-4fc1-bdea-96cf538b1cc4",
+    "network": "bafu",
+    "code": "2187"
+  },
+  {
+    "station_id": "be8bd514-02a3-4075-a5f2-809e69ce51b6",
+    "network": "bafu",
+    "code": "2368"
+  },
+  {
+    "station_id": "c11df60a-f906-445d-bdfb-3b3ce88934ba",
+    "network": "bafu",
+    "code": "2143"
+  },
+  {
+    "station_id": "c12a98b8-c164-4e8f-a483-fa44a62b9ee4",
+    "network": "bafu",
+    "code": "2312"
+  },
+  {
+    "station_id": "c1786f4e-bb2d-4aea-8eb5-2b7c1f9a8234",
+    "network": "bafu",
+    "code": "2319"
+  },
+  {
+    "station_id": "cac1da03-fbfc-4d2c-9b85-c47eca0347e0",
+    "network": "bafu",
+    "code": "2457"
+  },
+  {
+    "station_id": "d067e091-c8d7-47fe-a038-621f111b131e",
+    "network": "bafu",
+    "code": "2417"
+  },
+  {
+    "station_id": "d0941495-6a57-4bec-a10e-62d5ad4bd571",
+    "network": "bafu",
+    "code": "2219"
+  },
+  {
+    "station_id": "d1ac351a-5197-49df-97c5-9643b1ea1495",
+    "network": "bafu",
+    "code": "2276"
+  },
+  {
+    "station_id": "d3b07983-6413-465a-a0b3-0d37ae9577db",
+    "network": "bafu",
+    "code": "2480"
+  },
+  {
+    "station_id": "d63fbaa0-6517-4b8f-b76b-80f3315d2e2f",
+    "network": "bafu",
+    "code": "2232"
+  },
+  {
+    "station_id": "d6ba7b87-8763-47aa-bc66-0bb6fba2c114",
+    "network": "bafu",
+    "code": "2471"
+  },
+  {
+    "station_id": "d9873546-03c0-4927-b247-5fc4705a4f26",
+    "network": "bafu",
+    "code": "2409"
+  },
+  {
+    "station_id": "da0a9464-574e-4769-952b-1323c06e10e8",
+    "network": "bafu",
+    "code": "2605"
+  },
+  {
+    "station_id": "da5f64d3-b367-4794-89c8-b78b657eac5b",
+    "network": "bafu",
+    "code": "2355"
+  },
+  {
+    "station_id": "dc8f384a-f05c-47ed-b496-4ba1e6a3ab65",
+    "network": "bafu",
+    "code": "2346"
+  },
+  {
+    "station_id": "dde43177-9bf2-4e65-8fc3-506d0f490315",
+    "network": "bafu",
+    "code": "2087"
+  },
+  {
+    "station_id": "e12c609a-1a48-492d-92f0-602f88529d6a",
+    "network": "bafu",
+    "code": "2343"
+  },
+  {
+    "station_id": "e1702840-d563-4cb6-b7b3-0dcba4c00da0",
+    "network": "bafu",
+    "code": "2416"
+  },
+  {
+    "station_id": "e1e4cc12-75f5-400c-9bcb-bc6f4e99bdec",
+    "network": "bafu",
+    "code": "2488"
+  },
+  {
+    "station_id": "e4dcdca0-4ce0-41f2-be1b-6ec14711db23",
+    "network": "bafu",
+    "code": "2485"
+  },
+  {
+    "station_id": "e5e8ae1b-5900-4568-a732-624551caa172",
+    "network": "bafu",
+    "code": "2109"
+  },
+  {
+    "station_id": "e9c2051b-4f97-4b09-b4fb-b717eebd6299",
+    "network": "bafu",
+    "code": "2179"
+  },
+  {
+    "station_id": "eb8f6d8b-53fe-45f7-b8f3-2dbb123540c8",
+    "network": "bafu",
+    "code": "2458"
+  },
+  {
+    "station_id": "ed9486f1-076a-4182-bfe5-49c633673e50",
+    "network": "bafu",
+    "code": "2170"
+  },
+  {
+    "station_id": "ef78b5ee-175a-45f2-a090-26c7fffadd50",
+    "network": "bafu",
+    "code": "2493"
+  },
+  {
+    "station_id": "f36bc770-e0ed-4da1-9910-a862081c7998",
+    "network": "bafu",
+    "code": "2371"
+  },
+  {
+    "station_id": "f5586f79-ad99-4439-8f92-6c6b6bfd1815",
+    "network": "bafu",
+    "code": "2305"
+  },
+  {
+    "station_id": "f5a79ee2-2668-43b8-9227-b1a5cd30e8e5",
+    "network": "bafu",
+    "code": "2167"
+  },
+  {
+    "station_id": "f66b0fd5-f33c-4d02-ae94-fa3031c63612",
+    "network": "bafu",
+    "code": "2461"
+  },
+  {
+    "station_id": "f6b75e2c-e486-427a-9df3-dbb0459937be",
+    "network": "bafu",
+    "code": "2630"
+  },
+  {
+    "station_id": "fad4293c-ad7e-4770-a3f2-d25f4224a0fc",
+    "network": "bafu",
+    "code": "2498"
+  },
+  {
+    "station_id": "fb0bbc82-1ce7-4508-8249-689dfe8cebd8",
+    "network": "bafu",
+    "code": "2634"
+  },
+  {
+    "station_id": "ff1de3dd-ee95-4ea5-baa5-9d328cbed192",
+    "network": "bafu",
+    "code": "2203"
+  },
+  {
+    "station_id": "ff7a552b-c7b2-45e8-8249-97b57a6a2ac5",
+    "network": "bafu",
+    "code": "2433"
+  }
+]

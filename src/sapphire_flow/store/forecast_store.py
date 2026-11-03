@@ -20,7 +20,11 @@ from sapphire_flow.db.metadata import (
     forecast_values,
     forecasts,
 )
-from sapphire_flow.exceptions import ConflictError, ForecastRetryConflictError
+from sapphire_flow.exceptions import (
+    ConflictError,
+    ForecastRetryConflictError,
+    StoredForecastDecodeError,
+)
 from sapphire_flow.services.forecast_evidence import (
     restore_snapshot,
     serialize_thresholds,
@@ -32,6 +36,7 @@ from sapphire_flow.services.forecast_retry import (
     describe_difference,
     retry_conflict_message,
 )
+from sapphire_flow.store._forecast_decode import flag_objects
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.store.forecast_values_integrity import forecast_values_integrity
@@ -376,6 +381,40 @@ class PgForecastStore:
         # `status` is what distinguishes it from a current forecast.
         with protect_lineage_errors(self._data_use):
             return _fetch_forecast(self._conn, forecast_id, self._data_use)
+
+    def fetch_forecasts_by_ids(
+        self,
+        forecast_ids: list[ForecastId],
+    ) -> dict[ForecastId, OperationalForecast]:
+        if not forecast_ids:
+            return {}
+        with protect_lineage_errors(self._data_use):
+            rows = (
+                self._conn.execute(
+                    sa.select(
+                        *forecast_columns(forecasts, self._data_use), forecast_values
+                    )
+                    .join(
+                        forecast_values, forecast_values.c.forecast_id == forecasts.c.id
+                    )
+                    .where(forecasts.c.id.in_(forecast_ids))
+                    .where(forecasts.c.data_use == self._data_use.value)
+                    .order_by(forecast_values.c.valid_time)
+                )
+                .mappings()
+                .all()
+            )
+            grouped: dict[ForecastId, list[sa.RowMapping]] = {}
+            for row in rows:
+                grouped.setdefault(ForecastId(row["id"]), []).append(row)
+            try:
+                return {fid: _rows_to_domain(values) for fid, values in grouped.items()}
+            except ValueError as exc:
+                if self._data_use is not ForecastDataUse.STANDARD:
+                    raise
+                raise StoredForecastDecodeError(
+                    "invalid stored forecast record"
+                ) from exc
 
     def fetch_latest_forecast_at(
         self,
@@ -839,7 +878,7 @@ def _build_value_rows(forecast: OperationalForecast) -> list[dict[str, object]]:
 
 
 def _parse_input_quality_flags(raw: object) -> tuple[InputQualityFlag, ...]:
-    items: list[dict[str, object]] = raw or []  # type: ignore[assignment]
+    items = flag_objects(raw, required=("category", "level", "detail"))
     return tuple(
         InputQualityFlag(
             category=InputQualityCategory(f["category"]),
@@ -853,7 +892,7 @@ def _parse_input_quality_flags(raw: object) -> tuple[InputQualityFlag, ...]:
 def _parse_qc_flags(raw: object) -> tuple[QcFlag, ...]:
     """Plan 402 T3: the same parse `_rows_to_domain` uses for a forecast's
     stored `qc_flags` — shared here so `ForecastSummaryRow` carries them too."""
-    items: list[dict[str, object]] = raw or []  # type: ignore[assignment]
+    items = flag_objects(raw, required=("rule_id", "rule_version", "status"))
     return tuple(
         QcFlag(
             rule_id=f["rule_id"],  # type: ignore[arg-type]
@@ -870,31 +909,38 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     representation = EnsembleRepresentation(header["representation"])
     is_members = representation == EnsembleRepresentation.MEMBERS
 
-    if is_members:
-        value_rows = [
-            {
-                "valid_time": row["valid_time"],
-                "member_id": row["member_id"],
-                "value": row["value"],
-            }
-            for row in rows
-        ]
-        df = pl.DataFrame(value_rows).with_columns(
-            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
-            pl.col("member_id").cast(pl.Int32),
-        )
-    else:
-        value_rows = [
-            {
-                "valid_time": row["valid_time"],
-                "quantile": row["quantile"],
-                "value": row["value"],
-            }
-            for row in rows
-        ]
-        df = pl.DataFrame(value_rows).with_columns(
-            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
-        )
+    try:
+        if is_members:
+            value_rows = [
+                {
+                    "valid_time": row["valid_time"],
+                    "member_id": row["member_id"],
+                    "value": row["value"],
+                }
+                for row in rows
+            ]
+            df = pl.DataFrame(value_rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+        else:
+            value_rows = [
+                {
+                    "valid_time": row["valid_time"],
+                    "quantile": row["quantile"],
+                    "value": row["value"],
+                }
+                for row in rows
+            ]
+            df = pl.DataFrame(value_rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            )
+    except (
+        pl.exceptions.ComputeError,
+        pl.exceptions.InvalidOperationError,
+        pl.exceptions.SchemaError,
+    ) as exc:
+        raise ValueError("invalid stored forecast value frame") from exc
 
     # Plan 241 T4 — the stored value is AUTHORITATIVE when present. Every row
     # written since revision 0053 carries the cadence its ensemble declared, so

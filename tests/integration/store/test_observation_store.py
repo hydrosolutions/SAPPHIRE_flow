@@ -657,3 +657,37 @@ class TestFetchLatestObservations:
         )
         assert scoped[sid] is not None and scoped[sid].id == ordinary.id
         assert admin[sid] is not None and admin[sid].id == delivery.id
+
+
+class TestOverviewObservationWindows:
+    def test_qc_filter_and_exclusive_start(self, db_connection: sa.Connection) -> None:
+        from sapphire_flow.types.observation_read import ObservationWindowStart
+
+        sid = _seed_station(db_connection)
+        store = PgObservationStore(db_connection)
+        ids = store.store_raw_observations(
+            [_raw(sid, hour=0), _raw(sid, hour=1), _raw(sid, hour=2)]
+        )
+        store.update_qc(ids[0], QcStatus.QC_PASSED, [], qc_rule_version="1")
+        store.update_qc(ids[1], QcStatus.QC_PASSED, [], qc_rule_version="1")
+        store.update_qc(ids[2], QcStatus.QC_FAILED, [], qc_rule_version="1")
+        result = store.fetch_latest_observations(
+            [sid],
+            "discharge",
+            _utc(hour=0),
+            _utc(hour=2),
+            source=ObservationSource.MEASURED,
+            qc_status=QcStatus.QC_PASSED,
+            window_start_bound=ObservationWindowStart.EXCLUSIVE,
+        )
+        assert result[sid].timestamp == _utc(hour=1)
+        empty = store.fetch_latest_observations(
+            [sid],
+            "discharge",
+            _utc(hour=1),
+            _utc(hour=2),
+            source=ObservationSource.MEASURED,
+            qc_status=QcStatus.QC_PASSED,
+            window_start_bound=ObservationWindowStart.EXCLUSIVE,
+        )
+        assert empty[sid] is None

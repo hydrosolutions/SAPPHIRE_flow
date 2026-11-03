@@ -24,6 +24,7 @@ _UV_FIXTURE_ENV_BLOCKLIST = {
 
 _RESOURCES = [
     "sapphire_flow/py.typed",
+    "sapphire_flow/config/swiss_display_roster.json",
     "sapphire_flow/data/icon_ch2_eps_grid.npz",
     "sapphire_flow/api/templates/base.html",
     "sapphire_flow/models/aquacast/configs/cmal_small.yaml",

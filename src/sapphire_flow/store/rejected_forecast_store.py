@@ -18,7 +18,9 @@ from sapphire_flow.exceptions import (
     CaptureAbandonedError,
     ConfigurationError,
     DailyOutputRolledBackError,
+    StoredForecastDecodeError,
 )
+from sapphire_flow.store._forecast_decode import flag_objects
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.types.domain import QcFlag
@@ -80,8 +82,13 @@ def _nonfinite_encode(value: float) -> float | dict[str, str]:
 
 def _nonfinite_decode(raw: object) -> float:
     if isinstance(raw, dict):
-        return float(raw["nonfinite"])  # type: ignore[arg-type] — 'nan'/'inf'/'-inf'
-    return float(raw)  # type: ignore[arg-type]
+        token = cast("dict[str, object]", raw).get("nonfinite")
+        if not isinstance(token, str) or token not in {"nan", "inf", "-inf"}:
+            raise ValueError("invalid stored nonfinite value")
+        return float(token)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("stored rejected value must be numeric")
+    return float(raw)
 
 
 def encode_rejected_series(ensemble: ForecastEnsemble) -> dict[str, list[list[object]]]:
@@ -101,16 +108,24 @@ def encode_rejected_series(ensemble: ForecastEnsemble) -> dict[str, list[list[ob
 
 
 def _decode_series(
-    raw: dict[str, list[list[object]]],
+    raw: object,
 ) -> dict[str, tuple[tuple[UtcDatetime, float], ...]]:
     result: dict[str, tuple[tuple[UtcDatetime, float], ...]] = {}
-    for key, points in raw.items():
+    if not isinstance(raw, dict):
+        raise ValueError("stored rejected series must be an object")
+    for key, points in cast("dict[object, object]", raw).items():
+        if not isinstance(key, str) or not isinstance(points, list):
+            raise ValueError("stored rejected series must contain arrays")
         decoded: list[tuple[UtcDatetime, float]] = []
-        for point in points:
-            valid_time_iso, value_raw = point[0], point[1]
+        for point in cast("list[object]", points):
+            if not isinstance(point, list) or len(cast("list[object]", point)) != 2:
+                raise ValueError("stored rejected point must have two elements")
+            valid_time_iso, value_raw = cast("list[object]", point)
+            if not isinstance(valid_time_iso, str):
+                raise ValueError("stored rejected timestamp must be a string")
             decoded.append(
                 (
-                    utc_from_row(datetime.fromisoformat(str(valid_time_iso))),
+                    utc_from_row(datetime.fromisoformat(valid_time_iso)),
                     _nonfinite_decode(value_raw),
                 )
             )
@@ -131,7 +146,7 @@ def encode_rejected_qc_flags(flags: tuple[QcFlag, ...]) -> list[dict[str, object
 
 
 def _parse_qc_flags(raw: object) -> tuple[QcFlag, ...]:
-    items: list[dict[str, object]] = raw or []  # type: ignore[assignment]
+    items = flag_objects(raw, required=("rule_id", "rule_version", "status"))
     return tuple(
         QcFlag(
             rule_id=f["rule_id"],  # type: ignore[arg-type]
@@ -319,6 +334,36 @@ class PgRejectedForecastStore:
                 .one_or_none()
             )
             return _row_to_domain(row) if row is not None else None
+
+    def fetch_rejected_forecasts_by_ids(
+        self,
+        forecast_ids: list[RejectedForecastId],
+    ) -> dict[RejectedForecastId, PersistedRejectedForecast]:
+        if not forecast_ids:
+            return {}
+        with protect_lineage_errors(self._data_use):
+            rows = (
+                self._conn.execute(
+                    sa.select(
+                        *forecast_columns(rejected_forecasts, self._data_use)
+                    ).where(
+                        rejected_forecasts.c.id.in_(forecast_ids),
+                        rejected_forecasts.c.data_use == self._data_use.value,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            try:
+                return {
+                    RejectedForecastId(row["id"]): _row_to_domain(row) for row in rows
+                }
+            except ValueError as exc:
+                if self._data_use is not ForecastDataUse.STANDARD:
+                    raise
+                raise StoredForecastDecodeError(
+                    "invalid stored rejected record"
+                ) from exc
 
     def fetch_latest_rejected_forecast_at(
         self,

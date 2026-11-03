@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from sapphire_flow.types.enums import ModelArtifactStatus
+from sapphire_flow.types.observation_read import ObservationWindowStart
 
 # Convention: all range queries use half-open intervals [start, end).
 # SQL: WHERE timestamp >= start AND timestamp < end
@@ -147,8 +148,10 @@ class ObservationStore(Protocol):
         *,
         source: ObservationSource,
         excluded_delivery_id: str | None = None,
+        qc_status: QcStatus | None = None,
+        window_start_bound: ObservationWindowStart = ObservationWindowStart.INCLUSIVE,
     ) -> dict[StationId, Observation | None]:
-        """Latest visible row per station in the inclusive time window; no QC filter."""
+        """Latest visible row; inclusive lower bound and no QC filter by default."""
         raise NotImplementedError
 
     def fetch_latest_capture_timestamp(
@@ -253,6 +256,12 @@ class ForecastStore(Protocol):
         the SAME transaction (returning the replacement's id, the original
         keeping its values and evidence); ⛔ row 3 raises
         ``ForecastRetryConflictError``."""
+        raise NotImplementedError
+
+    def fetch_forecasts_by_ids(
+        self,
+        forecast_ids: list[ForecastId],
+    ) -> dict[ForecastId, OperationalForecast]:
         raise NotImplementedError
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
@@ -371,6 +380,12 @@ class RejectedForecastStore(Protocol):
         transaction — checks `abandon` and raises `CaptureAbandonedError` if
         it is set, immediately before `COMMIT` (D6), so a save the caller
         gave up waiting on never lands after being logged as timed out."""
+        raise NotImplementedError
+
+    def fetch_rejected_forecasts_by_ids(
+        self,
+        forecast_ids: list[RejectedForecastId],
+    ) -> dict[RejectedForecastId, PersistedRejectedForecast]:
         raise NotImplementedError
 
     def fetch_rejected_forecast(

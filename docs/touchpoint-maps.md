@@ -2358,3 +2358,23 @@ Prefect/deployment: `cli/onboard_nepal.py` submits the registered three-string
 `cli/register_deployments.py` owns registration, and the Nepal compose skip list
 holds activation. Verify config overlays, actual worker grants, roster races,
 batch rollback, SDK cleanup, real parameter schema and legacy CLI behavior.
+
+
+### Swiss overview read boundary
+
+Changes touch `api/routes/api_swiss_overview.py`, `api/swiss_overview_schemas.py`,
+`services/swiss_overview.py`, shared `services/evaluation_forecasts.py`, exact-ID
+forecast store readers, and bounded observation reads. The packaged roster and
+`config/swiss_overview.py` own admission, never frontend assets. Keep
+`map_contract.py`, maintained OpenAPI, auth matrix, publication cache/error paths,
+and GET-only CORS in sync. Verify station-panel CURRENT parity and fallback/history
+regressions, Nepal latest discharge/water-level semantics, native lineage isolation,
+four observation queries, constant group/day reads, and one BAFU directory listing.
+See `spec/api-v1-review.md` for the version 2.5 wire contract and disabled default.
+
+Swiss overview review corrections: current candidate maps are keyed by the frozen
+`DailyClaim` and `DailyOutputReference`, preserving group/attempt/contract authority.
+Exact STANDARD batch record construction raises `StoredForecastDecodeError`
+(`ValueError`) for malformed persisted values; protected and database errors remain
+fatal. Overview alone validates bounded same-stem raw BAFU unit/axis, issue and
+trace evidence. Snapshot parsing and latest-observation defaults are unchanged.

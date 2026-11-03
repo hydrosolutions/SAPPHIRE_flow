@@ -364,3 +364,92 @@ resolved by this plan.
   here.
 - `/qc/rules` never proves which thresholds produced a *past* flag — only
   the deployment's/station's **current** resolution.
+
+
+## Swiss live overview (Phase B)
+
+`GET /api/v1/swiss/overview` is a bearer reviewer/admin read. Human sessions and
+consumer tokens are not accepted. The maintained map OpenAPI export is version
+2.5. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
+preflights use `Cache-Control: no-store`.
+
+The route defaults to disabled (503). A reviewed deployment overlay must include
+`[swiss_overview]`, `roster_count = 134`, and
+`roster_sha256 = "2473843709831dcae8266e51757efccb563eb287871caffcc276835ca4007be1"`.
+It also requires `[evaluation_forecasts]`; that section owns the tenant and daily
+model/group configuration. The immutable manifest ships in the wheel at
+`config/swiss_display_roster.json`. Metadata drift fails 503 before observations
+or forecasts are read. Admins are restricted to the configured tenant and manifest;
+reviewers further intersect their explicit station grants. No roster expansion is
+inferred from mutable group membership. Codes are unique across networks because
+BAFU archives are code-keyed.
+
+The header declares measured discharge and the canonical observation display unit
+`m3/s`, not a per-record source-unit certificate. Every scoped station is returned.
+`generated_at` is one injected UTC clock, not source freshness. `observation.latest`
+is the latest trusted QC-passed reading in the preceding 168 hours, or null.
+The three `hourly` entries end at UTC hour boundaries H-2h, H-1h, H, oldest first.
+Each selects the last reading in `(hour_end-1h, hour_end]`; gaps remain null.
+Protected Nepal delivery rows are excluded even for admins. The existing
+`/observations/latest` defaults and water-level behavior are unchanged.
+
+`forecast` is only today's shared CURRENT daily evaluation selection. There is
+no ordinary, yesterday, or staged fallback. All current groups are validated before
+selection; an invalid daily authority makes every CMAL component unavailable with
+`authority_integrity_error`. A typed failure decoding an exact authoritative stored
+record has the same component-only result; observations and BAFU survive.
+Stored flag arrays require object entries with their required string fields;
+rejected series require arrays of two-element timestamp/value points and valid
+numeric/nonfinite encodings. Malformed JSON shapes and known Polars value-frame
+construction/cast failures become typed decode errors for exact STANDARD reads.
+Legacy null flag arrays remain empty; non-STANDARD errors retain their boundary.
+Database, protected-lineage and unrelated programming errors are not relabeled.
+Candidate keys retain the full frozen claim and output reference, so another
+group cannot overwrite the first group’s eligibility. The station
+panel still runs its fallback/history/diagnostic path; yesterday-only diagnostic
+corruption can fail that panel while a valid current-only overview remains usable.
+
+Available CMAL includes `output_id`, `output_source` (`forecast` or `rejected`),
+`qc_status`, `model_id`, source `daily_cmal`, and input-quality labels. Eligible
+rejected/suspect outputs remain visibly labeled. Peaks are maximum per-time
+ensemble medians over still-valid intervals; earliest time wins a tie. Horizon end
+is the exclusive end of the last interval. `bafu_comparison` is independent and
+never replaces CMAL. It uses one archive listing and scoped selected files through
+the full envelope parser. The overview additionally requires the same-stem raw
+JSON (at most 1 MiB), matching issue annotation and relevant trace times/values.
+Median and both Min/Max traces must explicitly declare `m³/s` or `m3/s` on the
+same axis. Only the percentile fill band may inherit that shared-axis evidence.
+A parquet unit alone is not evidence: the collector may have defaulted it.
+Missing/inconsistent raw evidence makes only that BAFU component unavailable;
+the existing station snapshot parser remains unchanged. Source issue time is not
+archive collection time. Malformed timestamp filenames are ignored as non-runs,
+never treated as valid. Corruption in a selected latest run never selects an older
+run. Null medians or non-monotonic envelopes are `invalid_source_data`; exhausted
+intervals are `expired_horizon`. A CMAL quantile output without a 0.5 quantile is
+`invalid_source_data`, not an expired horizon. Shared configuration/read failures
+are HTTP 503; unexpected errors are HTTP 500, both declared in OpenAPI.
+
+When the publication gate is active, reviewer CMAL retains only state/reason,
+output identity/source, model, issue time and QC status. Admin CMAL follows the
+existing evaluation behavior. BAFU is withheld for both roles, retaining only
+`state`, `reason`, and constant `source: "bafu"`.
+
+Reported levels, flow classes and threshold onboarding belong to Phase C.
+They explicitly report `unavailable` / `not_onboarded`; thresholds are `[]` and
+inferred levels/provenance are null. Unknown never means level 1.
+
+Frontend integration must use visible-tab polling, bypass proxy caches, clear
+live numeric fields on HTTP failure, and preserve the station panel's three-read
+budget. No backend scheduler or cache is added. See `swiss-overview.example.json` for a one-station excerpt from the isolated synthetic
+PostgreSQL/archive response, with station_count reduced to match (not production data). See the schema for exact unions:
+
+```json
+{"state":"unavailable","reason":"pending_current_issue"}
+```
+```json
+{"state":"withheld","reason":"publication_gate","source":"bafu"}
+```
+
+The midnight pending interval is intentional. A separately labeled panel fallback
+may still exist during it. Polling cadence, browser acceptance, and deployment
+performance remain rollout checks, not guarantees from this contract.

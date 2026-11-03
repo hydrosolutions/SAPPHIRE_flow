@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-26T01:30:00Z",
+  "parameter": "discharge",
+  "observation_source": "measured",
+  "observation_display_unit": "m3/s",
+  "station_count": 1,
+  "items": [
+    {
+      "station": {
+        "id": "9a8d70a4-5086-4a22-98b2-78721ddbc33b",
+        "network": "bafu",
+        "code": "overview-0"
+      },
+      "observation": {
+        "availability": "available",
+        "reason": null,
+        "latest": {
+          "observed_at": "2026-10-26T01:30:00Z",
+          "value": 64.12296644655943,
+          "qc_status": "qc_passed"
+        },
+        "hourly": [
+          {
+            "hour_end": "2026-10-25T23:00:00Z",
+            "sample": {
+              "observed_at": "2026-10-25T22:30:00Z",
+              "value": 64.12296644655943,
+              "qc_status": "qc_passed"
+            }
+          },
+          {
+            "hour_end": "2026-10-26T00:00:00Z",
+            "sample": {
+              "observed_at": "2026-10-25T23:30:00Z",
+              "value": 64.12296644655943,
+              "qc_status": "qc_passed"
+            }
+          },
+          {
+            "hour_end": "2026-10-26T01:00:00Z",
+            "sample": {
+              "observed_at": "2026-10-26T00:30:00Z",
+              "value": 64.12296644655943,
+              "qc_status": "qc_passed"
+            }
+          }
+        ]
+      },
+      "reported_level": {
+        "availability": "unavailable",
+        "reason": "not_onboarded",
+        "state": "unavailable",
+        "level": null,
+        "observed_at": null,
+        "collected_at": null,
+        "source": null,
+        "publisher": null
+      },
+      "flow_class": {
+        "availability": "unavailable",
+        "reason": "not_onboarded",
+        "code": null,
+        "label": null,
+        "source_time": null,
+        "collected_at": null,
+        "source": null,
+        "classification_scheme": null
+      },
+      "forecast": {
+        "state": "available",
+        "reason": null,
+        "issued_at": "2026-10-26T00:00:00Z",
+        "horizon_start": "2026-10-26T00:00:00Z",
+        "horizon_end": "2026-11-05T00:00:00Z",
+        "peak_value": 19.5,
+        "unit": "m3/s",
+        "peak_valid_time": "2026-11-04T00:00:00Z",
+        "inferred_level": null,
+        "threshold_source": null,
+        "threshold_profile": null,
+        "source": "daily_cmal",
+        "output_id": "4cbbf9f1-4efe-4597-8f74-f6ff82e8908a",
+        "output_source": "forecast",
+        "qc_status": "qc_passed",
+        "model_id": "daily-6e38dd79-5d32-40fe-9069-76bed426474c",
+        "peak_statistic": "ensemble_median",
+        "input_quality": null,
+        "input_quality_flags": []
+      },
+      "bafu_comparison": {
+        "state": "available",
+        "reason": null,
+        "issued_at": "2026-10-26T00:00:00Z",
+        "horizon_start": "2026-10-26T01:00:00Z",
+        "horizon_end": "2026-10-30T20:00:00Z",
+        "peak_value": 122.0,
+        "unit": "m3/s",
+        "peak_valid_time": "2026-10-26T01:00:00Z",
+        "inferred_level": null,
+        "threshold_source": null,
+        "threshold_profile": null,
+        "source": "bafu",
+        "peak_statistic": "median"
+      },
+      "thresholds": []
+    }
+  ]
+}
