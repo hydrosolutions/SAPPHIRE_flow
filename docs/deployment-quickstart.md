@@ -43,6 +43,15 @@ Create a `.env` file to override defaults:
 
 Without `SAPPHIRE_DOMAIN`, Caddy serves plain HTTP on port 80.
 
+### Deployment TOML (not `.env`)
+
+Nepal-only stored Gateway history can opt in with the top-level TOML setting
+`reanalysis_source = "recap_era5_land"` in the deployment config selected by
+`SAPPHIRE_CONFIG`, after the
+[Recap history activation checks](operations/recap-gateway-runbook.md#opt-in-stored-era5-land-history-reads).
+This does not change the Swiss default or the weather-history API. Verify the
+actual configuration source for each worker/deployment before activation.
+
 ## 4. Build and start
 
 ```bash

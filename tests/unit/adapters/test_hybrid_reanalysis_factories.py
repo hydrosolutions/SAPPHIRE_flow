@@ -342,3 +342,81 @@ class TestSnowTier:
 
         assert len(result) == 1
         assert result[0].value == 7.0
+
+
+class TestRecapHistorySelection:
+    def test_maps_only_era5_binding_and_preserves_rows(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
+
+        store = _seed_store()
+        recap = _raw(
+            source=GATEWAY_HISTORY_SOURCE,
+            parameter="precipitation",
+            when=_POST,
+            value=2.5,
+        )
+        sloth = replace(recap, source="era5_land", value=99.0)
+        passthrough = replace(recap, source="other", value=17.0)
+        store.store_forcing([recap, sloth, passthrough])
+        reader = select_reanalysis_source(forcing_store=store, mode="recap_era5_land")
+        bindings = [
+            replace(_cfg(), nwp_source="era5_land"),
+            replace(_cfg(), nwp_source="other"),
+        ]
+        assert reader.fetch_reanalysis(
+            bindings, _WINDOW_START, _WINDOW_END, ["precipitation"]
+        ) == [recap, passthrough]
+
+    def test_no_fallback_snow_or_forecast_reads(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
+
+        store = _seed_store()
+        store.store_forcing(
+            [
+                _raw(
+                    source="era5_land",
+                    parameter="precipitation",
+                    when=_POST,
+                    value=99.0,
+                ),
+                _raw(
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    when=_POST,
+                    value=20.0,
+                ),
+                _raw(
+                    source=GATEWAY_HISTORY_SOURCE,
+                    parameter="temperature",
+                    when=_POST,
+                    value=15.0,
+                ),
+            ]
+        )
+        reader = select_reanalysis_source(forcing_store=store, mode="recap_era5_land")
+        binding = replace(_cfg(), nwp_source="era5_land")
+        assert (
+            reader.fetch_reanalysis(
+                [binding], _WINDOW_START, _WINDOW_END, ["precipitation", "swe"]
+            )
+            == []
+        )
+        assert (
+            reader.fetch_reanalysis(
+                [replace(binding, role=WeatherSourceRole.FORECAST)],
+                _WINDOW_START,
+                _WINDOW_END,
+                ["temperature"],
+            )
+            == []
+        )

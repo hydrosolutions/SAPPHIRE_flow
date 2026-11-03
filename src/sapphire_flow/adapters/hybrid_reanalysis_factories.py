@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
 from sapphire_flow.adapters.per_source_store_reader import PerSourceStoreReader
 from sapphire_flow.types.forcing_sources import ForcingSource
+from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -97,7 +98,7 @@ def default_hybrid_forcing_source(
 def select_reanalysis_source(
     *,
     forcing_store: HistoricalForcingStore,
-    mode: Literal["single", "hybrid", "era5_land"],
+    mode: Literal["single", "hybrid", "era5_land", "recap_era5_land"],
 ) -> WeatherReanalysisSource:
     """Pick the read-side reanalysis source for the configured ``mode``."""
     if mode == "hybrid":
@@ -117,4 +118,8 @@ def select_reanalysis_source(
         StoreBackedReanalysisSource,
     )
 
+    if mode == "recap_era5_land":
+        return StoreBackedReanalysisSource(
+            forcing_store, source_mapping={"era5_land": GATEWAY_HISTORY_SOURCE}
+        )
     return StoreBackedReanalysisSource(forcing_store)

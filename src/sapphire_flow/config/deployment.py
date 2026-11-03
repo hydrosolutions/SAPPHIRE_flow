@@ -187,9 +187,12 @@ class DeploymentConfig(BaseModel):
     # training lineage reads), via the same generic per-source reader every
     # other single-source mode uses. This is distinct from the Data-Gateway-
     # mediated ERA5-Land path `architecture-context.md` describes for
-    # production Nepal ingest (§ "SAPPHIRE Data Gateway") — that remains a
-    # separate, later integration. v0 (Swiss) has no reason to select this.
-    reanalysis_source: Literal["single", "hybrid", "era5_land"] = "hybrid"
+    # production Nepal ingest (§ "SAPPHIRE Data Gateway"). Select
+    # "recap_era5_land" to map the era5_land binding to native Gateway history;
+    # unmapped bindings still pass through. Swiss deployments stay hybrid.
+    reanalysis_source: Literal["single", "hybrid", "era5_land", "recap_era5_land"] = (
+        "hybrid"
+    )
 
     # Per-organisation climatology window for the ERA5-Land/Caravan parity check
     # (Plan 183 T3). `None` uses the full ERA5-Land record
