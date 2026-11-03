@@ -279,8 +279,8 @@ version/architecture limitations and obtain owner acceptance before live loading
 
 ### Transfer deadlines and acknowledgement reconciliation
 
-The existing transfer step remains 30 minutes and the whole job 180 minutes.
-The internal transfer deadline is 1740s, starting **before** repeated preflight.
+The transfer step is bounded to 40 minutes; the whole job remains 180 minutes.
+The internal transfer deadline is 2340s, starting **before** repeated preflight.
 After source checks, payload hashing and wire-file creation, the sender recomputes
 its remaining SSH budget. It reserves 60s for local cleanup and refuses to start
 SSH unless the remaining budget exceeds the 1200s receiver cap plus a 60s
@@ -290,6 +290,29 @@ Receiver work stops early enough to reserve up to 60s of its own deadline for
 cleanup; all target Docker calls, including owned-probe cleanup, share that deadline.
 The operator checks both installed receiver code/config and sender limits before
 admission. Budget exhaustion is a hold, not permission to extend this job.
+
+The step and internal deadline add 600s of preparation headroom, not SSH time.
+With 441s of preparation (as observed in run 41606771468 attempt 1), the sender
+still receives at most 1500s, leaving 339s of internal slack plus the external
+60s cleanup margin. Full sender allowance remains available through 780s of
+preparation. At 1019s the allowance is 1261s; at 1020s it is 1260s and SSH is
+refused. Preflight and wire creation share the original deadline; it is not reset.
+The maximum secret-in-step and possible key-on-disk exposure window grows from
+30 to 40 minutes. Credential scope, injection point, SSH bounds and cleanup
+behavior are unchanged; no secret or private diagnostic output becomes public.
+
+Before dispatch, retain the full-job timeline and assess remaining job headroom,
+not only the transfer step limit. Run 41606771468 began at 09:01:01Z and entered
+transfer at 10:55:06Z: about 114 minutes elapsed and 66 minutes remained. The
+180-minute job limit still supersedes the 40-minute step and can interrupt its
+cleanup ordering. Insufficient whole-job headroom is a hold, not permission to
+retry or increase the job limit. These budgets do not guarantee delivery.
+
+A finished hosted runner is not payload retention. When no accepted or partial
+server bytes and no uploaded artifacts exist, a Produced receipt alone cannot
+recover the images. A new approved build is needed unless independently verified
+recoverable bytes appear. Do not mutate a published release tag or rebind an old
+receipt to avoid rebuilding; use a fresh release and admission after review.
 
 No deadline eliminates network acknowledgement ambiguity. After a lost acknowledgement,
 compare the independently retained `produced` digest record with the server's
@@ -346,7 +369,7 @@ First qualify this exact hosted path with the public-only route after reviewed
 publication. Local Docker 29.8.2 evidence does not qualify hosted 28.0.4.
 Any hosted engine-version drift blocks all release delivery routes until reviewed
 requalification. A later private attempt reruns its own setup/smoke and every existing test, scan, SBOM and
-image proof. The existing 180-minute job and 30-minute transfer limits remain;
+image proof. The 180-minute job and bounded 40-minute transfer limits apply;
 worst-case work does not guarantee diagnostic delivery before cancellation.
 
 Before strict route success, failures (including checkout or setup-uv failure)

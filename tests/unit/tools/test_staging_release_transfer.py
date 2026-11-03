@@ -891,12 +891,35 @@ class TestTransferBudget:
         with pytest.raises(transfer.TransferError, match="before SSH"):
             transfer.remaining_ssh_budget(1500, 1740, 421)
 
+    @pytest.mark.parametrize(
+        "elapsed, expected", [(441, 1500), (780, 1500), (1019, 1261)]
+    )
+    def test_extended_budget_preserves_sender_bounds(
+        self, elapsed: int, expected: int
+    ) -> None:
+        assert (
+            transfer.remaining_ssh_budget(1500, transfer.TRANSFER_WORK_SECONDS, elapsed)
+            == expected
+        )
+
+    @pytest.mark.parametrize("elapsed", [1020, 1021])
+    def test_extended_budget_rejects_exhausted_cleanup_margin(
+        self, elapsed: int
+    ) -> None:
+        with pytest.raises(transfer.TransferError, match="before SSH"):
+            transfer.remaining_ssh_budget(1500, transfer.TRANSFER_WORK_SECONDS, elapsed)
+
     def test_receiver_cannot_equal_sender_maximum(self) -> None:
         with pytest.raises(transfer.TransferError, match="invalid"):
             replace(config(), timeout_seconds=1500)
 
+    @pytest.mark.parametrize("deadline, elapsed", [(1740, 500), (2340, 1020)])
     def test_wire_cost_holds_ssh_and_cleans_created_key_files(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        deadline: int,
+        elapsed: int,
     ) -> None:
         envelope, directory = payload(tmp_path)
         work = tmp_path / "work"
@@ -917,8 +940,8 @@ class TestTransferBudget:
                     "STAGING_KNOWN_HOSTS": "synthetic",
                 },
                 timeout_seconds=1500,
-                deadline=1740,
-                clock=lambda: 500,
+                deadline=deadline,
+                clock=lambda: elapsed,
             )
         assert (work / "transfer.wire").exists()
         assert not (work / "staging-key").exists()

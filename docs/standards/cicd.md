@@ -2006,8 +2006,18 @@ CLI now rejects any release-state change during a build instead of recording a
 refreshed state; its Git contexts restore 0755/0644 Git mode parity (which can change
 layer bytes from older owner builds); legacy CI identity probes now use `--pull never
 --network none`. Existing publisher/probe and backup compatibility tests remain in
-the final suite. The 30-minute transfer step now accounts for pre-SSH work, cleanup
+the final suite. The 40-minute transfer step accounts for pre-SSH work, cleanup
 and strictly nested receiver/sender budgets; the 180-minute job is not extended.
+The internal phase is 2340s plus an external 60s cleanup margin. Its sender
+reservation remains 60s, with SSH bounded to 1261–1500s and the receiver to 1200s.
+At 441s preparation the full 1500s sender allowance leaves 339s internal slack;
+1019s preparation admits 1261s, while 1020s refuses SSH. The original deadline
+still includes preflight and wire creation. The maximum secret-in-step exposure
+window grows from 30 to 40 minutes; credential scope and cleanup do not change.
+Operators must assess whole-job headroom before dispatch: the observed failed
+run had about 66 minutes left at transfer entry, but the 180-minute cap still
+supersedes the step. No delivery guarantee or automatic retry follows from this
+extension. See the staging release runbook for retained-byte recovery limits.
 
 The staging controller requires exactly eight successful preparation outcomes:
 `checkout`, `uv`, `buildx`, `trivy`, `syft`, `route`, `engine`, `exporter-smoke`.
@@ -2019,8 +2029,9 @@ allowlist. A successful smoke-only environment record is not a release receipt.
 
 Public route/source validation has a 15-minute bound; hosted daemon setup has
 three minutes and exporter smoke five. No new verification/transfer-preflight
-cap or global budget increase is added. Existing 180-minute job, 30-minute transfer
-and substantive gate deadlines remain, without a worst-case delivery guarantee.
+cap or whole-job budget increase is added. The 180-minute job and substantive
+gate deadlines remain; only the transfer step grows from 30 to 40 minutes,
+without a worst-case delivery guarantee.
 The first hosted qualification remains an operational hold until the exact
 Docker 28.0.4/containerd + docker-container builder smoke passes; scanner/runtime
 compatibility still needs the separate complete private attempt.
