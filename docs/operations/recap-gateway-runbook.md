@@ -57,6 +57,44 @@ multi-year training series (see Plan 082 "Client caveats").
    in the coverage manifest (next section) — back-extraction does not update
    the manifest automatically; the manifest is a SUPERVISED record.
 
+## Opt-in stored ERA5-Land history reads
+
+`DeploymentConfig.reanalysis_source = "recap_era5_land"` selects already-stored
+native Gateway history through the shared `select_reanalysis_source` factory.
+It maps only the REANALYSIS binding `era5_land` to `GATEWAY_HISTORY_SOURCE`
+(`recap_era5_land_reanalysis`). Unmapped REANALYSIS bindings retain literal
+passthrough; FORECAST-only bindings read nothing. This is not an exclusive
+source filter. No network request, fallback, unit conversion or timestamp
+shift is added. Source/version, spatial type, band/member IDs and values are
+preserved; the store still owns latest-version selection and `[start,end)`.
+
+The accepted use case is cmal_small past precipitation and temperature, with
+Q supplied separately. With only the `era5_land` binding, SWE remains empty
+even if `recap_snow_reanalysis` rows exist. Snow consumers need a separate
+review. `hybrid` remains the default and the shipped Swiss configuration;
+`single`, Swiss hybrid chains and Sloth `era5_land` behavior are unchanged.
+
+Before activation, the orchestrator must inventory each consumer's actual
+configuration source: forecast cycle (model worker), training, hindcast,
+station onboarding, model onboarding and the `scripts/onboard.py` operator CLI. Record the explicitly authorized
+Nepal consumers and those left unchanged; a model-worker overlay does not
+prove another service receives it. Refresh all Nepal REANALYSIS bindings;
+unexpected extra bindings require a decision because passthrough is retained.
+The weather-history API still uses literal `hybrid`; it is excluded from this
+mode's activation and acceptance proof. Use native factory/store reads and
+bounded model-input assembly instead. No live configuration is changed here.
+
+Native writer tests establish metres-to-mm and kelvin-to-Celsius conversion,
+UTC parsing and provenance. Assembly uses model-declared UTC daily precipitation
+SUM and temperature MEAN, without a second conversion. These tests do not prove
+the provider's physical accumulation interval or day label: retain the existing
+scientific qualification and hold activation if its evidence is missing or
+contradicted. This selector is not a forecast-readiness claim. Fresh Q, complete
+30-day past P/T, ten future daily P/T steps, purpose-scoped rating evidence and
+unchanged FI/max_nan gates remain separate requirements. IFS
+`undeclared_native_cadence` and missing buckets remain unchanged; no history tag
+is added to `_NATIVE_STEP_BY_SOURCE` and no IFS tail bridge is supplied.
+
 ## Coverage manifest
 
 The Gateway exposes no coverage metadata (Resolved Gateway Question 3) — SAP3

@@ -33,6 +33,14 @@ class TestReanalysisSourceFlag:
 
         assert cfg.reanalysis_source == "hybrid"
 
+    def test_shipped_swiss_config_remains_hybrid(self) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.config.deployment import load_config
+
+        shipped = Path(__file__).resolve().parents[3] / "config.toml"
+        assert load_config(shipped).reanalysis_source == "hybrid"
+
     def test_accepts_single_as_explicit_opt_out(self) -> None:
         cfg = DeploymentConfig(
             max_retention_days=_RETENTION, reanalysis_source="single"
@@ -46,6 +54,12 @@ class TestReanalysisSourceFlag:
         )
 
         assert cfg.reanalysis_source == "era5_land"
+
+    def test_accepts_recap_era5_land(self) -> None:
+        cfg = DeploymentConfig(
+            max_retention_days=_RETENTION, reanalysis_source="recap_era5_land"
+        )
+        assert cfg.reanalysis_source == "recap_era5_land"
 
     def test_rejects_invalid_value(self) -> None:
         with pytest.raises(ValidationError):

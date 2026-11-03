@@ -246,6 +246,13 @@ Inspect on tasks touching source fetch, input assembly, resampling / aggregation
 windowing, requirement-superset construction, or the NWP coverage / input-quality
 gates.
 
+- stored Recap history selection: `DeploymentConfig.reanalysis_source`,
+  `select_reanalysis_source`, `StoreBackedReanalysisSource.source_mapping`,
+  `GATEWAY_HISTORY_SOURCE` and `RecapGatewayReanalysisAdapter` must agree.
+  `recap_era5_land` maps only `era5_land`; unmapped REANALYSIS bindings pass
+  through. Preserve the Swiss default and literal hybrid weather-history API.
+  Verify factory/config tests, native operational assembly and persisted
+  `test_recap_history_selection`; activation limits are in the Recap runbook.
 - input assembly: `assemble_station_operational_inputs` /
   `assemble_group_operational_inputs` build four channels — past_targets,
   past_dynamic (reanalysis, **plus a stored-NWP tail on the operational route** — see

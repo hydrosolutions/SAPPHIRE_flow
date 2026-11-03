@@ -2143,3 +2143,112 @@ class TestPastDynamicHonoursDeclaredResolution:
         # Exactly the declared lookback: two complete buckets, and NOT the
         # in-progress one at floor(issue_time).
         assert len(stamps) == 2
+
+
+class TestNativeRecapHistoryAssembly:
+    def test_native_writer_config_selected_utc_daily_inputs(self) -> None:
+        from dataclasses import replace
+
+        import pandas as pd
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.services.nepal_onboarding import history_binding
+        from sapphire_flow.types.enums import AggregationMethod
+        from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
+        from tests.fakes.fake_stores import FakeHistoricalForcingStore
+        from tests.unit.adapters.test_recap_gateway import (
+            _POLY_A,
+            _GoodSnow,
+            _MapResolver,
+            _reanalysis_adapter,
+            _ReanalysisEcmwf,
+            _ref,
+        )
+
+        sid = StationId(uuid4())
+        start = ensure_utc(_ISSUE - timedelta(days=2))
+
+        class HourlyHistory(_ReanalysisEcmwf):
+            def era5_land_reanalysis(self, **kwargs: object) -> object:
+                times = pd.date_range(start, periods=48, freq="h", name="time")
+                values = (
+                    [0.001] * 24 + [0.002] * 24
+                    if kwargs["variable"] == "total_precipitation"
+                    else [280.15] * 24 + [282.15] * 24
+                )
+                return pd.DataFrame(
+                    {
+                        _POLY_A: values,
+                        "source": "era5_land",
+                        "source_run": pd.Timestamp(start),
+                    },
+                    index=times,
+                )
+
+        binding = history_binding(sid)
+        assert binding.nwp_source == "era5_land"
+        assert binding.role is WeatherSourceRole.REANALYSIS
+        writer = _reanalysis_adapter(
+            HourlyHistory(), _GoodSnow(), _MapResolver({sid: _ref(sid, _POLY_A)})
+        )
+        rows = writer.fetch_reanalysis(
+            [binding], start, _ISSUE, ["precipitation", "temperature"]
+        )
+        assert len(rows) == 96
+        assert {row.source for row in rows} == {GATEWAY_HISTORY_SOURCE}
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            rows + [replace(row, source="era5_land", value=999.0) for row in rows]
+        )
+        cfg = DeploymentConfig(
+            max_retention_days=600, reanalysis_source="recap_era5_land"
+        )
+        reader = select_reanalysis_source(
+            forcing_store=store, mode=cfg.reanalysis_source
+        )
+        assert (
+            reader.fetch_reanalysis(
+                [binding], start, _ISSUE, ["precipitation", "temperature"]
+            )
+            == rows
+        )
+        station_store, basin_store, obs_store, nwp_store, state_store, _ = (
+            _make_stores_and_sources(sid, with_nwp=False)
+        )
+        station_store.store_weather_source(binding)
+        reqs = replace(
+            _make_model().data_requirements,
+            lookback_steps=2,
+            future_dynamic_features=frozenset(),
+            supported_time_steps=frozenset({timedelta(days=1)}),
+            declared_aggregations=(
+                ("precipitation", AggregationMethod.SUM),
+                ("temperature", AggregationMethod.MEAN),
+            ),
+        )
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=_make_model(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source="ifs_ecmwf",
+            forcing_source=reader,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=5,
+            time_step=timedelta(days=1),
+            requirements_override=reqs,
+        )
+        assert result is not None
+        frame = result[0].data.past_dynamic.sort("timestamp")
+        assert frame["timestamp"].to_list() == [start, start + timedelta(days=1)]
+        assert frame["precipitation"].to_list() == pytest.approx([24.0, 48.0])
+        assert frame["temperature"].to_list() == pytest.approx([7.0, 9.0])

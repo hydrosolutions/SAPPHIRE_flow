@@ -52,7 +52,8 @@ nwp_grid_retention_days = 3
 # single-source) — NO CAMELS-CH tier. "single" reads a station's ONE
 # nwp_source binding directly; kept only as an explicit opt-out (it cannot
 # see MeteoSwiss's per-product source tags).
-reanalysis_source = "hybrid"                # "single"|"hybrid"
+# "single"|"hybrid"|"era5_land"|"recap_era5_land"
+reanalysis_source = "hybrid"
 
 # --- Per-source alert enablement ---
 # Source: types-and-protocols.md § DeploymentConfig, v0-scope.md § A8c
