@@ -816,7 +816,10 @@ class TestDhmBatchBounds:
                     adapter.fetch_observations_batch([cfg], {cfg.id: START}).failed
                     == ()
                 )
-        assert len(calls) == len(ends) == 2
+        assert len(calls) == 2
+        assert {request.url.params["water_level_on__lt"] for request in calls} == {
+            (NOW + timedelta(seconds=1)).isoformat()
+        }
 
     @pytest.mark.parametrize(
         "headers,expected",
@@ -924,3 +927,206 @@ class TestDhmBatchBounds:
         assert stream.closed
         assert result.observations == []
         assert result.failed[0].failure_cause is FetchOutcomeCause.TRANSPORT_ERROR
+
+
+class TestDhmRequestEvidence:
+    def test_wire_bounds_are_real_filters_not_flow_or_observation_times(self) -> None:
+        logical_end = ensure_utc(NOW.replace(microsecond=123456))
+        logical_start = ensure_utc(logical_end - timedelta(hours=1))
+        requested_at = ensure_utc(logical_end + timedelta(seconds=2))
+        retrieved_at = ensure_utc(logical_end + timedelta(seconds=4))
+        clock_values = iter((logical_end, requested_at, retrieved_at))
+        requests: list[httpx.Request] = []
+        config = station()
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return response(
+                200,
+                json={
+                    "results": [
+                        reading(waterLevelOn=t.isoformat())
+                        for t in (
+                            logical_start - timedelta(seconds=1),
+                            logical_start,
+                            logical_end,
+                            logical_end + timedelta(seconds=1),
+                        )
+                    ]
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            result = DhmAdapter(
+                config=parse_dhm_config(settings()),
+                http_client=client,
+                clock=lambda: next(clock_values),
+                sleeper=lambda _: None,
+            ).fetch_observations_batch([config], {config.id: logical_start})
+        assert [r.timestamp for r in result.observations] == [logical_end]
+        evidence = result.outcomes[0].dhm_request_evidence
+        assert evidence is not None
+        (interval,) = evidence.requested_intervals
+        assert (
+            interval.lower_exclusive.isoformat()
+            == requests[0].url.params["water_level_on__gt"]
+        )
+        assert (
+            interval.upper_exclusive.isoformat()
+            == requests[0].url.params["water_level_on__lt"]
+        )
+        assert interval.upper_exclusive == logical_end + timedelta(seconds=1)
+        assert evidence.request_started_at == requested_at
+        assert evidence.retrieved_at == retrieved_at
+        assert evidence.request_count == 1
+
+    def test_adjacent_windows_keep_wire_overlap_without_duplicate_observations(
+        self,
+    ) -> None:
+        start = ensure_utc(NOW - timedelta(hours=2))
+        middle = ensure_utc(NOW - timedelta(hours=1))
+        config = station()
+        requests: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            values = [middle] if len(requests) == 1 else [middle, NOW]
+            return response(
+                200,
+                json={"results": [reading(waterLevelOn=t.isoformat()) for t in values]},
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            result = DhmAdapter(
+                config=parse_dhm_config(settings(window_hours=1)),
+                http_client=client,
+                clock=lambda: NOW,
+                sleeper=lambda _: None,
+            ).fetch_observations_batch([config], {config.id: start})
+        assert [r.timestamp for r in result.observations] == [middle, NOW]
+        evidence = result.outcomes[0].dhm_request_evidence
+        assert evidence is not None
+        assert len(evidence.requested_intervals) == 2
+        assert evidence.requested_intervals[0].upper_exclusive == middle + timedelta(
+            seconds=1
+        )
+        assert evidence.requested_intervals[1].lower_exclusive == middle - timedelta(
+            seconds=1
+        )
+        assert evidence.request_count == 2
+
+    def test_continuation_reuses_actual_wire_filters(self) -> None:
+        config = station()
+        requests: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            more = len(requests) == 1
+            timestamp = NOW - timedelta(hours=2 if more else 1)
+            next_url = (
+                str(request.url.copy_merge_params({"offset": "1"})) if more else None
+            )
+            return response(
+                200,
+                json={
+                    "results": [reading(waterLevelOn=timestamp.isoformat())],
+                    "next": next_url,
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            result = DhmAdapter(
+                config=parse_dhm_config(settings(page_size=1)),
+                http_client=client,
+                clock=lambda: NOW,
+                sleeper=lambda _: None,
+            ).fetch_observations_batch([config], {config.id: START})
+        evidence = result.outcomes[0].dhm_request_evidence
+        assert evidence is not None
+        assert len(evidence.requested_intervals) == 1
+        assert evidence.request_count == 2
+        assert (
+            requests[0].url.params["water_level_on__lt"]
+            == requests[1].url.params["water_level_on__lt"]
+        )
+
+    def test_preflight_failure_does_not_invent_request_evidence(self) -> None:
+        config = station("unmapped")
+        with httpx.Client(
+            transport=httpx.MockTransport(lambda _: pytest.fail("must not request"))
+        ) as client:
+            result = DhmAdapter(
+                config=parse_dhm_config(settings()),
+                http_client=client,
+                clock=lambda: NOW,
+                sleeper=lambda _: None,
+            ).fetch_observations_batch([config], {config.id: START})
+        assert result.outcomes[0].dhm_request_evidence is None
+
+
+class TestDhmHistoricalWindow:
+    def test_half_open_subsecond_bounds_keep_real_transport_clock(self) -> None:
+        config = station()
+        start = ensure_utc(START + timedelta(microseconds=400_000))
+        end = ensure_utc(start + timedelta(hours=1))
+        times = [
+            start - timedelta(microseconds=1),
+            start,
+            end - timedelta(microseconds=1),
+            end,
+        ]
+        rows = [reading(waterLevelOn=t.isoformat()) for t in times]
+        with httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: response(200, json={"results": rows})
+            )
+        ) as client:
+            adapter = DhmAdapter(
+                config=parse_dhm_config(settings()),
+                http_client=client,
+                clock=lambda: NOW,
+                request_clock=lambda: NOW,
+                sleeper=lambda _: None,
+            )
+            result = adapter.fetch_observations_window([config], start=start, end=end)
+        assert [row.timestamp for row in result.observations] == [start, times[2]]
+        receipt = result.outcomes[0].dhm_request_evidence
+        assert receipt is not None
+        assert receipt.request_started_at == NOW
+        assert receipt.retrieved_at == NOW
+
+    def test_conflicts_in_overlap_are_checked_before_outer_filter(self) -> None:
+        config = station()
+        start = START
+        end = ensure_utc(start + timedelta(hours=2))
+        calls = 0
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            # A shared internal boundary is returned twice with conflicting values.
+            return response(
+                200,
+                json={
+                    "results": [
+                        reading(
+                            float(calls),
+                            waterLevelOn=(
+                                start + timedelta(hours=1, microseconds=100_000)
+                            ).isoformat(),
+                        )
+                    ]
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            adapter = DhmAdapter(
+                config=parse_dhm_config(settings(window_hours=1.0)),
+                http_client=client,
+                clock=lambda: NOW,
+                sleeper=lambda _: None,
+            )
+            result = adapter.fetch_observations_window([config], start=start, end=end)
+        assert calls == 2
+        assert not result.observations
+        assert result.outcomes[0].failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE

@@ -3326,6 +3326,35 @@ rating_derived_discharge = sa.Table(
     sa.Column("rejection", sa.Text),
     sa.Column("content", sa.Text, nullable=False),
     sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("capture_id", UUID(as_uuid=True)),
+    sa.Column("evidence_version", sa.Integer, nullable=False, server_default="1"),
+    sa.Column("stored_order", sa.BigInteger, sa.Identity(always=True), nullable=False),
+    sa.Column(
+        "stored_order_basis",
+        sa.Text,
+        nullable=False,
+        server_default="database_insertion_sequence",
+    ),
+    sa.CheckConstraint(
+        "stored_order_basis IN "
+        "('database_insertion_sequence', 'migration_registration')",
+        name="ck_rating_derived_order_basis",
+    ),
+    sa.ForeignKeyConstraint(
+        ["capture_id", "tenant_id", "station_id"],
+        [
+            "native_measurement_captures.id",
+            "native_measurement_captures.tenant_id",
+            "native_measurement_captures.station_id",
+        ],
+        name="fk_rating_derived_capture",
+        ondelete="RESTRICT",
+    ),
+    sa.CheckConstraint(
+        "(evidence_version=1 AND capture_id IS NULL) OR "
+        "(evidence_version=2 AND capture_id IS NOT NULL)",
+        name="ck_rating_derived_evidence_version",
+    ),
     sa.ForeignKeyConstraint(
         ["station_id", "tenant_id"], ["stations.id", "stations.tenant_id"]
     ),
@@ -3356,4 +3385,175 @@ sa.Index(
     "ix_rating_derived_station_time",
     rating_derived_discharge.c.station_id,
     rating_derived_discharge.c.timestamp,
+)
+
+
+sa.Index(
+    "uq_rating_derived_stored_order",
+    rating_derived_discharge.c.stored_order,
+    unique=True,
+)
+
+native_measurement_captures = sa.Table(
+    "native_measurement_captures",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("source_version_sha256", sa.Text, nullable=False),
+    sa.Column("source_content", sa.Text, nullable=False),
+    sa.Column("evidence_content", sa.Text, nullable=False),
+    sa.Column("evidence_sha256", sa.Text, nullable=False),
+    sa.Column("registered_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"],
+        ["observations.id", "observations.station_id"],
+        ondelete="RESTRICT",
+    ),
+    sa.UniqueConstraint(
+        "tenant_id",
+        "station_id",
+        "observation_id",
+        "source_version_sha256",
+        name="uq_native_capture_version",
+    ),
+    sa.UniqueConstraint(
+        "id", "tenant_id", "station_id", name="uq_native_capture_scope"
+    ),
+    sa.CheckConstraint(
+        "source_version_sha256 = "
+        "encode(sha256(convert_to(source_content, 'UTF8')), 'hex')",
+        name="ck_native_capture_source_digest",
+    ),
+    sa.CheckConstraint(
+        "evidence_sha256 = encode(sha256(convert_to(evidence_content, 'UTF8')), 'hex')",
+        name="ck_native_capture_evidence_digest",
+    ),
+)
+sa.Index(
+    "ix_native_capture_station_observation",
+    native_measurement_captures.c.station_id,
+    native_measurement_captures.c.observation_id,
+)
+
+native_capture_batches = sa.Table(
+    "native_capture_batches",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("flow_run_id", UUID(as_uuid=True)),
+    sa.Column("context_content", sa.Text, nullable=False),
+    sa.Column("context_sha256", sa.Text, nullable=False),
+    sa.Column("accepted_input_sha256", sa.Text, nullable=False),
+    sa.Column("commit_content", sa.Text, nullable=False),
+    sa.Column("commit_sha256", sa.Text, nullable=False),
+    sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        ondelete="RESTRICT",
+    ),
+    sa.UniqueConstraint(
+        "id", "tenant_id", "station_id", name="uq_native_capture_batch_scope"
+    ),
+    sa.CheckConstraint(
+        "context_sha256 = encode(sha256(convert_to(context_content, 'UTF8')), 'hex')",
+        name="ck_native_capture_batch_context_digest",
+    ),
+    sa.CheckConstraint(
+        "commit_sha256 = encode(sha256(convert_to(commit_content, 'UTF8')), 'hex')",
+        name="ck_native_capture_batch_commit_digest",
+    ),
+)
+
+native_capture_sightings = sa.Table(
+    "native_capture_sightings",
+    metadata,
+    sa.Column("batch_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("capture_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.ForeignKeyConstraint(
+        ["batch_id", "tenant_id", "station_id"],
+        [
+            "native_capture_batches.id",
+            "native_capture_batches.tenant_id",
+            "native_capture_batches.station_id",
+        ],
+        ondelete="RESTRICT",
+    ),
+    sa.ForeignKeyConstraint(
+        ["capture_id", "tenant_id", "station_id"],
+        [
+            "native_measurement_captures.id",
+            "native_measurement_captures.tenant_id",
+            "native_measurement_captures.station_id",
+        ],
+        ondelete="RESTRICT",
+    ),
+)
+
+
+provisional_evaluation_grants = sa.Table(
+    "provisional_evaluation_grants",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column(
+        "access_token_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("access_tokens.id", ondelete="RESTRICT"),
+    ),
+    sa.Column(
+        "human_user_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="RESTRICT"),
+    ),
+    sa.Column(
+        "granted_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.statement_timestamp(),
+    ),
+    sa.Column("granted_by", sa.Text, nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True)),
+    sa.Column("revoked_by", sa.Text),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        ondelete="RESTRICT",
+    ),
+    sa.CheckConstraint(
+        "num_nonnulls(access_token_id,human_user_id)=1",
+        name="ck_evaluation_grant_subject",
+    ),
+    sa.CheckConstraint("length(btrim(granted_by))>0", name="ck_evaluation_grant_actor"),
+    sa.CheckConstraint(
+        "(revoked_at IS NULL AND revoked_by IS NULL) OR "
+        "(revoked_at IS NOT NULL AND revoked_at>=granted_at AND revoked_by IS NOT NULL "
+        "AND length(btrim(revoked_by))>0)",
+        name="ck_evaluation_grant_revocation",
+    ),
+    sa.Index(
+        "uq_evaluation_token_active",
+        "access_token_id",
+        "station_id",
+        unique=True,
+        postgresql_where=sa.text("revoked_at IS NULL AND access_token_id IS NOT NULL"),
+    ),
+    sa.Index(
+        "uq_evaluation_human_active",
+        "human_user_id",
+        "station_id",
+        unique=True,
+        postgresql_where=sa.text("revoked_at IS NULL AND human_user_id IS NOT NULL"),
+    ),
 )

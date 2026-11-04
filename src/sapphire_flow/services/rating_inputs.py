@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -15,6 +15,14 @@ from sapphire_flow.types.forecast_lineage import ForecastInputLineage
 from sapphire_flow.types.rating_input_lineage import (
     RatingDaySupport,
     RatingInputLineage,
+    RatingUnreconciledSource,
+)
+from sapphire_flow.types.rating_reconciliation import (
+    RatingEvidenceError,
+    RatingHeldSource,
+    RatingHoldReason,
+    RatingInputsUnavailable,
+    RatingWindowRead,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +45,19 @@ class RatingCurrentReader(Protocol):
     ) -> tuple[RatingDerivedDischarge, ...]: ...
 
 
+@runtime_checkable
+class RatingCurrentWindowReader(Protocol):
+    def read_current_window(
+        self,
+        binding: NativeRatingBinding,
+        dhm: DhmConfig,
+        *,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        at: UtcDatetime,
+    ) -> RatingWindowRead: ...
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NativeRatingInputs:
     reader: RatingCurrentReader
@@ -52,6 +73,19 @@ class NativeRatingInputs:
         end: UtcDatetime,
         at: UtcDatetime,
     ) -> tuple[RatingDerivedDischarge, ...]:
+        return self.read_window(
+            station_id, model_id, start=start, end=end, at=at
+        ).records
+
+    def read_window(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        *,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        at: UtcDatetime,
+    ) -> RatingWindowRead:
         matches = [
             b
             for b in self.bindings
@@ -67,19 +101,60 @@ class NativeRatingInputs:
                 "rating reconciliation window is shorter than native model lookback"
             )
         result: list[RatingDerivedDischarge] = []
+        held: list[RatingHeldSource] = []
+        source_count = 0
         cursor = start
         while cursor < end:
             stop = ensure_utc(min(end, cursor + timedelta(hours=6)))
             try:
-                result.extend(
-                    self.reader.read_current(
-                        binding, self.dhm, start=cursor, end=stop, at=at
+                if isinstance(self.reader, RatingCurrentWindowReader):
+                    window = self.reader.read_current_window(
+                        binding,
+                        self.dhm,
+                        start=cursor,
+                        end=stop,
+                        at=at,
                     )
-                )
+                    hard = tuple(
+                        source
+                        for source in window.held
+                        if source.reason is not RatingHoldReason.UNRECONCILED
+                    )
+                    if hard:
+                        raise RatingInputsUnavailable(hard)
+                    result.extend(window.records)
+                    held.extend(window.held)
+                    source_count += window.source_count
+                else:
+                    records = self.reader.read_current(
+                        binding,
+                        self.dhm,
+                        start=cursor,
+                        end=stop,
+                        at=at,
+                    )
+                    result.extend(records)
+                    source_count += len(records)
             except ValueError as exc:
-                raise InsufficientDataError(f"rating source held: {exc}") from exc
+                raise RatingInputsUnavailable(
+                    (
+                        RatingHeldSource(
+                            observation_id=None,
+                            source_version_sha256=None,
+                            reason=exc.reason
+                            if isinstance(exc, RatingEvidenceError)
+                            else RatingHoldReason.SOURCE_IDENTITY_MISMATCH,
+                        ),
+                    )
+                ) from None
             cursor = stop
-        return tuple(result)
+        return RatingWindowRead(
+            start=start,
+            end=end,
+            records=tuple(result),
+            held=tuple(held),
+            source_count=source_count,
+        )
 
 
 def merge_rating_days(
@@ -88,8 +163,11 @@ def merge_rating_days(
     *,
     issue_time: UtcDatetime,
     weather_cycle_time: UtcDatetime,
+    unreconciled_sources: tuple[RatingUnreconciledSource, ...] = (),
 ) -> tuple[pl.DataFrame, ForecastInputLineage | None, UtcDatetime | None]:
     cutoff = issue_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    if any(source.timestamp >= cutoff for source in unreconciled_sources):
+        raise ValueError("rating omissions must precede the current UTC day")
     if "discharge" in measured.columns:
         measured = measured.with_columns(
             pl.when(pl.col("discharge").is_finite())
@@ -121,12 +199,14 @@ def merge_rating_days(
     additions: list[dict[str, object]] = []
     support: list[RatingDaySupport] = []
     latest = None
+    policies: set[str] = set()
     for day, rows in sorted(buckets.items()):
         if day in measured_days:
             continue
         accepted = [row for row in rows if row.discharge is not None]
         if not accepted:
             continue
+        policies.update(json.loads(row.content)["policy"] for row in rows)
         value = math.fsum(
             row.discharge / len(accepted)
             for row in accepted
@@ -138,6 +218,11 @@ def merge_rating_days(
         # No coverage claim is inferred from sparse readings or unknown cadence.
         warnings.add("partial_daily_support")
         warnings.add("accepted_measured_discharge_absent")
+        if any(
+            day <= source.timestamp < day + timedelta(days=1)
+            for source in unreconciled_sources
+        ):
+            warnings.add("rating_unreconciled_sources_omitted")
         for row in rows:
             valid_to = json.loads(row.content)["curve"]["valid_to"]
             if valid_to is not None and datetime.fromisoformat(valid_to) <= issue_time:
@@ -183,11 +268,17 @@ def merge_rating_days(
             pl.coalesce("discharge", "_rating_q").alias("discharge")
         ).drop("_rating_q")
     lineage = ForecastInputLineage(
-        transformation_versions=("native-rating-linear-endpoints-v1",),
+        transformation_versions=tuple(sorted(policies)),
         rating_input=RatingInputLineage(
             issue_time=issue_time,
             weather_cycle_time=weather_cycle_time,
             days=tuple(support),
+            unreconciled_sources=tuple(
+                source
+                for source in unreconciled_sources
+                if source.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+                not in measured_days
+            ),
         ),
     )
     return merged.sort("timestamp"), lineage, latest

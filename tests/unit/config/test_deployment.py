@@ -6,7 +6,11 @@ from pathlib import Path
 import pydantic
 import pytest
 
-from sapphire_flow.config.deployment import _resolve_env_vars, load_config
+from sapphire_flow.config.deployment import (
+    DeploymentConfig,
+    _resolve_env_vars,
+    load_config,
+)
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.domain import DangerLevelDefinition, SeasonDefinition
 from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirection
@@ -495,3 +499,30 @@ class TestValidateRetention:
             pydantic.ValidationError, match="protected_backup_max_age_hours"
         ):
             make_deployment_config(protected_backup_max_age_hours=0)
+
+
+class TestProvisionalIfsTailConfig:
+    def test_default_disabled_and_explicit_mode(self) -> None:
+        from sapphire_flow.types.enums import ProvisionalIfsTailMode
+
+        assert (
+            DeploymentConfig(max_retention_days=3650).provisional_ifs_tail_mode
+            is ProvisionalIfsTailMode.DISABLED
+        )
+        assert (
+            DeploymentConfig.model_validate(
+                {"max_retention_days": 3650, "provisional_ifs_tail_mode": "control_3h"}
+            ).provisional_ifs_tail_mode
+            is ProvisionalIfsTailMode.CONTROL_3H
+        )
+
+    def test_unknown_mode_is_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="provisional_ifs_tail_mode"):
+            DeploymentConfig.model_validate(
+                {
+                    "max_retention_days": 3650,
+                    "provisional_ifs_tail_mode": "all_forecasts",
+                }
+            )

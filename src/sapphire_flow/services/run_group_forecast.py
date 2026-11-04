@@ -41,6 +41,7 @@ from sapphire_flow.types.enums import (
     ForecastStatus,
     FutureWeatherPolicy,
     ModelArtifactStatus,
+    ProvisionalIfsTailMode,
     QcStatus,
 )
 from sapphire_flow.types.forecast import OperationalForecast
@@ -364,6 +365,8 @@ def assemble_group_operational_inputs(
     time_step: timedelta,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     rating_inputs: NativeRatingInputs | None = None,
+    provisional_ifs_tail_mode_by_station: dict[StationId, ProvisionalIfsTailMode]
+    | None = None,
 ) -> tuple[GroupModelInputs, dict[StationId, OperationalInputMetadata]] | None:
     assembly = assemble_group_operational_inputs_outcome(
         group=group,
@@ -383,6 +386,7 @@ def assemble_group_operational_inputs(
         time_step=time_step,
         weather_policy=weather_policy,
         rating_inputs=rating_inputs,
+        provisional_ifs_tail_mode_by_station=provisional_ifs_tail_mode_by_station,
     )
     if assembly.inputs is None:
         return None
@@ -408,6 +412,8 @@ def assemble_group_operational_inputs_outcome(
     time_step: timedelta,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     rating_inputs: NativeRatingInputs | None = None,
+    provisional_ifs_tail_mode_by_station: dict[StationId, ProvisionalIfsTailMode]
+    | None = None,
 ) -> GroupInputAssembly:
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable: list[GroupMemberInputIssue] = []
@@ -448,6 +454,9 @@ def assemble_group_operational_inputs_outcome(
                 time_step=time_step,
                 weather_policy=weather_policy,
                 rating_inputs=rating_inputs,
+                provisional_ifs_tail_mode=(
+                    provisional_ifs_tail_mode_by_station or {}
+                ).get(sid, ProvisionalIfsTailMode.DISABLED),
             )
         except StoreError:
             raise

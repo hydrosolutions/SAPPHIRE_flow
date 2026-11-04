@@ -569,3 +569,57 @@ level_reference = "unknown"
             "provider": 1,
             "unattempted": 1,
         }
+
+
+class TestDhmFactoryEvidenceClock:
+    def test_query_end_stays_frozen_but_transport_uses_injected_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = station()
+        started = ensure_utc(NOW + timedelta(seconds=3))
+        retrieved = ensure_utc(NOW + timedelta(seconds=7))
+        times = iter((started, retrieved))
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return response(
+                200,
+                json={
+                    "results": [
+                        reading(waterLevelOn=(NOW - timedelta(minutes=5)).isoformat())
+                    ]
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+
+        def fetch_direct(
+            adapter: DhmAdapter,
+            station_configs: list[StationConfig],
+            since: dict[StationId, UtcDatetime],
+        ) -> HydroScraperBatchResult:
+            return adapter.fetch_observations_batch(station_configs, since)
+
+        monkeypatch.setattr(
+            "sapphire_flow.flows.ingest_observations._fetch_observations_task",
+            fetch_direct,
+        )
+        result = _fetch_configured_dhm(
+            parse_dhm_config(settings()),
+            [config],
+            {config.id: observation(config, 60).timestamp},
+            NOW,
+            request_clock=lambda: next(times),
+        )
+        evidence = result.outcomes[0].dhm_request_evidence
+        assert evidence is not None
+        assert evidence.request_started_at == started
+        assert evidence.retrieved_at == retrieved
+        assert (
+            requests[0].url.params["water_level_on__lt"]
+            == (NOW + timedelta(seconds=1)).isoformat()
+        )
+        assert evidence.request_count == len(requests) == 1
+        assert client.is_closed

@@ -341,3 +341,19 @@ class TestStoreRawUpsertObservability:
         assert event["inserted"] == 1
         assert event["updated"] == 1
         assert event["skipped"] == 1
+
+
+class TestStoreRawDetailedResult:
+    def test_distinguishes_insert_update_and_unchanged_overlap(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, rng_seed=291)
+        store = PgObservationStore(db_connection)
+        first = store.store_raw_observations_detailed([_raw(sid, 0, 10.0)])
+        assert first.inserted_ids == first.written_ids
+        assert first.updated_ids == ()
+        repeated = store.store_raw_observations_detailed([_raw(sid, 0, 10.0)])
+        assert repeated.written_ids == ()
+        corrected = store.store_raw_observations_detailed([_raw(sid, 0, 20.0)])
+        assert corrected.updated_ids == first.written_ids
+        assert corrected.inserted_ids == ()

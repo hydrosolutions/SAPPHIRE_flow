@@ -304,3 +304,110 @@ def test_worker_cannot_consume_issue_days_partial_bucket(
             conn.begin_nested(),
         ):
             conn.execute(sa.insert(forecasts).values(**row))
+
+
+@pytest.mark.parametrize(
+    "case", ["valid", "foreign", "duplicate", "consumed", "future", "digest", "empty"]
+)
+def test_worker_omission_lineage_is_scoped_and_exclusive(
+    role_harness: _RoleBootstrapHarness,
+    case: str,
+) -> None:
+    import hashlib
+    import json
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from sapphire_flow.db.metadata import (
+        forecasts,
+        observations,
+        rating_derived_discharge,
+        stations,
+    )
+    from sapphire_flow.store.observation_store import PgObservationStore
+    from sapphire_flow.types.rating_reference import (
+        canonical_content,
+        measurement_snapshot,
+    )
+    from tests.integration.store import test_native_rating_forecasts as fixture
+
+    result = role_harness.run_bootstrap("api-fixture", "worker-fixture")
+    assert result.returncode == 0, result.stderr
+    with role_harness.owner_engine.connect() as conn, conn.begin():
+        _, native = native_pair(conn)
+        savepoint = conn.begin_nested()
+        PgForecastStore(
+            conn, data_use=native.data_use, transaction_factory=savepoint_factory(conn)
+        ).store_forecast(native)
+        row = dict(
+            conn.execute(sa.select(forecasts).where(forecasts.c.id == native.id))
+            .mappings()
+            .one()
+        )
+        savepoint.rollback()
+        row["id"] = uuid4()
+        payload = json.loads(row["input_lineage"])
+        sid = native.station_id
+        if case == "foreign":
+            sid = conn.execute(
+                sa.select(stations.c.id).where(stations.c.id != sid).limit(1)
+            ).scalar_one()
+        timestamp = native.issued_at.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) - timedelta(hours=6)
+        if case == "future":
+            row["issued_at"] = native.issued_at.replace(
+                hour=12, minute=0, second=0, microsecond=0
+            )
+            payload["rating_input"]["issue_time"] = row["issued_at"].isoformat()
+            timestamp = row["issued_at"] - timedelta(hours=1)
+        observation = replace(
+            fixture.make_observation(
+                station_id=sid, parameter="water_level", value=0.4, timestamp=timestamp
+            ),
+            id=uuid4(),
+        )
+        PgObservationStore(conn).store_observations([observation])
+        omitted = {
+            "observation_id": str(observation.id),
+            "timestamp": timestamp.isoformat(),
+            "source_snapshot_sha256": hashlib.sha256(
+                measurement_snapshot(observation).content.encode()
+            ).hexdigest(),
+        }
+        if case == "consumed":
+            consumed = conn.execute(
+                sa.select(observations.c.id, observations.c.timestamp)
+                .join(
+                    rating_derived_discharge,
+                    rating_derived_discharge.c.observation_id == observations.c.id,
+                )
+                .where(
+                    rating_derived_discharge.c.fingerprint
+                    == payload["rating_input"]["days"][0]["fingerprints"][0]
+                )
+            ).one()
+            omitted.update(
+                observation_id=str(consumed.id),
+                timestamp=consumed.timestamp.isoformat(),
+            )
+        if case == "digest":
+            omitted["source_snapshot_sha256"] = "not-a-digest"
+        payload["rating_input"]["unreconciled_sources"] = (
+            []
+            if case == "empty"
+            else [omitted, omitted]
+            if case == "duplicate"
+            else [omitted]
+        )
+        row["input_lineage"] = canonical_content(payload)
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
+        if case == "valid":
+            conn.execute(sa.insert(forecasts).values(**row))
+        else:
+            with (
+                pytest.raises(sa.exc.DBAPIError, match="native rating"),
+                conn.begin_nested(),
+            ):
+                conn.execute(sa.insert(forecasts).values(**row))

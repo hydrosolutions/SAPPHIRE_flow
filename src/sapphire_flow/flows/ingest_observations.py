@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -37,10 +38,16 @@ from sapphire_flow.types.enums import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    import httpx
+
     from sapphire_flow.config.dhm import DhmConfig
     from sapphire_flow.config.river_stations import HydroScraperConfig
     from sapphire_flow.flows.bafu_ingest import BafuCaptureWriter, BafuDispatchResult
     from sapphire_flow.protocols.adapters import BatchStationDataSource
+    from sapphire_flow.protocols.native_capture import (
+        NativeCaptureReader,
+        NativeCaptureWriter,
+    )
     from sapphire_flow.protocols.stores import ObservationStore
     from sapphire_flow.services.rating_reconciliation import RatingReconciliationResult
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
@@ -53,12 +60,14 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcFlag, QcRuleSet, StationQcOverride
     from sapphire_flow.types.ids import ObservationId, StationId
+    from sapphire_flow.types.native_capture import CaptureRecoveryWindow
     from sapphire_flow.types.observation import (
         HydroScraperBatchResult,
         Observation,
         RawObservation,
         StationFetchOutcome,
     )
+    from sapphire_flow.types.rating_reconciliation import RatingHeldSource
     from sapphire_flow.types.station import StationConfig
     from sapphire_flow.types.station_qc import ThresholdConfigOutcome
 
@@ -97,6 +106,7 @@ class IngestResult:
     qc_threshold_rejected: int = 0
     qc_threshold_not_applicable: int = 0
     rating_results: tuple[RatingReconciliationResult, ...] = ()
+    native_capture_backlog: tuple[tuple[StationId, int | None], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +152,7 @@ def _reconcile_native_ratings_task(
             raise ValueError(
                 "native rating requires DHM config and transactional writer"
             )
-    except Exception as exc:
+    except Exception:
         return tuple(
             RatingReconciliationResult(
                 station_id=binding.station_id,
@@ -150,7 +160,7 @@ def _reconcile_native_ratings_task(
                 accepted=0,
                 rejected=0,
                 failed_chunks=1,
-                reasons=(str(exc),),
+                reasons=("source_identity_mismatch",),
             )
             for binding in bindings
         )
@@ -177,7 +187,7 @@ def _reconcile_native_ratings_task(
                         at=now,
                     )
                 )
-            except Exception as exc:
+            except Exception:
                 parts.append(
                     RatingReconciliationResult(
                         station_id=binding.station_id,
@@ -185,14 +195,13 @@ def _reconcile_native_ratings_task(
                         accepted=0,
                         rejected=0,
                         failed_chunks=1,
-                        reasons=(
-                            str(exc)
-                            if isinstance(exc, ValueError)
-                            else type(exc).__name__,
-                        ),
+                        reasons=("storage_error",),
                     )
                 )
         failed = sum(part.failed_chunks for part in parts)
+        from sapphire_flow.types.rating_reconciliation import AuditRecordState
+
+        audit_states = [part.audit_record_state for part in parts]
         outcomes.append(
             RatingReconciliationResult(
                 station_id=binding.station_id,
@@ -205,6 +214,15 @@ def _reconcile_native_ratings_task(
                 reasons=tuple(
                     sorted({reason for part in parts for reason in part.reasons})
                 ),
+                inserted=sum(part.inserted for part in parts),
+                held_count=sum(part.held_count for part in parts),
+                qc_unassessed=sum(part.qc_unassessed for part in parts),
+                audit_record_state=AuditRecordState.FAILED
+                if AuditRecordState.FAILED in audit_states
+                else AuditRecordState.RECORDED
+                if audit_states
+                and all(state is AuditRecordState.RECORDED for state in audit_states)
+                else None,
             )
         )
     return tuple(outcomes)
@@ -262,21 +280,30 @@ def _cursor_parameter_for_station(station: StationConfig) -> str:
     return _cursor_parameter_for_kind(station.station_kind)
 
 
+def _dhm_http_client(config: DhmConfig) -> httpx.Client:
+    import httpx
+
+    return httpx.Client(timeout=config.timeout_s, verify=True, follow_redirects=False)
+
+
 def _fetch_configured_dhm(
     config: DhmConfig,
     station_configs: list[StationConfig],
     since: dict[StationId, UtcDatetime],
     now: UtcDatetime,
+    *,
+    request_clock: Callable[[], UtcDatetime] | None = None,
 ) -> HydroScraperBatchResult:
-    import httpx
-
     from sapphire_flow.adapters.dhm import DhmAdapter
 
     # Allocate only once fetch is ready; construction and fetch share the lifetime.
-    with httpx.Client(
-        timeout=config.timeout_s, verify=True, follow_redirects=False
-    ) as client:
-        adapter = DhmAdapter(config=config, http_client=client, clock=lambda: now)
+    with _dhm_http_client(config) as client:
+        adapter = DhmAdapter(
+            config=config,
+            http_client=client,
+            clock=lambda: now,
+            request_clock=request_clock,
+        )
         return _fetch_observations_task(adapter, station_configs, since)
 
 
@@ -430,6 +457,8 @@ class QcTaskOutcome:
     counts: dict[str, int]
     zero_rule_groups: tuple[ZeroRuleGroup, ...]
     unjudged_groups: tuple[UnjudgedGroup, ...] = ()
+    evaluated_ids: tuple[ObservationId, ...] = ()
+    recovery_holds: tuple[RatingHeldSource, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -751,6 +780,11 @@ def _append_threshold_config_health_record(
         log.warning("pipeline.health_record_write_failed", error=str(exc))
 
 
+class QcWindowMode(Enum):
+    ORDINARY_AND_RECOVERY = "ordinary_and_recovery"
+    RECOVERY_ONLY = "recovery_only"
+
+
 @task(
     name="run-qc-and-update",
     task_run_name="run-qc-{station_id}-{parameter}",
@@ -769,6 +803,8 @@ def _run_qc_task(
     context_window_hours: float = 2.0,
     fetched_times: tuple[UtcDatetime, ...] = (),
     overrides: tuple[StationQcOverride, ...] = (),
+    recovery_windows: tuple[CaptureRecoveryWindow, ...] = (),
+    window_mode: QcWindowMode = QcWindowMode.ORDINARY_AND_RECOVERY,
 ) -> QcTaskOutcome:
     window_start = ensure_utc(now - timedelta(hours=context_window_hours))
     window_end = ensure_utc(now + timedelta(hours=1))
@@ -786,16 +822,123 @@ def _run_qc_task(
             )
         )
 
-    all_obs = obs_store.fetch_observations(
-        station_id=station_id,
-        parameter=parameter,
-        start=window_start,
-        end=window_end,
+    if window_mode is QcWindowMode.RECOVERY_ONLY:
+        ordinary = QcTaskOutcome(counts=_empty_qc_counts(), zero_rule_groups=())
+    else:
+        all_obs = obs_store.fetch_observations(
+            station_id=station_id,
+            parameter=parameter,
+            start=window_start,
+            end=window_end,
+        )
+        ordinary = _evaluate_qc_window(
+            all_obs,
+            obs_store,
+            baseline_store,
+            station_id,
+            parameter,
+            qc_rules,
+            station_networks=station_networks,
+            datum=datum,
+            overrides=overrides,
+        )
+    if not recovery_windows:
+        return ordinary
+    from sapphire_flow.protocols.native_capture import CaptureQcRecoveryReader
+    from sapphire_flow.types.rating_reconciliation import (
+        RatingHeldSource,
+        RatingHoldReason,
+        RatingInputsUnavailable,
     )
+
+    if not isinstance(obs_store, CaptureQcRecoveryReader):
+        raise ConfigurationError("native recovery requires a bounded QC reader")
+    parts = [ordinary]
+    evaluated = set(ordinary.evaluated_ids)
+    holds: list[RatingHeldSource] = []
+    for recovery in recovery_windows:
+        try:
+            context = obs_store.fetch_capture_qc_window(
+                recovery,
+                context_window_hours=context_window_hours,
+                excluded_ids=frozenset(evaluated),
+            )
+            part = _evaluate_qc_window(
+                list(context.observations),
+                obs_store,
+                baseline_store,
+                station_id,
+                parameter,
+                qc_rules,
+                station_networks=station_networks,
+                datum=datum,
+                overrides=overrides,
+                target_ids=context.target_ids,
+            )
+            parts.append(part)
+            evaluated.update(part.evaluated_ids)
+        except RatingInputsUnavailable as exc:
+            holds.extend(exc.held)
+        except Exception:
+            holds.append(
+                RatingHeldSource(
+                    observation_id=None,
+                    source_version_sha256=None,
+                    reason=RatingHoldReason.STORAGE_ERROR,
+                )
+            )
+    totals = {
+        key: sum(part.counts[key] for part in parts) for key in _empty_qc_counts()
+    }
+    unjudged: dict[tuple[StationId, str, float | None], set[ObservationId]] = {}
+    for part in parts:
+        for group in part.unjudged_groups:
+            key = (group.station_id, group.parameter, group.inferred_time_step_seconds)
+            unjudged.setdefault(key, set()).update(group.observation_ids)
+    return QcTaskOutcome(
+        counts=totals,
+        zero_rule_groups=tuple(
+            dict.fromkeys(group for part in parts for group in part.zero_rule_groups)
+        ),
+        unjudged_groups=tuple(
+            UnjudgedGroup(
+                station_id=key[0],
+                parameter=key[1],
+                inferred_time_step_seconds=key[2],
+                observation_ids=tuple(sorted(ids, key=str)),
+            )
+            for key, ids in unjudged.items()
+        ),
+        evaluated_ids=tuple(sorted(evaluated, key=str)),
+        recovery_holds=tuple(holds),
+    )
+
+
+def _evaluate_qc_window(
+    all_obs: list[Observation],
+    obs_store: ObservationStore,
+    baseline_store: PgClimBaselineStore,
+    station_id: StationId,
+    parameter: str,
+    qc_rules: QcRuleSet,
+    *,
+    station_networks: Mapping[StationId, str],
+    datum: float | None,
+    overrides: tuple[StationQcOverride, ...],
+    target_ids: frozenset[ObservationId] | None = None,
+) -> QcTaskOutcome:
     if not all_obs:
         return QcTaskOutcome(counts=_empty_qc_counts(), zero_rule_groups=())
 
-    pending_obs = [o for o in all_obs if o.qc_status in _QC_PICKUP_STATUSES]
+    pending_obs = [
+        o
+        for o in all_obs
+        if (
+            o.qc_status in _QC_PICKUP_STATUSES
+            if target_ids is None
+            else o.id in target_ids and o.qc_status is QcStatus.RAW
+        )
+    ]
     if not pending_obs:
         return QcTaskOutcome(counts=_empty_qc_counts(), zero_rule_groups=())
 
@@ -885,7 +1028,11 @@ def _run_qc_task(
     ]
     if not obs_store.update_qc_batch_if_current(updates, qc_rule_version=version):
         counts["stale_evaluation"] = len(updates)
-        return QcTaskOutcome(counts=counts, zero_rule_groups=())
+        return QcTaskOutcome(
+            counts=counts,
+            zero_rule_groups=(),
+            evaluated_ids=tuple(sorted(pending_ids, key=str)),
+        )
     for obs_id, obs_flags in flags.items():
         if obs_id not in pending_ids:
             continue
@@ -956,6 +1103,7 @@ def _run_qc_task(
         counts=counts,
         zero_rule_groups=tuple(zero_rule_groups),
         unjudged_groups=tuple(unjudged_groups),
+        evaluated_ids=tuple(sorted(pending_ids, key=str)),
     )
 
 
@@ -1145,10 +1293,65 @@ def ingest_observations_flow(
     bafu_unit_registry: object = None,
     bafu_unit_writer: object = None,
     rating_derived_store: object = None,
+    native_capture_store: object = None,
     rating_backfill_station_ids: list[str] | None = None,
     rating_backfill_start: datetime | None = None,
     rating_backfill_end: datetime | None = None,
+    historical_tenant_code: str | None = None,
+    historical_station_ids: list[str] | None = None,
+    historical_start: datetime | None = None,
+    historical_end: datetime | None = None,
 ) -> IngestResult:
+    historical_fields = (
+        historical_tenant_code,
+        historical_station_ids,
+        historical_start,
+        historical_end,
+    )
+    if any(value is not None for value in historical_fields):
+        dependencies = (
+            station_store,
+            obs_store,
+            baseline_store,
+            alert_store,
+            adapter,
+            qc_rules,
+            deployment_config,
+            clock,
+            formula_store,
+            pipeline_health_store,
+            tenant_store,
+            qc_obs_store,
+            bafu_unit_registry,
+            bafu_unit_writer,
+            rating_derived_store,
+            native_capture_store,
+        )
+        if (
+            any(value is None for value in historical_fields)
+            or any(value is not None for value in dependencies)
+            or any(
+                value is not None
+                for value in (
+                    rating_backfill_station_ids,
+                    rating_backfill_start,
+                    rating_backfill_end,
+                )
+            )
+            or context_window_hours != 2.0
+            or "SAPPHIRE_BAFU_UNIT_INGEST_CONFIG" in os.environ
+        ):
+            raise ConfigurationError(
+                "Historical capture requires complete native-only parameters"
+            )
+        from sapphire_flow.flows.historical_ingest import run_historical_ingest
+
+        return run_historical_ingest(
+            tenant_code=cast("str", historical_tenant_code),
+            station_ids=cast("list[str]", historical_station_ids),
+            start=cast("datetime", historical_start),
+            end=cast("datetime", historical_end),
+        )
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
 
@@ -1184,6 +1387,21 @@ def ingest_observations_flow(
             )
         _conn, stores = setup_production_stores(database_url)
         rating_derived_store = stores["rating_derived_store"]
+        if native_capture_store is None:
+            from uuid import uuid4
+
+            from sqlalchemy.engine import make_url
+
+            from sapphire_flow.store.native_capture_store import PgNativeCaptureStore
+            from sapphire_flow.store.rating_derived_store import (
+                rating_transaction_factory,
+            )
+
+            native_capture_store = PgNativeCaptureStore(
+                rating_transaction_factory(make_url(database_url)),
+                clock=cast("Callable[[], UtcDatetime]", clock),
+                id_gen=uuid4,
+            )
         station_store = stores["station_store"]  # type: ignore[assignment]
         obs_store = stores["obs_store"]  # type: ignore[assignment]
         qc_obs_store = stores["qc_obs_store"]
@@ -1210,25 +1428,144 @@ def ingest_observations_flow(
             raise ConfigurationError(
                 "rating backfill requires stations and explicit bounds"
             )
+        from uuid import UUID
+
+        from sapphire_flow.flows.native_ingest import (
+            discover_native_recovery,
+            native_capture_bindings,
+        )
+
+        requested = {UUID(identity) for identity in rating_backfill_station_ids}
+        configured_ids = {
+            item.station_id
+            for item in getattr(deployment_config, "provisional_ratings", ())
+        }
+        if not requested <= configured_ids:
+            raise ConfigurationError(
+                "rating backfill stations require explicit opt-in bindings"
+            )
+        backfill_now = cast("Callable[[], UtcDatetime]", clock)()
+        backfill_start = ensure_utc(rating_backfill_start)
+        backfill_end = ensure_utc(rating_backfill_end)
+        bindings = tuple(
+            binding
+            for binding in native_capture_bindings(deployment_config)
+            if binding.station_id in requested
+        )
+        totals = _empty_qc_counts()
+        failed_qc: set[StationId] = set()
+        backfill_errors: list[str] = []
+        backlog: tuple[tuple[StationId, int | None], ...] = ()
+        if bindings:
+            if obs_store is None or baseline_store is None:
+                raise ConfigurationError(
+                    "native backfill requires observation and baseline stores"
+                )
+            if qc_obs_store is None:
+                qc_obs_store = cast("ObservationStore", obs_store).qc_context_reader()
+            if qc_rules is None:
+                qc_rules = _load_qc_rules()
+            configured_stations = []
+            for binding in bindings:
+                station = cast("PgStationStore", station_store).fetch_station(
+                    binding.station_id
+                )
+                if (
+                    station is None
+                    or station.tenant_id != binding.tenant_id
+                    or station.network != "dhm"
+                ):
+                    raise ConfigurationError("native backfill station scope mismatch")
+                configured_stations.append(station)
+            threshold = _configured_station_qc(
+                configured_stations, cast("QcRuleSet", qc_rules), tenant_store
+            )
+            recovery = discover_native_recovery(
+                cast("NativeCaptureReader | None", native_capture_store),
+                bindings,
+                now=backfill_now,
+                start=backfill_start,
+                end=backfill_end,
+            )
+            backlog = recovery.backlog
+            failed_qc.update(recovery.failed_station_ids)
+            backfill_errors.extend(recovery.errors)
+            networks = {station.id: station.network for station in configured_stations}
+            for station in configured_stations:
+                windows = tuple(
+                    window
+                    for window in recovery.windows
+                    if window.station_id == station.id
+                )
+                if not windows:
+                    continue
+                try:
+                    outcome = _run_qc_task(
+                        cast("ObservationStore", qc_obs_store),
+                        cast("PgClimBaselineStore", baseline_store),
+                        station.id,
+                        "water_level",
+                        cast("QcRuleSet", qc_rules),
+                        backfill_now,
+                        station_networks=networks,
+                        datum=station.water_level_datum_masl,
+                        context_window_hours=context_window_hours,
+                        overrides=threshold.overrides,
+                        recovery_windows=windows,
+                        window_mode=QcWindowMode.RECOVERY_ONLY,
+                    )
+                    for key in totals:
+                        totals[key] += outcome.counts[key]
+                    if outcome.recovery_holds:
+                        failed_qc.add(station.id)
+                        backfill_errors.extend(
+                            f"native_qc_recovery_held:{station.id}:{held.reason.value}"
+                            for held in outcome.recovery_holds
+                        )
+                    _append_zero_rule_health_record(
+                        pipeline_health_store,
+                        checked_at=backfill_now,
+                        groups=outcome.zero_rule_groups,
+                        totals=outcome.counts,
+                    )
+                    _append_unjudged_health_record(
+                        pipeline_health_store,
+                        checked_at=backfill_now,
+                        groups=outcome.unjudged_groups,
+                        totals=outcome.counts,
+                    )
+                except ConfigurationError:
+                    raise
+                except Exception:
+                    failed_qc.add(station.id)
+                    backfill_errors.append(
+                        f"native_qc_recovery_held:{station.id}:storage_error"
+                    )
         results = _reconcile_native_ratings_task(
             rating_derived_store,
             deployment_config,
-            cast("Callable[[], UtcDatetime]", clock)(),
+            backfill_now,
             station_ids=rating_backfill_station_ids,
-            start=ensure_utc(rating_backfill_start),
-            end=ensure_utc(rating_backfill_end),
+            start=backfill_start,
+            end=backfill_end,
         )
         return IngestResult(
             stations_polled=0,
             observations_fetched=0,
             observations_stored=0,
             observations_skipped=0,
-            qc_passed=0,
-            qc_failed=0,
-            qc_suspect=0,
-            stations_failed=0,
-            errors=(),
+            qc_passed=totals["passed"],
+            qc_failed=totals["failed"],
+            qc_suspect=totals["suspect"],
+            qc_unchecked=totals["unchecked"],
+            qc_unjudged=totals["unjudged"],
+            qc_rechecked=totals["rechecked"],
+            qc_newly_checked=totals["newly_checked"],
+            qc_stale_evaluation=totals["stale_evaluation"],
+            stations_failed=len(failed_qc),
+            errors=tuple(backfill_errors),
             rating_results=results,
+            native_capture_backlog=backlog,
         )
     if rating_backfill_start is not None or rating_backfill_end is not None:
         raise ConfigurationError("rating backfill bounds require explicit stations")
@@ -1349,9 +1686,41 @@ def ingest_observations_flow(
         )
         since[station.id] = latest if latest is not None else default_since
 
+    from uuid import UUID
+
+    from sapphire_flow.config.dhm import DhmConfig
+    from sapphire_flow.flows.native_ingest import (
+        discover_native_recovery,
+        dispatch_native_captures,
+        native_capture_bindings,
+    )
+
+    eligible_ids = {station.id for station in eligible}
+    native_bindings = tuple(
+        binding
+        for binding in native_capture_bindings(deployment_config)
+        if binding.station_id in eligible_ids
+    )
+    native_dhm = dhm_config
+    if native_bindings and native_dhm is None:
+        try:
+            configured_adapter = _load_adapter_config()
+            native_dhm = (
+                configured_adapter
+                if isinstance(configured_adapter, DhmConfig)
+                else None
+            )
+        except Exception:
+            native_dhm = None
     # --- Step 2.1: Fetch observations ---
     batch_result = (
-        _fetch_configured_dhm(dhm_config, eligible, since, now)
+        _fetch_configured_dhm(
+            dhm_config,
+            eligible,
+            since,
+            now,
+            request_clock=cast("Callable[[], UtcDatetime]", clock),
+        )
         if dhm_config is not None
         else _fetch_observations_task(adapter, eligible, since)
     )
@@ -1381,6 +1750,19 @@ def ingest_observations_flow(
         for o in fetch_failed
     )
 
+    native_dispatch = dispatch_native_captures(
+        batch_result,
+        native_bindings,
+        native_dhm,
+        cast("NativeCaptureWriter | None", native_capture_store),
+        flow_run_id=UUID(str(flow_run.id)) if flow_run.id else None,
+    )
+    native_recovery = discover_native_recovery(
+        cast("NativeCaptureReader | None", native_capture_store),
+        native_bindings,
+        now=now,
+    )
+
     unit_dispatch = dispatch_bafu_captures(
         batch_result,
         eligible,
@@ -1394,7 +1776,11 @@ def ingest_observations_flow(
             outcomes=batch_result.outcomes,
             unit_dispatch=unit_dispatch,
         )
-    if not raw_obs and not batch_result.captured_outcomes:
+    if (
+        not raw_obs
+        and not batch_result.captured_outcomes
+        and not native_recovery.windows
+    ):
         log.info("ingest.no_new_data")
         return IngestResult(
             stations_polled=len(eligible),
@@ -1404,8 +1790,13 @@ def ingest_observations_flow(
             qc_passed=0,
             qc_failed=0,
             qc_suspect=0,
-            stations_failed=len(fetch_failed_station_ids),
-            errors=fetch_errors,
+            stations_failed=len(
+                fetch_failed_station_ids
+                | native_dispatch.failed_station_ids
+                | native_recovery.failed_station_ids
+            ),
+            errors=fetch_errors + native_dispatch.errors + native_recovery.errors,
+            native_capture_backlog=native_recovery.backlog,
             rating_results=(
                 _reconcile_native_ratings_task(
                     rating_derived_store, deployment_config, now
@@ -1424,9 +1815,16 @@ def ingest_observations_flow(
         row
         for row in raw_obs
         if row.station_id not in unit_dispatch.captured_station_ids
+        and not (
+            row.station_id in native_dispatch.station_ids
+            and row.parameter == "water_level"
+            and row.source.value == "measured"
+        )
     ]
-    storage_failed_station_ids = set(unit_dispatch.failed_station_ids)
-    storage_errors = list(unit_dispatch.errors)
+    storage_failed_station_ids = set(unit_dispatch.failed_station_ids) | set(
+        native_dispatch.failed_station_ids
+    )
+    storage_errors = list(unit_dispatch.errors + native_dispatch.errors)
     generic_stored = 0
     if generic_obs:
         try:
@@ -1442,11 +1840,16 @@ def ingest_observations_flow(
                     storage_failed_station_ids.add(station_id)
                     storage_errors.append(f"delivery collision at station {station_id}")
                     log.warning("ingest.delivery_collision", station_id=str(station_id))
-    stored_count = generic_stored + unit_dispatch.observations_written
+    stored_count = (
+        generic_stored
+        + unit_dispatch.observations_written
+        + native_dispatch.observations_written
+    )
     stored_obs = [
         row for row in generic_obs if row.station_id not in storage_failed_station_ids
     ]
     stored_obs.extend(unit_dispatch.canonical_observations)
+    stored_obs.extend(native_dispatch.canonical_observations)
     skipped_count = len(raw_obs) - stored_count
     log.info("ingest.store_complete", stored=stored_count, skipped=skipped_count)
 
@@ -1454,6 +1857,10 @@ def ingest_observations_flow(
     station_params: set[tuple[StationId, str]] = {
         (o.station_id, o.parameter) for o in stored_obs
     }
+    ordinary_station_params = frozenset(station_params)
+    station_params.update(
+        (window.station_id, "water_level") for window in native_recovery.windows
+    )
     station_networks = {station.id: station.network for station in eligible}
     datums: dict[tuple[StationId, str], float | None] = {
         (station.id, "water_level"): station.water_level_datum_masl
@@ -1465,8 +1872,8 @@ def ingest_observations_flow(
     # writes ONE record carrying all of them, not one record per group.
     zero_rule_groups: list[ZeroRuleGroup] = []
     unjudged_groups: list[UnjudgedGroup] = []
-    errors: list[str] = storage_errors
-    qc_failed_station_ids: set[StationId] = set()
+    errors: list[str] = storage_errors + list(native_recovery.errors)
+    qc_failed_station_ids: set[StationId] = set(native_recovery.failed_station_ids)
     dhm_station_ids = {
         s.id
         for s in eligible
@@ -1495,9 +1902,25 @@ def ingest_observations_flow(
                 station_networks=station_networks,
                 datum=datums.get((station_id, parameter)),
                 context_window_hours=context_window_hours,
-                fetched_times=tuple(recovered_times.get((station_id, parameter), ())),
+                fetched_times=()
+                if station_id in native_dispatch.station_ids
+                else tuple(recovered_times.get((station_id, parameter), ())),
                 overrides=threshold_config.overrides,
+                recovery_windows=tuple(
+                    window
+                    for window in native_recovery.windows
+                    if window.station_id == station_id and parameter == "water_level"
+                ),
+                window_mode=QcWindowMode.ORDINARY_AND_RECOVERY
+                if (station_id, parameter) in ordinary_station_params
+                else QcWindowMode.RECOVERY_ONLY,
             )
+            if counts.recovery_holds:
+                qc_failed_station_ids.add(station_id)
+                errors.extend(
+                    f"native_qc_recovery_held:{station_id}:{held.reason.value}"
+                    for held in counts.recovery_holds
+                )
             totals["passed"] += counts.counts["passed"]
             totals["failed"] += counts.counts["failed"]
             totals["suspect"] += counts.counts["suspect"]
@@ -1627,6 +2050,7 @@ def ingest_observations_flow(
         errors=fetch_errors + tuple(errors),
         bafu_unit_results=unit_dispatch.results,
         rating_results=rating_results,
+        native_capture_backlog=native_recovery.backlog,
         observations_derived=derived["derived"],
         observations_missing=derived["missing"],
         qc_threshold_pending=len(threshold_config.pending),

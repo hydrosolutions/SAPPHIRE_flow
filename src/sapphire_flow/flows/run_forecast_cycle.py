@@ -2742,6 +2742,7 @@ def run_forecast_cycle_flow(
         # fills a gap and never overrides a deliberate configuration.
         models = _with_group_station_code_resolvers(models, station_store)
 
+        enabled_models: set[ModelId] = set()
         if data_use is ForecastDataUse.PROVISIONAL_RATING:
             from sapphire_flow.protocols.forecast_model import GroupForecastModel
 
@@ -3980,6 +3981,18 @@ def run_forecast_cycle_flow(
                             rating_inputs=cast(
                                 "NativeRatingInputs | None", rating_inputs
                             ),
+                            provisional_ifs_tail_mode_by_station={
+                                sid: config.provisional_ifs_tail_mode
+                                for sid in member_ids
+                                if data_use is ForecastDataUse.PROVISIONAL_RATING
+                                and model_id in enabled_models
+                                and nwp_source_by_station.get(sid) == "ifs_ecmwf"
+                                and any(
+                                    binding.station_id == sid
+                                    and str(model_id) in binding.model_ids
+                                    for binding in config.provisional_ratings
+                                )
+                            },
                         )
                     except StoreError:
                         raise

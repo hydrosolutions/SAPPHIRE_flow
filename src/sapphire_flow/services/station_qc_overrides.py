@@ -191,6 +191,9 @@ def resolve_configured_station_qc(
     pending: list[str] = []
     rejected: list[str] = []
     not_applicable: list[str] = []
+    pending_keys: list[tuple[str, str]] = []
+    rejected_keys: list[tuple[str, str]] = []
+    not_applicable_keys: list[tuple[str, str]] = []
     for tenant_code, specs in grouped.items():
         tenant = cast(
             "Tenant | None",
@@ -220,20 +223,27 @@ def resolve_configured_station_qc(
             )
             if is_pending:
                 pending.append(subject)
+                pending_keys.append((spec.network, spec.code))
             else:
                 reason_text = ",".join(reason.value for reason in rejection.reasons)
                 rejected.append(f"{subject}: {reason_text}")
+                rejected_keys.append((spec.network, spec.code))
         for spec in resolution.not_applicable:
             subject = f"{spec.tenant_code}/{spec.network}/{spec.code}"
             station = by_station[(spec.network, spec.code)]
             if station.station_status.value == "onboarding":
                 pending.append(subject)
+                pending_keys.append((spec.network, spec.code))
             else:
                 not_applicable.append(subject)
+                not_applicable_keys.append((spec.network, spec.code))
 
     return ThresholdConfigOutcome(
         overrides=tuple(overrides),
         pending=tuple(pending),
         rejected=tuple(rejected),
         not_applicable=tuple(not_applicable),
+        pending_station_keys=tuple(pending_keys),
+        rejected_station_keys=tuple(rejected_keys),
+        not_applicable_station_keys=tuple(not_applicable_keys),
     )

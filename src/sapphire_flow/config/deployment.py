@@ -23,7 +23,11 @@ from sapphire_flow.types.domain import (
     SkillInterpretationBand,
     SkillInterpretationScheme,
 )
-from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirection
+from sapphire_flow.types.enums import (
+    ModelCombinationStrategy,
+    ProvisionalIfsTailMode,
+    ThresholdDirection,
+)
 from sapphire_flow.types.ids import (
     FALLBACK_ASSIGNMENT_PRIORITIES,
     FALLBACK_MODEL_IDS,
@@ -90,6 +94,7 @@ class InputQualityConfig(BaseModel):
 class DeploymentConfig(BaseModel):
     swiss_overview: SwissOverviewConfig | None = None
     provisional_ratings: tuple[ProvisionalRatingConfig, ...] = ()
+    provisional_ifs_tail_mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.DISABLED
     evaluation_forecasts: EvaluationForecastsConfig | None = None
     daily_evaluation: DailyEvaluationConfig | None = None
     danger_levels: list[_DangerLevelInput] = []

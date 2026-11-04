@@ -356,6 +356,9 @@ BEGIN
                             'rating_reference_proofs', 'provisional_discharges',
                             'forecast_input_stations', 'rating_delivery_files',
                             'rating_delivery_curves', 'rating_derived_discharge',
+                            'native_measurement_captures', 'native_capture_batches',
+                            'native_capture_sightings', 'provisional_evaluation_grants',
+                            'provisional_evaluation_active_grants',
                             'bafu_unit_batch_admissions',
                             'bafu_unit_batch_receipts', 'bafu_unit_events',
                             'bafu_unit_read_holds', 'bafu_unit_hold_releases',
@@ -536,6 +539,9 @@ WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
                        'forecast_input_stations', 'forecasts', 'rejected_forecasts',
                        'rating_delivery_files', 'rating_delivery_curves',
                        'rating_derived_discharge',
+                       'native_measurement_captures', 'native_capture_batches',
+                       'native_capture_sightings', 'provisional_evaluation_grants',
+                       'provisional_evaluation_active_grants',
                        'bafu_unit_batch_admissions', 'bafu_unit_batch_receipts',
                        'bafu_unit_events', 'bafu_unit_read_holds', 'bafu_unit_hold_releases',
                        'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
@@ -562,6 +568,9 @@ GRANT SELECT (
 -- USAGE (+SELECT, for currval()) on sequences is required for that INSERT to
 -- succeed. Sequences carry no data of their own — broad grant is low-risk.
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO sapphire_api, sapphire_worker;
+REVOKE ALL ON SEQUENCE rating_derived_discharge_stored_order_seq
+    FROM PUBLIC, sapphire_api, sapphire_worker;
+GRANT USAGE ON SEQUENCE rating_derived_discharge_stored_order_seq TO sapphire_worker;
 -- Unit-journal admission ordering is private; runtime authority is not enabled yet.
 REVOKE ALL ON SEQUENCE bafu_unit_batch_admissions_sequence_seq, bafu_unit_events_event_id_seq
     FROM PUBLIC, sapphire_api, sapphire_worker;
@@ -640,8 +649,14 @@ GRANT INSERT, UPDATE ON basin_versions TO sapphire_worker;
 GRANT INSERT ON basin_static_packages TO sapphire_worker;
 GRANT INSERT, UPDATE ON rating_curves TO sapphire_worker;
 -- Native rating provenance is immutable and never part of generic API reads.
-GRANT SELECT, INSERT ON rating_delivery_files, rating_delivery_curves,
-    rating_derived_discharge TO sapphire_worker;
+GRANT SELECT, INSERT ON rating_delivery_files, rating_delivery_curves TO sapphire_worker;
+GRANT SELECT ON rating_derived_discharge TO sapphire_worker;
+GRANT INSERT (fingerprint,tenant_id,station_id,observation_id,rating_curve_id,file_id,
+    timestamp,discharge,rejection,content,captured_at,capture_id,evidence_version)
+    ON rating_derived_discharge TO sapphire_worker;
+GRANT SELECT, INSERT ON native_measurement_captures, native_capture_batches,
+    native_capture_sightings TO sapphire_worker;
+GRANT SELECT ON provisional_evaluation_active_grants TO sapphire_api;
 GRANT EXECUTE ON FUNCTION public.native_rating_lineage(uuid,boolean)
     TO sapphire_api, sapphire_worker;
 GRANT INSERT ON historical_forcing TO sapphire_worker;

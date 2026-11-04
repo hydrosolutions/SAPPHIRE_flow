@@ -215,8 +215,19 @@ class TestProvisionalDischargeRoleBoundary:
                     "bafu_unit_receipt_reconciliation",
                     "observation_qc_boundaries",
                 }
+                native_protected = {
+                    "native_measurement_captures",
+                    "native_capture_batches",
+                    "native_capture_sightings",
+                    "provisional_evaluation_grants",
+                }
+                relation_grants = {row["relname"]: row["current"] for row in rows}
+                assert native_protected <= relation_grants.keys()
+                assert not any(relation_grants[name] for name in native_protected)
+                assert relation_grants["provisional_evaluation_active_grants"]
                 table_grant_exclusions = {
                     *TABLES,
+                    *native_protected,
                     "forecasts",
                     "rejected_forecasts",
                     *unit_protected,

@@ -236,6 +236,7 @@ def _patch_station_assembler(
         time_step: timedelta,
         weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
         rating_inputs: object | None = None,
+        provisional_ifs_tail_mode: object = None,
     ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
         calls.append((station_id, nwp_source))
         return results[station_id]
