@@ -37,7 +37,7 @@ jobs:
         # version" step below needs `git merge-base` against the PR base sha.
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -167,7 +167,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -564,7 +564,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -646,7 +646,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -715,7 +715,7 @@ jobs:
             exit 1
           fi
           echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW=0.dev0+g${GITHUB_SHA}" >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
         with:
           version: "0.11.7"
@@ -1317,7 +1317,7 @@ jobs:
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     permissions: { contents: read, pull-requests: read }
     env:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
@@ -1397,10 +1397,11 @@ jobs:
           github.actor == 'dependabot[bot]' &&
           env.UV_LOCK_CHANGED == 'false'
         run: |
-          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof was NOT performed; do not claim both images were verified."
+          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof and vulnerability scan were NOT performed; do not claim both images were verified."
           echo "### Aquacast image proof not performed" >> "$GITHUB_STEP_SUMMARY"
           echo "Supported Dependabot degraded case: AQUACAST_TOKEN absent and uv.lock unchanged." >> "$GITHUB_STEP_SUMMARY"
       - name: Build Aquacast app image
+        id: build-aquacast-image
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         timeout-minutes: 15
@@ -1419,6 +1420,22 @@ jobs:
           secrets: |
             recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
             aquacast_token=${{ secrets.AQUACAST_TOKEN }}
+      - name: Trivy Aquacast image scan
+        if: env.AQUACAST_TOKEN_PRESENT == 'true' && steps.build-aquacast-image.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        timeout-minutes: 5
+        env:
+          TRIVY_IMAGE_SRC: docker
+        with:
+          scan-type: image
+          image-ref: sapphire-flow-aquacast:ci-proof-${{ github.sha }}
+          format: table
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+          cache: 'true'
+
       - name: Prove Aquacast image release identity
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
         timeout-minutes: 3

@@ -498,6 +498,44 @@ class TestAquacastImageProofCredentialGuard:
         assert "NOT performed" in step["run"]
         assert "do not claim both images were verified" in step["run"]
 
+    def test_scan_blocks_on_findings_in_the_actual_aquacast_image(self) -> None:
+        scan = _job_step(_AQUACAST_IMAGE_JOB, "Trivy Aquacast image scan")
+        build = _job_step(_AQUACAST_IMAGE_JOB, "Build Aquacast app image")
+        default_scan = _job_step(
+            "build-image-and-scan", "Trivy image scan (report, attempt 1)"
+        )
+        default_gate = _job_step(
+            "build-image-and-scan", "Render vulnerability table (gate)"
+        )
+        assert scan["uses"] == default_scan["uses"]
+        assert scan["env"] == {"TRIVY_IMAGE_SRC": "docker"}
+        assert scan["with"] == {
+            "scan-type": "image",
+            "image-ref": build["with"]["tags"],
+            "format": "table",
+            "scanners": "vuln,secret",
+            "severity": "HIGH,CRITICAL",
+            "exit-code": "1",
+            "ignore-unfixed": default_scan["with"]["ignore-unfixed"],
+            "cache": default_scan["with"]["cache"],
+        }
+        assert "--scanners vuln,secret" in default_gate["run"]
+        assert "--severity HIGH,CRITICAL" in default_gate["run"]
+        assert "--exit-code 1" in default_gate["run"]
+
+    def test_scan_requires_token_and_successful_preceding_build(self) -> None:
+        steps = _ci_yml()["jobs"][_AQUACAST_IMAGE_JOB]["steps"]
+        build = _job_step(_AQUACAST_IMAGE_JOB, "Build Aquacast app image")
+        scan = _job_step(_AQUACAST_IMAGE_JOB, "Trivy Aquacast image scan")
+        assert build["id"] == "build-aquacast-image"
+        assert build["with"]["load"] is True
+        assert not any(step.get("continue-on-error", False) for step in (build, scan))
+        assert steps.index(scan) == steps.index(build) + 1
+        assert _normalized_job_if(_AQUACAST_IMAGE_JOB, "Trivy Aquacast image scan") == (
+            _normalized_job_if(_AQUACAST_IMAGE_JOB, "Build Aquacast app image")
+            + " && steps.build-aquacast-image.outcome == 'success'"
+        )
+
 
 _DETECT_STEPS = [
     pytest.param(
