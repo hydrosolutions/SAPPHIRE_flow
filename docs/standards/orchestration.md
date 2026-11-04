@@ -8,6 +8,16 @@
 
 Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a single orchestration layer. Native Python decorators (`@flow`, `@task`) mean flows are ordinary Python — no DAG compilation step, no separate DSL to learn. Built-in retry logic with configurable backoff, a live observability UI, and work pool isolation (separate worker processes per workload class) are available without additional infrastructure. All scheduling, concurrency enforcement, and run history live in the same system.
 
+### Test-only in-memory dependency metadata
+
+The pytest harness keeps the four large in-memory observation, forecast, historical
+forcing and reanalysis fakes opaque in Prefect flow-run parameter metadata. It wraps
+`Flow.serialize_parameters`, calls the original first, and replaces only existing
+entries for those top-level fake types (including test subclasses) with type-name
+markers. Actual flow arguments and records are unchanged. Ordinary parameters and
+Prefect's default 524288-byte server limit remain unchanged; no production encoder,
+flow or server setting is patched.
+
 ## Flow-to-Prefect mapping
 
 | Flow | Prefect flow function | Work pool | Trigger | Concurrency limit | Scope |
