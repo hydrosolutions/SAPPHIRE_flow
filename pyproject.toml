@@ -102,8 +102,11 @@ constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4
 # Accepted compatibility exception: Aquacast's operational import closure reaches
 # Rich through logging/inference imports. Keep Rich 14 and verify real discovery
 # with the Aquacast extra; this override does not satisfy upstream's Rich >=15 floor.
-# REMOVE this the moment aquacast relaxes the floor.
-override-dependencies = ["rich>=14,<15"]
+# Remove only the Rich override when aquacast relaxes its Rich floor.
+# Torch/torchvision are separate owner-authorized CVE-2026-24747 security pins.
+# Remove them only after upstream requirements permit a verified fixed pair.
+# See docs/deployment/dependency-maintenance-2026-11.md.
+override-dependencies = ["rich>=14,<15", "torch==2.10.0", "torchvision==0.25.0"]
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
