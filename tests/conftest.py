@@ -149,7 +149,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def opaque_prefect_fake_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
+def opaque_prefect_fake_parameters() -> Iterator[None]:
     from prefect.flows import Flow
 
     from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
@@ -176,7 +176,9 @@ def opaque_prefect_fake_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
             for key, value in serialized.items()
         }
 
-    monkeypatch.setattr(Flow, "serialize_parameters", serialize)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Flow, "serialize_parameters", serialize)
+        yield
 
 
 _EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))

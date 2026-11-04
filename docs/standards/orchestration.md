@@ -14,7 +14,8 @@ The pytest harness keeps the four large in-memory observation, forecast, histori
 forcing and reanalysis fakes opaque in Prefect flow-run parameter metadata. It wraps
 `Flow.serialize_parameters`, calls the original first, and replaces only existing
 entries for those top-level fake types (including test subclasses) with type-name
-markers. Actual flow arguments and records are unchanged. Ordinary parameters and
+markers. A dedicated patch context leaves each test's own monkeypatch lifetime
+unchanged. Actual flow arguments and records are unchanged. Ordinary parameters and
 Prefect's default 524288-byte server limit remain unchanged; no production encoder,
 flow or server setting is patched.
 
