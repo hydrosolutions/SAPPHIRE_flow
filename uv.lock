@@ -3552,7 +3552,7 @@ wheels = [
 
 [[package]]
 name = "prefect"
-version = "3.6.23"
+version = "3.6.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -3612,9 +3612,9 @@ dependencies = [
     { name = "websockets" },
     { name = "whenever", marker = "python_full_version >= '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/20/6bdc5b412233d0657cd1192152c1c515b61633275f16c1f8a55e9b057048/prefect-3.6.23.tar.gz", hash = "sha256:23b7071e6dcdae68fe8e5b334097fc1833c4695207a41de2b23779e2aec76143", size = 11000627, upload-time = "2026-03-20T12:04:08.793Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/f0/6ea725f17107b26391da9df4dd566cd00ccec0435ae47f59aa3ff30d7143/prefect-3.6.25.tar.gz", hash = "sha256:592473f43401ed36b5ffa1c1fa3edd46caf494a795d9a97eb7c308bff8b00d0c", size = 11031424, upload-time = "2026-04-03T18:12:34.796Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/33/0c3b28ff7dcb6b0bde145d6057785584bc1622d39bc48ea5af486faf4329/prefect-3.6.23-py3-none-any.whl", hash = "sha256:9ff1d82f399ced433ac794b23fb7b9426cd27b9e6e3610a1cdf5c4facb8975a2", size = 11833004, upload-time = "2026-03-20T12:04:05.467Z" },
+    { url = "https://files.pythonhosted.org/packages/db/36/53881852ca5ce4587ce1e966dd43ca7488e03a48ea55aaf50d81d152558a/prefect-3.6.25-py3-none-any.whl", hash = "sha256:3a2645afd0275d6ba3971750be6a3cbdd72f04363a1f955721cc1155667ee4f7", size = 11861649, upload-time = "2026-04-03T18:12:31.508Z" },
 ]
 
 [[package]]
@@ -4991,7 +4991,7 @@ requires-dist = [
     { name = "orjson" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "polars", specifier = ">=1.41.2" },
-    { name = "prefect", specifier = "==3.6.23" },
+    { name = "prefect", specifier = "==3.6.25" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pygments", specifier = ">=2.20.0" },

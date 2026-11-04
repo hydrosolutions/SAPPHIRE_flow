@@ -765,6 +765,12 @@ checks before merge remain mandatory; no server-enforced protection is asserted.
 
 ### Python dependency policy
 
+- Application/worker Prefect is pinned to `3.6.25` for CVE-2026-5366. Keep the
+  existing FastAPI bound and Rich compatibility override. This application
+  dependency change does not alter the separately pinned Prefect server image;
+  the read-only server check reported `3.6.29`, above this finding's fixed-version
+  threshold, not a general security-scan result. Both CI vulnerability gates must
+  pass on the final lock and rebuilt application image; no exemption is added.
 - `uv.lock` is committed. Resolver output is reproducible; `uv sync --frozen` is used in every CI workflow step that installs dependencies.
 - The 2026-10-01 security update locks transitive `urllib3` to 2.8.0, addressing
   CVE-2026-97687 (HTTPS proxy TLS configuration override) and CVE-2026-97689

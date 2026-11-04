@@ -38,7 +38,7 @@ dependencies = [
     "orjson",
     "platformdirs>=4.0",
     "polars>=1.41.2",
-    "prefect==3.6.23",
+    "prefect==3.6.25",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
     "pygments>=2.20.0",
@@ -94,7 +94,7 @@ required-version = "==0.11.7"
 # Security floors: certifi trust roots, Pillow codecs, and filelock (PR407).
 # Constraints preserve transitive dependency placement; filelock fixes CVE-2026-112940.
 constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4.2.1"]
-# Plan 159 T0e. aquacast floors `rich>=15.0.0`, prefect 3.6.23 caps `rich<15` —
+# Plan 159 T0e. aquacast floors `rich>=15.0.0`, prefect 3.6.25 caps `rich<15` —
 # unsatisfiable together, and the maintainer who could relax it is away. Overridden
 # rather than letting the resolver drag prefect forward (and fastapi with it, where
 # route attributes change and silently empty the API auth-matrix test).
