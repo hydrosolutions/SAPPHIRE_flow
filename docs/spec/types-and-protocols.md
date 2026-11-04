@@ -6516,7 +6516,9 @@ flow signatures and weather adapter Protocols remain unchanged.
 ### Swiss overview read types (Phase B)
 
 `types.swiss_overview` defines immutable `SwissRosterEntry`, `MedianPeak`, and
-`HeadlineAbsence`. `CurrentHeadline` carries a selected evaluation candidate or
+`HeadlineAbsence`. The Swiss overview service also derives an immutable compact
+forecast series from the selected candidate: median with stored or empirical type-7
+p25/p75, at most ten retained interval starts. `CurrentHeadline` carries a selected evaluation candidate or
 explicit absence; publication redaction remains an HTTP boundary operation.
 `CurrentMemberSelection` is shared by the station panel and batched overview.
 `DailyAuthorityIntegrityError` distinguishes invalid persisted/scope authority

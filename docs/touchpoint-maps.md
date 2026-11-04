@@ -2370,7 +2370,7 @@ forecast store readers, and bounded observation reads. The packaged roster and
 and GET-only CORS in sync. Verify station-panel CURRENT parity and fallback/history
 regressions, Nepal latest discharge/water-level semantics, native lineage isolation,
 four observation queries, constant group/day reads, and one BAFU directory listing.
-See `spec/api-v1-review.md` for the version 2.5 wire contract and disabled default.
+See `spec/api-v1-review.md` for the version 2.6 wire contract and disabled default.
 
 Swiss overview review corrections: current candidate maps are keyed by the frozen
 `DailyClaim` and `DailyOutputReference`, preserving group/attempt/contract authority.

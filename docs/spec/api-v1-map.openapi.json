@@ -569,6 +569,31 @@
             "title": "Reason",
             "type": "null"
           },
+          "series": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "available": "#/components/schemas/CmalSeriesAvailable",
+                    "unavailable": "#/components/schemas/CmalSeriesUnavailable"
+                  },
+                  "propertyName": "state"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CmalSeriesAvailable"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CmalSeriesUnavailable"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
+          },
           "source": {
             "const": "daily_cmal",
             "default": "daily_cmal",
@@ -610,6 +635,99 @@
           "input_quality_flags"
         ],
         "title": "CmalAvailable",
+        "type": "object"
+      },
+      "CmalSeriesAvailable": {
+        "properties": {
+          "points": {
+            "items": {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Points",
+            "type": "array"
+          },
+          "quartile_method": {
+            "enum": [
+              "stored_quantiles",
+              "member_empirical_type7"
+            ],
+            "title": "Quartile Method",
+            "type": "string"
+          },
+          "state": {
+            "const": "available",
+            "default": "available",
+            "title": "State",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Time Step Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "time_step_seconds",
+          "quartile_method",
+          "points"
+        ],
+        "title": "CmalSeriesAvailable",
+        "type": "object"
+      },
+      "CmalSeriesUnavailable": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "point_limit",
+              "invalid_series"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "const": "unavailable",
+            "default": "unavailable",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "CmalSeriesUnavailable",
         "type": "object"
       },
       "CmalWithheld": {
@@ -5141,7 +5259,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.5"
+    "version": "2.6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6430,7 +6548,7 @@
     },
     "/api/v1/swiss/overview": {
       "get": {
-        "description": "Reviewer/admin bearer only. Approved Swiss roster intersected with tenant and reviewer grants. Disabled or drifted configuration returns 503. Latest QC-passed measured discharge and three exclusive-start hourly windows; CURRENT daily CMAL authority only, separate BAFU comparison. No yesterday/ordinary fallback. Publication redaction applies; all responses and preflights are no-store. Metadata not onboarded is explicit.",
+        "description": "Reviewer/admin bearer only. Approved Swiss roster intersected with tenant and reviewer grants. Disabled or drifted configuration returns 503. Latest QC-passed measured discharge and three exclusive-start hourly windows; CURRENT daily CMAL authority only, with an optional compact median and p25\u2013p75 series; separate BAFU comparison. No yesterday/ordinary fallback. Publication redaction applies; all responses and preflights are no-store. Metadata not onboarded is explicit.",
         "operationId": "get_swiss_overview_api_v1_swiss_overview_get",
         "responses": {
           "200": {

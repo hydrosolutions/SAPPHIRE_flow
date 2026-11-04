@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from statistics import quantiles
 from time import perf_counter
 from types import SimpleNamespace
 from uuid import uuid4
@@ -155,7 +156,11 @@ class TestSwissOverviewIsolated:
                                 {
                                     "valid_time": key.context.issue_time + step * lead,
                                     "quantile": q,
-                                    "value": 10.0 + lead + q,
+                                    "value": (
+                                        10.123456789012345
+                                        + lead * 1.2345678901234567
+                                        + q * 0.9876543210987654
+                                    ),
                                 }
                                 for lead in range(steps)
                                 for q in levels
@@ -268,7 +273,7 @@ class TestSwissOverviewIsolated:
         measurements, counts, route_times, serialization_times = [], [], [], []
         profile_dir = os.environ.get("SWISS_OVERVIEW_PROFILE_DIR")
         assert not (production and profile_dir), "Production samples must be unprofiled"
-        iterations = 3 if profile_dir else 10
+        iterations = 3 if profile_dir or not production else 10
         with isolated_committed_db_engine.begin() as conn:
             queries = []
 
@@ -323,6 +328,21 @@ class TestSwissOverviewIsolated:
         assert len(archive_enumerations) == iterations
         assert response.station_count == 134
         assert all(item.forecast.state == "available" for item in response.items)
+        assert all(item.forecast.peak_value is not None for item in response.items)
+        if production:
+            assert all(
+                item.forecast.series is not None
+                and item.forecast.series.state == "available"
+                and len(item.forecast.series.points) == 10
+                for item in response.items
+            )
+        else:
+            assert all(
+                item.forecast.series is not None
+                and item.forecast.series.state == "unavailable"
+                and item.forecast.series.reason == "point_limit"
+                for item in response.items
+            )
         assert all(
             item.observation.latest is not None
             and len(item.observation.hourly) == 3
@@ -335,6 +355,10 @@ class TestSwissOverviewIsolated:
         )
         assert len(set(counts)) == 1
         assert counts[0] <= 12
+        p95_seconds = quantiles(measurements, n=100, method="inclusive")[94]
+        assert len(payload) <= 393_216
+        if production:
+            assert p95_seconds < 1.0
         result = dict(
             case=shape,
             profiled=bool(profile_dir),
@@ -352,10 +376,10 @@ class TestSwissOverviewIsolated:
             archive_enumerations=len(archive_enumerations),
             raw_evidence_files=54,
             samples_seconds=measurements,
-            p95_seconds=sorted(measurements)[-1],
+            p95_seconds=p95_seconds,
             queries=counts,
-            latency_target_met=max(measurements) < 1.0,
-            raw_payload_target_met=len(payload) < 150 * 1024,
+            latency_target_met=p95_seconds < 1.0 if production else None,
+            raw_payload_target_met=len(payload) <= 393_216,
             raw_bytes=len(payload),
             gzip_bytes=len(gzip.compress(payload)),
             scope=(

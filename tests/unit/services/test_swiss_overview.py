@@ -414,3 +414,572 @@ class TestExactDailyPeaks:
             withheld=False,
         )
         assert result.reason is HeadlineAbsence.INVALID_SOURCE_DATA
+
+
+class TestForecastSeries:
+    def _candidate(self, case: SimpleNamespace):
+        return (
+            read_evaluation_forecasts(
+                station=case.station,
+                settings=case.settings,
+                assignments=(),
+                stores=case.stores,
+                as_of=case.issue + timedelta(hours=1),
+            )
+            .parameters[0]
+            .candidate
+        )
+
+    def test_members_use_same_median_and_type7_band(
+        self, case: SimpleNamespace
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+
+        candidate = self._candidate(case)
+        rows = [
+            {
+                "valid_time": case.issue + timedelta(days=day),
+                "member_id": member,
+                "value": float(value + day),
+            }
+            for day in range(2)
+            for member, value in enumerate((1, 2, 3, 4, 100))
+        ]
+        ensemble = replace(
+            case.record.ensemble,
+            representation=EnsembleRepresentation.MEMBERS,
+            time_step=timedelta(days=1),
+            values=pl.DataFrame(rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+            ),
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                case.record,
+                representation=EnsembleRepresentation.MEMBERS,
+                ensemble=ensemble,
+            ),
+        )
+        result = candidate_series(
+            candidate,
+            as_of=case.issue + timedelta(hours=6),
+            peak=candidate_peak(candidate, as_of=case.issue + timedelta(hours=6)),
+        )
+        assert not isinstance(result, str)
+        assert result.quartile_method == "member_empirical_type7"
+        assert [(point.median, point.p25, point.p75) for point in result.points] == [
+            (3.0, 2.0, 4.0),
+            (4.0, 3.0, 5.0),
+        ]
+        assert candidate_peak(
+            candidate, as_of=case.issue + timedelta(hours=6)
+        ).value == max(point.median for point in result.points)
+
+    def test_sparse_members_keep_median_without_band(
+        self, case: SimpleNamespace
+    ) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+
+        result = candidate_series(
+            self._candidate(case),
+            as_of=case.issue,
+            peak=candidate_peak(self._candidate(case), as_of=case.issue),
+        )
+        assert not isinstance(result, str)
+        assert all(point.p25 is None and point.p75 is None for point in result.points)
+
+    @pytest.mark.parametrize("fault", ["nan", "inf", "too_many"])
+    def test_component_local_unavailability(
+        self, case: SimpleNamespace, fault: str
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+
+        candidate = self._candidate(case)
+        original_peak = candidate_peak(candidate, as_of=case.issue)
+        assert original_peak is not None
+        if fault in {"nan", "inf"}:
+            values = case.record.ensemble.values.with_columns(
+                pl.when(pl.int_range(pl.len()) == 0)
+                .then(float(fault))
+                .otherwise(pl.col("value"))
+                .alias("value")
+            )
+        else:
+            values = pl.DataFrame(
+                {
+                    "valid_time": [
+                        case.issue + timedelta(days=day) for day in range(11)
+                    ],
+                    "member_id": [0] * 11,
+                    "value": [float(day) for day in range(11)],
+                }
+            ).with_columns(pl.col("valid_time").cast(pl.Datetime("us", "UTC")))
+        candidate = replace(
+            candidate,
+            record=replace(
+                case.record,
+                ensemble=replace(
+                    case.record.ensemble, time_step=timedelta(days=1), values=values
+                ),
+            ),
+        )
+        peak = candidate_peak(candidate, as_of=case.issue) or original_peak
+        assert candidate_series(candidate, as_of=case.issue, peak=peak) == (
+            "invalid_series" if fault in {"nan", "inf"} else "point_limit"
+        )
+
+    def test_operational_member_ids_are_opaque(self, case: SimpleNamespace) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+
+        candidate = self._candidate(case)
+        values = candidate.record.ensemble.values.with_columns(
+            pl.col("member_id").replace_strict({0: "control", 1: "member-a"})
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                ensemble=replace(candidate.record.ensemble, values=values),
+            ),
+        )
+        peak = candidate_peak(candidate, as_of=case.issue)
+        assert peak is not None
+        series = candidate_series(candidate, as_of=case.issue, peak=peak)
+        assert not isinstance(series, str)
+        assert max(point.median for point in series.points) == peak.value
+        assert len(series.points) == 2
+
+    def test_persisted_member_ids_are_opaque(self, case: SimpleNamespace) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+        from sapphire_flow.types.rejected_forecast import PersistedRejectedForecast
+
+        candidate = self._candidate(case)
+        times = (case.issue, case.issue + timedelta(hours=1))
+        record = PersistedRejectedForecast(
+            id=case.record.id,
+            attempt_id=case.summary.claim.id,
+            recorded_at=case.issue,
+            station_id=case.station.id,
+            model_id=case.record.model_id,
+            model_artifact_id=case.record.model_artifact_id,
+            group_id=case.summary.claim.key.group_id,
+            issued_at=case.issue,
+            parameter="discharge",
+            representation=EnsembleRepresentation.MEMBERS,
+            units="m³/s",
+            time_step_seconds=3600,
+            qc_status=QcStatus.QC_FAILED,
+            qc_flags=(),
+            values={
+                "control": tuple(zip(times, (10.0, 20.0), strict=True)),
+                "member-a": tuple(zip(times, (20.0, 30.0), strict=True)),
+            },
+        )
+        candidate = replace(candidate, record=record)
+        peak = candidate_peak(candidate, as_of=case.issue)
+        assert peak is not None
+        series = candidate_series(candidate, as_of=case.issue, peak=peak)
+        assert not isinstance(series, str)
+        assert [point.median for point in series.points] == [15.0, 25.0]
+
+    def test_persisted_quantiles_preserve_stored_values(
+        self, case: SimpleNamespace
+    ) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+        from sapphire_flow.types.rejected_forecast import PersistedRejectedForecast
+
+        candidate = self._candidate(case)
+        times = (case.issue, case.issue + timedelta(days=1))
+        values = {
+            "0.05": tuple(zip(times, (8.0, 18.0), strict=True)),
+            "0.1": tuple(zip(times, (9.0, 19.0), strict=True)),
+            "0.25": tuple(zip(times, (10.0, 20.0), strict=True)),
+            "0.5": tuple(zip(times, (12.0, 22.0), strict=True)),
+            "0.75": tuple(zip(times, (14.0, 24.0), strict=True)),
+            "0.9": tuple(zip(times, (15.0, 25.0), strict=True)),
+            "0.95": tuple(zip(times, (16.0, 26.0), strict=True)),
+        }
+        record = PersistedRejectedForecast(
+            id=case.record.id,
+            attempt_id=case.summary.claim.id,
+            recorded_at=case.issue,
+            station_id=case.station.id,
+            model_id=case.record.model_id,
+            model_artifact_id=case.record.model_artifact_id,
+            group_id=case.summary.claim.key.group_id,
+            issued_at=case.issue,
+            parameter="discharge",
+            representation=EnsembleRepresentation.QUANTILES,
+            units="m³/s",
+            time_step_seconds=86400,
+            qc_status=QcStatus.QC_FAILED,
+            qc_flags=(),
+            values=values,
+        )
+        candidate = replace(candidate, record=record)
+        peak = candidate_peak(candidate, as_of=case.issue + timedelta(hours=6))
+        assert peak is not None
+        series = candidate_series(
+            candidate,
+            as_of=case.issue + timedelta(hours=6),
+            peak=peak,
+        )
+        assert not isinstance(series, str)
+        assert [(p.median, p.p25, p.p75) for p in series.points] == [
+            (12.0, 10.0, 14.0),
+            (22.0, 20.0, 24.0),
+        ]
+
+    @pytest.mark.parametrize(
+        ("fault", "expected"),
+        [
+            (None, [(12.0, 10.0, 14.0), (22.0, 20.0, 24.0)]),
+            ("missing_bounds", [(12.0, None, None), (22.0, None, None)]),
+            ("duplicate_median", "invalid_series"),
+            ("duplicate_bound", "invalid_series"),
+            ("nonfinite_bound", "invalid_series"),
+            ("inverted_bound", "invalid_series"),
+            ("quantile_only_time", "invalid_series"),
+            ("missing_median_time", "invalid_series"),
+        ],
+    )
+    def test_stored_quantile_values_and_invalid_series_are_local(
+        self, case: SimpleNamespace, fault: str | None, expected: object
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+
+        candidate = self._candidate(case)
+        levels = (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95)
+        rows = [
+            {
+                "valid_time": case.issue + timedelta(days=day),
+                "quantile": level,
+                "value": 12.0 + 10.0 * day + (level - 0.5) * 8.0,
+            }
+            for day in range(2)
+            for level in levels
+        ]
+        if fault == "missing_bounds":
+            rows = [row for row in rows if row["quantile"] not in {0.25, 0.75}]
+        elif fault == "duplicate_median":
+            rows.append(dict(next(row for row in rows if row["quantile"] == 0.5)))
+        elif fault == "duplicate_bound":
+            rows.append(dict(next(row for row in rows if row["quantile"] == 0.25)))
+        elif fault == "nonfinite_bound":
+            next(row for row in rows if row["quantile"] == 0.25)["value"] = float("nan")
+        elif fault == "inverted_bound":
+            next(row for row in rows if row["quantile"] == 0.25)["value"] = 13.0
+        elif fault == "quantile_only_time":
+            rows.append(
+                {
+                    "valid_time": case.issue + timedelta(days=2),
+                    "quantile": 0.25,
+                    "value": 30.0,
+                }
+            )
+        elif fault == "missing_median_time":
+            rows = [
+                row
+                for row in rows
+                if not (
+                    row["valid_time"] == case.issue + timedelta(days=1)
+                    and row["quantile"] == 0.5
+                )
+            ]
+        ensemble = replace(
+            case.record.ensemble,
+            representation=EnsembleRepresentation.QUANTILES,
+            time_step=timedelta(days=1),
+            values=pl.DataFrame(rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+            ),
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                representation=EnsembleRepresentation.QUANTILES,
+                ensemble=ensemble,
+            ),
+        )
+        peak = candidate_peak(candidate, as_of=case.issue + timedelta(hours=6))
+        assert peak is not None
+        result = candidate_series(
+            candidate,
+            as_of=case.issue + timedelta(hours=6),
+            peak=peak,
+        )
+        if isinstance(expected, str):
+            assert result == expected
+        else:
+            assert not isinstance(result, str)
+            assert [(p.median, p.p25, p.p75) for p in result.points] == expected
+            assert result.points[0].valid_time == peak.horizon_start
+            assert (
+                result.points[-1].valid_time
+                + timedelta(seconds=result.time_step_seconds)
+                == peak.horizon_end
+            )
+            assert max(p.median for p in result.points) == peak.value
+
+    def test_partly_elapsed_interval_is_retained(self, case: SimpleNamespace) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+
+        candidate = self._candidate(case)
+        as_of = ensure_utc(case.issue + timedelta(hours=1, minutes=30))
+        peak = candidate_peak(candidate, as_of=as_of)
+        assert peak is not None
+        result = candidate_series(candidate, as_of=as_of, peak=peak)
+        assert not isinstance(result, str)
+        assert result.points[0].valid_time == case.issue + timedelta(hours=1)
+
+
+class TestForecastSeriesScopedCorrections:
+    def _candidate(self, case: SimpleNamespace):
+        return (
+            read_evaluation_forecasts(
+                station=case.station,
+                settings=case.settings,
+                assignments=(),
+                stores=case.stores,
+                as_of=case.issue + timedelta(hours=1),
+            )
+            .parameters[0]
+            .candidate
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "replacement"),
+        [
+            ("horizon_start", timedelta(hours=1)),
+            ("horizon_end", timedelta(hours=3)),
+            ("value", 1.0),
+            ("valid_time", timedelta(hours=1)),
+        ],
+    )
+    def test_supplied_peak_must_match_series_identity(
+        self, case: SimpleNamespace, field: str, replacement: object
+    ) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.swiss_overview import MedianPeak
+
+        candidate = self._candidate(case)
+        peak = candidate_peak(candidate, as_of=case.issue)
+        assert peak is not None
+        changed = (
+            peak.value + replacement
+            if field == "value"
+            else ensure_utc(getattr(peak, field) + replacement)
+        )
+        mismatched = MedianPeak(
+            value=changed if field == "value" else peak.value,
+            valid_time=changed if field == "valid_time" else peak.valid_time,
+            horizon_start=(changed if field == "horizon_start" else peak.horizon_start),
+            horizon_end=changed if field == "horizon_end" else peak.horizon_end,
+        )
+        assert candidate_series(candidate, as_of=case.issue, peak=mismatched) == (
+            "invalid_series"
+        )
+
+    def test_ragged_member_timeline_retains_gap_and_sparse_null_bands(
+        self, case: SimpleNamespace
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+
+        candidate = self._candidate(case)
+        rows = [
+            *(
+                {
+                    "valid_time": case.issue,
+                    "member_id": f"member-{member}",
+                    "value": value,
+                }
+                for member, value in enumerate((1.0, 2.0, 3.0, 4.0, 5.0))
+            ),
+            *(
+                {
+                    "valid_time": case.issue + timedelta(days=2),
+                    "member_id": f"member-{member}",
+                    "value": value,
+                }
+                for member, value in enumerate((18.0, 20.0, 22.0))
+            ),
+        ]
+        ensemble = replace(
+            candidate.record.ensemble,
+            representation=EnsembleRepresentation.MEMBERS,
+            time_step=timedelta(days=1),
+            values=pl.DataFrame(rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+            ),
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                representation=EnsembleRepresentation.MEMBERS,
+                ensemble=ensemble,
+            ),
+        )
+        peak = candidate_peak(candidate, as_of=case.issue)
+        assert peak is not None
+        result = candidate_series(candidate, as_of=case.issue, peak=peak)
+        assert not isinstance(result, str)
+        assert [point.valid_time for point in result.points] == [
+            case.issue,
+            case.issue + timedelta(days=2),
+        ]
+        assert [(point.median, point.p25, point.p75) for point in result.points] == [
+            (3.0, 2.0, 4.0),
+            (20.0, None, None),
+        ]
+        assert max(point.median for point in result.points) == peak.value
+        assert (
+            result.points[-1].valid_time + timedelta(seconds=result.time_step_seconds)
+            == peak.horizon_end
+        )
+
+    def test_duplicate_level_is_local_and_does_not_change_headline(
+        self, case: SimpleNamespace
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+
+        candidate = self._candidate(case)
+        rows = [
+            {
+                "valid_time": case.issue + timedelta(days=day),
+                "quantile": level,
+                "value": 12.0 + day * 10.0 + (level - 0.5) * 8.0,
+            }
+            for day in range(2)
+            for level in (0.25, 0.5, 0.75)
+        ]
+        rows.append(dict(rows[0]))
+        ensemble = replace(
+            candidate.record.ensemble,
+            representation=EnsembleRepresentation.QUANTILES,
+            time_step=timedelta(days=1),
+            values=pl.DataFrame(rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+            ),
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                representation=EnsembleRepresentation.QUANTILES,
+                ensemble=ensemble,
+            ),
+        )
+        peak = candidate_peak(candidate, as_of=case.issue)
+        assert peak is not None
+        assert (peak.value, peak.valid_time) == (
+            22.0,
+            case.issue + timedelta(days=1),
+        )
+        assert candidate_series(candidate, as_of=case.issue, peak=peak) == (
+            "invalid_series"
+        )
+
+    def test_malformed_nonmedian_value_preserves_route_headline(
+        self, case: SimpleNamespace
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.api.routes.api_swiss_overview import _cmal
+        from sapphire_flow.services.swiss_overview import CurrentHeadline
+        from sapphire_flow.types.enums import EnsembleRepresentation
+
+        candidate = self._candidate(case)
+        rows = [
+            {
+                "valid_time": case.issue + timedelta(days=day),
+                "quantile": level,
+                "value": None if day == 0 and level == 0.25 else 12.0 + day,
+            }
+            for day in range(2)
+            for level in (0.25, 0.5, 0.75)
+        ]
+        ensemble = replace(
+            candidate.record.ensemble,
+            representation=EnsembleRepresentation.QUANTILES,
+            time_step=timedelta(days=1),
+            values=pl.DataFrame(rows).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("value").cast(pl.Float64),
+            ),
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                representation=EnsembleRepresentation.QUANTILES,
+                ensemble=ensemble,
+            ),
+        )
+        result = _cmal(
+            CurrentHeadline(candidate=candidate, absence=None),
+            as_of=case.issue,
+            withheld=False,
+        )
+        assert result.state == "available"
+        assert result.peak_value == 13.0
+        assert result.series.state == "unavailable"
+        assert result.series.reason == "invalid_series"
+
+    @pytest.mark.parametrize("bad_step", ["daily", 10**30])
+    def test_invalid_persisted_timestep_is_local_to_series(
+        self, case: SimpleNamespace, bad_step: object
+    ) -> None:
+        from sapphire_flow.services.swiss_overview import candidate_series
+        from sapphire_flow.types.enums import EnsembleRepresentation
+        from sapphire_flow.types.rejected_forecast import PersistedRejectedForecast
+
+        candidate = self._candidate(case)
+        times = (case.issue, case.issue + timedelta(days=1))
+        record = PersistedRejectedForecast(
+            id=case.record.id,
+            attempt_id=case.summary.claim.id,
+            recorded_at=case.issue,
+            station_id=case.station.id,
+            model_id=case.record.model_id,
+            model_artifact_id=case.record.model_artifact_id,
+            group_id=case.summary.claim.key.group_id,
+            issued_at=case.issue,
+            parameter="discharge",
+            representation=EnsembleRepresentation.MEMBERS,
+            units="m³/s",
+            time_step_seconds=86400,
+            qc_status=QcStatus.QC_FAILED,
+            qc_flags=(),
+            values={"control": tuple(zip(times, (10.0, 20.0), strict=True))},
+        )
+        valid_candidate = replace(candidate, record=record)
+        peak = candidate_peak(valid_candidate, as_of=case.issue)
+        assert peak is not None
+        invalid_candidate = replace(
+            valid_candidate, record=replace(record, time_step_seconds=bad_step)
+        )
+        assert (
+            candidate_series(invalid_candidate, as_of=case.issue, peak=peak)
+            == "invalid_series"
+        )

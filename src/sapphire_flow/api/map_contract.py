@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.5"
+MAP_CONTRACT_VERSION = "2.6"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -108,7 +108,8 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Reviewer/admin bearer only. Approved Swiss roster intersected with tenant "
         "and reviewer grants. Disabled or drifted configuration returns 503. "
         "Latest QC-passed measured discharge and three exclusive-start hourly "
-        "windows; CURRENT daily CMAL authority only, separate BAFU comparison. "
+        "windows; CURRENT daily CMAL authority only, with an optional compact "
+        "median and p25–p75 series; separate BAFU comparison. "
         "No yesterday/ordinary fallback. Publication redaction applies; all "
         "responses and preflights are no-store. Metadata not onboarded is explicit."
     ),

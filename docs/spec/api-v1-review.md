@@ -369,8 +369,8 @@ resolved by this plan.
 ## Swiss live overview (Phase B)
 
 `GET /api/v1/swiss/overview` is a bearer reviewer/admin read. Human sessions and
-consumer tokens are not accepted. The maintained map OpenAPI export is version
-2.5. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
+consumer tokens are not accepted. The map OpenAPI contract is
+version 2.6, including the compact series described below. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
 preflights use `Cache-Control: no-store`.
 
 The route defaults to disabled (503). A reviewed deployment overlay must include
@@ -458,3 +458,8 @@ PostgreSQL/archive response, with station_count reduced to match (not production
 The midnight pending interval is intentional. A separately labeled panel fallback
 may still exist during it. Polling cadence, browser acceptance, and deployment
 performance remain rollout checks, not guarantees from this contract.
+
+
+### Swiss overview compact CMAL series (map contract 2.6)
+
+An available `daily_cmal` headline carries optional `series`. New responses emit either an available 1–10 point median/p25/p75 interval-start series or component-local `point_limit`/`invalid_series` unavailability. The field is optional for rollback compatibility. It inherits the headline output identity and unit. Each point is `[valid_time, median, p25, p75]`; `quartile_method` is `stored_quantiles` or `member_empirical_type7`. The series must match the headline horizon, peak value and earliest peak time. Missing bounds are null and are never replaced with zero-width bands. Other headline variants do not carry this field.

@@ -21,6 +21,8 @@ from sapphire_flow.api.swiss_overview_schemas import (
     BafuWithheld,
     CmalAvailable,
     CmalHeadline,
+    CmalSeriesAvailable,
+    CmalSeriesUnavailable,
     CmalWithheld,
     HeadlineUnavailable,
     OverviewHour,
@@ -47,6 +49,7 @@ from sapphire_flow.services.swiss_overview import (
     CurrentHeadline,
     candidate_has_median,
     candidate_peak,
+    candidate_series,
     read_bafu_headlines,
     read_current_headlines,
 )
@@ -93,6 +96,19 @@ def _cmal(
     units = row.ensemble.units if isinstance(row, OperationalForecast) else row.units
     if units not in {"m3/s", "m³/s"}:
         return HeadlineUnavailable(reason=HeadlineAbsence.INVALID_SOURCE_DATA)
+    series = candidate_series(candidate, as_of=as_of, peak=peak)
+    encoded_series = (
+        CmalSeriesUnavailable(reason=series)
+        if isinstance(series, str)
+        else CmalSeriesAvailable(
+            time_step_seconds=series.time_step_seconds,
+            quartile_method=series.quartile_method,
+            points=[
+                (point.valid_time, point.median, point.p25, point.p75)
+                for point in series.points
+            ],
+        )
+    )
     return CmalAvailable(
         output_id=identity.output_id,
         output_source=identity.output_source,
@@ -106,6 +122,7 @@ def _cmal(
         input_quality=row.input_quality.value
         if isinstance(row, OperationalForecast) and row.input_quality
         else None,
+        series=encoded_series,
         input_quality_flags=[
             OverviewInputFlag(
                 category=f.category.value, level=f.level.value, detail=f.detail
