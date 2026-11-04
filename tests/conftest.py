@@ -125,6 +125,7 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from typing import Any
 
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.types.alert import Alert
@@ -145,6 +146,40 @@ if TYPE_CHECKING:
     from sapphire_flow.types.training import TrainingUnit
     from sapphire_flow.types.weather import PointForecast
     from tests.fakes.fake_clock import FakeClock
+
+
+@pytest.fixture(autouse=True)
+def opaque_prefect_fake_parameters() -> Iterator[None]:
+    from prefect.flows import Flow
+
+    from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+    from tests.fakes.fake_stores import (
+        FakeHistoricalForcingStore,
+        FakeObservationStore,
+        FakeWeatherForecastStore,
+    )
+
+    original = Flow.serialize_parameters
+    fake_types = (
+        FakeObservationStore,
+        FakeHistoricalForcingStore,
+        FakeWeatherForecastStore,
+        FakeWeatherReanalysisSource,
+    )
+
+    def serialize(flow: Flow, parameters: dict[str, Any]) -> dict[str, Any]:
+        serialized = original(flow, parameters)
+        return {
+            key: f"<{type(parameters[key]).__name__}>"
+            if isinstance(parameters.get(key), fake_types)
+            else value
+            for key, value in serialized.items()
+        }
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Flow, "serialize_parameters", serialize)
+        yield
+
 
 _EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _RNG_SEED = 42
