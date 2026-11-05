@@ -10,6 +10,18 @@ inspect rather than copying implementation explanations. Include only surprising
 high-consequence cross-cutting invariants. Verify affected maps against the code
 when changing them.
 
+## Local basin operator
+
+`cli/basin_operator.py` explicitly launches `basin_operator/` on loopback only.
+It reuses `services/basin_package_loader.py` and package fingerprints without
+importing the public API, database, forecast bootstrap or model registry. Changes
+to package validation/checksums/geometry joins must also run
+`tests/unit/basin_operator/`. Preserve upload string identities, original versus
+adjusted coordinates, exact reviewed-content binding, warning acknowledgment,
+structural approval blocks and immutable approved-only subset exports. Keep
+read-only feedback HTML free of approval authority. See the
+[operator runbook](operations/basin-operator-runbook.md).
+
 ## Maps
 
 - **ForecastInterface / model execution** — model boundary, adapters, data

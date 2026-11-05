@@ -170,6 +170,7 @@ sapphire_flow = [
     "config/swiss_display_roster.json",
     "data/icon_ch2_eps_grid.npz",
     "api/templates/**/*.html",
+    "basin_operator/templates/*.html",
     "models/aquacast/configs/*.yaml",
 ]
 
