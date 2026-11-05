@@ -178,7 +178,7 @@ def prose_path(path: bytes) -> bool:
     return (
         directory in PROSE_DIRECTORIES
         and not filename.startswith(b".")
-        and filename.rpartition(b".")[2] in {b"md", b"rst", b"txt"}
+        and filename.endswith((b".md", b".rst", b".txt"))
     )
 
 
