@@ -34,8 +34,12 @@ class TestTaggingPolicy:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
         assert (
-            "Every PR, including docs/tooling PRs, advances `RELEASE_TARGET` "
+            "Every PR except strictly docs-only changes advances `RELEASE_TARGET` "
             "by one patch from its current base."
+        ) in guidelines
+        assert (
+            "Tooling, configuration, dependencies and API contracts "
+            "still require a bump."
         ) in guidelines
         assert "Further commits in the same PR do not bump again." in guidelines
         assert "The target is release intent only." in guidelines

@@ -4,6 +4,12 @@ owner: Swiss restoration CI follow-up
 ---
 # Swiss restoration CI gates
 
+Current CI policy supersedes this plan’s original one-second latency budget: production
+p95 must be strictly below 1.25 seconds. The 393216-byte and 12-query limits are
+unchanged. See `docs/standards/cicd.md`, Swiss overview performance. Historical
+measurements and the original implementation scope below remain unchanged.
+
+
 ## Outcome and authority
 Make the unchanged Swiss full-roster performance contract a required fresh-process CI
 gate within the existing heavy leg, and give the existing Aquacast image proof enough bounded hosted-runner disk to

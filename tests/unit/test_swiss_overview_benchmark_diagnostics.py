@@ -101,9 +101,9 @@ class TestRecordThenAssertBudgets:
                 "raw_bytes=393217 limit=393216",
             ),
             (
-                {"p95_seconds": 1.0, "latency_target_met": False},
+                {"p95_seconds": 1.25, "latency_target_met": False},
                 "latency budget",
-                "p95_seconds=1.0 limit=1.0",
+                "p95_seconds=1.25 limit=1.25",
             ),
         ],
     )
@@ -121,6 +121,14 @@ class TestRecordThenAssertBudgets:
         persisted = json.loads(target.read_text())
         assert set(persisted) == EXPECTED_KEYS
         assert persisted == record
+
+    @pytest.mark.parametrize("seconds", [1.0, 1.09578, 1.249999])
+    def test_production_latency_below_new_limit_passes(
+        self, tmp_path: Path, seconds: float
+    ) -> None:
+        record = _production_record()
+        record["p95_seconds"] = seconds
+        record_then_assert_budgets(record, tmp_path / "benchmark.json")
 
     def test_unstable_query_counts_write_before_failure(self, tmp_path: Path) -> None:
         record = _production_record()

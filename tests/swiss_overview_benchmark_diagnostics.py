@@ -92,7 +92,7 @@ def _validate(
     ):
         raise ValueError("members and quantiles must match the benchmark case")
     p95_seconds = cast("float", record["p95_seconds"])
-    expected_latency = p95_seconds < 1.0 if case == "production_quantiles" else None
+    expected_latency = p95_seconds < 1.25 if case == "production_quantiles" else None
     if record["latency_target_met"] is not expected_latency:
         raise ValueError("latency_target_met does not match p95_seconds")
     raw_bytes = cast("int", record["raw_bytes"])
@@ -115,6 +115,6 @@ def record_then_assert_budgets(record: dict[str, object], target: Path | None) -
         f"payload budget exceeded: raw_bytes={record['raw_bytes']} limit=393216"
     )
     if case == "production_quantiles":
-        assert cast("float", record["p95_seconds"]) < 1.0, (
-            f"latency budget exceeded: p95_seconds={record['p95_seconds']!r} limit=1.0"
+        assert cast("float", record["p95_seconds"]) < 1.25, (
+            f"latency budget exceeded: p95_seconds={record['p95_seconds']!r} limit=1.25"
         )
