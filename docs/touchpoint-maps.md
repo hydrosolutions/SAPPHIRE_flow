@@ -2402,7 +2402,9 @@ production node
 `tests/integration/store/test_swiss_overview_performance.py::TestSwissOverviewPerformance::test_134_station_bounded_reads`
 in the required performance-first fresh process. Keep the sustained node
 `tests/integration/store/test_swiss_overview.py::TestSwissOverviewIsolated::test_134_station_bounded_reads`
-in the following heavy process. Do not merge them.
+in the following heavy process. Do not merge them. Production p95 must stay below
+1.25 seconds; raw payload remains <=393216 bytes and stable queries <=12/request.
+Update the benchmark producer, diagnostic validator and boundary tests together.
 
 The Aquacast capacity step is exclusive to its disposable GitHub-hosted job. Never
 broaden its two SDK roots, move it to a self-hosted or deployment host, or target Docker,

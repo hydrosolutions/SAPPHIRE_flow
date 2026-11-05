@@ -8,6 +8,12 @@ release_target: 0.1.1105
 
 # Reuse validated BAFU trace extraction within one run read
 
+Current CI policy supersedes this plan’s original one-second latency budget: production
+p95 must be strictly below 1.25 seconds. The 393216-byte and 12-query limits are
+unchanged. See `docs/standards/cicd.md`, Swiss overview performance. Historical
+measurements and the original implementation scope below remain unchanged.
+
+
 ## Authority and outcome
 
 This is the READY plan for PR #448 at planning head
