@@ -792,6 +792,20 @@ Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache 
 
 **`recap-dg-client` distribution — LANDED (Plan 082 Task 2H)**: the `hydrosolutions/recap-dg-client` Data Gateway client is distributed by **git pin plus a scoped exception to the wheel-only guard** (`pyproject.toml` `[tool.uv.sources]`, rev `60e5d736dec663d013ce2c05a6f067b82254cd7f`), the same Plan 079-style bridge used for `forecastinterface`. Unlike `forecastinterface`, `recap-dg-client` is a **private** repository, so both GitHub-hosted CI (`lint`, `unit`, `integration-shard`, `wheel-only-guard` jobs) and the Docker builder stage need clone auth. This is provided by a single repo secret, **`RECAP_DG_CLIENT_TOKEN`**. **As of 2026-07-21 (Plan 137) this is a fine-grained PAT scoped to `hydrosolutions/recap-dg-client` ONLY with Contents:Read-only (+ Metadata:Read-only), expiring 2027-07-17** — replacing an earlier broad `gho_` gh-CLI OAuth token that had write access to all repos. **It must be set in BOTH the Actions secret store AND the Dependabot secret store** (Settings → Secrets and variables → Actions *and* → Dependabot): GitHub does NOT share Actions secrets with Dependabot-triggered workflow runs, so a Dependabot-store copy is required or every Dependabot PR's fresh-clone jobs (`wheel-only-guard`, `build-image-and-scan`) fail closed. Renewal: the PAT expires 2027-07-17 — re-mint + update both stores + the mac-mini `secrets/recap_dg_client_token` before then (or migrate to the removal trigger below). CI jobs rewrite `https://github.com/hydrosolutions/recap-dg-client.git` to an authenticated URL via `git config --global url.<...>.insteadOf`, scoped to that one repository URL — never a blanket github.com credential rewrite. The Docker builder stage uses a BuildKit `--mount=type=secret` instead (`docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN`), writing then deleting `/root/.gitconfig` within the same `RUN` so the token never lands in a committed image layer. **Removal trigger**: migrate off the git pin to a versioned **private-index wheel** (a Plan 080-style hydrosolutions package index) and drop both the source-build exception and the `RECAP_DG_CLIENT_TOKEN` secret once that wheel is published — tracked as an IT-specialist follow-up.
 
+### Hosted-runner capacity exception
+
+Only the disposable GitHub-hosted `aquacast-release-image-proof` job may prepare host
+capacity. Its exact allowlist is `/usr/local/lib/android/sdk` and `/usr/share/dotnet`.
+When cleanup is needed, the step rejects symlinks, canonical mismatches, unexpected
+objects, and every mount at or below either root before either removal, then uses GNU
+`rm --one-file-system`. At or above the 20 GB minimum it is a no-op and does not access
+those roots. It is forbidden to touch the
+checkout/workspace, `/opt/hostedtoolcache`, Docker data or caches, credentials, private
+files, package-manager caches, or any discovered/arbitrary path. It is also forbidden on
+self-hosted, local, staging, and production systems. A 20 GB free-space result is only a
+minimum precondition; it does not establish image fit or replace build, scan, and identity
+proof.
+
 ### Image pinning
 
 Every externally-pulled image is pinned by **manifest-list digest** (not per-platform digest — the manifest-list resolves per-arch on pull, so the same pin works for both amd64 CI and arm64 Mac mini):

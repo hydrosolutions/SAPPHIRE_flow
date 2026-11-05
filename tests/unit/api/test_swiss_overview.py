@@ -126,6 +126,8 @@ class TestSwissOverview:
         item = body["items"][0]
         assert item["forecast"]["output_id"] == str(case.record.id)
         assert item["forecast"]["state"] == "available"
+        assert item["forecast"]["series"]["state"] == "available"
+        assert item["forecast"]["series"]["points"]
         assert item["reported_level"]["reason"] == "not_onboarded"
         assert item["thresholds"] == []
         assert len(api.obs_calls) == 4
@@ -160,6 +162,51 @@ class TestSwissOverview:
             }
         else:
             assert item["forecast"]["state"] == "available"
+
+    def test_opaque_member_ids_do_not_fail_route_encoding(
+        self, case: SimpleNamespace
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.api.routes.api_swiss_overview import _cmal
+        from sapphire_flow.services.evaluation_forecasts import (
+            read_evaluation_forecasts,
+        )
+        from sapphire_flow.services.swiss_overview import CurrentHeadline
+
+        candidate = (
+            read_evaluation_forecasts(
+                station=case.station,
+                settings=case.settings,
+                assignments=(),
+                stores=case.stores,
+                as_of=case.issue + timedelta(hours=1),
+            )
+            .parameters[0]
+            .candidate
+        )
+        candidate = replace(
+            candidate,
+            record=replace(
+                candidate.record,
+                ensemble=replace(
+                    candidate.record.ensemble,
+                    values=candidate.record.ensemble.values.with_columns(
+                        pl.col("member_id").replace_strict(
+                            {0: "control", 1: "member-a"}
+                        )
+                    ),
+                ),
+            ),
+        )
+        result = _cmal(
+            CurrentHeadline(candidate=candidate, absence=None),
+            as_of=case.issue + timedelta(hours=1),
+            withheld=False,
+        )
+        assert result.state == "available"
+        assert result.series is not None
+        assert result.series.state == "available"
 
     def test_four_qc_windows_do_not_carry_forward(
         self, api: SimpleNamespace, case: SimpleNamespace

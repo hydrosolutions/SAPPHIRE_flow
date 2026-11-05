@@ -318,3 +318,52 @@ class TestSnapshotContractValidation:
                 pending.extend(mapping.values())
             elif isinstance(node, list):
                 pending.extend(cast("list[Any]", node))
+
+
+class TestSwissCmalSeriesContract:
+    def test_synthetic_example_validates_against_committed_contract(self) -> None:
+        document = _load_committed()
+        example = json.loads(
+            (_REPO_ROOT / "docs/spec/swiss-overview.example.json").read_text()
+        )
+        schema = document["paths"]["/api/v1/swiss/overview"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]
+        jsonschema.validate(
+            instance=example,
+            schema=schema,
+            resolver=jsonschema.RefResolver.from_schema(document),
+        )
+
+    def test_series_is_optional_and_tuple_order_is_exact(self) -> None:
+        schemas = build_map_openapi()["components"]["schemas"]
+        assert "series" in schemas["CmalAvailable"]["properties"]
+        assert "series" not in schemas["CmalAvailable"]["required"]
+        available = schemas["CmalSeriesAvailable"]
+        assert available["properties"]["time_step_seconds"]["exclusiveMinimum"] == 0
+        assert available["properties"]["points"]["minItems"] == 1
+        assert available["properties"]["points"]["maxItems"] == 10
+        tuple_schema = available["properties"]["points"]["items"]
+        assert tuple_schema["minItems"] == tuple_schema["maxItems"] == 4
+        assert [
+            item.get("format") or item.get("type")
+            for item in tuple_schema["prefixItems"]
+        ] == ["date-time", "number", None, None]
+        assert available["properties"]["state"]["const"] == "available"
+        assert available["properties"]["quartile_method"]["enum"] == [
+            "stored_quantiles",
+            "member_empirical_type7",
+        ]
+        for index in (2, 3):
+            assert tuple_schema["prefixItems"][index]["anyOf"] == [
+                {"type": "number"},
+                {"type": "null"},
+            ]
+        unavailable = schemas["CmalSeriesUnavailable"]
+        assert unavailable["properties"]["state"]["const"] == "unavailable"
+        assert unavailable["properties"]["reason"]["enum"] == [
+            "point_limit",
+            "invalid_series",
+        ]
+        for variant in ("CmalWithheld", "HeadlineUnavailable"):
+            assert "series" not in schemas[variant]["properties"]

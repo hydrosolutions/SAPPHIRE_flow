@@ -30,6 +30,10 @@ NamedGroups = tuple[tuple[str, tuple[str, ...]], ...]
 
 NAMED_GROUPS: NamedGroups = (
     (
+        "performance",
+        ("tests/integration/store/test_swiss_overview_performance.py",),
+    ),
+    (
         "heavy",
         (
             "tests/integration/db/test_migration_0041_0044_tenant_model.py",
@@ -95,8 +99,23 @@ def build_shards(named_groups: NamedGroups = NAMED_GROUPS) -> tuple[Shard, ...]:
     )
 
 
-SHARDS = build_shards()
+GROUPS = build_shards()
+SHARDS = tuple(group for group in GROUPS if group.id != "performance")
 SHARD_IDS = tuple(shard.id for shard in SHARDS)
+EXECUTION_GROUPS: dict[str, tuple[str, ...]] = {
+    "heavy": ("performance", "heavy"),
+    "rest": ("rest",),
+}
+STRESS_NODE = (
+    "tests/integration/store/test_swiss_overview.py::"
+    "TestSwissOverviewIsolated::test_134_station_bounded_reads"
+)
+PERFORMANCE_NODE = (
+    "tests/integration/store/test_swiss_overview_performance.py::"
+    "TestSwissOverviewPerformance::test_134_station_bounded_reads"
+)
+PERFORMANCE_FILE = PERFORMANCE_NODE.split("::", maxsplit=1)[0]
+BENCHMARK_NODES = {STRESS_NODE, PERFORMANCE_NODE}
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -349,7 +368,7 @@ def check_native_partition(
             python=python,
             collector=collector,
         )
-        for shard in SHARDS
+        for shard in GROUPS
     }
     selected_report = check_count_partition(
         shard_items=selected_shards, all_items=selected_all
@@ -359,12 +378,13 @@ def check_native_partition(
             f"selected-node partition failed: {selected_report.describe()}"
         )
 
-    all_non_live_files = collect_files(
+    all_non_live_nodes = collect_node_sequence(
         (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT),
         repo_root=repo_root,
         python=python,
         collector=collector,
     )
+    all_non_live_files = _files(all_non_live_nodes)
     shard_files = {
         shard.id: collect_files(
             all_non_live_args(shard),
@@ -372,7 +392,7 @@ def check_native_partition(
             python=python,
             collector=collector,
         )
-        for shard in SHARDS
+        for shard in GROUPS
     }
     file_report = check_partition(shard_items=shard_files, all_items=all_non_live_files)
     if not file_report.is_exhaustive_partition:
@@ -384,6 +404,39 @@ def check_native_partition(
         selected_shards=selected_shards,
         all_non_live_shard_files=shard_files,
     )
+    performance_nodes = selected_shards["performance"]
+    if performance_nodes != (PERFORMANCE_NODE,):
+        raise SystemExit(
+            "performance group must select exactly its one benchmark node: "
+            f"expected {(PERFORMANCE_NODE,)!r}, got {performance_nodes!r}"
+        )
+    if shard_files["performance"] != frozenset({PERFORMANCE_FILE}):
+        raise SystemExit("performance group must contain exactly its benchmark file")
+    if STRESS_NODE not in selected_shards["heavy"]:
+        raise SystemExit("stress benchmark node must belong to the heavy group")
+    if PERFORMANCE_NODE in selected_shards["heavy"]:
+        raise SystemExit("production performance benchmark must not belong to heavy")
+
+    benchmark_nodes = {
+        node
+        for node in all_non_live_nodes
+        if node.split("[", maxsplit=1)[0].rsplit("::", maxsplit=1)[-1]
+        == "test_134_station_bounded_reads"
+    }
+    if benchmark_nodes != BENCHMARK_NODES:
+        raise SystemExit(
+            "benchmark node inventory drifted: "
+            f"expected {sorted(BENCHMARK_NODES)!r}, got {sorted(benchmark_nodes)!r}"
+        )
+    execution_counts = Counter(
+        group for groups in EXECUTION_GROUPS.values() for group in groups
+    )
+    if set(EXECUTION_GROUPS) != set(SHARD_IDS) or execution_counts != Counter(
+        group.id for group in GROUPS
+    ):
+        raise SystemExit(
+            "public/private execution mapping must run every group exactly once"
+        )
 
     return (
         "integration shards partition selected nodes and all non-live files: "
@@ -405,7 +458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check_partition:
         print(check_native_partition(repo_root=Path.cwd()))
         return 0
-    print(" ".join(shard_by_id(args.pytest_args).pytest_args()))
+    print(" ".join(shard_by_id(args.pytest_args, GROUPS).pytest_args()))
     return 0
 
 

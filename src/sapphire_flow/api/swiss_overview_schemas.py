@@ -94,6 +94,33 @@ class HeadlineAvailable(BaseModel):
     threshold_profile: None = None
 
 
+FiniteSeriesValue = Annotated[float, Field(allow_inf_nan=False)]
+
+
+class CmalSeriesAvailable(BaseModel):
+    state: Literal["available"] = "available"
+    time_step_seconds: float = Field(gt=0, allow_inf_nan=False)
+    quartile_method: Literal["stored_quantiles", "member_empirical_type7"]
+    points: list[
+        tuple[
+            datetime,
+            FiniteSeriesValue,
+            FiniteSeriesValue | None,
+            FiniteSeriesValue | None,
+        ]
+    ] = Field(min_length=1, max_length=10)
+
+
+class CmalSeriesUnavailable(BaseModel):
+    state: Literal["unavailable"] = "unavailable"
+    reason: Literal["point_limit", "invalid_series"]
+
+
+CmalSeries = Annotated[
+    CmalSeriesAvailable | CmalSeriesUnavailable, Field(discriminator="state")
+]
+
+
 class CmalAvailable(HeadlineAvailable):
     source: Literal["daily_cmal"] = "daily_cmal"
     output_id: str
@@ -103,6 +130,7 @@ class CmalAvailable(HeadlineAvailable):
     peak_statistic: Literal["ensemble_median"] = "ensemble_median"
     input_quality: str | None
     input_quality_flags: list[OverviewInputFlag]
+    series: CmalSeries | None = None
 
 
 class BafuAvailable(HeadlineAvailable):

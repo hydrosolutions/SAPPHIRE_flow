@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 from statistics import median
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
@@ -50,6 +50,130 @@ if TYPE_CHECKING:
 class CurrentHeadline:
     candidate: EvaluationCandidate | None
     absence: HeadlineAbsence | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastSeriesPoint:
+    valid_time: UtcDatetime
+    median: float
+    p25: float | None
+    p75: float | None
+
+
+SeriesUnavailableReason = Literal["point_limit", "invalid_series"]
+QuartileMethod = Literal["stored_quantiles", "member_empirical_type7"]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastSeries:
+    time_step_seconds: float
+    quartile_method: QuartileMethod
+    points: tuple[ForecastSeriesPoint, ...]
+
+
+def _type7(values: Sequence[float], probability: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    fraction = position - lower
+    if fraction == 0:
+        return ordered[lower]
+    return ordered[lower] + fraction * (ordered[lower + 1] - ordered[lower])
+
+
+def candidate_series(
+    candidate: EvaluationCandidate, *, as_of: UtcDatetime, peak: MedianPeak
+) -> ForecastSeries | SeriesUnavailableReason:
+    record = candidate.record
+    quantiles = record.representation is EnsembleRepresentation.QUANTILES
+    grouped: dict[UtcDatetime, list[tuple[float | None, float]]] = {}
+    if isinstance(record, OperationalForecast):
+        step = record.ensemble.time_step
+        rows = record.ensemble.values.iter_rows(named=True)
+        for row in rows:
+            try:
+                level = float(row["quantile"]) if quantiles else None
+                value = float(row["value"])
+            except (TypeError, ValueError, OverflowError):
+                return "invalid_series"
+            grouped.setdefault(row["valid_time"], []).append((level, value))
+    else:
+        try:
+            step = timedelta(seconds=record.time_step_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return "invalid_series"
+        for key, values in record.values.items():
+            try:
+                level = float(key) if quantiles else None
+            except (TypeError, ValueError, OverflowError):
+                return "invalid_series"
+            for valid_time, raw_value in values:
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError, OverflowError):
+                    return "invalid_series"
+                grouped.setdefault(valid_time, []).append((level, value))
+    try:
+        retained = sorted(
+            (valid_time, values)
+            for valid_time, values in grouped.items()
+            if valid_time + step > as_of
+        )
+        invalid_step = step <= timedelta(0)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid_series"
+    if len(retained) > 10:
+        return "point_limit"
+    if invalid_step or not retained:
+        return "invalid_series"
+    points: list[ForecastSeriesPoint] = []
+    for valid_time, keyed_values in retained:
+        values = [value for _, value in keyed_values]
+        if any(not math.isfinite(value) for value in values):
+            return "invalid_series"
+        if quantiles:
+            selected: dict[float, float] = {}
+            for level in (0.25, 0.5, 0.75):
+                found = [value for key, value in keyed_values if key == level]
+                if len(found) > 1 or (level == 0.5 and len(found) != 1):
+                    return "invalid_series"
+                if found:
+                    selected[level] = found[0]
+            median_value = selected[0.5]
+            p25 = selected.get(0.25)
+            p75 = selected.get(0.75)
+        else:
+            median_value = median(values)
+            p25 = _type7(values, 0.25) if len(values) >= 5 else None
+            p75 = _type7(values, 0.75) if len(values) >= 5 else None
+        if (
+            median_value < 0
+            or (p25 is not None and p25 > median_value)
+            or (p75 is not None and median_value > p75)
+        ):
+            return "invalid_series"
+        points.append(
+            ForecastSeriesPoint(
+                valid_time=valid_time,
+                median=median_value,
+                p25=p25,
+                p75=p75,
+            )
+        )
+    maximum = max(point.median for point in points)
+    earliest_maximum = next(point for point in points if point.median == maximum)
+    if (
+        points[0].valid_time != peak.horizon_start
+        or ensure_utc(points[-1].valid_time + step) != peak.horizon_end
+        or maximum != peak.value
+        or earliest_maximum.valid_time != peak.valid_time
+    ):
+        return "invalid_series"
+    return ForecastSeries(
+        time_step_seconds=step.total_seconds(),
+        quartile_method=("stored_quantiles" if quantiles else "member_empirical_type7"),
+        points=tuple(points),
+    )
 
 
 def read_current_headlines(

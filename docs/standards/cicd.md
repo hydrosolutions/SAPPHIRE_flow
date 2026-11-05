@@ -791,9 +791,9 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 
 Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
 
-- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
+- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
 - **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
-- **The `integration-shard` job is a two-leg SHARD MATRIX** with `fail-fast: false`. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
+- **The `integration-shard` job is a two-leg SHARD MATRIX** (`heavy`, `rest`) with `fail-fast: false`. `heavy` first runs the selectable `performance` group in a fresh pytest process, then its sustained main group; `rest` is the complement of both curated groups. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
 
 <!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
@@ -833,10 +833,13 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 3 | `integration-shard` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 3 | `integration-shard` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 3 | `integration-shard` | `uv sync --frozen` | — | `uv sync` | No |
-| 3 | `integration-shard` | `uv run python tools/integration_shards.py --check-partition` in one matrix leg | current checkout and native pytest collection | Same command after `uv sync --frozen` | No |
-| 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (two parallel CI jobs, one for `heavy` and one for `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | — | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
+| 3 | `integration-shard` | `uv run python tools/integration_shards.py --check-partition` in the `heavy` matrix leg | current checkout and native pytest collection | Same command after `uv sync --frozen` | No |
+| 3 | `integration-shard` | `Run Swiss overview performance gate` — the `heavy` leg runs the selectable `performance` group alone with the standard non-live/non-slow filters and a distinct JUnit file; `timeout-minutes: 3` | native partition proof and integration setup | Run the exact production benchmark node with postgres | No (but requires postgres) |
+| 3 | `integration-shard` | `Upload failed Swiss overview performance evidence` (`uses: actions/upload-artifact`, one literal runner-temp JSON, `retention-days: 7`, `if-no-files-found: error`, `continue-on-error: true`, `timeout-minutes: 1`) | failed, non-cancelled `overview_performance` step in `heavy` | n/a — the local JSON remains at the configured output path | Yes — bounded failure diagnostic; upload failure cannot replace or hide the pytest failure |
+| 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (two parallel CI jobs, one for `heavy` and one for `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | performance gate first in `heavy`; no extra process in `rest` | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
 | 3 | `integration-shard` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, unique `integration-junit-<shard>` names, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — bounded diagnostic artifact upload only | Yes — Actions artifact service |
 | 3 | `integration` | Aggregate verdict: fail unless `needs.integration-shard.result == 'success'` | `integration-shard` | n/a — local equivalent is both shard commands passing | Yes — preserves the existing required check context |
+| 4 | `aquacast-release-image-proof` | `Prepare hosted runner capacity` — token-present only, `timeout-minutes: 2`, after checkout identity and before buildx; requires 20 GB free and conditionally validates/removes only the two stock SDK roots | exact GitHub-hosted job context | No destructive local equivalent. Contract tests execute only a temporary-root copy with fake commands. | Yes — exclusive to the disposable `ubuntu-latest` runner; never run the production script locally |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
@@ -1874,7 +1877,7 @@ killed before delivery supplies no report or snapshots.
 | `unit` | All four existing `tools/unit_shards.py` partitions, `-n auto`, Aquacast extra and exact shim-node pass proof; scripts-shard sequential ordering regression; sysmon configuration/core proof; coverage and JUnit. No degraded private coverage. |
 | `unit-coverage` | Require all four successful shards and nonempty files; combine with `--keep`; whole-suite report, still informational/no new threshold. |
 | `wheel-only-guard` | Separate environment; no-build/no-cache guard before the existing ForecastInterface/recap exception reinstall. No new exception. |
-| `integration-shard` | Existing heavy/rest selectors, heavy partition proof, serial pytest and unchanged live/slow exclusions; a fresh pinned PostGIS container per shard; private JUnit. |
+| `integration-shard` | Existing heavy/rest gate names, native partition proof, unchanged live/slow exclusions and a fresh pinned PostGIS container per shard. `integration-heavy` runs the selectable performance group first in its own pytest process and JUnit, then heavy; `integration-rest` remains unchanged. |
 | `integration` | Explicit fail-closed dependency assertion over both integration results; a failed/missing shard blocks the aggregate. |
 | `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation. |
 | `aquacast-release-image-proof` | Actual Aquacast amd64 build/load and existing identity/shim/import/entrypoint/isolation proof, without missing-token degradation. Also applies the same private scan/SBOM gates to this variant. |
@@ -2040,3 +2043,32 @@ Pre-route failures, including setup-uv failure, intentionally cannot reach priva
 diagnostics because strict route success is mandatory. This differs from a
 post-route preparation failure, which can still produce the existing approved
 diagnostic. The shared smoke checks are not a receiver/envelope/load rehearsal.
+
+### Swiss overview performance and Aquacast runner capacity
+
+The required production benchmark node is
+`tests/integration/store/test_swiss_overview_performance.py::TestSwissOverviewPerformance::test_134_station_bounded_reads`.
+The sustained stress node is
+`tests/integration/store/test_swiss_overview.py::TestSwissOverviewIsolated::test_134_station_bounded_reads`.
+Do not merge these into one pytest process. Public CI and private verification both run
+performance first inside the existing heavy leg/gate; matrix IDs, private gate names and
+the success-only `integration` aggregate stay unchanged.
+
+The performance step writes one allowlisted numeric JSON record before its budget
+assertions. Public CI uploads only that file on a non-cancelled performance failure;
+upload failure cannot make the failed test green. Budget errors also include measured
+query counts, raw bytes or p95 and their limits in the log, so an upload failure does not
+lose those measurements. No response body is written or uploaded. Private verification
+retains the same bounded JSON and its separate JUnit file in its existing evidence bundle,
+without changing gate names or transfer fields.
+
+The Aquacast image-proof job remains a literal `ubuntu-latest` job with a 35-minute
+timeout. After checkout identity and before buildx, a two-minute token-present-only step
+requires at least 20,000,000,000 free bytes on `/`. This is a minimum operational
+precondition, not proof that the image fits. A valid reading at or above the minimum is a
+strict no-op: the step does not inspect or remove either SDK root. Below the minimum, it
+validates both roots and the mount table before removing either root, and may remove only
+`/usr/local/lib/android/sdk` and `/usr/share/dotnet`. The capacity parser preserves and
+rejects trailing records and rejects decimal values outside Bash's supported signed range
+before comparisons. It never runs on local, staging or production hosts. A complete
+Aquacast build, Trivy gate and release-identity/import proof is still required.
