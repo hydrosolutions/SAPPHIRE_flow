@@ -47,11 +47,17 @@ persisted nothing. It is picked up (and the provenance row written) on the
 first later run that actually imports a basin once its hold clears (see
 "Idempotency" below, lines documenting the fully-held case).
 
-The extraction tool that produces this package is **adjacent** — SAP3 does
-not call it (contract §12, `docs/plans/archive/117-basin-static-artifact-
+The extraction tool that produces this package is **adjacent** — the importer
+does not call it (contract §12, `docs/plans/archive/117-basin-static-artifact-
 architecture.md`). Obtain the package from the extractor operator (or DHM's
 regeneration path, contract §12) and place it anywhere readable — the
 importer takes an explicit `--package-dir`.
+
+For new batches, the separate [local basin operator](basin-operator-runbook.md)
+can explicitly invoke the supported external extractor, record hydrologist review
+and export a valid approved subset. It never imports to a database or starts with
+the forecast/API runtime. Its self-declared approval is separate from importer
+acceptance and model readiness.
 
 ## Running the importer
 
