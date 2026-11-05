@@ -161,8 +161,19 @@ def _trace_series(
     ]
 
 
+def _cached_trace_series(
+    frame: pl.DataFrame,
+    trace_name: str,
+    trace_cache: dict[str, list[tuple[UtcDatetime, float | None]]],
+) -> list[tuple[UtcDatetime, float | None]]:
+    if trace_name not in trace_cache:
+        trace_cache[trace_name] = _trace_series(frame, trace_name)
+    return trace_cache[trace_name]
+
+
 def _split_percentile_band(
     frame: pl.DataFrame,
+    trace_cache: dict[str, list[tuple[UtcDatetime, float | None]]],
 ) -> (
     tuple[
         list[tuple[UtcDatetime, float | None]], list[tuple[UtcDatetime, float | None]]
@@ -171,7 +182,7 @@ def _split_percentile_band(
 ):
     """Returns `(p25_series, p75_series)`, both ascending `valid_time`, or
     `None` if the polygon geometry does not reconstruct (D6)."""
-    band = _trace_series(frame, _TRACE_PERCENTILE_BAND)
+    band = _cached_trace_series(frame, _TRACE_PERCENTILE_BAND, trace_cache)
     n = len(band)
     if n < 3 or n % 2 == 0:
         # A closed polygon has an odd point count (2*half + 1 closing
@@ -257,7 +268,10 @@ class _RawArchive(BaseModel):
 
 
 def _raw_discharge_evidence(
-    path: Path, frame: pl.DataFrame, issued_at: UtcDatetime
+    path: Path,
+    frame: pl.DataFrame,
+    issued_at: UtcDatetime,
+    trace_cache: dict[str, list[tuple[UtcDatetime, float | None]]],
 ) -> bool:
     # Match the collector's same-stem raw payload to selected parsed trace data.
     # A parquet unit may be an adapter default, so it is not evidence alone.
@@ -293,7 +307,7 @@ def _raw_discharge_evidence(
                 (ensure_utc(datetime.fromisoformat(time)), value)
                 for time, value in zip(trace.x, trace.y, strict=True)
             ]
-            if points != _trace_series(frame, trace.name):
+            if points != _cached_trace_series(frame, trace.name, trace_cache):
                 return False
         return True
     except (OSError, ValueError):
@@ -323,6 +337,7 @@ def read_bafu_run(
     if frame.is_empty():
         return BafuRunUnavailable(reason="empty_archive_file")
 
+    trace_cache: dict[str, list[tuple[UtcDatetime, float | None]]] = {}
     if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and (
         "unit" not in frame.columns
         or any(unit not in {"m3/s", "m³/s"} for unit in frame["unit"].to_list())
@@ -335,10 +350,13 @@ def read_bafu_run(
     ):
         return BafuRunUnavailable(reason="invalid_identity")
     if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and not _raw_discharge_evidence(
-        base_path / "raw" / f"{path.stem}.json", frame, issued_at
+        base_path / "raw" / f"{path.stem}.json",
+        frame,
+        issued_at,
+        trace_cache,
     ):
         return BafuRunUnavailable(reason="unverified_raw_source")
-    split = _split_percentile_band(frame)
+    split = _split_percentile_band(frame, trace_cache)
     if split is None:
         return BafuRunUnavailable(
             reason="parse_error",
@@ -348,9 +366,9 @@ def read_bafu_run(
             ),
         )
     p25_series, p75_series = split
-    median_series = _trace_series(frame, _TRACE_MEDIAN)
-    minimum_series = _trace_series(frame, _TRACE_MIN)
-    maximum_series = _trace_series(frame, _TRACE_MAX)
+    median_series = _cached_trace_series(frame, _TRACE_MEDIAN, trace_cache)
+    minimum_series = _cached_trace_series(frame, _TRACE_MIN, trace_cache)
+    maximum_series = _cached_trace_series(frame, _TRACE_MAX, trace_cache)
 
     canonical_times = [t for t, _ in p25_series]
     if unit_policy is BafuUnitPolicy.EXPLICIT_DISCHARGE and (

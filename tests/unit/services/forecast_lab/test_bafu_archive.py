@@ -18,6 +18,8 @@ orientation).
 from __future__ import annotations
 
 import json
+import math
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,13 +27,17 @@ from typing import Any
 import polars as pl
 import pytest
 
+from sapphire_flow.services.forecast_lab import bafu_archive
 from sapphire_flow.services.forecast_lab.bafu_archive import (
     BafuArchiveRun,
     BafuRunUnavailable,
+    BafuUnitPolicy,
     find_latest_run_issued_at,
+    read_bafu_run,
     read_latest_bafu_run,
 )
 from sapphire_flow.types.datetime import ensure_utc
+from tests.fakes.bafu_archive import write_raw_evidence
 
 _ROOT = Path(__file__).resolve().parents[4]
 _FIXTURE = _ROOT / "tests/fixtures/reference/bafu_q_forecast_2135.json"
@@ -276,3 +282,217 @@ class TestLatestRunSelection:
 
     def test_no_run_at_all_returns_none(self, tmp_path: Path) -> None:
         assert find_latest_run_issued_at(tmp_path, "2135", now=ensure_utc(_NOW)) is None
+
+
+class TestReadBoundaryOrderingAndIsolation:
+    def test_wrong_unit_precedes_null_time_extraction(self, tmp_path: Path) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        rows[0]["unit"] = "feet"
+        rows[1]["valid_time"] = None
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        result = read_bafu_run(
+            tmp_path,
+            "2135",
+            issued_at=ensure_utc(_ISSUED_AT),
+            unit_policy=BafuUnitPolicy.EXPLICIT_DISCHARGE,
+        )
+
+        assert isinstance(result, BafuRunUnavailable)
+        assert result.reason == "unverified_unit"
+
+    def test_polygon_error_precedes_null_median_extraction(
+        self, tmp_path: Path
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        band_index = next(
+            i for i, row in enumerate(rows) if row["trace_name"] == "25.-75. Percentile"
+        )
+        rows.pop(band_index)
+        next(row for row in rows if row["trace_name"] == "Median")["valid_time"] = None
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        result = read_bafu_run(tmp_path, "2135", issued_at=ensure_utc(_ISSUED_AT))
+
+        assert isinstance(result, BafuRunUnavailable)
+        assert result.reason == "parse_error"
+        assert result.message == (
+            "the 25.-75. Percentile polygon does not reconstruct into two "
+            "matching ascending valid_time halves"
+        )
+
+    @pytest.mark.parametrize("null_trace", ["Min / Max", "Min. / Max."])
+    def test_all_named_traces_extract_before_median_axis_matching(
+        self, tmp_path: Path, null_trace: str
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        median = next(row for row in rows if row["trace_name"] == "Median")
+        median["valid_time"] = median["valid_time"] + timedelta(days=1)
+        next(row for row in rows if row["trace_name"] == null_trace)["valid_time"] = (
+            None
+        )
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        with pytest.raises(AttributeError, match="tzinfo"):
+            read_bafu_run(tmp_path, "2135", issued_at=ensure_utc(_ISSUED_AT))
+
+    def test_raw_source_check_precedes_null_time_extraction(
+        self, tmp_path: Path
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        next(row for row in rows if row["trace_name"] == "Median")["valid_time"] = None
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        result = read_bafu_run(
+            tmp_path,
+            "2135",
+            issued_at=ensure_utc(_ISSUED_AT),
+            unit_policy=BafuUnitPolicy.EXPLICIT_DISCHARGE,
+        )
+
+        assert isinstance(result, BafuRunUnavailable)
+        assert result.reason == "unverified_raw_source"
+
+    def test_reads_are_isolated_by_path_and_current_frame(self, tmp_path: Path) -> None:
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        changed = [dict(row) for row in rows]
+        next(row for row in changed if row["trace_name"] == "Median")["value"] = 222.0
+        _write_run(first, "2135", _ISSUED_AT, rows)
+        _write_run(second, "2135", _ISSUED_AT, changed)
+
+        first_result = read_bafu_run(first, "2135", issued_at=ensure_utc(_ISSUED_AT))
+        second_result = read_bafu_run(second, "2135", issued_at=ensure_utc(_ISSUED_AT))
+        assert isinstance(first_result, BafuArchiveRun)
+        assert isinstance(second_result, BafuArchiveRun)
+        assert first_result.points[0].median != second_result.points[0].median
+
+        rewritten = [dict(row) for row in rows]
+        next(row for row in rewritten if row["trace_name"] == "Median")["value"] = 333.0
+        _write_run(first, "2135", _ISSUED_AT, rewritten)
+        rewritten_result = read_bafu_run(
+            first, "2135", issued_at=ensure_utc(_ISSUED_AT)
+        )
+        assert isinstance(rewritten_result, BafuArchiveRun)
+        assert rewritten_result.points[0].median == 333.0
+
+    def test_minimum_and_maximum_trace_names_remain_distinct(
+        self, tmp_path: Path
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        next(row for row in rows if row["trace_name"] == "Min / Max")["value"] = -1.0
+        next(row for row in rows if row["trace_name"] == "Min. / Max.")["value"] = 999.0
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        result = read_bafu_run(tmp_path, "2135", issued_at=ensure_utc(_ISSUED_AT))
+
+        assert isinstance(result, BafuArchiveRun)
+        assert result.points[0].minimum == -1.0
+        assert result.points[0].maximum == 999.0
+
+    def test_raw_negative_zero_keeps_parquet_positive_zero(
+        self, tmp_path: Path
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        raw_rows = [dict(row) for row in rows]
+        next(row for row in raw_rows if row["trace_name"] == "Median")["value"] = -0.0
+        next(row for row in rows if row["trace_name"] == "Median")["value"] = 0.0
+        write_raw_evidence(tmp_path, "2135", _ISSUED_AT, raw_rows)
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+
+        result = read_bafu_run(
+            tmp_path,
+            "2135",
+            issued_at=ensure_utc(_ISSUED_AT),
+            unit_policy=BafuUnitPolicy.EXPLICIT_DISCHARGE,
+        )
+
+        assert isinstance(result, BafuArchiveRun)
+        value = result.points[0].median
+        assert value == 0.0
+        assert math.copysign(1.0, value) == 1.0
+
+    def test_unit_uses_first_minimum_row_in_file_order(self, tmp_path: Path) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        minimum_rows = [row for row in rows if row["trace_name"] == "Min / Max"]
+        other_rows = [row for row in rows if row["trace_name"] != "Min / Max"]
+        reordered_minimum = list(reversed(minimum_rows))
+        reordered_minimum[0]["unit"] = "m3/s"
+        for row in reordered_minimum[1:]:
+            row["unit"] = "m³/s"
+        reordered = reordered_minimum + other_rows
+        write_raw_evidence(tmp_path, "2135", _ISSUED_AT, reordered)
+        _write_run(tmp_path, "2135", _ISSUED_AT, reordered)
+
+        result = read_bafu_run(
+            tmp_path,
+            "2135",
+            issued_at=ensure_utc(_ISSUED_AT),
+            unit_policy=BafuUnitPolicy.EXPLICIT_DISCHARGE,
+        )
+
+        assert isinstance(result, BafuArchiveRun)
+        assert result.unit == "m3/s"
+
+
+class TestTraceExtractionReuse:
+    @pytest.mark.parametrize(
+        "unit_policy",
+        [
+            BafuUnitPolicy.EXPLICIT_DISCHARGE,
+            BafuUnitPolicy.SNAPSHOT_COMPATIBLE,
+        ],
+    )
+    def test_each_selected_trace_is_extracted_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        unit_policy: BafuUnitPolicy,
+    ) -> None:
+        rows = _rows_from_fixture(
+            "2135", issued_at=_ISSUED_AT, produced_at=_PRODUCED_AT
+        )
+        _write_run(tmp_path, "2135", _ISSUED_AT, rows)
+        write_raw_evidence(tmp_path, "2135", _ISSUED_AT, rows)
+        original = bafu_archive._trace_series
+        extracted: list[str] = []
+
+        def record_trace(frame: pl.DataFrame, trace_name: str) -> list[tuple[Any, Any]]:
+            extracted.append(trace_name)
+            return original(frame, trace_name)
+
+        monkeypatch.setattr(bafu_archive, "_trace_series", record_trace)
+
+        result = read_bafu_run(
+            tmp_path,
+            "2135",
+            issued_at=ensure_utc(_ISSUED_AT),
+            unit_policy=unit_policy,
+        )
+
+        assert isinstance(result, BafuArchiveRun)
+        assert Counter(extracted) == Counter(
+            {
+                "25.-75. Percentile": 1,
+                "Median": 1,
+                "Min / Max": 1,
+                "Min. / Max.": 1,
+            }
+        )
