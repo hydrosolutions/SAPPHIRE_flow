@@ -59,6 +59,7 @@ def render_page(
     extraction: str = "",
     rivers: dict[str, Any] | None = None,
     confirmed: bool = False,
+    can_extract: bool = False,
 ) -> str:
     return _ENV.get_template("review.html").render(
         data=data,
@@ -67,4 +68,5 @@ def render_page(
         extraction=extraction,
         rivers=rivers,
         confirmed=confirmed,
+        can_extract=can_extract,
     )

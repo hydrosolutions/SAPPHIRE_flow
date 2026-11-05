@@ -74,6 +74,8 @@ def create_operator_app(
     rivers: dict[str, Any] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
+    if package_dir is not None and workspace.command:
+        raise ValueError("choose either --package-dir or --extractor-command, not both")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     csrf = secrets.token_urlsafe(32)
     authority = f"127.0.0.1:{port}"
@@ -113,7 +115,17 @@ def create_operator_app(
             data=map_data(batch, workspace.decisions) if batch else None,
             inventory=workspace.state["inventory"],
             csrf=csrf if interactive else "",
-            extraction=workspace.state["extraction"],
+            extraction=(
+                "Existing extraction loaded"
+                if batch and not workspace.command
+                else "Attach a newly extracted package after confirming inputs"
+                if package_dir is not None
+                else "Configure --extractor-command or attach --package-dir"
+                if not workspace.command
+                else workspace.state["extraction"]
+            ),
+            can_extract=bool(workspace.command)
+            and workspace.state["extraction"] != "running",
             rivers=rivers,
             confirmed=workspace.state["confirmed"],
         )
@@ -142,6 +154,8 @@ def create_operator_app(
 
     @app.post("/extract")
     async def extract() -> dict[str, str]:
+        if package_dir is not None:
+            raise ValueError("precomputed package mode cannot start extraction")
         workspace.start_extraction()
         return {"status": "running"}
 
