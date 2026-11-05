@@ -16,6 +16,7 @@ from release_identity import (  # noqa: E402
     ReleaseIdentityError,
     Version,
     git,
+    git_bytes,
     parse_release_target,
     read_release_target,
     release_target_blob,
@@ -154,6 +155,67 @@ def bump(root: Path, base_sha: str) -> None:
         raise ReleaseIdentityError("unexpected post-bump target/config")
 
 
+# Only direct prose files in these directories are exempt. In particular,
+# docs/spec, requirements, assets and executable examples are not prose policy.
+PROSE_DIRECTORIES = frozenset(
+    {
+        b"docs",
+        b"docs/plans",
+        b"docs/standards",
+        b"docs/operations",
+        b"docs/runbooks",
+        b"docs/deployment",
+        b"docs/decisions",
+        b"planning/visions",
+    }
+)
+
+
+def prose_path(path: bytes) -> bool:
+    if path in {b"README.md", b"AGENTS.md"}:
+        return True
+    directory, _, filename = path.rpartition(b"/")
+    return (
+        directory in PROSE_DIRECTORIES
+        and not filename.startswith(b".")
+        and filename.rpartition(b".")[2] in {b"md", b"rst", b"txt"}
+    )
+
+
+def prose_diff(root: Path, before: str, after: str) -> bool:
+    raw = git_bytes(
+        [
+            "diff",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            before,
+            after,
+            "--",
+        ],
+        cwd=root,
+    )
+    fields = raw.split(b"\0")
+    if fields.pop() != b"" or len(fields) % 2:
+        return False
+    for index in range(0, len(fields), 2):
+        metadata = fields[index].split()
+        if len(metadata) != 5:
+            return False
+        old_mode, new_mode, _, _, status = metadata
+        if (
+            old_mode not in {b":000000", b":100644"}
+            or new_mode not in {b"000000", b"100644"}
+            or status not in {b"A", b"M", b"D"}
+            or not prose_path(fields[index + 1])
+        ):
+            return False
+    return True
+
+
 def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
     for sha in (base_sha, head_sha, merge_sha):
         require_full_sha(sha)
@@ -169,6 +231,19 @@ def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
             "event merge must have exactly base/head parents in order"
         )
     head = read_release_target(head_sha, cwd=root)
+    ancestors = git(
+        ["merge-base", "--all", base_sha, head_sha], cwd=root, harden=True
+    ).split()
+    # Both diffs exclude RELEASE_TARGET, including mode/type changes. A stale
+    # prose branch may inherit a newer base target only in the tested merge.
+    if (
+        len(ancestors) == 1
+        and prose_diff(root, ancestors[0], head_sha)
+        and prose_diff(root, base_sha, merge_sha)
+        and read_release_target(merge_sha, cwd=root)
+        == read_release_target(base_sha, cwd=root)
+    ):
+        return
     if read_release_target(merge_sha, cwd=root) != head:
         raise ReleaseIdentityError("merge target differs from PR head target")
     if head != next_target(root, base_sha):

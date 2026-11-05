@@ -345,7 +345,7 @@ def run_swiss_overview_benchmark(
         "samples_seconds": measurements,
         "p95_seconds": p95_seconds,
         "queries": counts,
-        "latency_target_met": p95_seconds < 1.0 if production else None,
+        "latency_target_met": p95_seconds < 1.25 if production else None,
         "raw_payload_target_met": len(payload) <= 393_216,
         "raw_bytes": len(payload),
         "gzip_bytes": len(gzip.compress(payload)),

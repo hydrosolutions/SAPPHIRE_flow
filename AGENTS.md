@@ -266,8 +266,10 @@ value: str | None = None
 
 ### Release Version Identity (mandatory)
 
-Every PR, including docs/tooling PRs, advances `RELEASE_TARGET` by one patch from its
-current base. Further commits in the same PR do not bump again. The target is release
+Every PR except strictly docs-only changes advances `RELEASE_TARGET` by one patch
+from its current base. The narrow prose allowlist and unchanged-target exception are
+defined in `docs/standards/cicd.md` (Release identity tags and receipts). Tooling,
+configuration, dependencies and API contracts still require a bump. Further commits in the same PR do not bump again. The target is release
 intent only. Package identity remains SCM-derived; do not edit literal package versions,
 `uv.lock` for version churn, or generated version metadata.
 

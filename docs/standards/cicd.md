@@ -480,8 +480,8 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 
 ### Release identity tags and receipts
 
-Each PR advances the sole `RELEASE_TARGET` patch once from its tested base, including
-docs/tooling PRs. This target is release intent, not package identity. Package versions
+Each non-docs-only PR advances the sole `RELEASE_TARGET` patch once from its tested
+base, including tooling PRs. This target is release intent, not package identity. Package versions
 remain dynamic and come from Git release identity at build time. The old automatic
 `tag-main.yml` publisher remains retired.
 
@@ -494,8 +494,27 @@ are no-ops; divergent targets refuse. Initial bootstrap is limited to the exact 
 base/seed in Plan521. Recheck those facts before bootstrap publication/rebase.
 
 The PR lint check uses existing full-history checkout and requires HEAD=`github.sha`
-with exactly event base/head parents, then compares regular Git target blobs. Head and
-merge targets must agree and equal base patch+1 with unchanged major/minor.
+with exactly event base/head parents, then compares regular Git target blobs. Normally,
+head and merge targets must agree and equal base patch+1 with unchanged major/minor.
+
+The only exemption is strictly docs-only changes. Allowed paths are root `README.md`
+and `AGENTS.md`, plus direct (not nested) `.md`, `.rst`, or `.txt` prose files in
+`docs/`, `docs/plans/`, `docs/standards/`, `docs/operations/`, `docs/runbooks/`,
+`docs/deployment/`, `docs/decisions/`, and `planning/visions/`. Hidden files are not
+allowed. In particular, API contracts (`docs/spec/`), requirements, examples, assets,
+scripts, configuration and dependencies are not exempt. All changed entries must
+be non-executable regular Git files (mode 100644) on each existing side. Additions,
+deletions and prose-to-prose renames qualify; code-to-prose renames, mode/type changes,
+symlinks and gitlinks do not. Rename detection is disabled and paths are NUL-delimited.
+
+Both the unique merge-base→PR-head diff and tested-base→tested-merge diff must pass
+this allowlist; `RELEASE_TARGET` must be unchanged in each diff. Thus a stale docs branch
+may retain its old head target while the tested merge preserves the newer base target;
+it cannot modify or revert that target. Ambiguous merge bases are not exempt. A docs
+PR that changes the target instead follows normal bump arithmetic. All commit identity,
+checkout and ordered-parent checks still run. No workflow, job, required check name or
+other validation is skipped for docs-only PRs.
+
 Before merging, the owner must verify current remote base/head and matching successful
 CI. If the base moved, update target and rerun CI against the new pair. This required
 owner checklist is not a claim of enabled GitHub strict protection. The owner must
@@ -2053,6 +2072,11 @@ The sustained stress node is
 Do not merge these into one pytest process. Public CI and private verification both run
 performance first inside the existing heavy leg/gate; matrix IDs, private gate names and
 the success-only `integration` aggregate stay unchanged.
+
+The production budget is p95 strictly below **1.25 seconds** for 134 stations × 10
+steps × 7 quantiles. Raw payload remains at most **393216 bytes** and query count
+remains stable and at most **12 per request**. This owner-approved CI latency budget
+change does not alter runtime/scientific behavior or qualify live performance.
 
 The performance step writes one allowlisted numeric JSON record before its budget
 assertions. Public CI uploads only that file on a non-cancelled performance failure;

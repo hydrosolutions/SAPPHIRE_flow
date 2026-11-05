@@ -4,6 +4,12 @@ owner: Swiss dashboard delivery
 ---
 # Swiss live overview — minimum operational delivery
 
+Current CI policy supersedes this plan’s original one-second latency budget: production
+p95 must be strictly below 1.25 seconds. The 393216-byte and 12-query limits are
+unchanged. See `docs/standards/cicd.md`, Swiss overview performance. Historical
+measurements and the original implementation scope below remain unchanged.
+
+
 ## Outcome and scope
 Replace staged Swiss observations, forecast map/counts/outlook and danger lists
 with current scoped API data. Preserve the working station panel and Nepal.

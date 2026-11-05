@@ -373,3 +373,235 @@ class TestExecutableResolution:
         assert not decoy.exists()
         assert result.returncode == 0, result.stderr
         assert (root / "RELEASE_TARGET").read_bytes() == b"1.2.4\n"
+
+
+def prose_pr(root: Path, changes: dict[str, str | None]) -> tuple[str, str, str]:
+    git(root, "checkout", "-b", "prose")
+    for name, content in changes.items():
+        path = root / name
+        if content is None:
+            path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "prose changes")
+    head = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "main")
+    base = git(root, "rev-parse", "HEAD")
+    git(root, "merge", "--no-ff", "prose", "-m", "tested prose merge")
+    return base, head, git(root, "rev-parse", "HEAD")
+
+
+class TestDocsOnlyPr:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "docs/guide.md",
+            "docs/standards/ci.rst",
+            "planning/visions/new.txt",
+            "README.md",
+            "AGENTS.md",
+            "docs/white space\nname.md",
+        ],
+    )
+    def test_prose_passes_without_bump(self, tmp_path: Path, name: str) -> None:
+        repository(tmp_path)
+        target.check_pr(tmp_path, *prose_pr(tmp_path, {name: "prose\n"}))
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "src/code.py",
+            "docs/spec/api.openapi.json",
+            "docs/spec/contract.md",
+            "docs/config.toml",
+            "docs/script.py",
+            "docs/assets/asset.txt",
+            "docs/requirements/data.txt",
+            "pyproject.toml",
+            "uv.lock",
+        ],
+    )
+    def test_mixed_or_nonprose_requires_bump(self, tmp_path: Path, name: str) -> None:
+        repository(tmp_path)
+        pair = prose_pr(tmp_path, {"docs/guide.md": "prose", name: "change"})
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, *pair)
+
+    def test_deletion_and_prose_rename_pass(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        (tmp_path / "README.md").write_text("old prose")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "-m", "old prose")
+        target.check_pr(
+            tmp_path,
+            *prose_pr(
+                tmp_path,
+                {
+                    "README.md": None,
+                    "docs/renamed.md": "old prose",
+                },
+            ),
+        )
+
+    def test_code_renamed_to_prose_requires_bump(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        (tmp_path / "code.py").write_text("old code")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "-m", "code")
+        pair = prose_pr(tmp_path, {"code.py": None, "docs/new.md": "old code"})
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, *pair)
+
+    @pytest.mark.parametrize("kind", ["executable", "symlink", "gitlink"])
+    def test_nonregular_prose_requires_bump(self, tmp_path: Path, kind: str) -> None:
+        base = repository(tmp_path)
+        pair = prose_pr(tmp_path, {"docs/guide.md": "prose"})
+        git(tmp_path, "checkout", "prose")
+        path = tmp_path / "docs/guide.md"
+        if kind == "executable":
+            path.chmod(0o755)
+            git(tmp_path, "add", ".")
+        elif kind == "symlink":
+            path.unlink()
+            path.symlink_to("../RELEASE_TARGET")
+            git(tmp_path, "add", ".")
+        else:
+            git(tmp_path, "config", "diff.ignoreSubmodules", "all")
+            git(
+                tmp_path,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"160000,{base},docs/guide.md",
+            )
+        git(tmp_path, "commit", "-m", "nonregular")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        git(tmp_path, "reset", "--hard", pair[0])
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "nonregular merge")
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("raw", ["1.2.2\n", "1.2.5\n"])
+    def test_prose_with_target_edit_uses_arithmetic(
+        self, tmp_path: Path, raw: str
+    ) -> None:
+        repository(tmp_path)
+        pair = prose_pr(tmp_path, {"docs/guide.md": "prose", "RELEASE_TARGET": raw})
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, *pair)
+
+    def test_stale_prose_preserves_advanced_base_target(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        base, head, _ = prose_pr(tmp_path, {"docs/guide.md": "prose"})
+        git(tmp_path, "reset", "--hard", base)
+        (tmp_path / "RELEASE_TARGET").write_text("1.2.4\n")
+        git(tmp_path, "commit", "-am", "base release")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "stale prose merge")
+        target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("name", ["RELEASE_TARGET", "src/merge-only.py"])
+    def test_merge_only_nonprose_change_refuses(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        repository(tmp_path)
+        base, head, _ = prose_pr(tmp_path, {"docs/guide.md": "prose"})
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1.2.4\n")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "--amend", "--no-edit")
+        with pytest.raises(target.ReleaseIdentityError, match="target"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("kind", ["executable", "symlink"])
+    @pytest.mark.parametrize("content", [None, "plain prose"])
+    def test_nonregular_deletion_or_conversion_requires_bump(
+        self, tmp_path: Path, kind: str, content: str | None
+    ) -> None:
+        repository(tmp_path)
+        path = tmp_path / "README.md"
+        if kind == "executable":
+            path.write_text("executable prose")
+            path.chmod(0o755)
+        else:
+            path.symlink_to("RELEASE_TARGET")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "-m", "nonregular base")
+        git(tmp_path, "checkout", "-b", "prose")
+        path.unlink()
+        if content is not None:
+            path.write_text(content)
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "remove or convert")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "merge")
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_concurrent_base_cannot_hide_pr_code_change(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        base, head, _ = prose_pr(
+            tmp_path, {"docs/guide.md": "prose", "code.py": "code"}
+        )
+        git(tmp_path, "reset", "--hard", base)
+        (tmp_path / "code.py").write_text("code")
+        git(tmp_path, "add", ".")
+        git(tmp_path, "commit", "-m", "same code on base")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "merge")
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_docs_with_valid_bump_still_passes(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        target.check_pr(
+            tmp_path,
+            *prose_pr(
+                tmp_path,
+                {
+                    "docs/guide.md": "prose",
+                    "RELEASE_TARGET": "1.2.4\n",
+                },
+            ),
+        )
+
+    @pytest.mark.parametrize("identity", ["checkout", "parents", "short_sha"])
+    def test_docs_exemption_keeps_identity_checks(
+        self, tmp_path: Path, identity: str
+    ) -> None:
+        repository(tmp_path)
+        base, head, merge = prose_pr(tmp_path, {"docs/guide.md": "prose"})
+        if identity == "checkout":
+            git(tmp_path, "checkout", head)
+            message = "HEAD"
+        elif identity == "parents":
+            base, head = head, base
+            message = "parents"
+        else:
+            base = base[:12]
+            message = "SHA"
+        with pytest.raises(target.ReleaseIdentityError, match=message):
+            target.check_pr(tmp_path, base, head, merge)
+
+    def test_concurrent_base_cannot_hide_target_edit(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        base, head, _ = prose_pr(
+            tmp_path,
+            {
+                "docs/guide.md": "prose",
+                "RELEASE_TARGET": "1.2.4\n",
+            },
+        )
+        git(tmp_path, "reset", "--hard", base)
+        (tmp_path / "RELEASE_TARGET").write_text("1.2.4\n")
+        git(tmp_path, "commit", "-am", "same release on base")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "merge")
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
