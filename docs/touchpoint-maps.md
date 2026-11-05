@@ -2381,3 +2381,18 @@ trace evidence. Omitted Plotly trace `yaxis` uses primary `"y"`; explicit axis
 values and discharge-unit evidence remain checked. Keep synthetic raw fixtures
 faithful to the checked-in BAFU payload, which omits axes on all five traces.
 Snapshot parsing and latest-observation defaults are unchanged.
+
+## CI performance and hosted-runner capacity touchpoint
+
+Changes to integration selection must preserve public `heavy`/`rest` jobs, private
+`integration-heavy`/`integration-rest` gates, and exactly-once coverage. Keep the
+production node
+`tests/integration/store/test_swiss_overview_performance.py::TestSwissOverviewPerformance::test_134_station_bounded_reads`
+in the required performance-first fresh process. Keep the sustained node
+`tests/integration/store/test_swiss_overview.py::TestSwissOverviewIsolated::test_134_station_bounded_reads`
+in the following heavy process. Do not merge them.
+
+The Aquacast capacity step is exclusive to its disposable GitHub-hosted job. Never
+broaden its two SDK roots, move it to a self-hosted or deployment host, or target Docker,
+caches, credentials, the checkout, or `/opt/hostedtoolcache`. Verify changes with the
+shard, workflow, private-verification, and capacity-script contract tests.

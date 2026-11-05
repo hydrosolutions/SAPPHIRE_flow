@@ -812,6 +812,27 @@ jobs:
       - name: Prove integration shard partition
         if: matrix.shard == 'heavy'
         run: uv run python tools/integration_shards.py --check-partition
+      - name: Run Swiss overview performance gate
+        id: overview_performance
+        if: matrix.shard == 'heavy'
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args performance)"
+          uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml "$RUNNER_TEMP/junit-integration-performance.xml"
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
+          SWISS_OVERVIEW_BENCHMARK_OUTPUT: ${{ runner.temp }}/swiss-overview-performance.json
+      - name: Upload failed Swiss overview performance evidence
+        if: ${{ failure() && !cancelled() && matrix.shard == 'heavy' && steps.overview_performance.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        timeout-minutes: 1
+        with:
+          name: swiss-overview-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/swiss-overview-performance.json
+          retention-days: 7
+          if-no-files-found: error
       - name: Run integration tests
         run: |
           set -euo pipefail
@@ -1330,6 +1351,180 @@ jobs:
           head_sha="$(git rev-parse HEAD)"
           if [ "$head_sha" != "$GITHUB_SHA" ]; then
             echo "::error::checked-out HEAD $head_sha does not match github.sha $GITHUB_SHA"
+            exit 1
+          fi
+      - name: Prepare hosted runner capacity
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          set -f
+          minimum_bytes=20000000000
+          root_one=/usr/local/lib/android/sdk
+          root_two=/usr/share/dotnet
+
+          if [ "${GITHUB_ACTIONS:-}" != true ] || [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || [ "${GITHUB_JOB:-}" != aquacast-release-image-proof ]; then
+            echo "::error::hosted-runner capacity preparation refused outside its exact CI job"
+            exit 1
+          fi
+
+          available_bytes() {
+            output=$(
+              set +e
+              df -B1 --output=avail /
+              df_status=$?
+              printf '__SAPPHIRE_DF_STATUS_%s__' "$df_status"
+            )
+            case "$output" in
+              *__SAPPHIRE_DF_STATUS_0__)
+                output=${output%__SAPPHIRE_DF_STATUS_0__}
+                ;;
+              *__SAPPHIRE_DF_STATUS_*)
+                echo "::error::root filesystem capacity query failed" >&2
+                return 1
+                ;;
+              *)
+                echo "::error::root filesystem capacity query status was not preserved" >&2
+                return 1
+                ;;
+            esac
+            line_count=0
+            header=
+            value=
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_count=$((line_count + 1))
+              case "$line_count" in
+                1) header=$line ;;
+                2) value=$line ;;
+                *)
+                  echo "::error::root filesystem capacity output must contain exactly two lines" >&2
+                  return 1
+                  ;;
+              esac
+            done < <(printf '%s' "$output")
+            if [ "$line_count" -ne 2 ]; then
+              echo "::error::root filesystem capacity output must contain exactly two lines" >&2
+              return 1
+            fi
+            while [ "${header# }" != "$header" ]; do header=${header# }; done
+            while [ "${header% }" != "$header" ]; do header=${header% }; done
+            while [ "${value# }" != "$value" ]; do value=${value# }; done
+            while [ "${value% }" != "$value" ]; do value=${value% }; done
+            if [ "$header" != Avail ]; then
+              echo "::error::unexpected root filesystem capacity header" >&2
+              return 1
+            fi
+            case "$value" in
+              ''|*[!0-9]*)
+                echo "::error::root filesystem available bytes must be one non-negative decimal integer" >&2
+                return 1
+                ;;
+            esac
+            # Lexical comparison is intentional after the exact 19-digit check;
+            # numeric comparison can overflow before the value is rejected.
+            # shellcheck disable=SC2071
+            if [ "${#value}" -gt 19 ] || { [ "${#value}" -eq 19 ] && [ "$value" \> 9223372036854775807 ]; }; then
+              echo "::error::root filesystem available bytes exceed the supported numeric range" >&2
+              return 1
+            fi
+            printf '%s\n' "$value"
+          }
+
+          before=$(available_bytes)
+          echo "::notice title=Aquacast capacity before::available_bytes=$before minimum_bytes=$minimum_bytes"
+          if [ "$before" -ge "$minimum_bytes" ]; then
+            echo "::notice title=Aquacast capacity preparation::minimum already met; no SDK roots removed"
+          else
+            if [ ! -f /proc/self/mountinfo ] || [ ! -r /proc/self/mountinfo ]; then
+              echo "::error::cannot read Linux mount table"
+              exit 1
+            fi
+            # Validate every allowlisted root before removing either one.
+            for candidate in "$root_one" "$root_two"; do
+              if [ -L "$candidate" ]; then
+                echo "::error::allowlisted SDK root is a symlink: $candidate"
+                exit 1
+              fi
+              if [ ! -e "$candidate" ]; then
+                echo "::notice title=Aquacast capacity root::absent=$candidate"
+                continue
+              fi
+              if [ ! -d "$candidate" ]; then
+                echo "::error::allowlisted SDK root is not a directory: $candidate"
+                exit 1
+              fi
+              canonical=$(realpath -e -- "$candidate") || {
+                echo "::error::cannot resolve allowlisted SDK root: $candidate"
+                exit 1
+              }
+              if [ "$canonical" != "$candidate" ]; then
+                echo "::error::allowlisted SDK root is not canonical: $candidate"
+                exit 1
+              fi
+              mounted=false
+              mount_records=0
+              while IFS= read -r mount_line || [ -n "$mount_line" ]; do
+                mount_records=$((mount_records + 1))
+                # mountinfo requires at least ten fields and exactly one separator.
+                # Word splitting is deliberate; globbing is disabled above.
+                # shellcheck disable=SC2086
+                set -- $mount_line
+                if [ "$#" -lt 10 ]; then
+                  echo "::error::malformed Linux mount table"
+                  exit 1
+                fi
+                mount_point=$5
+                separators=0
+                field_index=0
+                separator_index=0
+                for field in "$@"; do
+                  field_index=$((field_index + 1))
+                  if [ "$field" = - ]; then
+                    separators=$((separators + 1))
+                    separator_index=$field_index
+                  fi
+                done
+                if [ "$separators" -ne 1 ] || [ "$separator_index" -lt 7 ] || [ $((field_index - separator_index)) -lt 3 ]; then
+                  echo "::error::malformed Linux mount table"
+                  exit 1
+                fi
+                case "$mount_point" in
+                  "$candidate"|"$candidate"/*) mounted=true ;;
+                esac
+              done < /proc/self/mountinfo
+              if [ "$mount_records" -eq 0 ]; then
+                echo "::error::Linux mount table is empty"
+                exit 1
+              fi
+              if [ "$mounted" = true ]; then
+                echo "::error::mount exists at or below allowlisted SDK root: $candidate"
+                exit 1
+              fi
+            done
+            for candidate in "$root_one" "$root_two"; do
+              if [ ! -e "$candidate" ]; then
+                continue
+              fi
+              case "$candidate" in
+                /usr/local/lib/android/sdk)
+                  sudo rm -rf --one-file-system -- /usr/local/lib/android/sdk
+                  ;;
+                /usr/share/dotnet)
+                  sudo rm -rf --one-file-system -- /usr/share/dotnet
+                  ;;
+                *)
+                  echo "::error::unexpected capacity cleanup root"
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
+          after=$(available_bytes)
+          echo "::notice title=Aquacast capacity after::available_bytes=$after minimum_bytes=$minimum_bytes"
+          if [ "$after" -ge "$minimum_bytes" ]; then
+            :
+          else
+            echo "::error::Aquacast image proof requires at least $minimum_bytes available bytes; 20 GB is a minimum precondition, not fit proof"
             exit 1
           fi
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1

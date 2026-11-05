@@ -284,6 +284,11 @@ echo "::notice title=unit shard ${shard}::wall-clock $((SECONDS - started))s"
     export DATABASE_URL=postgresql://test:test@localhost:5432/sapphire_test
     if [ "$shard" = heavy ]; then
       uv run --no-sync python tools/integration_shards.py --check-partition
+      performance_args=$(uv run --no-sync python tools/integration_shards.py --pytest-args performance)
+      # shellcheck disable=SC2086
+      SWISS_OVERVIEW_BENCHMARK_OUTPUT="$PRIVATE_EVIDENCE/swiss-overview-performance.json" \
+        uv run --no-sync pytest $performance_args --ignore=tests/integration/live -v -m 'not slow' \
+        --junitxml "$PRIVATE_EVIDENCE/junit-integration-performance.xml"
     fi
     args=$(uv run --no-sync python tools/integration_shards.py --pytest-args "$shard")
     # shellcheck disable=SC2086

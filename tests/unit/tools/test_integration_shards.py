@@ -12,8 +12,11 @@ import yaml
 from tools import integration_shards
 from tools.integration_shards import (
     ALL_NON_LIVE_ARGS,
+    BENCHMARK_NODES,
     CATCH_ALL_SHARD_ID,
     COMMON_SELECTED_ARGS,
+    EXECUTION_GROUPS,
+    GROUPS,
     INTEGRATION_ROOT,
     LIVE_ROOT,
     NAMED_GROUPS,
@@ -35,24 +38,41 @@ if TYPE_CHECKING:
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _WORKFLOW_PATH = _REPO_ROOT / ".github/workflows/ci.yml"
+_PRIVATE_PATH = _REPO_ROOT / "tools/private_verification_gates.sh"
 _SHARD_JOB = "integration-shard"
 _AGGREGATE_JOB = "integration"
-_HEAVY_FILES = tuple(path for _, paths in NAMED_GROUPS for path in paths)
-_HEAVY_NODES = tuple(f"{path}::test_selected" for path in _HEAVY_FILES)
+GROUP_BY_ID = {group.id: group for group in GROUPS}
+_CURATED_FILES = tuple(path for _, paths in NAMED_GROUPS for path in paths)
+
+
+def _node(path: str) -> str:
+    if path.endswith("test_swiss_overview.py"):
+        return next(node for node in BENCHMARK_NODES if "performance" not in node)
+    if path.endswith("test_swiss_overview_performance.py"):
+        return next(node for node in BENCHMARK_NODES if "performance" in node)
+    return f"{path}::test_selected"
+
+
+_GROUP_NODES = {
+    group_id: tuple(_node(path) for path in paths) for group_id, paths in NAMED_GROUPS
+}
+_CURATED_NODES = tuple(node for nodes in _GROUP_NODES.values() for node in nodes)
 _REST_NODE = "tests/integration/api/test_access_token_auth.py::test_auth"
 _SLOW_ONLY_NODE = "tests/integration/test_e2e_pipeline.py::test_slow"
 
 _SELECTED_FIXTURE = {
-    (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS): (*_HEAVY_NODES, _REST_NODE),
-    selected_args(SHARDS[0]): _HEAVY_NODES,
-    selected_args(SHARDS[1]): (_REST_NODE,),
+    (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS): (*_CURATED_NODES, _REST_NODE),
+    selected_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
+    selected_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
+    selected_args(GROUP_BY_ID["rest"]): (_REST_NODE,),
     (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT): (
-        *_HEAVY_NODES,
+        *_CURATED_NODES,
         _REST_NODE,
         _SLOW_ONLY_NODE,
     ),
-    all_non_live_args(SHARDS[0]): _HEAVY_NODES,
-    all_non_live_args(SHARDS[1]): (_REST_NODE, _SLOW_ONLY_NODE),
+    all_non_live_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
+    all_non_live_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
+    all_non_live_args(GROUP_BY_ID["rest"]): (_REST_NODE, _SLOW_ONLY_NODE),
 }
 
 
@@ -142,6 +162,11 @@ class TestIntegrationShardDefinitions:
 
     def test_shard_ids_remain_heavy_and_rest(self) -> None:
         assert SHARD_IDS == ("heavy", "rest")
+        assert tuple(group.id for group in GROUPS) == ("performance", "heavy", "rest")
+        assert EXECUTION_GROUPS == {
+            "heavy": ("performance", "heavy"),
+            "rest": ("rest",),
+        }
 
     def test_pytest_args_scope_a_shard_to_its_paths(self) -> None:
         shard = Shard(
@@ -252,7 +277,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "11 selected nodes, 12 non-live files"
+            "12 selected nodes, 13 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:
@@ -260,7 +285,7 @@ class TestInjectedPartitionProof:
             pytest_args: Sequence[str], *, repo_root: Path, python: str | None = None
         ) -> tuple[str, ...]:
             nodes = _fake_collector(pytest_args, repo_root=repo_root, python=python)
-            if tuple(pytest_args) == selected_args(SHARDS[0]):
+            if tuple(pytest_args) == selected_args(GROUP_BY_ID["heavy"]):
                 return (*nodes, nodes[0])
             return nodes
 
@@ -298,11 +323,12 @@ class TestInjectedPartitionProof:
             collector=_fake_collector,
         )
         listed_only = {
-            SHARDS[0].id: collect_node_ids(
-                selected_args(SHARDS[0]),
+            group_id: collect_node_ids(
+                selected_args(GROUP_BY_ID[group_id]),
                 repo_root=_REPO_ROOT,
                 collector=_fake_collector,
             )
+            for group_id in ("performance", "heavy")
         }
 
         report = check_partition(shard_items=listed_only, all_items=selected_nodes)
@@ -312,7 +338,7 @@ class TestInjectedPartitionProof:
 
     def test_all_non_live_files_include_slow_only_catch_all_file(self) -> None:
         files = collect_files(
-            all_non_live_args(SHARDS[1]),
+            all_non_live_args(GROUP_BY_ID["rest"]),
             repo_root=_REPO_ROOT,
             collector=_fake_collector,
         )
@@ -333,24 +359,74 @@ class TestInjectedPartitionProof:
         all_mark_calls = [
             args for args in seen_args if args[:2] == ALL_NON_LIVE_ARGS[:2]
         ]
-        assert len(all_mark_calls) == 3
+        assert len(all_mark_calls) == 4
+
+    def test_performance_group_must_select_exactly_one_node(self) -> None:
+        extra = (
+            "tests/integration/store/test_swiss_overview_performance.py::"
+            "TestSwissOverviewPerformance::test_unexpected"
+        )
+
+        def collector(
+            pytest_args: Sequence[str], *, repo_root: Path, python: str | None = None
+        ) -> tuple[str, ...]:
+            nodes = _fake_collector(pytest_args, repo_root=repo_root, python=python)
+            if tuple(pytest_args) in {
+                (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS),
+                selected_args(GROUP_BY_ID["performance"]),
+                (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT),
+                all_non_live_args(GROUP_BY_ID["performance"]),
+            }:
+                return (*nodes, extra)
+            return nodes
+
+        with pytest.raises(SystemExit, match="performance group must select exactly"):
+            check_native_partition(repo_root=_REPO_ROOT, collector=collector)
+
+    def test_parameterized_benchmark_copy_with_colons_in_id_fails(self) -> None:
+        extra = (
+            "tests/integration/store/test_other.py::X::"
+            "test_134_station_bounded_reads[case::variant]"
+        )
+
+        def collector(
+            pytest_args: Sequence[str], *, repo_root: Path, python: str | None = None
+        ) -> tuple[str, ...]:
+            nodes = _fake_collector(pytest_args, repo_root=repo_root, python=python)
+            if tuple(pytest_args) in {
+                (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS),
+                selected_args(GROUP_BY_ID["rest"]),
+                (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT),
+                all_non_live_args(GROUP_BY_ID["rest"]),
+            }:
+                return (*nodes, extra)
+            return nodes
+
+        with pytest.raises(SystemExit, match="benchmark node inventory drifted"):
+            check_native_partition(repo_root=_REPO_ROOT, collector=collector)
 
 
 class TestCuratedPathValidation:
     def test_every_real_curated_file_is_represented_in_selected_membership(
         self,
     ) -> None:
-        selected = _fake_collector(selected_args(SHARDS[0]), repo_root=_REPO_ROOT)
+        selected = tuple(
+            node
+            for group_id in ("performance", "heavy")
+            for node in _fake_collector(
+                selected_args(GROUP_BY_ID[group_id]), repo_root=_REPO_ROOT
+            )
+        )
         selected_files = {node.split("::", maxsplit=1)[0] for node in selected}
 
-        assert selected_files == set(_HEAVY_FILES)
+        assert selected_files == set(_CURATED_FILES)
 
     def test_missing_curated_file_fails_through_public_proof(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         path = "tests/integration/db/test_missing.py"
         shards = build_shards((("heavy", (path,)),))
-        monkeypatch.setattr(integration_shards, "SHARDS", shards)
+        monkeypatch.setattr(integration_shards, "GROUPS", shards)
         monkeypatch.setattr(integration_shards, "NAMED_GROUPS", (("heavy", (path,)),))
 
         with pytest.raises(SystemExit, match="not an existing file"):
@@ -365,7 +441,7 @@ class TestCuratedPathValidation:
         (tmp_path / path).parent.mkdir(parents=True)
         (tmp_path / path).write_text("def test_live():\n    assert True\n")
         shards = build_shards((("heavy", (path,)),))
-        monkeypatch.setattr(integration_shards, "SHARDS", shards)
+        monkeypatch.setattr(integration_shards, "GROUPS", shards)
         monkeypatch.setattr(integration_shards, "NAMED_GROUPS", (("heavy", (path,)),))
 
         with pytest.raises(SystemExit, match="live integration"):
@@ -382,7 +458,7 @@ class TestCuratedPathValidation:
             (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / path).write_text("def test_placeholder():\n    assert True\n")
         shards = build_shards((("heavy", (selected, empty)),))
-        monkeypatch.setattr(integration_shards, "SHARDS", shards)
+        monkeypatch.setattr(integration_shards, "GROUPS", shards)
         monkeypatch.setattr(
             integration_shards, "NAMED_GROUPS", (("heavy", (selected, empty)),)
         )
@@ -402,7 +478,7 @@ class TestCuratedPathValidation:
             (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / path).write_text("def test_placeholder():\n    assert True\n")
         shards = build_shards((("heavy", (selected, slow_only)),))
-        monkeypatch.setattr(integration_shards, "SHARDS", shards)
+        monkeypatch.setattr(integration_shards, "GROUPS", shards)
         monkeypatch.setattr(
             integration_shards, "NAMED_GROUPS", (("heavy", (selected, slow_only)),)
         )
@@ -427,15 +503,15 @@ def _single_path_collector(path: str):
         args = tuple(pytest_args)
         if args == (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS):
             return (node, rest_node)
-        if args == selected_args(integration_shards.SHARDS[0]):
+        if args == selected_args(integration_shards.GROUPS[0]):
             return (node,)
-        if args == selected_args(integration_shards.SHARDS[1]):
+        if args == selected_args(integration_shards.GROUPS[1]):
             return (rest_node,)
         if args == (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT):
             return (node, rest_node)
-        if args == all_non_live_args(integration_shards.SHARDS[0]):
+        if args == all_non_live_args(integration_shards.GROUPS[0]):
             return (node,)
-        if args == all_non_live_args(integration_shards.SHARDS[1]):
+        if args == all_non_live_args(integration_shards.GROUPS[1]):
             return (rest_node,)
         raise AssertionError(args)
 
@@ -456,17 +532,17 @@ def _curated_stale_collector(
         args = tuple(pytest_args)
         if args == (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS):
             return (selected_node, rest_node)
-        if args == selected_args(integration_shards.SHARDS[0]):
+        if args == selected_args(integration_shards.GROUPS[0]):
             return (selected_node,)
-        if args == selected_args(integration_shards.SHARDS[1]):
+        if args == selected_args(integration_shards.GROUPS[1]):
             return (rest_node,)
         if args == (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT):
             return (selected_node, rest_node) + (
                 (stale_node,) if stale_in_all_mark else ()
             )
-        if args == all_non_live_args(integration_shards.SHARDS[0]):
+        if args == all_non_live_args(integration_shards.GROUPS[0]):
             return (selected_node,) + ((stale_node,) if stale_in_all_mark else ())
-        if args == all_non_live_args(integration_shards.SHARDS[1]):
+        if args == all_non_live_args(integration_shards.GROUPS[1]):
             return (rest_node,)
         raise AssertionError(args)
 
@@ -496,6 +572,103 @@ class TestCiWorkflowIntegrationMatrix:
         )
 
         assert _pytest_filter_args(run_script) == COMMON_SELECTED_ARGS
+
+    def test_both_public_steps_use_exact_partition_filters(self) -> None:
+        steps = _workflow()["jobs"][_SHARD_JOB]["steps"]
+        performance = next(
+            step for step in steps if step.get("id") == "overview_performance"
+        )
+        main = next(
+            step for step in steps if step.get("name") == "Run integration tests"
+        )
+
+        assert _pytest_filter_args(performance["run"]) == COMMON_SELECTED_ARGS
+        assert _pytest_filter_args(main["run"]) == COMMON_SELECTED_ARGS
+        assert "--pytest-args performance" in performance["run"]
+        assert '--pytest-args "${{ matrix.shard }}"' in main["run"]
+        assert "junit-integration-performance.xml" in performance["run"]
+        assert "junit-integration-${{ matrix.shard }}.xml" in main["run"]
+
+    def test_public_performance_step_precedes_main_pytest_only_on_heavy(self) -> None:
+        steps = _workflow()["jobs"][_SHARD_JOB]["steps"]
+        performance = next(
+            step for step in steps if step.get("id") == "overview_performance"
+        )
+        main = next(
+            step for step in steps if step.get("name") == "Run integration tests"
+        )
+
+        assert performance["if"] == "matrix.shard == 'heavy'"
+        assert performance["timeout-minutes"] == 3
+        assert "continue-on-error" not in performance
+        proof = next(
+            step
+            for step in steps
+            if step.get("name") == "Prove integration shard partition"
+        )
+        assert steps.index(proof) < steps.index(performance) < steps.index(main)
+        total = sum(step.get("timeout-minutes", 0) for step in steps)
+        assert total == 24
+        assert total <= _workflow()["jobs"][_SHARD_JOB]["timeout-minutes"]
+
+    def test_private_performance_runs_inside_heavy_arm_before_main_with_exact_filters(
+        self,
+    ) -> None:
+        script = _PRIVATE_PATH.read_text()
+        arm_start = script.index('if [ "$shard" = heavy ]; then')
+        arm_end = script.index("\n    fi", arm_start)
+        main_command = (
+            "args=$(uv run --no-sync python tools/integration_shards.py "
+            '--pytest-args "$shard")'
+        )
+        main_start = script.index(main_command, arm_end)
+        arm = script[arm_start:arm_end]
+        main = script[main_start:]
+
+        assert "--pytest-args performance" in arm
+        assert "--ignore=tests/integration/live -v -m 'not slow'" in arm
+        assert "junit-integration-performance.xml" in arm
+        assert "--pytest-args performance" not in main
+        assert "junit-integration-$shard.xml" in main
+        assert script.index("--pytest-args performance", arm_start) < main_start
+
+    def test_failure_artifact_contract_is_fixed_and_non_masking(self) -> None:
+        steps = _workflow()["jobs"][_SHARD_JOB]["steps"]
+        upload = next(
+            step
+            for step in steps
+            if step.get("name") == "Upload failed Swiss overview performance evidence"
+        )
+        assert upload["if"] == (
+            "${{ failure() && !cancelled() && matrix.shard == 'heavy' && "
+            "steps.overview_performance.outcome == 'failure' }}"
+        )
+        assert upload["continue-on-error"] is True
+        assert upload["timeout-minutes"] == 1
+        assert (
+            upload["with"]["path"]
+            == "${{ runner.temp }}/swiss-overview-performance.json"
+        )
+        assert upload["with"]["if-no-files-found"] == "error"
+        assert upload["with"]["retention-days"] == 7
+        assert (
+            upload["uses"]
+            == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+        )
+        assert upload["with"]["name"] == (
+            "swiss-overview-performance-${{ github.run_id }}-${{ github.run_attempt }}"
+        )
+        writers = [
+            step
+            for step in steps
+            if "SWISS_OVERVIEW_BENCHMARK_OUTPUT" in step.get("env", {})
+        ]
+        assert len(writers) == 1
+        assert writers[0]["id"] == "overview_performance"
+        assert (
+            writers[0]["env"]["SWISS_OVERVIEW_BENCHMARK_OUTPUT"]
+            == upload["with"]["path"]
+        )
 
     def test_partition_proof_runs_in_one_already_set_up_integration_leg(self) -> None:
         proof_steps = [
