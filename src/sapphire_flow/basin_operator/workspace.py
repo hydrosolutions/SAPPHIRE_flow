@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import replace
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,17 +33,34 @@ from .review import (
 )
 
 
+class ExtractorInterface(Enum):
+    RELEASE_V020 = "v0.2.0"
+    HISTORICAL_V2 = "historical-v2"
+
+
+PINNED_RELEASE = "v0.2.0"
+PINNED_SOURCE = "25cc09c2aff192033abefaf6b052822ad7024d67"
+
+
 def extraction_argv(
     prefix: tuple[str, ...],
     stations: tuple[StationInput, ...],
     *,
     package_id: str,
     output: Path,
+    interface: ExtractorInterface = ExtractorInterface.HISTORICAL_V2,
 ) -> list[str]:
     if not prefix or any(not arg or "\x00" in arg for arg in prefix):
         raise ValueError("configure a supported extractor argv prefix")
-    if any(arg in ("--station", "--output", "--package-id") for arg in prefix):
+    if any(
+        arg.split("=", 1)[0] in ("--station", "--output", "--package-id")
+        for arg in prefix
+    ):
         raise ValueError("station/output/package-id arguments belong to the operator")
+    if interface is ExtractorInterface.RELEASE_V020 and any(
+        arg.split("=", 1)[0] in ("--snap-strategy", "--snap-audit") for arg in prefix
+    ):
+        raise ValueError("v0.2.0 does not accept --snap-strategy or --snap-audit")
     for index, argument in enumerate(prefix):
         if argument == "--snap-strategy" and (
             index + 1 >= len(prefix) or prefix[index + 1] != "distance-first"
@@ -57,7 +75,7 @@ def extraction_argv(
                 "only the accepted default distance-first snap is supported"
             )
     args = list(prefix)
-    if not any(
+    if interface is ExtractorInterface.HISTORICAL_V2 and not any(
         arg == "--snap-strategy" or arg.startswith("--snap-strategy=") for arg in prefix
     ):
         args.extend(["--snap-strategy", "distance-first"])
@@ -75,10 +93,25 @@ def extraction_argv(
 
 
 class BasinWorkspace:
-    def __init__(self, directory: Path, command: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        command: tuple[str, ...],
+        *,
+        interface: ExtractorInterface = ExtractorInterface.HISTORICAL_V2,
+    ) -> None:
         self.directory = directory.resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.command = command
+        self.interface = interface
+        if command:
+            extraction_argv(
+                command,
+                (),
+                package_id="validation",
+                output=self.directory / "package.zip",
+                interface=interface,
+            )
         self.process: subprocess.Popen[bytes] | None = None
         self.state: dict[str, Any] = {
             "inventory": [],
@@ -164,6 +197,10 @@ class BasinWorkspace:
         self.save()
 
     def start_extraction(self) -> None:
+        if not self.command:
+            raise ValueError(
+                "configure --extractor-command to start automatic extraction"
+            )
         if not self.state["confirmed"]:
             raise ValueError("confirm interpreted inventory before extraction")
         if self.process is not None and self.process.poll() is None:
@@ -177,10 +214,22 @@ class BasinWorkspace:
             self.stations,
             package_id=package_id,
             output=output,
+            interface=self.interface,
         )
         write_json(
             attempt / "invocation.json",
-            {"argv": argv, "inventory": inventory_json(self.stations)},
+            {
+                "argv": argv,
+                "inventory": inventory_json(self.stations),
+                "interface": self.interface.value,
+                "expected_source_configuration": {
+                    "release": PINNED_RELEASE,
+                    "repository": "hydrosolutions/static-attrs-nepal",
+                    "commit": PINNED_SOURCE,
+                }
+                if self.interface is ExtractorInterface.RELEASE_V020
+                else None,
+            },
         )
         with (attempt / "extractor.log").open("wb") as log:
             self.process = subprocess.Popen(
@@ -245,12 +294,15 @@ class BasinWorkspace:
                 "corrected inputs require a newly extracted package identity"
             )
         self._observe_package_identity(batch)
-        if batch.fingerprint != self.state["fingerprint"]:
+        same_package = batch.fingerprint == self.state["fingerprint"]
+        if not same_package:
             self.state["decisions"] = []
         self.state.update(
             package_dir=str(directory.resolve()),
             fingerprint=batch.fingerprint,
-            source_archive_sha256=None,
+            source_archive_sha256=self.state.get("source_archive_sha256")
+            if same_package
+            else None,
         )
         self.save()
 

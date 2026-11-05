@@ -10,7 +10,7 @@ import pytest
 import xlsxwriter
 
 from sapphire_flow.basin_operator.inventory import parse_inventory
-from sapphire_flow.basin_operator.workspace import extraction_argv
+from sapphire_flow.basin_operator.workspace import ExtractorInterface, extraction_argv
 
 
 class TestParseInventory:
@@ -68,3 +68,76 @@ class TestExtractionArgv:
             "85.0",
         ]
         assert args[3:5] == ["--snap-strategy", "distance-first"]
+
+    @pytest.mark.parametrize("interface", list(ExtractorInterface))
+    @pytest.mark.parametrize(
+        "argument",
+        [
+            "--station",
+            "--station=x",
+            "--output",
+            "--output=x",
+            "--package-id",
+            "--package-id=x",
+        ],
+    )
+    def test_owned_arguments_rejected(
+        self, interface: ExtractorInterface, argument: str, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="belong to the operator"):
+            extraction_argv(
+                ("extractor", argument),
+                (),
+                package_id="test",
+                output=tmp_path,
+                interface=interface,
+            )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ("--snap-strategy", "distance-first"),
+            ("--snap-strategy=distance-first",),
+            ("--snap-audit",),
+            ("--snap-audit=true",),
+        ],
+    )
+    def test_release_rejects_v2_options(
+        self, arguments: tuple[str, ...], tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="v0.2.0 does not accept"):
+            extraction_argv(
+                ("extractor", *arguments),
+                (),
+                package_id="test",
+                output=tmp_path,
+                interface=ExtractorInterface.RELEASE_V020,
+            )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [("--snap-strategy", "distance-first"), ("--snap-strategy=distance-first",)],
+    )
+    def test_legacy_keeps_supported_prefix(
+        self, arguments: tuple[str, ...], tmp_path: Path
+    ) -> None:
+        prefix = ("extractor", *arguments)
+        argv = extraction_argv(prefix, (), package_id="test", output=tmp_path)
+        assert argv[: len(prefix)] == list(prefix)
+        assert sum(arg.startswith("--snap-strategy") for arg in argv) == 1
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ("--snap-strategy", "area-first"),
+            ("--snap-strategy=area-first",),
+            ("--snap-strategy",),
+        ],
+    )
+    def test_legacy_rejects_alternate_strategy(
+        self, arguments: tuple[str, ...], tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="distance-first"):
+            extraction_argv(
+                ("extractor", *arguments), (), package_id="test", output=tmp_path
+            )

@@ -167,11 +167,38 @@ do not leave it looking like a supported pinned-release invocation.
 **Verification:** Focused operator tests including browser checks; affected loader
 unit regressions; ruff lint/format; pyright changed modules. Run the full suite
 once after final code changes locally or in CI before merge. Use the new worktree's
-own uv environment. Bump patch version for each code commit per repository policy.
+own uv environment. Advance the per-PR `RELEASE_TARGET` one patch from the tested
+base using `.venv/bin/python -I tools/release_target.py bump --base-sha <full-base-sha>`.
+Package identity remains SCM-derived. The orchestrator confirmed this current
+checked-in mechanism replaces stale inherited per-commit literal-version guidance;
+do not restore removed version fields or dependencies.
 Keep review reports local, not committed. Present independent findings to the
 owner; do not silently resolve risk or automatically open/merge a PR. Preserve
 live review server/workspace until an authorized restart, with no inferred or
 replayed approval. No feature-branch tag.
+
+## Implementation checkpoint (2026-11-05)
+
+- T1: implemented. Real isolated Chrome reproduces RED before the change, then
+  verifies reviewer focus/viewport and no blank-reviewer request, empty selection,
+  server-error correction, valid decision, network failure, visible export success
+  and read-only feedback. The explicit browser check passes (1 test).
+- T2: implemented. Attached/direct-start guards, no-command and automatic states,
+  old-ledger resume, corrected inputs, ambiguous launch rejection and same-package
+  approval/fingerprint/ZIP-hash preservation have passing regressions.
+- T3: implemented. Enum selection, strict argv checks and real external synthetic
+  release/legacy subprocesses pass, including `00001`, corrected coordinates,
+  package identity, invalid ZIP and process failure. No live extraction was run.
+- T4: docs reconciled; focused operator/loader/CLI tests pass (164), changed-module
+  ruff lint/format and pyright pass. Release target advances from tested base
+  `8857c8294772843a9a8eff5a1794071443291e7e` to `0.1.1110` with the supported helper.
+  **Full-suite gate remains blocked:** `uv run pytest` yielded 11,751 passed,
+  8 failed, 54 skipped and 15 deselected. All failures are in
+  `tests/unit/ops/test_watchdog_qc_unchecked.py`: real host disk free space below
+  5% adds an alert to tests that do not inject disk usage. The isolated file
+  reproduces the same eight failures (five passed). No unrelated code was changed.
+  Full green local/CI verification, independent patch reviews, owner disposition
+  and separately authorized native automatic-extraction acceptance remain pending.
 
 ## Exit commands
 

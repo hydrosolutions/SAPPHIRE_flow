@@ -7,10 +7,14 @@ are self-declared, not authenticated. Scientific adoption still needs owner appr
 
 ## Prepare
 
-1. Obtain the owner's supported, tested `static-attrs-nepal` bundle and its local
-   HFX, HydroATLAS and ERA5-Land datasets. Keep that environment separate from
-   SAPPHIRE. Do not install its dependencies into the forecast environment.
-   Required tested v2 bundle SHA-256:
+1. For new automatic runs, provision the fixed `static-attrs-nepal` release
+   `v0.2.0`, source commit `25cc09c2aff192033abefaf6b052822ad7024d67`,
+   and its local HFX, HydroATLAS and ERA5-Land datasets. Source/runtime pinning
+   is the operator's responsibility; the CLI interface selector does not verify
+   executable identity. The rebuilt appliance handover is still pending.
+   The historical v2 bundle remains a separate compatibility path. Keep that
+   environment separate from SAPPHIRE. Do not install its dependencies into the forecast environment.
+   Historical tested v2 bundle SHA-256:
    `e438ca2c5bd6a88a9a65d5471c54ae097db6410fd4a8abb50d57661f868f0c83`.
    The owner-provided tar matched that historical hash in read-only verification.
    Its historical image ID is
@@ -18,10 +22,15 @@ are self-declared, not authenticated. Scientific adoption still needs owner appr
    This is not a claim that the image has been loaded or run here. The bundle
    requires an authorized native Linux amd64 host; Apple Silicon emulation is
    not a supported fallback for its AVX/AVX2 requirements.
-2. Verify the bundle version, architecture, dataset paths and supported command
-   on the extraction host. The tested handover documents extractor 0.2.0/v2;
-   upstream main is not assumed equivalent. This delivery has **not** run a new
-   live extraction. The inaccessible supplied OneDrive folder was not bypassed.
+2. Verify source identity, architecture, dataset paths and supported command
+   on the extraction host. Both historical v2 and the selected release can report
+   version 0.2.0; that string does not prove source identity. The release fixes
+   distance-first internally and rejects v2 strategy/audit options. Trishuli
+   main/v2 geometry and 92 static values matched in the same runtime; the
+   21-station comparison was **not** exactly equivalent. Neither comparison
+   demonstrated automatic extraction through this operator or a rebuilt image.
+   This delivery runs only synthetic subprocesses, not a new live extraction.
+   The inaccessible supplied OneDrive folder was not bypassed.
 3. Use a new private workspace outside the repository. Do not copy restricted
    discharge, stage or rating-table files into it. One running operator per
    workspace is enforced by a local process lock (macOS/Linux).
@@ -41,7 +50,8 @@ From the normal installed SAPPHIRE environment:
 ```bash
 uv run python -m sapphire_flow.cli.basin_operator \
   --workspace /absolute/private/new-basin-review \
-  --extractor-command /absolute/private/extractor-command.json
+  --extractor-command /absolute/private/extractor-command.json \
+  --extractor-interface v0.2.0
 ```
 
 Open `http://127.0.0.1:8765` (not `localhost`). The listener is loopback-only;
@@ -53,30 +63,37 @@ wrapper separately before retrying interrupted work.
 
 The command file is a JSON **argv prefix**, not a shell script. It is trusted
 operator configuration, never uploaded from the page. Use absolute paths. For
-the tested appliance interface, an illustrative configuration is:
+the pinned release interface, an illustrative configuration is:
 
 ```json
 [
-  "/absolute/tested-extractor/.venv/bin/python",
+  "/absolute/pinned-v0.2.0-extractor/.venv/bin/python",
   "-m", "static_attrs_nepal.appliance",
   "--hfx-dataset-dir", "/absolute/datasets/hfx",
   "--hydroatlas-clip", "/absolute/datasets/hydroatlas.gpkg",
-  "--era5-land-cube", "/absolute/datasets/era5-land.zarr",
-  "--snap-strategy", "distance-first"
+  "--era5-land-cube", "/absolute/datasets/era5-land.zarr"
 ]
 ```
 
 The operator appends repeated `--station CODE NAME LAT LON`, then a new
 `--package-id` and `--output`. Do not include these arguments in the prefix.
 It never interprets a shell, selects another snapping method, or adds scientific
-thresholds. The wrapper always passes the tested v2 `--snap-strategy distance-first`
-setting (adds it if absent from the prefix). Other explicit strategies are
-rejected. Do not substitute upstream main, which has a different CLI. Do not put credentials into argv: the local invocation
-record preserves it for provenance. An existing container command can be used
-only when its owner-supported interface accepts these arguments and exposes the
+thresholds. With `--extractor-interface v0.2.0`, no strategy/audit options are
+added; `--snap-strategy` and `--snap-audit` in the prefix are rejected, including
+`--option=value` forms. Station/output/package-ID overrides are also rejected.
+
+For the historical v2 bundle only, choose `--extractor-interface historical-v2`.
+This is the backward-compatible default when the selector is omitted, **not**
+the recommended release for new pipelines. It adds `--snap-strategy distance-first`
+when absent and rejects other strategies. It does not rewrite arbitrary prefixes
+or detect a binary's version. Do not put credentials into argv: the local invocation
+record preserves exact argv/input provenance, the selected interface and, for
+v0.2.0, the expected release/source reference explicitly as configuration, not
+verified provenance. Existing invocation records are unchanged. An existing
+container command can be used only when its owner-supported interface accepts these arguments and exposes the
 output directory at the same absolute host path. No infrastructure is provisioned.
 
-The tested v2 invocation writes a **ZIP file** at `--output`. Each attempt uses
+Both supported interfaces must write a **ZIP file** at `--output`. Each attempt uses
 a fresh `package.zip`; the original ZIP is retained unchanged and hashed. The
 operator unpacks into a new sibling `package/` directory for the existing loader.
 Only unique root-level contract files are accepted: the six required v2 members
@@ -84,9 +101,20 @@ Only unique root-level contract files are accepted: the six required v2 members
 optional bands/comparison/checksum files. Links, paths, unexpected files, encrypted
 entries and more than 2 GiB expanded content are rejected. Do not guess another
 release's archive layout or silently rewrite its command. Escalate incompatibility.
-For separately completed extraction, launch with `--package-dir /absolute/package`
-instead. The facilitator must verify this package was made from the uploaded
-coordinates and current corrected inputs. Attaching verifies the exact station
+For separately completed extraction, launch in attachment mode instead:
+
+```bash
+uv run python -m sapphire_flow.cli.basin_operator \
+  --workspace /absolute/private/new-basin-review \
+  --package-dir /absolute/package
+```
+
+Do not combine `--package-dir` with `--extractor-command`; launch fails fast.
+A valid attached package shows **Existing extraction loaded** with Start extraction
+disabled. Direct extraction requests in attachment mode are rejected without
+clearing approvals. With neither configuration, the page asks you to configure
+an extractor or attach a package and disables Start extraction. The facilitator
+must verify this package was made from the uploaded coordinates and current corrected inputs. Attaching verifies the exact station
 set, each station's display name and the package contract, **not** scientific delineation or input provenance that
 the producer does not expose. A corrected batch cannot reattach a superseded
 package identity. Keep original extraction outputs unchanged.
@@ -99,9 +127,11 @@ restricted data. If no context is supplied, the map explicitly says so.
 ## Operate and resume
 
 1. Upload, inspect the interpreted inventory, then **Confirm**. No extraction
-   starts before confirmation.
-2. **Start extraction**. It runs as a separate process/environment. Reload to see
-   completion or failure. Each attempt has a new directory containing immutable
+   starts before confirmation. In attachment mode, confirmation loads the package;
+   no extraction is launched. Corrected inputs cannot display the old package as
+   current and require a new package identity.
+2. In configured automatic mode, **Start extraction**. It runs as a separate
+   process/environment. Reload to see completion or failure. Each attempt has a new directory containing immutable
    inputs/argv and `extractor.log`; these remain local, not remotely shared.
    A failed or structurally invalid output cannot be approved. Restarting the
    operator preserves review state; an in-flight process is reported interrupted,
@@ -110,7 +140,9 @@ restricted data. If no context is supplied, the map explicitly says so.
    selection, outlet zoom and basin/batch fit. There are **no alternative snaps**.
    Published/extracted areas and snap distances are evidence, not new thresholds.
 4. Select all stations (the default) or a subset. Enter the hydrologist's name.
-   Approve, leave pending or mark needing correction. Pending/correction actions
+   Blank/whitespace names show feedback beside the controls and focus the name
+   field without sending a decision. Empty selection is reported first. Server
+   validation still applies. Approve, leave pending or mark needing correction. Pending/correction actions
    require a reason. Approval with any displayed warning requires the explicit
    acknowledgment checkbox. Structural failures and existing coverage holds
    cannot be overridden. Approval here is not model-input qualification.
@@ -120,7 +152,10 @@ restricted data. If no context is supplied, the map explicitly says so.
    published area. Escalate suspected DEM problems to the extractor owner.
    Adjustments preserve original inputs and input history, clear approvals and
    require confirmation, re-extraction and fresh review. No polygon editing.
-6. **Create immutable approved-only handover**. The UI reports its local path.
+6. **Create immutable approved-only handover**. The UI reports its local path
+   in an announced message that receives focus and scrolls into view. Network and
+   server errors use the same visible feedback. Review/correction errors can be
+   fixed without losing the form values.
    Do not overwrite an existing handover. Unreviewed stations are never approved
    implicitly. Any package file or inventory change invalidates prior approval.
    The workspace retains the first observed content identity for each package ID,
@@ -128,7 +163,9 @@ restricted data. If no context is supplied, the map explicitly says so.
    same ID are rejected repeatedly: obtain a new producer package ID, then review
    again. Inventory-only provenance changes do not alter package content identity,
    but still require fresh review. Local state is trusted facilitator data, not a
-   signed identity or tamper-proof approval ledger.
+   signed identity or tamper-proof approval ledger. Restarting and attaching the
+   same unchanged automatic package retains decisions, fingerprint and its recorded
+   source ZIP hash. A different package does not inherit that hash.
 
 ## Maps and connectivity
 
@@ -183,7 +220,23 @@ separately authorized steps, not actions in this operator.
 
 ## Validation and remaining acceptance
 
-Focused synthetic tests cover uploads, argv, external-process orchestration,
+Repeatable project-native checks (Chrome installed locally; no runtime browser
+dependency or packaged-browser download):
+
+```bash
+uv run pytest tests/unit/basin_operator tests/unit/services/test_basin_package_loader.py
+uv run --with playwright==1.64.1 pytest tests/unit/basin_operator/browser_checks.py
+```
+
+Run the browser file separately: combining it with its parent directory can cause
+pytest to deduplicate collection and omit this explicitly named check. It starts
+an isolated server on a free port with synthetic files, never the live workspace.
+It uses headless installed Chrome and blocks external map assets. It verifies
+actual button requests, focus/viewport, correction, network/server errors, export
+success and read-only feedback. It is not a map-provider availability test.
+
+Focused synthetic tests cover uploads, argv, strict release-shaped and legacy
+external subprocesses (no scientific recomputation),
 local host/CSRF checks, warning/structural gates, selection, resume, changed-package
 reapproval and approved-only round-trip packages. They do not repeat upstream
 scientific evaluations. Before real use, obtain the supported extractor runtime and

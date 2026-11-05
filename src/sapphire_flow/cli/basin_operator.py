@@ -12,7 +12,7 @@ import uvicorn
 from pydantic import StrictStr, TypeAdapter
 
 from sapphire_flow.basin_operator.web import create_operator_app
-from sapphire_flow.basin_operator.workspace import BasinWorkspace
+from sapphire_flow.basin_operator.workspace import BasinWorkspace, ExtractorInterface
 from sapphire_flow.logging import configure_cli_logging
 
 
@@ -27,6 +27,12 @@ def main() -> None:
         help="JSON argv prefix for supported extractor in its own environment",
     )
     parser.add_argument(
+        "--extractor-interface",
+        choices=[interface.value for interface in ExtractorInterface],
+        default=ExtractorInterface.HISTORICAL_V2.value,
+        help="CLI shape only, not source verification; recommended: v0.2.0",
+    )
+    parser.add_argument(
         "--package-dir",
         type=Path,
         help="existing extraction to attach after confirmation",
@@ -38,6 +44,9 @@ def main() -> None:
     )
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    if args.package_dir is not None and args.extractor_command is not None:
+        parser.error("choose either --package-dir or --extractor-command, not both")
+    interface = ExtractorInterface(args.extractor_interface)
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
     command = (
@@ -63,7 +72,12 @@ def main() -> None:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error("another operator is using this workspace")
-        workspace = BasinWorkspace(args.workspace, tuple(command))
+        try:
+            workspace = BasinWorkspace(
+                args.workspace, tuple(command), interface=interface
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         configure_cli_logging()
         structlog.get_logger(__name__).info(
             "basin_operator.started", host="127.0.0.1", port=args.port

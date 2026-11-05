@@ -10,7 +10,7 @@ button,input,select{font:inherit;margin:.3rem;padding:.3rem}.warning{background:
 </style></head><body>
 <h1>Basin extraction and review</h1>
 <p>Reviewer names are self-declared, not authenticated. This tool does not register stations or enable forecasts.</p>
-<div id="message" role="status"></div>
+<div id="message" role="status" aria-live="polite" tabindex="-1"></div>
 {% if csrf %}
 {% if not inventory %}
 <fieldset><legend>1. Upload new station batch</legend>
@@ -30,7 +30,7 @@ optional published_area_km2 and source. WGS84 decimal degrees. Excel codes must 
 {% if csrf %}
 <fieldset><legend>2. Confirm and extract</legend>
 <button id="confirm">Confirm interpreted inventory</button><span>{{'Confirmed' if confirmed else 'Not confirmed'}}</span>
-<button id="extract" {% if not confirmed %}disabled{% endif %}>Start extraction</button>
+<button id="extract" {% if not confirmed or not can_extract %}disabled{% endif %}>Start extraction</button>
 <p>Extraction: {{extraction}}. Reload to check completion. Original output is retained unchanged.</p>
 </fieldset>
 <fieldset><legend>Correction: change extraction pour point, never the original station</legend>
@@ -63,7 +63,8 @@ If a background is unavailable, the geometry is still shown. Do not treat missin
 {% if csrf %}
 <fieldset><legend>3. Record local hydrologist decision for selected stations</legend>
 <button id="select-all">Select all</button><button id="select-none">Select none</button>
-<label>Self-declared reviewer <input id="reviewer" maxlength="200"></label>
+<label>Self-declared reviewer <input id="reviewer" maxlength="200" aria-describedby="reviewer-message"></label>
+<div id="reviewer-message" role="status" aria-live="polite"></div>
 <label>Reason <input id="reason" maxlength="2000"></label>
 <label><input id="ack" type="checkbox">I reviewed and acknowledge the displayed warnings</label><br>
 <button data-decision="approved">Approve selected</button><button data-decision="pending">Leave pending</button>
@@ -105,24 +106,38 @@ if(typeof L==='undefined'){
 <script>
 const csrf={{csrf|tojson}};
 const message=document.getElementById('message');
+function feedback(text,isError=false){
+ message.className=isError?'error':'';message.textContent=text;
+ message.focus();message.scrollIntoView({block:'center'});
+}
 async function post(path,body){
  try{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Basin-CSRF':csrf},body:JSON.stringify(body)});
  const result=await response.json();if(!response.ok)throw new Error(result.detail||'Request failed');
- if(result.handover){message.textContent='Handover saved: '+result.handover;}else{location.reload();}
- }catch(error){message.className='error';message.textContent=error.message;}
+ if(result.handover){feedback('Handover saved: '+result.handover);}else{location.reload();}
+ }catch(error){feedback(error.message,true);}
 }
 const bind=(id,fn)=>{const el=document.getElementById(id);if(el)el.onclick=fn;};
 bind('upload-button',async()=>{const file=document.getElementById('upload').files[0];if(!file)return;
- const bytes=new Uint8Array(await file.arrayBuffer());if(bytes.length>5*1024*1024){message.textContent='Upload exceeds 5 MiB';return;}
+ const bytes=new Uint8Array(await file.arrayBuffer());if(bytes.length>5*1024*1024){feedback('Upload exceeds 5 MiB',true);return;}
  let binary='';bytes.forEach(b=>binary+=String.fromCharCode(b));post('/upload',{suffix:file.name.endsWith('.xlsx')?'.xlsx':'.csv',content:btoa(binary)});});
 bind('confirm',()=>post('/confirm',{}));bind('extract',()=>post('/extract',{}));
 bind('adjust',()=>post('/adjust',{code:document.getElementById('adjust-code').value,latitude:document.getElementById('adjust-lat').value,longitude:document.getElementById('adjust-lon').value,reason:document.getElementById('adjust-reason').value}));
 bind('select-all',()=>document.querySelectorAll('.selection').forEach(c=>c.checked=true));
 bind('select-none',()=>document.querySelectorAll('.selection').forEach(c=>c.checked=false));
-document.querySelectorAll('[data-decision]').forEach(button=>button.onclick=()=>post('/decision',{
- codes:Array.from(document.querySelectorAll('.selection:checked')).map(c=>c.value),status:button.dataset.decision,
- reviewer:document.getElementById('reviewer').value,reason:document.getElementById('reason').value,
- acknowledgment:document.getElementById('ack').checked?'acknowledged':'not_acknowledged',fingerprint:data.fingerprint}));
+document.querySelectorAll('[data-decision]').forEach(button=>button.onclick=()=>{
+ const codes=Array.from(document.querySelectorAll('.selection:checked')).map(c=>c.value);
+ const reviewer=document.getElementById('reviewer');
+ const reviewerMessage=document.getElementById('reviewer-message');
+ reviewerMessage.textContent='';reviewer.removeAttribute('aria-invalid');
+ if(!codes.length){feedback('Select at least one station.',true);return;}
+ if(!reviewer.value.trim()){
+  reviewerMessage.textContent='Enter a reviewer name before recording a decision.';
+  reviewer.setAttribute('aria-invalid','true');reviewer.focus();reviewer.scrollIntoView({block:'center'});return;
+ }
+ post('/decision',{codes,status:button.dataset.decision,
+ reviewer:reviewer.value,reason:document.getElementById('reason').value,
+ acknowledgment:document.getElementById('ack').checked?'acknowledged':'not_acknowledged',fingerprint:data.fingerprint});
+});
 bind('export',()=>post('/export',{}));
 </script>{% endif %}
 </body></html>
