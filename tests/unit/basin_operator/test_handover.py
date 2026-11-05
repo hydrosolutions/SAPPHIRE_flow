@@ -103,6 +103,11 @@ class TestRenderPage:
     def test_feedback_is_read_only_and_escapes_user_data(
         self, synthetic_package: Path, inventory: bytes
     ) -> None:
+        path = synthetic_package / "basins.gpkg"
+        frame = gpd.read_file(path)
+        frame.loc[0, "display_name"] = "</script><script>alert(1)</script>"
+        path.unlink()
+        frame.to_file(path, layer="polygons", driver="GPKG")
         batch = open_batch(
             synthetic_package,
             parse_inventory(

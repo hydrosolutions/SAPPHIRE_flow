@@ -87,7 +87,7 @@ release's archive layout or silently rewrite its command. Escalate incompatibili
 For separately completed extraction, launch with `--package-dir /absolute/package`
 instead. The facilitator must verify this package was made from the uploaded
 coordinates and current corrected inputs. Attaching verifies the exact station
-set and package contract, **not** scientific delineation or input provenance that
+set, each station's display name and the package contract, **not** scientific delineation or input provenance that
 the producer does not expose. A corrected batch cannot reattach a superseded
 package identity. Keep original extraction outputs unchanged.
 
@@ -122,9 +122,13 @@ restricted data. If no context is supplied, the map explicitly says so.
    require confirmation, re-extraction and fresh review. No polygon editing.
 6. **Create immutable approved-only handover**. The UI reports its local path.
    Do not overwrite an existing handover. Unreviewed stations are never approved
-   implicitly. Any package file or inventory change invalidates prior approval;
-   reload and review again. Local state is trusted facilitator data, not a signed
-   identity or tamper-proof approval ledger.
+   implicitly. Any package file or inventory change invalidates prior approval.
+   The workspace retains the first observed content identity for each package ID,
+   including across restart and reattachment. Changed package bytes under that
+   same ID are rejected repeatedly: obtain a new producer package ID, then review
+   again. Inventory-only provenance changes do not alter package content identity,
+   but still require fresh review. Local state is trusted facilitator data, not a
+   signed identity or tamper-proof approval ledger.
 
 ## Maps and connectivity
 

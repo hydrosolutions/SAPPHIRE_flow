@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+import geopandas as gpd
 import pytest
 
 from sapphire_flow.basin_operator.inventory import Coordinate, parse_inventory
@@ -21,6 +22,23 @@ NOW = "2026-11-05T12:00:00Z"
 
 
 class TestReview:
+    @pytest.mark.parametrize(
+        "names", [["Wrong name", "Synthetic B"], ["Synthetic B", "Synthetic A"]]
+    )
+    def test_rejects_wrong_or_swapped_display_names(
+        self,
+        synthetic_package: Path,
+        inventory: bytes,
+        names: list[str],
+    ) -> None:
+        path = synthetic_package / "basins.gpkg"
+        frame = gpd.read_file(path)
+        frame["display_name"] = names
+        path.unlink()
+        frame.to_file(path, layer="polygons", driver="GPKG")
+        with pytest.raises(ValueError, match="display_name.*001.0"):
+            open_batch(synthetic_package, parse_inventory(inventory, ".csv"))
+
     def test_warning_needs_acknowledgment(
         self, synthetic_package: Path, inventory: bytes
     ) -> None:
@@ -113,6 +131,48 @@ class TestBasinWorkspace:
         with pytest.raises(ValueError, match="approvals cleared"):
             resumed.batch()
         assert resumed.decisions == ()
+        with pytest.raises(ValueError, match="new package_id"):
+            resumed.batch()
+        restarted = BasinWorkspace(workspace.directory, ())
+        with pytest.raises(ValueError, match="new package_id"):
+            restarted.batch()
+        with pytest.raises(ValueError, match="new package_id"):
+            restarted.attach_package(synthetic_package)
+        # A genuinely new package identity permits a fresh review, never old approval.
+        manifest_path = synthetic_package / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["package_id"] = "synthetic-corrected"
+        manifest_path.write_text(json.dumps(manifest))
+        restarted.attach_package(synthetic_package)
+        assert restarted.decisions == ()
+        restarted.review(
+            codes=("001.0",),
+            status=ReviewStatus.APPROVED,
+            reviewer="Hydrologist",
+            reason="Fresh review",
+            acknowledgment=WarningAcknowledgment.NOT_ACKNOWLEDGED,
+            fingerprint=restarted.batch().fingerprint,
+            now=NOW,
+        )
+        assert restarted.decisions[0].status == ReviewStatus.APPROVED
+
+    def test_inventory_provenance_change_does_not_mutate_package_identity(
+        self,
+        tmp_path: Path,
+        synthetic_package: Path,
+        inventory: bytes,
+    ) -> None:
+        workspace = BasinWorkspace(tmp_path / "review", ())
+        workspace.upload(inventory, ".csv")
+        workspace.confirm()
+        workspace.attach_package(synthetic_package)
+        first = workspace.batch()
+        workspace.state["inventory"][0]["source"] = "Clarified survey citation"
+        workspace.save()
+        workspace.attach_package(synthetic_package)
+        current = BasinWorkspace(workspace.directory, ()).batch()
+        assert current.content_fingerprint == first.content_fingerprint
+        assert current.fingerprint != first.fingerprint
 
     def test_adjustment_preserves_original_and_requires_new_package(
         self, tmp_path: Path, synthetic_package: Path, inventory: bytes

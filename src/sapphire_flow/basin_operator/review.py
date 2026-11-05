@@ -52,6 +52,7 @@ class ReviewBatch:
     package: LoadedBasinPackage
     stations: tuple[StationInput, ...]
     fingerprint: str
+    content_fingerprint: str
     warnings: dict[str, tuple[str, ...]]
     blockers: dict[str, tuple[str, ...]]
 
@@ -72,6 +73,13 @@ def open_batch(package_dir: Path, stations: tuple[StationInput, ...]) -> ReviewB
         raise ValueError(
             "extracted station set does not exactly match confirmed inventory"
         )
+    names = {station.code: station.display_name for station in stations}
+    for basin in loaded.basins:
+        if basin.display_name != names[basin.station_code]:
+            raise ValueError(
+                "extracted display_name differs from inventory for "
+                f"{basin.station_code!r}"
+            )
     # Inventory resolution only; these deterministic IDs are never stored in SAP3.
     report = evaluate_basin_acceptance(
         loaded,
@@ -126,11 +134,17 @@ def open_batch(package_dir: Path, stations: tuple[StationInput, ...]) -> ReviewB
             raise ValueError("package must not contain symbolic links")
         if path.is_file():
             hashes[str(path.relative_to(package_dir))] = file_hash(path)
-    payload = {
+    payload: dict[str, Any] = {
         "package": compute_package_fingerprint(loaded),
         "files": hashes,
-        "inventory": inventory_json(stations),
     }
+    content_fingerprint = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, allow_nan=False).encode()
+        ).hexdigest()
+    )
+    payload["inventory"] = inventory_json(stations)
     fingerprint = (
         "sha256:"
         + hashlib.sha256(
@@ -146,6 +160,7 @@ def open_batch(package_dir: Path, stations: tuple[StationInput, ...]) -> ReviewB
         package=loaded,
         stations=stations,
         fingerprint=fingerprint,
+        content_fingerprint=content_fingerprint,
         warnings=warnings,
         blockers=blockers,
     )

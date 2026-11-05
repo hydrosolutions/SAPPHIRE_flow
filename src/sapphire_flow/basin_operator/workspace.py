@@ -244,6 +244,7 @@ class BasinWorkspace:
             raise ValueError(
                 "corrected inputs require a newly extracted package identity"
             )
+        self._observe_package_identity(batch)
         if batch.fingerprint != self.state["fingerprint"]:
             self.state["decisions"] = []
         self.state.update(
@@ -257,6 +258,7 @@ class BasinWorkspace:
         if not self.state["package_dir"]:
             raise ValueError("no valid extraction package attached")
         batch = open_batch(Path(self.state["package_dir"]), self.stations)
+        self._observe_package_identity(batch)
         if batch.fingerprint != self.state["fingerprint"]:
             self.state["decisions"] = []
             self.state["fingerprint"] = batch.fingerprint
@@ -265,6 +267,21 @@ class BasinWorkspace:
                 "package changed; previous approvals cleared; reload and review again"
             )
         return batch
+
+    def _observe_package_identity(self, batch: ReviewBatch) -> None:
+        identities = self.state.setdefault("package_identities", {})
+        package_id = batch.package.manifest.package_id
+        observed = identities.get(package_id)
+        if observed is not None and observed != batch.content_fingerprint:
+            self.state["decisions"] = []
+            self.save()
+            raise ValueError(
+                "package identity reused for changed content; approvals cleared; "
+                "a new package_id is required"
+            )
+        if observed is None:
+            identities[package_id] = batch.content_fingerprint
+            self.save()
 
     def review(
         self,
