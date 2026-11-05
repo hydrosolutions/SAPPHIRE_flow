@@ -171,6 +171,14 @@ history. Leave shared Gateway subscriptions untouched. Reactivation requires
 fresh readiness checks and hydrologist approval. Permanent deletion and Gateway
 cleanup are outside scope.
 
+Reversible retirement must never use the permanent decommissioned transition.
+The current station lifecycle gates both forecast execution and observation
+ingestion, so a station-status change alone cannot implement the retain-ingestion
+option. That option requires a separate control that reliably prevents forecast
+participation while allowing ingestion; if that separation cannot be established,
+keep forecasts stopped and report the hold rather than enabling both implicitly.
+Choose the mechanism during implementation using existing controls where suitable.
+
 ## 8. Future administrator dashboard
 
 Deliver the operator workflow and small basin-review page first, not a full
