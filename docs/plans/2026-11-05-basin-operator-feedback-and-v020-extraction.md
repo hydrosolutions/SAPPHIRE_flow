@@ -213,6 +213,22 @@ replayed approval. No feature-branch tag.
   lint/format and changed-source pyright pass. The release-target helper is an
   idempotent no-op at `0.1.1110`. Full-suite verification remains blocked as above.
 
+## Stacked PR checkpoint (2026-11-06)
+
+The owner authorized parallel CI after the earlier NHS provider PR #462.
+This branch is stacked on that PR's head
+`fb6c5fc987b3507919ba425105b6a50d9e80eac9`, not merged into its branch.
+The rebase changed none of this patch's reviewed source/test/document files.
+The per-PR target is now `0.1.1111` (stacked base `0.1.1110` plus one).
+Against that base, all 166 focused tests, the separate real Chrome check,
+ruff lint/format and changed-module pyright pass. All three independent reviews
+of the corrected implementation found no new actionable defects; no functional
+source changes followed them. Owner authorized publication of this dependent PR.
+The previous local full-suite failure is not waived; final CI is required.
+PR #462 must merge first, then retarget this PR to `main` and verify its final
+merge-base/release-target checks. No merge, deployment or live-review restart is
+authorized. Native automatic-extraction acceptance remains separate and pending.
+
 ## Exit commands
 
 - `uv run pytest tests/unit/basin_operator tests/unit/services/test_basin_package_loader.py`
