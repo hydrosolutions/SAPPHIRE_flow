@@ -218,6 +218,7 @@ def gateway_cli(
         gateway=SyntheticGateway(),
         retrieval=SyntheticRetrieval(["g_001_0", "g_002"]),
         upload_error=None,
+        upload_response_text=None,
         subscription_fault=None,
         readback_fault=None,
         subscription_fault_seen=False,
@@ -226,6 +227,7 @@ def gateway_cli(
         forecast_fault=None,
         download_error=None,
         retrieval_response=None,
+        malformed_response=None,
         native_requests=[],
     )
     monkeypatch.setattr(
@@ -243,7 +245,7 @@ def gateway_cli(
             case.gateway.requests.append(request)
             if case.upload_error is not None:
                 raise case.upload_error("synthetic failure " + str(request.url))
-            echo = " credential ".join(sorted(forms))
+            echo = case.upload_response_text or " credential ".join(sorted(forms))
             return httpx.Response(
                 200, json={"message": echo, "detail": echo, "warnings": echo}
             )
@@ -355,6 +357,10 @@ def gateway_cli(
                 extra.index = pd.DatetimeIndex([base + pd.Timedelta(hours=lead)])
                 data = pd.concat([data, extra])
 
+        if case.malformed_response is not None:
+            data = data.drop(columns="source")
+            data["source_run"] = case.secret
+            data["g_001_0"] = case.malformed_response
         content = io.BytesIO()
         data.to_parquet(content)
         response = requests.Response()
@@ -1301,3 +1307,60 @@ def test_cli_native_retrieval_error_category_is_safe_and_durable(
     restored = invoke_cli(case, ["status"], capsys)
     assert reason in restored["stations"][0]["holds"]
     assert sum(request.method != "GET" for request in case.gateway.requests) == writes
+
+
+@pytest.mark.parametrize("scheme", ["HTTPS", "hTtPs", "HTTP"])
+def test_cli_upload_urls_and_reflected_keys_are_removed_before_persistence(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str], scheme: str
+) -> None:
+    case = gateway_cli
+    case.upload_response_text = (
+        "x" * 980
+        + " See "
+        + scheme
+        + "://gateway.invalid/private?api_key="
+        + quote_plus(case.secret)
+        + " raw "
+        + case.secret
+    )
+    prepare_cli(case, capsys)
+    output = invoke_cli(
+        case, ["register", "--hru", "new_synthetic", *connection_args(case)], capsys
+    )
+    state = (case.workspace / "state.json").read_text()
+    assert "://" not in state + json.dumps(output)
+    assert "gateway.invalid" not in state + json.dumps(output)
+
+
+def test_cli_malformed_native_responses_keep_distinct_digest_without_raw_values(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    case.malformed_response = 11.5
+    first = invoke_cli(case, ["resume", *connection_args(case)], capsys)
+    first_chunks = [
+        chunk
+        for chunk in first["stations"][0]["coverage"]
+        if chunk["stream"] == "ifs_forecast"
+    ]
+    assert all(
+        "missing_or_duplicate_columns" in chunk["holds"] for chunk in first_chunks
+    )
+    case.malformed_response = 12.5
+    second = invoke_cli(case, ["resume", *connection_args(case)], capsys)
+    second_chunks = [
+        chunk
+        for chunk in second["stations"][0]["coverage"]
+        if chunk["stream"] == "ifs_forecast"
+    ]
+    assert [chunk["response_sha256"] for chunk in first_chunks] != [
+        chunk["response_sha256"] for chunk in second_chunks
+    ]
+    assert all(
+        chunk["usable_count"] == 0 and chunk["validated_source"] is None
+        for chunk in second_chunks
+    )
+    state = (case.workspace / "state.json").read_text()
+    assert case.secret not in state + json.dumps(second)
+    assert '"raw"' not in state and '"values"' not in state

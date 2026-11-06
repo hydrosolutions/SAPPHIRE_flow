@@ -326,3 +326,28 @@ def test_transport_suppresses_above_critical_and_restores_nested_threshold(
         assert "safe restoration marker" in caplog.text
     finally:
         logging.disable(original)
+
+
+@pytest.mark.parametrize("scheme", ["HTTPS", "hTtPs", "HTTP"])
+def test_upload_metadata_removes_case_insensitive_urls_before_truncation(
+    scheme: str,
+) -> None:
+    secret = "aaaa/aaaa+aaaa"
+    url = scheme + "://gateway.invalid/private?api_key=" + secret
+    reflected = "x" * 980 + " See " + url
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": url, "detail": reflected, "warnings": reflected}
+        )
+
+    adapter = RecapRegistration(
+        config(), api_key=secret, transport=httpx.MockTransport(transport)
+    )
+    try:
+        receipt = adapter.upload(hru_code="synthetic", content=b"synthetic")
+    finally:
+        adapter.close()
+    text = receipt.message + receipt.detail + str(receipt.warnings)
+    assert "://" not in text and "gateway.invalid" not in text
+    assert secret not in text

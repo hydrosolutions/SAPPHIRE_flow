@@ -105,7 +105,7 @@ def _safe_text(text: str, api_key: str) -> str:
                 for part in re.split(r"(%[0-9a-fA-F]{2})", form)
             )
             text = re.sub(pattern, "[redacted]", text)
-    text = re.sub(r"https?://\S+", "[URL omitted]", text)
+    text = re.sub(r"https?://\S+", "[URL omitted]", text, flags=re.IGNORECASE)
     text = re.sub(r"(?i)api_key\s*[=:]\s*\S+", "api_key=[redacted]", text)
     return "".join(c for c in text if c.isprintable() or c == "\n")[:1000]
 

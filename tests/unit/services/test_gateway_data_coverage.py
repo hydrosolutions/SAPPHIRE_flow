@@ -340,3 +340,75 @@ def test_native_client_error_shapes_are_safely_classified(
     assert secret not in str(error.value)
     assert error.value.__context__ is None and error.value.__cause__ is None
     assert not list(tmp_path.iterdir())
+
+
+def test_malformed_response_digests_cover_structure_and_available_relevant_cells() -> (
+    None
+):
+    missing = frame().drop(columns="source")
+    changed_value = missing.copy()
+    changed_value.iloc[0, 0] = 99.0
+    duplicate = pd.concat([frame(), frame().iloc[:, [0]]], axis=1)
+    unknown_axis = frame().reset_index(drop=True)
+    changed_axis = unknown_axis.copy()
+    changed_axis.index = pd.Index([10, 11, 12])
+    responses = [
+        missing,
+        changed_value,
+        duplicate,
+        unknown_axis,
+        changed_axis,
+        pd.DataFrame(),
+        pd.DataFrame(columns=["other"]),
+        pd.DataFrame(columns=["junk"]),
+    ]
+    digests = [
+        assess_coverage(response, scope()).response_sha256 for response in responses
+    ]
+    assert len(set(digests)) == len(responses)
+    assert all(
+        assess_coverage(response.copy(), scope()).response_sha256 == digest
+        for response, digest in zip(responses, digests, strict=True)
+    )
+
+
+def test_absent_tabular_response_is_not_hashed_as_an_empty_response() -> None:
+    absent = assess_coverage(None, scope())
+    empty = assess_coverage(pd.DataFrame(), scope())
+    assert absent.response_sha256 != empty.response_sha256
+    assert absent.observed_count == absent.usable_count == 0
+    assert absent.validated_source is None
+    assert absent.response_sha256 == assess_coverage(None, scope()).response_sha256
+
+
+def test_projection_hash_avoids_arbitrary_reprs_and_unrequested_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Unsupported:
+        def __repr__(self) -> str:
+            raise AssertionError("arbitrary repr must never run")
+
+    data = frame().drop(columns="source")
+    data["g_synthetic"] = Unsupported()
+    data["unrequested"] = "aaaa-unrequested-aaaa"
+    first = assess_coverage(data, scope())
+    data["unrequested"] = "changed but excluded"
+    assert assess_coverage(data, scope()).response_sha256 == first.response_sha256
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+def test_malformed_duplicate_and_timezone_metadata_affect_projection() -> None:
+    data = pd.concat([frame(), frame().iloc[:, [0]]], axis=1)
+    changed = data.copy()
+    changed.iloc[0, -1] = 42.0
+    naive = frame().drop(columns="source")
+    naive.index = naive.index.tz_localize(None)
+    assert (
+        assess_coverage(data, scope()).response_sha256
+        != assess_coverage(changed, scope()).response_sha256
+    )
+    assert (
+        assess_coverage(naive, scope()).response_sha256
+        != assess_coverage(frame().drop(columns="source"), scope()).response_sha256
+    )

@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from numbers import Real
+from datetime import UTC, date, datetime, timedelta
+from numbers import Integral, Real
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -78,8 +79,101 @@ class CoverageEvidence:
     validated_run_identities: tuple[str, ...]
 
 
-def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEvidence:
+def _evidence_scalar(value: object) -> object:
+    if value is None:
+        return ["none"]
+    if value is pd.NA:
+        return ["missing"]
+    if value is pd.NaT:
+        return ["nat"]
+    if isinstance(value, str):
+        return ["string", value]
+    if isinstance(value, bool):
+        return ["boolean", value]
+    if isinstance(value, Integral):
+        return ["integer", int(value)]
+    if isinstance(value, Real):
+        number = float(value)
+        return [
+            "real",
+            number
+            if math.isfinite(number)
+            else "nan"
+            if math.isnan(number)
+            else "positive_infinity"
+            if number > 0
+            else "negative_infinity",
+        ]
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        return [
+            "datetime" if isinstance(value, datetime) else "date",
+            value.isoformat(),
+        ]
+    if isinstance(value, tuple):
+        return [
+            "tuple",
+            [_evidence_scalar(part) for part in cast("tuple[object, ...]", value)],
+        ]
+    return ["unsupported_scalar"]
+
+
+def _response_digest(frame: pd.DataFrame | None, polygon: str) -> str:
+    digest = hashlib.sha256()
+
+    def add(value: object) -> None:
+        digest.update(
+            json.dumps(
+                value, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        )
+        digest.update(b"\n")
+
+    add("gateway-coverage-projection-v1")
+    if frame is None:
+        add("no_tabular_response")
+        return "sha256:" + digest.hexdigest()
+    tabular: Any = frame
+    columns: list[object] = tabular.columns.tolist()
+    add(
+        {
+            "shape": list(frame.shape),
+            "requested_column": polygon,
+            "columns": [_evidence_scalar(label) for label in columns],
+            "index_type": type(frame.index).__name__,
+            "index_levels": frame.index.nlevels,
+            "index_names": [_evidence_scalar(name) for name in frame.index.names],
+        }
+    )
+    for level in range(frame.index.nlevels):
+        index: Any = tabular.index.get_level_values(level)
+        tz = index.tz if isinstance(index, pd.DatetimeIndex) else None
+        zone = getattr(tz, "key", None)
+        if not isinstance(zone, str):
+            zone = getattr(tz, "zone", None)
+        add(
+            {
+                "index_level": level,
+                "timezone_aware": tz is not None,
+                "timezone_name": zone if isinstance(zone, str) else None,
+            }
+        )
+        for value in cast("list[object]", cast("Any", index).tolist()):
+            add(_evidence_scalar(value))
+    for position, label in enumerate(columns):
+        if isinstance(label, str) and label in (polygon, "source", "source_run"):
+            add({"column_position": position})
+            for value in cast("list[object]", tabular.iloc[:, position].tolist()):
+                add(_evidence_scalar(value))
+    return "sha256:" + digest.hexdigest()
+
+
+def assess_coverage(
+    frame: pd.DataFrame | None, scope: CoverageScope
+) -> CoverageEvidence:
     """Check one explicit polygon/variable/member response, without unit conversion."""
+    response_digest = _response_digest(frame, scope.polygon)
+    if frame is None:
+        frame = pd.DataFrame()
     expected = (
         scope.expected_times
         if scope.expected_times is not None
@@ -91,7 +185,6 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
     holds: set[str] = set()
     usable: set[datetime] = set()
     run_identities: set[str] = set()
-    digest = hashlib.sha256()
     columns = {scope.polygon, "source"}
     if scope.source_run.semantics != SourceRunSemantics.ABSENT:
         columns.add("source_run")
@@ -117,17 +210,6 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
             if not isinstance(timestamp, pd.Timestamp):
                 holds.add("invalid_timestamp")
                 continue
-            # Digest actual relevant response cells, not raw exported series.
-            digest.update(
-                repr(
-                    (
-                        timestamp.isoformat(),
-                        row[scope.polygon],
-                        row["source"],
-                        row.get("source_run"),
-                    )
-                ).encode()
-            )
             if timestamp.utcoffset() != timedelta(0):
                 holds.add("non_utc_timestamp")
                 continue
@@ -175,7 +257,7 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
         usable_count=len(usable),
         missing_intervals=tuple(intervals),
         holds=tuple(sorted(holds)),
-        response_sha256="sha256:" + digest.hexdigest(),
+        response_sha256=response_digest,
         validated_source=scope.source if usable else None,
         validated_source_run=scope.source_run if usable else None,
         validated_run_identities=tuple(sorted(run_identities)),

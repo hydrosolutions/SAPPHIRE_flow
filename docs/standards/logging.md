@@ -713,8 +713,8 @@ arbitrarily large Python integer levels. This narrowly contains HTTPX and reques
 handlers run; it is not a global redaction framework or a client monkey-patch.
 Failures expose a closed `GatewayFailure` reason only; no raw exception chain,
 request params or response body enters state/output. Upload warnings are bounded
-and key/URL-sanitized, including query-encoded key forms and percent-escape case
-variants before truncation. Every ordinary HTTPX transport/response-processing
+and key/URL-sanitized, including query-encoded key forms, percent-escape case
+variants and case-insensitive HTTP(S) schemes before truncation. Every ordinary HTTPX transport/response-processing
 exception is contained by the external boundary; process interrupts still propagate. No new Prefect or operational events are introduced.
 Subscription failure diagnostics persist only the shared typed category before
 read-back. Operator JSON separates current outcome from prior typed failure

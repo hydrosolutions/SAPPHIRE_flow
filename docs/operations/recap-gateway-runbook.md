@@ -289,6 +289,18 @@ unchanged. Their observed count is reported as unknown (`null`), never invented
 from expected or usable counts. Newly fetched evidence records the actual returned
 row count, including unusable or extra rows.
 
+Newly assessed `response_sha256` values hash a versioned, deterministic typed
+projection before coverage validation: shape, ordered column labels (duplicates
+included), index class/levels/names, timezone awareness/available zone labels,
+available index values/timestamps, and available requested polygon/source/run
+cells by column position. Other value columns are excluded. Only supported scalar
+forms are encoded; unsupported objects use an opaque marker, never arbitrary reprs.
+Only the digest is retained, not this projection or measurement values. No tabular
+response (for example a failed fetch) hashes a distinct absence marker, not an
+invented empty frame. This is not a raw-wire hash or authenticity proof. Earlier
+stored hashes remain unchanged and must not be relabeled as this projection format.
+
+
 
 
 ## Manual GeoPackage upload

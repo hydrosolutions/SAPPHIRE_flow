@@ -465,3 +465,31 @@ all eight implementation modules pass pyright and changed-file lint/format passe
 Exact results are in the local UTC-scope handoff. Target0.1.1114 and cache behavior remain unchanged. No live/external/model
 operation, geometry work, push, PR, merge or tag. Fresh full-patch reviews and
 final-head full CI remain required; synthetic checks are not live/scientific approval.
+
+## Sanitized response and malformed-frame evidence repair — 2026-11-06
+
+Root commissioned the bounded response-sanitization/evidence findings at `a5e92685`.
+HTTP(S) URL removal is now case-insensitive; raw/encoded key removal and URL removal
+still happen before truncation. Adapter and actual CLI receipt/state/output tests
+cover uppercase/mixed schemes with reflected dummy keys at the truncation boundary.
+No URL parsing, transport or client behavior was expanded.
+
+Coverage digest generation now runs before schema/time-axis rejection and hashes a
+versioned allowlisted projection: shape, ordered/duplicate column labels, requested
+column, index structure/timezone/available values, and available requested polygon/
+source/run cells by position. Supported scalars have deterministic type tags; unknown
+objects have opaque markers rather than arbitrary reprs. Unrequested value columns
+and transport data are excluded. Only the digest is stored. Failed fetches pass an
+explicit absent tabular result and hash a separate marker, not a fabricated empty
+response. Existing persisted hashes/schema remain readable and unchanged; this is
+not full raw-wire evidence or authenticated history.
+
+RED: **4 failed,66 passed**. Initial expanded focused GREEN: **162 passed**. Regressions
+cover distinct missing/duplicate-column/unknown-axis/empty frames, identical-input
+stability, relevant-cell changes, opaque unsupported objects, excluded unrelated
+values, absent-vs-empty distinction, and native malformed-response resume evidence
+without raw/secret output. Final broader checks: **648 passed,1 optional skip**;
+all eight implementation modules pass pyright and changed-file lint/format passes.
+Exact results are recorded in the local response-evidence handoff. Target0.1.1114 is unchanged. No unrelated/cache/geometry/model/client
+or live/external changes, push, PR, merge or tags. Fresh full-patch review and
+final-head full CI remain required; fixture success is not live/scientific acceptance.

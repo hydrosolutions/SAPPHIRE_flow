@@ -1163,10 +1163,10 @@ def resume_coverage(
             )
             if not isinstance(raw, pd.DataFrame):
                 failure = "unsupported_response_frame"
-                raw = pd.DataFrame()
+                raw = None
         except GatewayAccessError as exc:
             failure = exc.reason.value
-            raw = pd.DataFrame()
+            raw = None
         for feature in pending:
             result = assess_coverage(raw, request.coverage_scope(feature.polygon_name))
             evidence = ChunkEvidence(
