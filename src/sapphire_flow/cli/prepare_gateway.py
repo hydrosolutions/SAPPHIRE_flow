@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import threading
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -167,6 +168,16 @@ def _show(state: PreparationState, *, instructions: tuple[str, ...] = ()) -> int
     return 2 if any(s["outcome"] == "held" for s in report["stations"]) else 0
 
 
+def _load_explicit_api_key(path: Path) -> str:
+    key: str | None = None
+    with suppress(OSError, UnicodeError):
+        if path.is_file():
+            key = path.read_text().strip()
+    if not key:
+        raise ConfigurationError("explicit Gateway secret file unavailable or empty")
+    return key
+
+
 def run(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     if threading.current_thread() is not threading.main_thread():
@@ -235,7 +246,11 @@ def run(arguments: list[str] | None = None) -> int:
             elif args.command in ("register", "subscribe", "resume"):
                 config = load_recap_gateway_config(args.config)
                 validate_connection(config.base_url, verify_tls=config.verify_tls)
-                key = load_recap_api_key(secret_path=args.secret_file)
+                key = (
+                    _load_explicit_api_key(args.secret_file)
+                    if args.secret_file is not None
+                    else load_recap_api_key()
+                )
                 if args.command == "resume":
                     from recap_client import RecapClient
 

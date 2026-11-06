@@ -60,9 +60,14 @@ Gateway coverage passes. Exit `0` means this Gateway scope passed, not model rea
    optional model dependencies produce a hold. No weights, predict or train call
    occurs. An edit retains the old proposal but invalidates its confirmation and
    coverage eligibility. Unsupported required inputs cannot be silently removed.
-3. Register once using the existing approved secret loader and the existing upload
+3. Register once using the approved secret-file boundary and the existing upload
    authority. `CONFIG` is the normal Recap configuration; `KEY_FILE` is an existing
    approved secret file, never a key value or a new inventory export.
+   An explicit `--secret-file` must itself supply a nonempty key. A missing, empty,
+   whitespace-only or unreadable file fails before clients or remote operations;
+   it never falls back to `RECAP_API_KEY`, including if the file changes during
+   reading. If the option is omitted, the existing default-secret/environment
+   selection remains supported. Never put a key value on the command line.
 
    ```bash
    uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" register --hru "$NEW_HRU" --config "$CONFIG" --secret-file "$KEY_FILE"

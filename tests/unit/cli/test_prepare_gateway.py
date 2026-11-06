@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -841,3 +842,102 @@ def test_cli_malformed_saved_counts_fail_without_reset(
     output = capsys.readouterr()
     assert output.out == ""
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("command", ["register", "subscribe", "resume"])
+@pytest.mark.parametrize(
+    "failure",
+    ["missing", "empty", "whitespace", "unreadable", "disappeared", "emptied_on_read"],
+)
+def test_explicit_secret_file_fails_before_clients_without_environment_fallback(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    failure: str,
+) -> None:
+    import recap_client
+
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    monkeypatch.setenv("RECAP_API_KEY", "aaaa-ambient-aaaa")
+    if failure == "missing":
+        case.key_file.unlink()
+    elif failure in ("empty", "whitespace"):
+        case.key_file.write_text("" if failure == "empty" else " \n\t")
+    else:
+        original = Path.read_text
+
+        def unreadable(path: Path, *args: object, **kwargs: object) -> str:
+            if path == case.key_file:
+                if failure == "disappeared":
+                    raise FileNotFoundError("synthetic disappeared aaaa-ambient-aaaa")
+                if failure == "emptied_on_read":
+                    return ""
+                raise PermissionError("synthetic raw read error aaaa-ambient-aaaa")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+    clients: list[str] = []
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        clients.append("constructed")
+        raise AssertionError(
+            "client construction must follow successful credential selection"
+        )
+
+    monkeypatch.setattr(prepare_gateway, "RecapRegistration", forbidden)
+    monkeypatch.setattr(recap_client, "RecapClient", forbidden)
+    arguments = [command, *connection_args(case)]
+    if command == "register":
+        arguments.extend(["--hru", "new_synthetic"])
+    assert prepare_gateway.run([*case.argv, *arguments]) == 2
+    captured = capsys.readouterr()
+    assert "aaaa-ambient-aaaa" not in captured.out + captured.err
+    assert "synthetic raw read error" not in captured.out + captured.err
+    assert clients == [] and case.gateway.requests == [] and case.native_requests == []
+    assert os.environ.get("RECAP_API_KEY") == "aaaa-ambient-aaaa"
+
+
+def test_valid_explicit_secret_precedes_ambient_key(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    monkeypatch.setenv("RECAP_API_KEY", "aaaa-ambient-aaaa")
+    case.key_file.write_text("  " + case.secret + "\n")
+    invoke_cli(
+        case, ["register", "--hru", "new_synthetic", *connection_args(case)], capsys
+    )
+    assert case.gateway.requests[0].url.params["api_key"] == case.secret
+
+
+@pytest.mark.parametrize("selection", ["file", "environment"])
+def test_omitted_secret_option_keeps_supported_environment_selection(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    from sapphire_flow.config import recap_gateway
+
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    monkeypatch.setattr(
+        recap_gateway,
+        "DEFAULT_RECAP_API_KEY_SECRET_PATH",
+        case.key_file
+        if selection == "file"
+        else case.key_file.parent / "missing-default",
+    )
+    monkeypatch.setenv(
+        "RECAP_API_KEY", "aaaa-ambient-aaaa" if selection == "file" else case.secret
+    )
+    invoke_cli(
+        case,
+        ["register", "--hru", "new_synthetic", "--config", str(case.config)],
+        capsys,
+    )
+    assert case.gateway.requests[0].url.params["api_key"] == case.secret

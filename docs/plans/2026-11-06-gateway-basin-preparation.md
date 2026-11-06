@@ -167,7 +167,7 @@ The runbook must provide these numbered steps with tested CLI invocations:
 
 **Out:** full admin dashboard, new auth, automatic deployment, and separate acceptance frameworks.
 
-**Verification / RED:** CLI help and command tests through the project's native interpreter, no network by default. End-to-end synthetic two-station approved export → proposal → confirmed registration → subscriptions → manual pause → partial coverage → resume, including repeated commands with unchanged remote call counts. Verify no secret leakage, source mutation, excluded-station upload or accidental DB/Prefect construction. Existing `tests/unit/basin_operator/`, `tests/unit/docs/test_recap_runbook.py`, `tests/unit/config/test_recap_gateway_config.py` and Recap adapter tests must remain green. Runbook command names/options must match CLI help; test actual behavior, not only heading strings.
+**Verification / RED:** CLI help and command tests through the project's native interpreter, no network by default. End-to-end synthetic two-station approved export → proposal → confirmed registration → subscriptions → manual pause → partial coverage → resume, including repeated commands with unchanged remote WRITE counts. Reuse completed historical checks; intentionally refresh forecast evidence on resume because same-cycle output can be overwritten. Verify no secret leakage, source mutation, excluded-station upload or accidental DB/Prefect construction. Existing `tests/unit/basin_operator/`, `tests/unit/docs/test_recap_runbook.py`, `tests/unit/config/test_recap_gateway_config.py` and Recap adapter tests must remain green. Runbook command names/options must match CLI help; test actual behavior, not only heading strings.
 
 **Docs:** the three operator runbooks, touchpoint map and logging standard for new event fields. **Implementation evidence (2026-11-06):** all seven local commands and the numbered linked procedure are implemented. CLI tests exercise actual prepare/confirm/status behavior without credential/network construction and reject secret-bearing invalid scope without echo. Native `uv run python -m sapphire_flow.cli.prepare_gateway --help` matches the documented commands. Service E2E uses real approved export, real HTTP adapter/fake transport and explicit synthetic retrieval contracts; it is not a full CLI-through-facade live acceptance test. Existing basin/Recap/config/runbook regressions pass. No public service/DB/Prefect bootstrap was added.
 
@@ -346,3 +346,25 @@ with the peer's deterministic fixture fix preserved. All eight implementation
 modules pass pyright; changed-file lint/format passes. The full suite was not rerun;
 final-head full CI and fresh full-patch reviews remain required. No live operations,
 external/client/model edits, push, PR, tag or merge occurred.
+
+## Explicit secret-file boundary repair — 2026-11-06
+
+Root commissioned the sole confirmed credential-selection finding at `920fb197`.
+An explicit preparation CLI `--secret-file` now supplies the key directly or fails
+closed before any client construction/remote operation. The strict reader uses the
+existing file text/strip convention but has no environment-fallback path; a missing,
+empty, whitespace-only, unreadable, disappearing or newly emptied file cannot
+select ambient credentials. Safe errors omit file contents and raw read errors.
+Omitting the option retains the unchanged generic loader's default-file/environment
+behavior. No process-environment workaround or external-client edit was introduced.
+
+Actual CLI RED: **9 failed, 33 passed**, reproducing fallback/client construction
+for missing/empty/whitespace files. Actual CLI regressions cover all three remote
+commands, read-time races, explicit-file precedence and both omitted-option sources.
+Broader native GREEN: **566 passed, 1 optional skip**; all eight implementation
+modules pass pyright, and changed-file lint/format passes. Exact commit evidence
+is in the local key-file handoff.
+Release target stays **0.1.1114**. Forecast refresh and complete historical reuse
+are unchanged; T5's ambiguous remote call-count wording above is clarified to
+remote WRITE counts. No full-hour suite, live operation, deployment, external edit,
+push, PR, tag or merge. Fresh independent reviews and final-head full CI remain.
