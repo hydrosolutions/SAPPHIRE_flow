@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from math import isnan
+from math import isfinite, isnan
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -34,12 +34,14 @@ from sapphire_flow.services.run_station_forecast import (
     worst_qc_status,
 )
 from sapphire_flow.services.training_data import expected_past_buckets
-from sapphire_flow.types.domain import aggregate_input_quality
+from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import (
     ArtifactScope,
     ForecastDataUse,
     ForecastStatus,
     FutureWeatherPolicy,
+    InputQualityCategory,
+    InputQualityLevel,
     ModelArtifactStatus,
     ProvisionalIfsTailMode,
     QcStatus,
@@ -621,6 +623,53 @@ def _raise_store_error_if_connection_fatal(
     raise StoreError(msg) from exc
 
 
+def _provisional_discharge_flags(
+    *,
+    station_id: StationId,
+    group_inputs: GroupModelInputs,
+    metadata: OperationalInputMetadata,
+    lookback_steps: int,
+    recent_steps: int,
+) -> list[InputQualityFlag]:
+    lineage = metadata.input_lineage
+    if lineage is None or lineage.rating_input is None or lookback_steps <= 0:
+        return []
+    frame = group_inputs.for_station(station_id).past_targets
+    if "discharge" not in frame.columns:
+        return []
+    expected = expected_past_buckets(
+        group_inputs.issue_time, group_inputs.time_step, lookback_steps
+    )
+    supplied = dict(frame.select("timestamp", "discharge").iter_rows())
+    missing_cells = {
+        slot
+        for slot in expected
+        if slot in supplied and (supplied[slot] is None or not isfinite(supplied[slot]))
+    }
+    absent = set(expected) - supplied.keys()
+    missing = missing_cells | absent
+    if not missing:
+        return []
+    recent: set[UtcDatetime] = (
+        set(expected[-recent_steps:]) if recent_steps > 0 else set()
+    )
+    return [
+        InputQualityFlag(
+            category=InputQualityCategory.OBSERVATION,
+            level=InputQualityLevel.DEGRADED
+            if missing & recent
+            else InputQualityLevel.PARTIAL,
+            detail=(
+                f"discharge unavailable in {len(missing)} of {len(expected)} "
+                f"assembly slots: {len(missing_cells)} missing assembly cells "
+                f"(including normalized interior omissions), "
+                f"{len(absent)} undelivered edge slots; "
+                f"{len(missing & recent)} within the {recent_steps} most recent steps"
+            ),
+        )
+    ]
+
+
 def _build_station_result(
     *,
     station_id: StationId,
@@ -769,8 +818,22 @@ def _build_station_result(
         recent_steps=iq_config.forcing_recent_steps,
         declared_lookbacks=dict(data_requirements.declared_lookbacks),
     )
-    if forcing_flags:
-        input_quality_flags = (*input_quality_flags, *forcing_flags)
+    try:
+        observation_flags = _provisional_discharge_flags(
+            station_id=station_id,
+            group_inputs=group_inputs,
+            metadata=input_metadata,
+            lookback_steps=data_requirements.lookback_steps,
+            recent_steps=iq_config.forcing_recent_steps,
+        )
+    except Exception as exc:
+        log.warning(
+            "run_group_forecast.discharge_coverage_diagnostic_failed",
+            error_type=type(exc).__name__,
+        )
+        observation_flags = []
+    if forcing_flags or observation_flags:
+        input_quality_flags = (*input_quality_flags, *forcing_flags, *observation_flags)
         input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
@@ -927,6 +990,30 @@ def run_group_forecast(
                     "group input gate returned invalid member identities"
                 )
             unavailable.extend(issues)
+            try:
+                for issue in issues:
+                    metadata = metadata_by_station.get(issue.station_id)
+                    if metadata is not None:
+                        coverage = _provisional_discharge_flags(
+                            station_id=issue.station_id,
+                            group_inputs=group_inputs,
+                            metadata=metadata,
+                            lookback_steps=model.data_requirements.lookback_steps,
+                            recent_steps=config.input_quality.forcing_recent_steps,
+                        )
+                        if coverage:
+                            log.warning(
+                                "run_group_forecast.provisional_discharge_excluded",
+                                station_id=str(issue.station_id),
+                                reason=issue.reason.value,
+                                coverage=[flag.detail for flag in coverage],
+                            )
+            except Exception as exc:
+                # Diagnostics must not replace the gate's actual member decisions.
+                log.warning(
+                    "run_group_forecast.discharge_coverage_diagnostic_failed",
+                    error_type=type(exc).__name__,
+                )
             serviceable_ids = [
                 sid for sid in serviceable_ids if sid not in excluded_ids
             ]
