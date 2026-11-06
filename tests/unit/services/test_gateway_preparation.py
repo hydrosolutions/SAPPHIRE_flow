@@ -53,6 +53,8 @@ from sapphire_flow.types.gateway_preparation import (
     PreparationState,
     ProductContract,
     RegistrationStatus,
+    SourceRunContract,
+    SourceRunSemantics,
     SubscriptionParameter,
 )
 from sapphire_flow.types.model import ModelDataRequirements
@@ -170,7 +172,7 @@ def test_state_roundtrip_and_exclusive_lock(approved: Path, tmp_path: Path) -> N
         ):
             pass
     raw = json.loads((directory / "state.json").read_text())
-    raw["schema_version"] = 2
+    raw["schema_version"] = 999
     (directory / "state.json").write_text(json.dumps(raw))
     with pytest.raises(ValueError, match="unsupported"):
         load_preparation_state(directory)
@@ -210,7 +212,14 @@ def proposal():
             level=None,
             control_grid="0p1",
             product_grid_reference="synthetic contract only",
-            source_runs=((cycle.isoformat(), "synthetic_run"),),
+            source_runs=(
+                (
+                    cycle.isoformat(),
+                    SourceRunContract(
+                        semantics=SourceRunSemantics.EXACT, value="synthetic_run"
+                    ),
+                ),
+            ),
         ),
         contracts=tuple(
             ProductContract(
@@ -221,6 +230,9 @@ def proposal():
                 reference="synthetic fixture, not Vatro",
                 date_end=DateEndConvention.INCLUSIVE,
                 publication_lag=timedelta(days=5),
+                historical_source_run=SourceRunContract(
+                    semantics=SourceRunSemantics.EXACT, value="synthetic_run"
+                ),
                 subscription_parameters=tuple(
                     SubscriptionParameter(
                         canonical=canonical,
@@ -643,3 +655,77 @@ def test_research_text_code_00001_survives_admission(
         "00001",
         "g_00001",
     )
+
+
+def test_invalid_hru_never_persists_external_intent(
+    approved: Path, tmp_path: Path
+) -> None:
+    gateway = SyntheticGateway()
+    adapter = RecapRegistration(
+        config(), api_key="synthetic", transport=httpx.MockTransport(gateway.transport)
+    )
+    workspace = tmp_path / "evidence"
+    with preparation_workspace(workspace, handover=approved):
+        state = PreparationState(
+            handover=admit_handover(approved), gateway_review_reference="synthetic"
+        )
+        state = retain_proposal(workspace, state, proposal())
+        state = confirm_proposal(workspace, state, proposal_revision(proposal()))
+        with pytest.raises(ValueError, match="identifier"):
+            register_handover(
+                workspace,
+                state,
+                adapter,
+                requested_hru="Bad/name",
+                attempt_id="a",
+                now="synthetic",
+            )
+        state = load_preparation_state(workspace)
+        assert state.attempts == ()
+        assert gateway.requests == []
+        state = register_handover(
+            workspace,
+            state,
+            adapter,
+            requested_hru="corrected_name",
+            attempt_id="b",
+            now="synthetic",
+        )
+        assert len(gateway.requests) == 1
+        assert state.attempts[-1].status == RegistrationStatus.RECONCILIATION_REQUIRED
+    adapter.close()
+
+
+def test_previous_state_version_is_preserved_and_never_reinterpreted(
+    approved: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "evidence"
+    with preparation_workspace(workspace, handover=approved):
+        save_preparation_state(
+            workspace, PreparationState(handover=admit_handover(approved))
+        )
+    path = workspace / "state.json"
+    raw = json.loads(path.read_text())
+    raw["schema_version"] = 1
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="unsupported preparation state; do not reset"):
+        load_preparation_state(workspace)
+    assert path.read_bytes() == before
+
+
+def test_unknown_historical_run_blocks_proposal_confirmation() -> None:
+    known = proposal()
+    unresolved = tuple(
+        replace(contract, historical_source_run=SourceRunContract())
+        for contract in known.contracts
+    )
+    planned = propose_data(
+        model_id=known.model_id,
+        requirements=requirements(),
+        time_step=known.time_step,
+        history=known.history,
+        forecast=known.forecast,
+        contracts=unresolved,
+    )
+    assert "historical_source_run_unconfirmed:era5_history" in planned.holds

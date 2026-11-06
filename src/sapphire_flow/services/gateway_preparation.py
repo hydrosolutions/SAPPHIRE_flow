@@ -50,11 +50,14 @@ from sapphire_flow.types.gateway_preparation import (
     RegistrationStatus,
     RequestedVariable,
     RequirementSnapshot,
+    SourceRunContract,
+    SourceRunSemantics,
     StreamSetting,
     Subscription,
     SubscriptionAction,
     SubscriptionChange,
     SubscriptionPlan,
+    parse_gateway_hru_name,
 )
 
 if TYPE_CHECKING:
@@ -323,6 +326,7 @@ def register_handover(
     now: str,
 ) -> PreparationState:
     """Persist an uncertain intent before exactly one upload. Never auto-retry."""
+    requested_hru = parse_gateway_hru_name(requested_hru)
     if (
         not state.proposals
         or state.confirmed_proposal != proposal_revision(state.proposals[-1])
@@ -480,13 +484,20 @@ def propose_data(
         if contract is None:
             continue
         if variable.stream in (DataStream.ERA5_HISTORY, DataStream.SNOW_HISTORY):
+            if (
+                contract.historical_source_run.semantics
+                == SourceRunSemantics.UNRESOLVED
+            ):
+                holds.append(
+                    "historical_source_run_unconfirmed:" + variable.stream.value
+                )
             if timedelta(days=1) % contract.cadence:
                 holds.append("history_cadence_not_supported_by_date_chunks")
-        elif (
-            forecast is not None
-            and (forecast.end_lead - forecast.first_lead) % contract.cadence
-        ):
-            holds.append("forecast_interval_not_aligned_with_source_cadence")
+        elif forecast is not None:
+            try:
+                contract.forecast_leads(forecast.first_lead, forecast.end_lead)
+            except ValueError:
+                holds.append("forecast_interval_not_aligned_with_source_cadence")
         modes = (
             {"fc"}
             if variable.stream == DataStream.IFS_FORECAST and forecast
@@ -940,13 +951,13 @@ def resume_coverage(
             if not pending:
                 continue
             failure: str | None = None
-            expected_run = None
+            expected_run = contract.historical_source_run
             if cycle is not None:
                 assert proposal.forecast is not None
                 expected_run = dict(proposal.forecast.source_runs).get(
-                    cycle.isoformat()
+                    cycle.isoformat(), SourceRunContract()
                 )
-                if not expected_run:
+                if expected_run.semantics == SourceRunSemantics.UNRESOLVED:
                     failure = "forecast_source_run_contract_unconfirmed"
             try:
                 if failure:
@@ -982,6 +993,12 @@ def resume_coverage(
                     source=contract.provenance,
                     contract_reference=contract.reference,
                     source_run=expected_run,
+                    expected_times=tuple(
+                        cycle + lead
+                        for lead in contract.forecast_leads(start - cycle, end - cycle)
+                    )
+                    if cycle is not None
+                    else None,
                 )
                 result = assess_coverage(raw, scope)
                 evidence = ChunkEvidence(
@@ -999,6 +1016,9 @@ def resume_coverage(
                     missing_intervals=result.missing_intervals,
                     holds=(*result.holds, failure) if failure else result.holds,
                     response_sha256=result.response_sha256,
+                    validated_source=result.validated_source,
+                    validated_source_run=result.validated_source_run,
+                    validated_run_identities=result.validated_run_identities,
                 )
                 state = replace(state, coverage=(*state.coverage, evidence))
                 save_preparation_state(directory, state)
@@ -1063,7 +1083,8 @@ def _fetch_scope(
             include_provenance=True,
         )
     if (
-        isinstance(raw, pd.DataFrame)
+        cycle is None
+        and isinstance(raw, pd.DataFrame)
         and isinstance(raw.index, pd.DatetimeIndex)
         and raw.index.tz is not None
     ):

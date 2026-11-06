@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +18,10 @@ from sapphire_flow.services.gateway_data_coverage import (
     private_gateway_fetch,
     recover_downloads,
 )
+from sapphire_flow.types.gateway_preparation import (
+    SourceRunContract,
+    SourceRunSemantics,
+)
 
 
 def scope() -> CoverageScope:
@@ -27,6 +32,7 @@ def scope() -> CoverageScope:
         cadence=timedelta(days=1),
         source="synthetic_history",
         contract_reference="synthetic-only contract",
+        source_run=SourceRunContract(semantics=SourceRunSemantics.NULL),
     )
 
 
@@ -167,3 +173,124 @@ def test_only_owned_orphans_cleaned(tmp_path: Path) -> None:
     unrelated.write_bytes(b"unrelated")
     assert recover_downloads(tmp_path) == 1
     assert other.exists() and unrelated.exists()
+
+
+def test_unconfirmed_run_contract_never_completes_history() -> None:
+    data = frame()
+    data["source_run"] = "unexpected-run"
+    result = assess_coverage(data, replace(scope(), source_run=SourceRunContract()))
+    assert result.holds
+    assert result.usable_count == 0
+
+
+@pytest.mark.parametrize(
+    "semantics", [SourceRunSemantics.EXACT, SourceRunSemantics.NULL]
+)
+def test_wrong_historical_source_run_holds_each_row(
+    semantics: SourceRunSemantics,
+) -> None:
+    contract = SourceRunContract(
+        semantics=semantics,
+        value="confirmed-synthetic" if semantics == SourceRunSemantics.EXACT else None,
+    )
+    data = frame()
+    data["source_run"] = "wrong-run"
+    result = assess_coverage(data, replace(scope(), source_run=contract))
+    assert "wrong_source_provenance" in result.holds
+    assert result.usable_count == 0
+    assert result.validated_source is None and result.validated_source_run is None
+
+
+@pytest.mark.parametrize(
+    "semantics",
+    [SourceRunSemantics.EXACT, SourceRunSemantics.NULL, SourceRunSemantics.ABSENT],
+)
+def test_explicit_run_semantics_retained_as_validated_evidence(
+    semantics: SourceRunSemantics,
+) -> None:
+    contract = SourceRunContract(
+        semantics=semantics,
+        value="confirmed-synthetic" if semantics == SourceRunSemantics.EXACT else None,
+    )
+    data = frame()
+    if semantics == SourceRunSemantics.ABSENT:
+        data = data.drop(columns="source_run")
+    elif semantics == SourceRunSemantics.EXACT:
+        data["source_run"] = "confirmed-synthetic"
+    result = assess_coverage(data, replace(scope(), source_run=contract))
+    assert result.holds == ()
+    assert result.validated_source == "synthetic_history"
+    assert result.validated_source_run == contract
+
+
+def test_null_run_requires_a_column_and_absent_run_forbids_it() -> None:
+    assert assess_coverage(frame().drop(columns="source_run"), scope()).holds
+    assert assess_coverage(
+        frame(),
+        replace(
+            scope(), source_run=SourceRunContract(semantics=SourceRunSemantics.ABSENT)
+        ),
+    ).holds
+
+
+@pytest.mark.parametrize(
+    "semantics", [SourceRunSemantics.UTC_INSTANT, SourceRunSemantics.UTC_DATE_MIDNIGHT]
+)
+def test_datetime_run_contracts_normalize_offset_and_preserve_observed_identity(
+    semantics: SourceRunSemantics,
+) -> None:
+    data = frame()
+    expected = pd.Timestamp(scope().start).normalize()
+    data["source_run"] = (
+        data.index.normalize().tz_convert("Asia/Kathmandu")
+        if semantics == SourceRunSemantics.UTC_DATE_MIDNIGHT
+        else expected.tz_convert("Asia/Kathmandu")
+    )
+    run = SourceRunContract(
+        semantics=semantics,
+        timestamp=expected.to_pydatetime()
+        if semantics == SourceRunSemantics.UTC_INSTANT
+        else None,
+    )
+    result = assess_coverage(data, replace(scope(), source_run=run))
+    assert result.holds == ()
+    expected_runs = (
+        tuple(time.isoformat() for time in data.index.normalize())
+        if semantics == SourceRunSemantics.UTC_DATE_MIDNIGHT
+        else (expected.isoformat(),)
+    )
+    assert result.validated_run_identities == expected_runs
+
+
+@pytest.mark.parametrize(
+    "bad_run", [pd.Timestamp("2024-01-01"), pd.NaT, "2024-01-01T00:00:00+00:00"]
+)
+def test_typed_datetime_run_rejects_naive_missing_or_text(bad_run: object) -> None:
+    data = frame()
+    data["source_run"] = bad_run
+    run = SourceRunContract(semantics=SourceRunSemantics.UTC_DATE_MIDNIGHT)
+    result = assess_coverage(data, replace(scope(), source_run=run))
+    assert result.usable_count == 0
+    assert "wrong_source_provenance" in result.holds
+
+
+def test_declared_daily_run_policy_validates_every_date_not_a_global_constant() -> None:
+    times = pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC")
+    data = pd.DataFrame(
+        {"g_synthetic": 1.0, "source": "synthetic_history", "source_run": times},
+        index=times,
+    )
+    declared = replace(
+        scope(),
+        start=times[0].to_pydatetime(),
+        end=(times[-1] + pd.Timedelta(days=1)).to_pydatetime(),
+        cadence=timedelta(days=1),
+        source_run=SourceRunContract(semantics=SourceRunSemantics.UTC_DATE_MIDNIGHT),
+    )
+    result = assess_coverage(data, declared)
+    assert result.holds == ()
+    assert len(result.validated_run_identities) == 3
+    data.loc[times[-1], "source_run"] = times[0]
+    result = assess_coverage(data, declared)
+    assert result.usable_count == 2
+    assert "wrong_source_provenance" in result.holds

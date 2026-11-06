@@ -710,5 +710,6 @@ on exit. This narrowly contains HTTPX and requests/urllib3 query-key URLs before
 handlers run; it is not a global redaction framework or a client monkey-patch.
 Failures expose a closed `GatewayFailure` reason only; no raw exception chain,
 request params or response body enters state/output. Upload warnings are bounded
-and key/URL-sanitized. No new Prefect or operational events are introduced.
-
+and key/URL-sanitized, including query-encoded key forms and percent-escape case
+variants before truncation. Every ordinary HTTPX transport/response-processing
+exception is contained by the external boundary; process interrupts still propagate. No new Prefect or operational events are introduced.

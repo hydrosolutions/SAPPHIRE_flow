@@ -8,8 +8,8 @@ import os
 import re
 import tempfile
 import threading
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from numbers import Real
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -20,6 +20,10 @@ from sapphire_flow.adapters.recap_registration import (
     GatewayAccessError,
     quiet_gateway_transport,
     safe_gateway_failure,
+)
+from sapphire_flow.types.gateway_preparation import (
+    SourceRunContract,
+    SourceRunSemantics,
 )
 
 if TYPE_CHECKING:
@@ -34,7 +38,8 @@ class CoverageScope:
     cadence: timedelta
     source: str
     contract_reference: str
-    source_run: str | None = None
+    source_run: SourceRunContract = field(default_factory=SourceRunContract)
+    expected_times: tuple[datetime, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.contract_reference.strip() or not self.source or not self.polygon:
@@ -46,7 +51,17 @@ class CoverageScope:
             for t in (self.start, self.end)
         ):
             raise ValueError("coverage scope must be UTC")
-        if (self.end - self.start) % self.cadence:
+        if self.expected_times is not None:
+            if not self.expected_times or any(
+                time.utcoffset() != timedelta(0) or not self.start <= time < self.end
+                for time in self.expected_times
+            ):
+                raise ValueError(
+                    "expected support must be nonempty UTC points inside scope"
+                )
+            if tuple(sorted(set(self.expected_times))) != self.expected_times:
+                raise ValueError("expected support must be ordered and distinct")
+        elif (self.end - self.start) % self.cadence:
             raise ValueError("coverage interval must align with confirmed support")
 
 
@@ -57,19 +72,36 @@ class CoverageEvidence:
     missing_intervals: tuple[tuple[str, str], ...]
     holds: tuple[str, ...]
     response_sha256: str
+    validated_source: str | None
+    validated_source_run: SourceRunContract | None
+    validated_run_identities: tuple[str, ...]
 
 
 def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEvidence:
     """Check one explicit polygon/variable/member response, without unit conversion."""
-    expected = tuple(
-        scope.start + n * scope.cadence
-        for n in range(int((scope.end - scope.start) / scope.cadence))
+    expected = (
+        scope.expected_times
+        if scope.expected_times is not None
+        else tuple(
+            scope.start + n * scope.cadence
+            for n in range(int((scope.end - scope.start) / scope.cadence))
+        )
     )
     holds: set[str] = set()
     usable: set[datetime] = set()
+    run_identities: set[str] = set()
     digest = hashlib.sha256()
-    columns = {scope.polygon, "source", "source_run"}
-    if not columns <= set(frame.columns) or not frame.columns.is_unique:
+    columns = {scope.polygon, "source"}
+    if scope.source_run.semantics != SourceRunSemantics.ABSENT:
+        columns.add("source_run")
+    if scope.source_run.semantics == SourceRunSemantics.UNRESOLVED:
+        holds.add("source_run_contract_unconfirmed")
+    elif (
+        scope.source_run.semantics == SourceRunSemantics.ABSENT
+        and "source_run" in frame.columns
+    ):
+        holds.add("unexpected_source_run_column")
+    elif not columns <= set(frame.columns) or not frame.columns.is_unique:
         holds.add("missing_or_duplicate_columns")
     elif not isinstance(frame.index, pd.DatetimeIndex) or frame.index.tz is None:
         holds.add("unknown_time_axis")
@@ -91,7 +123,7 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
                         timestamp.isoformat(),
                         row[scope.polygon],
                         row["source"],
-                        row["source_run"],
+                        row.get("source_run"),
                     )
                 ).encode()
             )
@@ -106,9 +138,8 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
             if (
                 not isinstance(row["source"], str)
                 or row["source"] != scope.source
-                or (
-                    scope.source_run is not None
-                    and str(row["source_run"]) != scope.source_run
+                or not _matches_source_run(
+                    row.get("source_run"), scope.source_run, timestamp
                 )
             ):
                 holds.add("wrong_source_provenance")
@@ -122,15 +153,19 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
                 holds.add("unusable_values")
                 continue
             usable.add(timestamp)
+            observed_run = row.get("source_run")
+            if isinstance(observed_run, str):
+                run_identities.add(observed_run)
+            elif isinstance(observed_run, datetime) and observed_run is not pd.NaT:
+                run_identities.add(observed_run.astimezone(UTC).isoformat())
     missing = [timestamp for timestamp in expected if timestamp not in usable]
     intervals: list[tuple[str, str]] = []
+    following = dict(zip(expected, (*expected[1:], scope.end), strict=True))
     for timestamp in missing:
         if intervals and intervals[-1][1] == timestamp.isoformat():
-            intervals[-1] = (intervals[-1][0], (timestamp + scope.cadence).isoformat())
+            intervals[-1] = (intervals[-1][0], following[timestamp].isoformat())
         else:
-            intervals.append(
-                (timestamp.isoformat(), (timestamp + scope.cadence).isoformat())
-            )
+            intervals.append((timestamp.isoformat(), following[timestamp].isoformat()))
     if missing:
         holds.add("missing_requested_support")
     return CoverageEvidence(
@@ -139,7 +174,43 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
         missing_intervals=tuple(intervals),
         holds=tuple(sorted(holds)),
         response_sha256="sha256:" + digest.hexdigest(),
+        validated_source=scope.source if usable else None,
+        validated_source_run=scope.source_run if usable else None,
+        validated_run_identities=tuple(sorted(run_identities)),
     )
+
+
+def _matches_source_run(
+    value: object, contract: SourceRunContract, valid_time: datetime
+) -> bool:
+    if contract.semantics in (
+        SourceRunSemantics.UTC_INSTANT,
+        SourceRunSemantics.UTC_DATE_MIDNIGHT,
+    ):
+        if (
+            not isinstance(value, datetime)
+            or value is pd.NaT
+            or value.utcoffset() is None
+        ):
+            return False
+        expected = (
+            contract.timestamp
+            if contract.semantics == SourceRunSemantics.UTC_INSTANT
+            else valid_time.astimezone(UTC).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        )
+        return value.astimezone(UTC) == expected
+    if contract.semantics == SourceRunSemantics.EXACT:
+        return isinstance(value, str) and value == contract.value
+    if contract.semantics == SourceRunSemantics.NULL:
+        return (
+            value is None
+            or value is pd.NA
+            or value is pd.NaT
+            or (isinstance(value, Real) and math.isnan(value))
+        )
+    return contract.semantics == SourceRunSemantics.ABSENT
 
 
 _Result = TypeVar("_Result")

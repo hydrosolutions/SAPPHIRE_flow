@@ -8,12 +8,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, TypeVar
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
 from pydantic import BaseModel, StrictBool, StrictStr, TypeAdapter, ValidationError
 
-from sapphire_flow.types.gateway_preparation import StreamSetting, Subscription
+from sapphire_flow.types.gateway_preparation import (
+    StreamSetting,
+    Subscription,
+    parse_gateway_hru_name,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -100,7 +104,17 @@ class UploadReceipt:
 
 def _safe_text(text: str, api_key: str) -> str:
     # Redact before truncation so even a boundary-spanning key cannot survive.
-    text = text.replace(api_key, "[redacted]") if api_key else text
+    if api_key:
+        forms = {api_key, quote(api_key), quote(api_key, safe=""), quote_plus(api_key)}
+        for form in sorted(forms, key=len, reverse=True):
+            # Only percent escape digits are case-insensitive, not key text.
+            pattern = "".join(
+                f"(?i:{part})"
+                if re.fullmatch(r"%[0-9a-fA-F]{2}", part)
+                else re.escape(part)
+                for part in re.split(r"(%[0-9a-fA-F]{2})", form)
+            )
+            text = re.sub(pattern, "[redacted]", text)
     text = re.sub(r"https?://\S+", "[URL omitted]", text)
     text = re.sub(r"(?i)api_key\s*[=:]\s*\S+", "api_key=[redacted]", text)
     return "".join(c for c in text if c.isprintable() or c == "\n")[:1000]
@@ -130,8 +144,7 @@ class RecapRegistration:
         self._client.close()
 
     def upload(self, *, hru_code: str, content: bytes) -> UploadReceipt:
-        if re.fullmatch(r"[a-z_][a-z0-9_]*", hru_code) is None:
-            raise ValueError("new Gateway HRU must be a lowercase identifier")
+        hru_code = parse_gateway_hru_name(hru_code)
         # Exact bytes already verified against the durable intent by the service.
         failure: GatewayFailure | None = None
         receipt: UploadReceipt | None = None
@@ -167,10 +180,11 @@ class RecapRegistration:
                         if body.warnings
                         else None,
                     )
-            except (httpx.HTTPError, OSError):
-                failure = GatewayFailure.UNCERTAIN
             except (ValidationError, ValueError):
                 failure = GatewayFailure.MALFORMED
+            except Exception:
+                # Complete external transport/response boundary, never raw chains.
+                failure = GatewayFailure.UNCERTAIN
         # Outside except: neither a secret-bearing context nor cause is retained.
         if failure is not None:
             raise GatewayAccessError(failure)
@@ -204,10 +218,11 @@ class RecapRegistration:
                     failure = GatewayFailure.UNCERTAIN
                 else:
                     result = boundary.validate_json(response.content)
-            except (httpx.HTTPError, OSError):
-                failure = GatewayFailure.UNCERTAIN
             except (ValidationError, ValueError):
                 failure = GatewayFailure.MALFORMED
+            except Exception:
+                # Complete external transport/response boundary, never raw chains.
+                failure = GatewayFailure.UNCERTAIN
         if failure is not None:
             raise GatewayAccessError(failure)
         if result is None:

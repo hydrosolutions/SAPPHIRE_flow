@@ -145,7 +145,7 @@ Report requested versus returned usable support, compressed missing intervals/co
 
 **Verification / RED:** `tests/unit/services/test_gateway_data_coverage.py` and preparation tests with fake `RecapClientLike`. Complete multi-chunk windows, gaps inside apparently complete min/max bounds, missing feature/variable/member, NaN/Inf/zero, wrong source, duplicate/conflicting/off-grid/out-of-window data, inclusive/exclusive boundary and leap-year joins, lagged tail, per-station partial result. Test completed job plus empty HTTP success remains held, ERA5 job cannot complete snow, changed scope invalidates affected chunks, resume after one chunk/variable failure preserves prior verified evidence. Compare final results from uninterrupted and interrupted execution; no repeat registration or unrelated subscription writes. Test every requested cell is accounted for, not merely a sample. Add pinned real-client boundary tests with a fake network transport for private working-directory placement, restrictive permissions, interrupted download/orphan recovery, and credential-safe logging/error mapping; do not infer these properties from a fake client alone. Exercise third-party logging and reflected keys without making live requests. Tests must document unchanged supported client redirect behavior rather than claiming it has been disabled.
 
-**Docs:** update coverage explanation in `docs/operations/recap-gateway-runbook.md`; clearly distinguish this evidence from supervised training spans and persistence. **Implementation evidence (2026-11-06):** manual instructions/job references, 31-day full-window history requests, separately requested control forecasts, aggregate per-station coverage and completed-chunk reuse are implemented. Pure tests cover interior gaps, leap day, zeros, NaN/Inf, missing columns, duplicates, off-grid/wrong-source/empty replies. A synthetic two-station 40-day scenario holds one station then resumes successfully without repeat writes. Actual pinned facade tests use fake requests transport and verify 0700 CWD, restrictive raw-file creation, cleanup/orphan ownership, safe errors/logs and **unchanged native redirect following**. Temporal support currently requires a timezone-aware UTC index and uniform declared stream cadence; nonuniform/native-naive contracts are not implemented and cannot be certified complete. No live history/data fetch occurred in this pass. No standalone pre-implementation T4 RED run was recorded.
+**Docs:** update coverage explanation in `docs/operations/recap-gateway-runbook.md`; clearly distinguish this evidence from supervised training spans and persistence. **Implementation evidence (2026-11-06):** manual instructions/job references, 31-day full-window history requests, separately requested control forecasts, aggregate per-station coverage and completed-chunk reuse are implemented. Pure tests cover interior gaps, leap day, zeros, NaN/Inf, missing columns, duplicates, off-grid/wrong-source/empty replies. A synthetic two-station 40-day scenario holds one station then resumes successfully without repeat writes. Actual pinned facade tests use fake requests transport and verify 0700 CWD, restrictive raw-file creation, cleanup/orphan ownership, safe errors/logs and **unchanged native redirect following**. The initial reviewed head supported timezone-aware UTC indexes and uniform cadence only. The focused repair below extends this to explicit piecewise forecast lead support and typed aware source-run identities; naive indexes remain unsupported. No live history/data fetch occurred in this pass. No standalone pre-implementation T4 RED run was recorded.
 
 ### T5 — Deliver the facilitator commands and numbered operator procedure
 
@@ -215,3 +215,50 @@ A merged code PR can establish **implemented capability** while this task remain
 - **Existing authority and required inputs:** the owner already permits the scoped new Trishuli shapefile registration and data fetches. Obtain the applicable credentials and operator inputs, Vatro review and explicit subscription-scope confirmation without asking again for the already-authorized upload/fetch. Ask the owner only for expanded actions such as deployment, existing-station changes, shared IFS work or changed overlap with Nepal-cloud / BAFU-Mac-mini runtimes. Shared IFS work remains excluded by default.
 
 Every vision outcome has a verification route in T1–T6. Software/hold/idempotency behavior is executable offline. Real upload, permissions, subscription interpretation, manual history and full coverage remain externally gated and cannot be asserted from this planning pass. No extra checkout, infrastructure or external-repository edit is needed.
+
+## Focused patch-review repair evidence — 2026-11-06
+
+Root authorized repair of the five independent patch findings at reviewed head
+`882ff10003d64002b2e98aa033dc52b7e0b5e85c`; this does not replace fresh review.
+
+- T1/T4: state schema advances to 2. Version 1 is rejected and preserved, not
+  automatically migrated/reset. Historical source-run semantics are explicit:
+  exact text, fixed aware instant, explicitly declared UTC-date-midnight rule,
+  confirmed null/absence, or unresolved hold. Every usable
+  historical row must satisfy source and run contracts; validated source/run
+  provenance is retained in chunk evidence. No actual ERA5 run rule is invented.
+- T3: raw and standard query-encoded keys (percent-escape case variants included)
+  are redacted before warning/detail truncation. Ordinary HTTPX transport and
+  response-processing exceptions are safely mapped; BaseException interrupts
+  still propagate. HRU names are parsed before durable mutation intent so local
+  syntax errors remain correctable without fabricated remote reconciliation.
+- T5: actual `run()` dispatch now covers registration/repeated uncertainty,
+  reconciliation, subscription preview/stale/exact confirmation, manual history
+  with/without job reference, full-scope resume and status. Tests use native-shaped
+  config, a dummy secret file, the actual approved secret/config loaders, the real
+  HTTPX adapter and pinned retrieval facade, with only network transports faked.
+  They assert state/output secret safety, no duplicate writes, control-only calls,
+  wrong historical provenance holds, partial station results and complete resume.
+- RED evidence: five newly added security/local-name regressions failed before
+  repair (5 failed / 42 passed); an unresolved historical-run test separately
+  failed by returning complete coverage. GREEN after the control compatibility extension: **477 passed, 1 optional skip**
+  across new tests and relevant basin/Recap/FI regressions; changed-module pyright
+  **0 errors**. Lint/format checks pass. Aquacast's real declaration remains unverified.
+- Final-head full default CI is required after repair. Per root instruction the
+  one-hour known-low-disk local suite was not repeated. The 11914-pass/8-watchdog-
+  failure result above is evidence for the **earlier reviewed head only**, not a
+  repaired-head full-suite success. RELEASE_TARGET stays **0.1.1113**; no second bump.
+
+Root explicitly extended the repair to represent the approved ten-day control
+shape. Product contracts now accept validated contiguous lead bands, with uniform
+cadence retained. The declared synthetic `[0,144h)`/3h + `[144,240h)`/6h schedule
+requires exactly 64 points, independently of returned rows. Native-facade/CLI
+regressions cover missing 3h/6h points, the 144h join, duplicate joins, wrong cycle,
+off-grid and excluded 240h points. Typed aware run instants normalize to UTC;
+history supports an opt-in UTC-date-midnight rule, validated across each date and
+retained with unique observed run identities. No universal ERA5 rule is inferred.
+Separate root-authorized metadata observations motivated these shapes but remain
+external evidence, not Vatro contract confirmation or this agent's live work.
+No aggregation, units, scientific adoption, or live eligibility is inferred.
+The missing pre-factor derived-GeoPackage golden literal remains disclosed; existing
+fixed digest baselines and export round-trips remain unchanged and green.

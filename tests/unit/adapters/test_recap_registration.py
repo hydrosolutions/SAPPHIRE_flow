@@ -196,3 +196,55 @@ def test_scoped_read_rejects_another_hru() -> None:
             adapter.subscriptions(source="synthetic_era5", hru_code="new_synthetic")
     finally:
         adapter.close()
+
+
+@pytest.mark.parametrize(
+    "exception_type", [httpx.InvalidURL, httpx.StreamError, httpx.CookieConflict]
+)
+def test_all_httpx_transport_errors_are_chain_free(
+    exception_type: type[Exception],
+) -> None:
+    def transport(request: httpx.Request) -> httpx.Response:
+        raise exception_type("synthetic failure " + str(request.url))
+
+    adapter = RecapRegistration(
+        config(), api_key=KEY, transport=httpx.MockTransport(transport)
+    )
+    try:
+        for action in (
+            lambda: adapter.upload(hru_code="new_synthetic", content=b"synthetic"),
+            lambda: adapter.subscriptions(source="era5", hru_code="new_synthetic"),
+        ):
+            with pytest.raises(GatewayAccessError) as error:
+                action()
+            assert KEY not in str(error.value)
+            assert error.value.__context__ is None and error.value.__cause__ is None
+    finally:
+        adapter.close()
+
+
+def test_encoded_secret_echoes_redacted_before_truncation() -> None:
+    from urllib.parse import quote, quote_plus
+
+    secret = "aaaa/aaaa+aaaa aaaa%aaaa?"
+    forms = {secret, quote(secret), quote(secret, safe=""), quote_plus(secret)}
+    forms |= {
+        form.replace("%2F", "%2f").replace("%2B", "%2b").replace("%3F", "%3f")
+        for form in forms
+    }
+    echo = " credential ".join(sorted(forms))
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": echo, "detail": echo, "warnings": "x" * 980 + echo}
+        )
+
+    adapter = RecapRegistration(
+        config(), api_key=secret, transport=httpx.MockTransport(transport)
+    )
+    try:
+        receipt = adapter.upload(hru_code="new_synthetic", content=b"synthetic")
+    finally:
+        adapter.close()
+    for form in forms:
+        assert form not in receipt.message + receipt.detail + str(receipt.warnings)

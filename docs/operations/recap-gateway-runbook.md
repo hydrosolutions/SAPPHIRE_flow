@@ -71,7 +71,9 @@ Gateway coverage passes. Exit `0` means this Gateway scope passed, not model rea
    ```
 
    Upload is exactly `package/basins.gpkg`, once per HRU/batch, never a ZIP or static
-   table. Intent is flushed before the POST. HTTP success is recorded separately
+   table. Requested HRU syntax is parsed before any intent is recorded; a local naming
+   error makes no transport call and can be corrected without remote reconciliation.
+   Intent is flushed before the POST. HTTP success is recorded separately
    from confirmed identity. Reconciliation evidence must tie the requested HRU,
    exact upload digest and all feature names to this handover. Self-declared actor
    text is not authentication. Optional admin review may provide evidence; it is
@@ -132,17 +134,57 @@ operator-selected `purpose`. `forecast` contains UTC synoptic `cycles`, ISO-8601
 `first_lead`/exclusive `end_lead` durations, explicit `members` (`[0]` for SAP3's
 control/HRES only), `level_type`, nullable `level`,
 `control_grid` (`0p1`), `product_grid_reference`, and
-`source_runs`: pairs of cycle ISO timestamp and exact expected returned
-`source_run` text. This implementation supports timezone-aware UTC timestamp
-indices and one declared uniform cadence per stream. Nonuniform lead-time support
-or naive timestamp conventions remain held pending an explicit supported temporal
-contract; do not manufacture a cadence from returned data. Missing run evidence holds coverage. Grid values describe the
+`source_runs`: pairs of cycle ISO timestamp and a run contract. For datetime-valued
+runs use `{"semantics":"utc_instant","timestamp":"2026-11-06T00:00:00Z"}`;
+that aware instant must match its requested cycle and is normalized to UTC.
+Exact text run identities remain supported through `{"semantics":"exact",
+"value":"CONFIRMED_TEXT"}`. Naive or string timestamps do not satisfy a declared
+datetime contract. Missing run evidence holds coverage. Grid values describe the
 fixed product; they are **not** unsupported client selection arguments.
+
+Uniform `cadence` remains supported. A product can instead declare
+`forecast_lead_bands`, ordered contiguous half-open lead intervals from zero,
+each with ISO-8601 `start`, `end`, and `cadence`. For example, the following
+**synthetic declaration** expresses 64 expected control points over `[0,240h)`:
+
+```json
+"forecast_lead_bands": [
+  {"start":"PT0S","end":"P6D","cadence":"PT3H"},
+  {"start":"P6D","end":"P10D","cadence":"PT6H"}
+]
+```
+
+It requires leads 0..141 every 3h and 144..234 every 6h, with one join at 144h
+and no 240h point. Lead bands must cover the requested horizon; gaps, overlaps
+and unsupported boundaries are rejected. Expected timestamps are enumerated
+from this declaration **before** looking at returned data. Missing 3h or 6h
+points, duplicate joins, unexpected points and wrong cycles hold coverage.
+Nothing silently coarsens cadence. Aware UTC indexes are required; source-run
+instants may carry other offsets and are normalized to UTC. Timestamp spacing
+does not establish interval-value support, aggregation, units or scientific
+readiness. Actual product declarations and evidence still require Vatro review.
 
 Each `contracts` entry contains `stream` (`era5_history`, `ifs_forecast`,
 `snow_history`, `snow_forecast`), `subscription_source`, positive ISO-8601 `cadence`,
 expected raw `provenance`, `reference`, `date_end` (`inclusive` or `exclusive`),
-ISO-8601 `publication_lag`, and `subscription_parameters`. Each binding names the
+ISO-8601 `publication_lag`, `historical_source_run`, and `subscription_parameters`.
+`historical_source_run` is an explicit object with `semantics` and nullable `value`:
+`{"semantics":"exact","value":"CONFIRMED_TEXT"}` checks that exact text on every
+historical row; `{"semantics":"null","value":null}` requires a present column
+with null values; `{"semantics":"absent","value":null}` requires the column to
+be absent. The default `unresolved` is a hold, not permission to ignore the field.
+Use null/absence only when supported by the cited product contract. Fixed aware
+historical instants use the same `utc_instant`/`timestamp` contract as forecasts.
+An explicitly confirmed per-date rule can instead use
+`{"semantics":"utc_date_midnight"}`: every row's run must equal midnight of
+that row's UTC valid date. This rule is **opt-in**, requires the product's evidence
+reference, and is not a universal ERA5 assumption or a conclusion from one day's
+metadata. Other varying rules remain unresolved until explicitly supported.
+Aggregate chunk evidence retains the validated source/run contract and the unique
+normalized observed run identities for usable rows, not raw time series. Wrong
+run provenance cannot complete a historical chunk.
+
+Each subscription binding names the
 canonical variable, **exact** subscription `parameter_name`, and nullable
 `forecast_type` (`fc` for IFS control). Snow history also has
 `snow_history_procedure`. Do not infer native cadence, endpoint inclusivity or
@@ -169,7 +211,10 @@ New authenticated onboarding calls require HTTPS, verified TLS, credential-free
 configured URLs and no redirects. Query authentication is retained because it is
 the supported API contract. The exclusive CLI suppresses third-party stdlib
 transport logging before emission during HTTP calls and never prints raw transport
-errors or exception chains. Upload detail/warnings are bounded and sanitized.
+errors or exception chains. Upload detail/warnings redact raw and standard `quote`/`quote_plus` key encodings,
+including percent-escape case variants, before truncation. URL and labelled-query
+redaction also remain. The complete HTTPX request/response exception boundary
+returns sanitized errors; it does not suppress process interruption.
 The existing retrieval client is **not** modified: it still follows redirects.
 The owner assigned that concern to Vatro as a lower-priority follow-up, not a
 blanket retrieval blocker. Its raw download runs in a private `0700` per-attempt
@@ -177,6 +222,14 @@ CWD under the external workspace with `0077` umask. Normal/error paths clean
 owned downloads; restart cleans only marked owned orphan Parquet files. Aggregate
 state survives. Never run this process-scoped boundary inside a threaded server.
 Keep workspaces private and never commit them or raw data.
+
+Evidence schema version **2** requires explicit run provenance. Version-1
+workspaces from the unreleased implementation are rejected without rewriting them;
+their historical chunks must not be silently reused. Preserve the entire workspace
+and remote-action ledger. Ask the maintainer for an explicit reconciliation/migration
+before proceeding; do not delete state, start a second workspace, or repeat writes
+as a migration shortcut. There is no automatic upgrade or reset path.
+
 
 ## Manual GeoPackage upload
 

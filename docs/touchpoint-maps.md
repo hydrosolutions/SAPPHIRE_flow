@@ -37,6 +37,14 @@ immutability and every station's visible held/eligible result. Verify both HTTP
 stacks with fake transports, key-safe errors/logs, fixed fingerprint baselines,
 partial-batch resume, interrupted writes, unrelated snow flags and the existing
 basin/Recap regressions. The training span manifest and model contracts do not change.
+State schema 2 requires explicit historical run semantics (exact text, fixed aware
+instant, explicitly declared UTC-date-midnight rule, supported null/absence, or
+unresolved hold); validated provenance and unique observed run identities accompany
+aggregate chunk evidence. Forecast contracts support uniform cadence or declared
+contiguous lead bands. Expected support never comes from returned rows. Never silently reinterpret version-1 chunks. Exercise
+actual CLI dispatch through both HTTP stacks with dummy config/secret files and
+fake transports, including encoded key echoes and locally invalid HRU names.
+
 
 ## Maps
 

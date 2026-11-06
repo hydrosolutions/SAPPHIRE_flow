@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path  # noqa: TC003 -- state boundary serialization
 from typing import Literal
 
 from sapphire_flow.basin_operator.inventory import StationInput  # noqa: TC001
+from sapphire_flow.types.weather import GatewayHruName
+
+
+def parse_gateway_hru_name(value: str) -> GatewayHruName:
+    if re.fullmatch(r"[a-z_][a-z0-9_]*", value) is None:
+        raise ValueError("new Gateway HRU must be a lowercase identifier")
+    return GatewayHruName(value)
 
 
 class RegistrationStatus(StrEnum):
@@ -97,6 +104,35 @@ class RequestedVariable:
     source_unit: str
 
 
+class SourceRunSemantics(StrEnum):
+    UNRESOLVED = "unresolved"
+    EXACT = "exact"
+    NULL = "null"
+    ABSENT = "absent"
+    UTC_INSTANT = "utc_instant"
+    UTC_DATE_MIDNIGHT = "utc_date_midnight"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SourceRunContract:
+    semantics: SourceRunSemantics = SourceRunSemantics.UNRESOLVED
+    value: str | None = None
+    timestamp: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.semantics == SourceRunSemantics.EXACT:
+            if not isinstance(self.value, str) or not self.value.strip():
+                raise ValueError("exact source_run requires a nonempty expected value")
+        elif self.value is not None:
+            raise ValueError("only exact source_run semantics accept a value")
+        if self.semantics == SourceRunSemantics.UTC_INSTANT:
+            if self.timestamp is None or self.timestamp.utcoffset() is None:
+                raise ValueError("fixed run identity requires an aware datetime")
+            object.__setattr__(self, "timestamp", self.timestamp.astimezone(UTC))
+        elif self.timestamp is not None:
+            raise ValueError("only fixed run identities accept a timestamp")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ForecastScope:
     cycles: tuple[datetime, ...]
@@ -107,7 +143,7 @@ class ForecastScope:
     level: int | None
     control_grid: Literal["0p1"]
     product_grid_reference: str
-    source_runs: tuple[tuple[str, str], ...] = ()
+    source_runs: tuple[tuple[str, SourceRunContract], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.cycles or len(set(self.cycles)) != len(self.cycles):
@@ -124,6 +160,26 @@ class ForecastScope:
             raise ValueError("forecast cycles must be UTC synoptic hours")
         if self.first_lead < timedelta(0) or self.first_lead >= self.end_lead:
             raise ValueError("nonempty forecast lead interval required")
+        runs = dict(self.source_runs)
+        if len(runs) != len(self.source_runs) or not set(runs) <= {
+            c.isoformat() for c in self.cycles
+        }:
+            raise ValueError("run contracts must identify distinct requested cycles")
+        for cycle in self.cycles:
+            run = runs.get(cycle.isoformat())
+            if run is None:
+                continue
+            if run.semantics not in (
+                SourceRunSemantics.EXACT,
+                SourceRunSemantics.UTC_INSTANT,
+                SourceRunSemantics.UNRESOLVED,
+            ):
+                raise ValueError("forecast runs require fixed identities")
+            if (
+                run.semantics == SourceRunSemantics.UTC_INSTANT
+                and run.timestamp != cycle
+            ):
+                raise ValueError("forecast run timestamp must match its cycle")
         if self.members != (0,) or type(self.members[0]) is not int:
             raise ValueError(
                 "Gateway preparation currently supports control member 0 only"
@@ -151,6 +207,25 @@ class SubscriptionParameter:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastLeadBand:
+    start: timedelta
+    end: timedelta
+    cadence: timedelta
+
+    def __post_init__(self) -> None:
+        if (
+            self.start < timedelta(0)
+            or self.end <= self.start
+            or self.cadence <= timedelta(0)
+        ):
+            raise ValueError(
+                "lead band requires nonnegative start and positive interval/cadence"
+            )
+        if (self.end - self.start) % self.cadence:
+            raise ValueError("lead band boundaries must align with cadence")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ProductContract:
     stream: DataStream
     subscription_source: str
@@ -161,6 +236,8 @@ class ProductContract:
     publication_lag: timedelta
     snow_history_procedure: str = ""
     subscription_parameters: tuple[SubscriptionParameter, ...] = ()
+    historical_source_run: SourceRunContract = field(default_factory=SourceRunContract)
+    forecast_lead_bands: tuple[ForecastLeadBand, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -173,6 +250,40 @@ class ProductContract:
             )
         if self.cadence <= timedelta(0) or self.publication_lag < timedelta(0):
             raise ValueError("valid source cadence and publication lag required")
+        if self.forecast_lead_bands:
+            if self.stream not in (DataStream.IFS_FORECAST, DataStream.SNOW_FORECAST):
+                raise ValueError("lead bands apply only to forecast streams")
+            if self.forecast_lead_bands[0].start != timedelta(0) or any(
+                left.end != right.start
+                for left, right in zip(
+                    self.forecast_lead_bands[:-1],
+                    self.forecast_lead_bands[1:],
+                    strict=True,
+                )
+            ):
+                raise ValueError("lead bands must be ordered and contiguous from zero")
+
+    def forecast_leads(self, start: timedelta, end: timedelta) -> tuple[timedelta, ...]:
+        if start < timedelta(0) or start >= end:
+            raise ValueError("nonempty forecast interval required")
+        bands = self.forecast_lead_bands or (
+            ForecastLeadBand(start=timedelta(0), end=end, cadence=self.cadence),
+        )
+        if end > bands[-1].end:
+            raise ValueError("forecast interval exceeds declared lead support")
+        for boundary in (start, end):
+            if not any(
+                b.start <= boundary <= b.end
+                and (boundary - b.start) % b.cadence == timedelta(0)
+                for b in bands
+            ):
+                raise ValueError("forecast interval boundary is not declared support")
+        return tuple(
+            lead
+            for band in bands
+            for n in range(int((band.end - band.start) / band.cadence))
+            if start <= (lead := band.start + n * band.cadence) < end
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -265,13 +376,16 @@ class ChunkEvidence:
     missing_intervals: tuple[tuple[str, str], ...]
     holds: tuple[str, ...]
     response_sha256: str
+    validated_source: str | None
+    validated_source_run: SourceRunContract | None
+    validated_run_identities: tuple[str, ...]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class PreparationState:
     handover: ApprovedHandover
     attempts: tuple[RegistrationAttempt, ...] = ()
-    schema_version: int = 1
+    schema_version: int = 2
     proposals: tuple[DataProposal, ...] = ()
     confirmed_proposal: str | None = None
     gateway_review_reference: str = ""
@@ -282,5 +396,5 @@ class PreparationState:
     history_jobs: tuple[tuple[str, str, str], ...] = ()
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
+        if type(self.schema_version) is not int or self.schema_version != 2:
             raise ValueError("unsupported preparation state version")
