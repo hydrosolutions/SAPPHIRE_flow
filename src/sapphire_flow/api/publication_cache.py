@@ -28,6 +28,7 @@ def _forecast_bearing_path(path: str) -> bool:
             "/api/v1/forecast-lab/snapshot",
             "/api/v1/observations/latest",
             "/api/v1/swiss/overview",
+            "/api/v1/swiss/observation-history",
         }
     )
 

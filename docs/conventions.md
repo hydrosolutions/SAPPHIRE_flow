@@ -1,7 +1,7 @@
 # Project Conventions
 
-Patterns and conventions specific to SAPPHIRE Flow that complement the
-coding style rules in `AGENTS.md`.
+Repository coding, domain and testing conventions. Agent workflow procedures
+belong to the globally installed skills; project safeguards are in `AGENTS.md`.
 
 > **v0 note**: This document describes the full v1 system. For v0, `v0-scope.md`
 > overrides where it differs — notably: no PgBouncer (direct connections only),
@@ -9,6 +9,30 @@ coding style rules in `AGENTS.md`.
 > conventions.md and v0-scope.md conflict, v0-scope.md wins for v0 implementation.
 
 ---
+
+## Python implementation and tests
+
+- Annotate function parameters and returns; use built-in generics and `|` unions.
+- Parse raw inputs into domain types at boundaries. Prefer frozen, keyword-only,
+  slotted dataclasses for internal values; enforce invariants at construction.
+- Use semantic wrappers where primitives can be confused, enums for named domain
+  states, `Literal` for fixed string choices, and Protocols for interfaces.
+- Pydantic is for external boundaries, not internal domain models.
+- Raise meaningful exceptions with context; never use bare `except`.
+  Use structlog for runtime diagnostics, following the logging standard.
+- Inject clocks, random generators and side-effecting dependencies. Tests must not
+  depend on wall-clock sleeps, host resource levels or uncontrolled randomness.
+- Test public behavior and contracts, not private implementation details. Prefer
+  fakes; mock external boundaries. Keep fixtures and assertions focused and readable.
+- Cover happy paths, invalid inputs, boundary cases, data preservation and a small
+  set of real integration paths. Check exception type and a useful message fragment.
+- Use `test_<module>.py`, descriptive snake-case tests, and classes grouped by the
+  function or class under test. Coverage finds gaps; it is not a percentage target.
+- Keep code, comments and docstrings concise. Explain non-obvious contracts and
+  decisions; do not duplicate self-explanatory code. Avoid deep nesting and unrelated
+  refactors. Keep each maintained concept in one documentation location.
+- Keep one-off exploratory work out of tracked source; make recurring logic a
+  proper module or script. Run project imports and checks in the project environment.
 
 ## Naming
 
@@ -344,7 +368,7 @@ raise.
   these coincide in single-timezone deployments (Nepal, Switzerland).
 - **Python**: timezone-aware `datetime` objects.
 - **API format**: ISO 8601 with timezone — `"2026-07-01T12:00:00Z"`.
-- **No `datetime.now()`** in business logic — inject a clock (see AGENTS.md).
+- **No `datetime.now()`** in business logic — inject a clock (see Python implementation and tests above).
 
 ### Temporal aggregation periods
 
@@ -593,6 +617,14 @@ Assert expected result counts before ordering checks so an empty response cannot
 
 Test-generated query plans and other artifacts must use pytest's `tmp_path`, not
 pre-existing developer evidence directories.
+
+### Watchdog test isolation
+
+Tests of a single watchdog condition must inject controlled unrelated probes,
+including `disk_probe`. QC alert tests use the existing healthy-disk fake so
+host free space cannot add alerts. Keep dedicated disk-alert tests exercising
+low-space and probe-failure behavior; do not change production thresholds to
+make unrelated tests pass.
 
 ### Observation test-fake snapshots
 

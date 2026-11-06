@@ -16,8 +16,8 @@ Rules:
     2026-09-28)
 
 Direct pushes to `main` are not checked — code (and so this generated file)
-only reaches `main` through a pull request (hold-at-PR, AGENTS.md § Version
-Bumping).
+only reaches `main` through an owner-approved pull request (AGENTS.md § Project
+safeguards; docs/standards/cicd.md § Release identity tags and receipts).
 
 Usage::
 

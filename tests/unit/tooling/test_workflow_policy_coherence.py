@@ -14,7 +14,20 @@ class TestAgentInstructionPolicy:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
         assert (
-            "Agent workflows come from the globally installed PCE skills." in guidelines
+            "Follow the user's approved scope and the applicable globally "
+            "installed skills." in guidelines
+        )
+        assert (
+            "Skills own planning, delegation, review sequencing and delivery "
+            "procedures." in guidelines
+        )
+        assert (
+            "Do not add repository-local skills, workflow copies or extra "
+            "approval layers." in guidelines
+        )
+        assert (
+            "old agent roles and status gates do not override current "
+            "instructions or authorize unapproved work." in guidelines
         )
         assert not (_REPO_ROOT / "docs/workflow.md").exists()
         assert not (_REPO_ROOT / "scripts/check_readiness.py").exists()
@@ -24,33 +37,53 @@ class TestAgentInstructionPolicy:
     def test_owner_retains_approval_and_merge_authority(self) -> None:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
-        assert "the human owner approves and merges every PR" in guidelines
-        assert "No agent merges." in guidelines
-        assert "owner-commissioned relevant independent review" in guidelines
+        assert "The owner approves and merges PRs" in guidelines
+        assert "Agents do not merge or publish release identity." in guidelines
+        assert (
+            "Non-trivial plans and patches require independent Claude and Codex reviews"
+            in guidelines
+        )
+        assert (
+            "high-risk work also needs an owner-commissioned relevant "
+            "independent review." in guidelines
+        )
+        assert "Missing reviews are not approvals." in guidelines
 
 
 class TestTaggingPolicy:
     def test_release_identity_is_owner_published_after_merge(self) -> None:
-        guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
+        policy = _normalized(_REPO_ROOT / "docs/standards/cicd.md")
 
         assert (
-            "Every PR except strictly docs-only changes advances `RELEASE_TARGET` "
-            "by one patch from its current base."
-        ) in guidelines
+            "Each non-docs-only PR advances the sole `RELEASE_TARGET` patch "
+            "once from its tested base, including tooling PRs." in policy
+        )
         assert (
-            "Tooling, configuration, dependencies and API contracts "
-            "still require a bump."
-        ) in guidelines
-        assert "Further commits in the same PR do not bump again." in guidelines
-        assert "The target is release intent only." in guidelines
+            "head and merge targets must agree and equal base patch+1 with "
+            "unchanged major/minor." in policy
+        )
+        assert "The only exemption is strictly docs-only changes." in policy
         assert (
-            "Package identity remains SCM-derived; do not edit literal package "
-            "versions, `uv.lock` for version churn, or generated version metadata."
-        ) in guidelines
+            "API contracts (`docs/spec/`), requirements, examples, assets, "
+            "scripts, configuration and dependencies are not exempt." in policy
+        )
+        assert "Further commits in the same PR do not bump again." in policy
+        assert "This target is release intent, not package identity." in policy
         assert (
-            "Agents never create release tags, never publish release state, "
-            "and never merge PRs."
-        ) in guidelines
-        assert "The human owner publishes release identity after merge" in guidelines
-        assert "from a clean reviewed `main`" in guidelines
-        assert ".github/workflows/tag-main.yml" not in guidelines
+            "Package versions remain dynamic and come from Git release "
+            "identity at build time." in policy
+        )
+        assert (
+            "Do not edit literal package versions, `uv.lock` for version "
+            "churn, or generated SCM version metadata." in policy
+        )
+        assert (
+            "Agents never create release tags, publish release state, or merge PRs."
+            in policy
+        )
+        assert (
+            "After a reviewed merge, the human owner publishes release "
+            "identity from a clean reviewed `main` checkout" in policy
+        )
+        assert "`tag-main.yml` publisher remains retired." in policy
+        assert not (_REPO_ROOT / ".github/workflows/tag-main.yml").exists()

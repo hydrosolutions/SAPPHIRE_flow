@@ -34,6 +34,7 @@ from tests.unit.ops.test_watchdog import (
     _bafu_ok_probe,
     _clock,
     _config,
+    _disk_ok_probe,
     _forecast_freshness_ok_probe,
     _launchd_ok_probe,
     _make_fresh_backup,
@@ -81,9 +82,25 @@ def _run(tmp_path: Path, probe, slack: _SlackRecorder):
         bafu_obs_probe=_bafu_obs_ok_probe,
         forecast_freshness_probe=_forecast_freshness_ok_probe,
         qc_unchecked_probe=probe,
+        disk_probe=_disk_ok_probe,
         backup_device_verifier=lambda _: True,
         launchd_probe=_launchd_ok_probe,
     )
+
+
+class TestDiskProbeIsolation:
+    def test_qc_check_does_not_read_host_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unexpected_disk_usage(_path: Path) -> None:
+            raise AssertionError("QC test must not read the host disk")
+
+        monkeypatch.setattr(watchdog.shutil, "disk_usage", unexpected_disk_usage)
+        slack = _SlackRecorder()
+
+        _run(tmp_path, _absent, slack)
+
+        assert slack.calls == []
 
 
 class TestPresencePolarity:

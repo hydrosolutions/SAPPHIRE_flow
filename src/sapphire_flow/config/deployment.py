@@ -93,6 +93,7 @@ class InputQualityConfig(BaseModel):
 
 class DeploymentConfig(BaseModel):
     swiss_overview: SwissOverviewConfig | None = None
+    swiss_observation_history: bool = False
     provisional_ratings: tuple[ProvisionalRatingConfig, ...] = ()
     provisional_ifs_tail_mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.DISABLED
     evaluation_forecasts: EvaluationForecastsConfig | None = None

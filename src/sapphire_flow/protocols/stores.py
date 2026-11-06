@@ -93,6 +93,7 @@ if TYPE_CHECKING:
         Observation,
         RawObservation,
     )
+    from sapphire_flow.types.observation_history import HistoryRead, HistoryReading
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -138,6 +139,12 @@ class ObservationStore(Protocol):
         qc_rule_version: str | None = None,
     ) -> bool:
         raise NotImplementedError
+
+    def fetch_observation_history(
+        self, request: HistoryRead
+    ) -> tuple[HistoryReading, ...]:
+        """Trusted, inclusive, eligible-only bounded snapshot; overflow fails wholly."""
+        ...
 
     def fetch_latest_observations(
         self,

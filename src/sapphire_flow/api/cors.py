@@ -92,9 +92,10 @@ class ScopedCorsMiddleware:
             )
         else:
             target = self._consumer
-        if path == "/api/v1/swiss/overview" or re.fullmatch(
-            r"/api/v1/stations/[^/]+/evaluation-forecasts", path
-        ):
+        if path in {
+            "/api/v1/swiss/overview",
+            "/api/v1/swiss/observation-history",
+        } or re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path):
             from sapphire_flow.api.publication_cache import PublicationCacheMiddleware
 
             await PublicationCacheMiddleware(target)(scope, receive, send)
