@@ -142,6 +142,37 @@ def native_pair(conn: sa.Connection) -> tuple[OperationalForecast, OperationalFo
 
 
 class TestNativeRatingForecasts:
+    def test_tolerant_discharge_coverage_roundtrips(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from tests.unit.services.test_native_rating_assembly import (
+            _assemble_daily_discharge,
+            _run_daily_assembly,
+        )
+
+        assembly, adapter, recording, group = _assemble_daily_discharge(
+            set(range(10, 16)) | {29}, max_nan=6
+        )
+        outcome = _run_daily_assembly(assembly, adapter, recording, group)
+        assembled = next(iter(outcome.results.values())).forecasts[0]
+        _, native = native_pair(db_connection)
+        native = replace(
+            native,
+            input_quality=assembled.input_quality,
+            input_quality_flags=assembled.input_quality_flags,
+        )
+        scoped = PgForecastStore(
+            db_connection,
+            data_use=ForecastDataUse.PROVISIONAL_RATING,
+            transaction_factory=savepoint_factory(db_connection),
+        )
+        scoped.store_forecast(native)
+        restored = scoped.fetch_forecast(native.id)
+        assert restored is not None
+        assert restored.input_quality_flags == assembled.input_quality_flags
+        assert restored.input_quality == assembled.input_quality
+        assert restored.input_lineage == native.input_lineage
+
     def test_success_roundtrip_retry_and_cross_purpose(
         self, db_connection: sa.Connection
     ) -> None:

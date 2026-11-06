@@ -10,6 +10,7 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.protocols.forecast_model import GroupInputGate
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.input_quality import (
     MODEL_INPUT_QC_STATUSES,
@@ -1016,6 +1017,33 @@ def build_superset_requirements(
     )
 
 
+def _normalize_provisional_discharge(
+    frame: pl.DataFrame, *, start: UtcDatetime, end: UtcDatetime
+) -> pl.DataFrame:
+    timestamps = frame["timestamp"]
+    dtype = timestamps.dtype
+    if not isinstance(dtype, pl.Datetime) or dtype.time_zone != "UTC":
+        raise ConfigurationError("provisional discharge requires UTC datetime labels")
+    if timestamps.null_count() or timestamps.n_unique() != frame.height:
+        raise ConfigurationError(
+            "provisional discharge requires unique non-null labels"
+        )
+    if ((timestamps < start) | (timestamps >= end)).any():
+        raise ConfigurationError("provisional discharge labels outside assembly bounds")
+    if (timestamps != timestamps.dt.truncate("1d")).any():
+        raise ConfigurationError("provisional discharge labels off the UTC daily grid")
+    if frame.is_empty():
+        return frame
+    # Only validated UTC midnights cross Python's microsecond datetime boundary.
+    labels = timestamps.to_list()
+    calendar = pl.DataFrame(
+        {"timestamp": pl.datetime_range(min(labels), max(labels), "1d", eager=True)}
+    ).cast({"timestamp": dtype})
+    return calendar.join(
+        frame, on="timestamp", how="left", validate="1:1"
+    ).with_columns(pl.col("discharge").fill_null(float("nan")))
+
+
 def assemble_station_operational_inputs(
     station_id: StationId,
     model: StationForecastModel | GroupForecastModel,
@@ -1189,9 +1217,28 @@ def assemble_station_operational_inputs(
     # way here: return `None` so the caller's `inputs_result is None`
     # branch degrades this one cycle cleanly, instead of raising into the
     # generic per-station `except Exception` that counts it as a failure.
+    normalize_discharge = (
+        rating_lineage is not None
+        and rating_lineage.rating_input is not None
+        and time_step == timedelta(days=1)
+        and reqs.target_parameters == frozenset({"discharge"})
+        and set(past_targets.columns) == {"timestamp", "discharge"}
+        and isinstance(model, GroupInputGate)
+    )
     try:
+        if normalize_discharge:
+            past_targets = _normalize_provisional_discharge(
+                past_targets, start=past_targets_start, end=past_targets_end
+            )
+        # The shared cadence guard reads integer durations as microseconds.
+        # Exact daily alignment above makes this validation-only cast lossless.
+        cadence_targets = (
+            past_targets.cast({"timestamp": pl.Datetime("us", "UTC")})
+            if normalize_discharge
+            else past_targets
+        )
         validate_time_step_cadence(
-            past_targets, time_step, context="operational_inputs.past_targets"
+            cadence_targets, time_step, context="operational_inputs.past_targets"
         )
     except ConfigurationError as exc:
         log.warning(
@@ -1251,7 +1298,13 @@ def assemble_station_operational_inputs(
     # ColumnNotFoundError, so count it as 0 instead.
     if latest_obs_ts is not None and reqs.target_parameters:
         per_target_counts = {
-            p: (past_targets[p].drop_nulls().len() if p in past_targets.columns else 0)
+            p: (
+                int(past_targets[p].is_finite().sum())
+                if normalize_discharge
+                else past_targets[p].drop_nulls().len()
+            )
+            if p in past_targets.columns
+            else 0
             for p in reqs.target_parameters
         }
         lookback_got = min(per_target_counts.values())

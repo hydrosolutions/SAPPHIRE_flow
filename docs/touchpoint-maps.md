@@ -251,6 +251,19 @@ include them in the task context packet.
 - alerting or quality gates that depend on model success/failure
 - tests and fixtures that assume current output shape or failure behavior
 
+**Provisional daily discharge calendars:** only opted-in, accepted-rating-lineage,
+discharge-only daily frames for `GroupInputGate` models gain interior NaN rows.
+`operational_inputs.py` preserves delivered edges and finite values; malformed UTC
+calendars use the cadence-skip channel. Ungated and ordinary paths are unchanged.
+The FI gate still counts the entire delivered column, including Q7/P30 gaps outside
+the target's eventual seven-step selection; forcing-only `declared_lookbacks` is
+not a target-window contract. `run_group_forecast.py` reports finite-aware
+OBSERVATION coverage over the assembly window (missing assembly cells, including
+normalized interior omissions, versus undelivered edge slots), using `forcing_recent_steps` for DEGRADED recent gaps and
+PARTIAL older gaps. This quality label never admits a refused member or invents
+source lineage. Run `test_native_rating_assembly.py`, normal group tests and FI
+NaN-gate tests; preserve real-checkpoint no-network edge proof outside Git.
+
 **Operational inputs / time-series preprocessing**
 
 How raw source data becomes prediction inputs, *before* the model boundary above.
