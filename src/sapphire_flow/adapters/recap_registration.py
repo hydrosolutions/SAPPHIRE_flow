@@ -282,8 +282,6 @@ class RecapRegistration:
             raise GatewayAccessError(GatewayFailure.MALFORMED)
 
     def update_subscription(self, before: Subscription, after: Subscription) -> None:
-        from urllib.parse import quote
-
         if (before.source, before.hru_code, before.parameter_name) != (
             after.source,
             after.hru_code,

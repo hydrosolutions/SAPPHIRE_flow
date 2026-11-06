@@ -41,7 +41,10 @@ State schema 2 requires explicit historical run semantics (exact text, fixed awa
 instant, explicitly declared UTC-date-midnight rule, supported null/absence, or
 unresolved hold); validated provenance and unique observed run identities accompany
 aggregate chunk evidence. Forecast contracts support uniform cadence or declared
-contiguous lead bands. Expected support never comes from returned rows. Never silently reinterpret version-1 chunks. Exercise
+contiguous lead bands. Expected support never comes from returned rows. Every requested
+forecast cycle must have a resolved run contract before confirming the proposal.
+Observed subscription drift must be persisted as uncertain; status and resume
+both require the latest relevant action to be verified, not any past success. Never silently reinterpret version-1 chunks. Exercise
 actual CLI dispatch through both HTTP stacks with dummy config/secret files and
 fake transports, including encoded key echoes and locally invalid HRU names.
 

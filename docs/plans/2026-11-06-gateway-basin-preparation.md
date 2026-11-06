@@ -262,3 +262,29 @@ external evidence, not Vatro contract confirmation or this agent's live work.
 No aggregation, units, scientific adoption, or live eligibility is inferred.
 The missing pre-factor derived-GeoPackage golden literal remains disclosed; existing
 fixed digest baselines and export round-trips remain unchanged and green.
+
+## Second focused repair — 2026-11-06
+
+Root commissioned repairs following independent full-patch reviews of `ad3bad6e`.
+
+- T3/T4/T5: an observed subscription mismatch now appends and durably saves an
+  uncertain action before returning. Status and resume share a latest-action
+  predicate; historical success cannot mask newer contradictory evidence. Actual
+  CLI regression starts with complete coverage, disables one fake remote row,
+  observes drift, reloads status, and refuses resume without new data calls. A
+  renewed preview/exact confirmation restores the row with one PUT, no unrelated
+  writes; stale confirmation cannot overwrite it. Prior audit records remain.
+- T2/T5: every requested forecast cycle must have a resolved source-run contract
+  before proposal confirmation or external writes. Missing, all-unresolved and
+  partially declared cycles hold at the proposal and actual CLI boundaries.
+  Typed instant equality-to-cycle, history provenance and declared lead support
+  are unchanged. Valid complete control-shape scenarios remain green.
+- Removed the redundant local `quote` import; no broader scope change.
+- RED run: seven failures, 41 passes. Six failures reproduced the behavioral
+  defects; the unresolved CLI fixture also exposed a noncanonical cycle-key
+  setup, corrected to exercise two valid unresolved declarations. Final broader
+  native verification: **484 passed, 1 optional skip**; all eight implementation
+  modules pass pyright, and changed-file lint/format checks pass.
+- RELEASE_TARGET remains 0.1.1113. No full-suite rerun on the low-disk host,
+  live operation, client/model edit, deployment, push or PR. Fresh full-patch
+  review and final-head full CI remain required; Vatro approval is separate.

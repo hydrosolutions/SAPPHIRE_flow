@@ -729,3 +729,32 @@ def test_unknown_historical_run_blocks_proposal_confirmation() -> None:
         contracts=unresolved,
     )
     assert "historical_source_run_unconfirmed:era5_history" in planned.holds
+
+
+@pytest.mark.parametrize("declaration", ["missing", "unresolved", "partial"])
+def test_each_forecast_cycle_requires_a_resolved_run_contract(declaration: str) -> None:
+    known = proposal()
+    assert known.forecast is not None
+    forecast = known.forecast
+    if declaration == "partial":
+        forecast = replace(
+            forecast, cycles=(*forecast.cycles, forecast.cycles[0] + timedelta(days=1))
+        )
+    else:
+        forecast = replace(
+            forecast,
+            source_runs=()
+            if declaration == "missing"
+            else ((forecast.cycles[0].isoformat(), SourceRunContract()),),
+        )
+    planned = propose_data(
+        model_id=known.model_id,
+        requirements=requirements(),
+        time_step=known.time_step,
+        history=known.history,
+        forecast=forecast,
+        contracts=known.contracts,
+    )
+    assert any(
+        h.startswith("forecast_source_run_contract_unconfirmed:") for h in planned.holds
+    )

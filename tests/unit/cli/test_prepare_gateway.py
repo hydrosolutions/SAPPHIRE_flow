@@ -240,6 +240,17 @@ def gateway_cli(
             return httpx.Response(
                 200, json={"message": echo, "detail": echo, "warnings": echo}
             )
+        if request.method == "PUT":
+            case.gateway.requests.append(request)
+            source, hru, parameter = request.url.path.split("/")[-3:]
+            row = next(
+                r
+                for r in case.gateway.rows
+                if (r["source"], r["hru_code"], r["parameter_name"])
+                == (source, hru, parameter)
+            )
+            row.update(json.loads(request.content))
+            return httpx.Response(200, json=row)
         return case.gateway.transport(request)
 
     def requests_send(
@@ -526,3 +537,106 @@ def test_cli_declared_control_schedule_rejects_incomplete_or_wrong_support(
             chunk["usable_count"] == 64 and "unexpected_time_support" in chunk["holds"]
             for chunk in evidence
         )
+
+
+def test_cli_observed_subscription_drift_survives_restart_until_reconfirmed(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    connection = connection_args(case)
+    invoke_cli(case, ["register", "--hru", "new_synthetic", *connection], capsys)
+    invoke_cli(
+        case,
+        [
+            "reconcile",
+            "--outcome",
+            "confirmed",
+            "--actor",
+            "Synthetic",
+            "--evidence",
+            "synthetic-receipt",
+        ],
+        capsys,
+    )
+    preview = invoke_cli(case, ["subscribe", *connection], capsys)
+    revision = preview["subscription_revision"]
+    invoke_cli(case, ["subscribe", "--confirm", revision, *connection], capsys)
+    case.retrieval.missing = False
+    invoke_cli(case, ["resume", *connection], capsys, expected=0)
+    native_count = len(case.native_requests)
+    case.gateway.rows[0]["enabled"] = False
+    observed = invoke_cli(
+        case, ["subscribe", "--confirm", revision, *connection], capsys
+    )
+    raw = json.loads((case.workspace / "state.json").read_text())
+    assert raw["subscription_actions"][-1]["outcome"] == "uncertain"
+    assert any(a["outcome"] == "verified" for a in raw["subscription_actions"])
+    assert all(s["outcome"] == "held" for s in observed["stations"])
+    invoke_cli(case, ["status"], capsys)
+    invoke_cli(case, ["resume", *connection], capsys)
+    assert len(case.native_requests) == native_count
+    assert sum(r.method != "GET" for r in case.gateway.requests) == 5
+    renewed = invoke_cli(case, ["subscribe", *connection], capsys)
+    assert renewed["subscription_revision"] != revision
+    invoke_cli(case, ["subscribe", "--confirm", revision, *connection], capsys)
+    assert case.gateway.rows[0]["enabled"] is False
+    assert sum(r.method != "GET" for r in case.gateway.requests) == 5
+    invoke_cli(
+        case,
+        ["subscribe", "--confirm", renewed["subscription_revision"], *connection],
+        capsys,
+        expected=0,
+    )
+    invoke_cli(case, ["status"], capsys, expected=0)
+    invoke_cli(case, ["resume", *connection], capsys, expected=0)
+    assert sum(r.method != "GET" for r in case.gateway.requests) == 6
+    assert len([r for r in case.gateway.requests if r.method == "PUT"]) == 1
+
+
+@pytest.mark.parametrize("declaration", ["missing", "unresolved", "partial"])
+def test_cli_unresolved_forecast_cycles_cannot_confirm_or_write(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str], declaration: str
+) -> None:
+    case = gateway_cli
+    source = json.loads(case.scope.read_text())
+    forecast = source["forecast"]
+    if declaration == "partial":
+        forecast["cycles"].append("2024-02-12T00:00:00Z")
+    elif declaration == "missing":
+        forecast["source_runs"] = []
+    else:
+        forecast["cycles"].append("2024-02-12T00:00:00Z")
+        forecast["source_runs"] = [
+            [cycle.replace("Z", "+00:00"), {"semantics": "unresolved"}]
+            for cycle in forecast["cycles"]
+        ]
+    case.scope.write_text(json.dumps(source))
+    preview = invoke_cli(case, ["prepare", "--scope", str(case.scope)], capsys)
+    assert all(
+        any(
+            h.startswith("forecast_source_run_contract_unconfirmed:")
+            for h in s["holds"]
+        )
+        for s in preview["stations"]
+    )
+    invoke_cli(
+        case,
+        [
+            "prepare",
+            "--scope",
+            str(case.scope),
+            "--confirm",
+            preview["proposal_revision"],
+            "--vatro-review",
+            "synthetic",
+        ],
+        capsys,
+    )
+    invoke_cli(
+        case, ["register", "--hru", "new_synthetic", *connection_args(case)], capsys
+    )
+    invoke_cli(case, ["subscribe", *connection_args(case)], capsys)
+    raw = json.loads((case.workspace / "state.json").read_text())
+    assert raw["confirmed_proposal"] is None and raw["attempts"] == []
+    assert case.gateway.requests == []

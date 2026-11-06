@@ -515,6 +515,14 @@ def propose_data(
                 )
 
     if streams & {DataStream.IFS_FORECAST, DataStream.SNOW_FORECAST}:
+        if forecast is not None:
+            runs = dict(forecast.source_runs)
+            for cycle in forecast.cycles:
+                run = runs.get(cycle.isoformat())
+                if run is None or run.semantics == SourceRunSemantics.UNRESOLVED:
+                    holds.append(
+                        "forecast_source_run_contract_unconfirmed:" + cycle.isoformat()
+                    )
         if forecast is None:
             holds.append("explicit_forecast_scope_required")
         elif (
@@ -734,6 +742,18 @@ def confirm_subscriptions(
     return state
 
 
+def _subscription_verified(state: PreparationState, change: SubscriptionChange) -> bool:
+    latest = next(
+        (
+            action
+            for action in reversed(state.subscription_actions)
+            if action.change == change
+        ),
+        None,
+    )
+    return latest is not None and latest.outcome == "verified"
+
+
 def apply_subscriptions(
     directory: Path,
     state: PreparationState,
@@ -758,6 +778,13 @@ def apply_subscriptions(
         prior = [a for a in state.subscription_actions if a.change == change]
         if current != target:
             if current != change.before or prior:
+                action = SubscriptionAction(
+                    change=change, recorded_at=now, outcome="uncertain"
+                )
+                state = replace(
+                    state, subscription_actions=(*state.subscription_actions, action)
+                )
+                save_preparation_state(directory, state)
                 raise ValueError(
                     "subscription outcome or concurrent change requires reconciliation"
                 )
@@ -881,10 +908,8 @@ def resume_coverage(
     plan = state.subscription_plans[-1]
     if plan.proposal_revision != proposal_revision(proposal):
         raise ValueError("subscription scope is stale")
-    for change in plan.changes:
-        actions = [a for a in state.subscription_actions if a.change == change]
-        if not actions or actions[-1].outcome != "verified":
-            raise ValueError("subscription read-back remains held")
+    if not all(_subscription_verified(state, change) for change in plan.changes):
+        raise ValueError("subscription read-back remains held")
     revision = proposal_revision(proposal)
     contracts = {c.stream: c for c in proposal.contracts}
     for variable in proposal.variables:
@@ -1112,10 +1137,7 @@ def preparation_report(state: PreparationState) -> dict[str, Any]:
         ):
             holds.append("subscriptions_unconfirmed")
         elif any(
-            not any(
-                a.change == change and a.outcome == "verified"
-                for a in state.subscription_actions
-            )
+            not _subscription_verified(state, change)
             for change in state.subscription_plans[-1].changes
         ):
             holds.append("subscription_readback_missing")

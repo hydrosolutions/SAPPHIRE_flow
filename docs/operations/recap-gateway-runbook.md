@@ -139,7 +139,9 @@ runs use `{"semantics":"utc_instant","timestamp":"2026-11-06T00:00:00Z"}`;
 that aware instant must match its requested cycle and is normalized to UTC.
 Exact text run identities remain supported through `{"semantics":"exact",
 "value":"CONFIRMED_TEXT"}`. Naive or string timestamps do not satisfy a declared
-datetime contract. Missing run evidence holds coverage. Grid values describe the
+datetime contract. Every requested forecast cycle needs a resolved declaration before proposal
+confirmation, upload or subscription writes. Missing/unresolved cycles hold the
+proposal, not only later coverage. Grid values describe the
 fixed product; they are **not** unsupported client selection arguments.
 
 Uniform `cadence` remains supported. A product can instead declare
@@ -222,6 +224,12 @@ CWD under the external workspace with `0077` umask. Normal/error paths clean
 owned downloads; restart cleans only marked owned orphan Parquet files. Aggregate
 state survives. Never run this process-scoped boundary inside a threaded server.
 Keep workspaces private and never commit them or raw data.
+
+When a fresh subscription read observes drift, the workflow saves an uncertain
+action before returning the hold. Status and resume consult the latest relevant
+action, never an older successful read-back. Inspect a renewed subscription
+preview and confirm its exact revision before correcting drift. A stale
+confirmation cannot overwrite the changed row; prior audit evidence is retained.
 
 Evidence schema version **2** requires explicit run provenance. Version-1
 workspaces from the unreleased implementation are rejected without rewriting them;
