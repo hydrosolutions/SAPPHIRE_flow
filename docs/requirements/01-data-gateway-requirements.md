@@ -20,6 +20,19 @@
 > Decisions). This requirements doc is the Gateway-facing agreement; Plan 081 is the SAP3-side
 > adapter contract. There is no separate `docs/design/` copy.
 
+## November 2026 integration status (not a retrospective agreement change)
+
+The June baseline below remains the dated agreement. On 2026-11-06 the public
+OpenAPI documented geometry upload, parameter catalog reads and scoped subscription
+list/create/update APIs. Authenticated read-only metadata later confirmed current
+source literals, surface subscription identities and fixed fc/pf P/T grids; see the
+[operator procedure](../operations/recap-gateway-runbook.md#prepare-an-approved-basin-handover).
+SAP3 now has an offline-tested approved-handover integration against those schemas.
+This does not establish write semantics, Vatro approval, source coverage or live
+acceptance. Vatro must reconcile §1's manual-upload capability row and §8 Q4 with
+the supported integration/procedure before full rehearsal. Historical backfills
+remain manual; no client or Gateway changes are included.
+
 ## 1. Context & the agreed division
 
 In Nepal v1, SAP3 runs as one shared on-prem production deployment (HSOL east, DHM west)

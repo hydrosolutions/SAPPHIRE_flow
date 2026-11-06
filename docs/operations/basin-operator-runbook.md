@@ -462,3 +462,11 @@ six-/21-station evaluation-server records. Full repository tests and independent
 reviews remain pre-merge gates.
 
 </details>
+
+## Next: prepare the approved handover in the Gateway
+
+Use the companion [approved-handover procedure](recap-gateway-runbook.md#prepare-an-approved-basin-handover).
+Keep the exported package and original approval immutable. Gateway admission
+checks identity/checksums/approval applicability and reads feature attributes only;
+it does not repeat geometry review. Its external private workspace is separate
+from this review server. Do not stop or restart the review tool to use it.

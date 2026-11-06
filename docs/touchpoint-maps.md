@@ -22,6 +22,22 @@ structural approval blocks and immutable approved-only subset exports. Keep
 read-only feedback HTML free of approval authority. See the
 [operator runbook](operations/basin-operator-runbook.md).
 
+### Approved handover Gateway preparation
+
+`cli/prepare_gateway.py` → `services/gateway_preparation.py` →
+`adapters/recap_registration.py` and the supported `recap_client` facade.
+`types/gateway_preparation.py` owns immutable scope/evidence;
+`services/gateway_data_coverage.py` assesses complete requested cells and contains
+private transient downloads. No DB/Prefect bootstrap or running review-tool changes.
+Keep `load_package_identity`, `compute_manifest_fingerprint` and
+`compute_review_fingerprints` byte-compatible with existing review/import identity.
+Admission must not call geometry-review entrypoints. Preserve durable-before-write
+intent, attributed reconciliation, exact proposal/delta confirmations, source
+immutability and every station's visible held/eligible result. Verify both HTTP
+stacks with fake transports, key-safe errors/logs, fixed fingerprint baselines,
+partial-batch resume, interrupted writes, unrelated snow flags and the existing
+basin/Recap regressions. The training span manifest and model contracts do not change.
+
 ## Maps
 
 - **ForecastInterface / model execution** — model boundary, adapters, data

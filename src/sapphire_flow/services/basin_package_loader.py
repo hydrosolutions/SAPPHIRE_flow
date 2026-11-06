@@ -402,29 +402,7 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
     Raises :class:`BasinPackageRejectedError` on ANY whole-package reject rule.
     Performs no DB writes and no per-basin business decisions (Task 1B).
     """
-    manifest_path = package_dir / "manifest.json"
-    if not manifest_path.is_file():
-        raise BasinPackageRejectedError(
-            f"mandatory file manifest.json missing from {package_dir}"
-        )
-    manifest_model = _parse_model(_ManifestModel, manifest_path)
-
-    if manifest_model.contract_version != _SUPPORTED_CONTRACT_VERSION:
-        raise BasinPackageRejectedError(
-            f"unsupported contract_version {manifest_model.contract_version!r}; "
-            f"expected {_SUPPORTED_CONTRACT_VERSION!r}"
-        )
-
-    _validate_declared_paths(package_dir, manifest_model)
-
-    missing_files = [
-        name for name in _MANDATORY_FILES if not (package_dir / name).is_file()
-    ]
-    if missing_files:
-        raise BasinPackageRejectedError(f"mandatory file(s) missing: {missing_files}")
-
-    computed_checksums = _compute_and_verify_checksums(package_dir, manifest_model)
-    manifest = _domain_manifest(manifest_model)
+    manifest, computed_checksums = load_package_identity(package_dir)
 
     basins_gdf = _read_geometry_file(package_dir / "basins.gpkg", label="basins.gpkg")
     _validate_basin_columns(basins_gdf)
@@ -474,6 +452,35 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
         validation_report=validation_report,
         computed_checksums=computed_checksums,
     )
+
+
+def load_package_identity(package_dir: Path) -> tuple[PackageManifest, dict[str, str]]:
+    """Read only declared metadata and byte checksums, never geometry."""
+    manifest_path = package_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise BasinPackageRejectedError(
+            f"mandatory file manifest.json missing from {package_dir}"
+        )
+    manifest_model = _parse_model(_ManifestModel, manifest_path)
+
+    if manifest_model.contract_version != _SUPPORTED_CONTRACT_VERSION:
+        raise BasinPackageRejectedError(
+            f"unsupported contract_version {manifest_model.contract_version!r}; "
+            f"expected {_SUPPORTED_CONTRACT_VERSION!r}"
+        )
+
+    _validate_declared_paths(package_dir, manifest_model)
+
+    missing_files = [
+        name for name in _MANDATORY_FILES if not (package_dir / name).is_file()
+    ]
+    if missing_files:
+        raise BasinPackageRejectedError(f"mandatory file(s) missing: {missing_files}")
+
+    computed_checksums = _compute_and_verify_checksums(package_dir, manifest_model)
+    manifest = _domain_manifest(manifest_model)
+
+    return manifest, computed_checksums
 
 
 def _domain_manifest(model: _ManifestModel) -> PackageManifest:

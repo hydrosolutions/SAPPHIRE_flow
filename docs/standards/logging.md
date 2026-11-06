@@ -697,7 +697,18 @@ work directories. Source/attempt validation failures cannot enter SSH diagnostic
 Receipt fields are fixed typed identifiers/hashes/counts, never arbitrary labels,
 package inventories or server error text. See [the staging route](../deployment/actions-staging-release.md).
 
-
 ### Observation-history bounded failures
 
 `observation_history.read_failed` uses closed causes `disabled`, `config_drift`, `row_cap`, `byte_cap`, `timeout`, `database_fault`. Configuration drift/database faults use ERROR; bounded unavailability uses WARNING. Diagnostics may include the bound, capped eligible row count, encoded byte count and at most one validated in-scope station ID for a station overflow. Never emit values, excluded/protected counts, raw SQL/errors, payloads or credentials. HTTP errors remain generic.
+
+### Local Gateway preparation transport boundary
+
+The exclusive `prepare_gateway` CLI uses structured JSON operator reports, not raw
+HTTP diagnostics. During a Gateway request, `quiet_gateway_transport` temporarily
+suppresses stdlib transport emission at every severity, restoring the prior level
+on exit. This narrowly contains HTTPX and requests/urllib3 query-key URLs before
+handlers run; it is not a global redaction framework or a client monkey-patch.
+Failures expose a closed `GatewayFailure` reason only; no raw exception chain,
+request params or response body enters state/output. Upload warnings are bounded
+and key/URL-sanitized. No new Prefect or operational events are introduced.
+
