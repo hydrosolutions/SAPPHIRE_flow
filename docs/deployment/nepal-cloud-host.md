@@ -4,6 +4,9 @@
 > [Actions-built exact-image route](actions-staging-release.md).
 > The host-build bootstrap below is historical provisioning guidance, not authority
 > to rebuild or start applications on the protected staging host.
+> An NHS-enabled runtime also requires the complete overlay list and ordered
+> activation/rollback in [NHS forecast configuration](nhs-forecast-configuration.md).
+> Its explicit two-file examples below are not complete commands for that runtime.
 
 Host: `nepal-staging.hydrosolutions.ch` (Infomaniak Public Cloud, Ubuntu 24.04, Docker). This is a
 **staging** host; production stays with the owner. The full runbook (update, restart, rotate keys, take

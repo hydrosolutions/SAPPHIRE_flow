@@ -12,8 +12,11 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from typing import cast
 
 import structlog
+
+from sapphire_flow.config.river_stations import ForecastConfigOverlay
 
 log = structlog.get_logger(__name__)
 
@@ -29,6 +32,29 @@ BACKUP_POOL = "backup"
 FLOW_SOURCE_ROOT = "/app"
 
 
+def forecast_job_variables(
+    existing: object, overlay: ForecastConfigOverlay | None
+) -> dict[str, object]:
+    if not isinstance(existing, dict) or any(
+        not isinstance(key, str) for key in cast("dict[object, object]", existing)
+    ):
+        raise ValueError("forecast job variables must be a string-keyed mapping")
+    result = dict(cast("dict[str, object]", existing))
+    raw_env = result.get("env", {})
+    if not isinstance(raw_env, dict) or any(
+        not isinstance(key, str) for key in cast("dict[object, object]", raw_env)
+    ):
+        raise ValueError("forecast job environment must be a string-keyed mapping")
+    environment = dict(cast("dict[str, object]", raw_env))
+    if overlay is None:
+        environment.pop("SAPPHIRE_FORECAST_CONFIG_OVERLAY", None)
+    else:
+        environment["SAPPHIRE_FORECAST_CONFIG_OVERLAY"] = overlay.environment_value()
+    if "env" in result or environment:
+        result["env"] = environment
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class DeploymentSpec:
     flow_module: str
@@ -37,6 +63,7 @@ class DeploymentSpec:
     cron: str | None = None
     concurrency_limit: int | None = None
     work_pool_name: str = WORK_POOL
+    forecast_config_overlay: ForecastConfigOverlay | None = None
 
 
 _SKIP_ENV_VAR = "SAPPHIRE_SKIP_DEPLOYMENTS"
@@ -57,11 +84,18 @@ def _build_specs() -> list[DeploymentSpec]:
         raise ValueError(
             f"{_SKIP_ENV_VAR} names unknown deployments: {sorted(unknown)}"
         )
+    if "forecast-cycle" in skipped and any(
+        spec.forecast_config_overlay is not None for spec in specs
+    ):
+        log.info("deployment.forecast_config_unused", reason="deployment_skipped")
     return [spec for spec in specs if spec.deployment_name not in skipped]
 
 
 def _all_specs() -> list[DeploymentSpec]:
     """Build deployment specs with env-var-configurable schedules."""
+    forecast_overlay = ForecastConfigOverlay.parse(
+        os.environ.get("SAPPHIRE_FORECAST_CONFIG_OVERLAY")
+    )
     cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
     cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
     cron_backup = os.environ.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
@@ -129,6 +163,7 @@ def _all_specs() -> list[DeploymentSpec]:
             flow_module="sapphire_flow.flows.run_forecast_cycle",
             flow_attr="run_forecast_cycle_flow",
             deployment_name="forecast-cycle",
+            forecast_config_overlay=forecast_overlay,
             cron=cron_forecast,
             concurrency_limit=1,
         ),
@@ -251,6 +286,23 @@ async def _register_one(spec: DeploymentSpec) -> None:
         deploy_kwargs["cron"] = spec.cron
     if spec.concurrency_limit is not None:
         deploy_kwargs["concurrency_limit"] = spec.concurrency_limit
+
+    if spec.deployment_name == "forecast-cycle":
+        from prefect.client.orchestration import get_client
+        from prefect.exceptions import ObjectNotFound
+
+        async with get_client() as client:
+            try:
+                existing = await client.read_deployment_by_name(
+                    f"{flow_fn.name}/{spec.deployment_name}"
+                )
+            except ObjectNotFound:
+                variables: object = {}
+            else:
+                variables = existing.job_variables
+        deploy_kwargs["job_variables"] = forecast_job_variables(
+            variables, spec.forecast_config_overlay
+        )
 
     deployment_id = await sourced_flow.adeploy(**deploy_kwargs)
     log.info(

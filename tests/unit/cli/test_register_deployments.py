@@ -620,3 +620,112 @@ class TestSkippedDeployments:
             overlay["services"]["init"]["environment"]["SAPPHIRE_SKIP_DEPLOYMENTS"],
         )
         assert not [s for s in _build_specs() if "bafu" in s.deployment_name]
+
+
+class TestForecastConfigOverlay:
+    @pytest.mark.parametrize("raw", [None, ""])
+    def test_disabled(self, raw: str | None) -> None:
+        from sapphire_flow.cli.register_deployments import ForecastConfigOverlay
+
+        assert ForecastConfigOverlay.parse(raw) is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            " ",
+            "relative.toml",
+            "/a,,/b",
+            "/a,",
+            "/a/../b",
+            "/a/./b",
+            "/a//b",
+            "/a\n/b",
+            "/${PATH}/a",
+        ],
+    )
+    def test_malformed_paths_fail_without_echoing_input(self, raw: str) -> None:
+        from sapphire_flow.cli.register_deployments import ForecastConfigOverlay
+
+        with pytest.raises(ValueError, match="forecast overlays"):
+            ForecastConfigOverlay.parse(raw)
+
+    def test_order_and_runtime_parser_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.cli.register_deployments import ForecastConfigOverlay
+        from sapphire_flow.config._overlay import _resolve_overlay_paths
+
+        overlay = ForecastConfigOverlay.parse(
+            " /app/base.toml, /app/config/overlays/nhs-provider.toml "
+        )
+        assert overlay is not None
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", overlay.environment_value())
+        assert tuple(_resolve_overlay_paths()) == overlay.paths
+
+    def test_only_forecast_spec_receives_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SAPPHIRE_FORECAST_CONFIG_OVERLAY",
+            "/app/base.toml,/app/config/overlays/nhs-provider.toml",
+        )
+        specs = _build_specs()
+        assert [
+            s.deployment_name for s in specs if s.forecast_config_overlay is not None
+        ] == ["forecast-cycle"]
+
+    def test_skipped_forecast_stays_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SAPPHIRE_FORECAST_CONFIG_OVERLAY",
+            "/app/base.toml,/app/config/overlays/nhs-provider.toml",
+        )
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "forecast-cycle")
+        assert "forecast-cycle" not in {s.deployment_name for s in _build_specs()}
+
+
+class TestForecastJobVariables:
+    def test_set_repeat_and_clear_preserve_unrelated_values(self) -> None:
+        from copy import deepcopy
+
+        from sapphire_flow.cli.register_deployments import (
+            ForecastConfigOverlay,
+            forecast_job_variables,
+        )
+
+        existing = {
+            "env": {"OTHER": "unchanged", "NULL": None},
+            "working_dir": "/app",
+            "labels": {"safe": "value"},
+        }
+        original = deepcopy(existing)
+        overlay = ForecastConfigOverlay.parse(
+            "/app/base.toml,/app/config/overlays/nhs-provider.toml"
+        )
+        configured = forecast_job_variables(existing, overlay)
+        assert forecast_job_variables(configured, overlay) == configured
+        assert forecast_job_variables(configured, None) == original
+        assert existing == original
+        assert configured["env"] == {
+            "OTHER": "unchanged",
+            "NULL": None,
+            "SAPPHIRE_FORECAST_CONFIG_OVERLAY": (
+                "/app/base.toml,/app/config/overlays/nhs-provider.toml"
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "existing",
+        [None, [], {"env": None}, {"env": []}, {1: "bad"}, {"env": {1: "bad"}}],
+    )
+    def test_malformed_shapes_refuse(self, existing: object) -> None:
+        from sapphire_flow.cli.register_deployments import forecast_job_variables
+
+        with pytest.raises(ValueError, match="must be a string-keyed mapping"):
+            forecast_job_variables(existing, None)
+
+    def test_new_disabled_deployment_does_not_add_environment(self) -> None:
+        from sapphire_flow.cli.register_deployments import forecast_job_variables
+
+        assert forecast_job_variables({}, None) == {}

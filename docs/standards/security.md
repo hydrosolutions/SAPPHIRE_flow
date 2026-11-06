@@ -2211,3 +2211,15 @@ withholds reviewer CMAL values/details and BAFU for every role. Protected Nepal
 observation deliveries are never included, including for admins. No display
 thresholds, new grants, migrations, or ingestion activation are introduced in
 Phase B. Phase C unavailable components do not imply safe levels.
+
+### Shared NHS provider identity file
+
+Forecast configuration may share the approved non-secret provider identity file
+with native ingest through a read-only, existing-file bind. Keep operational
+contents outside Git and CI. Verify effective container hashes and worker-UID
+readability, including after any approved atomic replacement; a host hash alone
+is insufficient. Other default-worker jobs can read the mapping but must not
+select it implicitly. Diagnostics expose only approved paths, booleans and hashes,
+never arbitrary Compose/Prefect environment or provider contents. The [NHS
+procedure](../deployment/nhs-forecast-configuration.md) preserves exact source
+authority and documents activation and rollback order.

@@ -99,6 +99,7 @@ if TYPE_CHECKING:
         RecapClientLike,
     )
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.config.dhm import DhmConfig
     from sapphire_flow.flows.daily_forecast_execution import DailyForecastExecution
     from sapphire_flow.protocols.adapters import (
         WeatherForecastSource,
@@ -2409,6 +2410,41 @@ def _with_group_station_code_resolvers(
     return with_group_station_code_resolvers(models, station_store)
 
 
+def _load_selected_provider_config(
+    config: DeploymentConfig | None, data_use: ForecastDataUse
+) -> tuple[DeploymentConfig | None, DhmConfig | None]:
+    from sapphire_flow.config.river_stations import (
+        ForecastConfigOverlay,
+        load_forecast_provider_config,
+    )
+
+    if data_use is not ForecastDataUse.PROVISIONAL_RATING:
+        return config, None
+    try:
+        selection = ForecastConfigOverlay.parse(
+            os.environ.get("SAPPHIRE_FORECAST_CONFIG_OVERLAY")
+        )
+    except ValueError:
+        raise ConfigurationError("invalid forecast provider selection") from None
+    if selection is None:
+        return config, None
+    if config is not None:
+        raise ConfigurationError(
+            "forecast provider selection cannot accompany injected config"
+        )
+    base_path = os.environ.get("SAPPHIRE_CONFIG")
+    if not base_path:
+        raise ConfigurationError(
+            "forecast provider selection requires a base configuration"
+        )
+    worker_paths = tuple(
+        Path(item.strip())
+        for item in os.environ.get("SAPPHIRE_CONFIG_OVERLAY", "").split(",")
+        if item.strip()
+    )
+    return load_forecast_provider_config(Path(base_path), worker_paths, selection)
+
+
 @flow(
     name="forecast-cycle",
     log_prints=False,
@@ -2568,6 +2604,7 @@ def run_forecast_cycle_flow(
                 "RejectedForecastStore", stores["rejected_forecast_store"]
             )
 
+        config, selected_provider = _load_selected_provider_config(config, data_use)
         if config is None:
             config_path = os.environ.get("SAPPHIRE_CONFIG")
             if config_path is not None:
@@ -2592,7 +2629,11 @@ def run_forecast_cycle_flow(
                     "provisional rating cycle requires explicit scoped opt-ins"
                 )
             if not isinstance(rating_inputs, NativeRatingInputs):
-                dhm = load_adapter_config()
+                dhm = (
+                    selected_provider
+                    if selected_provider is not None
+                    else load_adapter_config()
+                )
                 if not isinstance(dhm, DhmConfig) or rating_inputs is None:
                     raise ConfigurationError(
                         "provisional rating cycle requires native DHM reader"

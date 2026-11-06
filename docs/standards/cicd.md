@@ -2096,3 +2096,13 @@ validates both roots and the mount table before removing either root, and may re
 rejects trailing records and rejects decimal values outside Bash's supported signed range
 before comparisons. It never runs on local, staging or production hosts. A complete
 Aquacast build, Trivy gate and release-identity/import proof is still required.
+
+### Forecast-scoped NHS provider configuration
+
+The optional `docker-compose.nhs-forecast.yml` adds a shared read-only provider file
+for the default worker and a forecast-only registration input on init. It does not
+change the base worker overlay chain. Follow the maintained [NHS configuration
+procedure](../deployment/nhs-forecast-configuration.md), including full Compose-file
+invocation inventory, two-stage activation, effective hashes and clearing the owned
+deployment key before image rollback or mount removal. Operational provider files
+are not committed. This wiring grants no deployment or provider-polling authority.

@@ -515,7 +515,12 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     path = _Path(path)
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
-    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
+    return parse_deployment_config(load_merged_toml(path, _resolve_overlay_paths()))
+
+
+def parse_deployment_config(raw: dict[str, object]) -> DeploymentConfig:
+    """Parse an already loaded configuration snapshot without changing it."""
+    data = cast("dict[str, Any]", dict(raw))
     # Extract NWP grid archive path before popping adapters section
     _adapters = _adapter_section(data, "adapters")
     _weather_forecast = _adapter_section(_adapters, "weather_forecast")

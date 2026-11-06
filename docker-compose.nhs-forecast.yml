@@ -1,0 +1,14 @@
+# Adds only the worker provider bind and init selection; keep in every file list.
+# Activation is a separate registration step after mount availability is verified.
+services:
+  prefect-worker:
+    volumes:
+      - type: bind
+        source: ${NHS_PROVIDER_CONFIG_SOURCE:?approved provider file required}
+        target: /app/config/overlays/nhs-provider.toml
+        read_only: true
+        bind:
+          create_host_path: false
+  init:
+    environment:
+      SAPPHIRE_FORECAST_CONFIG_OVERLAY: ${NHS_FORECAST_JOB_OVERLAYS:-}
