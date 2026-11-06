@@ -74,10 +74,7 @@ def safe_gateway_failure(exc: Exception) -> GatewayAccessError:
     if type(status) is int and status in (401, 403):
         return GatewayAccessError(GatewayFailure.AUTHORIZATION)
     code = getattr(exc, "code", None)
-    if isinstance(code, str) and code in (
-        "source_data_missing",
-        "subscription_not_found",
-    ):
+    if isinstance(code, str) and code == "source_data_missing":
         return GatewayAccessError(GatewayFailure.UNAVAILABLE)
     return GatewayAccessError(GatewayFailure.UNCERTAIN)
 

@@ -225,6 +225,7 @@ def gateway_cli(
         wrong_run=False,
         forecast_fault=None,
         download_error=None,
+        retrieval_response=None,
         native_requests=[],
     )
     monkeypatch.setattr(
@@ -293,6 +294,16 @@ def gateway_cli(
         assert request.url is not None
         if case.download_error is not None:
             raise ValueError("synthetic failure " + request.url)
+        if case.retrieval_response is not None:
+            status, code = case.retrieval_response
+            response = requests.Response()
+            response.status_code = status
+            response.url = request.url
+            response.request = request
+            response.raw = io.BytesIO(
+                json.dumps({"code": code, "message": secret + request.url}).encode()
+            )
+            return response
         query = {
             key: values[0]
             for key, values in parse_qs(urlsplit(request.url).query).items()
@@ -1223,3 +1234,70 @@ def test_known_package_failures_exit_held_without_mutation_or_clients(
         for path in source.rglob("*")
         if path.is_file()
     } == source_before
+
+
+def test_cli_z_spelled_scope_preserves_revision_and_completes(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    original = invoke_cli(case, ["prepare", "--scope", str(case.scope)], capsys)
+    source = json.loads(case.scope.read_text())
+    source["forecast"]["source_runs"][0][0] = source["forecast"]["source_runs"][0][
+        0
+    ].replace("+00:00", "Z")
+    assert source["forecast"]["cycles"][0].endswith("Z")
+    case.scope.write_text(json.dumps(source))
+    assert prepare_gateway.run([*case.argv, "prepare", "--scope", str(case.scope)]) == 2
+    captured = capsys.readouterr()
+    assert "held or failed" not in captured.err
+    equivalent = json.loads(captured.out)
+    assert equivalent["proposal_revision"] == original["proposal_revision"]
+    assert "forecast_source_run_contract_unconfirmed" not in str(equivalent["stations"])
+    complete = complete_cli_case(case, capsys)
+    assert complete["proposal_revision"] == original["proposal_revision"]
+    assert all(
+        station["outcome"] == "eligible_for_preparation"
+        for station in complete["stations"]
+    )
+    path = case.workspace / "state.json"
+    before = path.read_bytes()
+    raw = json.loads(before)
+    assert raw["proposals"][-1]["forecast"]["source_runs"][0][0].endswith("+00:00")
+    invoke_cli(case, ["status"], capsys, expected=0)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "status,code,reason",
+    [
+        (401, "synthetic_unknown", "authorization_failed"),
+        (403, "synthetic_unknown", "authorization_failed"),
+        (404, "source_data_missing", "source_unavailable"),
+        (404, "subscription_not_found", "outcome_uncertain"),
+    ],
+)
+def test_cli_native_retrieval_error_category_is_safe_and_durable(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+    code: str,
+    reason: str,
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    writes = sum(request.method != "GET" for request in case.gateway.requests)
+    case.retrieval_response = (status, code)
+    output = invoke_cli(case, ["resume", *connection_args(case)], capsys)
+    forecasts = [
+        chunk
+        for chunk in output["stations"][0]["coverage"]
+        if chunk["stream"] == "ifs_forecast"
+    ]
+    assert forecasts and all(reason in chunk["holds"] for chunk in forecasts)
+    assert all(
+        chunk["usable_count"] == 0 and chunk["validated_source"] is None
+        for chunk in forecasts
+    )
+    restored = invoke_cli(case, ["status"], capsys)
+    assert reason in restored["stations"][0]["holds"]
+    assert sum(request.method != "GET" for request in case.gateway.requests) == writes

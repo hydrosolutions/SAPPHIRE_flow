@@ -294,3 +294,49 @@ def test_declared_daily_run_policy_validates_every_date_not_a_global_constant() 
     result = assess_coverage(data, declared)
     assert result.usable_count == 2
     assert "wrong_source_provenance" in result.holds
+
+
+@pytest.mark.parametrize(
+    "status,code,reason",
+    [
+        (401, "synthetic_unknown", "authorization_failed"),
+        (403, "synthetic_unknown", "authorization_failed"),
+        (404, "source_data_missing", "source_unavailable"),
+        (404, "subscription_not_found", "outcome_uncertain"),
+        (500, "synthetic_unknown", "outcome_uncertain"),
+    ],
+)
+def test_native_client_error_shapes_are_safely_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, code: str, reason: str
+) -> None:
+    import json
+
+    secret = "aaaa-native-aaaa"
+
+    def send(
+        self: object, request: requests.PreparedRequest, **kwargs: object
+    ) -> requests.Response:
+        response = requests.Response()
+        response.status_code = status
+        response.url = request.url
+        response.request = request
+        response.raw = io.BytesIO(
+            json.dumps({"code": code, "message": secret + str(request.url)}).encode()
+        )
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    client = RecapClient(
+        ApiClientConfig(base_url="https://example.invalid/sdk", api_key=secret)
+    )
+    with pytest.raises(GatewayAccessError, match=reason) as error:
+        private_gateway_fetch(
+            tmp_path,
+            lambda: client.ecmwf.era5_land_reanalysis(
+                variable="synthetic", start_date="2024-02-28", hru_code="new_synthetic"
+            ),
+        )
+    assert error.value.reason.value == reason
+    assert secret not in str(error.value)
+    assert error.value.__context__ is None and error.value.__cause__ is None
+    assert not list(tmp_path.iterdir())

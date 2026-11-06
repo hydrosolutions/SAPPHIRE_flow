@@ -169,6 +169,13 @@ class ForecastScope:
             raise ValueError("forecast cycles must be UTC synoptic hours")
         if self.first_lead < timedelta(0) or self.first_lead >= self.end_lead:
             raise ValueError("nonempty forecast lead interval required")
+        normalized_runs: list[tuple[str, SourceRunContract]] = []
+        for key, run in self.source_runs:
+            instant = datetime.fromisoformat(key)
+            if instant.utcoffset() != timedelta(0):
+                raise ValueError("forecast run keys must be aware UTC instants")
+            normalized_runs.append((instant.astimezone(UTC).isoformat(), run))
+        object.__setattr__(self, "source_runs", tuple(normalized_runs))
         runs = dict(self.source_runs)
         if len(runs) != len(self.source_runs) or not set(runs) <= {
             c.isoformat() for c in self.cycles

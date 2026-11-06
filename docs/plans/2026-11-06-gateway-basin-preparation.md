@@ -434,3 +434,34 @@ swallowing. Final native checks: **621 passed, 1 optional skip**; all eight
 implementation modules pass pyright and changed-file lint/format passes. Exact
 results are recorded in the local package-failure handoff. Target0.1.1114 remains unchanged. No live/external operation, cache change,
 push, PR, merge or tag; fresh independent review and final-head full CI remain.
+
+## UTC scope and native verification repair — 2026-11-06
+
+Root commissioned three bounded items from the complete reviews at `70b8f118`.
+Forecast source-run keys now parse aware UTC instants at construction, normalize
+once to the existing canonical `+00:00` spelling, and then reject unrequested or
+duplicate-after-normalization keys. Naive/non-UTC keys remain invalid. JSON scopes
+using equivalent `Z`/`+00:00` keys resolve to the same proposal revision; previously
+valid schema-2 serialization is unchanged and status loading does not rewrite it.
+All-cycle completeness and typed provenance remain enforced.
+
+Native-client source inspection confirms `source_data_missing` is its dedicated
+availability code. Arbitrary other provider codes can pass through ApiValidationError,
+but this raw seam supplies no supported availability meaning for `subscription_not_found`;
+that speculative mapping is removed, not replaced with another invented code.
+Fake-transport tests through the installed native client/private fetch and actual
+resume pin401/403 authorization and source-data-missing unavailability, preserve
+safe uncertain classification for unknown codes, and assert no secret/cause-chain
+exposure or new remote writes. The client itself is unchanged.
+
+A small runbook test extracts the documented preparation command lines and passes
+their tokens to the PUBLIC parser.parse_args. It does not execute commands, expand
+environment variables, access secrets, inspect parser internals or create a shell
+framework; the documented commands needed no changes.
+
+RED UTC regressions: **2 failed,105 passed**. Initial expanded focused checks:
+**145 passed**. Final broader native checks: **637 passed,1 optional skip**;
+all eight implementation modules pass pyright and changed-file lint/format passes.
+Exact results are in the local UTC-scope handoff. Target0.1.1114 and cache behavior remain unchanged. No live/external/model
+operation, geometry work, push, PR, merge or tag. Fresh full-patch reviews and
+final-head full CI remain required; synthetic checks are not live/scientific approval.

@@ -139,8 +139,11 @@ operator-selected `purpose`. `forecast` contains UTC synoptic `cycles`, ISO-8601
 `first_lead`/exclusive `end_lead` durations, explicit `members` (`[0]` for SAP3's
 control/HRES only), `level_type`, nullable `level`,
 `control_grid` (`0p1`), `product_grid_reference`, and
-`source_runs`: pairs of cycle ISO timestamp and a run contract. For datetime-valued
-runs use `{"semantics":"utc_instant","timestamp":"2026-11-06T00:00:00Z"}`;
+`source_runs`: pairs of cycle ISO timestamp and a run contract.
+Keys must be aware UTC instants; `Z` and `+00:00` spellings normalize to the same
+canonical key and proposal revision. Naive, non-UTC, unrequested, or duplicate
+normalized keys are rejected. Existing valid schema-2 keys keep their serialized form.
+For datetime-valued runs use `{"semantics":"utc_instant","timestamp":"2026-11-06T00:00:00Z"}`;
 that aware instant must match its requested cycle and is normalized to UTC.
 Exact text run identities remain supported through `{"semantics":"exact",
 "value":"CONFIRMED_TEXT"}`. Naive or string timestamps do not satisfy a declared

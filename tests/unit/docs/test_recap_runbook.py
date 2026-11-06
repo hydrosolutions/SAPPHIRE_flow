@@ -5,6 +5,7 @@ that a stray body-text mention could satisfy accidentally."""
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -52,3 +53,19 @@ class TestRunbookSections:
             assert any(reason in h for h in headings_lower), (
                 f"NWP_DELIVERY reason {reason!r} not found as a heading"
             )
+
+
+def test_documented_gateway_preparation_commands_parse_without_execution() -> None:
+    from sapphire_flow.cli.prepare_gateway import parser
+
+    prefix = "uv run python -m sapphire_flow.cli.prepare_gateway"
+    commands = [
+        line.strip()
+        for line in _RUNBOOK_PATH.read_text().splitlines()
+        if line.strip().startswith(prefix + " ")
+    ]
+    assert commands, "runbook must contain preparation CLI examples"
+    command_parser = parser()
+    for command in commands:
+        arguments = shlex.split(command)[len(shlex.split(prefix)) :]
+        command_parser.parse_args(arguments)

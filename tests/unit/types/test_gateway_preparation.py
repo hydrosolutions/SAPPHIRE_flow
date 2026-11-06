@@ -169,3 +169,42 @@ def test_failed_fetch_can_preserve_empty_unvalidated_evidence() -> None:
         validated_source_run=None,
     )
     assert failed.usable_count == 0 and failed.validated_source is None
+
+
+def test_json_forecast_run_keys_accept_equivalent_utc_spelling() -> None:
+    import json
+
+    from pydantic import TypeAdapter
+
+    from sapphire_flow.services.gateway_preparation import proposal_revision
+    from sapphire_flow.types.gateway_preparation import ForecastScope
+
+    original = proposal()
+    assert original.forecast is not None
+    payload = TypeAdapter(ForecastScope).dump_python(original.forecast, mode="json")
+    payload["source_runs"][0][0] = payload["source_runs"][0][0].replace("+00:00", "Z")
+    parsed = TypeAdapter(ForecastScope).validate_json(json.dumps(payload))
+    assert parsed == original.forecast
+    assert proposal_revision(replace(original, forecast=parsed)) == proposal_revision(
+        original
+    )
+
+
+@pytest.mark.parametrize(
+    "key", ["2024-02-11T00:00:00", "2024-02-11T01:00:00+01:00", "2024-02-12T00:00:00Z"]
+)
+def test_forecast_run_keys_reject_naive_non_utc_and_unrequested_instants(
+    key: str,
+) -> None:
+    forecast = proposal().forecast
+    assert forecast is not None
+    with pytest.raises(ValueError, match="UTC|requested cycles"):
+        replace(forecast, source_runs=((key, forecast.source_runs[0][1]),))
+
+
+def test_duplicate_keys_after_utc_normalization_are_rejected() -> None:
+    forecast = proposal().forecast
+    assert forecast is not None
+    key, run = forecast.source_runs[0]
+    with pytest.raises(ValueError, match="distinct requested cycles"):
+        replace(forecast, source_runs=((key, run), (key.replace("+00:00", "Z"), run)))
