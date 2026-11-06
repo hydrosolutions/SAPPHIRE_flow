@@ -165,7 +165,8 @@ restricted data. If no context is supplied, the map explicitly says so.
    but still require fresh review. Local state is trusted facilitator data, not a
    signed identity or tamper-proof approval ledger. Restarting and attaching the
    same unchanged automatic package retains decisions, fingerprint and its recorded
-   source ZIP hash. A different package does not inherit that hash.
+   source ZIP hash. A different package does not inherit that hash, including
+   replacement detected on page load before confirmation and fresh review.
 
 ## Maps and connectivity
 
@@ -228,8 +229,8 @@ uv run pytest tests/unit/basin_operator tests/unit/services/test_basin_package_l
 uv run --with playwright==1.64.1 pytest tests/unit/basin_operator/browser_checks.py
 ```
 
-Run the browser file separately: combining it with its parent directory can cause
-pytest to deduplicate collection and omit this explicitly named check. It starts
+`browser_checks.py` is outside pytest's default `test_*.py` / `*_test.py`
+discovery patterns. Run the explicit separate browser command above. It starts
 an isolated server on a free port with synthetic files, never the live workspace.
 It uses headless installed Chrome and blocks external map assets. It verifies
 actual button requests, focus/viewport, correction, network/server errors, export

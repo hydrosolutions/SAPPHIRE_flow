@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Literal
 
 import geopandas as gpd
 import polars as pl
@@ -63,11 +64,13 @@ def leading_zero_package(synthetic_package: Path) -> Path:
 
 
 @pytest.mark.parametrize("interface", list(ExtractorInterface))
+@pytest.mark.parametrize("replacement_path", ["direct", "page"])
 def test_strict_subprocess_resume_and_export(
     tmp_path: Path,
     leading_zero_package: Path,
     inventory: bytes,
     interface: ExtractorInterface,
+    replacement_path: Literal["direct", "page"],
 ) -> None:
     legacy = (
         "p.add_argument('--snap-strategy', choices=['distance-first'], required=True)"
@@ -140,7 +143,41 @@ def test_strict_subprocess_resume_and_export(
     )
     assert approval["source_archive_sha256"] == archive_hash
     assert invocation_path.read_bytes() == invocation_bytes
-    # A different package must not borrow the previous ZIP hash.
+    if replacement_path == "page":
+        # Replacing the attached directory first goes through page invalidation.
+        manifest_path = Path(resumed.state["package_dir"]) / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["package_id"] = "replacement-producer-package"
+        manifest_path.write_text(json.dumps(manifest))
+        changed = client.get("/")
+        assert changed.status_code == 400
+        assert "package changed" in changed.json()["detail"]
+        assert resumed.decisions == ()
+        assert client.post("/confirm", headers=headers).status_code == 200
+        replacement = resumed.batch()
+        assert replacement.package.manifest.package_id == "replacement-producer-package"
+        assert replacement.fingerprint != batch.fingerprint
+        response = client.post(
+            "/decision",
+            headers=headers,
+            json={
+                "codes": ["00001"],
+                "status": "approved",
+                "reviewer": "Fresh reviewer",
+                "reason": "Replacement reviewed",
+                "acknowledgment": "acknowledged",
+                "fingerprint": replacement.fingerprint,
+            },
+        )
+        assert response.status_code == 200
+        response = client.post("/export", headers=headers)
+        assert response.status_code == 200
+        approval = json.loads(
+            (Path(response.json()["handover"]) / "approval.json").read_text()
+        )
+        assert approval["source_archive_sha256"] is None
+        assert resumed.state["source_archive_sha256"] is None
+    # A direct different-package attachment must not borrow a ZIP hash either.
     resumed.attach_package(leading_zero_package)
     assert resumed.state["source_archive_sha256"] is None
     assert resumed.decisions == ()
