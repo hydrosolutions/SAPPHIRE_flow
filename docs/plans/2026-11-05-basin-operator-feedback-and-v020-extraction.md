@@ -229,6 +229,28 @@ PR #462 must merge first, then retarget this PR to `main` and verify its final
 merge-base/release-target checks. No merge, deployment or live-review restart is
 authorized. Native automatic-extraction acceptance remains separate and pending.
 
+## Updated-main checkpoint (2026-11-06)
+
+PR #462 and its CI fixes merged into `main` at
+`84211f8a49c8d84814f709aa9586671e94fca2ae`. The owner authorized updating this
+branch and trying the PR again. Our commits were rebased onto that main commit,
+removing the old inherited provider commits. All reviewed application/test files
+remain byte-identical; `RELEASE_TARGET` stays correctly at base-plus-one
+`0.1.1111`. Against updated main, 166 focused tests, the explicit Chrome check,
+ruff lint/format and changed-source pyright pass. Final full-suite CI is still
+required; earlier local failures are not a waiver.
+
+The owner requested a more usable runbook. It now opens with short hydrologist and
+facilitator checklists, retains setup/reference content in expandable sections,
+and explains first setup with owner support, routine reuse and system-change
+rechecks. Both visible and detailed instructions distinguish resumed completed
+review from new/corrected extraction; they must not cause a needless rerun that
+clears decisions. Independent documentation reviews found no remaining corrections.
+The actual GitHub Markdown render was checked: 11 sections start collapsed.
+No runtime/server/workspace or scientific output changed for these documentation
+updates. PR #463 may be reopened against `main`; the earlier stacked-base warning
+is superseded. The owner retains merge and live-restart authority.
+
 ## Exit commands
 
 - `uv run pytest tests/unit/basin_operator tests/unit/services/test_basin_package_loader.py`

@@ -1,78 +1,117 @@
-# Local basin extraction and approval
+# Review a station basin and save its handover
 
-This is a facilitator-operated development tool for **new station batches**.
-It does not import stations, call the Gateway, open a database, discover models,
-or start scheduled forecasts. It is not part of the public API. Reviewer names
-are self-declared, not authenticated. Scientific adoption still needs owner approval.
+Use this guide with a **facilitator-prepared local tool**. The facilitator handles
+setup; the hydrologist decides whether the basin is suitable. One person can do
+both jobs, but setup success is not scientific approval.
 
-## Hydrologist quick-start — a prepared session
+> This tool does **not** register stations or start forecasts. Reviewer names are
+> self-declared, not authenticated. The local review address works on the
+> facilitator's computer, not on a colleague's computer.
 
-The facilitator prepares the tool and extraction; you judge the basin and outlet.
-You do not need to install the software to review a prepared session. If the tool
-or package is not ready, ask the facilitator to complete the setup below first.
+## Hydrologist: review the basin
 
-1. **Check the station list.** Compare every interpreted code, name and WGS84
-   coordinate with the source before confirming. Codes such as `00001` must retain
-   their leading zeros.
-2. **Wait for the basin to be ready.** An existing package shows **Existing
-   extraction loaded**; do not start extraction again. In automatic mode, the
-   facilitator starts extraction after confirmation and waits for a valid result.
-3. **Inspect the evidence.** Review the original point, selected outlet and basin
-   boundary with satellite/terrain backgrounds, area and snap distance. Missing
-   map context is not evidence that the basin is correct.
-4. **Check the selection and record your decision.** All stations are selected by
-   default. Viewing one station on the map does **not** select only that station
-   for approval. Select the intended rows, enter your name and decide. Acknowledge
-   displayed warnings only after reviewing them; structural holds cannot be waived.
-5. **Save the approved-only handover.** The success message gives a folder path on
-   the facilitator's computer. Ask them to open it. For colleague feedback, share
-   only `review.html`, subject to data-use restrictions; it still needs internet
-   for map assets/backgrounds and is not the approved model-input package.
+1. **Check the station details.** Compare the displayed codes, names and coordinates
+   with your source. Keep leading zeros: `00001` must stay `00001`. Tell the
+   facilitator about any mistake before confirming the inputs.
+2. **Check that the basin is ready.** If the page says **Existing extraction
+   loaded** or extraction is **completed** with a basin shown, skip Start
+   extraction. Otherwise, ask the facilitator to finish loading a valid result.
+3. **Inspect the basin and outlet.** Use the satellite and terrain backgrounds.
+   Compare the original point, snapped outlet, boundary, area and snap distance.
+   Tell the facilitator if the map context you need is missing.
+4. **Select the stations you mean to review.** Check the boxes in the table.
+   **All stations are selected by default.** Choosing a station on the map does
+   not change those checkboxes.
+5. **Record your decision.** Enter your name, then choose **Approve selected**,
+   **Leave pending**, or **Needs correction**. Give a reason for pending/correction.
+   Review any warnings before acknowledging them. Structural holds cannot be
+   overridden.
+6. **Save the handover.** Click **Create immutable approved-only handover**.
+   Look for **Handover saved:** and ask the facilitator to open that folder.
+   Only approved stations belong in the exported basin/static package.
 
-**State key:** Loaded/completed means ready for review, not approved. Pending
-means no approval yet. Needs correction means the recorded concern remains to be
-resolved before fresh review; changed inputs require a new extraction. Approved
-means eligible for this basin handover only, not station admission, model-input
-qualification or activation of forecasts.
+> **Loaded is not approved.** Approval here covers this basin handover only—not
+> model-input qualification or activation of forecasts. Do not approve a basin
+> when the evidence needed for your review is missing.
 
-See [Operate and resume](#operate-and-resume) for the detailed decision procedure.
-The local review address works on the facilitator's machine; it is not a link
-that colleagues can open on their own computers.
+## Facilitator: prepare each review session
 
-## Facilitator responsibilities
+1. **Choose the route.** Already have an extraction? Use **Attach an existing
+   extraction**. Need to create one? Use **Run automatic extraction**, with the
+   pinned runtime and datasets prepared first. The explanations and commands are
+   in the expandable sections below.
+2. **Prepare the station sheet and workspace.** Keep station codes as text. Use a
+   new private workspace for a new batch, or resume the existing workspace for the
+   same batch. Check that an existing package matches the supplied station inputs.
+3. **Start the local tool and check the inputs.** For a new batch, upload the
+   sheet. When resuming, use the saved inputs; do not upload again. Ask the
+   hydrologist to check them and confirm if confirmation is still needed.
+   Attachment mode loads the package at confirmation. In automatic mode, start
+   extraction only when a new or corrected batch needs a result. If a valid
+   completed basin is already loaded, go straight to review; do not rerun it.
+   Reload to check a running extraction. Do not start another run while it is busy.
+4. **Check the review is usable.** Verify that the intended basin is loaded and
+   satellite/terrain backgrounds work. Explain any missing river or map context.
+   Let the hydrologist make the decision; never infer approval from a successful run.
+5. **Open and share the saved handover.** The displayed folder is on your computer.
+   For colleague feedback, send only `review.html`, subject to data-use restrictions.
+   Its map backgrounds still need internet. This read-only feedback copy is not
+   an approved training table or a way to record approval remotely.
 
-One person may fill both roles, but setup checks do not replace the explicit
-scientific review and approval.
+> **First run?** Set up the system with the project owner's support. Open
+> **First setup** below. On an unchanged system, you normally reuse that setup.
+> After a system change, open **Recheck after a system change** before new work.
 
-**Initial setup — with the project owner's support for the first run:** choose
-[the workflow](#choose-your-workflow), prepare the SAPPHIRE environment and private
-workspace, and follow [Prepare](#prepare) and [Explicit launch](#explicit-launch).
-For attachment, obtain the matching station sheet and validated unpacked package,
-retaining its original ZIP. For automatic extraction, also provision the pinned
-extractor environment, datasets and output-path access. Verify the first run with
-the owner: confirm the inputs, inspect the loaded result, check map connectivity,
-and complete review/export without treating setup success as scientific approval.
-Retain the working launch command, runtime/dataset references and workspace
-locations securely so the session can be resumed; do not store credentials in argv.
+## Help and technical details
 
-**Before each session:** the full installation is not repeated on an unchanged
-system. Start the local tool, check that the intended package and station sheet
-match, and check that imagery/terrain and any supplied river context are usable.
-Explain any missing context to the hydrologist. Use a new workspace for a new batch,
-or resume the existing one for the same batch. Help the reviewer find the saved
-handover and share the appropriate files; never record approval on their behalf
-without their explicit decision.
+Open only the section you need. These sections explain the steps above; they do
+not authorize new infrastructure, a deployment, or a scientific approval.
 
-**After a system change:** initial setup is not a permanent guarantee. If the
-computer, operating system, Python/container environment, storage paths or access
-permissions change, repeat the affected preparation and startup checks. For
-extraction-related changes, run a known reference case in a separate test workspace
-and compare it with retained results before new work; investigate differences
-rather than assuming success means equivalence. Preserve original packages and
-approval records. Ask the owner for help if the earlier setup no longer works.
-This is rechecking the fixed setup, not an instruction to upgrade the extractor or
-rerun previously approved stations in place. A rebuilt appliance handover remains
-pending; this guide does not turn the current tool into a self-installing appliance.
+<details>
+<summary>First setup — facilitator, with the project owner</summary>
+
+The project owner will support the first run. This is a development tool,
+not a self-installing appliance. A rebuilt appliance handover is still pending.
+
+1. With the owner, choose attachment or automatic extraction.
+2. Prepare the installed SAPPHIRE environment and a private workspace. Use the
+   **Preparation requirements** and **Launch commands** sections below together.
+3. For attachment, obtain the matching station sheet, validated unpacked package
+   and original ZIP. No extractor runtime or datasets are needed just for review.
+4. For automatic extraction, also provision the fixed `v0.2.0` extractor runtime,
+   its datasets and output-path access. Do not install these into the forecast
+   environment. The operator does not provision them for you.
+5. Check the first run with the owner: inputs, loaded result, map access, explicit
+   hydrologist decision and export. A successful setup does not approve the basin.
+6. Retain the working command, runtime/dataset references and workspace locations
+   securely. Do not put credentials in command arguments. These records help you
+   start the next session without repeating installation.
+
+</details>
+
+<details>
+<summary>Recheck after a system change — facilitator</summary>
+
+Repeat the affected setup checks if the computer, operating system,
+Python/container environment, storage paths or access permissions change.
+This does not mean reinstalling everything after every session.
+
+1. Preserve original packages, workspaces and approval records.
+2. Recheck the affected preparation requirements and launch command. Verify that
+   the intended inputs and paths are still available.
+3. If extraction is affected, run a known reference case in a **separate test
+   workspace** and compare with retained results. Investigate differences; a
+   successful exit alone does not prove equivalent output.
+4. Check the map and review controls before starting new work. Ask the project
+   owner for help if the previous setup no longer works.
+
+Keep the selected extractor release fixed. Do not use this check as an excuse to
+upgrade it or overwrite previously approved outputs.
+
+</details>
+
+<details>
+<summary>What each workflow does</summary>
 
 ## Choose your workflow
 
@@ -100,6 +139,47 @@ Choose one launch mode, not both. See [Explicit launch](#explicit-launch) for
 commands and runtime requirements. The UI behavior described here belongs to
 the operator update; a still-running older review server needs the updated code
 and an authorized restart before it shows these fixes.
+
+</details>
+
+<details>
+<summary>If a button does not respond, or a command fails</summary>
+
+## Troubleshooting the review controls
+
+| What you see | Meaning and action |
+| --- | --- |
+| Upload is rejected because the workspace already has an inventory | Use the saved inputs when resuming; do not upload the sheet again. Start a new workspace only for a new batch. |
+| **Enter a reviewer name before recording a decision.** | A station is selected but the reviewer name is empty or only spaces. Enter the hydrologist's name and retry. No decision was recorded by that attempt. If nothing is selected, select a station first. |
+| **Start extraction** is disabled | In attachment mode this is expected: confirm the matching inventory and review the loaded package instead. With no package or command configured, relaunch in one of the modes above. In automatic mode, confirm inputs first; do not start a second extraction while one is running. |
+| The command rejects `--snap-strategy` or `--snap-audit` | The pinned `v0.2.0` release fixes distance-first internally and does not accept these historical v2 options. Remove them from its configured prefix. Only select `historical-v2` when intentionally running the old bundle; do not switch interfaces merely to hide a mismatch. |
+
+After **Create immutable approved-only handover**, the success message shows
+**Handover saved:** followed by the local directory path. It receives focus and
+scrolls into view; this is a saved local folder, not a remote upload or automatic
+station registration. If an error appears instead, resolve it before treating an
+export as complete. See [Handover contract](#handover-contract) for its contents.
+
+</details>
+
+<details>
+<summary>What the review states mean</summary>
+
+| Page state | What it means |
+| --- | --- |
+| Existing extraction loaded / completed | A result is ready for review. It is not approved yet. |
+| Pending | No approval has been recorded. |
+| Needs correction | Resolve the recorded concern before fresh review. Changed inputs require a new extraction. |
+| Approved | Eligible for this basin handover only. This is not station admission, model qualification or forecast activation. |
+
+If you need to correct an extraction point, preserve the original coordinate and
+record the reason. Do not move points merely to match a published area. See
+**Detailed review, corrections and resume** below for the procedure.
+
+</details>
+
+<details>
+<summary>Preparation requirements — facilitator</summary>
 
 ## Prepare
 
@@ -142,6 +222,11 @@ and an authorized restart before it shows these fixes.
    Numeric or mixed-type Excel code columns are rejected. Compare interpreted
    codes and coordinates with the source before confirming. Duplicate codes and normalized polygon-name collisions
    are rejected. Uploads are limited to 5 MiB and 1,000 stations.
+
+</details>
+
+<details>
+<summary>Launch commands — facilitator</summary>
 
 ## Explicit launch
 
@@ -224,14 +309,24 @@ FeatureCollection of LineString/MultiLineString context. Obtain it through the
 supported extractor handover; do not substitute alternative catchments or scrape
 restricted data. If no context is supplied, the map explicitly says so.
 
+</details>
+
+<details>
+<summary>Detailed review, corrections and resume</summary>
+
 ## Operate and resume
 
-1. Upload, inspect the interpreted inventory, then **Confirm**. No extraction
-   starts before confirmation. In attachment mode, confirmation loads the package;
-   no extraction is launched. Corrected inputs cannot display the old package as
-   current and require a new package identity.
-2. In configured automatic mode, **Start extraction**. It runs as a separate
-   process/environment. Reload to see completion or failure. Each attempt has a new directory containing immutable
+1. For a new workspace, upload and inspect the interpreted inventory, then
+   **Confirm**. When resuming, inspect the saved inputs instead of uploading again;
+   confirm only if needed. In attachment mode, confirmation loads the package
+   without running extraction. Corrected inputs require confirmation and a newly
+   extracted package identity; the old package is not current.
+2. In configured automatic mode, click **Start extraction** only when a new or
+   corrected batch needs a result. If a valid completed basin is already loaded,
+   skip this step and retain its review decisions. Starting another extraction
+   clears the current decisions; it is not the way to resume review.
+   Extraction runs as a separate process/environment. Reload to see completion or
+   failure. Each attempt has a new directory containing immutable
    inputs/argv and `extractor.log`; these remain local, not remotely shared.
    A failed or structurally invalid output cannot be approved. Restarting the
    operator preserves review state; an in-flight process is reported interrupted,
@@ -273,19 +368,10 @@ restricted data. If no context is supplied, the map explicitly says so.
    source ZIP hash. A different package does not inherit that hash, including
    replacement detected on page load before confirmation and fresh review.
 
-## Troubleshooting the review controls
+</details>
 
-| What you see | Meaning and action |
-| --- | --- |
-| **Enter a reviewer name before recording a decision.** | A station is selected but the reviewer name is empty or only spaces. Enter the hydrologist's name and retry. No decision was recorded by that attempt. If nothing is selected, select a station first. |
-| **Start extraction** is disabled | In attachment mode this is expected: confirm the matching inventory and review the loaded package instead. With no package or command configured, relaunch in one of the modes above. In automatic mode, confirm inputs first; do not start a second extraction while one is running. |
-| The command rejects `--snap-strategy` or `--snap-audit` | The pinned `v0.2.0` release fixes distance-first internally and does not accept these historical v2 options. Remove them from its configured prefix. Only select `historical-v2` when intentionally running the old bundle; do not switch interfaces merely to hide a mismatch. |
-
-After **Create immutable approved-only handover**, the success message shows
-**Handover saved:** followed by the local directory path. It receives focus and
-scrolls into view; this is a saved local folder, not a remote upload or automatic
-station registration. If an error appears instead, resolve it before treating an
-export as complete. See [Handover contract](#handover-contract) for its contents.
+<details>
+<summary>Map backgrounds, connectivity and usage terms</summary>
 
 ## Maps and connectivity
 
@@ -306,6 +392,11 @@ Tile failures show a warning and leave geometry overlays in place. A missing
 Leaflet library shows a separate warning and preserves the review table; reconnect
 before map review. Automated UI tests are not hydrologist approval or proof of
 provider availability. Exported HTML still needs internet for map assets/backgrounds.
+
+</details>
+
+<details>
+<summary>What the handover contains</summary>
 
 ## Handover contract
 
@@ -338,6 +429,11 @@ resulting decision locally. Review what you share; even geometry/coordinates may
 have data-use restrictions. Gateway registration and SAPPHIRE admission are later,
 separately authorized steps, not actions in this operator.
 
+</details>
+
+<details>
+<summary>Validation evidence and remaining acceptance</summary>
+
 ## Validation and remaining acceptance
 
 Repeatable project-native checks (Chrome installed locally; no runtime browser
@@ -364,3 +460,5 @@ datasets, verify a **new** trial batch end to end, verify live imagery/terrain a
 available river context, and obtain hydrologist review. Do not reset existing
 six-/21-station evaluation-server records. Full repository tests and independent
 reviews remain pre-merge gates.
+
+</details>
