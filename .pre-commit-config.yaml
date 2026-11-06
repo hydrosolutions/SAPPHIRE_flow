@@ -16,12 +16,13 @@
 # All ruff hooks are CHECK-ONLY (no auto-fix). See D8 in
 # docs/plans/archive/070-precommit-and-gate-parity.md for the rationale
 # (auto-fix can desynchronize already staged content from the final commit;
-# see AGENTS.md §Release Version Identity).
+# see docs/standards/cicd.md §Release identity tags and receipts).
 #
 # default_install_hook_types: a bare `pre-commit install` (no --hook-type
 # flags) now registers pre-commit + pre-push + post-commit, so a NEW clone
 # gets the Plan 200 D4 unpushed-main nudge without needing the long-form
-# command from AGENTS.md/README.md. An EXISTING clone that already
+# command in docs/standards/cicd.md §Contributor setup and local checks.
+# An EXISTING clone that already
 # ran the old two-type install must still re-run that command once (or
 # `pre-commit install` again) to pick up post-commit -- pre-commit only
 # registers the hook types actually requested at install time.

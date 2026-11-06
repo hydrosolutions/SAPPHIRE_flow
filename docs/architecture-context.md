@@ -3376,7 +3376,7 @@ tools/  →  adapters/
 
 ### Test layer mapping
 
-Follows from the layering rule. See AGENTS.md for test writing conventions.
+Follows from the layering rule. See docs/conventions.md for test writing conventions.
 
 | Layer | Test type | Strategy |
 |-------|-----------|----------|

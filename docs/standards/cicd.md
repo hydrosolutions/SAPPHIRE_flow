@@ -485,6 +485,10 @@ base, including tooling PRs. This target is release intent, not package identity
 remain dynamic and come from Git release identity at build time. The old automatic
 `tag-main.yml` publisher remains retired.
 
+Further commits in the same PR do not bump again. Do not edit literal package
+versions, `uv.lock` for version churn, or generated SCM version metadata.
+Agents never create release tags, publish release state, or merge PRs.
+
 Use an already installed project interpreter directly:
 `.venv/bin/python -I tools/release_target.py bump --base-sha <full-base-sha>`.
 There is no wrapper-triggered project sync/build. Strict raw target and exact single-file
@@ -576,6 +580,29 @@ Two gates protect every change before it reaches `main`:
 2. **CI gate (GitHub Actions)** — thorough, remote, fires on push and PR. Catches what pre-commit misses: integration tests (require postgres + system deps), image builds, Trivy CVE scans, SBOM generation, and the wheel-only guard.
 
 **The parity invariant**: a developer should never push a commit that CI will reject for a reason their local environment could not have surfaced first.
+
+### Contributor setup and local checks
+
+Use `uv` exclusively for Python dependencies and project commands:
+
+```bash
+uv sync
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type post-commit
+uv run ruff format
+uv run ruff check --fix
+uv run pre-commit run --all-files
+```
+
+Use `uv add` / `uv remove` for dependency changes and `uv run` for scripts and
+checks. Run only reviewed hooks; inspect unfamiliar agent configurations first.
+Reinstall all three hook types when upgrading a clone that lacks `post-commit`.
+The post-commit main-branch reminder warns about unpushed work; it never blocks.
+
+Ruff hooks are check-only: format and fix before staging. The whitespace and
+end-of-file hygiene hooks can modify files and refuse the commit; inspect and
+restage their fixes before retrying. Hook bypass is not a normal workflow, and
+CI remains the backstop. Release-target and SCM identity rules are defined in
+**Image tagging and versioning** above; do not use retired per-commit package bumps.
 
 ### Full lifecycle flow
 
@@ -741,7 +768,7 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 
 ### Cross-references
 
-- `AGENTS.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
+- Contributor setup and local checks above — hook installation and check-only policy.
 - [`docs/plans/archive/070-precommit-and-gate-parity.md`](../plans/archive/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. A4 wires the pyright ratchet at `pre-push`, with CI as the backstop.
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
 - [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
@@ -1026,7 +1053,7 @@ pre-push feedback only. It is not full unit, integration, Aquacast, Docker,
 Trivy, Syft, wheel-only or dependency-safety validation.
 
 `uv run check` is the developer ergonomics counterpart to the
-`pre-commit` developer-tier gate (see `AGENTS.md` §Pre-commit hooks and
+`pre-commit` developer-tier gate (see Contributor setup and local checks above and
 `docs/plans/archive/070-precommit-and-gate-parity.md` for the full design).
 The CI `lint` job keeps its own standalone ruff steps; this helper does
 not modify CI behaviour.

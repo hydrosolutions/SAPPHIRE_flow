@@ -29,7 +29,7 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 > deployment".** Owner rulings:
 > [2026-09-10](docs/plans/264-qc-rules-select-on-network.md) (*"the Swiss deployment is a sandbox,
 > not production"*; that framing *"overstated"*) and 2026-09-23. The risk triggers in
-> [the project safeguards](AGENTS.md#agent-skills-and-project-safeguards) still apply on their own merits — a migration is still a
+> [the project safeguards](AGENTS.md#project-safeguards) still apply on their own merits — a migration is still a
 > migration — but the deployment being live is not one of them.
 >
 > ⚠️ **Two qualifications, so this is not read wider than it is.** *(a)* Quality-control flags are
@@ -137,7 +137,7 @@ pick up the new `post-commit` hook on its own.
 If `pre-commit install` errors with `Cowardly refusing to install hooks
 with core.hooksPath set`, run `git config --unset-all core.hooksPath`
 first — some IDEs (and tools like `husky`) set that key automatically.
-See `AGENTS.md` §Pre-commit hooks for the full hook policy.
+See [Contributor setup and local checks](docs/standards/cicd.md#contributor-setup-and-local-checks) for the full hook policy.
 
 ### 4. Run database migrations
 
