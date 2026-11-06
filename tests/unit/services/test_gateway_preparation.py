@@ -930,3 +930,49 @@ def test_same_snow_variable_can_share_compatible_stream_subscription() -> None:
         contracts=contracts,
     )
     assert planned.holds == ()
+
+
+def test_schema_two_absent_subscription_reason_stays_unknown_without_rewrite(
+    approved: Path, tmp_path: Path
+) -> None:
+    from sapphire_flow.types.gateway_preparation import (
+        StreamSetting,
+        Subscription,
+        SubscriptionAction,
+        SubscriptionChange,
+    )
+
+    change = SubscriptionChange(
+        before=None,
+        after=Subscription(
+            source="era5",
+            hru_code="synthetic",
+            parameter_name="temperature",
+            enabled=StreamSetting.ENABLED,
+        ),
+    )
+    action = SubscriptionAction(
+        change=change, recorded_at="synthetic", outcome="uncertain"
+    )
+    workspace = tmp_path / "evidence"
+    with preparation_workspace(workspace, handover=approved):
+        save_preparation_state(
+            workspace,
+            PreparationState(
+                handover=admit_handover(approved), subscription_actions=(action,)
+            ),
+        )
+    path = workspace / "state.json"
+    raw = json.loads(path.read_text())
+    del raw["subscription_actions"][0]["failure_reason"]
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    restored = load_preparation_state(workspace)
+    assert restored.subscription_actions[0].failure_reason is None
+    assert path.read_bytes() == before
+    raw["subscription_actions"][0]["failure_reason"] = "unknown_failure_with_dummy_aaaa"
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="unsupported preparation state; do not reset"):
+        load_preparation_state(workspace)
+    assert path.read_bytes() == before

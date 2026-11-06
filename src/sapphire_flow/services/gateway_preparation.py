@@ -308,6 +308,10 @@ def load_preparation_state(directory: Path) -> PreparationState:
             for chunk in cast("list[Any]", raw["coverage"]):
                 if isinstance(chunk, dict):
                     cast("dict[str, Any]", chunk).setdefault("observed_count", None)
+        if isinstance(raw.get("subscription_actions"), list):
+            for action in cast("list[Any]", raw["subscription_actions"]):
+                if isinstance(action, dict):
+                    cast("dict[str, Any]", action).setdefault("failure_reason", None)
         if json.dumps(raw, sort_keys=True) != json.dumps(
             json.loads(_STATE.dump_json(state)), sort_keys=True
         ):
@@ -838,9 +842,18 @@ def apply_subscriptions(
                     adapter.create_subscription(target)
                 else:
                     adapter.update_subscription(current, target)
-            except GatewayAccessError:
-                # A fresh read can reconcile a lost response without a second write.
-                pass
+            except GatewayAccessError as exc:
+                failure = SubscriptionAction(
+                    change=change,
+                    recorded_at=now,
+                    outcome="uncertain",
+                    failure_reason=exc.reason,
+                )
+                state = replace(
+                    state, subscription_actions=(*state.subscription_actions, failure)
+                )
+                save_preparation_state(directory, state)
+                # Persist before read-back, which may itself fail or be interrupted.
             rows = adapter.subscriptions(source=target.source, hru_code=target.hru_code)
             current = next(
                 (r for r in rows if r.parameter_name == target.parameter_name), None
@@ -1323,6 +1336,34 @@ def _coverage_summary(
     }
 
 
+def _subscription_diagnostics(state: PreparationState) -> list[dict[str, Any]]:
+    if not state.subscription_plans:
+        return []
+    rows: list[dict[str, Any]] = []
+    for change in state.subscription_plans[-1].changes:
+        actions = [
+            action for action in state.subscription_actions if action.change == change
+        ]
+        rows.append(
+            {
+                "source": change.after.source,
+                "hru_code": change.after.hru_code,
+                "parameter_name": change.after.parameter_name,
+                "current_outcome": actions[-1].outcome if actions else "unrecorded",
+                "failure_reason": actions[-1].failure_reason if actions else None,
+                "failure_history": [
+                    {
+                        "recorded_at": _coverage_label(action.recorded_at),
+                        "reason": action.failure_reason,
+                    }
+                    for action in actions
+                    if action.failure_reason is not None
+                ],
+            }
+        )
+    return rows
+
+
 def preparation_report(state: PreparationState) -> dict[str, Any]:
     proposal = state.proposals[-1] if state.proposals else None
     revision = proposal_revision(proposal) if proposal else None
@@ -1423,6 +1464,7 @@ def preparation_report(state: PreparationState) -> dict[str, Any]:
         "derived_fingerprint": state.handover.derived_fingerprint,
         "proposal_revision": revision,
         "stations": outcomes,
+        "subscription_diagnostics": _subscription_diagnostics(state),
     }
 
 

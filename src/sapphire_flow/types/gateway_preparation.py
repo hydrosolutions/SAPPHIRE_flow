@@ -19,6 +19,15 @@ def parse_gateway_hru_name(value: str) -> GatewayHruName:
     return GatewayHruName(value)
 
 
+class GatewayFailure(StrEnum):
+    AUTHORIZATION = "authorization_failed"
+    INVALID_REQUEST = "invalid_request"
+    CONFLICT = "reconciliation_required"
+    UNAVAILABLE = "source_unavailable"
+    UNCERTAIN = "outcome_uncertain"
+    MALFORMED = "malformed_response"
+
+
 class RegistrationStatus(StrEnum):
     NOT_SENT = "not_sent"
     RECONCILIATION_REQUIRED = "reconciliation_required"
@@ -358,6 +367,16 @@ class SubscriptionAction:
     change: SubscriptionChange
     recorded_at: str
     outcome: Literal["intent", "verified", "uncertain"]
+    failure_reason: GatewayFailure | None = None
+
+    def __post_init__(self) -> None:
+        if self.failure_reason is not None and (
+            type(self.failure_reason) is not GatewayFailure
+            or self.outcome != "uncertain"
+        ):
+            raise ValueError(
+                "typed failure reasons require uncertain subscription evidence"
+            )
 
 
 def _evidence_time(value: str) -> datetime:

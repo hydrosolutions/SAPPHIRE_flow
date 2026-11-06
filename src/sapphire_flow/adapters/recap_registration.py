@@ -6,7 +6,6 @@ import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, TypeVar
 from urllib.parse import quote, quote_plus, urlsplit
 
@@ -14,6 +13,7 @@ import httpx
 from pydantic import BaseModel, StrictBool, StrictStr, TypeAdapter, ValidationError
 
 from sapphire_flow.types.gateway_preparation import (
+    GatewayFailure,
     StreamSetting,
     Subscription,
     parse_gateway_hru_name,
@@ -23,15 +23,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from sapphire_flow.config.recap_gateway import RecapGatewayConfig
-
-
-class GatewayFailure(StrEnum):
-    AUTHORIZATION = "authorization_failed"
-    INVALID_REQUEST = "invalid_request"
-    CONFLICT = "reconciliation_required"
-    UNAVAILABLE = "source_unavailable"
-    UNCERTAIN = "outcome_uncertain"
-    MALFORMED = "malformed_response"
 
 
 class GatewayAccessError(ValueError):
@@ -214,6 +205,10 @@ class RecapRegistration:
                 )
                 if response.status_code in (401, 403):
                     failure = GatewayFailure.AUTHORIZATION
+                elif response.status_code in (400, 422):
+                    failure = GatewayFailure.INVALID_REQUEST
+                elif response.status_code == 409:
+                    failure = GatewayFailure.CONFLICT
                 elif not 200 <= response.status_code < 300:
                     failure = GatewayFailure.UNCERTAIN
                 else:

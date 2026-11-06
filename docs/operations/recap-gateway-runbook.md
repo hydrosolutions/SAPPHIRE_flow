@@ -235,6 +235,16 @@ owned downloads; restart cleans only marked owned orphan Parquet files. Aggregat
 state survives. Never run this process-scoped boundary inside a threaded server.
 Keep workspaces private and never commit them or raw data.
 
+Subscription write failures retain a closed typed category: 400/422 are
+`invalid_request`, 409 is `reconciliation_required`, 401/403 are
+`authorization_failed`; malformed replies and transport uncertainty stay distinct.
+The category is saved before fresh read-back, so a later GET failure or interruption
+cannot erase it. `subscription_diagnostics` shows the current outcome and typed
+failure history only, never raw errors/bodies/URLs or keys. A verified read-back
+can reconcile the desired row while preserving earlier failure evidence; none of
+these categories authorizes an automatic repeat write. Older schema-2 actions
+without a reason remain explicitly unknown (`null`) and load without rewriting.
+
 When a fresh subscription read observes drift, the workflow saves an uncertain
 action before returning the hold. Status and resume consult the latest relevant
 action, never an older successful read-back. Inspect a renewed subscription

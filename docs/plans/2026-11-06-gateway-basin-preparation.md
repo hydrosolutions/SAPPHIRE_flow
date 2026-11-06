@@ -368,3 +368,30 @@ Release target stays **0.1.1114**. Forecast refresh and complete historical reus
 are unchanged; T5's ambiguous remote call-count wording above is clarified to
 remote WRITE counts. No full-hour suite, live operation, deployment, external edit,
 push, PR, tag or merge. Fresh independent reviews and final-head full CI remain.
+
+## Typed subscription failure repair — 2026-11-06
+
+Root commissioned the sole remaining typed-diagnostic finding at `8a1e76dd`.
+The owned JSON boundary now distinguishes subscription POST/PUT validation
+(400/422), conflict (409), authorization (401/403), malformed replies and uncertain
+transport outcomes using the existing closed GatewayFailure taxonomy. The enum
+lives in domain types and is reused by the adapter; there is no types→adapter
+import or parallel free-form taxonomy.
+
+A failed write appends/fsyncs uncertain action evidence with its safe typed reason
+**before** fresh read-back can fail or be interrupted. Read-back reconciliation,
+write intents, drift holds and no automatic duplicate writes are unchanged. A later
+verified row is accepted without erasing prior failures. CLI diagnostics expose
+current outcome and typed failure history, not response bodies, URLs or keys.
+Valid schema-2 records may omit the new optional reason: unknown remains null,
+loading preserves bytes, and malformed new categories are rejected.
+
+Actual adapter/CLI RED: **15 failed, 77 passed**. Regressions cover POST and PUT
+400/422/409/401/403/transport/malformed replies, durable reasons after restart,
+failed/interrupted read-back, successful lost-response/error reconciliation without
+another write, and legacy state compatibility. Final broader native checks:
+**600 passed, 1 optional skip**; all eight implementation modules pass pyright,
+and changed-file lint/format checks pass. Exact evidence is in the local
+subscription-reason handoff. RELEASE_TARGET stays0.1.1114; no
+forecast/cache change, live/external operations, push, PR, tag or merge. Fresh
+independent reviews and final-head full CI remain required.

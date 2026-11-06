@@ -248,3 +248,50 @@ def test_encoded_secret_echoes_redacted_before_truncation() -> None:
         adapter.close()
     for form in forms:
         assert form not in receipt.message + receipt.detail + str(receipt.warnings)
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT"])
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (400, "invalid_request"),
+        (422, "invalid_request"),
+        (409, "reconciliation_required"),
+        (401, "authorization_failed"),
+        (403, "authorization_failed"),
+        (0, "outcome_uncertain"),
+        (200, "malformed_response"),
+    ],
+)
+def test_subscription_write_preserves_typed_failure_category(
+    method: str, status: int, reason: str
+) -> None:
+    target = Subscription(
+        source="era5",
+        hru_code="synthetic",
+        parameter_name="temperature",
+        enabled=StreamSetting.ENABLED,
+    )
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        assert request.method == method
+        if status == 0:
+            raise httpx.ReadTimeout(KEY + str(request.url), request=request)
+        return httpx.Response(status, json={"detail": KEY + str(request.url)})
+
+    adapter = RecapRegistration(
+        config(), api_key=KEY, transport=httpx.MockTransport(transport)
+    )
+    try:
+        with pytest.raises(GatewayAccessError, match=reason) as error:
+            if method == "POST":
+                adapter.create_subscription(target)
+            else:
+                adapter.update_subscription(
+                    replace(target, enabled=StreamSetting.DISABLED), target
+                )
+        assert error.value.reason.value == reason
+        assert KEY not in str(error.value)
+        assert error.value.__context__ is None and error.value.__cause__ is None
+    finally:
+        adapter.close()

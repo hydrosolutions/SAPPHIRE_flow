@@ -218,6 +218,10 @@ def gateway_cli(
         gateway=SyntheticGateway(),
         retrieval=SyntheticRetrieval(["g_001_0", "g_002"]),
         upload_error=None,
+        subscription_fault=None,
+        readback_fault=None,
+        subscription_fault_seen=False,
+        commit_failed_write=False,
         wrong_run=False,
         forecast_fault=None,
         download_error=None,
@@ -242,6 +246,34 @@ def gateway_cli(
             return httpx.Response(
                 200, json={"message": echo, "detail": echo, "warnings": echo}
             )
+        if "/catalogs/subscriptions" in request.url.path:
+            if (
+                request.method == "GET"
+                and case.subscription_fault_seen
+                and case.readback_fault
+            ):
+                if case.readback_fault == "interrupt":
+                    raise KeyboardInterrupt()
+                raise httpx.ReadTimeout(
+                    "synthetic " + secret + str(request.url), request=request
+                )
+            if (
+                request.method in ("POST", "PUT")
+                and case.subscription_fault is not None
+            ):
+                case.gateway.requests.append(request)
+                status = case.subscription_fault
+                case.subscription_fault = None
+                case.subscription_fault_seen = True
+                if case.commit_failed_write:
+                    case.gateway.rows.append(json.loads(request.content))
+                if status == 0:
+                    raise httpx.ReadTimeout(
+                        "synthetic " + secret + str(request.url), request=request
+                    )
+                return httpx.Response(
+                    status, json={"detail": secret + str(request.url)}
+                )
         if request.method == "PUT":
             case.gateway.requests.append(request)
             source, hru, parameter = request.url.path.split("/")[-3:]
@@ -941,3 +973,168 @@ def test_omitted_secret_option_keeps_supported_environment_selection(
         capsys,
     )
     assert case.gateway.requests[0].url.params["api_key"] == case.secret
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT"])
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (400, "invalid_request"),
+        (422, "invalid_request"),
+        (409, "reconciliation_required"),
+        (401, "authorization_failed"),
+        (403, "authorization_failed"),
+        (0, "outcome_uncertain"),
+        (200, "malformed_response"),
+    ],
+)
+def test_cli_subscription_failure_reason_is_durable_and_never_retries_write(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+    reason: str,
+    method: str,
+) -> None:
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    connection = connection_args(case)
+    invoke_cli(case, ["register", "--hru", "new_synthetic", *connection], capsys)
+    invoke_cli(
+        case,
+        [
+            "reconcile",
+            "--outcome",
+            "confirmed",
+            "--actor",
+            "Synthetic",
+            "--evidence",
+            "synthetic",
+        ],
+        capsys,
+    )
+    if method == "PUT":
+        case.gateway.rows.append(
+            {
+                "source": "synthetic_era5",
+                "hru_code": "new_synthetic",
+                "parameter_name": "2m_temperature",
+                "enabled": False,
+                "forecast_enabled": None,
+                "reanalysis_enabled": None,
+            }
+        )
+    preview = invoke_cli(case, ["subscribe", *connection], capsys)
+    case.subscription_fault = status
+    invoke_cli(
+        case,
+        ["subscribe", "--confirm", preview["subscription_revision"], *connection],
+        capsys,
+    )
+    raw = json.loads((case.workspace / "state.json").read_text())
+    assert any(
+        action.get("failure_reason") == reason for action in raw["subscription_actions"]
+    )
+    result = invoke_cli(case, ["status"], capsys)
+    assert any(
+        failure["reason"] == reason
+        for row in result["subscription_diagnostics"]
+        for failure in row["failure_history"]
+    )
+    invoke_cli(
+        case,
+        ["subscribe", "--confirm", preview["subscription_revision"], *connection],
+        capsys,
+    )
+    assert sum(request.method != "GET" for request in case.gateway.requests) == 2
+    assert [
+        request.method for request in case.gateway.requests if request.method != "GET"
+    ][-1] == method
+    result = invoke_cli(case, ["status"], capsys)
+    assert any(
+        failure["reason"] == reason
+        for row in result["subscription_diagnostics"]
+        for failure in row["failure_history"]
+    )
+
+
+@pytest.mark.parametrize("readback", ["transport", "interrupt"])
+def test_cli_write_failure_is_saved_before_readback_can_fail(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str], readback: str
+) -> None:
+    case = gateway_cli
+    prepare_cli(case, capsys)
+    connection = connection_args(case)
+    invoke_cli(case, ["register", "--hru", "new_synthetic", *connection], capsys)
+    invoke_cli(
+        case,
+        [
+            "reconcile",
+            "--outcome",
+            "confirmed",
+            "--actor",
+            "Synthetic",
+            "--evidence",
+            "synthetic",
+        ],
+        capsys,
+    )
+    preview = invoke_cli(case, ["subscribe", *connection], capsys)
+    case.subscription_fault = 409
+    case.readback_fault = readback
+    command = ["subscribe", "--confirm", preview["subscription_revision"], *connection]
+    if readback == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            prepare_gateway.run([*case.argv, *command])
+        capsys.readouterr()
+    else:
+        invoke_cli(case, command, capsys)
+    raw = json.loads((case.workspace / "state.json").read_text())
+    assert (
+        raw["subscription_actions"][-1]["failure_reason"] == "reconciliation_required"
+    )
+    case.readback_fault = None
+    result = invoke_cli(case, ["status"], capsys)
+    assert (
+        result["subscription_diagnostics"][0]["failure_history"][-1]["reason"]
+        == "reconciliation_required"
+    )
+    invoke_cli(case, command, capsys)
+    assert sum(request.method != "GET" for request in case.gateway.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (0, "outcome_uncertain"),
+        (409, "reconciliation_required"),
+        (400, "invalid_request"),
+    ],
+)
+def test_cli_verified_readback_retains_failure_history_without_duplicate_write(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+    reason: str,
+) -> None:
+    case = gateway_cli
+    case.subscription_fault = status
+    case.commit_failed_write = True
+    output = complete_cli_case(case, capsys)
+    diagnostic = next(
+        row for row in output["subscription_diagnostics"] if row["failure_history"]
+    )
+    assert diagnostic["current_outcome"] == "verified"
+    assert diagnostic["failure_reason"] is None
+    assert diagnostic["failure_history"][0]["reason"] == reason
+    invoke_cli(
+        case,
+        [
+            "subscribe",
+            "--confirm",
+            output["subscription_revision"],
+            *connection_args(case),
+        ],
+        capsys,
+        expected=0,
+    )
+    assert sum(request.method != "GET" for request in case.gateway.requests) == 5

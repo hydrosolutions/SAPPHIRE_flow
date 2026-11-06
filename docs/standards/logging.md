@@ -714,3 +714,7 @@ request params or response body enters state/output. Upload warnings are bounded
 and key/URL-sanitized, including query-encoded key forms and percent-escape case
 variants before truncation. Every ordinary HTTPX transport/response-processing
 exception is contained by the external boundary; process interrupts still propagate. No new Prefect or operational events are introduced.
+Subscription failure diagnostics persist only the shared typed category before
+read-back. Operator JSON separates current outcome from prior typed failure
+history; successful reconciliation does not delete that history. No raw transport
+error/body/key becomes a diagnostic field.
