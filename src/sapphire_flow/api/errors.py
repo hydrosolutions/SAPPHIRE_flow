@@ -24,6 +24,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
                 "/api/v1/forecast-lab/snapshot",
                 "/api/v1/observations/latest",
                 "/api/v1/swiss/overview",
+                "/api/v1/swiss/observation-history",
             }
             or re.fullmatch(
                 r"/api/v1/stations/[^/]+/evaluation-forecasts", request.url.path

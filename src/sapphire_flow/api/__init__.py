@@ -128,8 +128,12 @@ app.include_router(_api_rejected.router)
 from sapphire_flow.api.routes import (  # noqa: E402
     api_evaluation_forecasts as _api_evaluation,
 )
+from sapphire_flow.api.routes import (  # noqa: E402
+    api_swiss_observation_history as _swiss_history,
+)
 from sapphire_flow.api.routes import api_swiss_overview as _swiss_overview  # noqa: E402
 
+app.include_router(_swiss_history.router, dependencies=[Depends(require_reviewer)])
 app.include_router(_swiss_overview.router, dependencies=[Depends(require_reviewer)])
 app.include_router(_api_evaluation.router)
 # Review routes depend on a named OIDC human. Consumer publication routes

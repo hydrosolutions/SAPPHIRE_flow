@@ -594,6 +594,14 @@ Assert expected result counts before ordering checks so an empty response cannot
 Test-generated query plans and other artifacts must use pytest's `tmp_path`, not
 pre-existing developer evidence directories.
 
+### Watchdog test isolation
+
+Tests of a single watchdog condition must inject controlled unrelated probes,
+including `disk_probe`. QC alert tests use the existing healthy-disk fake so
+host free space cannot add alerts. Keep dedicated disk-alert tests exercising
+low-space and probe-failure behavior; do not change production thresholds to
+make unrelated tests pass.
+
 ### Observation test-fake snapshots
 
 Both fake conditional-QC update entrypoints use the batch validator and require a

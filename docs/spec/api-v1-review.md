@@ -370,7 +370,7 @@ resolved by this plan.
 
 `GET /api/v1/swiss/overview` is a bearer reviewer/admin read. Human sessions and
 consumer tokens are not accepted. The map OpenAPI contract is
-version 2.6, including the compact series described below. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
+version 2.7, including the unchanged compact series described below. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
 preflights use `Cache-Control: no-store`.
 
 The route defaults to disabled (503). A reviewed deployment overlay must include
@@ -463,3 +463,42 @@ performance remain rollout checks, not guarantees from this contract.
 ### Swiss overview compact CMAL series (map contract 2.6)
 
 An available `daily_cmal` headline carries optional `series`. New responses emit either an available 1–10 point median/p25/p75 interval-start series or component-local `point_limit`/`invalid_series` unavailability. The field is optional for rollback compatibility. It inherits the headline output identity and unit. Each point is `[valid_time, median, p25, p75]`; `quartile_method` is `stored_quantiles` or `member_empirical_type7`. The series must match the headline horizon, peak value and earliest peak time. Missing bounds are null and are never replaced with zero-width bands. Other headline variants do not carry this field.
+
+
+### Swiss observation history (map contract 2.7, disabled build)
+
+`GET /api/v1/swiss/observation-history?window_hours=168` is a separate reviewer/admin bearer read. `window_hours` accepts only a single `72` or `168`; omission means 168. Unknown/duplicate keys fail with framework 422 `{"detail":[...]}` after authentication. Human sessions and consumer tokens are not admitted. Other HTTP errors use `{"error":...,"detail":null}`; unsupported methods use the framework detail envelope. Every path, including preflight and failures, is no-store.
+
+Top-level deployment setting `swiss_observation_history = false` is independent of the digest-pinned `swiss_overview` roster and `evaluation_forecasts` tenant settings, which are also required. It must remain false until qualification and owner admission. Metadata drift and bounded unavailability return generic 503; unexpected faults remain sanitized 500. No forecast/provider/archive reads occur. Admin remains roster-bound; reviewer receives the tenant/grant intersection, including empty stations.
+
+The schema_version 1 compact body has a fresh UUID generation, `generated_at=as_of=A`, `expires_at=A+20 minutes`, exact `window_start=S=A-W`, and `native_start=J=floor_3h_UTC(A-1h)`. Coarse owns `[S,J)`; native owns `[J,A]`. Shared grid starts at `floor_3h_UTC(S)`, step 10800 seconds, with the first interval clipped to S. Station tuples are `[sample_mean,min,max,eligible_count]`; empty is `[null,null,null,0]`. Native tuples are `[timestamp,value]`. UTC microseconds and binary64 precision are retained. Means use exact-ratio accumulation rounded once, not a time average. Denser sampling weighs more. Coverage is always unknown, including singletons; no cadence, interpolation, carry-forward or percentage is inferred. Latest/hourly overview and forecast semantics are unchanged.
+
+Trust/hold, protected-delivery, scope, QC-passed measured-discharge and finite-value eligibility precede every statistic and volume decision in one SQL snapshot. The request-local statement timeout is five seconds; only SQLSTATE 57014 maps to 503 and failed transactions roll back. Row-cap+1 is an overflow sentinel, never truncated success.
+
+Provisional safeguards are 200 stations, 2500 eligible rows/station, 500000/fleet and 2097152 raw UTF-8 bytes. They are not approved operational budgets. The proposed <=6 total SQL and <3-second p95 still require representative qualification; explicit-grant auth currently requires seven statements including tenant-integrity validation and SET LOCAL. Do not weaken authorization to fit that proposal. Existing overview gates remain 393216 bytes, <1.25-second p95 and <=12 queries. See the [reviewed implementation/qualification contract](../plans/2026-11-05-swiss-mixed-resolution-history.md); browser retention and owner visual/operational admission remain separate gates.
+
+
+Singleton blocks require numeric `mean == min == max` at both the domain and
+HTTP boundary. Signed zeros compare numerically: `statistics.mean([-0.0])`
+returns `+0.0`, while extrema and native values preserve `-0.0`. No mean
+algorithm, rounding, wire field, or map-contract version changes for this check.
+The route wire regression includes fractional microseconds and JSON `-0.0`/`2.0`.
+
+The expensive history benchmark is a **provisional qualification diagnostic**,
+not an admitted production regression or nightly qualification. It requires an
+explicit opt-in in addition to the slow-test selection. Run from the backend root
+with the existing test environment and Docker available:
+
+```sh
+SAPPHIRE_RUN_HISTORY_QUALIFICATION=1 SAPPHIRE_HISTORY_BENCHMARK_DIR=/tmp/sapphire-history-benchmark uv run --no-sync pytest tests/integration/api/test_observation_history_performance.py -m slow -v -rs
+```
+
+Without that environment flag, even an explicit slow run visibly skips these
+history diagnostics with the unadmitted-gate reason. Ordinary history route/store
+tests and all existing overview gates remain normal tests. The flag does not
+turn failures into expected failures, approve limits, or activate the route.
+Required performance qualification remains open: representative p95, auth-inclusive
+query cost, caps/encoded-size boundaries, actual per-request allocation and
+concurrent history plus overview traffic. Fixture-process peak RSS includes setup
+and process lifetime; it is not request memory and must not be extrapolated
+linearly to fleet caps. Single SQL timings are diagnostics, not p95 evidence.

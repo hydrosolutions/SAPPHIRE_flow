@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError
 
 from sapphire_flow.db.metadata import observations as observations_table
 from sapphire_flow.exceptions import DeliveryCollisionError
+from sapphire_flow.services.observation_history import check_history_bounds
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.store.bafu_unit_read_filter import (
     unit_read_predicate,
@@ -25,6 +26,11 @@ from sapphire_flow.types.observation import (
     Observation,
     RawObservation,
     RawObservationWriteResult,
+)
+from sapphire_flow.types.observation_history import (
+    HistoryRead,
+    HistoryReading,
+    HistoryReadTimeoutError,
 )
 from sapphire_flow.types.observation_read import (
     ObservationReadPurpose,
@@ -680,6 +686,52 @@ class PgObservationStore:
             )
         ).scalar_one_or_none()
         return utc_or_none(row)
+
+    def fetch_observation_history(
+        self, request: HistoryRead
+    ) -> tuple[HistoryReading, ...]:
+        if self._purpose is not ObservationReadPurpose.TRUSTED:
+            raise ValueError("observation history requires a trusted read purpose")
+        if not request.station_ids:
+            return ()
+        table = observations_table
+        statement = (
+            sa.select(table.c.station_id, table.c.timestamp, table.c.value)
+            .where(
+                table.c.station_id.in_(request.station_ids),
+                table.c.parameter == request.parameter,
+                table.c.source == request.source.value,
+                table.c.qc_status == request.qc_status.value,
+                table.c.timestamp >= request.start,
+                table.c.timestamp <= request.as_of,
+                table.c.delivery_id.is_distinct_from(request.excluded_delivery_id),
+                table.c.value > float("-inf"),
+                table.c.value < float("inf"),
+                sa.select(unit_read_predicate(table, self._purpose))
+                .correlate(table)
+                .scalar_subquery(),
+            )
+            .order_by(table.c.station_id, table.c.timestamp)
+            .limit(request.fleet_row_cap + 1)
+        )
+        try:
+            self._conn.execute(sa.text("SET LOCAL statement_timeout = '5s'"))
+            rows = tuple(
+                HistoryReading(
+                    station_id=StationId(row.station_id),
+                    timestamp=utc_from_row(row.timestamp),
+                    value=row.value,
+                )
+                for row in self._conn.execute(statement)
+            )
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "57014":
+                raise HistoryReadTimeoutError(
+                    "observation history read timed out"
+                ) from None
+            raise
+        check_history_bounds(request, rows)
+        return rows
 
     def fetch_latest_observations(
         self,

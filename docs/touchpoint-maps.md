@@ -2423,3 +2423,8 @@ The Aquacast capacity step is exclusive to its disposable GitHub-hosted job. Nev
 broaden its two SDK roots, move it to a self-hosted or deployment host, or target Docker,
 caches, credentials, the checkout, or `/opt/hostedtoolcache`. Verify changes with the
 shard, workflow, private-verification, and capacity-script contract tests.
+
+
+### Swiss observation-history boundary
+
+`api/routes/api_swiss_observation_history.py`, `api/swiss_observation_history_schemas.py`, `services/observation_history.py` and `types/observation_history.py` own the separate default-off mixed-resolution read. Follow the [API contract](spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build). Changes must keep protocol/store/fake parity, auth-first query parsing, exact scope/trust/exclusion-before-cap, one observation snapshot, timeout rollback, no-store errors/CORS, map contract drift tests and full-precision exact means aligned. Preserve overview payload/defaults and its independent cost gates. Dense synthetic route qualification is in `tests/integration/api/test_observation_history_performance.py` (explicit slow tier); this is not deployed admission. Nepal parity is a named follow-up in the plan index, not enabled here.

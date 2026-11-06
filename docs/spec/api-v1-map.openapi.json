@@ -2708,6 +2708,72 @@
         "title": "HeadlineUnavailable",
         "type": "object"
       },
+      "HistoryCoarseGrid": {
+        "additionalProperties": false,
+        "properties": {
+          "block_count": {
+            "maximum": 56.0,
+            "minimum": 0.0,
+            "title": "Block Count",
+            "type": "integer"
+          },
+          "first_block_clipped": {
+            "title": "First Block Clipped",
+            "type": "boolean"
+          },
+          "first_start": {
+            "format": "date-time",
+            "title": "First Start",
+            "type": "string"
+          },
+          "grid_start": {
+            "format": "date-time",
+            "title": "Grid Start",
+            "type": "string"
+          },
+          "step_seconds": {
+            "const": 10800,
+            "default": 10800,
+            "title": "Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "grid_start",
+          "block_count",
+          "first_start",
+          "first_block_clipped"
+        ],
+        "title": "HistoryCoarseGrid",
+        "type": "object"
+      },
+      "HistoryStation": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "network": {
+            "minLength": 1,
+            "title": "Network",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "network",
+          "code"
+        ],
+        "title": "HistoryStation",
+        "type": "object"
+      },
       "InputQualityCategory": {
         "enum": [
           "observation",
@@ -2885,6 +2951,90 @@
         ],
         "title": "NwpCycleSource",
         "type": "string"
+      },
+      "ObservationHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "coarse": {
+            "items": {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                {
+                  "maximum": 2500.0,
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 56,
+            "title": "Coarse",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/UnknownCoverage"
+          },
+          "native": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 2500,
+            "title": "Native",
+            "type": "array"
+          },
+          "station": {
+            "$ref": "#/components/schemas/HistoryStation"
+          }
+        },
+        "required": [
+          "station",
+          "coarse",
+          "native"
+        ],
+        "title": "ObservationHistoryItem",
+        "type": "object"
       },
       "ObservationPointSchema": {
         "additionalProperties": false,
@@ -4975,6 +5125,104 @@
         "title": "StatusBlockSchema",
         "type": "object"
       },
+      "SwissObservationHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "coarse": {
+            "$ref": "#/components/schemas/HistoryCoarseGrid"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationHistoryItem"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "native_start": {
+            "format": "date-time",
+            "title": "Native Start",
+            "type": "string"
+          },
+          "observation_display_unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Observation Display Unit",
+            "type": "string"
+          },
+          "observation_source": {
+            "const": "measured",
+            "default": "measured",
+            "title": "Observation Source",
+            "type": "string"
+          },
+          "parameter": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "station_count": {
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Station Count",
+            "type": "integer"
+          },
+          "window_hours": {
+            "enum": [
+              72,
+              168
+            ],
+            "title": "Window Hours",
+            "type": "integer"
+          },
+          "window_start": {
+            "format": "date-time",
+            "title": "Window Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation_id",
+          "generated_at",
+          "as_of",
+          "expires_at",
+          "window_hours",
+          "window_start",
+          "native_start",
+          "coarse",
+          "station_count",
+          "items"
+        ],
+        "title": "SwissObservationHistoryResponse",
+        "type": "object"
+      },
       "SwissOverviewItem": {
         "properties": {
           "bafu_comparison": {
@@ -5130,6 +5378,19 @@
         "title": "ThresholdResponse",
         "type": "object"
       },
+      "UnknownCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "UnknownCoverage",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -5259,7 +5520,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.6"
+    "version": "2.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6543,6 +6804,112 @@
         "summary": "Get Station Skill",
         "tags": [
           "api-review"
+        ]
+      }
+    },
+    "/api/v1/swiss/observation-history": {
+      "get": {
+        "description": "Reviewer/admin bearer only; independently disabled by default. Authorized Swiss roster, QC-passed trusted measured discharge only. Exact sample means/min/max in clipped three-hour UTC blocks, followed by native timestamp markers. Coverage unknown; no cadence inference. 72 or 168 hours only; duplicate/unknown queries fail after auth. All responses/preflights no-store. Caps provisional pending qualification.",
+        "operationId": "get_swiss_observation_history_api_v1_swiss_observation_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "enum": [
+                72,
+                168
+              ],
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwissObservationHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "405": {
+            "description": "Method not allowed (framework detail envelope)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "detail": {
+                      "items": {
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "detail"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid history query; authentication runs first."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Swiss observation history is unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get Swiss Observation History",
+        "tags": [
+          "api-swiss-observation-history"
         ]
       }
     },

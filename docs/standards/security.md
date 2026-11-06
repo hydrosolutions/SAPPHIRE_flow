@@ -2223,3 +2223,7 @@ select it implicitly. Diagnostics expose only approved paths, booleans and hashe
 never arbitrary Compose/Prefect environment or provider contents. The [NHS
 procedure](../deployment/nhs-forecast-configuration.md) preserves exact source
 authority and documents activation and rollback order.
+
+### Swiss observation-history disabled read
+
+The separate default-off reviewer/admin bearer route `/api/v1/swiss/observation-history` uses the same pinned roster and evaluation tenant authority as overview. Admin is not exempt from roster/trusted-unit/protected-delivery exclusions. Auth precedes strict query parsing. Scope, finite QC-passed measured discharge and current holds/exclusions precede counts, cap decisions and response metadata; no audit fallback is allowed. All responses and consumer-origin GET-only preflights are no-store; human/review POST CORS is not extended. Bound/timeout failures return generic 503; only eligible bounded diagnostics reach structured server logs. Feature admission is held pending cost, independent review and browser qualification. See the [wire and config contract](../spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import threading  # noqa: TC003
 from bisect import bisect_right
 from collections.abc import (
@@ -31,6 +32,10 @@ from sapphire_flow.services.forecast_retry import (
     ForecastRetryRow,
     classify_forecast_retry,
     retry_conflict_message,
+)
+from sapphire_flow.services.observation_history import (
+    check_history_bounds,
+    unique_readings,
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
@@ -113,6 +118,7 @@ from sapphire_flow.types.observation import (  # noqa: TC001
     Observation,
     RawObservation,
 )
+from sapphire_flow.types.observation_history import HistoryRead, HistoryReading
 from sapphire_flow.types.observation_read import (
     ObservationReadPurpose,
     ObservationWindowStart,
@@ -374,6 +380,29 @@ class FakeObservationStore:
         for obs, status, flags in updates:
             self.update_qc(obs.id, status, flags, qc_rule_version)
         return True
+
+    def fetch_observation_history(
+        self, request: HistoryRead
+    ) -> tuple[HistoryReading, ...]:
+        if self._purpose is not ObservationReadPurpose.TRUSTED:
+            raise ValueError("observation history requires a trusted read purpose")
+        rows = unique_readings(
+            HistoryReading(
+                station_id=row.station_id, timestamp=row.timestamp, value=row.value
+            )
+            for row in self._observations.values()
+            if row.station_id in request.station_ids
+            and request.start <= row.timestamp <= request.as_of
+            and row.parameter == request.parameter
+            and row.source is request.source
+            and row.qc_status is request.qc_status
+            and row.delivery_id != request.excluded_delivery_id
+            and self._unit_visible(row)
+            and row.value is not None
+            and math.isfinite(row.value)
+        )
+        check_history_bounds(request, rows)
+        return rows
 
     def fetch_latest_observations(
         self,

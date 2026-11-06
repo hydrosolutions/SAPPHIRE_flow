@@ -6540,3 +6540,10 @@ Exact STANDARD batch record construction raises `StoredForecastDecodeError`
 (`ValueError`) for malformed persisted values; protected and database errors remain
 fatal. Overview alone validates bounded same-stem raw BAFU unit/axis, issue and
 trace evidence. Snapshot parsing and latest-observation defaults are unchanged.
+
+
+## Bounded observation-history snapshot
+
+`types/observation_history.py` defines frozen `HistoryGrid`, `HistoryRead`, `HistoryReading`, `BlockSummary` and `StationHistory`; `HistoryWindow` selects 72/168 hours and `BlockClipping` names temporal clipping. UTC microseconds determine exact interval ownership. `ObservationStore.fetch_observation_history(request: HistoryRead) -> tuple[HistoryReading, ...]` is a narrow TRUSTED-only, inclusive `[start,as_of]` capability. Existing half-open/general reader signatures are unchanged. Scope, measured discharge, QC-passed, protected-delivery exclusion, current canonical-unit/hold state and finite values are applied before the cap+1 sentinel and per-station cap. Overflow raises `HistoryRowLimitError` for the whole batch; SQLSTATE 57014 raises `HistoryReadTimeoutError`. PostgreSQL uses one observation statement plus request-local SET LOCAL. The fake uses the same eligibility and whole-batch bounds.
+
+`services/observation_history.py` deduplicates identical current timestamp keys, refuses conflicting values, and summarizes finite eligible cohorts with `statistics.mean` (exact rational mean rounded once to binary64). Min/max/native preserve input precision; no tolerance or clamp is used. Coverage remains unknown at the HTTP boundary. See [API contract 2.7](api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build) for wire fields and provisional safeguards.
