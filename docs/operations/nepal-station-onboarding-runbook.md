@@ -85,7 +85,16 @@ in an old basin package or an example command as the authority for new runs.
 ## 2. Delineate basins and build the static-attributes package
 
 Use the [static-attrs-nepal README](https://github.com/hydrosolutions/static-attrs-nepal#headless-batch-cli)
-for the supported appliance route and full user instructions. The bundle route
+for appliance background. For new operator runs, use the pinned v0.2.0 route in
+[the local operator guide](basin-operator-runbook.md). That release fixes
+distance-first internally and does **not** accept `--snap-audit` or
+`--snap-strategy`. Source/runtime identity must be provisioned separately;
+the interface selector is not verification. Rebuilt-appliance automatic acceptance
+is pending.
+
+**Historical v2 compatibility only:** the following snap-audit and manual-build
+examples describe the earlier bundle, not the selected v0.2.0 pipeline.
+The bundle route
 requires a real amd64 Linux host; running from source is the documented route
 for macOS. Its headless CLI accepts repeated
 `--station CODE "DISPLAY NAME" LAT LON` arguments. From source, the documented
