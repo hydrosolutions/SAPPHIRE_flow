@@ -976,3 +976,103 @@ def test_schema_two_absent_subscription_reason_stays_unknown_without_rewrite(
     with pytest.raises(ValueError, match="unsupported preparation state; do not reset"):
         load_preparation_state(workspace)
     assert path.read_bytes() == before
+
+
+def build_invalid_handover_fixture(directory: Path, failure: str) -> None:
+    """Build synthetic invalid inputs with consistent outer hashes."""
+    from sapphire_flow.basin_operator.inventory import restore_inventory
+    from sapphire_flow.basin_operator.review import compute_review_fingerprints
+    from sapphire_flow.services.basin_package_loader import load_package_identity
+    from sapphire_flow.types.basin_package import compute_manifest_fingerprint
+
+    package = directory / "package"
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if failure == "contract":
+        manifest["contract_version"] = "synthetic-unsupported-contract"
+    elif failure == "checksum":
+        manifest["checksums"]["basins.gpkg"] = "sha256:" + "0" * 64
+    elif failure == "path":
+        manifest["files"]["basins"] = "../synthetic-escape.gpkg"
+    elif failure == "geopackage":
+        (package / "basins.gpkg").write_bytes(b"synthetic unreadable geopackage")
+        manifest["checksums"]["basins.gpkg"] = file_hash(package / "basins.gpkg")
+    else:
+        raise AssertionError("unknown synthetic failure")
+    manifest_path.write_text(json.dumps(manifest))
+    if failure == "geopackage":
+        parsed, computed = load_package_identity(package)
+        hashes = {
+            str(path.relative_to(package)): file_hash(path)
+            for path in package.rglob("*")
+            if path.is_file()
+        }
+        stations = restore_inventory(
+            json.loads((directory / "coordinates-and-snap.json").read_text())
+        )
+        _, fingerprint = compute_review_fingerprints(
+            compute_manifest_fingerprint(parsed, computed), hashes, stations
+        )
+        approval_path = directory / "approval.json"
+        approval = json.loads(approval_path.read_text())
+        approval["derived_fingerprint"] = fingerprint
+        approval_path.write_text(json.dumps(approval))
+    files = sorted(
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and path != directory / "checksums.sha256"
+    )
+    (directory / "checksums.sha256").write_text(
+        "".join(
+            f"{file_hash(path).removeprefix('sha256:')}  "
+            f"{path.relative_to(directory)}\n"
+            for path in files
+        )
+    )
+
+
+@pytest.mark.parametrize("failure", ["contract", "checksum", "path", "geopackage"])
+def test_known_package_rejections_are_safe_admission_failures(
+    approved: Path, failure: str
+) -> None:
+    build_invalid_handover_fixture(approved, failure)
+    before = {
+        str(path.relative_to(approved)): path.read_bytes()
+        for path in approved.rglob("*")
+        if path.is_file()
+    }
+    with pytest.raises(ValueError, match="invalid approved handover") as error:
+        admit_handover(approved)
+    assert error.value.__cause__ is None
+    assert {
+        str(path.relative_to(approved)): path.read_bytes()
+        for path in approved.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_known_attribute_layer_failure_is_normalized_without_geometry_read(
+    approved: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pyogrio.errors
+
+    def fail_reader(*args: object, **kwargs: object) -> None:
+        assert kwargs["read_geometry"] is False
+        raise pyogrio.errors.DataLayerError("synthetic raw layer failure")
+
+    monkeypatch.setattr("pyogrio.read_dataframe", fail_reader)
+    with pytest.raises(ValueError, match="invalid approved handover") as error:
+        admit_handover(approved)
+    assert error.value.__cause__ is None
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_unexpected_reader_bug_or_interrupt_is_not_swallowed(
+    approved: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    def fail_reader(*args: object, **kwargs: object) -> None:
+        raise failure("synthetic unexpected reader failure")
+
+    monkeypatch.setattr("pyogrio.read_dataframe", fail_reader)
+    with pytest.raises(failure, match="synthetic unexpected reader failure"):
+        admit_handover(approved)

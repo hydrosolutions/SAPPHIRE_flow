@@ -1138,3 +1138,88 @@ def test_cli_verified_readback_retains_failure_history_without_duplicate_write(
         expected=0,
     )
     assert sum(request.method != "GET" for request in case.gateway.requests) == 5
+
+
+@pytest.mark.parametrize("failure", ["contract", "checksum", "path", "geopackage"])
+@pytest.mark.parametrize("entry", ["prepare", "status", "recovery"])
+def test_known_package_failures_exit_held_without_mutation_or_clients(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    entry: str,
+) -> None:
+    import recap_client
+
+    from sapphire_flow.exceptions import ConfigurationError
+    from tests.unit.services.test_gateway_preparation import (
+        build_invalid_handover_fixture,
+    )
+
+    case = gateway_cli
+    source = Path(case.argv[3])
+    if entry != "prepare":
+        prepare_cli(case, capsys)
+    else:
+        case.workspace.mkdir(mode=0o700)
+        (case.workspace / ".preparation.lock").write_bytes(b"")
+        (case.workspace / ".preparation.lock").chmod(0o600)
+    workspace_before = {
+        str(path.relative_to(case.workspace)): path.read_bytes()
+        for path in case.workspace.rglob("*")
+        if path.is_file()
+    }
+    source_before: dict[str, bytes] = {}
+
+    def corrupt_fixture() -> None:
+        build_invalid_handover_fixture(source, failure)
+        source_before.update(
+            {
+                str(path.relative_to(source)): path.read_bytes()
+                for path in source.rglob("*")
+                if path.is_file()
+            }
+        )
+
+    if entry == "recovery":
+
+        def fail_config(path: Path) -> None:
+            corrupt_fixture()
+            raise ConfigurationError("synthetic config failure")
+
+        monkeypatch.setattr(prepare_gateway, "load_recap_gateway_config", fail_config)
+        command = ["register", "--hru", "new_synthetic", *connection_args(case)]
+    else:
+        corrupt_fixture()
+        command = (
+            ["prepare", "--scope", str(case.scope)]
+            if entry == "prepare"
+            else ["status"]
+        )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("known package failure must not construct a client")
+
+    monkeypatch.setattr(prepare_gateway, "RecapRegistration", forbidden)
+    monkeypatch.setattr(recap_client, "RecapClient", forbidden)
+    assert prepare_gateway.run([*case.argv, *command]) == 2
+    captured = capsys.readouterr()
+    assert "held or failed" in captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert "synthetic-unsupported-contract" not in captured.out + captured.err
+    assert "synthetic-escape" not in captured.out + captured.err
+    assert (
+        "not recognized as being in a supported file format"
+        not in captured.out + captured.err
+    )
+    assert case.gateway.requests == [] and case.native_requests == []
+    assert {
+        str(path.relative_to(case.workspace)): path.read_bytes()
+        for path in case.workspace.rglob("*")
+        if path.is_file()
+    } == workspace_before
+    assert {
+        str(path.relative_to(source)): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    } == source_before

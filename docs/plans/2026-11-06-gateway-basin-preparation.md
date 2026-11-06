@@ -413,3 +413,24 @@ all eight implementation modules pass pyright, and changed-file lint/format pass
 Exact results are in the local transport-log handoff. Target0.1.1114 is unchanged. No other behavior/cache changes, live/external
 operations, infrastructure, push, PR, merge or tags; fresh independent reviews and
 final-head full CI remain required.
+
+## Known package-admission failure repair — 2026-11-06
+
+Root commissioned the bounded admission/CLI failure finding at `2a954b9d`.
+`admit_handover` now normalizes known `BasinPackageRejectedError` and pyogrio
+`DataSourceError`/`DataLayerError` into the existing safe invalid-handover error,
+without a raw cause chain. All CLI and persisted-reload package paths use that
+boundary, so no redundant CLI catch layer was added. No catch-all, geometry
+acceptance, source/evidence rewriting or incidental reason-type cleanup was added.
+Unexpected RuntimeError and KeyboardInterrupt still propagate.
+
+RED: **16 failed, 120 passed**. Synthetic input tests keep outer hashes consistent
+while triggering unsupported internal contract, declared checksum/path rejection,
+and a genuinely unreadable attribute-only GeoPackage. Actual prepare/status and
+error-recovery reload return held/exit2 with safe output, unchanged workspace/source
+bytes and zero clients or remote calls. A DataLayerError I/O regression verifies
+`read_geometry=False`; unexpected bug/interruption regressions guard against broad
+swallowing. Final native checks: **621 passed, 1 optional skip**; all eight
+implementation modules pass pyright and changed-file lint/format passes. Exact
+results are recorded in the local package-failure handoff. Target0.1.1114 remains unchanged. No live/external operation, cache change,
+push, PR, merge or tag; fresh independent review and final-head full CI remain.

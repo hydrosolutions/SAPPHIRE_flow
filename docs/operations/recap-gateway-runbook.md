@@ -267,6 +267,13 @@ An equal number of unrelated records is not coverage. Missing intervals/holds or
 mismatched evidence force a hold/refetch. Unexpected records remain auditable and
 held rather than silently discarded. Malformed persisted dates, counts, digests or
 provenance fail loading without rewriting or resetting the original workspace.
+Known internal package-contract/checksum/path rejections and unreadable GeoPackage
+attribute layers also return a safe held result (exit 2), including status/recovery
+loads. Passing outer handover hashes does not bypass these internal boundaries.
+The command does not rewrite approval or evidence to make a rejected package pass;
+return upstream for a corrected handover. Attribute admission still does not perform
+geometry acceptance. Unexpected bugs and process interrupts are not blanket-caught.
+
 
 Evidence schema version **2** requires explicit run provenance. Version-1
 workspaces from the unreleased implementation are rejected without rewriting them;

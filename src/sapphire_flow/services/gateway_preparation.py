@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 import pyogrio
+import pyogrio.errors
 from pydantic import BaseModel, ConfigDict, StrictStr, TypeAdapter, ValidationError
 
 from sapphire_flow.adapters.recap_gateway import RECAP_VARIABLES, RecapClientLike
@@ -27,6 +28,7 @@ from sapphire_flow.adapters.recap_registration import (
 )
 from sapphire_flow.basin_operator.inventory import restore_inventory
 from sapphire_flow.basin_operator.review import compute_review_fingerprints, file_hash
+from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.services.basin_package_loader import load_package_identity
 from sapphire_flow.services.gateway_data_coverage import (
     CoverageScope,
@@ -224,8 +226,16 @@ def admit_handover(directory: Path) -> ApprovedHandover:
         if _handover_hashes(directory) != hashes:
             raise ValueError("handover changed during admission")
         return admitted
-    except (OSError, KeyError, TypeError, ValidationError) as exc:
-        raise ValueError("invalid approved handover") from exc
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        ValidationError,
+        BasinPackageRejectedError,
+        pyogrio.errors.DataSourceError,
+        pyogrio.errors.DataLayerError,
+    ):
+        raise ValueError("invalid approved handover") from None
 
 
 _STATE = TypeAdapter(PreparationState)
