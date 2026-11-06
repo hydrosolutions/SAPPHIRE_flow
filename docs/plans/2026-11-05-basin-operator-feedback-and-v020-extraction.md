@@ -197,8 +197,21 @@ replayed approval. No feature-branch tag.
   `tests/unit/ops/test_watchdog_qc_unchecked.py`: real host disk free space below
   5% adds an alert to tests that do not inject disk usage. The isolated file
   reproduces the same eight failures (five passed). No unrelated code was changed.
-  Full green local/CI verification, independent patch reviews, owner disposition
-  and separately authorized native automatic-extraction acceptance remain pending.
+  These full-suite results are from candidate `c23f177c`, before the bounded
+  patch correction; the full suite was not rerun after that correction on the
+  same low-disk local development Mac. Full green local/CI verification,
+  independent patch reviews, owner disposition and separately authorized native
+  automatic-extraction acceptance remain pending.
+- Owner-approved patch corrections: invalidate the recorded ZIP hash when
+  `batch()` first observes a changed fingerprint, before reattachment can treat
+  it as current. The regression exercises changed package → page invalidation →
+  confirmation/reattachment → fresh review/export for both interfaces, while
+  retaining unchanged-package resume checks. Both cases failed before the fix.
+  Browser documentation now states the default discovery patterns and explicit
+  command, without assigning an unverified collection mechanism. After the
+  correction: 166 focused tests and the explicit Chrome check pass; ruff
+  lint/format and changed-source pyright pass. The release-target helper is an
+  idempotent no-op at `0.1.1110`. Full-suite verification remains blocked as above.
 
 ## Exit commands
 

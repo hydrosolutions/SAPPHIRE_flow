@@ -313,6 +313,7 @@ class BasinWorkspace:
         self._observe_package_identity(batch)
         if batch.fingerprint != self.state["fingerprint"]:
             self.state["decisions"] = []
+            self.state["source_archive_sha256"] = None
             self.state["fingerprint"] = batch.fingerprint
             self.save()
             raise ValueError(
