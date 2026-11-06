@@ -697,6 +697,7 @@ work directories. Source/attempt validation failures cannot enter SSH diagnostic
 Receipt fields are fixed typed identifiers/hashes/counts, never arbitrary labels,
 package inventories or server error text. See [the staging route](../deployment/actions-staging-release.md).
 
+
 ### Observation-history bounded failures
 
 `observation_history.read_failed` uses closed causes `disabled`, `config_drift`, `row_cap`, `byte_cap`, `timeout`, `database_fault`. Configuration drift/database faults use ERROR; bounded unavailability uses WARNING. Diagnostics may include the bound, capped eligible row count, encoded byte count and at most one validated in-scope station ID for a station overflow. Never emit values, excluded/protected counts, raw SQL/errors, payloads or credentials. HTTP errors remain generic.

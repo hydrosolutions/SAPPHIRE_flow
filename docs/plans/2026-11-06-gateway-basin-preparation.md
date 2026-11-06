@@ -324,3 +324,25 @@ patch reviews of `575983e6`; incidental cleanup was not included.
 - Release target remains 0.1.1113. No live operations, external/client/model edits,
   push, PR, merge or full low-disk-host suite. Fresh full-patch review and final-head
   full CI remain required. Synthetic support is not Vatro or scientific acceptance.
+
+## Current-base update — 2026-11-06
+
+Root requested rebasing the four implementation/repair commits onto
+`a85431a3d0de4416defff89590052ebb33eedc1d` before fresh review. All eight
+implementation modules and five Gateway test modules remain byte-identical to
+reviewed candidate `403ba25c`. The logging-document conflict preserved both the
+peer observation-history section and the Gateway transport section; no peer source
+was changed. The pinned vision exactly matches issue 452's still-linked
+`fad38d087f9ac740050563e91239576ac3eae8d6` blob.
+
+Current-checkout AGENTS, conventions, CI/CD release policy and installed global
+skill govern. The current guarded helper computes RELEASE_TARGET **0.1.1114**
+from the new base's **0.1.1113**; this supersedes prior-base target notes above and
+is not a per-repair bump or release. The lockfile/project dependencies did not
+change, so no sync was needed. Existing native environment checks used `--no-sync`.
+Focused/relevant plus current watchdog/policy checks: **545 passed, 1 optional
+skip**. The previously failing watchdog module now independently passes **14 tests**
+with the peer's deterministic fixture fix preserved. All eight implementation
+modules pass pyright; changed-file lint/format passes. The full suite was not rerun;
+final-head full CI and fresh full-patch reviews remain required. No live operations,
+external/client/model edits, push, PR, tag or merge occurred.
