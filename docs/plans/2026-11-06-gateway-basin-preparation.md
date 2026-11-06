@@ -395,3 +395,21 @@ and changed-file lint/format checks pass. Exact evidence is in the local
 subscription-reason handoff. RELEASE_TARGET stays0.1.1114; no
 forecast/cache change, live/external operations, push, PR, tag or merge. Fresh
 independent reviews and final-head full CI remain required.
+
+## Practical transport-log threshold repair — 2026-11-06
+
+Root commissioned the bounded custom-level logging finding at `5bf8005f`.
+`quiet_gateway_transport` now disables stdlib emission through `sys.maxsize`,
+covering standard/custom practical levels above CRITICAL. Its existing `finally`
+restores the exact prior disable threshold on normal and exception exits, including
+nested contexts. This does not claim mathematical suppression of arbitrary unbounded
+Python integer levels. No handlers or clients are replaced; the exclusive CLI
+process boundary and native redirect behavior remain unchanged.
+
+RED: two level-60 reflected dummy-key regressions failed before repair. Normal and
+exception/nested exits verify no handler capture and exact prior-threshold
+restoration. Final broader native checks: **602 passed, 1 optional skip**;
+all eight implementation modules pass pyright, and changed-file lint/format passes.
+Exact results are in the local transport-log handoff. Target0.1.1114 is unchanged. No other behavior/cache changes, live/external
+operations, infrastructure, push, PR, merge or tags; fresh independent reviews and
+final-head full CI remain required.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import replace
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 from sapphire_flow.adapters.recap_registration import (
     GatewayAccessError,
     RecapRegistration,
+    quiet_gateway_transport,
     validate_connection,
 )
 from sapphire_flow.config.recap_gateway import RecapGatewayConfig
@@ -295,3 +297,32 @@ def test_subscription_write_preserves_typed_failure_category(
         assert error.value.__context__ is None and error.value.__cause__ is None
     finally:
         adapter.close()
+
+
+@pytest.mark.parametrize("exit_mode", ["normal", "exception"])
+def test_transport_suppresses_above_critical_and_restores_nested_threshold(
+    caplog: pytest.LogCaptureFixture, exit_mode: str
+) -> None:
+    logger = logging.getLogger("httpx")
+    caplog.set_level(1, logger="httpx")
+    original = logging.root.manager.disable
+    logging.disable(17)
+    try:
+        expected = (
+            pytest.raises(RuntimeError, match="synthetic exit")
+            if exit_mode == "exception"
+            else nullcontext()
+        )
+        with expected, quiet_gateway_transport():
+            logger.log(60, "api_key=aaaa-reflected-aaaa")
+            with quiet_gateway_transport():
+                logger.log(60, "api_key=aaaa-reflected-aaaa")
+                if exit_mode == "exception":
+                    raise RuntimeError("synthetic exit")
+            logger.log(60, "api_key=aaaa-reflected-aaaa")
+        assert logging.root.manager.disable == 17
+        assert "aaaa-reflected-aaaa" not in caplog.text
+        logger.log(60, "safe restoration marker")
+        assert "safe restoration marker" in caplog.text
+    finally:
+        logging.disable(original)

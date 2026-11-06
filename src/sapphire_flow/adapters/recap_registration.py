@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypeVar
@@ -55,12 +56,13 @@ def validate_connection(base_url: str, *, verify_tls: bool) -> None:
 def quiet_gateway_transport() -> Iterator[None]:
     """Suppress third-party stdlib emission only during exclusive CLI I/O.
 
-    Query authentication makes request logs unsafe at every severity. The CLI
-    is single-process/single-threaded; restore its prior logging state afterward.
+    Block standard and custom levels through sys.maxsize, the practical integer
+    threshold. The CLI is single-process/single-threaded; restore its exact prior
+    logging threshold afterward.
     This does not modify client methods, redirects or global logging handlers.
     """
     previous = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
+    logging.disable(sys.maxsize)
     try:
         yield
     finally:

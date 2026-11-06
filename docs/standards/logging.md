@@ -706,8 +706,10 @@ package inventories or server error text. See [the staging route](../deployment/
 
 The exclusive `prepare_gateway` CLI uses structured JSON operator reports, not raw
 HTTP diagnostics. During a Gateway request, `quiet_gateway_transport` temporarily
-suppresses stdlib transport emission at every severity, restoring the prior level
-on exit. This narrowly contains HTTPX and requests/urllib3 query-key URLs before
+suppresses stdlib transport emission through `sys.maxsize`, including custom
+levels above CRITICAL, restoring the exact prior threshold on normal/exception
+exit. This is the practical integer threshold, not mathematical suppression of
+arbitrarily large Python integer levels. This narrowly contains HTTPX and requests/urllib3 query-key URLs before
 handlers run; it is not a global redaction framework or a client monkey-patch.
 Failures expose a closed `GatewayFailure` reason only; no raw exception chain,
 request params or response body enters state/output. Upload warnings are bounded
