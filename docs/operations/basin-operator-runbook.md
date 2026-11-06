@@ -5,6 +5,33 @@ It does not import stations, call the Gateway, open a database, discover models,
 or start scheduled forecasts. It is not part of the public API. Reviewer names
 are self-declared, not authenticated. Scientific adoption still needs owner approval.
 
+## Choose your workflow
+
+Both workflows end with the same steps: inspect the basin and selected outlet,
+record a hydrologist decision, then export only approved stations. Neither
+workflow registers a station or enables forecasts.
+
+| Workflow | What it does | When to choose it |
+| --- | --- | --- |
+| **Attach an existing extraction** | Loads an already extracted package for validation, map review and approved-only export. It does not run the extractor or recompute geometry/static values. | Extraction has already finished elsewhere, such as on EC2. This is the route used for the Trishuli rehearsal. |
+| **Run automatic extraction** | Starts your configured external extractor after you confirm the uploaded inputs and click **Start extraction**. It retains the resulting ZIP, validates/unpacks it, then opens the same review workflow. | You have provisioned the pinned `v0.2.0` runtime and datasets, and its command can write to the output path visible to the operator. |
+
+For attachment, use `--package-dir` with the validated **unpacked directory**, not
+the ZIP. Upload the same station inputs and confirm them. Once attached, the page
+shows **Existing extraction loaded**; skip Start extraction. Keep the original ZIP.
+You do not need an extractor command or dataset installation just to review a
+completed package.
+
+For automatic extraction, use `--extractor-command` and explicitly select
+`--extractor-interface v0.2.0`. The operator does not install the extractor,
+download datasets or provision an extraction host. Historical v2 is a separate
+compatibility option, not the selected source release for this pipeline.
+
+Choose one launch mode, not both. See [Explicit launch](#explicit-launch) for
+commands and runtime requirements. The UI behavior described here belongs to
+the operator update; a still-running older review server needs the updated code
+and an authorized restart before it shows these fixes.
+
 ## Prepare
 
 1. For new automatic runs, provision the fixed `static-attrs-nepal` release
@@ -167,6 +194,20 @@ restricted data. If no context is supplied, the map explicitly says so.
    same unchanged automatic package retains decisions, fingerprint and its recorded
    source ZIP hash. A different package does not inherit that hash, including
    replacement detected on page load before confirmation and fresh review.
+
+## Troubleshooting the review controls
+
+| What you see | Meaning and action |
+| --- | --- |
+| **Enter a reviewer name before recording a decision.** | A station is selected but the reviewer name is empty or only spaces. Enter the hydrologist's name and retry. No decision was recorded by that attempt. If nothing is selected, select a station first. |
+| **Start extraction** is disabled | In attachment mode this is expected: confirm the matching inventory and review the loaded package instead. With no package or command configured, relaunch in one of the modes above. In automatic mode, confirm inputs first; do not start a second extraction while one is running. |
+| The command rejects `--snap-strategy` or `--snap-audit` | The pinned `v0.2.0` release fixes distance-first internally and does not accept these historical v2 options. Remove them from its configured prefix. Only select `historical-v2` when intentionally running the old bundle; do not switch interfaces merely to hide a mismatch. |
+
+After **Create immutable approved-only handover**, the success message shows
+**Handover saved:** followed by the local directory path. It receives focus and
+scrolls into view; this is a saved local folder, not a remote upload or automatic
+station registration. If an error appears instead, resolve it before treating an
+export as complete. See [Handover contract](#handover-contract) for its contents.
 
 ## Maps and connectivity
 
