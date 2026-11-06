@@ -132,7 +132,7 @@ def verify_forecast_configuration(raw: object) -> dict[str, object]:
         mount.get("type") != "bind"
         or mount.get("source") != source
         or mount.get("read_only") is not True
-        or _mapping(mount.get("bind")).get("create_host_path") is not False
+        or _mapping(mount.get("bind")).get("create_host_path", False) is not False
     ):
         raise ValueError("forecast provider must be an existing read-only file bind")
     ingest_mounts = [

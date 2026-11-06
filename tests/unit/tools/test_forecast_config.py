@@ -73,6 +73,34 @@ def configuration() -> dict[str, Any]:
 
 
 class TestForecastConfiguration:
+    def test_rendered_false_omitted_from_present_bind_mapping(self) -> None:
+        data = configuration()
+        data["candidate"]["services"]["prefect-worker"]["volumes"][0]["bind"] = {}
+        assert (
+            config.verify_forecast_configuration(data)["configuration_matches"] is True
+        )
+
+    @pytest.mark.parametrize("value", [True, None, "false", 0, 1])
+    def test_explicit_unsafe_host_path_flag_is_rejected(self, value: object) -> None:
+        data = configuration()
+        mount = data["candidate"]["services"]["prefect-worker"]["volumes"][0]
+        mount["bind"]["create_host_path"] = value
+        with pytest.raises(ValueError, match="existing read-only file bind"):
+            config.verify_forecast_configuration(data)
+
+    @pytest.mark.parametrize("bind", [None, True, "false", [], {1: False}])
+    def test_malformed_bind_mapping_is_rejected(self, bind: object) -> None:
+        data = configuration()
+        data["candidate"]["services"]["prefect-worker"]["volumes"][0]["bind"] = bind
+        with pytest.raises(ValueError, match="string-keyed mappings"):
+            config.verify_forecast_configuration(data)
+
+    def test_absent_bind_mapping_is_rejected(self) -> None:
+        data = configuration()
+        del data["candidate"]["services"]["prefect-worker"]["volumes"][0]["bind"]
+        with pytest.raises(ValueError, match="string-keyed mappings"):
+            config.verify_forecast_configuration(data)
+
     def test_exact_scoped_delta_and_safe_result(self) -> None:
         data = configuration()
         original = copy.deepcopy(data)

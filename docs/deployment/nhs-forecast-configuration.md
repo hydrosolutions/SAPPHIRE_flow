@@ -78,6 +78,12 @@ messages. Validate with a clean application environment as well, proving project
 `.env` supplies the settings rather than an interactive export. The checker permits
 only the new provider bind and init registration selection; it checks unchanged
 worker chain, unrelated environment/services/mounts and shared ingest source.
+Compose 2.38.2 omits `create_host_path: false` from a present `bind` mapping in
+rendered JSON; Compose 5.6.0 retains it. The checker accepts either representation
+of false only when the bind mapping is present and well typed. Explicit true,
+null, strings, malformed mappings and absent bind mappings still refuse. The
+source overlay continues to require `create_host_path: false`; read-only, exact
+source/target and single-mount checks remain unchanged.
 
 Rendering is not file/readability or reader-authority proof. Root must verify
 regular-file existence, effective in-container hashes and actual worker-UID
