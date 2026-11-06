@@ -15,8 +15,9 @@ stage; other stations remain visibly held with reasons.
 This is integration work in SAPPHIRE Flow, not development of the Recap Data
 Gateway or its client. Reuse supported Gateway APIs and existing client functions.
 The owner approved this integration and selected Trishuli as the first rehearsal
-station. This document captures the outcome; implementation still requires the
-repository's reviewed READY plan and normal review/merge gates.
+station. This document captures the outcome. Implementation follows the invoked
+global skill and current `AGENTS.md` safeguards, including independent review and
+owner-only PR approval and merge.
 
 The [overarching vision](2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md)
 provides the full journey and shared boundaries. The delivered
