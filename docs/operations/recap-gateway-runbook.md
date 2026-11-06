@@ -186,6 +186,11 @@ Aggregate chunk evidence retains the validated source/run contract and the uniqu
 normalized observed run identities for usable rows, not raw time series. Wrong
 run provenance cannot complete a historical chunk.
 
+Distinct required variables cannot share one subscription identity. Conflicting
+ERA5 or IFS P/T mappings hold the proposal before confirmation or remote calls;
+preview repeats the check defensively. Only the same canonical snow variable can
+share its existing compatible history/forecast row and stream flags.
+
 Each subscription binding names the
 canonical variable, **exact** subscription `parameter_name`, and nullable
 `forecast_type` (`fc` for IFS control). Snow history also has
@@ -231,12 +236,34 @@ action, never an older successful read-back. Inspect a renewed subscription
 preview and confirm its exact revision before correcting drift. A stale
 confirmation cannot overwrite the changed row; prior audit evidence is retained.
 
+The CLI's per-station `coverage` list exposes whitelisted aggregate evidence:
+requested variable/window/cycle/member, requested/usable/observed row counts,
+missing counts and compressed intervals, validated source/run and unique normalized
+run identities, fetch time, digest, holds, and declared publication lag. It contains
+no measurement values or raw transport payloads. Unknown records are marked
+`unexpected`, including their recorded station identity; they cannot stand in for
+requested chunks. Non-identifier metadata is redacted. Publication lag is a declared
+limitation, not proof of freshness or scientific/model readiness. Operators do not
+need to parse `state.json` to understand complete or partial coverage.
+
+Eligibility and history-cache reuse require the same exact derived chunk keys,
+declared support counts, complete usable support and matching source/run provenance.
+An equal number of unrelated records is not coverage. Missing intervals/holds or
+mismatched evidence force a hold/refetch. Unexpected records remain auditable and
+held rather than silently discarded. Malformed persisted dates, counts, digests or
+provenance fail loading without rewriting or resetting the original workspace.
+
 Evidence schema version **2** requires explicit run provenance. Version-1
 workspaces from the unreleased implementation are rejected without rewriting them;
 their historical chunks must not be silently reused. Preserve the entire workspace
 and remote-action ledger. Ask the maintainer for an explicit reconciliation/migration
 before proceeding; do not delete state, start a second workspace, or repeat writes
 as a migration shortcut. There is no automatic upgrade or reset path.
+Valid schema-2 records without the later optional `observed_count` still load
+unchanged. Their observed count is reported as unknown (`null`), never invented
+from expected or usable counts. Newly fetched evidence records the actual returned
+row count, including unusable or extra rows.
+
 
 
 ## Manual GeoPackage upload

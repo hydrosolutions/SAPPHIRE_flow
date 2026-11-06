@@ -758,3 +758,175 @@ def test_each_forecast_cycle_requires_a_resolved_run_contract(declaration: str) 
     assert any(
         h.startswith("forecast_source_run_contract_unconfirmed:") for h in planned.holds
     )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expected_count": -1},
+        {"usable_count": 4},
+        {"observed_count": 2},
+        {"start": "bad"},
+        {"end": "2024-01-01T00:00:00+00:00"},
+        {"fetched_at": "2026-11-06"},
+        {"response_sha256": "bad"},
+        {"validated_source": None},
+        {"validated_source_run": None},
+        {"validated_run_identities": ["unexpected"]},
+        {"usable_count": 2},
+        {"expected_count": "3"},
+        {"fetched_at": "2026-11-06T00:00:00+01:00"},
+        {
+            "usable_count": 2,
+            "holds": ["missing_requested_support"],
+            "missing_intervals": [
+                ["2023-12-31T00:00:00+00:00", "2024-01-02T00:00:00+00:00"]
+            ],
+        },
+    ],
+)
+def test_malformed_saved_coverage_is_rejected_without_rewriting(
+    approved: Path, tmp_path: Path, changes: dict[str, object]
+) -> None:
+    from tests.unit.types.test_gateway_preparation import valid_chunk
+
+    workspace = tmp_path / "evidence"
+    with preparation_workspace(workspace, handover=approved):
+        save_preparation_state(
+            workspace,
+            PreparationState(
+                handover=admit_handover(approved), coverage=(valid_chunk(),)
+            ),
+        )
+    path = workspace / "state.json"
+    raw = json.loads(path.read_text())
+    raw["coverage"][0].update(changes)
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="unsupported preparation state; do not reset"):
+        load_preparation_state(workspace)
+    assert path.read_bytes() == before
+
+
+def test_schema_two_without_observed_count_remains_readable_and_unmodified(
+    approved: Path, tmp_path: Path
+) -> None:
+    from tests.unit.types.test_gateway_preparation import valid_chunk
+
+    workspace = tmp_path / "evidence"
+    with preparation_workspace(workspace, handover=approved):
+        save_preparation_state(
+            workspace,
+            PreparationState(
+                handover=admit_handover(approved), coverage=(valid_chunk(),)
+            ),
+        )
+    path = workspace / "state.json"
+    raw = json.loads(path.read_text())
+    del raw["coverage"][0]["observed_count"]
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    restored = load_preparation_state(workspace)
+    assert restored.coverage[0].observed_count is None
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("stream", [DataStream.ERA5_HISTORY, DataStream.IFS_FORECAST])
+def test_proposal_rejects_distinct_variables_sharing_subscription_identity(
+    stream: DataStream,
+) -> None:
+    original = proposal()
+    contract = next(c for c in original.contracts if c.stream == stream)
+    bindings = tuple(
+        replace(binding, parameter_name="same_required_identity")
+        for binding in contract.subscription_parameters
+    )
+    contracts = tuple(
+        replace(c, subscription_parameters=bindings) if c.stream == stream else c
+        for c in original.contracts
+    )
+    planned = propose_data(
+        model_id=original.model_id,
+        requirements=requirements(),
+        time_step=original.time_step,
+        history=original.history,
+        forecast=original.forecast,
+        contracts=contracts,
+    )
+    assert "conflicting_subscription_identity" in planned.holds
+
+
+def test_defensive_preview_rejects_conflicting_required_identity_before_reads(
+    approved: Path, tmp_path: Path
+) -> None:
+    from sapphire_flow.types.gateway_preparation import RegistrationAttempt
+
+    original = proposal()
+    contract = original.contracts[1]
+    bindings = tuple(
+        replace(binding, parameter_name="same_required_identity")
+        for binding in contract.subscription_parameters
+    )
+    malformed = replace(
+        original,
+        contracts=(
+            original.contracts[0],
+            replace(contract, subscription_parameters=bindings),
+        ),
+    )
+    state = PreparationState(
+        handover=admit_handover(approved),
+        proposals=(malformed,),
+        confirmed_proposal=proposal_revision(malformed),
+        attempts=(
+            RegistrationAttempt(
+                attempt_id="synthetic",
+                recorded_at="synthetic",
+                requested_hru="synthetic",
+                upload_sha256="synthetic",
+                status=RegistrationStatus.CONFIRMED,
+                actor="synthetic",
+                evidence_reference="synthetic",
+            ),
+        ),
+    )
+    gateway = SyntheticGateway()
+    adapter = RecapRegistration(
+        config(), api_key="synthetic", transport=httpx.MockTransport(gateway.transport)
+    )
+    try:
+        with pytest.raises(ValueError, match="conflicting required subscription"):
+            preview_subscriptions(tmp_path / "evidence", state, adapter)
+        assert gateway.requests == []
+    finally:
+        adapter.close()
+
+
+def test_same_snow_variable_can_share_compatible_stream_subscription() -> None:
+    original = proposal()
+    requirements_snow = replace(
+        requirements(),
+        past_dynamic_features=frozenset({"swe"}),
+        future_dynamic_features=frozenset({"swe"}),
+    )
+    contracts = tuple(
+        replace(
+            original.contracts[0],
+            stream=stream,
+            subscription_source="jsnow",
+            snow_history_procedure="synthetic",
+            subscription_parameters=(
+                SubscriptionParameter(canonical="swe", parameter_name="swe"),
+            ),
+        )
+        for stream in (DataStream.SNOW_HISTORY, DataStream.SNOW_FORECAST)
+    )
+    planned = propose_data(
+        model_id="synthetic",
+        requirements=requirements_snow,
+        time_step=original.time_step,
+        history=original.history,
+        forecast=original.forecast,
+        contracts=contracts,
+    )
+    assert planned.holds == ()

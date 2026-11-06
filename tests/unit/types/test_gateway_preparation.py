@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from sapphire_flow.types.gateway_preparation import (
+    ChunkEvidence,
+    DataStream,
     ForecastLeadBand,
     HistoryScope,
     RegistrationAttempt,
@@ -106,3 +108,64 @@ def test_fixed_run_identity_requires_aware_datetime_and_normalizes_utc() -> None
     assert forecast is not None
     with pytest.raises(ValueError, match="match its cycle"):
         replace(forecast, source_runs=((forecast.cycles[0].isoformat(), run),))
+
+
+def valid_chunk() -> ChunkEvidence:
+    return ChunkEvidence(
+        scope_revision="sha256:" + "0" * 64,
+        station_code="001.0",
+        stream=DataStream.ERA5_HISTORY,
+        variable="total_precipitation",
+        start="2024-01-01T00:00:00+00:00",
+        end="2024-01-04T00:00:00+00:00",
+        member=None,
+        cycle=None,
+        fetched_at="2026-11-06T00:00:00+00:00",
+        expected_count=3,
+        usable_count=3,
+        observed_count=3,
+        missing_intervals=(),
+        holds=(),
+        response_sha256="sha256:" + "a" * 64,
+        validated_source="synthetic_history",
+        validated_source_run=SourceRunContract(semantics=SourceRunSemantics.NULL),
+        validated_run_identities=(),
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"expected_count": -1},
+        {"usable_count": 4},
+        {"observed_count": 2},
+        {"start": "bad"},
+        {"end": "2024-01-01T00:00:00+00:00"},
+        {"fetched_at": "2026-11-06"},
+        {"response_sha256": "bad"},
+        {"validated_source": None},
+        {"validated_source_run": None},
+        {"validated_run_identities": ("unexpected",)},
+        {"usable_count": 2},
+        {"member": 0},
+    ],
+)
+def test_chunk_evidence_rejects_incoherent_values(changes: dict[str, object]) -> None:
+    with pytest.raises(
+        ValueError, match="evidence|counts|provenance|identities|Invalid isoformat"
+    ):
+        replace(valid_chunk(), **changes)
+
+
+def test_failed_fetch_can_preserve_empty_unvalidated_evidence() -> None:
+    evidence = valid_chunk()
+    failed = replace(
+        evidence,
+        usable_count=0,
+        observed_count=0,
+        missing_intervals=((evidence.start, evidence.end),),
+        holds=("missing_requested_support", "source_unavailable"),
+        validated_source=None,
+        validated_source_run=None,
+    )
+    assert failed.usable_count == 0 and failed.validated_source is None

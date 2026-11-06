@@ -360,6 +360,18 @@ class SubscriptionAction:
     outcome: Literal["intent", "verified", "uncertain"]
 
 
+def _evidence_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.utcoffset() != timedelta(0):
+        raise ValueError("evidence timestamps must be aware UTC")
+    return parsed
+
+
+CoverageKey = tuple[
+    str, DataStream, str, datetime, datetime, int | None, datetime | None
+]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ChunkEvidence:
     scope_revision: str
@@ -379,6 +391,127 @@ class ChunkEvidence:
     validated_source: str | None
     validated_source_run: SourceRunContract | None
     validated_run_identities: tuple[str, ...]
+    observed_count: int | None = None
+
+    @property
+    def scope_key(self) -> CoverageKey:
+        return (
+            self.station_code,
+            self.stream,
+            self.variable,
+            _evidence_time(self.start),
+            _evidence_time(self.end),
+            self.member,
+            _evidence_time(self.cycle) if self.cycle else None,
+        )
+
+    def __post_init__(self) -> None:
+        start, end = _evidence_time(self.start), _evidence_time(self.end)
+        _evidence_time(self.fetched_at)
+        if start >= end or not self.station_code or not self.variable:
+            raise ValueError("evidence requires a nonempty identified interval")
+        for digest in (self.scope_revision, self.response_sha256):
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+                raise ValueError("evidence digest must be canonical sha256")
+        counts = (self.expected_count, self.usable_count) + (
+            () if self.observed_count is None else (self.observed_count,)
+        )
+        if (
+            any(type(count) is not int or count < 0 for count in counts)
+            or self.usable_count > self.expected_count
+            or (
+                self.observed_count is not None
+                and self.usable_count > self.observed_count
+            )
+        ):
+            raise ValueError("evidence counts are incoherent")
+        historical = self.stream in (DataStream.ERA5_HISTORY, DataStream.SNOW_HISTORY)
+        if historical:
+            if self.cycle is not None or self.member is not None:
+                raise ValueError("historical evidence cannot have forecast identity")
+        elif (
+            self.cycle is None
+            or _evidence_time(self.cycle) > start
+            or (
+                self.stream == DataStream.IFS_FORECAST
+                and (type(self.member) is not int or self.member != 0)
+            )
+            or (self.stream == DataStream.SNOW_FORECAST and self.member is not None)
+        ):
+            raise ValueError(
+                "forecast evidence requires matching cycle/member identity"
+            )
+        previous = start
+        for left, right in self.missing_intervals:
+            a, b = _evidence_time(left), _evidence_time(right)
+            if not previous <= a < b <= end:
+                raise ValueError("missing intervals must be ordered inside scope")
+            previous = b
+        incomplete = self.usable_count < self.expected_count
+        if (
+            bool(self.missing_intervals) != incomplete
+            or (("missing_requested_support" in self.holds) != incomplete)
+            or len(self.missing_intervals) > self.expected_count - self.usable_count
+            or (not self.holds and self.expected_count == 0)
+        ):
+            raise ValueError("evidence missing support and holds are inconsistent")
+        if (
+            self.observed_count is not None
+            and not self.holds
+            and self.observed_count != self.expected_count
+        ):
+            raise ValueError("hold-free evidence has unexpected observed support")
+        if (
+            tuple(sorted(set(self.validated_run_identities)))
+            != self.validated_run_identities
+        ):
+            raise ValueError("validated run identities must be distinct and ordered")
+        if self.usable_count == 0:
+            if (
+                self.validated_source is not None
+                or self.validated_source_run is not None
+                or self.validated_run_identities
+            ):
+                raise ValueError("empty evidence cannot claim validated provenance")
+            return
+        run = self.validated_source_run
+        if (
+            not self.validated_source
+            or not self.validated_source.strip()
+            or run is None
+            or run.semantics == SourceRunSemantics.UNRESOLVED
+        ):
+            raise ValueError("usable evidence requires resolved validated provenance")
+        identities = self.validated_run_identities
+        if len(identities) > self.usable_count:
+            raise ValueError("run identity count exceeds usable support")
+        if run.semantics == SourceRunSemantics.EXACT and identities != (run.value,):
+            raise ValueError("exact run provenance is inconsistent")
+        if run.semantics == SourceRunSemantics.UTC_INSTANT and (
+            run.timestamp is None or identities != (run.timestamp.isoformat(),)
+        ):
+            raise ValueError("fixed datetime run provenance is inconsistent")
+        if (
+            run.semantics in (SourceRunSemantics.NULL, SourceRunSemantics.ABSENT)
+            and identities
+        ):
+            raise ValueError("null or absent runs cannot claim identities")
+        if run.semantics == SourceRunSemantics.UTC_DATE_MIDNIGHT:
+            if not identities:
+                raise ValueError("daily run identities are missing")
+            for identity in identities:
+                instant = _evidence_time(identity)
+                if (
+                    instant.isoformat() != identity
+                    or instant
+                    != instant.replace(hour=0, minute=0, second=0, microsecond=0)
+                    or not start.date()
+                    <= instant.date()
+                    <= (end - timedelta(microseconds=1)).date()
+                ):
+                    raise ValueError(
+                        "daily run identity is outside declared evidence dates"
+                    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -67,6 +67,7 @@ class CoverageScope:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CoverageEvidence:
+    observed_count: int
     expected_count: int
     usable_count: int
     missing_intervals: tuple[tuple[str, str], ...]
@@ -169,6 +170,7 @@ def assess_coverage(frame: pd.DataFrame, scope: CoverageScope) -> CoverageEviden
     if missing:
         holds.add("missing_requested_support")
     return CoverageEvidence(
+        observed_count=len(frame),
         expected_count=len(expected),
         usable_count=len(usable),
         missing_intervals=tuple(intervals),

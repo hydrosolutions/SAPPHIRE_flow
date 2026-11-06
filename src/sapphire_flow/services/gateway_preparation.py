@@ -9,8 +9,8 @@ import math
 import os
 import re
 import tempfile
-from contextlib import contextmanager
-from dataclasses import asdict, replace
+from contextlib import contextmanager, suppress
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -39,6 +39,7 @@ from sapphire_flow.types.gateway_preparation import (
     ApprovedFeature,
     ApprovedHandover,
     ChunkEvidence,
+    CoverageKey,
     DataProposal,
     DataStream,
     DateEndConvention,
@@ -300,8 +301,13 @@ def load_preparation_state(directory: Path) -> PreparationState:
         raise ValueError("state symbolic links are forbidden")
     try:
         payload = path.read_bytes()
-        raw = json.loads(payload, object_pairs_hook=_unique_json_keys)
+        raw: dict[str, Any] = json.loads(payload, object_pairs_hook=_unique_json_keys)
         state = _STATE.validate_json(payload)
+        # Schema-2 records predate this optional observation; unknown is not zero.
+        if isinstance(raw.get("coverage"), list):
+            for chunk in cast("list[Any]", raw["coverage"]):
+                if isinstance(chunk, dict):
+                    cast("dict[str, Any]", chunk).setdefault("observed_count", None)
         if json.dumps(raw, sort_keys=True) != json.dumps(
             json.loads(_STATE.dump_json(state)), sort_keys=True
         ):
@@ -535,6 +541,8 @@ def propose_data(
             and forecast.end_lead < requirements.forecast_horizon_steps * time_step
         ):
             holds.append("forecast_scope_shorter_than_declared_horizon")
+    if _conflicting_subscription_identity(tuple(requested), contracts):
+        holds.append("conflicting_subscription_identity")
     return DataProposal(
         model_id=model_id,
         requirements=_snapshot(requirements),
@@ -547,6 +555,34 @@ def propose_data(
         forecast=forecast,
         contracts=contracts,
     )
+
+
+def _conflicting_subscription_identity(
+    variables: tuple[RequestedVariable, ...], contracts: tuple[ProductContract, ...]
+) -> bool:
+    by_stream = {contract.stream: contract for contract in contracts}
+    identities: dict[tuple[str, str], tuple[str, str]] = {}
+    for variable in variables:
+        contract = by_stream.get(variable.stream)
+        if contract is None:
+            continue
+        mode = "fc" if variable.stream == DataStream.IFS_FORECAST else None
+        for binding in contract.subscription_parameters:
+            if binding.canonical != variable.canonical or binding.forecast_type != mode:
+                continue
+            identity = (contract.subscription_source, binding.parameter_name)
+            # The same snow variable may share history/forecast flags.
+            product = (
+                "snow"
+                if variable.stream
+                in (DataStream.SNOW_HISTORY, DataStream.SNOW_FORECAST)
+                else variable.stream.value
+            )
+            meaning = (variable.canonical, product)
+            if identity in identities and identities[identity] != meaning:
+                return True
+            identities[identity] = meaning
+    return False
 
 
 def proposal_revision(proposal: DataProposal) -> str:
@@ -605,6 +641,8 @@ def preview_subscriptions(
     adapter: RecapRegistration,
 ) -> PreparationState:
     hru, proposal = _confirmed_scope(state)
+    if _conflicting_subscription_identity(proposal.variables, proposal.contracts):
+        raise ValueError("conflicting required subscription identities")
     contracts = {c.stream: c for c in proposal.contracts}
     desired: dict[tuple[str, str], set[DataStream]] = {}
     for variable in proposal.variables:
@@ -891,6 +929,167 @@ def record_history_job(
     return state
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _CoverageRequest:
+    variable: RequestedVariable
+    contract: ProductContract
+    start: datetime
+    end: datetime
+    member: int | None
+    cycle: datetime | None
+    times: tuple[datetime, ...]
+    run: SourceRunContract
+
+    def key(self, station: str) -> CoverageKey:
+        return (
+            station,
+            self.variable.stream,
+            self.variable.parameter,
+            self.start,
+            self.end,
+            self.member,
+            self.cycle,
+        )
+
+    def coverage_scope(self, polygon: str) -> CoverageScope:
+        return CoverageScope(
+            polygon=polygon,
+            start=self.start,
+            end=self.end,
+            cadence=self.contract.cadence,
+            source=self.contract.provenance,
+            contract_reference=self.contract.reference,
+            source_run=self.run,
+            expected_times=self.times,
+        )
+
+    def run_identities(self) -> tuple[str, ...]:
+        if self.run.semantics == SourceRunSemantics.EXACT:
+            assert self.run.value is not None
+            return (self.run.value,)
+        if self.run.semantics == SourceRunSemantics.UTC_INSTANT:
+            assert self.run.timestamp is not None
+            return (self.run.timestamp.isoformat(),)
+        if self.run.semantics == SourceRunSemantics.UTC_DATE_MIDNIGHT:
+            return tuple(
+                sorted(
+                    {
+                        time.replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        ).isoformat()
+                        for time in self.times
+                    }
+                )
+            )
+        return ()
+
+
+def _coverage_requests(proposal: DataProposal) -> tuple[_CoverageRequest, ...]:
+    if proposal.holds:
+        raise ValueError("coverage scope remains unresolved")
+    contracts = {contract.stream: contract for contract in proposal.contracts}
+    requests: list[_CoverageRequest] = []
+    for variable in proposal.variables:
+        contract = contracts.get(variable.stream)
+        if contract is None:
+            raise ValueError("coverage contract missing")
+        if variable.stream in (DataStream.ERA5_HISTORY, DataStream.SNOW_HISTORY):
+            if proposal.history is None:
+                raise ValueError("coverage history missing")
+            start = proposal.history.start
+            while start < proposal.history.end:
+                end = min(start + timedelta(days=31), proposal.history.end)
+                if (end - start) % contract.cadence:
+                    raise ValueError("history support is not aligned")
+                times = tuple(
+                    start + n * contract.cadence
+                    for n in range(int((end - start) / contract.cadence))
+                )
+                requests.append(
+                    _CoverageRequest(
+                        variable=variable,
+                        contract=contract,
+                        start=start,
+                        end=end,
+                        cycle=None,
+                        member=None,
+                        times=times,
+                        run=contract.historical_source_run,
+                    )
+                )
+                start = end
+        else:
+            forecast = proposal.forecast
+            if forecast is None:
+                raise ValueError("coverage forecast missing")
+            runs = dict(forecast.source_runs)
+            for cycle in forecast.cycles:
+                run = runs.get(cycle.isoformat(), SourceRunContract())
+                for member in (
+                    forecast.members
+                    if variable.stream == DataStream.IFS_FORECAST
+                    else (None,)
+                ):
+                    requests.append(
+                        _CoverageRequest(
+                            variable=variable,
+                            contract=contract,
+                            start=cycle + forecast.first_lead,
+                            end=cycle + forecast.end_lead,
+                            cycle=cycle,
+                            member=member,
+                            times=tuple(
+                                cycle + lead
+                                for lead in contract.forecast_leads(
+                                    forecast.first_lead, forecast.end_lead
+                                )
+                            ),
+                            run=run,
+                        )
+                    )
+    if any(
+        not request.times or request.run.semantics == SourceRunSemantics.UNRESOLVED
+        for request in requests
+    ):
+        raise ValueError("coverage time or run support unresolved")
+    return tuple(requests)
+
+
+def _coverage_issues(
+    evidence: ChunkEvidence, request: _CoverageRequest
+) -> tuple[str, ...]:
+    issues = set(evidence.holds)
+    count = len(request.times)
+    if evidence.expected_count != count:
+        issues.add("evidence_expected_count_mismatch")
+    if evidence.usable_count != count or evidence.missing_intervals:
+        issues.add("missing_requested_support")
+    if evidence.observed_count is not None and evidence.observed_count != count:
+        issues.add("evidence_observed_count_mismatch")
+    expected_runs = request.run_identities()
+    if evidence.usable_count and (
+        evidence.validated_source != request.contract.provenance
+        or evidence.validated_source_run != request.run
+        or not set(evidence.validated_run_identities) <= set(expected_runs)
+        or (
+            evidence.usable_count == count
+            and evidence.validated_run_identities != expected_runs
+        )
+    ):
+        issues.add("evidence_provenance_mismatch")
+    return tuple(sorted(issues))
+
+
+def _latest_coverage(
+    state: PreparationState, revision: str
+) -> dict[CoverageKey, ChunkEvidence]:
+    return {
+        evidence.scope_key: evidence
+        for evidence in state.coverage
+        if evidence.scope_revision == revision
+    }
+
+
 def resume_coverage(
     directory: Path,
     state: PreparationState,
@@ -911,142 +1110,64 @@ def resume_coverage(
     if not all(_subscription_verified(state, change) for change in plan.changes):
         raise ValueError("subscription read-back remains held")
     revision = proposal_revision(proposal)
-    contracts = {c.stream: c for c in proposal.contracts}
-    for variable in proposal.variables:
-        contract = contracts[variable.stream]
-        historical = variable.stream in (
-            DataStream.ERA5_HISTORY,
-            DataStream.SNOW_HISTORY,
-        )
-        windows: list[tuple[datetime, datetime, int | None, datetime | None]] = []
-        if historical:
-            assert proposal.history is not None
-            cursor = proposal.history.start
-            while cursor < proposal.history.end:
-                end = min(cursor + timedelta(days=31), proposal.history.end)
-                windows.append((cursor, end, None, None))
-                cursor = end
-        else:
-            assert proposal.forecast is not None
-            members = (
-                proposal.forecast.members
-                if variable.stream == DataStream.IFS_FORECAST
-                else (None,)
+    for request in _coverage_requests(proposal):
+        latest = _latest_coverage(state, revision)
+        pending = [
+            feature
+            for feature in state.handover.features
+            if request.cycle is not None
+            or (existing := latest.get(request.key(feature.station.code))) is None
+            or _coverage_issues(existing, request)
+        ]
+        if not pending:
+            continue
+        failure: str | None = None
+        try:
+            raw = private_gateway_fetch(
+                directory,
+                partial(
+                    _fetch_scope,
+                    client,
+                    hru=hru,
+                    variable=request.variable,
+                    contract=request.contract,
+                    start=request.start,
+                    end=request.end,
+                    cycle=request.cycle,
+                    member=request.member,
+                    forecast=proposal.forecast,
+                ),
             )
-            windows = [
-                (
-                    cycle + proposal.forecast.first_lead,
-                    cycle + proposal.forecast.end_lead,
-                    member,
-                    cycle,
-                )
-                for cycle in proposal.forecast.cycles
-                for member in members
-            ]
-        for start, end, member, cycle in windows:
-            pending: list[ApprovedFeature] = []
-            for feature in state.handover.features:
-                key = (
-                    revision,
-                    feature.station.code,
-                    variable.stream,
-                    variable.parameter,
-                    start.isoformat(),
-                    end.isoformat(),
-                    member,
-                    cycle.isoformat() if cycle else None,
-                )
-                existing = [
-                    e
-                    for e in state.coverage
-                    if (
-                        e.scope_revision,
-                        e.station_code,
-                        e.stream,
-                        e.variable,
-                        e.start,
-                        e.end,
-                        e.member,
-                        e.cycle,
-                    )
-                    == key
-                ]
-                if not historical or not existing or existing[-1].holds:
-                    pending.append(feature)
-            if not pending:
-                continue
-            failure: str | None = None
-            expected_run = contract.historical_source_run
-            if cycle is not None:
-                assert proposal.forecast is not None
-                expected_run = dict(proposal.forecast.source_runs).get(
-                    cycle.isoformat(), SourceRunContract()
-                )
-                if expected_run.semantics == SourceRunSemantics.UNRESOLVED:
-                    failure = "forecast_source_run_contract_unconfirmed"
-            try:
-                if failure:
-                    raw = pd.DataFrame()
-                else:
-                    raw = private_gateway_fetch(
-                        directory,
-                        partial(
-                            _fetch_scope,
-                            client,
-                            hru=hru,
-                            variable=variable,
-                            contract=contract,
-                            start=start,
-                            end=end,
-                            cycle=cycle,
-                            member=member,
-                            forecast=proposal.forecast,
-                        ),
-                    )
-                    if not isinstance(raw, pd.DataFrame):
-                        failure = "unsupported_response_frame"
-                        raw = pd.DataFrame()
-            except GatewayAccessError as exc:
-                failure = exc.reason.value
+            if not isinstance(raw, pd.DataFrame):
+                failure = "unsupported_response_frame"
                 raw = pd.DataFrame()
-            for feature in pending:
-                scope = CoverageScope(
-                    polygon=feature.polygon_name,
-                    start=start,
-                    end=end,
-                    cadence=contract.cadence,
-                    source=contract.provenance,
-                    contract_reference=contract.reference,
-                    source_run=expected_run,
-                    expected_times=tuple(
-                        cycle + lead
-                        for lead in contract.forecast_leads(start - cycle, end - cycle)
-                    )
-                    if cycle is not None
-                    else None,
-                )
-                result = assess_coverage(raw, scope)
-                evidence = ChunkEvidence(
-                    scope_revision=revision,
-                    station_code=feature.station.code,
-                    stream=variable.stream,
-                    variable=variable.parameter,
-                    start=start.isoformat(),
-                    end=end.isoformat(),
-                    member=member,
-                    cycle=cycle.isoformat() if cycle else None,
-                    fetched_at=now,
-                    expected_count=result.expected_count,
-                    usable_count=result.usable_count,
-                    missing_intervals=result.missing_intervals,
-                    holds=(*result.holds, failure) if failure else result.holds,
-                    response_sha256=result.response_sha256,
-                    validated_source=result.validated_source,
-                    validated_source_run=result.validated_source_run,
-                    validated_run_identities=result.validated_run_identities,
-                )
-                state = replace(state, coverage=(*state.coverage, evidence))
-                save_preparation_state(directory, state)
+        except GatewayAccessError as exc:
+            failure = exc.reason.value
+            raw = pd.DataFrame()
+        for feature in pending:
+            result = assess_coverage(raw, request.coverage_scope(feature.polygon_name))
+            evidence = ChunkEvidence(
+                scope_revision=revision,
+                station_code=feature.station.code,
+                stream=request.variable.stream,
+                variable=request.variable.parameter,
+                start=request.start.isoformat(),
+                end=request.end.isoformat(),
+                member=request.member,
+                cycle=request.cycle.isoformat() if request.cycle else None,
+                fetched_at=now,
+                expected_count=result.expected_count,
+                usable_count=result.usable_count,
+                observed_count=result.observed_count,
+                missing_intervals=result.missing_intervals,
+                holds=(*result.holds, failure) if failure else result.holds,
+                response_sha256=result.response_sha256,
+                validated_source=result.validated_source,
+                validated_source_run=result.validated_source_run,
+                validated_run_identities=result.validated_run_identities,
+            )
+            state = replace(state, coverage=(*state.coverage, evidence))
+            save_preparation_state(directory, state)
     return state
 
 
@@ -1117,9 +1238,107 @@ def _fetch_scope(
     return raw
 
 
+def _coverage_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return (
+        value
+        if re.fullmatch(r"[A-Za-z0-9_.:+-]{1,200}", value)
+        else "[redacted metadata]"
+    )
+
+
+def _coverage_summary(
+    request: _CoverageRequest | None,
+    evidence: ChunkEvidence | None,
+    issues: tuple[str, ...],
+) -> dict[str, Any]:
+    run = evidence.validated_source_run if evidence else None
+    return {
+        "applicability": "requested" if request else "unexpected",
+        "station_code": _coverage_label(evidence.station_code) if evidence else None,
+        "scope_revision": evidence.scope_revision if evidence else None,
+        "stream": request.variable.stream
+        if request
+        else evidence.stream
+        if evidence
+        else None,
+        "variable": _coverage_label(
+            request.variable.parameter
+            if request
+            else evidence.variable
+            if evidence
+            else None
+        ),
+        "start": request.start.isoformat()
+        if request
+        else evidence.start
+        if evidence
+        else None,
+        "end": request.end.isoformat()
+        if request
+        else evidence.end
+        if evidence
+        else None,
+        "cycle": request.cycle.isoformat()
+        if request and request.cycle
+        else evidence.cycle
+        if evidence
+        else None,
+        "member": request.member if request else evidence.member if evidence else None,
+        "requested_count": len(request.times) if request else None,
+        "recorded_expected_count": evidence.expected_count if evidence else None,
+        "usable_count": evidence.usable_count if evidence else None,
+        "observed_count": evidence.observed_count if evidence else None,
+        "missing_count": len(request.times) - evidence.usable_count
+        if request and evidence and evidence.usable_count <= len(request.times)
+        else None,
+        "missing_intervals": evidence.missing_intervals if evidence else (),
+        "validated_source": _coverage_label(evidence.validated_source)
+        if evidence
+        else None,
+        "validated_source_run": {
+            "semantics": run.semantics,
+            "value": _coverage_label(run.value),
+            "timestamp": run.timestamp.isoformat() if run.timestamp else None,
+        }
+        if run
+        else None,
+        "validated_run_identities": tuple(
+            _coverage_label(value) for value in evidence.validated_run_identities
+        )
+        if evidence
+        else (),
+        "fetched_at": evidence.fetched_at if evidence else None,
+        "response_sha256": evidence.response_sha256 if evidence else None,
+        "holds": tuple(_coverage_label(value) for value in issues),
+        "publication_lag_seconds": request.contract.publication_lag.total_seconds()
+        if request
+        else None,
+        "limitations": (
+            "Declared publication lag is not a freshness guarantee; "
+            "coverage is not scientific or model readiness. "
+            "Legacy observed counts may be unknown."
+        ),
+    }
+
+
 def preparation_report(state: PreparationState) -> dict[str, Any]:
     proposal = state.proposals[-1] if state.proposals else None
     revision = proposal_revision(proposal) if proposal else None
+    requests: tuple[_CoverageRequest, ...] = ()
+    if proposal is not None:
+        # Unresolved proposals stay held; do not invent expected support.
+        with suppress(ValueError):
+            requests = _coverage_requests(proposal)
+    latest = _latest_coverage(state, revision) if revision else {}
+    expected = {
+        request.key(feature.station.code): request
+        for request in requests
+        for feature in state.handover.features
+    }
+    unexpected = set(latest) - set(expected)
+    stations = {feature.station.code for feature in state.handover.features}
     outcomes: list[dict[str, Any]] = []
     for feature in state.handover.features:
         holds = list(proposal.holds) if proposal else ["proposal_missing"]
@@ -1141,47 +1360,44 @@ def preparation_report(state: PreparationState) -> dict[str, Any]:
             for change in state.subscription_plans[-1].changes
         ):
             holds.append("subscription_readback_missing")
-        latest: dict[tuple[object, ...], ChunkEvidence] = {}
-        for evidence in state.coverage:
-            if (
-                evidence.scope_revision == revision
-                and evidence.station_code == feature.station.code
-            ):
-                latest[
-                    (
-                        evidence.stream,
-                        evidence.variable,
-                        evidence.start,
-                        evidence.end,
-                        evidence.member,
-                        evidence.cycle,
-                    )
-                ] = evidence
-        if not latest:
-            holds.append("coverage_not_verified")
-        for evidence in latest.values():
-            holds.extend(evidence.holds)
-        # Completion includes every requested variable/window/member, not a sample.
-        expected_chunks = 0
-        if proposal is not None:
-            for variable in proposal.variables:
-                if variable.stream in (
-                    DataStream.ERA5_HISTORY,
-                    DataStream.SNOW_HISTORY,
-                ):
-                    if proposal.history:
-                        expected_chunks += math.ceil(
-                            (proposal.history.end - proposal.history.start)
-                            / timedelta(days=31)
-                        )
-                elif proposal.forecast:
-                    expected_chunks += len(proposal.forecast.cycles) * (
-                        len(proposal.forecast.members)
-                        if variable.stream == DataStream.IFS_FORECAST
-                        else 1
-                    )
-        if len(latest) != expected_chunks:
+        station_expected = {
+            key: request
+            for key, request in expected.items()
+            if key[0] == feature.station.code
+        }
+        station_latest = {
+            key: evidence
+            for key, evidence in latest.items()
+            if key[0] == feature.station.code
+        }
+        summaries: list[dict[str, Any]] = []
+        verified = 0
+        if not station_expected or not set(station_expected) <= set(station_latest):
             holds.append("requested_scope_incomplete")
+        station_unexpected = {
+            key
+            for key in unexpected
+            if key[0] == feature.station.code or key[0] not in stations
+        }
+        if station_unexpected:
+            holds.append("unexpected_coverage_evidence")
+        for key, request in station_expected.items():
+            evidence = station_latest.get(key)
+            issues = (
+                _coverage_issues(evidence, request)
+                if evidence
+                else ("coverage_not_verified",)
+            )
+            holds.extend(issues)
+            verified += not issues
+            summaries.append(_coverage_summary(request, evidence, issues))
+        for key in latest:
+            if key in station_unexpected:
+                summaries.append(
+                    _coverage_summary(
+                        None, latest[key], ("unexpected_coverage_evidence",)
+                    )
+                )
         outcomes.append(
             {
                 "network": feature.network,
@@ -1191,8 +1407,11 @@ def preparation_report(state: PreparationState) -> dict[str, Any]:
                 "gauge_id": feature.gauge_id,
                 "original_coordinates": asdict(feature.station.original),
                 "outcome": "held" if holds else "eligible_for_preparation",
-                "holds": sorted(set(holds)),
-                "verified_chunks": len(latest),
+                "holds": sorted(
+                    {_coverage_label(hold) or "unknown_hold" for hold in holds}
+                ),
+                "verified_chunks": verified,
+                "coverage": summaries,
             }
         )
     return {

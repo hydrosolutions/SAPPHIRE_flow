@@ -219,6 +219,7 @@ def gateway_cli(
         upload_error=None,
         wrong_run=False,
         forecast_fault=None,
+        download_error=None,
         native_requests=[],
     )
     monkeypatch.setattr(
@@ -257,6 +258,8 @@ def gateway_cli(
         self: object, request: requests.PreparedRequest, **kwargs: object
     ) -> requests.Response:
         assert request.url is not None
+        if case.download_error is not None:
+            raise ValueError("synthetic failure " + request.url)
         query = {
             key: values[0]
             for key, values in parse_qs(urlsplit(request.url).query).items()
@@ -422,6 +425,14 @@ def test_all_cli_dispatch_with_real_facade_and_fake_transports(
         "eligible_for_preparation",
         "held",
     ]
+    partial_chunks = partial["stations"][1]["coverage"]
+    missing = next(chunk for chunk in partial_chunks if chunk["missing_count"])
+    assert (
+        missing["missing_intervals"]
+        and missing["usable_count"] < missing["requested_count"]
+    )
+    assert missing["observed_count"] == missing["requested_count"]
+    assert "evidence_provenance_mismatch" not in missing["holds"]
     case.retrieval.missing = False
     invoke_cli(case, ["resume", *connection], capsys, expected=0)
     invoke_cli(case, ["status"], capsys, expected=0)
@@ -640,3 +651,193 @@ def test_cli_unresolved_forecast_cycles_cannot_confirm_or_write(
     raw = json.loads((case.workspace / "state.json").read_text())
     assert raw["confirmed_proposal"] is None and raw["attempts"] == []
     assert case.gateway.requests == []
+
+
+def complete_cli_case(
+    case: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> dict[str, Any]:
+    prepare_cli(case, capsys)
+    connection = connection_args(case)
+    invoke_cli(case, ["register", "--hru", "new_synthetic", *connection], capsys)
+    invoke_cli(
+        case,
+        [
+            "reconcile",
+            "--outcome",
+            "confirmed",
+            "--actor",
+            "Synthetic",
+            "--evidence",
+            "synthetic",
+        ],
+        capsys,
+    )
+    preview = invoke_cli(case, ["subscribe", *connection], capsys)
+    invoke_cli(
+        case,
+        ["subscribe", "--confirm", preview["subscription_revision"], *connection],
+        capsys,
+    )
+    case.retrieval.missing = False
+    return invoke_cli(case, ["resume", *connection], capsys, expected=0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("variable", "wrong_variable"),
+        ("expected_count", 1),
+        ("validated_source", "wrong_source"),
+        ("start", "2024-01-01T01:00:00+00:00"),
+        ("station_code", "unmapped"),
+        (
+            "validated_source_run",
+            {"semantics": "null", "value": None, "timestamp": None},
+        ),
+    ],
+)
+def test_cli_wrong_evidence_cannot_establish_eligibility_or_skip_fetch(
+    gateway_cli: SimpleNamespace,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    value: object,
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    path = case.workspace / "state.json"
+    raw = json.loads(path.read_text())
+    chunk = raw["coverage"][0]
+    chunk[field] = value
+    if field == "validated_source_run":
+        chunk["validated_run_identities"] = []
+    if field == "expected_count":
+        chunk["usable_count"] = value
+        chunk["validated_run_identities"] = chunk["validated_run_identities"][:1]
+        if "observed_count" in chunk:
+            chunk["observed_count"] = value
+    path.write_text(json.dumps(raw))
+    output = invoke_cli(case, ["status"], capsys)
+    assert output["stations"][0]["outcome"] == "held"
+    if field in ("variable", "start"):
+        assert output["stations"][1]["outcome"] == "eligible_for_preparation"
+    before = len(case.native_requests)
+    output = invoke_cli(
+        case,
+        ["resume", *connection_args(case)],
+        capsys,
+        expected=2 if field in ("variable", "start", "station_code") else 0,
+    )
+    assert (
+        len(case.native_requests) > before + 2
+    )  # refreshed history, not just forecast
+    summaries = output["stations"][0]["coverage"]
+    if field in ("variable", "start", "station_code"):
+        assert any(c["applicability"] == "unexpected" for c in summaries)
+
+
+@pytest.mark.parametrize("stream", ["era5_history", "ifs_forecast"])
+def test_cli_conflicting_subscription_identities_never_confirm_or_write(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str], stream: str
+) -> None:
+    case = gateway_cli
+    source = json.loads(case.scope.read_text())
+    contract = next(c for c in source["contracts"] if c["stream"] == stream)
+    contract["subscription_parameters"][1]["parameter_name"] = contract[
+        "subscription_parameters"
+    ][0]["parameter_name"]
+    case.scope.write_text(json.dumps(source))
+    preview = invoke_cli(case, ["prepare", "--scope", str(case.scope)], capsys)
+    assert "conflicting_subscription_identity" in preview["stations"][0]["holds"]
+    invoke_cli(
+        case,
+        [
+            "prepare",
+            "--scope",
+            str(case.scope),
+            "--confirm",
+            preview["proposal_revision"],
+            "--vatro-review",
+            "synthetic",
+        ],
+        capsys,
+    )
+    invoke_cli(
+        case, ["register", "--hru", "new_synthetic", *connection_args(case)], capsys
+    )
+    invoke_cli(case, ["subscribe", *connection_args(case)], capsys)
+    assert case.gateway.requests == []
+
+
+def test_cli_reports_aggregate_coverage_without_raw_measurements(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = complete_cli_case(gateway_cli, capsys)
+    chunks = output["stations"][0]["coverage"]
+    forecast = next(c for c in chunks if c["stream"] == "ifs_forecast")
+    assert (
+        forecast["requested_count"]
+        == forecast["usable_count"]
+        == forecast["observed_count"]
+        == 64
+    )
+    assert forecast["missing_count"] == 0 and forecast["missing_intervals"] == []
+    assert forecast["validated_source"] == "synthetic_forecast"
+    assert forecast["validated_run_identities"] == ["2024-02-11T00:00:00+00:00"]
+    assert forecast["publication_lag_seconds"] >= 0
+    assert forecast["response_sha256"].startswith("sha256:")
+    assert "values" not in forecast and "raw" not in forecast
+
+
+def test_cli_failed_fetch_preserves_honest_aggregate_evidence(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    case.download_error = "synthetic"
+    output = invoke_cli(case, ["resume", *connection_args(case)], capsys)
+    forecasts = [
+        c for c in output["stations"][0]["coverage"] if c["stream"] == "ifs_forecast"
+    ]
+    assert forecasts and all(
+        c["observed_count"] == c["usable_count"] == 0 for c in forecasts
+    )
+    assert all(
+        c["validated_source"] is None and c["validated_source_run"] is None
+        for c in forecasts
+    )
+    assert all(
+        c["requested_count"] == c["missing_count"] == 64 and c["missing_intervals"]
+        for c in forecasts
+    )
+
+
+def test_cli_legacy_observed_count_is_unknown_not_fabricated(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    path = case.workspace / "state.json"
+    raw = json.loads(path.read_text())
+    for chunk in raw["coverage"]:
+        del chunk["observed_count"]
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    output = invoke_cli(case, ["status"], capsys, expected=0)
+    assert all(c["observed_count"] is None for c in output["stations"][0]["coverage"])
+    assert path.read_bytes() == before
+
+
+def test_cli_malformed_saved_counts_fail_without_reset(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    complete_cli_case(case, capsys)
+    path = case.workspace / "state.json"
+    raw = json.loads(path.read_text())
+    raw["coverage"][0]["expected_count"] = -1
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
+    assert prepare_gateway.run([*case.argv, "status"]) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert path.read_bytes() == before

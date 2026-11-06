@@ -288,3 +288,39 @@ Root commissioned repairs following independent full-patch reviews of `ad3bad6e`
 - RELEASE_TARGET remains 0.1.1113. No full-suite rerun on the low-disk host,
   live operation, client/model edit, deployment, push or PR. Fresh full-patch
   review and final-head full CI remain required; Vatro approval is separate.
+
+## Third focused repair — 2026-11-06
+
+Root commissioned scope/evidence/report corrections after independent complete
+patch reviews of `575983e6`; incidental cleanup was not included.
+
+- T1/T4: ChunkEvidence validates aware UTC dates, ordered nonempty intervals,
+  nonnegative/coherent expected/usable/observed counts, canonical digests,
+  missing/hold coherence, forecast identity and validated source/run identities.
+  Honest failed fetches retain zero usable/observed rows, missing support and no
+  invented provenance. Malformed state is refused without resetting/replacing it.
+  Schema 2 stays compatible: the new optional observed count is unknown for old
+  valid records, and loading does not rewrite their bytes.
+- T4/T5: one declared chunk-scope derivation serves report and resume/cache.
+  Eligibility requires every exact station/variable/window/cycle/member key and
+  matching support counts/source/run contract/normalized identities, not arbitrary
+  record cardinality or old hold-free flags. Wrong keys cannot substitute; invalid
+  complete-looking counts/provenance cannot skip history retrieval. Unexpected
+  records remain explicitly held and visible, not silently deleted.
+- T2/T3: proposal and defensive preview reject shared subscription identities for
+  distinct required variables/products before remote calls. Existing compatible
+  same-canonical snow history/forecast sharing remains valid.
+- T5: per-station CLI summaries now expose only whitelisted aggregate scope,
+  requested/usable/observed support, missing counts/intervals, validated provenance,
+  fetch time/digest, holds and declared publication-lag limitations. Complete,
+  partial, wrong-scope, failed-fetch and legacy-unknown observations are tested;
+  raw measurements and transport data remain private.
+- RED: six actual CLI regressions failed (16 passed) before repair, demonstrating
+  wrong-key/count/provenance eligibility, duplicate subscription identities and
+  omitted aggregate output. Expanded construction/load/report/resume/cache and
+  native-facade verification: **528 passed, 1 optional skip**. Changed-file
+  lint/format and pyright across all eight implementation modules pass; exact
+  final-head and log evidence are recorded in the third local handoff.
+- Release target remains 0.1.1113. No live operations, external/client/model edits,
+  push, PR, merge or full low-disk-host suite. Fresh full-patch review and final-head
+  full CI remain required. Synthetic support is not Vatro or scientific acceptance.

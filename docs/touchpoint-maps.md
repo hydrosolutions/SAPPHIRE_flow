@@ -44,7 +44,14 @@ aggregate chunk evidence. Forecast contracts support uniform cadence or declared
 contiguous lead bands. Expected support never comes from returned rows. Every requested
 forecast cycle must have a resolved run contract before confirming the proposal.
 Observed subscription drift must be persisted as uncertain; status and resume
-both require the latest relevant action to be verified, not any past success. Never silently reinterpret version-1 chunks. Exercise
+both require the latest relevant action to be verified, not any past success.
+Coverage report and resume/cache share exact requested chunk derivation and
+count/provenance checks. Persisted chunk invariants reject malformed dates/counts/
+digests/provenance without rewriting state; optional unknown observed counts keep
+valid schema-2 records readable. CLI coverage summaries whitelist aggregates only.
+Required subscription identities must not collapse different canonical products;
+intentional same-variable snow stream sharing remains supported.
+ Never silently reinterpret version-1 chunks. Exercise
 actual CLI dispatch through both HTTP stacks with dummy config/secret files and
 fake transports, including encoded key echoes and locally invalid HRU names.
 
