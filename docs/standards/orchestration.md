@@ -489,3 +489,17 @@ Every run-name template must be covered by `tests/unit/flows/test_run_names.py` 
 Plan 399 received an empty mapping, and still does when nothing is supplied. ⛔ The four
 onboarding training sites and two smoke-test sites deliberately keep the empty mapping; they
 train at onboarding time, where no caller config exists.
+
+### Forecast configuration registration
+
+`SAPPHIRE_FORECAST_CONFIG_OVERLAY` supplies the complete ordered forecast-only
+overlay chain. Registration reads existing forecast job variables, changes only
+`env.SAPPHIRE_FORECAST_CONFIG_OVERLAY`, and preserves unrelated entries, including
+the generic worker overlay key. Unset/empty removes
+the owned key explicitly. A skipped deployment remains skipped; malformed inputs
+fail closed. Treat registration as single-writer while its pool is quiesced.
+The real supported process-worker harness establishes that worker values shadow
+same-named job values. Keep the distinct forecast key absent from worker/pool
+environments. Full mapping preservation and explicit empty-env clearing are
+required; verify child-process absence on disable, not API read-back alone. See [NHS configuration
+and rollback](../deployment/nhs-forecast-configuration.md).

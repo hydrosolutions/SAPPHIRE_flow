@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -10,9 +10,6 @@ from sapphire_flow.config.river_stations import (
     load_river_station_config,
 )
 from sapphire_flow.exceptions import ConfigurationError
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestLoadRiverStationConfig:
@@ -86,3 +83,70 @@ level_reference = "unknown"
         path.write_text(body.replace('"hydro_scraper"', '"dhm"'))
         with pytest.raises(ConfigurationError, match="Invalid DHM"):
             load_river_station_config(path, [])
+
+
+class TestForecastProviderSnapshot:
+    def test_joint_snapshot_replaces_entire_provider_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.config import river_stations as source
+
+        base = tmp_path / "base.toml"
+        base.write_text(
+            'max_retention_days = 600\n[adapters.river_stations]\ntype="hydro_scraper"\nendpoint="https://example.invalid/old"\ntimeout_s=11\nmax_cache_age_hours=24\n[adapters.river_stations.monitoring]\nexpected_interval_hours=0.17\n'
+        )
+        worker = tmp_path / "worker.toml"
+        worker.write_text("max_retention_days=700\n")
+        provider = tmp_path / "provider.toml"
+        provider.write_text(
+            '[adapters.river_stations]\ntype="dhm"\nendpoint="https://example.invalid/levels"\nmax_requests_per_batch=1\nmax_bytes_per_batch=1000\nmax_batch_seconds=30.0\n[[adapters.river_stations.bindings]]\nnetwork="dhm"\nstation_code="synthetic"\napi_station_id=1\nlevel_reference="gauge_zero"\n'
+        )
+        monkeypatch.setattr(source, "FORECAST_PROVIDER_PATH", provider)
+        selection = source.ForecastConfigOverlay(paths=(worker, provider))
+        reads: list[Path] = []
+        actual_read = Path.read_text
+
+        def read(path: Path, *args: object, **kwargs: object) -> str:
+            reads.append(path)
+            if path == provider:
+                worker.write_text("max_retention_days=900\n")
+            return actual_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read)
+        config, dhm = source.load_forecast_provider_config(base, (worker,), selection)
+        assert reads == [base, worker, provider]
+        assert config.max_retention_days == 700
+        assert dhm.timeout_s == 30.0
+        assert dhm.endpoint == "https://example.invalid/levels"
+
+    @pytest.mark.parametrize(
+        "failure", ["scope", "malformed", "missing", "stale", "wrong_target"]
+    )
+    def test_invalid_selection_is_value_free(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        from sapphire_flow.config import river_stations as source
+        from sapphire_flow.exceptions import ConfigurationError
+
+        base = tmp_path / "base.toml"
+        base.write_text("max_retention_days=600\n")
+        worker = tmp_path / "worker.toml"
+        worker.write_text("")
+        provider = tmp_path / "provider.toml"
+        monkeypatch.setattr(source, "FORECAST_PROVIDER_PATH", provider)
+        provider.write_text(
+            'secret="DO_NOT_PRINT"\n' if failure == "scope" else "bad = DO_NOT_PRINT"
+        )
+        if failure == "missing":
+            provider.unlink()
+        if failure == "wrong_target":
+            with pytest.raises(ValueError, match="reviewed provider target"):
+                source.ForecastConfigOverlay(paths=(worker, tmp_path / "other.toml"))
+            return
+        selection = source.ForecastConfigOverlay(paths=(worker, provider))
+        with pytest.raises(ConfigurationError, match="forecast provider") as raised:
+            source.load_forecast_provider_config(
+                base, () if failure == "stale" else (worker,), selection
+            )
+        assert "DO_NOT_PRINT" not in str(raised.value)
+        assert str(tmp_path) not in str(raised.value)
