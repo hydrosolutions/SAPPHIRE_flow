@@ -191,3 +191,16 @@ PATCH preserve existing variables, while a nonempty PATCH replaces the top-level
 mapping. Always submit the full preserved mapping. Clearing the final owned env key
 uses explicit `env: {}` and still requires actual child absence checks. No assertion
 that baseline registration resets unrelated variables is made.
+
+## CI security maintenance
+
+PR validation found CVE-2026-49272 in the inherited OAuthLib 4.0.0 lock record.
+The narrow repair upgrades only that package record to 4.0.1, retaining Prefect,
+Apprise, requests-oauthlib and all other pins. The dependency chain is Prefect →
+Apprise → requests-oauthlib → OAuthLib. The upstream advisory affects OAuthLib
+3.3.0 through versions below 4.0.1 and fixes missing device-code validation on the
+OAuth device-flow server endpoint. Applications implementing that server flow must
+supply the new validator hook; SAPPHIRE Flow contains no such implementation.
+This dependency repair does not change provider selection or authorize activation.
+See [the upstream advisory](https://github.com/advisories/GHSA-3jp2-3mrg-2vxc) and
+[4.0.1 release notes](https://github.com/oauthlib/oauthlib/releases/tag/v4.0.1).
