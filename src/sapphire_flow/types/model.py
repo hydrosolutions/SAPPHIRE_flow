@@ -103,6 +103,7 @@ class GroupModelInputs:
     forecast_horizon_steps: int
     time_step: timedelta
     source_evidence: tuple[tuple[StationId, StationSourceEvidence], ...] = ()
+    forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
 
     def for_station(self, station_id: StationId) -> StationInputData:
         if station_id not in self.station_ids:

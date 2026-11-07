@@ -1,0 +1,12 @@
+{
+  "source_contract_revision": "ceff18d099b277d6e237c2cb81fe2068a85d06e5",
+  "producer_identity": "UNVERIFIED",
+  "issue_time": "2026-11-06T00:00:00Z",
+  "requested_start": "2026-10-07",
+  "hru_code": "nepal21_20261012",
+  "sha256": {
+    "precipitation": "d6ec09e51d9cec0e7a392d7e47a79c725deeb91764b4b4a427409ae2e1e15bb3",
+    "temperature": "9894d027780954b2539938fb065efeec8ed1a496e025de2db074daf694caeb9e"
+  },
+  "semantics": "P incremental START labels in metres; T snapshots in kelvin; source_meta has no member. Six-hour option selects fill cycles, not output cadence."
+}

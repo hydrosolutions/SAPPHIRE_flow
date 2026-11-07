@@ -237,7 +237,9 @@ def _patch_station_assembler(
         weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
         rating_inputs: object | None = None,
         provisional_ifs_tail_mode: object = None,
+        selected_weather: object | None = None,
     ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
+        assert selected_weather is None
         calls.append((station_id, nwp_source))
         return results[station_id]
 

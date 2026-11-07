@@ -518,3 +518,33 @@ class TestUpdateStationStatus:
         store = PgStationStore(db_connection)
         # Should not raise — missing station is silently ignored
         store.update_station_status(StationId(uuid.uuid4()), StationStatus.OPERATIONAL)
+
+
+class TestOperationalWeatherRole:
+    def test_role_scoped_accessors_keep_history_and_forecast_separate(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationStore(db_connection)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()), code="OP-WEATHER-001", network="dhm"
+        )
+        store.store_station(station)
+        bindings = [
+            StationWeatherSource(
+                station_id=station.id,
+                nwp_source=name,
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=role,
+            )
+            for name, role in (
+                ("ifs", WeatherSourceRole.FORECAST),
+                ("era5_land", WeatherSourceRole.REANALYSIS),
+                ("recap_ecmwf_operational", WeatherSourceRole.OPERATIONAL),
+            )
+        ]
+        for binding in bindings:
+            store.store_weather_source(binding)
+        assert store.fetch_forecast_binding(station.id) == bindings[0]
+        assert store.fetch_reanalysis_bindings(station.id) == [bindings[1]]
+        assert store.fetch_operational_binding(station.id) == bindings[2]

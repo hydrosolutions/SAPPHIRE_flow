@@ -15,9 +15,10 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import NwpCycleSource
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from sapphire_flow.protocols.stores import WeatherForecastStore
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
 
@@ -42,8 +43,28 @@ def assemble_scheduled_daily_weather(
     issue_time: UtcDatetime,
     now: UtcDatetime,
     max_age_hours: float,
+    selected_weather: Mapping[StationId, AssignmentWeatherInputs] | None = None,
 ) -> DailyWeatherAssembly:
     """Select one cached cycle before prediction; never combine assemblies."""
+    if selected_weather is not None:
+        from sapphire_flow.services.selected_weather_inputs import (
+            selected_group_weather_provenance,
+        )
+
+        oldest = ensure_utc(now - timedelta(hours=max_age_hours))
+        provenance = selected_group_weather_provenance(
+            selected_weather, issue_time=issue_time
+        )
+        reference = provenance.nwp_cycle_reference_time
+        if reference is not None and not oldest <= reference <= min(now, issue_time):
+            raise StoreError(
+                "selected daily weather exceeds the unchanged future age bound"
+            )
+        return DailyWeatherAssembly(
+            assembly=assemble(reference if reference is not None else issue_time),
+            source=provenance.nwp_cycle_source,
+            reference_time=reference,
+        )
     if not future_features:
         return DailyWeatherAssembly(
             assembly=assemble(cycle_time),

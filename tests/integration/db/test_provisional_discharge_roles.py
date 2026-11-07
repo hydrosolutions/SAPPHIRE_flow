@@ -234,7 +234,9 @@ class TestProvisionalDischargeRoleBoundary:
                     "rating_delivery_files",
                     "rating_delivery_curves",
                     "rating_derived_discharge",
+                    "operational_weather_cache",
                 }
+                assert not relation_grants["operational_weather_cache"]
                 assert all(
                     row["current"]
                     == (row["prior"] and row["relname"] not in table_grant_exclusions)

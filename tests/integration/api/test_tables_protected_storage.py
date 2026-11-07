@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 TABLES = (
     *PROVISIONAL_TABLES,
     "forecast_input_stations",
+    "operational_weather_cache",
     "bafu_unit_batch_admissions",
     "bafu_unit_batch_receipts",
     "bafu_unit_events",

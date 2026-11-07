@@ -308,6 +308,19 @@ class PgStationStore:
             )
         return matches[0]
 
+    def fetch_operational_binding(self, station_id: StationId) -> StationWeatherSource:
+        matches = [
+            source
+            for source in self.fetch_weather_sources(station_id)
+            if source.role is WeatherSourceRole.OPERATIONAL
+        ]
+        if len(matches) != 1:
+            raise ConfigurationError(
+                f"station {station_id} has {len(matches)} OPERATIONAL bindings, "
+                "expected exactly 1"
+            )
+        return matches[0]
+
     def fetch_reanalysis_bindings(
         self, station_id: StationId
     ) -> list[StationWeatherSource]:

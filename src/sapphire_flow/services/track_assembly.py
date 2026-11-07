@@ -44,6 +44,7 @@ from sapphire_flow.services.training_data import (
 from sapphire_flow.types.enums import (
     EnsembleMode,
     ForcingRoute,
+    FutureWeatherPolicy,
     NwpCycleSource,
     ObservationQcCoverage,
 )
@@ -58,6 +59,7 @@ from sapphire_flow.types.forcing_track import (
 from sapphire_flow.types.forecast import ForecastProvenance
 from sapphire_flow.types.forecast_evidence import StationSourceEvidence
 from sapphire_flow.types.model import StationInputData, StationModelInputs
+from sapphire_flow.types.operational_weather import FutureWeatherUse
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -71,6 +73,7 @@ if TYPE_CHECKING:
         StationStore,
         WeatherForecastStore,
     )
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forcing_track import (
         FeatureFetchHorizons,
@@ -187,6 +190,8 @@ def assemble_assignment_inputs(
     clock: Callable[[], UtcDatetime],
     static_naming_models: list[object] | None = None,
     expected_member_ids: frozenset[int] | None = None,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    selected_weather: AssignmentWeatherInputs | None = None,
 ) -> ReadyContext | MissingTrackContext | UnavailableTrackContext:
     """Assemble ONE assignment's own frame (D9).
 
@@ -227,6 +232,33 @@ def assemble_assignment_inputs(
     forecast_horizon_steps = reqs.forecast_horizon_steps
     cycle_source = NwpCycleSource.RUNOFF_ONLY
 
+    if selected_weather is not None:
+        if (
+            selected_weather.use.station_id != station_id
+            or selected_weather.use.issue_time != issue_time
+        ):
+            raise ConfigurationError(
+                "selected weather does not belong to this assignment"
+            )
+        weather_policy = FutureWeatherPolicy.RECAP_COMPLETE_DAILY
+        if isinstance(selected_weather.use.future, FutureWeatherUse):
+            if not isinstance(projection, ForcingRequired):
+                raise ConfigurationError(
+                    "trackless assignment cannot consume future weather"
+                )
+            actual_cycle = selected_weather.use.future.receipt.cycle_time
+            track_outcome = StationTrackAvailable(
+                cycle=actual_cycle,
+                records=list(selected_weather.future_records),
+                provenance=NwpCycleSource.PRIMARY
+                if actual_cycle == issue_time
+                else NwpCycleSource.FALLBACK,
+            )
+        elif isinstance(projection, ForcingRequired):
+            raise ConfigurationError(
+                "future-forced assignment has no verified weather use"
+            )
+
     match projection, track_outcome:
         case NoForcingRequired(), None:
             pass
@@ -252,6 +284,7 @@ def assemble_assignment_inputs(
                 future_dynamic_features=frozenset(horizons),
                 ensemble_mode=reqs.ensemble_mode,
                 feature_horizons=feature_horizons,
+                weather_policy=weather_policy,
             )
             nwp_age_hours = (now - cycle).total_seconds() / 3600.0
             if nwp_age_hours < 0:
@@ -368,7 +401,9 @@ def assemble_assignment_inputs(
     past_dynamic_features = list(reqs.past_dynamic_features)
     raw_forcing: list[RawHistoricalForcing] = []
     tail_records: list[WeatherForecastRecord] = []
-    if past_dynamic_features:
+    if selected_weather is not None:
+        past_dynamic = selected_weather.past_dynamic
+    elif past_dynamic_features:
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
             station_configs=reanalysis_bindings,
@@ -414,6 +449,10 @@ def assemble_assignment_inputs(
     else:
         past_dynamic = pl.DataFrame()
 
+    if selected_weather is not None:
+        future_dynamic = selected_weather.future_dynamic
+        station_records = list(selected_weather.future_records)
+
     static_df: pl.DataFrame | None = None
     station_config = station_store.fetch_station(station_id)
     if station_config is not None and station_config.basin_id is not None:
@@ -453,6 +492,7 @@ def assemble_assignment_inputs(
             historical_forcing=tuple(raw_forcing),
             future_weather=tuple(station_records),
             tail_weather=tuple(tail_records),
+            weather_use=None if selected_weather is None else selected_weather.use,
         ),
     )
     provenance = ForecastProvenance(

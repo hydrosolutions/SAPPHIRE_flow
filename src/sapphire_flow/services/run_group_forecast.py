@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+from sapphire_flow.config.operational_weather import OperationalPastWeatherRoute
 from sapphire_flow.exceptions import (
     ConfigurationError,
     GroupForecastError,
@@ -23,6 +25,7 @@ from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import (
     assess_input_quality,
     past_forcing_flags,
+    selected_weather_quality_flags,
 )
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
@@ -37,6 +40,7 @@ from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    ForcingRoute,
     ForecastDataUse,
     ForecastStatus,
     FutureWeatherPolicy,
@@ -60,7 +64,7 @@ from sapphire_flow.types.rejected_forecast import (
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import timedelta
     from uuid import UUID
 
@@ -79,6 +83,7 @@ if TYPE_CHECKING:
     from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
     from sapphire_flow.services.operational_inputs import OperationalInputMetadata
     from sapphire_flow.services.rating_inputs import NativeRatingInputs
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         ClimBaseline,
@@ -299,8 +304,26 @@ def _future_adequate(
     model_id: ModelId,
     group: StationGroup,
     station_id: StationId,
+    *,
+    forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
+    time_step: timedelta | None = None,
 ) -> bool:
     requirements = model.data_requirements
+    if forcing_route is ForcingRoute.PER_TRACK and isinstance(
+        model, ForecastInterfaceAdapter
+    ):
+        if time_step is None:
+            raise ConfigurationError("per-track group coverage requires its time step")
+        modes = model.future_feature_modes(time_step)
+        return all(
+            assess_future_coverage(
+                future,
+                required_features=frozenset({str(feature)}),
+                required_steps=horizon.value,
+                ensemble_mode=modes[feature],
+            ).adequate
+            for feature, horizon in model.future_feature_horizons(time_step).items()
+        )
     if not requirements.future_dynamic_features:
         return True
     required_steps = resolve_required_steps(
@@ -369,6 +392,8 @@ def assemble_group_operational_inputs(
     rating_inputs: NativeRatingInputs | None = None,
     provisional_ifs_tail_mode_by_station: dict[StationId, ProvisionalIfsTailMode]
     | None = None,
+    selected_weather_by_station: Mapping[StationId, AssignmentWeatherInputs]
+    | None = None,
 ) -> tuple[GroupModelInputs, dict[StationId, OperationalInputMetadata]] | None:
     assembly = assemble_group_operational_inputs_outcome(
         group=group,
@@ -389,6 +414,7 @@ def assemble_group_operational_inputs(
         weather_policy=weather_policy,
         rating_inputs=rating_inputs,
         provisional_ifs_tail_mode_by_station=provisional_ifs_tail_mode_by_station,
+        selected_weather_by_station=selected_weather_by_station,
     )
     if assembly.inputs is None:
         return None
@@ -416,6 +442,8 @@ def assemble_group_operational_inputs_outcome(
     rating_inputs: NativeRatingInputs | None = None,
     provisional_ifs_tail_mode_by_station: dict[StationId, ProvisionalIfsTailMode]
     | None = None,
+    selected_weather_by_station: Mapping[StationId, AssignmentWeatherInputs]
+    | None = None,
 ) -> GroupInputAssembly:
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable: list[GroupMemberInputIssue] = []
@@ -434,6 +462,12 @@ def assemble_group_operational_inputs_outcome(
         )
 
     for sid in expected:
+        if (
+            selected_weather_by_station is not None
+            and sid not in selected_weather_by_station
+        ):
+            skip(sid, GroupMemberInputReason.INPUTS_UNAVAILABLE)
+            continue
         if sid not in nwp_source_by_station:
             skip(sid, GroupMemberInputReason.MISSING_FORECAST_BINDING)
             continue
@@ -456,6 +490,9 @@ def assemble_group_operational_inputs_outcome(
                 time_step=time_step,
                 weather_policy=weather_policy,
                 rating_inputs=rating_inputs,
+                selected_weather=None
+                if selected_weather_by_station is None
+                else selected_weather_by_station[sid],
                 provisional_ifs_tail_mode=(
                     provisional_ifs_tail_mode_by_station or {}
                 ).get(sid, ProvisionalIfsTailMode.DISABLED),
@@ -492,7 +529,7 @@ def assemble_group_operational_inputs_outcome(
         station_input = replace(
             station_input, data=replace(station_input.data, static=projected)
         )
-        if not _future_adequate(
+        if selected_weather_by_station is None and not _future_adequate(
             station_input.data.future_dynamic, model, model_id, group, sid
         ):
             skip(sid, GroupMemberInputReason.INSUFFICIENT_FUTURE)
@@ -574,6 +611,7 @@ def assemble_group_operational_inputs_outcome(
         issue_time=first.issue_time,
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
+        forcing_route=first.forcing_route,
         source_evidence=tuple(
             (inp.station_id, inp.source_evidence)
             for inp in station_inputs
@@ -832,8 +870,16 @@ def _build_station_result(
             error_type=type(exc).__name__,
         )
         observation_flags = []
-    if forcing_flags or observation_flags:
-        input_quality_flags = (*input_quality_flags, *forcing_flags, *observation_flags)
+    weather_flags = selected_weather_quality_flags(
+        dict(group_inputs.source_evidence).get(station_id)
+    )
+    if forcing_flags or observation_flags or weather_flags:
+        input_quality_flags = (
+            *input_quality_flags,
+            *forcing_flags,
+            *observation_flags,
+            *weather_flags,
+        )
         input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
@@ -863,6 +909,12 @@ def _build_station_result(
                 qc_flags=tuple(flags),
                 input_quality=input_quality,
                 input_quality_flags=input_quality_flags,
+                weather_evidence_version=(
+                    1
+                    if config.operational_weather.route
+                    is OperationalPastWeatherRoute.RECAP_COMBINED
+                    else None
+                ),
                 evidence=evidence,
                 data_use=data_use,
                 input_lineage=lineage,
@@ -964,6 +1016,8 @@ def run_group_forecast(
             assignment.model_id,
             group,
             sid,
+            forcing_route=group_inputs.forcing_route,
+            time_step=group_inputs.time_step,
         ):
             serviceable_ids.append(sid)
         else:
@@ -1128,6 +1182,22 @@ def run_group_forecast(
         baselines_by_station=baselines_by_station,
         water_level_datums_masl=water_level_datums_masl or {},
     )
+
+    from sapphire_flow.services.selected_weather_evidence import (
+        validate_selected_capture,
+    )
+
+    if config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED:
+        selected_sources = dict(group_inputs.source_evidence)
+        validate_selected_capture(
+            evidence,
+            sources={
+                sid: selected_sources.get(sid) for sid in group_inputs.station_ids
+            },
+            model_id=assignment.model_id,
+            issue_time=group_inputs.issue_time,
+            max_bytes=config.operational_weather.max_evidence_bytes,
+        )
 
     try:
         artifact = model.deserialize_artifact(artifact_bytes)

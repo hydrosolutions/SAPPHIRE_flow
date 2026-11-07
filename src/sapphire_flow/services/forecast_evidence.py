@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from functools import lru_cache
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 import polars as pl
@@ -23,15 +23,23 @@ from pydantic import BaseModel
 
 from sapphire_flow import __version__
 from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+from sapphire_flow.config.operational_weather import (
+    MAX_SELECTED_WEATHER_EVIDENCE_BYTES,
+    OperationalPastWeatherRoute,
+)
+from sapphire_flow.exceptions import ConfigurationError, WeatherEvidenceCaptureError
 from sapphire_flow.services.ensemble_fanout import prediction_member_inputs
 from sapphire_flow.types.forecast_evidence import (
     EvidenceStatus,
     ForecastEvidence,
+    StationSourceEvidence,
     incomplete_evidence,
 )
+from sapphire_flow.types.operational_weather import FutureWeatherUse, WeatherUse
 
 if TYPE_CHECKING:
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         ClimBaseline,
         ForecastQcRuleSet,
@@ -61,7 +69,13 @@ def _plain(value: Any) -> Any:
         return _plain(value.model_dump(mode="python"))
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: _plain(getattr(value, field.name)) for field in fields(value)
+            field.name: _plain(getattr(value, field.name))
+            for field in fields(value)
+            if not (
+                isinstance(value, StationSourceEvidence)
+                and field.name == "weather_use"
+                and value.weather_use is None
+            )
         }
     if isinstance(value, Enum):
         return value.value
@@ -109,11 +123,35 @@ def _evidence(
     *,
     artifact_bytes: bytes | None,
     missing_reason: str | None = None,
+    weather_evidence_version: Literal[1] | None = None,
+    max_snapshot_bytes: int | None = None,
 ) -> ForecastEvidence:
-    raw = json.dumps(
-        _plain(payload), sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    compressed = zlib.compress(raw, level=6)
+    if max_snapshot_bytes is None:
+        raw = json.dumps(
+            _plain(payload), sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        compressed = zlib.compress(raw, level=6)
+    else:
+        encoder = json.JSONEncoder(
+            sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=True
+        )
+        compressor = zlib.compressobj(level=6)
+        chunks: list[bytes] = []
+        pending = bytearray()
+        size = 0
+        for text in encoder.iterencode(_plain(payload)):
+            size += len(text)
+            if size > max_snapshot_bytes:
+                raise ConfigurationError(
+                    "selected weather evidence exceeds snapshot limit"
+                )
+            pending.extend(text.encode("ascii"))
+            if len(pending) >= 64 * 1024:
+                chunks.append(compressor.compress(pending))
+                pending.clear()
+        chunks.append(compressor.compress(pending))
+        chunks.append(compressor.flush())
+        compressed = b"".join(chunks)
     artifact_hash = (
         hashlib.sha256(artifact_bytes).hexdigest()
         if artifact_bytes is not None
@@ -130,6 +168,13 @@ def _evidence(
         "python_version": platform.python_version(),
         "dependency_versions": _dependency_versions(),
     }
+    if weather_evidence_version is not None:
+        manifest["weather_evidence_version"] = weather_evidence_version
+        manifest["weather_station_ids"] = (
+            [payload["station_id"]]
+            if payload["kind"] in ("station", "combined")
+            else sorted(cast("list[str]", payload["station_ids"]))
+        )
     missing = [missing_reason] if missing_reason else []
     image_digest = manifest["runtime_image_digest"]
     if not image_digest:
@@ -150,7 +195,34 @@ def _evidence(
         artifact=artifact_bytes,
         artifact_sha256=artifact_hash,
         reason=combined_reason,
+        weather_evidence_version=weather_evidence_version,
     )
+
+
+def _require_selected_source(
+    source: StationSourceEvidence | None, station_id: StationId, issue_time: UtcDatetime
+) -> None:
+    if source is None or not isinstance(source.weather_use, WeatherUse):
+        raise WeatherEvidenceCaptureError(
+            "selected forecast requires complete as-used weather evidence"
+        )
+    use = source.weather_use
+    if use.station_id != station_id or use.issue_time != issue_time:
+        raise WeatherEvidenceCaptureError("selected forecast weather identity mismatch")
+    if source.historical_forcing or source.tail_weather:
+        raise WeatherEvidenceCaptureError(
+            "selected weather cannot claim historical or tail-fill lineage"
+        )
+    ids = tuple(row.id for row in source.future_weather)
+    if isinstance(use.future, FutureWeatherUse):
+        if ids != use.future.consumed_record_ids:
+            raise WeatherEvidenceCaptureError(
+                "selected future evidence does not match consumed archive records"
+            )
+    elif ids:
+        raise WeatherEvidenceCaptureError(
+            "unused future weather cannot carry archive records"
+        )
 
 
 def capture_station_evidence(
@@ -168,6 +240,13 @@ def capture_station_evidence(
     water_level_datum_masl: float | None,
     fanout_features: frozenset[str] | None = None,
 ) -> ForecastEvidence:
+    selected = (
+        config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED
+    )
+    if selected:
+        _require_selected_source(
+            inputs.source_evidence, inputs.station_id, inputs.issue_time
+        )
     try:
         payload: dict[str, object] = {
             "schema_version": 1,
@@ -244,6 +323,10 @@ def capture_station_evidence(
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,
+            weather_evidence_version=1 if selected else None,
+            max_snapshot_bytes=config.operational_weather.max_evidence_bytes
+            if selected
+            else None,
             missing_reason=(
                 "source_provenance_unavailable"
                 if inputs.source_evidence is None
@@ -251,6 +334,10 @@ def capture_station_evidence(
             ),
         )
     except Exception as exc:
+        if selected:
+            raise WeatherEvidenceCaptureError(
+                "selected forecast evidence capture failed"
+            ) from exc
         log.warning("forecast_evidence.capture_failed", error=str(exc))
         return incomplete_evidence(f"capture_failed:{type(exc).__name__}")
 
@@ -268,6 +355,19 @@ def capture_group_evidence(
     baselines_by_station: dict[StationId, list[ClimBaseline]],
     water_level_datums_masl: dict[StationId, float | None],
 ) -> ForecastEvidence:
+    selected = (
+        config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED
+    )
+    if selected:
+        sources = dict(inputs.source_evidence)
+        if set(sources) != set(inputs.station_ids) or len(sources) != len(
+            inputs.source_evidence
+        ):
+            raise WeatherEvidenceCaptureError(
+                "selected group requires weather evidence for every member"
+            )
+        for station_id in inputs.station_ids:
+            _require_selected_source(sources[station_id], station_id, inputs.issue_time)
     try:
         payload: dict[str, object] = {
             "schema_version": 1,
@@ -320,9 +420,17 @@ def capture_group_evidence(
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,
+            weather_evidence_version=1 if selected else None,
+            max_snapshot_bytes=config.operational_weather.max_evidence_bytes
+            if selected
+            else None,
             missing_reason=None if has_all_sources else "source_provenance_unavailable",
         )
     except Exception as exc:
+        if selected:
+            raise WeatherEvidenceCaptureError(
+                "selected group evidence capture failed"
+            ) from exc
         log.warning("forecast_evidence.capture_failed", error=str(exc))
         return incomplete_evidence(f"capture_failed:{type(exc).__name__}")
 
@@ -339,6 +447,48 @@ def capture_combined_evidence(
     water_level_datum_masl: float | None,
     bma_sampling_counts: dict[ModelId, int] | None = None,
 ) -> ForecastEvidence:
+    selected = any(fc.weather_evidence_version == 1 for fc in contributors)
+    derived = None
+    if selected:
+        from sapphire_flow.services.selected_weather_evidence import (
+            restore_selected_weather,
+        )
+        from sapphire_flow.types.operational_weather import (
+            ContributingWeatherUse,
+            DerivedWeatherUse,
+        )
+
+        facts: list[ContributingWeatherUse] = []
+        for fc in contributors:
+            use = None
+            if fc.weather_evidence_version == 1:
+                if fc.evidence is None:
+                    raise ConfigurationError("selected contributor evidence missing")
+                use = restore_selected_weather(
+                    fc.evidence,
+                    model_id=fc.model_id,
+                    issue_time=fc.issued_at,
+                ).get(fc.station_id)
+                if not isinstance(use, WeatherUse):
+                    raise ConfigurationError(
+                        "selected contributor weather fact unavailable"
+                    )
+            facts.append(
+                ContributingWeatherUse(
+                    forecast_id=fc.id,
+                    evidence_sha256=fc.evidence.snapshot_sha256
+                    if fc.evidence
+                    else None,
+                    weather_use=use,
+                )
+            )
+        if len({(fc.station_id, fc.issued_at) for fc in contributors}) != 1:
+            raise ConfigurationError("combined weather contributor scope mismatch")
+        derived = DerivedWeatherUse(
+            station_id=contributors[0].station_id,
+            issue_time=contributors[0].issued_at,
+            contributors=tuple(facts),
+        )
     try:
         payload: dict[str, object] = {
             "schema_version": 1,
@@ -382,6 +532,12 @@ def capture_combined_evidence(
                 else None
             ),
         }
+        if derived is not None:
+            payload.update(
+                station_id=str(derived.station_id),
+                issue_time=derived.issue_time,
+                weather_use=derived,
+            )
         missing = any(
             fc.evidence is None or fc.evidence.status is EvidenceStatus.INCOMPLETE
             for fc in contributors
@@ -390,8 +546,16 @@ def capture_combined_evidence(
             payload,
             artifact_bytes=None,
             missing_reason="contributor_evidence_incomplete" if missing else None,
+            weather_evidence_version=1 if selected else None,
+            max_snapshot_bytes=MAX_SELECTED_WEATHER_EVIDENCE_BYTES
+            if selected
+            else None,
         )
     except Exception as exc:
+        if selected:
+            raise ConfigurationError(
+                "selected combined weather capture failed"
+            ) from exc
         log.warning("forecast_evidence.capture_failed", error=str(exc))
         return incomplete_evidence(f"capture_failed:{type(exc).__name__}")
 

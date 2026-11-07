@@ -2462,3 +2462,25 @@ shard, workflow, private-verification, and capacity-script contract tests.
 ### Swiss observation-history boundary
 
 `api/routes/api_swiss_observation_history.py`, `api/swiss_observation_history_schemas.py`, `services/observation_history.py` and `types/observation_history.py` own the separate default-off mixed-resolution read. Follow the [API contract](spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build). Changes must keep protocol/store/fake parity, auth-first query parsing, exact scope/trust/exclusion-before-cap, one observation snapshot, timeout rollback, no-store errors/CORS, map contract drift tests and full-precision exact means aligned. Preserve overview payload/defaults and its independent cost gates. Dense synthetic route qualification is in `tests/integration/api/test_observation_history_performance.py` (explicit slow tier); this is not deployed admission. Nepal parity is a named follow-up in the plan index, not enabled here.
+
+
+### Selected operational-weather route
+
+For the explicit `recap_combined` route, trace configuration and provider decoding
+through `operational_weather_prepare.py`/`operational_weather_refresh.py`, then
+`operational_weather_cache.py`, `operational_weather_codec.py` and
+`operational_weather_proof.py`. Native station/per-track/group/scheduled dispatch
+consumes terminal views through `operational_weather_projection.py` and
+`selected_weather_inputs.py`; pending, fatal or unattempted consumed legs block reuse.
+
+Capture/store/API touchpoints include `selected_weather_evidence.py`,
+`forecast_evidence.py`, `forecast_store.py`, `api/weather_evidence.py`,
+`api/map_contract.py`, migrations 0081/0082 and `docker/bootstrap-roles.sql`. Preserve
+pre-predict validation, immutable parent markers, authoritative retry hydration,
+station-only summaries and the existing authorization/publication boundaries.
+
+Verification includes native selected station/group/FI/default-off tests, cache
+CAS/archive-proof tests, combined UTC/Kathmandu restoration, committed scheduled
+runs, actual worker/API-role checks, native/legacy API isolation and the committed
+map-contract/version guard. Focused checks do not replace the final offline suite.
+See [configured operational daily weather](spec/types-and-protocols.md#configured-operational-daily-weather).

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from sapphire_flow.types.enums import ForecastDataUse, InputQualityLevel, QcStatus
 from sapphire_flow.types.forecast_lineage import ForecastInputLineage
@@ -80,10 +80,16 @@ class OperationalForecast:
     Set at forecast-storage time by Task 4; Task 2 only plumbs the column.
     """
     evidence: ForecastEvidence | None = None
+    weather_evidence_version: Literal[1] | None = None
     data_use: ForecastDataUse = ForecastDataUse.STANDARD
     input_lineage: ForecastInputLineage | None = None
 
     def __post_init__(self) -> None:
+        if self.weather_evidence_version is not None and (
+            type(self.weather_evidence_version) is not int
+            or self.weather_evidence_version != 1
+        ):
+            raise ValueError("unsupported weather evidence version")
         if not isinstance(cast("object", self.data_use), ForecastDataUse):
             raise ValueError("forecast data use must be typed")
         if self.data_use is ForecastDataUse.PROVISIONAL_RATING:

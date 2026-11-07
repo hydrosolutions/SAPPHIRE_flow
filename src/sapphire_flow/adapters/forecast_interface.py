@@ -1051,7 +1051,7 @@ class ForecastInterfaceAdapter:
             # not be evaluated over the whole (possibly longer, D5/D26)
             # frame a sibling feature/assignment needed. `future_steps_by_name`
             # is empty on every non-PER_TRACK route (D10), so the LEGACY
-            # superset route and the GROUP path are byte-for-byte unchanged.
+            # superset route and unselected GROUP paths remain unchanged.
             if name in future_steps_by_name:
                 frame = self._slice_to_future_steps(
                     frame=frame, name=name, future_steps=future_steps_by_name[name]
@@ -1146,6 +1146,8 @@ class ForecastInterfaceAdapter:
                     past_targets=inputs.for_station(station_id).past_targets,
                     past_dynamic=inputs.for_station(station_id).past_dynamic,
                     future_dynamic=inputs.for_station(station_id).future_dynamic,
+                    time_step=inputs.time_step,
+                    forcing_route=inputs.forcing_route,
                 )
             )
             return self._model_inputs_from_group_data(
@@ -1217,6 +1219,8 @@ class ForecastInterfaceAdapter:
                 past_targets=data.past_targets,
                 past_dynamic=data.past_dynamic,
                 future_dynamic=data.future_dynamic,
+                time_step=inputs.time_step,
+                forcing_route=inputs.forcing_route,
             )
             if over_tolerance:
                 log.warning(
@@ -1424,6 +1428,9 @@ class ForecastInterfaceAdapter:
                 self._station_code(station_id): self._station_inputs_from_station_data(
                     data=data.for_station(station_id),
                     time_step=data.time_step,
+                    forcing_route=data.forcing_route
+                    if isinstance(data, GroupModelInputs)
+                    else ForcingRoute.LEGACY_SUPERSET,
                 )
                 for station_id in selected_station_ids
             }

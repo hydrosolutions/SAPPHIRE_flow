@@ -13,6 +13,9 @@ from sapphire_flow.config.daily_evaluation import DailyEvaluationConfig  # noqa:
 from sapphire_flow.config.evaluation_forecasts import (
     EvaluationForecastsConfig,  # noqa: TC001
 )
+from sapphire_flow.config.operational_weather import (
+    OperationalWeatherConfig,  # noqa: TC001
+)
 from sapphire_flow.config.provisional_rating import (
     ProvisionalRatingConfig,  # noqa: TC001
 )
@@ -92,6 +95,9 @@ class InputQualityConfig(BaseModel):
 
 
 class DeploymentConfig(BaseModel):
+    operational_weather: OperationalWeatherConfig = Field(
+        default_factory=OperationalWeatherConfig
+    )
     swiss_overview: SwissOverviewConfig | None = None
     swiss_observation_history: bool = False
     provisional_ratings: tuple[ProvisionalRatingConfig, ...] = ()

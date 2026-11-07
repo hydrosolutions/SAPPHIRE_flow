@@ -637,3 +637,14 @@ and an explicit bounded full-cohort read. The fake computes shared context once
 per read or batch comparison, never caches it across calls, and hashes each
 target's prior QC state separately. Hold/evidence/input mutations must invalidate
 old tokens, including mutations to excluded neighbours.
+
+
+### Selected operational-weather service-user exception
+
+The service-user inventory includes `operational_weather_cache`: worker
+SELECT/INSERT/UPDATE, no worker DELETE/TRUNCATE, and no API/PUBLIC privileges.
+The immutable nullable `forecasts.weather_evidence_version` is included in the
+explicit safe parent-column SELECT grants; this does not grant raw input-lineage
+access or permit marker mutation. The authoritative SQL is
+`docker/bootstrap-roles.sql` and migrations 0081/0082; see the
+[security boundary](standards/security.md#selected-operational-weather-storage-boundary).

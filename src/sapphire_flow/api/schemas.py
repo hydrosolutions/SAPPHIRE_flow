@@ -5,6 +5,8 @@ from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
+from sapphire_flow.api.weather_evidence import WeatherUseResponse  # noqa: TC001
+
 # NOT moved under TYPE_CHECKING (would trip ruff TC001): these are `Literal`
 # type aliases, not classes — pydantic resolves them at class-body evaluation
 # time to build each model's schema, the same reason forecast_lab.py keeps
@@ -172,6 +174,7 @@ class EnsembleResponse(BaseModel):
 
 
 class ForecastDetail(ForecastSummary):
+    weather_use: WeatherUseResponse | None = None
     model_artifact_id: str | None = None
     nwp_cycle_reference_time: datetime | None = None
     version: int

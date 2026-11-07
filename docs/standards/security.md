@@ -2227,3 +2227,16 @@ authority and documents activation and rollback order.
 ### Swiss observation-history disabled read
 
 The separate default-off reviewer/admin bearer route `/api/v1/swiss/observation-history` uses the same pinned roster and evaluation tenant authority as overview. Admin is not exempt from roster/trusted-unit/protected-delivery exclusions. Auth precedes strict query parsing. Scope, finite QC-passed measured discharge and current holds/exclusions precede counts, cap decisions and response metadata; no audit fallback is allowed. All responses and consumer-origin GET-only preflights are no-store; human/review POST CORS is not extended. Bound/timeout failures return generic 503; only eligible bounded diagnostics reach structured server logs. Feature admission is held pending cost, independent review and browser qualification. See the [wire and config contract](../spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build).
+
+
+### Selected operational-weather storage boundary
+
+`operational_weather_cache` permits `sapphire_worker` SELECT/INSERT/UPDATE only.
+Neither runtime role may DELETE/TRUNCATE it; `sapphire_api` and PUBLIC receive no
+cache privileges. Generic table browsing excludes the cache before COUNT/read.
+The forecast-parent `weather_evidence_version` is a safe readable discriminator,
+not raw lineage: NULL remains legacy, 1 requires selected immutable evidence, and
+the database trigger refuses changing either value on an existing parent. Existing
+authentication, purpose, station and publication checks still precede weather reads.
+See the configured operational daily weather section of
+[`types-and-protocols.md`](../spec/types-and-protocols.md) and migrations 0081/0082.

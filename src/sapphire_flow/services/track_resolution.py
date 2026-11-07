@@ -27,7 +27,12 @@ from sapphire_flow.preprocessing.converters import (
     point_forecast_to_records,
 )
 from sapphire_flow.services.operational_inputs import reduced_daily_step_times
+from sapphire_flow.services.operational_weather_proof import (
+    WeatherProofError,
+    prove_future_receipt,
+)
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import FutureWeatherPolicy
 from sapphire_flow.types.forcing_track import (
     RawFetchStatus,
     StationTrackAvailable,
@@ -41,7 +46,7 @@ from sapphire_flow.types.weather import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from uuid import UUID
 
     from sapphire_flow.protocols.stores import WeatherForecastStore
@@ -49,6 +54,10 @@ if TYPE_CHECKING:
     from sapphire_flow.types.enums import NwpCycleSource
     from sapphire_flow.types.forcing_track import RawFetchOutcome, ResolvedTrackRequest
     from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.operational_weather import (
+        FutureWeatherReceipt,
+        FutureWeatherScope,
+    )
     from sapphire_flow.types.weather import WeatherForecastRecord, WeatherForecastResult
 
 log = structlog.get_logger(__name__)
@@ -89,6 +98,7 @@ def _station_complete(
     track_request: ResolvedTrackRequest,
     expected_member_ids: frozenset[int],
     issue_time: UtcDatetime,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> bool:
     """D8.1: per-station raw completeness. For every feature in the track,
     this station's series must reach ``fetch_horizons[f]`` steps (counted in
@@ -121,6 +131,36 @@ def _station_complete(
     """
     for feature, horizon in track_request.fetch_horizons.items():
         feature_records = [r for r in records if r.parameter == feature]
+        if weather_policy is FutureWeatherPolicy.RECAP_COMPLETE_DAILY:
+            from sapphire_flow.services.recap_daily_weather import (
+                recap_complete_daily_records,
+            )
+
+            if (
+                track_request.key.time_step != timedelta(days=1)
+                or any(
+                    (
+                        issue_time.hour,
+                        issue_time.minute,
+                        issue_time.second,
+                        issue_time.microsecond,
+                    )
+                )
+                or any(record.member_id is None for record in feature_records)
+                or frozenset(
+                    record.member_id
+                    for record in feature_records
+                    if record.member_id is not None
+                )
+                != expected_member_ids
+            ):
+                return False
+            feature_records = recap_complete_daily_records(
+                feature_records,
+                issue_time=issue_time,
+                feature_horizons={str(feature): horizon.value},
+                ensemble_mode=track_request.key.ensemble_mode,
+            )
         times_by_key = reduced_daily_step_times(
             feature_records,
             time_step=track_request.key.time_step,
@@ -182,6 +222,8 @@ def resolve_candidate(
     max_cycle_age_hours: float,
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    earliest_cycle: UtcDatetime | None = None,
 ) -> AcceptedCandidate | None:
     """Pure fetch/validate half — NO store I/O (D7). Walks back from the
     cadence-floored ``nominal_now``, calling ``fetch_candidate`` per
@@ -218,6 +260,8 @@ def resolve_candidate(
     steps = int(max_cycle_age_hours // cycle_cadence_hours) + 1
 
     for _ in range(steps):
+        if earliest_cycle is not None and candidate_cycle < earliest_cycle:
+            break
         try:
             outcome = fetch_candidate(candidate_cycle)
         except RecapTransientError as exc:
@@ -244,6 +288,7 @@ def resolve_candidate(
                     track_request=track_request,
                     expected_member_ids=expected_member_ids,
                     issue_time=issue_time,
+                    weather_policy=weather_policy,
                 ):
                     complete[station_id] = records
                 else:
@@ -299,6 +344,8 @@ def commit_track(
     weather_forecast_store: WeatherForecastStore,
     nwp_source: str,
     track_features: frozenset[str],
+    receipt_scopes: Mapping[StationId, tuple[FutureWeatherScope, ...]] | None = None,
+    receipt_validated_at: UtcDatetime | None = None,
 ) -> TrackFetchResult:
     """Serial convergence half (D7): persist ONLY complete stations' rows,
     read them back, and map final per-station availability (D8.4).
@@ -316,6 +363,17 @@ def commit_track(
     covered as available. The readback is also filtered to
     ``track_features`` for the same reason: rows for a feature this track
     never requested must not leak into its assembled frame."""
+    if receipt_scopes is not None and (
+        receipt_validated_at is None
+        or any(
+            not receipt_scopes.get(station_id)
+            for station_id in accepted.complete_station_records
+        )
+    ):
+        raise WeatherProofError(
+            "selected track requires explicit proof scopes and time"
+        )
+    receipts: list[FutureWeatherReceipt] = []
     all_records = [
         record
         for records in accepted.complete_station_records.values()
@@ -346,6 +404,18 @@ def commit_track(
                 reason=StationUnavailableReason.NO_DATA_AT_CYCLE
             )
             continue
+        if receipt_scopes is not None:
+            assert receipt_validated_at is not None
+            receipts.extend(
+                prove_future_receipt(
+                    scope=scope,
+                    cycle_time=accepted.resolved_cycle,
+                    validated_at=receipt_validated_at,
+                    fetched=accepted.complete_station_records[station_id],
+                    readback=readback,
+                )
+                for scope in receipt_scopes[station_id]
+            )
         outcomes[station_id] = StationTrackAvailable(
             cycle=accepted.resolved_cycle,
             records=readback,
@@ -353,5 +423,7 @@ def commit_track(
         )
 
     return TrackFetchResult(
-        resolved_cycle=accepted.resolved_cycle, station_outcomes=outcomes
+        resolved_cycle=accepted.resolved_cycle,
+        station_outcomes=outcomes,
+        weather_receipts=tuple(receipts),
     )

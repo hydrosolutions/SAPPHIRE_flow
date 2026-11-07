@@ -31,6 +31,7 @@ from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
 
 if TYPE_CHECKING:
+    from sapphire_flow.protocols.stores import ForecastStore
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import OperationalForecast
 
@@ -119,6 +120,23 @@ def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
     )
 
 
+def _detail_with_weather(
+    forecast: OperationalForecast, store: ForecastStore
+) -> ForecastDetail:
+    from sapphire_flow.api.weather_evidence import read_weather_summary
+
+    summary = read_weather_summary(
+        version=forecast.weather_evidence_version,
+        forecast_id=forecast.id,
+        station_id=forecast.station_id,
+        model_id=forecast.model_id,
+        issue_time=forecast.issued_at,
+        data_use=forecast.data_use,
+        store=store,
+    )
+    return to_forecast_detail(forecast).model_copy(update={"weather_use": summary})
+
+
 @router.get("/forecasts/{forecast_id}", response_model=ForecastDetail)
 def get_forecast(
     forecast_id: str,
@@ -138,10 +156,10 @@ def get_forecast(
     if forecast is None or not principal.station_in_scope(forecast.station_id):
         raise HTTPException(status_code=404, detail="Forecast not found")
     if not gate.active_tenant_ids:
-        return to_forecast_detail(forecast)
+        return _detail_with_weather(forecast, forecast_store)
     tenant_id = station_tenant_id(stores, forecast.station_id)
     if not gate.active(tenant_id):
-        return to_forecast_detail(forecast)
+        return _detail_with_weather(forecast, forecast_store)
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
     metadata, decisions = publication_metadata(pub, forecast, tenant_id)
@@ -158,4 +176,4 @@ def get_forecast(
             withdrawn_at=last.created_at,
         )
         return JSONResponse(status_code=410, content=tombstone.model_dump(mode="json"))
-    return to_forecast_detail(forecast).model_copy(update=metadata)
+    return _detail_with_weather(forecast, forecast_store).model_copy(update=metadata)

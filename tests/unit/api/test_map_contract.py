@@ -368,3 +368,37 @@ class TestSwissCmalSeriesContract:
         ]
         for variant in ("CmalWithheld", "HeadlineUnavailable"):
             assert "series" not in schemas[variant]["properties"]
+
+
+class TestSelectedWeatherContract:
+    def test_existing_station_weather_binding_component_keeps_its_identity(
+        self,
+    ) -> None:
+        from sapphire_flow.api.schemas import WeatherSourceResponse
+
+        schemas = _load_committed()["components"]["schemas"]
+        assert (
+            schemas["WeatherSourceResponse"]
+            == WeatherSourceResponse.model_json_schema()
+        )
+        assert schemas["StationDetail"]["properties"]["weather_sources"]["items"] == {
+            "$ref": "#/components/schemas/WeatherSourceResponse"
+        }
+
+    def test_weather_source_runs_use_a_distinct_component(self) -> None:
+        schemas = _load_committed()["components"]["schemas"]
+        assert schemas["WeatherLegUseResponse"]["properties"]["sources"]["items"] == {
+            "$ref": "#/components/schemas/WeatherSourceRunResponse"
+        }
+        assert set(schemas["WeatherSourceRunResponse"]["properties"]) == {
+            "source",
+            "source_run",
+        }
+
+    def test_forecast_weather_fact_is_optional_and_nullable(self) -> None:
+        schema = _load_committed()["components"]["schemas"]["ForecastDetail"]
+        assert "weather_use" not in schema["required"]
+        assert schema["properties"]["weather_use"]["anyOf"] == [
+            {"$ref": "#/components/schemas/WeatherUseResponse"},
+            {"type": "null"},
+        ]

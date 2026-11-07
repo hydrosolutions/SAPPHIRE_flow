@@ -89,7 +89,19 @@ def _combined_contributor_gap(
     if evidence.snapshot is None:
         return "contributor_snapshot_unavailable"
     try:
-        references = restore_snapshot(evidence.snapshot).get("contributors")
+        if evidence.weather_evidence_version == 1:
+            from sapphire_flow.services.selected_weather_evidence import (
+                MAX_WEATHER_EVIDENCE_BYTES,
+                restore_bounded_weather_snapshot,
+            )
+
+            payload = restore_bounded_weather_snapshot(
+                evidence.snapshot,
+                max_bytes=MAX_WEATHER_EVIDENCE_BYTES,
+            )
+        else:
+            payload = restore_snapshot(evidence.snapshot)
+        references = payload.get("contributors")
     except (ValueError, UnicodeDecodeError, zlib.error):
         return "contributor_snapshot_unreadable"
     if not isinstance(references, list) or not references:
@@ -131,6 +143,70 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
 
 
+def _validate_combined_weather_contributors(
+    txn: sa.Connection, forecast: OperationalForecast
+) -> None:
+    from sapphire_flow.exceptions import WeatherEvidenceCaptureError
+    from sapphire_flow.services.selected_weather_evidence import (
+        restore_selected_weather,
+    )
+    from sapphire_flow.types.operational_weather import DerivedWeatherUse
+
+    if forecast.weather_evidence_version != 1 or forecast.combination_strategy is None:
+        return
+    assert forecast.evidence is not None
+    use = restore_selected_weather(
+        forecast.evidence,
+        model_id=forecast.model_id,
+        issue_time=forecast.issued_at,
+    )[forecast.station_id]
+    if not isinstance(use, DerivedWeatherUse):
+        raise WeatherEvidenceCaptureError(
+            "combined forecast requires derived weather facts"
+        )
+    store = PgForecastStore(txn, data_use=forecast.data_use)
+    for item in use.contributors:
+        row = txn.execute(
+            sa.select(
+                forecasts.c.station_id,
+                forecasts.c.model_id,
+                forecasts.c.issued_at,
+                forecasts.c.weather_evidence_version,
+            ).where(
+                forecasts.c.id == item.forecast_id,
+                forecasts.c.data_use == forecast.data_use.value,
+            )
+        ).one_or_none()
+        if (
+            row is None
+            or row.station_id != forecast.station_id
+            or row.issued_at != forecast.issued_at
+        ):
+            raise WeatherEvidenceCaptureError(
+                "combined weather contributor is not persisted in scope"
+            )
+        if row.weather_evidence_version is None:
+            if item.weather_use is not None:
+                raise WeatherEvidenceCaptureError(
+                    "legacy contributor cannot claim selected weather"
+                )
+            continue
+        persisted = store.fetch_evidence(item.forecast_id)
+        if persisted is None or persisted.snapshot_sha256 != item.evidence_sha256:
+            raise WeatherEvidenceCaptureError(
+                "combined weather contributor evidence mismatch"
+            )
+        actual = restore_selected_weather(
+            persisted,
+            model_id=ModelId(row.model_id),
+            issue_time=utc_from_row(row.issued_at),
+        ).get(forecast.station_id)
+        if actual != item.weather_use:
+            raise WeatherEvidenceCaptureError(
+                "combined weather differs from persisted contributor"
+            )
+
+
 class PgForecastStore:
     def __init__(
         self,
@@ -157,7 +233,13 @@ class PgForecastStore:
         with protect_lineage_errors(self._data_use):
             if forecast.data_use is not self._data_use:
                 raise ValueError("forecast data use differs from store purpose")
+            from sapphire_flow.services.selected_weather_evidence import (
+                validate_selected_forecast,
+            )
+
+            validate_selected_forecast(forecast)
             with self._begin() as txn:
+                _validate_combined_weather_contributors(txn, forecast)
                 # Plan 327 — a cycle that died partway is re-runnable. An
                 # IDENTICAL recomputation (decision-table row 4) returns the
                 # stored identity and writes nothing. Plan 328 T2 — a row 1 or
@@ -794,6 +876,7 @@ def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
     """
     return dict(
         id=forecast.id,
+        weather_evidence_version=forecast.weather_evidence_version,
         data_use=forecast.data_use.value,
         input_lineage=(
             forecast.input_lineage.content if forecast.input_lineage else None
@@ -1008,6 +1091,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     warm_up_raw = header["warm_up_source"]
     return OperationalForecast(
         id=ForecastId(header["id"]),
+        weather_evidence_version=header["weather_evidence_version"],
         data_use=ForecastDataUse(header["data_use"]),
         input_lineage=(
             ForecastInputLineage.from_content(header["input_lineage"])

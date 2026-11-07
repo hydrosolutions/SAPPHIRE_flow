@@ -94,6 +94,13 @@ if TYPE_CHECKING:
         RawObservation,
     )
     from sapphire_flow.types.observation_history import HistoryRead, HistoryReading
+    from sapphire_flow.types.operational_weather import (
+        FutureWeatherRequest,
+        WeatherCacheAttempt,
+        WeatherCacheCompletion,
+        WeatherCacheEntry,
+        WeatherCacheKey,
+    )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -117,6 +124,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.tenant import Tenant
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 
 @runtime_checkable
@@ -875,6 +883,9 @@ class StationStore(Protocol):
     def fetch_forecast_binding(self, station_id: StationId) -> StationWeatherSource:
         raise NotImplementedError
 
+    def fetch_operational_binding(self, station_id: StationId) -> StationWeatherSource:
+        raise NotImplementedError
+
     def fetch_reanalysis_bindings(
         self, station_id: StationId
     ) -> list[StationWeatherSource]:
@@ -1331,3 +1342,28 @@ class ProvisionalDischargeStore(Protocol):
     def fetch_provisional_discharge(
         self, fingerprint: str
     ) -> ProvisionalDischarge | None: ...
+
+
+@runtime_checkable
+class OperationalWeatherCacheStore(Protocol):
+    def fetch(self, key: WeatherCacheKey) -> WeatherCacheEntry | None: ...
+
+    def begin(
+        self,
+        *,
+        key: WeatherCacheKey,
+        principal: WritePrincipal,
+        attempt_id: UUID,
+        issue_time: UtcDatetime,
+        started_at: UtcDatetime,
+        future_scopes: tuple[FutureWeatherRequest, ...] = (),
+    ) -> WeatherCacheAttempt: ...
+
+    def finish(
+        self,
+        *,
+        attempt: WeatherCacheAttempt,
+        principal: WritePrincipal,
+        completion: WeatherCacheCompletion,
+        earliest_cycle: UtcDatetime,
+    ) -> WeatherCacheEntry: ...

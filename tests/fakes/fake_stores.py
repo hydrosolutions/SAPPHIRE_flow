@@ -797,6 +797,11 @@ class FakeForecastStore:
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
         if forecast.data_use is not self._data_use:
             raise ValueError("forecast data use differs from store purpose")
+        from sapphire_flow.services.selected_weather_evidence import (
+            validate_selected_forecast,
+        )
+
+        validate_selected_forecast(forecast)
         key = (
             forecast.station_id,
             forecast.model_id,
@@ -2149,6 +2154,19 @@ class FakeStationStore:
             raise ConfigurationError(
                 f"station {station_id} has {len(matches)} FORECAST weather-source "
                 f"binding(s), expected exactly 1: {found!r}"
+            )
+        return matches[0]
+
+    def fetch_operational_binding(self, station_id: StationId) -> StationWeatherSource:
+        matches = [
+            source
+            for source in self.fetch_weather_sources(station_id)
+            if source.role is WeatherSourceRole.OPERATIONAL
+        ]
+        if len(matches) != 1:
+            raise ConfigurationError(
+                f"station {station_id} has {len(matches)} OPERATIONAL bindings, "
+                "expected exactly 1"
             )
         return matches[0]
 

@@ -235,6 +235,18 @@ class StoreBackedGatewayPolygonResolver:
 
 @runtime_checkable
 class EcmwfApiLike(Protocol):
+    def operational(
+        self,
+        *,
+        hru_code: str,
+        start_date: object,
+        era5_variable_name: str,
+        ifs_variable_name: str,
+        subdaily_resolution: int = 6,
+        include_provenance: bool = True,
+        **kwargs: object,
+    ) -> object: ...
+
     def ifs_forecast(
         self,
         *,
@@ -383,7 +395,7 @@ _SNOW_UNAVAILABLE_CODES = frozenset({"source_data_missing", "subscription_not_fo
 
 
 def _guarded_snow_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
-    """Snow-scoped guard (Plan 145 D3.2a; 146 D5): distinct from ``_guarded_fetch``.
+    """Snow-scoped guard, distinct from ``guarded_recap_fetch``.
 
     ``source_data_missing``/``subscription_not_found`` map to
     ``RecapSnowUnavailableError`` — contained per ``(hru, variable)`` by the
@@ -501,7 +513,7 @@ def resolve_latest_cycle(
     steps = int(max_age_hours // cadence_hours) + 1
     for _ in range(steps):
         try:
-            _guarded_fetch(
+            guarded_recap_fetch(
                 client.ecmwf.ifs_forecast,
                 variable=_PROBE_VARIABLE,
                 run_date=candidate,
@@ -517,9 +529,11 @@ def resolve_latest_cycle(
     return None
 
 
-def _guarded_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
+def guarded_recap_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
     try:
         return fn(**kwargs)
+    except AdapterError:
+        raise
     except Exception as exc:  # structural map; no recap-dg-client symbol referenced
         raise _map_recap_error(exc) from exc
 
@@ -850,6 +864,15 @@ class RecapGatewayForecastAdapter:
         self._client = client
         self._resolver = resolver
         self._max_cycle_age_hours = max_cycle_age_hours
+
+    def with_resolver(
+        self, resolver: GatewayPolygonResolver
+    ) -> RecapGatewayForecastAdapter:
+        return RecapGatewayForecastAdapter(
+            client=self._client,
+            resolver=resolver,
+            max_cycle_age_hours=self._max_cycle_age_hours,
+        )
 
     def _resolve_effective_cycle(
         self,
@@ -1325,7 +1348,7 @@ class RecapGatewayForecastAdapter:
             call_kwargs["member"] = member
         df = cast(
             "pd.DataFrame",
-            _guarded_fetch(self._client.ecmwf.ifs_forecast, **call_kwargs),
+            guarded_recap_fetch(self._client.ecmwf.ifs_forecast, **call_kwargs),
         )
         rows, source_run, missing = _iter_long_rows(
             df, refs_by_polygon, variable.convert, raise_on_missing=raise_on_missing
@@ -1527,7 +1550,7 @@ class RecapGatewayReanalysisAdapter:
         if era5_name is not None:
             df = cast(
                 "pd.DataFrame",
-                _guarded_fetch(
+                guarded_recap_fetch(
                     self._client.ecmwf.era5_land_reanalysis,
                     variable=era5_name,
                     start_date=start,
@@ -1539,7 +1562,7 @@ class RecapGatewayReanalysisAdapter:
         elif snow_name is not None:
             df = cast(
                 "pd.DataFrame",
-                _guarded_fetch(
+                guarded_recap_fetch(
                     self._client.snow.reanalysis,
                     hru_code=hru_name,
                     variable=snow_name,

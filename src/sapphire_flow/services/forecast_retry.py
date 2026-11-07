@@ -26,6 +26,7 @@ class ForecastRetryRow(Enum):
     QC_VERDICT_DIFFERS = 3
     IDENTICAL = 4
     INPUT_LINEAGE_DIFFERS = 5
+    WEATHER_EVIDENCE_VERSION_DIFFERS = 6
 
 
 #: Plan 328 T2 — the rows whose re-run SUPERSEDES the stored forecast and
@@ -38,7 +39,10 @@ SUPERSEDING_ROWS = (
 
 #: ⛔ Row 3 stays refused permanently and is nobody's to replace. Widening it
 #: means amending Plan 327's table first.
-REFUSING_ROWS = (ForecastRetryRow.QC_VERDICT_DIFFERS,)
+REFUSING_ROWS = (
+    ForecastRetryRow.QC_VERDICT_DIFFERS,
+    ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS,
+)
 
 
 def classify_forecast_retry(
@@ -52,6 +56,8 @@ def classify_forecast_retry(
     ⛔ Evidence state is NOT a classifier (Plan 327 § D1). Every operational
     forecast carries an incomplete-evidence marker and a pre-``0057`` forecast
     has no evidence row at all, so consulting it would refuse every resume.
+    The selected-weather v3 parent version is an independent immutable input
+    discriminator, not evidence state; a version-only mismatch is refused.
 
     ⛔ NOT compared, because they differ on every re-run by construction: the
     row id, ``created_at``/``updated_at``, ``version``, and the flow-run
@@ -90,6 +96,10 @@ def classify_forecast_retry(
         if stored.input_lineage.fingerprint != recomputed.input_lineage.fingerprint:
             return ForecastRetryRow.INPUT_LINEAGE_DIFFERS
 
+    # Selected-weather v3: never reinterpret the retained row's weather contract.
+    if stored.weather_evidence_version != recomputed.weather_evidence_version:
+        return ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS
+
     # ROW 4 — otherwise: identical.
     return ForecastRetryRow.IDENTICAL
 
@@ -119,6 +129,8 @@ def describe_difference(
             )
         case ForecastRetryRow.INPUT_LINEAGE_DIFFERS:
             return "consumed input lineage differs"
+        case ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS:
+            return "immutable weather evidence version differs"
         case ForecastRetryRow.IDENTICAL:
             return "row 4: identical"
 

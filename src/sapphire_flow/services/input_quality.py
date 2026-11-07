@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.config.deployment import InputQualityConfig
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.observation import Observation
 from sapphire_flow.types.enums import (
     InputQualityCategory,
@@ -312,3 +313,47 @@ def past_forcing_flags(
         if flag is not None:
             flags.append(flag)
     return flags
+
+
+def selected_weather_quality_flags(
+    source: StationSourceEvidence | None,
+) -> tuple[InputQualityFlag, ...]:
+    from sapphire_flow.types.operational_weather import (
+        FutureWeatherUse,
+        PastWeatherUse,
+        WeatherFreshness,
+    )
+
+    use = None if source is None else source.weather_use
+    if use is None:
+        return ()
+    flags: list[InputQualityFlag] = []
+    if (
+        isinstance(use.past, PastWeatherUse)
+        and use.past.freshness is WeatherFreshness.STALE
+    ):
+        flags.append(
+            InputQualityFlag(
+                category=InputQualityCategory.FORCING,
+                level=InputQualityLevel.DEGRADED,
+                detail=(
+                    "Past operational weather STALE: retained complete support "
+                    "after refresh failure"
+                ),
+            )
+        )
+    if (
+        isinstance(use.future, FutureWeatherUse)
+        and use.future.freshness is WeatherFreshness.STALE
+    ):
+        flags.append(
+            InputQualityFlag(
+                category=InputQualityCategory.NWP,
+                level=InputQualityLevel.DEGRADED,
+                detail=(
+                    "Future operational weather STALE: retained complete support "
+                    "after refresh failure"
+                ),
+            )
+        )
+    return tuple(flags)

@@ -103,7 +103,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # bounded QC serialization chains 0078 onto 0077.
 # Native rating provenance chains 0079 onto 0078.
 # Atomic native capture and inert evaluation foundations chain 0080 onto 0079.
-_RELEASE_B_HEAD = "0080"
+# Selected operational cache and immutable evidence marker chain0081–0082.
+_RELEASE_B_HEAD = "0082"
 
 
 def _down_revisions() -> dict[str, str | None]:

@@ -49,7 +49,11 @@ class TestForecastDataUseMigration:
             )
         command.upgrade(config, "0069")
         with engine.connect() as conn:
-            row = conn.execute(sa.select(forecasts).where(forecasts.c.id == fid)).one()
+            row = conn.execute(
+                sa.select(forecasts.c.data_use, forecasts.c.input_lineage).where(
+                    forecasts.c.id == fid
+                )
+            ).one()
             assert row.data_use == "standard"
             assert row.input_lineage is None
             indexes = sa.inspect(conn).get_indexes("forecasts")

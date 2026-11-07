@@ -190,6 +190,10 @@ class ConfigurationError(SapphireError):
     """Invalid or missing configuration."""
 
 
+class WeatherEvidenceCaptureError(ConfigurationError):
+    """Selected weather evidence does not match the immutable assembly facts."""
+
+
 class UnsupportedModelRequirementError(SapphireError):
     """A ForecastInterface model's ``InputRequirement`` cannot be represented
     by SAP3's single-resolution domain types (Plan 156) — e.g. more than one
