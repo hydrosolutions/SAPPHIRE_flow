@@ -83,7 +83,13 @@ if TYPE_CHECKING:
     from sapphire_flow.flows.run_forecast_cycle import ForecastCycleResult
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import OperationalWeatherCacheStore
+    from sapphire_flow.services.selected_weather_evidence import (
+        SelectedWeatherIssuanceRefusal,
+    )
+    from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import OperationalForecast
+    from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 
@@ -151,6 +157,8 @@ def _run_selected_cycle(
     ]
     | None = None,
     configure_refresh: Callable[[dict[str, object]], dict[str, object]] | None = None,
+    verify_cycle: Callable[[ForecastCycleResult, dict[str, object]], None]
+    | None = None,
     execution_runs: int = 1,
     past_refresh_error: Exception | None = None,
     lookback_days: int = 2,
@@ -506,6 +514,14 @@ def _run_selected_cycle(
         execution_time = ensure_utc(ISSUE + timedelta(hours=6 * run_index))
         result = run_cycle()
         counts.append(result.forecasts_stored)
+    if verify_cycle is not None:
+        verify_cycle(result, stores)
+        return [
+            forecast
+            for forecast in stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            if forecast.station_id in {station.id for station in stations}
+            and forecast.model_id == mid
+        ]
     if refresh_case != "none":
         from tests.fakes.fake_stores import FakeForecastStore
 
@@ -882,3 +898,538 @@ def test_station_stale_leg_projects_persisted_quality(
     _run_selected_cycle(
         monkeypatch, group_run=False, capture_fault="none", refresh_case=refresh_case
     )
+
+
+class TestSelectedWeatherIssuance:
+    @pytest.mark.parametrize("group_run", [False, True])
+    @pytest.mark.parametrize("stage", ["deserialize", "predict"])
+    @pytest.mark.parametrize("reason", ["weather_expired", "issue_day_mismatch"])
+    def test_boundary_crossing_refuses_actual_flow_write(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        group_run: bool,
+        stage: Literal["deserialize", "predict"],
+        reason: Literal["weather_expired", "issue_day_mismatch"],
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        now = ISSUE
+        calls = 0
+        model_type = FakeGroupForecastModel if group_run else FakeStationForecastModel
+        predict_name = "predict_batch" if group_run else "predict"
+        deserialize = model_type.deserialize_artifact
+        predict = getattr(model_type, predict_name)
+        crossing = ensure_utc(
+            ISSUE
+            + (
+                timedelta(hours=36, microseconds=1)
+                if reason == "weather_expired"
+                else timedelta(hours=18, minutes=15)
+            )
+        )
+
+        def deserialize_then_advance(self: object, raw: bytes) -> object:
+            nonlocal now
+            result = deserialize(self, raw)
+            if stage == "deserialize":
+                now = crossing
+            return result
+
+        def predict_then_advance(
+            self: object, *args: object, **kwargs: object
+        ) -> object:
+            nonlocal now, calls
+            calls += 1
+            result = predict(self, *args, **kwargs)
+            if stage == "predict":
+                now = crossing
+            return result
+
+        monkeypatch.setattr(
+            model_type, "deserialize_artifact", deserialize_then_advance
+        )
+        monkeypatch.setattr(model_type, predict_name, predict_then_advance)
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "nwp_max_fallback_age_hours": 36.0,
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu")
+                                if reason == "issue_day_mismatch"
+                                else None,
+                            }
+                        ),
+                    }
+                ),
+                "cycle_time": None,
+                "clock": lambda: now,
+            }
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            assert result.forecasts_stored == 0
+            assert stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE) == []
+            assert any(reason in error for error in result.errors), result.errors
+            assert calls == (0 if stage == "deserialize" else 1)
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=group_run,
+            capture_fault="none",
+            station_count=3 if group_run else 1,
+            configure_cycle=configure,
+            verify_cycle=verify,
+        )
+
+    @pytest.mark.parametrize("group_run", [False, True])
+    def test_automatic_tick_uses_midnight_and_same_actual_created_at(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        group_run: bool,
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        at = ensure_utc(ISSUE + timedelta(minutes=15))
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu"),
+                            }
+                        ),
+                    }
+                ),
+                "cycle_time": None,
+                "clock": lambda: at,
+            }
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            assert result.forecasts_stored == 1, result.errors
+            assert len(forecasts) == 1
+            assert forecasts[0].ensemble.issued_at == ISSUE
+            assert forecasts[0].created_at == at
+            assert forecasts[0].nwp_cycle_reference_time == ISSUE
+            assert forecasts[0].weather_evidence_version == 1
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=group_run,
+            capture_fault="none",
+            configure_cycle=configure,
+            verify_cycle=verify,
+        )
+
+    def test_group_preserves_success_and_qc_rejections_across_creation_expiry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
+        from sapphire_flow.types.domain import ForecastQcRuleParams
+        from tests.unit.flows.test_run_forecast_cycle_rejected_capture import _StubStore
+
+        now = ISSUE
+        boundary = ensure_utc(ISSUE + timedelta(hours=36))
+        expired = ensure_utc(boundary + timedelta(microseconds=1))
+        original_predict = FakeGroupForecastModel.predict_batch
+        original_check = ForecastOutputQualityChecker.check
+        rejected = _StubStore()
+
+        def predict(
+            self: FakeGroupForecastModel, *args: object, **kwargs: object
+        ) -> object:
+            nonlocal now
+            batch = original_predict(self, *args, **kwargs)
+            for sid in (StationId(UUID(int=2)), StationId(UUID(int=4))):
+                ensembles, state = batch[sid]
+                ensemble = ensembles["discharge"]
+                batch[sid] = (
+                    {
+                        "discharge": replace(
+                            ensemble,
+                            values=ensemble.values.with_columns(
+                                pl.lit(-1.0).alias("value")
+                            ),
+                        )
+                    },
+                    state,
+                )
+            now = boundary
+            return batch
+
+        def check(
+            self: ForecastOutputQualityChecker,
+            ensemble: object,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            nonlocal now
+            flags = original_check(self, ensemble, *args, **kwargs)
+            if ensemble.station_id == StationId(UUID(int=2)):
+                now = expired
+            return flags
+
+        monkeypatch.setattr(FakeGroupForecastModel, "predict_batch", predict)
+        monkeypatch.setattr(ForecastOutputQualityChecker, "check", check)
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={"nwp_max_fallback_age_hours": 36.0}
+                ),
+                "clock": lambda: now,
+                "rejected_forecast_store": rejected,
+                "qc_rules": ForecastQcRuleSet(
+                    version="negative",
+                    rules=(
+                        ForecastQcRuleParams(
+                            rule_id="negative_value",
+                            rule_version="1",
+                            parameter="discharge",
+                            time_step=timedelta(days=1),
+                            thresholds={"value_min": 0.0},
+                        ),
+                    ),
+                ),
+            }
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            assert result.forecasts_stored == 1, result.errors
+            assert [
+                (f.station_id, f.created_at, f.ensemble.issued_at) for f in forecasts
+            ] == [(StationId(UUID(int=1)), boundary, ISSUE)]
+            assert forecasts[0].updated_at == boundary
+            assert forecasts[0].nwp_cycle_reference_time == ISSUE
+            assert any(
+                str(UUID(int=3)) in error and "weather_expired" in error
+                for error in result.errors
+            )
+            assert rejected.committed
+            entries = [entry for call in rejected.calls for entry in call]
+            assert {entry.payload.station_id for entry in entries} == {
+                StationId(UUID(int=2)),
+                StationId(UUID(int=4)),
+            }
+            assert all(
+                parameter.qc_status is QcStatus.QC_FAILED
+                for entry in entries
+                for parameter in entry.payload.parameters
+            )
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=True,
+            capture_fault="none",
+            station_count=4,
+            configure_cycle=configure,
+            verify_cycle=verify,
+        )
+
+    def test_nepal_day_mismatch_refuses_before_provider_fetch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        from sapphire_flow.exceptions import ConfigurationError
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("day mismatch reached provider fetch")
+
+        monkeypatch.setattr(FixtureOperationalApi, "operational", forbidden)
+        monkeypatch.setattr(_FakeCandidateAwareSource, "fetch_requirement", forbidden)
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu"),
+                            }
+                        ),
+                    }
+                ),
+                "cycle_time": None,
+                "clock": lambda: ensure_utc(ISSUE + timedelta(hours=18, minutes=15)),
+            }
+
+        with pytest.raises(ConfigurationError, match="issue day differs"):
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=True,
+                capture_fault="none",
+                configure_cycle=configure,
+            )
+
+    def test_explicit_manual_issue_bypasses_only_calendar(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        at = ensure_utc(ISSUE + timedelta(days=1))
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "nwp_max_fallback_age_hours": 36.0,
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu"),
+                            }
+                        ),
+                    }
+                ),
+                "forcing_resolution_policy": ForcingResolutionPolicy(
+                    cycle_cadence_hours=6, max_cycle_age_hours=36, max_retries=0
+                ),
+                "cycle_time": ISSUE.isoformat(),
+                "clock": lambda: at,
+            }
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            assert result.forecasts_stored == 1, result.errors
+            assert len(forecasts) == 1
+            assert forecasts[0].ensemble.issued_at == ISSUE
+            assert forecasts[0].created_at == at
+            assert forecasts[0].nwp_cycle_reference_time == ISSUE
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=True,
+            capture_fault="none",
+            configure_cycle=configure,
+            verify_cycle=verify,
+        )
+
+    @pytest.mark.parametrize("purpose", ["standard", "provisional", "replay"])
+    def test_entry_refusal_uses_existing_fatal_freshness_boundary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        purpose: Literal["standard", "provisional", "replay"],
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        from sapphire_flow.exceptions import ConfigurationError
+        from sapphire_flow.flows import run_forecast_cycle as flow
+        from sapphire_flow.types.enums import PipelineCheckType, PipelineHealthStatus
+        from tests.fakes.fake_stores import FakePipelineHealthStore
+
+        health = FakePipelineHealthStore()
+        failures: list[BaseException] = []
+        original = flow.emit_freshness_on_fatal_exit
+        at = ensure_utc(ISSUE + timedelta(hours=18, minutes=15))
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+
+        def emit(*args: object, **kwargs: object) -> object:
+            exc = kwargs["exc"]
+            assert isinstance(exc, BaseException)
+            failures.append(exc)
+            return original(*args, **kwargs)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("entry failure reached provider")
+
+        monkeypatch.setattr(flow, "emit_freshness_on_fatal_exit", emit)
+        monkeypatch.setattr(FixtureOperationalApi, "operational", forbidden)
+        monkeypatch.setattr(_FakeCandidateAwareSource, "fetch_requirement", forbidden)
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            options = {
+                "config": config.model_copy(
+                    update={
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu")
+                            }
+                        )
+                    }
+                ),
+                "cycle_time": ISSUE.isoformat() if purpose == "replay" else None,
+                "clock": lambda: at,
+                "pipeline_health_store": health,
+            }
+            if purpose == "replay":
+                options["operational_weather_adapter"] = None
+            return options
+
+        with pytest.raises(
+            ConfigurationError,
+            match="provider configuration"
+            if purpose == "replay"
+            else "issue day differs",
+        ) as raised:
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=True,
+                capture_fault="none",
+                configure_cycle=configure,
+                data_use=ForecastDataUse.PROVISIONAL_RATING
+                if purpose == "provisional"
+                else ForecastDataUse.STANDARD,
+            )
+        assert failures == [raised.value]
+        assert failures[0] is raised.value
+        assert raised.value.__cause__ is None
+        records = health.fetch_recent(check_type=PipelineCheckType.FORECAST_FRESHNESS)
+        if purpose == "standard":
+            assert len(records) == 1
+            assert records[0].status is PipelineHealthStatus.CRITICAL
+            assert records[0].detail["forecasts_stored"] == 0
+            assert records[0].checked_at == at
+        else:
+            assert records == []
+
+    @pytest.mark.parametrize("group_run", [False, True])
+    def test_ticking_clock_stamps_all_parameters_with_checked_time(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        group_run: bool,
+    ) -> None:
+        import importlib
+        from zoneinfo import ZoneInfo
+
+        from sapphire_flow.services.selected_weather_evidence import (
+            selected_weather_issuance_refusal,
+        )
+
+        checked: list[UtcDatetime] = []
+        ticks = 0
+        model_type = FakeGroupForecastModel if group_run else FakeStationForecastModel
+        method = "predict_batch" if group_run else "predict"
+        original_predict = getattr(model_type, method)
+        monkeypatch.setattr(
+            model_type,
+            "data_requirements",
+            replace(
+                model_type.data_requirements,
+                target_parameters=frozenset({"discharge", "water_level"}),
+                required_past_targets=frozenset({"discharge"}),
+            ),
+        )
+
+        def two_parameters(
+            ensembles: dict[str, ForecastEnsemble], state: bytes | None
+        ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+            discharge = ensembles["discharge"]
+            return {
+                **ensembles,
+                "water_level": replace(discharge, parameter="water_level", units="m"),
+            }, state
+
+        def predict(self: object, *args: object, **kwargs: object) -> object:
+            result = original_predict(self, *args, **kwargs)
+            return (
+                {sid: two_parameters(*value) for sid, value in result.items()}
+                if group_run
+                else two_parameters(*result)
+            )
+
+        def guard(
+            source: StationSourceEvidence | None,
+            *,
+            issue_time: UtcDatetime,
+            at: UtcDatetime,
+            max_age_hours: float,
+            automatic_issue_timezone: ZoneInfo | None = None,
+        ) -> SelectedWeatherIssuanceRefusal | None:
+            checked.append(at)
+            return selected_weather_issuance_refusal(
+                source,
+                issue_time=issue_time,
+                at=at,
+                max_age_hours=max_age_hours,
+                automatic_issue_timezone=automatic_issue_timezone,
+            )
+
+        def clock() -> UtcDatetime:
+            nonlocal ticks
+            ticks += 1
+            return ensure_utc(ISSUE + timedelta(minutes=15, microseconds=ticks))
+
+        runner = importlib.import_module(
+            "sapphire_flow.services.run_group_forecast"
+            if group_run
+            else "sapphire_flow.services.run_station_forecast"
+        )
+        monkeypatch.setattr(model_type, method, predict)
+        monkeypatch.setattr(runner, "selected_weather_issuance_refusal", guard)
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu")
+                            }
+                        )
+                    }
+                ),
+                "cycle_time": None,
+                "clock": clock,
+            }
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            assert result.forecasts_stored == 2, result.errors
+            assert {f.ensemble.parameter for f in forecasts} == {
+                "discharge",
+                "water_level",
+            }
+            assert len(checked) == 2 and checked[0] < checked[1]
+            assert {f.created_at for f in forecasts} == {checked[-1]}
+            assert {f.updated_at for f in forecasts} == {checked[-1]}
+            assert all(f.issued_at == ISSUE for f in forecasts)
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=group_run,
+            capture_fault="none",
+            configure_cycle=configure,
+            verify_cycle=verify,
+        )

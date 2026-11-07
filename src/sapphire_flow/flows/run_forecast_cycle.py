@@ -81,6 +81,7 @@ from sapphire_flow.types.forecast_evidence import (
     ForecastEvidence,
     incomplete_evidence,
 )
+from sapphire_flow.types.group_input import GroupMemberInputReason
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
     COMBINED_MODEL_IDS,
@@ -93,6 +94,7 @@ from sapphire_flow.types.ids import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from uuid import UUID
+    from zoneinfo import ZoneInfo
 
     from prefect.client.schemas.objects import State, TaskRun
     from prefect.tasks import Task
@@ -173,6 +175,34 @@ log = structlog.get_logger(__name__)
 # `_capture_rejected_forecasts` (never bound as a default argument), so a
 # test can shorten it by monkeypatching this module attribute.
 REJECTED_CAPTURE_DEADLINE_S = 10.0
+
+
+def _require_selected_issue_day(
+    issue_time: UtcDatetime, actual_time: UtcDatetime, timezone: ZoneInfo
+) -> None:
+    if (
+        issue_time.astimezone(timezone).date()
+        != actual_time.astimezone(timezone).date()
+    ):
+        raise ConfigurationError(
+            "automatic forecast issue day differs from execution day"
+        )
+
+
+def _station_issuance_errors(
+    station_id: StationId, failures: Mapping[ModelId, AssignmentFailure]
+) -> tuple[str, ...]:
+    from sapphire_flow.services.run_station_forecast import AssignmentFailureCause
+
+    return tuple(
+        f"Station {station_id} model {mid}: {failure.detail}"
+        for mid, failure in failures.items()
+        if failure.cause
+        in (
+            AssignmentFailureCause.WEATHER_EXPIRED,
+            AssignmentFailureCause.ISSUE_DAY_MISMATCH,
+        )
+    )
 
 
 def _collect_rejected_forecasts(
@@ -2799,9 +2829,22 @@ def run_forecast_cycle_flow(
             is OperationalPastWeatherRoute.RECAP_COMBINED
         )
         selected_cycle_time: UtcDatetime | None = None
+        automatic_issue_timezone: ZoneInfo | None = None
         if selected_weather_route:
             selected_cycle_time = _resolve_cycle_time(cycle_time, clock)
+            if cycle_time is None:
+                automatic_issue_timezone = (
+                    config.operational_weather.automatic_issue_timezone
+                )
             try:
+                if automatic_issue_timezone is not None:
+                    actual_time = selected_cycle_time
+                    selected_cycle_time = ensure_utc(
+                        actual_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                    )
+                    _require_selected_issue_day(
+                        selected_cycle_time, actual_time, automatic_issue_timezone
+                    )
                 operational_weather_principal, operational_weather_cache = (
                     _selected_weather_owner_dependencies(
                         config=config,
@@ -3354,6 +3397,16 @@ def run_forecast_cycle_flow(
                 resolution_policy = (
                     forcing_resolution_policy or _DEFAULT_FORCING_RESOLUTION_POLICY
                 )
+                log.info(
+                    "selected_weather.issuance_policy",
+                    max_age_hours=config.nwp_max_fallback_age_hours,
+                    max_cycle_age_hours=resolution_policy.max_cycle_age_hours,
+                    automatic_issue_timezone=(
+                        automatic_issue_timezone.key
+                        if automatic_issue_timezone is not None
+                        else None
+                    ),
+                )
                 weather_earliest_cycle = ensure_utc(
                     clock() - timedelta(hours=config.nwp_max_fallback_age_hours)
                 )
@@ -3798,9 +3851,13 @@ def run_forecast_cycle_flow(
                         rng=rng,
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
+                        automatic_issue_timezone=automatic_issue_timezone,
                     )
                     _collect_rejected_forecasts(
                         rejected_buffer, attempt_id, multi_result.failed_models
+                    )
+                    errors.extend(
+                        _station_issuance_errors(sid, multi_result.failed_models)
                     )
 
                     # D11: the cross-cycle combination preflight — installed
@@ -4125,9 +4182,13 @@ def run_forecast_cycle_flow(
                         rng=rng,
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
+                        automatic_issue_timezone=automatic_issue_timezone,
                     )
                     _collect_rejected_forecasts(
                         rejected_buffer, attempt_id, fc_outcome.failed_models
+                    )
+                    errors.extend(
+                        _station_issuance_errors(sid, fc_outcome.failed_models)
                     )
 
                     if fc_outcome.result is None:
@@ -4201,9 +4262,13 @@ def run_forecast_cycle_flow(
                         rng=rng,
                         model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
+                        automatic_issue_timezone=automatic_issue_timezone,
                     )
                     _collect_rejected_forecasts(
                         rejected_buffer, attempt_id, multi_result.failed_models
+                    )
+                    errors.extend(
+                        _station_issuance_errors(sid, multi_result.failed_models)
                     )
 
                     if multi_result.primary_model_id is None:
@@ -4357,6 +4422,7 @@ def run_forecast_cycle_flow(
                 water_level_datums_masl=water_level_datums_masl,
                 rng=rng,
                 selected_weather_inputs=selected_weather_inputs,
+                automatic_issue_timezone=automatic_issue_timezone,
             )
             forecasts_stored += daily_stored
             errors.extend(daily_errors)
@@ -4584,7 +4650,17 @@ def run_forecast_cycle_flow(
                         state_policy=GroupStatePolicy.STATELESS_ONLY
                         if data_use is ForecastDataUse.PROVISIONAL_RATING
                         else GroupStatePolicy.PRESERVE,
+                        automatic_issue_timezone=automatic_issue_timezone,
                     )
+                    for member_issue in group_outcome.unavailable_members:
+                        if member_issue.reason in (
+                            GroupMemberInputReason.WEATHER_EXPIRED,
+                            GroupMemberInputReason.ISSUE_DAY_MISMATCH,
+                        ):
+                            errors.append(
+                                f"Station {member_issue.station_id}: "
+                                f"{member_issue.reason.value}"
+                            )
                     selected_group_failures.update(
                         selected_attempt_pairs
                         - {

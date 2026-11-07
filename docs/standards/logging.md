@@ -720,3 +720,15 @@ Subscription failure diagnostics persist only the shared typed category before
 read-back. Operator JSON separates current outcome from prior typed failure
 history; successful reconciliation does not delete that history. No raw transport
 error/body/key becomes a diagnostic field.
+
+### Selected-weather issuance events
+
+- `selected_weather.issuance_policy` (INFO): resolved `max_age_hours`,
+  `max_cycle_age_hours`, and the active automatic IANA timezone (or null).
+- `selected_weather.issuance_refused` (WARNING): `station_id`, immutable
+  `issue_time`/`cycle_time`, `checked_at`, `age_hours`, `max_age_hours`, and typed
+  `reason` (`weather_expired` or `issue_day_mismatch`). No provider response,
+  credentials or evidence payload is logged. Flow errors retain the same reason.
+
+These are execution diagnostics, not evidence of on-time publication, complete
+provider coverage or hydrological forecast skill.

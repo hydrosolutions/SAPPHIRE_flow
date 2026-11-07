@@ -230,3 +230,67 @@ class TestCompletionRollbackBoundary:
                 clock=lambda: NOW,
             )
         assert not isinstance(failure.value, DailyOutputRolledBackError)
+
+
+class TestDailyIssuanceRefusalCompletion:
+    @pytest.mark.parametrize("reason", ["weather_expired", "issue_day_mismatch"])
+    def test_typed_refusal_finalizes_incomplete_without_forecast_write(
+        self,
+        isolated_committed_db_engine: sa.Engine,
+        assignment: tuple[DailyClaimKey, FrozenDailyAssignment],
+        reason: str,
+    ) -> None:
+        from sapphire_flow.types.daily_forecast_outcome import (
+            DailyMemberReason,
+            DailyMemberState,
+        )
+        from sapphire_flow.types.group_input import (
+            GroupMemberInputIssue,
+            GroupMemberInputReason,
+        )
+
+        claim, member, _ = _prepare(isolated_committed_db_engine, assignment)
+        key, frozen = claim.key, claim.frozen
+        outcome = GroupForecastOutcome(
+            results={},
+            expected_station_ids=(member.station_id,),
+            unavailable_members=(
+                GroupMemberInputIssue(
+                    station_id=member.station_id,
+                    reason=GroupMemberInputReason(reason),
+                ),
+            ),
+        )
+        assert outcome.failure is None
+        store = PgDailyForecastStore(isolated_committed_db_engine.begin)
+        with isolated_committed_db_engine.connect() as conn:
+            result = complete_daily_group(
+                claim=claim,
+                result=outcome,
+                exclusions=(),
+                provenance={member.station_id: member.provenance},
+                forecast_writer=PgCommittedForecastWriter(
+                    isolated_committed_db_engine.begin
+                ),
+                rejected_writer=PgRejectedForecastStore(
+                    conn, transaction_factory=isolated_committed_db_engine.begin
+                ),
+                store=store,
+                clock=lambda: NOW + timedelta(days=1),
+            )
+            assert (
+                conn.execute(
+                    sa.text("SELECT count(*) FROM forecasts WHERE station_id = :sid"),
+                    {"sid": member.station_id},
+                ).scalar_one()
+                == 0
+            )
+        assert result.state is DailyAttemptState.INCOMPLETE
+        assert len(result.outcomes) == 1
+        assert result.outcomes[0].state is DailyMemberState.INPUT_EXCLUDED
+        assert result.outcomes[0].reason is DailyMemberReason.INPUTS_UNAVAILABLE
+        assert result.outcomes[0].references == ()
+        snapshot = store.read_day(key)
+        assert snapshot.latest is not None
+        assert snapshot.latest.state is DailyAttemptState.INCOMPLETE
+        assert claim.key == key and claim.frozen == frozen

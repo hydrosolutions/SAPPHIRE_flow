@@ -503,3 +503,16 @@ same-named job values. Keep the distinct forecast key absent from worker/pool
 environments. Full mapping preservation and explicit empty-env clearing are
 required; verify child-process absence on disable, not API read-back alone. See [NHS configuration
 and rollback](../deployment/nhs-forecast-configuration.md).
+
+### Selected daily-weather scheduling
+
+Forecast-cycle re-registration preserves existing parameters and unrelated job
+variables; it does not reset an operator's approved `data_use` or issue selection.
+New deployments start with empty parameters. Cron remains driven by
+`SCHEDULE_FORECAST_CYCLE`. Other deployments retain their existing behavior.
+Automatic selected daily issuance requires the explicit IANA calendar opt-in and
+an omitted `cycle_time`; it is not inferred from UI timezone or age settings.
+Frozen daily claims retain their own issue and default execution hash. Typed age
+or day refusals finalize no-output claims as `INCOMPLETE`, not abandoned ACTIVE
+claims. See the [operational runbook](../operations/recap-gateway-runbook.md#opt-in-daily-operational-weather-issuance)
+for configuration-chain, deadline and activation gates.

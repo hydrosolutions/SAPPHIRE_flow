@@ -36,6 +36,9 @@ from sapphire_flow.services.qc_datum import (
     forecast_skipped_rules,
     shift_ensemble_for_water_level_datum,
 )
+from sapphire_flow.services.selected_weather_evidence import (
+    selected_weather_issuance_refusal,
+)
 from sapphire_flow.services.track_assembly import (
     MissingTrackContext,
     ReadyContext,
@@ -64,6 +67,8 @@ from sapphire_flow.types.rejected_forecast import (
 )
 
 if TYPE_CHECKING:
+    from zoneinfo import ZoneInfo
+
     import polars as pl
 
     from sapphire_flow.config.deployment import DeploymentConfig
@@ -119,6 +124,8 @@ class AssignmentFailureCause(Enum):
     # seam (T7). Both are assignment-local and advance the fallback chain. ---
     MISSING_CONTEXT = auto()  # the track never resolved -> model NOT called
     TRACK_UNAVAILABLE = auto()  # the track resolved, this station unavailable
+    WEATHER_EXPIRED = auto()
+    ISSUE_DAY_MISMATCH = auto()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -288,6 +295,7 @@ def _run_single_model(
     rng: random.Random,
     forcing_contract: ForcingContract | None = None,
     input_lineage: ForecastInputLineage | None = None,
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> AssignmentOutcome:
     """``forcing_contract`` is the Plan 151 D10a per-track substitution:
     ``None`` (the default) is the LEGACY route — every forcing read below
@@ -579,6 +587,21 @@ def _run_single_model(
         )
     try:
         artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
+        if (
+            config.operational_weather.route
+            is OperationalPastWeatherRoute.RECAP_COMBINED
+        ):
+            refusal = selected_weather_issuance_refusal(
+                context.inputs.source_evidence,
+                issue_time=context.inputs.issue_time,
+                at=clock(),
+                max_age_hours=config.nwp_max_fallback_age_hours,
+                automatic_issue_timezone=automatic_issue_timezone,
+            )
+            if refusal is not None:
+                return AssignmentFailure(
+                    cause=AssignmentFailureCause[refusal.name], detail=refusal.value
+                )
         if is_ensemble:
             # Member-suffixed forcing is fanned out into one N-member ensemble.
             # The fan-out maps ``predict`` over N members; each may return its own
@@ -756,6 +779,18 @@ def _run_single_model(
 
     forecasts: list[OperationalForecast] = []
     now = clock()
+    if config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED:
+        refusal = selected_weather_issuance_refusal(
+            context.inputs.source_evidence,
+            issue_time=context.inputs.issue_time,
+            at=now,
+            max_age_hours=config.nwp_max_fallback_age_hours,
+            automatic_issue_timezone=automatic_issue_timezone,
+        )
+        if refusal is not None:
+            return AssignmentFailure(
+                cause=AssignmentFailureCause[refusal.name], detail=refusal.value
+            )
     for param, ensemble in ensembles.items():
         flags = all_flags[param]
         qc_status = worst_qc_status(flags)
@@ -823,6 +858,7 @@ def run_all_station_forecasts(
     rng: random.Random,
     model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> MultiModelForecastResult:
     sorted_assignments = sorted(assignments, key=lambda a: a.priority)
     # Slim per-run scalars extracted ONCE from the shared ``input_metadata``
@@ -862,6 +898,7 @@ def run_all_station_forecasts(
                 id_gen=id_gen,
                 rng=rng,
                 input_lineage=input_metadata.input_lineage,
+                automatic_issue_timezone=automatic_issue_timezone,
             )
         except Exception as exc:  # backstop for UNANTICIPATED bugs only (D3/D6)
             log.error(
@@ -907,6 +944,7 @@ def run_all_station_forecasts_per_track(
     rng: random.Random,
     model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> MultiModelForecastResult:
     """Plan 151 T7 (D10): the per-track counterpart of
     ``run_all_station_forecasts``. Instead of ONE shared ``inputs`` /
@@ -1001,6 +1039,7 @@ def run_all_station_forecasts_per_track(
                 id_gen=id_gen,
                 rng=rng,
                 forcing_contract=contract,
+                automatic_issue_timezone=automatic_issue_timezone,
             )
         except Exception as exc:  # backstop for UNANTICIPATED bugs only (D3/D6)
             log.error(
@@ -1060,6 +1099,7 @@ def run_station_forecast(
     rng: random.Random,
     model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> PrimaryForecastOutcome:
     multi = run_all_station_forecasts(
         station_id=station_id,
@@ -1080,6 +1120,7 @@ def run_station_forecast(
         rng=rng,
         model_state_store=model_state_store,
         water_level_datum_masl=water_level_datum_masl,
+        automatic_issue_timezone=automatic_issue_timezone,
     )
     if multi.primary_model_id is None:
         log.warning(

@@ -16,6 +16,8 @@ class GroupMemberInputReason(Enum):
     INSUFFICIENT_FUTURE = "insufficient_future"
     NAN_TOLERANCE_EXCEEDED = "nan_tolerance_exceeded"
     INPUTS_UNAVAILABLE = "inputs_unavailable"
+    WEATHER_EXPIRED = "weather_expired"
+    ISSUE_DAY_MISMATCH = "issue_day_mismatch"
     MISSING_FORECAST_BINDING = "missing_forecast_binding"
 
 

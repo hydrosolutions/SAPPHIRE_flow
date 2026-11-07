@@ -2479,6 +2479,14 @@ Capture/store/API touchpoints include `selected_weather_evidence.py`,
 pre-predict validation, immutable parent markers, authoritative retry hydration,
 station-only summaries and the existing authorization/publication boundaries.
 
+Issuance changes also trace `config/operational_weather.py`, the forecast-worker
+TOML overlay chain, `run_station_forecast.py`, `run_group_forecast.py`,
+`daily_forecast_execution.py`, `daily_forecast_completion.py` and
+`cli/register_deployments.py`. Preserve frozen issue/hash compatibility, exact
+creation timestamps, member-local refusal and QC diagnostic persistence, and
+operator deployment parameters. Test both actual configuration loaders, real
+`adeploy` kwargs, native flow writes and serial committed daily completion.
+
 Verification includes native selected station/group/FI/default-off tests, cache
 CAS/archive-proof tests, combined UTC/Kathmandu restoration, committed scheduled
 runs, actual worker/API-role checks, native/legacy API isolation and the committed
