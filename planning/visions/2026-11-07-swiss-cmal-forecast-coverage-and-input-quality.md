@@ -6,7 +6,8 @@ Improve Swiss `cmal_small` forecast coverage and provide trustworthy per-station
 freshness, attempt status and proportionate input-quality information to the
 separate forecast dashboard project. The owner confirmed this scope on 2026-11-07.
 This is a standalone vision, not a Program Effort or an implementation plan.
-Publication does not authorize deployment, historical reruns or operational adoption.
+Publication does not authorize implementation, deployment, historical reruns or
+operational adoption.
 
 Start with a bounded diagnosis, then fix confirmed causes and explain remaining
 limitations. Do not turn this first stage into an exhaustive scientific investigation.
@@ -125,7 +126,10 @@ Source inspection at `20444391946d6baae963ab3fc1afaf33218558eb` establishes:
 - `src/sapphire_flow/services/input_quality.py`: `assess_input_quality` marks cold
   start degraded; `assess_past_forcing_gaps` already distinguishes recent gaps from
   older gaps (older gaps are PARTIAL). `past_forcing_flags` considers declared
-  per-series lookbacks. Do not assume the owner's gap example requires a new mechanism.
+  per-series lookbacks. These gap checks cover missing timestamps, not values already
+  repaired upstream. Whether repair provenance is captured and propagated is a bounded
+  diagnosis question; do not assume either that the example is already handled or that
+  it requires a new mechanism.
 - `src/sapphire_flow/types/daily_forecast.py`: UTC daily issue identity and attempt
   states. `types/daily_forecast_outcome.py` carries per-member outcomes and reasons;
   COMPLETE can include input/configuration exclusions alongside produced outputs.
@@ -165,5 +169,7 @@ unreviewed fixes. No live mutation is authorized by the diagnostic examples abov
 - Maintain authorization, no-store/retention, output QC, scientific provenance and
   existing overview cost safeguards. Do not add unbounded per-station scans simply to
   supply status. Verify shared-path compatibility with other models and regions.
-- Follow repository review, test and owner merge/deployment requirements. This vision
+- Follow repository review, test and owner merge/deployment requirements. Changes to
+  external contracts, user-visible semantics or material scientific behavior are
+  high-risk under AGENTS.md and require its additional independent review. This vision
   does not prescribe schema migrations, new dependencies or a new status store.
